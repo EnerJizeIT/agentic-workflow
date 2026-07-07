@@ -275,7 +275,18 @@ In your DONE report, briefly explain any non-trivial design choices. This helps 
 
 ---
 
-## 9. If anything is unclear
+## 9. Output status block
+
+End every turn with a concise status block:
+
+```
+WORKER STATUS: <done|blocked|in_progress>
+FILES CHANGED: <list>
+VERIFY RESULT: <green|red|blocked>
+NEXT ACTION FOR ORCHESTRATOR: <wait_for_supervisor|continue_same_todo>
+```
+
+## 10. If anything is unclear
 
 STOP. Write `BLOCKED-{NNNN}.md` with a clear description of the problem. The Supervisor will clarify.
 
