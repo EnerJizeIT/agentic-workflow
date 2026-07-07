@@ -13,6 +13,17 @@
 
 ---
 
+## ✅ Done in v0.2.0
+
+- [x] Оркестратор читает стадии из YAML pipeline файла.
+- [x] Поддержка всех сигналов: DONE, BLOCKED, REVIEW-APPROVED/REJECTED, TEST-PASSED/FAILED.
+- [x] Retry логика с эскалацией на supervisor'а.
+- [x] Переходы между стадиями по правилам `on_*` из конфига (next, rollback_to, escalate, stop).
+- [x] Опции `--pipeline`, `--from-stage`, `--auto`, `--timeout` для `awf start`.
+- [x] Инструкции supervisor/worker переписаны для capable модели (Mode A/B/C).
+
+---
+
 ### Task 1 · HTML dashboard как обертка над CLI
 
 **Files:** `dashboard/` (new directory), `bin/awf`
@@ -78,7 +89,7 @@
 
 ### Task 3 · Автоинициализация по файлу требований
 
-**Files:** `lib/init.sh`, `bin/awf`
+**Files:** `lib/bootstrap.sh` (new), `bin/awf`
 
 **Description:**
 
@@ -90,7 +101,7 @@
    - `.agentic/pipelines/simple.yaml` (копия из шаблонов).
    - `.agentic/roles/` (копии ролей из шаблонов).
    - `.agentic/inbox/`, `.agentic/outbox/`, `.agentic/logs/`, `.agentic/context/`.
-3. Сохранить файл требований как `.agentic/plan.md` — стартовую точку для Supervisor.
+3. Сохранить файл требований как `.agentic/phases/plan.md` — стартовую точку для Supervisor.
 4. Supervisor анализирует файл требований и декомпозирует задачи в TODO листы.
 
 Новая подкоманда: `awf bootstrap <requirements-file>` — делает всё вышеописанное.
@@ -105,48 +116,62 @@
 
 ---
 
-### Task 4 · Выбор сценария пайплайна
+### Task 4 · Цепочка worker'ов (supervisor→worker₁→worker₂→...→supervisor)
 
-**Files:** `lib/orchestrator.sh`, `templates/pipelines/`, `lib/config-loader.sh` (new)
+**Files:** `lib/orchestrator.sh`, `templates/pipelines/`
 
 **Description:**
 
-Поддержать выбор сценария выполнения через UI и CLI:
+Расширить оркестратор для поддержки последовательной передачи задачи между несколькими worker'ами с разными ролями. Каждый worker работает с одним и тем же TODO, но применяет свою специализацию. Результат одного worker'а (изменения в файлах + отчет) становится контекстом для следующего.
 
-| Сценарий | Описание |
-|---|---|
-| `supervisor-only` | Только Supervisor генерирует TODO, но не делегирует (ручной режим). |
-| `supervisor-worker` | Классический: Supervisor → Worker → Supervisor (ревью). |
-| `supervisor-worker*X` | Цепочка: Supervisor → Worker₁ → Worker₂ → ... → Worker_N → Supervisor. Каждый worker применяет свой скилл к одной задаче последовательно. |
-
-В YAML-конфиге:
+Пример pipeline YAML:
 
 ```yaml
-scenario: supervisor-worker*3
-workers:
-  - role: developer
-    skill: backend-developer
-  - role: tester
-    skill: test-writer
-  - role: reviewer
-    skill: code-reviewer
+stages:
+  - name: "plan"
+    role: "supervisor"
+    action: "create_todo"
+
+  - name: "implement"
+    role: "backend-developer"
+    action: "execute_todo"
+    on_blocked: "escalate"
+    max_retries: 3
+
+  - name: "add-tests"
+    role: "test-writer"
+    action: "execute_todo"
+    on_blocked: "escalate"
+
+  - name: "review"
+    role: "code-reviewer"
+    action: "review_code"
+    on_approved: "next"
+    on_rejected: "rollback_to:implement"
+
+  - name: "verify"
+    role: "supervisor"
+    action: "verify_result"
 ```
 
-Оркестратор должен поддерживать передачу задачи между worker'ами: каждый worker работает с одним и тем же TODO, но со своей ролью и контекстом. Результат одного worker'а становится входом для следующего.
+Оркестратор уже поддерживает произвольные роли через YAML (v0.2.0). Нужно:
+1. Убедиться, что каждый worker видит изменения предыдущего (git diff перед запуском).
+2. Добавить прогресс-отображение: "Worker 2 of 4: test-writer".
+3. Добавить шаблон pipeline с цепочкой worker'ов.
 
 **Constraints:**
-- Сохранить обратную совместимость: старые конфиги без `scenario` работают как `supervisor-worker`.
-- Оркестратор отслеживает прогресс цепочки (worker 1 из 3 → worker 2 из 3 → ...).
+- Обратная совместимость: один worker работает как раньше.
+- Порядок стадий в YAML определяет порядок передачи.
 
-**Verify:** Пайплайн с 3 worker'ами выполняется последовательно, каждый видит работу предыдущего.
+**Verify:** Пайплайн с 3+ worker-стадиями выполняется последовательно, каждый видит работу предыдущего.
 
-**Done when:** Все три сценария работают через CLI и отражаются в dashboard.
+**Done when:** Цепочка worker'ов работает, прогресс отображается, каждый worker видит контекст предыдущих.
 
 ---
 
 ### Task 5 · Роли и скиллы для worker'ов
 
-**Files:** `templates/roles/`, `lib/add-role.sh`, `lib/skill-loader.sh` (new)
+**Files:** `templates/roles/`, `lib/add-role.sh`
 
 **Description:**
 
@@ -162,25 +187,13 @@ workers:
 
 2. Каждая роль — это Markdown-файл с инструкциями (как существующие `supervisor.md` / `worker.md`).
 
-3. В конфиге пользователь указывает, какие роли участвуют в цепочке и в каком порядке:
+3. Команда `awf add-role <role-name>` копирует шаблон роли в `.agentic/roles/`.
 
-```yaml
-pipeline:
-  - stage: worker
-    role: backend-developer
-  - stage: worker
-    role: test-writer
-  - stage: worker
-    role: code-reviewer
-```
-
-4. Команда `awf add-role <role-name>` копирует шаблон роли в `.agentic/roles/` и добавляет её в конфиг.
-
-5. Supervisor при выборе роли получает соответствующий скилл-файл как инструкцию.
+4. Supervisor при создании pipeline выбирает роли из доступных шаблонов.
 
 **Constraints:**
 - Роли должны быть расширяемыми: пользователь может создавать свои.
-- Порядок ролей в пайплайне определяет порядок передачи задач.
+- Шаблон новой роли генерируется по образцу `worker.md`.
 
 **Verify:** `awf add-role test-writer` создает файл, пайплайн использует роль.
 
@@ -190,7 +203,7 @@ pipeline:
 
 ### Task 6 · Выбор и настройка моделей для участников
 
-**Files:** `lib/model-selector.sh` (new), `bin/awf`, `templates/config.yaml`
+**Files:** `bin/awf`, `templates/config.yaml`
 
 **Description:**
 
@@ -213,9 +226,7 @@ models:
 
 3. По умолчанию одна модель для всех, но можно переопределить для конкретной роли.
 
-4. Dashboard показывает, какая модель назначена каждой роли, и позволяет менять.
-
-5. При запуске воркфлоу оркестратор передает модель в соответствующий агент.
+4. При запуске воркфлоу оркестратор передает модель в соответствующий агент.
 
 **Constraints:**
 - Список моделей берется из opencode (проверить, какой API/конфиг используется).
@@ -223,13 +234,13 @@ models:
 
 **Verify:** `awf models list` выводит список, `awf start` использует правильные модели.
 
-**Done when:** Модели выбираются через UI и CLI, применяются к ролям при запуске.
+**Done when:** Модели выбираются через CLI и конфиг, применяются к ролям при запуске.
 
 ---
 
 ### Task 7 · Real-time обновление статуса на странице
 
-**Files:** `dashboard/index.html`, `lib/server.sh`, `lib/status-watcher.sh` (new)
+**Files:** `dashboard/index.html`, `lib/server.sh`
 
 **Description:**
 
@@ -267,7 +278,7 @@ UI-элементы:
 ```
 Task 1 (Dashboard) → Task 2 (API) → Task 7 (Real-time)
 Task 3 (Bootstrap)  → независимо
-Task 4 (Scenarios)  → Task 5 (Roles)
+Task 4 (Chain)      → independently (orchestrator already reads YAML)
 Task 5 (Roles)      → независимо
 Task 6 (Models)     → независимо
 ```
@@ -275,7 +286,7 @@ Task 6 (Models)     → независимо
 Рекомендуемый порядок реализации:
 1. **Task 2** — API (база для dashboard).
 2. **Task 3** — Bootstrap (автоинициализация).
-3. **Task 4** — Сценарии (расширение оркестратора).
+3. **Task 4** — Цепочка worker'ов (расширение оркестратора).
 4. **Task 5** — Роли (шаблоны worker'ов).
 5. **Task 1** — Dashboard (сборка UI поверх API).
 6. **Task 6** — Модели (выбор LLM).

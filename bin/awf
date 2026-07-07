@@ -2,7 +2,7 @@
 # awf — Agentic Workflow Framework CLI
 set -euo pipefail
 
-AWF_VERSION="0.1.0"
+AWF_VERSION="0.2.0"
 FRAMEWORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_DIR="$FRAMEWORK_DIR/lib"
 TEMPLATES_DIR="$FRAMEWORK_DIR/templates"
@@ -30,10 +30,19 @@ Examples:
   awf init --template full
   awf start
   awf start --pipeline full-review
+  awf start --from-stage review
+  awf start --auto
+  awf continue
   awf status
   awf report
   awf baseline TODO-0001
   awf rollback TODO-0001
+
+Options for 'start':
+  --pipeline <name>    Pipeline to run (default: from config.yaml)
+  --from-stage <name>  Start from a specific stage
+  --auto               Skip supervisor interactive waits
+  --timeout <seconds>  Agent timeout (default: 3600)
 EOF
 }
 
