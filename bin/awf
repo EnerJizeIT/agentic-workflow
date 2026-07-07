@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# awf — Agentic Workflow Framework CLI
+set -euo pipefail
+
+AWF_VERSION="0.1.0"
+FRAMEWORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LIB_DIR="$FRAMEWORK_DIR/lib"
+TEMPLATES_DIR="$FRAMEWORK_DIR/templates"
+
+usage() {
+    cat <<EOF
+awf v${AWF_VERSION} — Agentic Workflow Framework
+
+Usage: awf <command> [options]
+
+Commands:
+  init              Initialize .agentic/ in current project
+  start             Start the pipeline from the beginning
+  continue          Resume an interrupted pipeline
+  status            Show current workflow state
+  report            Show summary report
+  add-role <name>   Generate a template for a new role
+  baseline <id>     Create a baseline snapshot
+  rollback <id>     Rollback to baseline
+  reset             Clean runtime data (inbox/outbox/logs)
+  help              Show this message
+
+Examples:
+  awf init --template simple
+  awf init --template full
+  awf start
+  awf start --pipeline full-review
+  awf status
+  awf report
+  awf baseline TODO-0001
+  awf rollback TODO-0001
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+    usage
+    exit 0
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+    init)       source "$LIB_DIR/init.sh" "$@" ;;
+    start)      source "$LIB_DIR/orchestrator.sh" start "$@" ;;
+    continue)   source "$LIB_DIR/orchestrator.sh" continue "$@" ;;
+    status)     source "$LIB_DIR/status.sh" "$@" ;;
+    report)     source "$LIB_DIR/report.sh" "$@" ;;
+    add-role)   source "$LIB_DIR/add-role.sh" "$@" ;;
+    baseline)   source "$LIB_DIR/baseline.sh" "$@" ;;
+    rollback)   source "$LIB_DIR/rollback.sh" "$@" ;;
+    reset)      source "$LIB_DIR/reset.sh" "$@" ;;
+    help|--help|-h) usage ;;
+    *) echo "Unknown command: $COMMAND"; echo "Run 'awf help' for usage."; exit 1 ;;
+esac

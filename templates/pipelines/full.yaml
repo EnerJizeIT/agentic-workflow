@@ -1,0 +1,36 @@
+name: "full-review"
+description: "Full cycle with code review and testing"
+
+stages:
+  - name: "plan"
+    role: "supervisor"
+    action: "create_todo"
+
+  - name: "implement"
+    role: "worker"
+    action: "execute_todo"
+    on_blocked: "escalate"
+    max_retries: 3
+
+  - name: "review"
+    role: "reviewer"
+    action: "review_code"
+    description: "Reviewer checks implementation quality"
+    on_approved: "next"
+    on_rejected: "rollback_to:implement"
+    max_retries: 2
+
+  - name: "test"
+    role: "tester"
+    action: "run_tests"
+    description: "Tester runs tests and checks coverage"
+    on_passed: "next"
+    on_failed: "rollback_to:implement"
+    max_retries: 2
+
+  - name: "finalize"
+    role: "supervisor"
+    action: "final_verify"
+    description: "Final verification and commit"
+    on_approved: "commit_and_report"
+    on_rejected: "rollback_to:implement"
