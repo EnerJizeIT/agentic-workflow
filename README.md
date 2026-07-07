@@ -82,13 +82,27 @@ awf init --template full     # + reviewer + tester
 awf start
 ```
 
+Оркестратор читает стадии из `.agentic/pipelines/default.yaml` и выполняет их последовательно.
+
 Что произойдет:
 
 1. **Supervisor stage (ты):** orchestrator покажет инструкцию. Ты читаешь `.agentic/roles/supervisor.md`, изучаешь проект, создаёшь TODO и кладёшь его в `.agentic/inbox/TODO-0001.md` + `.agentic/inbox/TODO-0001.ready`. Нажми Enter.
 
 2. **Worker stage (автоматически):** orchestrator запускает отдельный агент opencode. Worker читает TODO, реализует задачи, пишет DONE или BLOCKED в `.agentic/outbox/`.
 
-3. **Supervisor verify (ты):** orchestrator просит проверить результат. Ты проверяешь код, запускаешь тесты, решаешь: approve / fix / rollback.
+3. **Если worker вернул BLOCKED:** оркестратор эскалирует на тебя. Ты анализируешь проблему, создаёшь исправленный TODO. Worker перезапускается (до `max_retries` попыток).
+
+4. **Supervisor verify (ты):** orchestrator просит проверить результат. Ты проверяешь код, запускаешь тесты, решаешь: approve / fix / rollback.
+
+**Опции запуска:**
+
+```bash
+awf start                          # пайплайн по умолчанию из config.yaml
+awf start --pipeline full-review   # конкретный пайплайн
+awf start --from-stage review      # начать с указанной стадии
+awf start --auto                   # пропустить интерактивные паузы supervisor'а
+awf start --timeout 7200           # таймаут агента (сек, по умолчанию 3600)
+```
 
 После завершения итерации запусти `awf start` снова для следующего шага.
 
@@ -97,12 +111,14 @@ awf start
 ## How it works
 
 ```
-┌─────────────┐     TODO-0001      ┌──────────┐    DONE/BLOCKED    ┌─────────────┐
-│  SUPERVISOR │ ─────────────────► │  WORKER  │ ──────────────────► │ SUPERVISOR  │
-│  (you, in   │  .agentic/inbox/   │ (agent)  │  .agentic/outbox/   │  (verify)   │
-│  this term) │                    │          │                     │             │
-└─────────────┘                    └──────────┘                     └─────────────┘
+Supervisor → [TODO в inbox/] → Worker → [DONE/BLOCKED в outbox/] → Supervisor
+                                                          ↓
+                                                    Если BLOCKED:
+                                                    Supervisor replan → новый TODO
+                                                    Worker перезапускается (до max_retries)
 ```
+
+Оркестратор читает стадии из YAML файла пайплайна и выполняет их последовательно. Переходы между стадиями определяются правилами `on_*` в конфиге (`next`, `rollback_to`, `escalate`, `stop`).
 
 Все общение между ролями идет через файлы:
 - **inbox/** — задачи от supervisor к worker'у.
@@ -118,7 +134,11 @@ awf start
 | Command | Описание |
 |---|---|
 | `awf init [--template simple\|full]` | Создать `.agentic/` в проекте |
-| `awf start` | Запустить пайплайн (supervisor → worker → verify) |
+| `awf start [опции]` | Запустить пайплайн из YAML конфига |
+| `awf start --pipeline <name>` | Конкретный пайплайн |
+| `awf start --from-stage <name>` | Начать с указанной стадии |
+| `awf start --auto` | Без интерактивных пауз supervisor'а |
+| `awf start --timeout <sec>` | Таймаут агента (по умолчанию 3600) |
 | `awf continue` | Продолжить прерванный пайплайн |
 | `awf status` | Текущее состояние воркфлоу |
 | `awf report` | Сводный отчет о работе |
@@ -156,11 +176,20 @@ vim .agentic/phases/plan.md
 awf start
 # → Supervisor stage: создай TODO, нажми Enter
 # → Worker stage: агент работает автоматически (может занять время)
+# → Если BLOCKED: supervisor создает исправленный TODO, worker перезапускается
 # → Verify stage: проверь результат, нажми Enter
 
 # Следующая итерация
 awf start
-# → Повторяется для следующего шага из плана
+
+# Конкретный пайплайн
+awf start --pipeline full-review
+
+# Начать с конкретной стадии
+awf start --from-stage review
+
+# Без пауз (для автоматизации)
+awf start --auto
 
 # Посмотри статус
 awf status
