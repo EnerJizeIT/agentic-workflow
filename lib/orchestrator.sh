@@ -274,7 +274,7 @@ run_agent_stage() {
         --agent "$AGENT_NAME" \
         --file "$ROLE_FILE" \
         --file "$TODO_FILE" \
-        "$PROMPT"
+        -- "$PROMPT"
 
     log "Agent stage finished: $ROLE ($ACTION) for $TODO_ID"
 }
