@@ -14,6 +14,7 @@ Agents communicate via **files** in the `.agentic/` directory. This is simple, r
 - `TASK_DONE` — Agent successfully completed the task.
 - `TASK_BLOCKED` — Agent cannot proceed and needs supervisor intervention.
 - `TASK_ACK` — Supervisor acknowledged the agent's report.
+- `TASK_PROGRESS` — Agent reports intermediate progress (append-only).
 - `REVIEW_APPROVED` / `REVIEW_REJECTED` — Reviewer verdict (optional roles).
 - `TEST_PASSED` / `TEST_FAILED` — Tester verdict (optional roles).
 
@@ -32,6 +33,7 @@ Agents communicate via **files** in the `.agentic/` directory. This is simple, r
 │   ├── DONE-0001.ready
 │   ├── BLOCKED-0002.md
 │   ├── BLOCKED-0002.ready
+│   ├── PROGRESS-0001.md   # Append-only progress log
 │   └── ...
 ├── context/        # Context snapshots and baselines
 │   └── BASELINE-0001.sha
@@ -45,6 +47,7 @@ Agents communicate via **files** in the `.agentic/` directory. This is simple, r
 
 - `inbox/` — only Supervisor writes, agents read.
 - `outbox/` — only agents write, Supervisor reads.
+- `outbox/PROGRESS-{NNNN}.md` — agent appends after each task; Supervisor reads for monitoring.
 - `context/` — Supervisor writes context snapshots, agents read.
 - `logs/` — both agents and orchestrator may append.
 - `reports/` — orchestrator writes, user reads.
@@ -122,6 +125,28 @@ created_by: supervisor
 created_at: <ISO timestamp>
 ```
 
+### 3.5 TASK_PROGRESS — Agent → Supervisor (append-only)
+
+**Files:**
+- `.agentic/outbox/PROGRESS-{NNNN}.md` — append-only progress log.
+
+**Format:** Markdown, one entry per task. Agent appends after completing each task.
+
+```markdown
+## Task {N} · {title} — [x] complete / [~] in-progress / [!] failed
+- **Completed at:** {ISO timestamp}
+- **Files changed:** `file1`, `file2`
+- **Verify:** {command} — green|red
+- **Notes:** {brief note if anything unexpected}
+```
+
+**Rules:**
+- File is **append-only** — never rewrite or delete previous entries.
+- Created by agent on first task completion.
+- Supervisor may read at any time to monitor progress.
+- If agent crashes and restarts, it reads this file to resume from last checkpoint.
+- Timestamps use `T00:00:00Z` format for KV-cache stability (normalized hours).
+
 ---
 
 ## 4. Task lifecycle
@@ -180,6 +205,18 @@ If restarted, agent should:
 1. Find the latest `TODO-{NNNN}.ready` without matching DONE/BLOCKED.
 2. Verify `TODO-{NNNN}.md` hasn't changed since `.ready`.
 3. Continue from that TODO.
+
+### 6.4 Session Recovery
+
+If the agent process crashes or is interrupted, it can resume from `PROGRESS-{NNNN}.md`:
+
+1. Agent starts, finds active `TODO-{NNNN}.ready`.
+2. Checks for `.agentic/outbox/PROGRESS-{NNNN}.md`.
+3. If exists — reads it, identifies last completed task.
+4. Skips tasks marked `[x]`, continues from first `[~]` or next unmarked task.
+5. If no progress file — starts from Task 1.
+
+**Supervisor replan invalidates progress:** if Supervisor creates a new TODO (e.g., `TODO-0002`) to replace a blocked `TODO-0001`, the new TODO starts fresh with no progress file.
 
 ---
 

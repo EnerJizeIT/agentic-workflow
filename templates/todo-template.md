@@ -135,3 +135,29 @@ git push
 7. Git commit + push — LAST step, not first.
 8. Don't use sed/awk/cat/echo for code edits — use edit tool.
 9. Don't do more than the TODO says. Don't refactor. Don't add comments.
+10. After each task — append entry to `.agentic/outbox/PROGRESS-{NNNN}.md`.
+11. If verify fails — use the 3-Strike Error Protocol before escalating.
+
+## Progress Tracking
+
+Write `.agentic/outbox/PROGRESS-{NNNN}.md` as you work. Append-only, never rewrite.
+
+```markdown
+## Task {N} · {title} — [x] complete / [~] in-progress / [!] failed
+- **Completed at:** {ISO timestamp}
+- **Files changed:** `file1`, `file2`
+- **Verify:** {command} — green|red
+- **Notes:** {brief note}
+```
+
+## Error Attempt Log
+
+If a task fails, track attempts:
+
+| Attempt | Approach | Error | Resolution |
+|---------|----------|-------|------------|
+| 1 | {what you tried} | {error} | {result} |
+| 2 | {different approach} | {error} | {result} |
+| 3 | {broader rethink} | {error} | escalated |
+
+After 3 failures — write BLOCKED with the full table.

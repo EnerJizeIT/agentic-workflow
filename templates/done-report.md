@@ -4,6 +4,7 @@
 **Status:** completed
 **Started at:** <ISO timestamp>
 **Completed at:** <ISO timestamp>
+**Attempts needed:** <1|2|3> (for tasks that required retries)
 
 ## Summary
 
@@ -22,6 +23,12 @@
 
 - `path/to/file1`
 - `path/to/file2`
+
+## Error attempts (if any task required retries)
+
+| Task | Attempt | Approach | Resolution |
+|------|---------|----------|------------|
+| Task N | 1 | <what failed> | <how fixed> |
 
 ## Notes
 

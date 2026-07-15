@@ -164,6 +164,11 @@ The agent will create one of:
 - `.agentic/outbox/DONE-{NNNN}.md` + `.ready` — success.
 - `.agentic/outbox/BLOCKED-{NNNN}.md` + `.ready` — blocked.
 
+**While waiting:** You can monitor agent progress:
+- `awf status` — shows progress for active tasks.
+- `.agentic/outbox/PROGRESS-{NNNN}.md` — append-only log of completed tasks.
+- The agent writes to this file after each task. Read it to see what's done and what's in progress.
+
 ### Step 7 · Verify result
 
 If **DONE**:
@@ -178,13 +183,16 @@ If **DONE**:
 
 If **BLOCKED**:
 
-1. Read `BLOCKED-{NNNN}.md`.
-2. Decide:
-   - **Clarify:** the task was ambiguous → rewrite TODO with more detail (Mode B).
-   - **Pin down:** the worker keeps misunderstanding → use exact Find/Replace (Mode C).
-   - **Fix architecture:** architectural constraint is blocking → fix it, then new TODO.
-   - **Ask user:** human decision needed → create `.agentic/inbox/ASK-USER-{NNNN}.md`.
-   - **Rollback:** revert to baseline → prepare new TODO.
+1. Read `BLOCKED-{NNNN}.md` — check the attempt history table.
+2. Read `PROGRESS-{NNNN}.md` — see which tasks completed and which failed.
+3. Decide:
+    - **Clarify:** the task was ambiguous → rewrite TODO with more detail (Mode B).
+    - **Pin down:** the worker keeps misunderstanding → use exact Find/Replace (Mode C).
+    - **Fix architecture:** architectural constraint is blocking → fix it, then new TODO.
+    - **Ask user:** human decision needed → create `.agentic/inbox/ASK-USER-{NNNN}.md`.
+    - **Rollback:** revert to baseline → prepare new TODO.
+
+**Note:** The worker uses the 3-Strike Error Protocol. If it reached attempt 3, the problem is likely not a simple fix — reconsider the approach or escalate to Mode C.
 
 ---
 

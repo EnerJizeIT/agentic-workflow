@@ -1,6 +1,20 @@
 # Agentic Workflow Framework
 
-Declarative multi-agent pipeline: **Supervisor plans → Worker implements → Supervisor verifies**. Communication via files on disk. No Python — YAML config + Markdown instructions.
+Declarative multi-agent pipeline: **Supervisor plans → Worker implements → Supervisor verifies**. Communication via files on disk. Pure bash core (YAML config + Markdown instructions); YAML parsing uses `yq` when available, otherwise falls back to `python3 + PyYAML`.
+
+---
+
+## Requirements
+
+- **bash** 4+ (arrays, `mapfile`-free parsing).
+- **git** (the target project must be a git repo).
+- **opencode** CLI on `$PATH` (only needed for `awf start` / `awf continue`).
+- A YAML backend (one of):
+  - `yq` (preferred) — single static binary, install via your package manager, **or**
+  - `python3` with `PyYAML` (`pip install pyyaml`) — already present on most dev machines.
+
+`awf` auto-detects which backend is available. Without one, YAML parsing
+errors out loudly instead of silently mis-parsing with regex.
 
 ---
 
@@ -208,6 +222,7 @@ awf reset
 ```
 bin/awf              # CLI entry point
 lib/
+  yaml.sh            # YAML backend (yq preferred, python3+PyYAML fallback)
   init.sh            # создание .agentic/
   orchestrator.sh    # ядро: выполнение пайплайна
   baseline.sh        # снимки состояния
@@ -223,6 +238,8 @@ templates/
 protocols/
   communication.md   # спецификация файловой шины
 proposal/            # детальная спецификация (архитектура, конфиги, роли)
+tests/
+  run.sh             # bash test runner (zero-dep)
 BACKLOG.md           # план развития фреймворка
 ```
 
@@ -261,6 +278,44 @@ Reviewer проверяет качество кода. Tester запускает
 | **A: High-level** (по умолчанию) | Обычные задачи | Описание "что построить", ограничения, verify |
 | **B: Detailed** | Сложные задачи, несколько файлов | Архитектурные заметки, референсы, паттерны |
 | **C: Find/Replace** (fallback) | Предыдущие попытки не сработали | Точные блоки кода для замены |
+
+## Progress tracking
+
+Worker пишет `.agentic/outbox/PROGRESS-{NNNN}.md` после каждого выполненного Task. Файл append-only, Supervisor может читать его в любое время.
+
+```bash
+awf status          # показывает прогресс для активных задач
+cat .agentic/outbox/PROGRESS-TODO-0001.md   # полный лог
+```
+
+## 3-Strike Error Protocol
+
+Worker не эскалирует на первую ошибку. Протокол:
+
+```
+Attempt 1: Diagnose & Fix → Attempt 2: Alternative Approach → Attempt 3: Broader Rethink → Escalate
+```
+
+Каждая попытка логируется. Supervisor видит историю в BLOCKED-отчёте.
+
+## Session Recovery
+
+Если worker-процесс упал, он восстанавливается с `PROGRESS-{NNNN}.md` при перезапуске — пропускает выполненные задачи, продолжает с первого незавершённого.
+
+---
+
+## Testing
+
+The framework ships a zero-dependency bash test runner for its core logic
+(YAML parsing, stage parsing, signal classification, transition resolution,
+stale-signal filtering):
+
+```bash
+./tests/run.sh
+```
+
+No `bats` or other test framework required — just bash + a YAML backend.
+The run is hermetic (uses a `mktemp` dir) and safe to invoke from anywhere.
 
 ---
 

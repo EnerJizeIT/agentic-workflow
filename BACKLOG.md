@@ -22,6 +22,16 @@
 - [x] Опции `--pipeline`, `--from-stage`, `--auto`, `--timeout` для `awf start`.
 - [x] Инструкции supervisor/worker переписаны для capable модели (Mode A/B/C).
 
+## ✅ Done in v0.3.0
+
+- [x] Progress tracking — worker пишет `PROGRESS-{NNNN}.md` после каждого Task.
+- [x] 3-Strike Error Protocol — структурированный протокол retries (attempt 1→2→3→escalate).
+- [x] Session recovery — worker восстанавливается с последнего checkpoint.
+- [x] Read/Write decision matrix в инструкции worker'а.
+- [x] `awf status` показывает прогресс активных задач.
+- [x] Оркестратор показывает прогресс при ожидании сигнала.
+- [x] BLOCKED-отчёт включает таблицу попыток.
+
 ---
 
 ### Task 1 · HTML dashboard как обертка над CLI

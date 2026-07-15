@@ -4,6 +4,13 @@
 # handles signals (DONE/BLOCKED/REVIEW/TEST), retries, and transitions.
 set -euo pipefail
 
+# yaml.sh lives next to this file; bin/awf exports LIB_DIR.
+if [[ -z "${LIB_DIR:-}" ]]; then
+    LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+# shellcheck source=yaml.sh
+source "$LIB_DIR/yaml.sh"
+
 MODE="${1:-start}"
 shift || true
 
@@ -29,12 +36,6 @@ CONTEXT="$AGENTIC_DIR/context"
 LOGS="$AGENTIC_DIR/logs"
 CONFIG="$AGENTIC_DIR/config.yaml"
 
-mkdir -p "$INBOX" "$OUTBOX" "$CONTEXT" "$LOGS"
-
-log() {
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOGS/orchestrator.log"
-}
-
 if [[ ! -d "$AGENTIC_DIR" ]]; then
     echo "No .agentic/ found. Run 'awf init' first."
     exit 1
@@ -45,36 +46,42 @@ if [[ ! -f "$CONFIG" ]]; then
     exit 1
 fi
 
+mkdir -p "$INBOX" "$OUTBOX" "$CONTEXT" "$LOGS"
+
+log() {
+    mkdir -p "$LOGS"
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$LOGS/orchestrator.log"
+}
+
 ###############################################################################
-# YAML parser helpers
+# Pipeline resolution & parsing (via lib/yaml.sh)
 ###############################################################################
 
-# Determine which pipeline file to use
+# Determine which pipeline file to use.
 resolve_pipeline_file() {
-    local DEFAULT_PIPE="default"
-    if [[ -f "$CONFIG" ]]; then
-        local CFG=$(grep 'default_pipeline:' "$CONFIG" 2>/dev/null | sed 's/.*: *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' ')
-        [[ -n "$CFG" ]] && DEFAULT_PIPE="$CFG"
-    fi
-    [[ -n "$PIPELINE_NAME" ]] && DEFAULT_PIPE="$PIPELINE_NAME"
+    local default_pipe
+    default_pipe=$(yaml_get "default_pipeline" "$CONFIG" "default")
+    [[ -n "$PIPELINE_NAME" ]] && default_pipe="$PIPELINE_NAME"
 
-    # Try pipelines/<name>.yaml
-    if [[ -f "$AGENTIC_DIR/pipelines/${DEFAULT_PIPE}.yaml" ]]; then
-        echo "$AGENTIC_DIR/pipelines/${DEFAULT_PIPE}.yaml"
-    elif [[ -f "$AGENTIC_DIR/pipelines/default.yaml" ]]; then
-        echo "$AGENTIC_DIR/pipelines/default.yaml"
-    else
-        echo "ERROR: No pipeline file found. Expected .agentic/pipelines/${DEFAULT_PIPE}.yaml or default.yaml" >&2
-        exit 1
+    local candidate="$AGENTIC_DIR/pipelines/${default_pipe}.yaml"
+    if [[ -f "$candidate" ]]; then
+        echo "$candidate"
+        return 0
     fi
+    # Last-resort fallback to default.yaml so --pipeline typos still find something.
+    if [[ "$default_pipe" != "default" && -f "$AGENTIC_DIR/pipelines/default.yaml" ]]; then
+        echo "$AGENTIC_DIR/pipelines/default.yaml"
+        return 0
+    fi
+    echo "ERROR: No pipeline file found. Expected $candidate" >&2
+    exit 1
 }
 
 PIPELINE_FILE=$(resolve_pipeline_file)
 
-# Parse stages from YAML into parallel arrays.
-# Populates: STAGE_NAMES[], STAGE_ROLES[], STAGE_ACTIONS[], STAGE_DESC[],
-#            STAGE_ON_BLOCKED[], STAGE_ON_APPROVED[], STAGE_ON_REJECTED[],
-#            STAGE_ON_PASSED[], STAGE_ON_FAILED[], STAGE_MAX_RETRIES[]
+# Parse stages from the pipeline YAML into parallel arrays using yaml_stages_dump
+# (TSV rows). Columns: name role action description on_blocked on_approved
+#                     on_rejected on_passed on_failed max_retries
 parse_stages() {
     STAGE_NAMES=()
     STAGE_ROLES=()
@@ -87,89 +94,47 @@ parse_stages() {
     STAGE_ON_FAILED=()
     STAGE_MAX_RETRIES=()
 
-    local current_idx=-1
-    local in_stages=0
+    local row_count=0
+    local IFS=$'\t'
+    while read -r name role action desc on_b on_a on_r on_p on_f max; do
+        [[ -z "$name" ]] && continue
+        STAGE_NAMES+=("$name")
+        STAGE_ROLES+=("$role")
+        STAGE_ACTIONS+=("$action")
+        STAGE_DESC+=("$desc")
+        STAGE_ON_BLOCKED+=("${on_b:-escalate}")
+        STAGE_ON_APPROVED+=("${on_a:-next}")
+        STAGE_ON_REJECTED+=("${on_r:-rollback_to:implement}")
+        STAGE_ON_PASSED+=("${on_p:-next}")
+        STAGE_ON_FAILED+=("${on_f:-rollback_to:implement}")
+        STAGE_MAX_RETRIES+=("${max:-1}")
+        row_count=$((row_count + 1))
+    done < <(yaml_stages_dump "$PIPELINE_FILE")
+    unset IFS
 
-    while IFS= read -r line; do
-        # Detect stages: section
-        if [[ "$line" =~ ^stages: ]]; then
-            in_stages=1
-            continue
-        fi
-
-        # If we hit a top-level key outside stages, stop
-        if [[ $in_stages -eq 1 ]] && [[ "$line" =~ ^[a-zA-Z] ]] && [[ ! "$line" =~ ^[[:space:]] ]]; then
-            in_stages=0
-            continue
-        fi
-
-        [[ $in_stages -eq 0 ]] && continue
-
-        # New stage entry: "  - name:"
-        if [[ "$line" =~ ^[[:space:]]*-[[:space:]]+name:[[:space:]]*\"?([^\"]+)\"? ]]; then
-            ((current_idx++)) || true
-            STAGE_NAMES+=("${BASH_REMATCH[1]}")
-            STAGE_ROLES+=("")
-            STAGE_ACTIONS+=("")
-            STAGE_DESC+=("")
-            STAGE_ON_BLOCKED+=("escalate")
-            STAGE_ON_APPROVED+=("next")
-            STAGE_ON_REJECTED+=("rollback_to:implement")
-            STAGE_ON_PASSED+=("next")
-            STAGE_ON_FAILED+=("rollback_to:implement")
-            STAGE_MAX_RETRIES+=("1")
-            continue
-        fi
-
-        [[ $current_idx -lt 0 ]] && continue
-
-        # Parse fields of current stage
-        local value
-        value=$(echo "$line" | sed 's/.*:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d '[:space:]')
-
-        if [[ "$line" =~ role: ]]; then
-            STAGE_ROLES[$current_idx]="$value"
-        elif [[ "$line" =~ action: ]]; then
-            STAGE_ACTIONS[$current_idx]="$value"
-        elif [[ "$line" =~ description: ]]; then
-            STAGE_DESC[$current_idx]=$(echo "$line" | sed 's/.*:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/')
-        elif [[ "$line" =~ on_blocked: ]]; then
-            STAGE_ON_BLOCKED[$current_idx]="$value"
-        elif [[ "$line" =~ on_approved: ]]; then
-            STAGE_ON_APPROVED[$current_idx]="$value"
-        elif [[ "$line" =~ on_rejected: ]]; then
-            STAGE_ON_REJECTED[$current_idx]="$value"
-        elif [[ "$line" =~ on_passed: ]]; then
-            STAGE_ON_PASSED[$current_idx]="$value"
-        elif [[ "$line" =~ on_failed: ]]; then
-            STAGE_ON_FAILED[$current_idx]="$value"
-        elif [[ "$line" =~ max_retries: ]]; then
-            STAGE_MAX_RETRIES[$current_idx]="$value"
-        fi
-    done < "$PIPELINE_FILE"
+    if [[ $row_count -eq 0 ]]; then
+        echo "ERROR: No stages parsed from $PIPELINE_FILE (backend: $(yaml_backend))." >&2
+        echo "       Check the YAML syntax or install yq / PyYAML." >&2
+        exit 1
+    fi
 }
 
 ###############################################################################
-# Config helpers
+# Config helpers (via lib/yaml.sh)
 ###############################################################################
 
 get_config_value() {
     local key="$1"
     local default="${2:-}"
-    if [[ -f "$CONFIG" ]]; then
-        local val
-        val=$(grep "$key:" "$CONFIG" 2>/dev/null | head -1 | sed 's/.*:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d '[:space:]')
-        [[ -n "$val" ]] && echo "$val" || echo "$default"
-    else
-        echo "$default"
-    fi
+    yaml_get "$key" "$CONFIG" "$default"
 }
 
+# agent_name override for a role; defaults to the role name itself.
 get_agent_name() {
     local role="$1"
     local name
-    name=$(awk "/^  ${role}:/{found=1} found && /agent_name:/{print; exit}" "$CONFIG" 2>/dev/null | sed 's/.*:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}/\1/')
-    echo "${name:-$role}"
+    name=$(yaml_get "models.${role}.agent_name" "$CONFIG" "$role")
+    echo "$name"
 }
 
 ###############################################################################
@@ -199,7 +164,7 @@ find_active_todo() {
 run_supervisor_stage() {
     local ACTION="$1"
     local PHASES_FILE
-    PHASES_FILE=$(get_config_value "current:" ".agentic/phases/plan.md")
+    PHASES_FILE=$(get_config_value "phases.current" ".agentic/phases/plan.md")
 
     echo ""
     echo "═══════════════════════════════════════════"
@@ -296,6 +261,13 @@ run_agent_stage() {
     echo "Task: $TODO_FILE"
     echo ""
 
+    # Drop stale signals this action could produce, so we never misread a
+    # leftover from a previous run as the current stage's result.
+    local STAGE_PREFIXES
+    # shellcheck disable=SC2207
+    STAGE_PREFIXES=($(expected_signal_prefixes "$ACTION"))
+    clean_stage_signals "$TODO_ID" "${STAGE_PREFIXES[@]}"
+
     log "Agent stage started: $ROLE ($ACTION) for $TODO_ID"
 
     opencode run --auto \
@@ -313,27 +285,34 @@ run_agent_stage() {
 
 wait_for_signal() {
     local TODO_ID="$1"
+    shift
+    local PREFIXES=("$@")
+    [[ ${#PREFIXES[@]} -eq 0 ]] && PREFIXES=(DONE BLOCKED)
     local POLL_INTERVAL=5
     local START_TIME
     START_TIME=$(date +%s)
 
-    echo "Waiting for agent signal (timeout: ${TIMEOUT}s)..."
-    log "Waiting for signal for $TODO_ID"
+    echo "Waiting for agent signal (prefixes: ${PREFIXES[*]}; timeout: ${TIMEOUT}s)..."
+    log "Waiting for signal for $TODO_ID (prefixes: ${PREFIXES[*]})"
 
     while true; do
         local SIGNAL=""
-        for f in "$OUTBOX"/*-"$TODO_ID".ready; do
-            if [[ -f "$f" ]]; then
-                SIGNAL=$(basename "$f")
-                break
-            fi
-        done
+        SIGNAL=$(read_signal_for_todo "$TODO_ID" "${PREFIXES[@]}" || true)
 
         if [[ -n "$SIGNAL" ]]; then
             echo "Signal received: $SIGNAL"
             log "Signal received: $SIGNAL"
             echo "$SIGNAL"
             return 0
+        fi
+
+        # Show progress if available
+        local PROGRESS_FILE="$OUTBOX/PROGRESS-${TODO_ID}.md"
+        if [[ -f "$PROGRESS_FILE" ]]; then
+            local TOTAL_TASKS DONE_TASKS
+            TOTAL_TASKS=$(grep -c '^## Task' "$PROGRESS_FILE" 2>/dev/null || echo 0)
+            DONE_TASKS=$(grep '^## Task' "$PROGRESS_FILE" 2>/dev/null | grep -c '\[x\]' || echo 0)
+            echo "  Progress: $DONE_TASKS/$TOTAL_TASKS tasks completed"
         fi
 
         sleep "$POLL_INTERVAL"
@@ -357,6 +336,42 @@ signal_type() {
     if [[ "$sig" == TEST-PASSED-* ]]; then echo "passed"; return; fi
     if [[ "$sig" == TEST-FAILED-* ]]; then echo "failed"; return; fi
     echo "unknown"
+}
+
+# Signal prefixes an action is allowed to emit. Anything else is treated as
+# stale (left over from a previous stage) and ignored.
+expected_signal_prefixes() {
+    case "$1" in
+        execute_todo)                      echo "DONE BLOCKED" ;;
+        review_code|audit_code)            echo "REVIEW-APPROVED REVIEW-REJECTED BLOCKED" ;;
+        run_tests)                         echo "TEST-PASSED TEST-FAILED BLOCKED" ;;
+        *)                                 echo "DONE BLOCKED REVIEW-APPROVED REVIEW-REJECTED TEST-PASSED TEST-FAILED" ;;
+    esac
+}
+
+# Remove stale .ready + .md reports for a TODO that this action would produce.
+# Keeps reports from earlier stages (e.g. worker's DONE survives into review).
+clean_stage_signals() {
+    local todo="$1"; shift
+    local prefix
+    for prefix in "$@"; do
+        rm -f "$OUTBOX/${prefix}-${todo}.ready" "$OUTBOX/${prefix}-${todo}.md" 2>/dev/null || true
+    done
+}
+
+# Echo the first existing signal (basename without .ready) for a TODO among the
+# given prefixes, in order. Returns non-zero if none found.
+read_signal_for_todo() {
+    local todo="$1"; shift
+    local prefix f
+    for prefix in "$@"; do
+        f="$OUTBOX/${prefix}-${todo}.ready"
+        if [[ -f "$f" ]]; then
+            basename "$f" .ready
+            return 0
+        fi
+    done
+    return 1
 }
 
 ###############################################################################
@@ -547,18 +562,20 @@ run_pipeline() {
 
         run_agent_stage "$s_role" "$s_action" "$CURRENT_TODO"
 
-        # Wait for signal (opencode run is blocking, but double-check outbox)
+        # Only accept signals this action is allowed to emit. Stale signals
+        # from earlier stages (e.g. worker's DONE during a review stage) are
+        # ignored — see expected_signal_prefixes().
+        local STAGE_PREFIXES
+        # shellcheck disable=SC2207
+        STAGE_PREFIXES=($(expected_signal_prefixes "$s_action"))
+
+        # opencode run is blocking; the .ready signal should already exist.
         local SIGNAL=""
-        for f in "$OUTBOX"/*-"$CURRENT_TODO".ready; do
-            if [[ -f "$f" ]]; then
-                SIGNAL=$(basename "$f")
-                break
-            fi
-        done
+        SIGNAL=$(read_signal_for_todo "$CURRENT_TODO" "${STAGE_PREFIXES[@]}" || true)
 
         if [[ -z "$SIGNAL" ]]; then
-            # Agent may have exited without writing signal; try polling briefly
-            SIGNAL=$(wait_for_signal "$CURRENT_TODO" 60) || true
+            # Brief fallback poll in case the signal write lags behind process exit.
+            SIGNAL=$(TIMEOUT=30 wait_for_signal "$CURRENT_TODO" "${STAGE_PREFIXES[@]}") || true
         fi
 
         if [[ -z "$SIGNAL" ]]; then
@@ -576,8 +593,30 @@ run_pipeline() {
         case "$TRANSITION_ACTION" in
             next|commit_and_next|commit_and_report)
                 if [[ "$TRANSITION_ACTION" == commit_and_next || "$TRANSITION_ACTION" == commit_and_report ]]; then
-                    echo "Approving changes. (Commit handled by supervisor.)"
-                    log "Auto-approve for $s_name"
+                    # Actually commit the stage's changes. Worker never commits
+                    # (per role contract); the orchestrator does it when the
+                    # pipeline policy says so.
+                    if git rev-parse --git-dir &>/dev/null; then
+                        git add -A 2>/dev/null || true
+                        if ! git diff --cached --quiet 2>/dev/null; then
+                            local COMMIT_MSG="awf(${s_name}): ${CURRENT_TODO}"
+                            if git commit -m "$COMMIT_MSG" >/dev/null 2>&1; then
+                                local SHA
+                                SHA=$(git rev-parse --short HEAD)
+                                echo "Committed: ${CURRENT_TODO} at '${s_name}' ($SHA)"
+                                log "Committed ${CURRENT_TODO} at ${s_name} ($SHA)"
+                            else
+                                echo "WARNING: git commit failed; leaving changes staged."
+                                log "git commit failed at ${s_name}"
+                            fi
+                        else
+                            echo "No changes to commit at '${s_name}'."
+                            log "Nothing to commit at ${s_name}"
+                        fi
+                    else
+                        echo "Not a git repo — skipping commit for '${s_name}'."
+                        log "No git repo; commit skipped at ${s_name}"
+                    fi
                 fi
                 echo "Moving to next stage."
                 RETRY_COUNTS[$stage_idx]=0
@@ -655,8 +694,11 @@ run_pipeline() {
 
 ###############################################################################
 # Mode dispatch
+# Guarded so the file can be sourced by tests (AWF_NO_DISPATCH=1) to exercise
+# individual functions without triggering a pipeline run.
 ###############################################################################
 
+if [[ "${AWF_NO_DISPATCH:-0}" != "1" ]]; then
 case "$MODE" in
     start)
         run_pipeline
@@ -686,3 +728,4 @@ case "$MODE" in
         exit 1
         ;;
 esac
+fi

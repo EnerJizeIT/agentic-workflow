@@ -51,6 +51,18 @@ You get verbatim `Find` / `Replace with` blocks. **Follow exactly.** Do not devi
 
 ## 3. Workflow
 
+### Step 0 · Session Recovery (resume from checkpoint)
+
+Before starting, check if a previous session left a progress file:
+
+1. Look for `.agentic/outbox/PROGRESS-{NNNN}.md` matching your active TODO.
+2. If it exists, read it — it contains your last checkpoint.
+3. Determine which tasks were completed and which remain.
+4. Skip completed tasks, continue from the first unfinished one.
+5. If the progress file shows you were mid-task, re-read the target file and resume.
+
+**No progress file?** Start from Step 1 normally.
+
 ### Step 1 · Find active TODO
 
 Check `.agentic/inbox/` for `TODO-{NNNN}.ready`. If none exists — STOP.
@@ -101,15 +113,53 @@ For each Task:
 
 **DO NOT use `sed`, `awk`, `cat >`, `echo >` for code edits.** Only `edit` and `write` tools.
 
+#### Progress tracking (after each Task)
+
+After completing each Task, append an entry to `.agentic/outbox/PROGRESS-{NNNN}.md`:
+
+```markdown
+## Task {N} · {title} — {status}
+- **Completed at:** {ISO timestamp}
+- **Files changed:** `file1`, `file2`
+- **Verify:** {command} — {green|red}
+- **Notes:** {brief note if anything unexpected}
+```
+
+Use `[x]` for complete, `[~]` for in-progress, `[!]` for failed. This file is append-only — never rewrite previous entries. Supervisor can read it to monitor your progress.
+
 ### Step 6 · Verify after each Task
 
 Run the command from the **Verify** section of that Task. Must pass.
 
-**If verify fails:**
-1. Analyze the error carefully.
-2. Fix the issue — you have the freedom to adjust your implementation.
-3. Re-run verify until it passes.
-4. If you cannot fix it after genuine attempts — STOP, go to Step 8 (BLOCKED).
+**If verify fails — use the 3-Strike Error Protocol:**
+
+```
+ATTEMPT 1: Diagnose & Fix
+  → Read error carefully, identify root cause
+  → Apply targeted fix
+  → Re-run verify
+
+ATTEMPT 2: Alternative Approach
+  → Same error? Try a different method or tool
+  → Different library? Different pattern?
+  → NEVER repeat the exact same failing action
+
+ATTEMPT 3: Broader Rethink
+  → Question your assumptions
+  → Re-read the TODO and related files
+  → Consider whether the task description needs clarification
+```
+
+**After 3 failures:** Escalate to Supervisor via BLOCKED report. Include the full attempt history.
+
+Track each attempt in `PROGRESS-{NNNN}.md`:
+```markdown
+| Attempt | Approach | Error | Resolution |
+|---------|----------|-------|------------|
+| 1 | {what you tried} | {error} | {result} |
+| 2 | {different approach} | {error} | {result} |
+| 3 | {broader rethink} | {error} | escalated |
+```
 
 ### Step 7 · Regression verify (before Final Tasks)
 
@@ -144,10 +194,11 @@ Create one of:
 - Any deviations from TODO and why.
 
 **BLOCKED report must include:**
-- What you attempted.
+- What you attempted (full 3-strike attempt history).
 - Where it failed (error messages, log excerpts).
 - What you think the root cause is.
 - Suggestions for how to proceed.
+- Current progress in `PROGRESS-{NNNN}.md` (which tasks completed, which failed).
 
 ### Step 9 · Create signal file
 
@@ -209,6 +260,7 @@ Before creating `DONE-{NNNN}.md`:
 - [ ] Regression verify — passed
 - [ ] Build passes (if applicable)
 - [ ] Lint/typecheck passes (if applicable)
+- [ ] `PROGRESS-{NNNN}.md` has entries for all Tasks
 - [ ] DONE report includes verify results, changed files, and design decisions
 
 **If any item is not checked — DO NOT write DONE. Write BLOCKED.**
@@ -273,6 +325,17 @@ If the project has tests and your change affects tested behavior:
 
 In your DONE report, briefly explain any non-trivial design choices. This helps the Supervisor review efficiently.
 
+### Read vs Write decision matrix
+
+| Situation | Action | Reason |
+|---|---|---|
+| Just read a file | DON'T re-read | Content still in context |
+| Just wrote a file | DON'T re-read | Content still in context |
+| Discovered something unexpected | Write to PROGRESS NOW | Prevents lost context |
+| Starting new Task | Read TODO again | Re-orient if context stale |
+| Error occurred | Read target file | Need current state to fix |
+| After 2 file operations | Append to PROGRESS | 2-action rule: persist findings |
+
 ---
 
 ## 9. Output status block
@@ -283,6 +346,7 @@ End every turn with a concise status block:
 WORKER STATUS: <done|blocked|in_progress>
 FILES CHANGED: <list>
 VERIFY RESULT: <green|red|blocked>
+PROGRESS FILE: PROGRESS-{NNNN}.md ({N} entries)
 NEXT ACTION FOR ORCHESTRATOR: <wait_for_supervisor|continue_same_todo>
 ```
 

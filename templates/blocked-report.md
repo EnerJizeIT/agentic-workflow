@@ -3,20 +3,29 @@
 **Task ID:** TODO-{NNNN}
 **Blocked at:** <ISO timestamp>
 **Task:** <which task caused the blocker>
+**Attempts exhausted:** <1|2|3>
 
 ## Problem
 
 <Clear description of the problem.>
 
-## Attempted
+## Attempt History
 
-<What was tried.>
+| Attempt | Approach | Error | Resolution |
+|---------|----------|-------|------------|
+| 1 | <what you tried> | <error> | <result> |
+| 2 | <different approach> | <error> | <result> |
+| 3 | <broader rethink> | <error> | escalated |
 
 ## Error output
 
 ```
 <command output or error message>
 ```
+
+## Progress so far
+
+<Which tasks completed, which failed. Reference PROGRESS-{NNNN}.md>
 
 ## Required action
 
