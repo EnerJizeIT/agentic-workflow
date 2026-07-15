@@ -163,6 +163,7 @@ find_active_todo() {
 
 run_supervisor_stage() {
     local ACTION="$1"
+    local TODO_REF="${2:-}"
     local PHASES_FILE
     PHASES_FILE=$(get_config_value "phases.current" ".agentic/phases/plan.md")
 
@@ -198,6 +199,26 @@ run_supervisor_stage() {
             echo "  2. Analyze the problem"
             echo "  3. Create a new TODO with refined instructions"
             echo "  4. Create .agentic/inbox/TODO-{NNNN}.ready"
+            ;;
+        salvage)
+            # No-signal recovery: worker finished but never signalled (timeout/crash).
+            # The work may be complete and just unrecorded.
+            local BASE_SHA=""
+            [[ -n "$TODO_REF" && -f "$CONTEXT/BASELINE-${TODO_REF}.sha" ]] \
+                && BASE_SHA=$(head -1 "$CONTEXT/BASELINE-${TODO_REF}.sha" 2>/dev/null)
+            echo "Worker finished but wrote NO signal (timeout/crash). Work may be complete."
+            echo ""
+            echo "Investigate the orphaned work:"
+            echo "  1. See what changed:  git diff ${BASE_SHA:+$BASE_SHA }--stat"
+            echo "  2. Worker progress:   cat $OUTBOX/PROGRESS-${TODO_REF}.md"
+            echo "  3. Verify changes independently (build, tests, review)."
+            echo ""
+            echo "Decide and act:"
+            echo "  - good  -> salvage: write $OUTBOX/DONE-${TODO_REF}.md + $OUTBOX/DONE-${TODO_REF}.ready"
+            echo "  - bad   -> rollback to baseline, then create a new TODO (replan)"
+            echo "  - stuck -> leave as-is and stop"
+            echo ""
+            echo "After writing a signal (or a new TODO), press Enter to continue."
             ;;
     esac
 
@@ -292,7 +313,11 @@ wait_for_signal() {
     local START_TIME
     START_TIME=$(date +%s)
 
-    echo "Waiting for agent signal (prefixes: ${PREFIXES[*]}; timeout: ${TIMEOUT}s)..."
+    # IMPORTANT: all diagnostics go to stderr. The caller captures stdout
+    # (`SIGNAL=$(wait_for_signal ...)`) to get ONLY the signal name on success.
+    # Echoing progress/timeout text to stdout contaminates that capture and caused
+    # the orphan bug (multi-line garbage was classified as signal_type "unknown").
+    echo "Waiting for agent signal (prefixes: ${PREFIXES[*]}; timeout: ${TIMEOUT}s)..." >&2
     log "Waiting for signal for $TODO_ID (prefixes: ${PREFIXES[*]})"
 
     while true; do
@@ -300,9 +325,9 @@ wait_for_signal() {
         SIGNAL=$(read_signal_for_todo "$TODO_ID" "${PREFIXES[@]}" || true)
 
         if [[ -n "$SIGNAL" ]]; then
-            echo "Signal received: $SIGNAL"
+            echo "Signal received: $SIGNAL" >&2
             log "Signal received: $SIGNAL"
-            echo "$SIGNAL"
+            printf '%s' "$SIGNAL"
             return 0
         fi
 
@@ -312,14 +337,14 @@ wait_for_signal() {
             local TOTAL_TASKS DONE_TASKS
             TOTAL_TASKS=$(grep -c '^## Task' "$PROGRESS_FILE" 2>/dev/null || echo 0)
             DONE_TASKS=$(grep '^## Task' "$PROGRESS_FILE" 2>/dev/null | grep -c '\[x\]' || echo 0)
-            echo "  Progress: $DONE_TASKS/$TOTAL_TASKS tasks completed"
+            echo "  Progress: $DONE_TASKS/$TOTAL_TASKS tasks completed" >&2
         fi
 
         sleep "$POLL_INTERVAL"
 
         local ELAPSED=$(( $(date +%s) - START_TIME ))
         if [[ $ELAPSED -gt $TIMEOUT ]]; then
-            echo "TIMEOUT: Stage did not complete within ${TIMEOUT}s"
+            echo "TIMEOUT: Stage did not complete within ${TIMEOUT}s" >&2
             log "TIMEOUT waiting for signal for $TODO_ID"
             return 1
         fi
@@ -474,7 +499,61 @@ increment_retry() {
 should_retry() {
     local idx="$1"
     local max="${STAGE_MAX_RETRIES[$idx]:-1}"
-    [[ ${RETRY_COUNTS[$idx]} -lt $max ]]
+     [[ ${RETRY_COUNTS[$idx]} -lt $max ]]
+}
+
+###############################################################################
+# Commit helpers
+###############################################################################
+
+# Commit the current increment if the stage policy demands it. The orchestrator
+# NEVER pushes — push is the supervisor's explicit call (see supervisor.md Step 8).
+# Args: stage_name  todo_id  policy
+# Returns 0 if a commit was created, 1 otherwise. All human-facing messages -> stderr.
+maybe_commit_on_policy() {
+    local stage_name="$1" todo_id="$2" policy="$3"
+    if [[ "$policy" != "commit_and_next" && "$policy" != "commit_and_report" ]]; then
+        return 1
+    fi
+    if ! git rev-parse --git-dir &>/dev/null; then
+        echo "Not a git repo — skipping auto-commit for '${stage_name}'." >&2
+        log "No git repo; auto-commit skipped at ${stage_name}"
+        return 1
+    fi
+    git add -A 2>/dev/null || true
+    if git diff --cached --quiet 2>/dev/null; then
+        echo "No changes to auto-commit at '${stage_name}'." >&2
+        log "Nothing to auto-commit at ${stage_name}"
+        return 1
+    fi
+    local msg="awf(${stage_name}): ${todo_id}"
+    if git commit -m "$msg" >/dev/null 2>&1; then
+        local sha
+        sha=$(git rev-parse --short HEAD)
+        echo "Auto-committed: ${todo_id} at '${stage_name}' ($sha)." >&2
+        echo "Remember to push: git push origin HEAD" >&2
+        log "Auto-committed ${todo_id} at ${stage_name} ($sha)"
+        return 0
+    fi
+    echo "WARNING: git commit failed at '${stage_name}'; leaving changes staged." >&2
+    log "git auto-commit failed at ${stage_name}"
+    return 1
+}
+
+# Detect whether the worker left changes relative to the baseline snapshot for a TODO.
+# Used by the no-signal salvage path: returns 0 (true) if there's evidence the worker
+# did work despite not writing DONE/BLOCKED. Args: todo_id
+detect_work_evidence() {
+    local todo_id="$1"
+    local sha_file="$CONTEXT/BASELINE-${todo_id}.sha"
+    [[ -f "$sha_file" ]] || return 1
+    git rev-parse --git-dir &>/dev/null || return 1
+    local base_sha
+    base_sha=$(head -1 "$sha_file" 2>/dev/null)
+    [[ "$base_sha" =~ ^[0-9a-f]{7,} ]] || return 1
+    git cat-file -e "${base_sha}^{commit}" 2>/dev/null || return 1
+    # git diff <commit> covers committed-since + staged + unstaged changes.
+    ! git diff --quiet "$base_sha" 2>/dev/null
 }
 
 ###############################################################################
@@ -540,9 +619,13 @@ run_pipeline() {
                 echo "Active TODO: $CURRENT_TODO"
             fi
 
-            # After verify/finalize, move to next stage
+            # After verify/finalize: the supervisor approved (by continuing past the
+            # stage). Honour the stage's on_approved policy — commit the increment if
+            # it says commit_and_next / commit_and_report. Push stays manual (Step 8).
             if [[ "$s_action" == "verify_result" || "$s_action" == "final_verify" ]]; then
                 echo "Supervisor verification complete."
+                maybe_commit_on_policy "$s_name" "$CURRENT_TODO" \
+                    "${STAGE_ON_APPROVED[$stage_idx]:-next}" || true
                 ((stage_idx++)) || true
                 continue
             fi
@@ -579,9 +662,31 @@ run_pipeline() {
         fi
 
         if [[ -z "$SIGNAL" ]]; then
-            echo "WARNING: No signal found after agent stage '$s_name'. Check $OUTBOX/"
-            log "WARNING: No signal after stage $s_name"
-            exit 1
+            # No signal: the worker finished/crashed without writing DONE/BLOCKED.
+            # Don't hard-stop and orphan potentially-completed work — escalate.
+            echo "WARNING: No signal after agent stage '$s_name' (worker ran but didn't signal)." >&2
+            log "No signal after $s_name — salvage path"
+            if [[ $AUTO -eq 1 ]]; then
+                if detect_work_evidence "$CURRENT_TODO"; then
+                    echo "  Worker left changes vs baseline. TODO $CURRENT_TODO left ACTIVE for manual salvage." >&2
+                    echo "  Inspect: git diff ; awf status ; then write DONE-${CURRENT_TODO}.ready or replan." >&2
+                    log "Auto: work detected; $CURRENT_TODO left active for manual salvage"
+                else
+                    echo "  No worker changes and no signal — treating as failure." >&2
+                    log "Auto: no work + no signal — stop at $s_name"
+                fi
+                exit 1
+            fi
+            # Interactive: supervisor salvage stage — review git diff, write DONE or replan.
+            run_supervisor_stage "salvage" "$CURRENT_TODO"
+            SIGNAL=$(read_signal_for_todo "$CURRENT_TODO" "${STAGE_PREFIXES[@]}" || true)
+            if [[ -z "$SIGNAL" ]]; then
+                echo "No signal after supervisor salvage. Stopping." >&2
+                log "Stopped: salvage produced no signal at $s_name"
+                exit 1
+            fi
+            echo "Salvaged signal: $SIGNAL" >&2
+            log "Salvaged signal: $SIGNAL via supervisor"
         fi
 
         local SIG_TYPE
@@ -592,32 +697,8 @@ run_pipeline() {
 
         case "$TRANSITION_ACTION" in
             next|commit_and_next|commit_and_report)
-                if [[ "$TRANSITION_ACTION" == commit_and_next || "$TRANSITION_ACTION" == commit_and_report ]]; then
-                    # Actually commit the stage's changes. Worker never commits
-                    # (per role contract); the orchestrator does it when the
-                    # pipeline policy says so.
-                    if git rev-parse --git-dir &>/dev/null; then
-                        git add -A 2>/dev/null || true
-                        if ! git diff --cached --quiet 2>/dev/null; then
-                            local COMMIT_MSG="awf(${s_name}): ${CURRENT_TODO}"
-                            if git commit -m "$COMMIT_MSG" >/dev/null 2>&1; then
-                                local SHA
-                                SHA=$(git rev-parse --short HEAD)
-                                echo "Committed: ${CURRENT_TODO} at '${s_name}' ($SHA)"
-                                log "Committed ${CURRENT_TODO} at ${s_name} ($SHA)"
-                            else
-                                echo "WARNING: git commit failed; leaving changes staged."
-                                log "git commit failed at ${s_name}"
-                            fi
-                        else
-                            echo "No changes to commit at '${s_name}'."
-                            log "Nothing to commit at ${s_name}"
-                        fi
-                    else
-                        echo "Not a git repo — skipping commit for '${s_name}'."
-                        log "No git repo; commit skipped at ${s_name}"
-                    fi
-                fi
+                # Worker never commits; the orchestrator does it when policy says so.
+                maybe_commit_on_policy "$s_name" "$CURRENT_TODO" "$TRANSITION_ACTION" || true
                 echo "Moving to next stage."
                 RETRY_COUNTS[$stage_idx]=0
                 ((stage_idx++)) || true

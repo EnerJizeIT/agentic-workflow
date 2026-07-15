@@ -161,9 +161,9 @@ Track each attempt in `PROGRESS-{NNNN}.md`:
 | 3 | {broader rethink} | {error} | escalated |
 ```
 
-### Step 7 · Regression verify (before Final Tasks)
+### Step 7 · Regression verify (before reporting DONE)
 
-After all Tasks 1..N but **before** version bump and git commit:
+After all Tasks 1..N, before writing `DONE-{NNNN}.md`:
 
 ```bash
 # Run commands from config.yaml verification section
@@ -211,14 +211,20 @@ Create one of:
 
 ## 4. CRITICAL PROHIBITIONS
 
-### ❌ NO `git commit` WITHOUT implementing Tasks
+### ❌ DO NOT `git commit` or `git push` — that is the SUPERVISOR's job
 
-**Correct order:**
-1. Implement ALL Tasks.
-2. Verify — green.
-3. Bump version (if specified).
-4. Verify all — green.
-5. ONLY THEN `git add -A && git commit && git push`.
+You (the worker) **never** commit or push. Committing is the supervisor's quality gate:
+the supervisor reviews your DONE report, verifies independently, and only then commits
+and pushes (see `supervisor.md` → "Step 8 · Commit & push"). Your job ends at writing
+`DONE-{NNNN}.md` + the `.ready` signal.
+
+- Do **not** run `git add`, `git commit`, or `git push`.
+- Do **not** bump the project version either — leave the working tree with your source
+  changes only; the supervisor decides how to land them.
+- "Bump version" instructions in a TODO mean: edit the version file, not `git`-commit it.
+
+(If you ever see a TODO explicitly ordering a final `git commit` step, still do NOT commit
+— flag it in the DONE report as a deviation. The orchestrator/supervisor owns the commit.)
 
 ### ❌ DO NOT fix pre-existing errors
 
@@ -281,15 +287,19 @@ If you realize your changes broke existing code and can't fix within TODO scope:
 
 ## 7. Self-check signs of failure
 
-🚨 You did `git commit` but `git diff HEAD~1 --stat` shows:
+🚨 You are about to write `DONE-{NNNN}.md`, but `git diff --stat` (uncommitted changes) shows:
 - Only `.md` files (markdown, docs, TODO)
 - Zero changes in source files
 
-→ **You didn't implement the TODO.** Revert:
-```bash
-git reset --hard HEAD~1
-```
-and start from Step 5 — real code changes.
+→ **You didn't actually implement the TODO.** Do not write DONE. Go back to Step 5 and
+make real source-code changes.
+
+🚨 You ran `git add`, `git commit`, or `git push`?
+
+→ **That's a mistake** — the worker must never commit or push (see Prohibitions §4).
+Leave the working tree as-is, note the deviation in your DONE report, and let the
+supervisor handle version control. Do **not** attempt to "undo" it with `git reset` —
+just don't do it again and flag it.
 
 ---
 

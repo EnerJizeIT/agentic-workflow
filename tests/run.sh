@@ -239,6 +239,83 @@ RETRY_COUNTS=(2)
 assert_eq "no" "$(should_retry 0 && echo yes || echo no)" "should_retry.at.max"
 
 ###############################################################################
+# 11. maybe_commit_on_policy — orchestrator auto-commit (needs a real git repo)
+###############################################################################
+GITREPO="$TMP/commit-repo"
+mkdir -p "$GITREPO"
+cd "$GITREPO"
+git init -q
+git config user.email t@t.t
+git config user.name t
+printf '.agentic/\n' > .gitignore
+echo "hello" > file.txt
+git add -A && git commit -qm "init"
+HEAD0=$(git rev-parse HEAD)
+
+# policy "next" -> NO commit, HEAD unchanged
+echo "change1" >> file.txt
+assert_eq "no-commit" "$(maybe_commit_on_policy verify TODO-1 next >/dev/null 2>&1 && echo committed || echo no-commit)" \
+    "commit.policy.next.does.not.commit"
+assert_eq "$HEAD0" "$(git rev-parse HEAD)" "commit.policy.next.head.unchanged"
+
+# policy "commit_and_next" + changes -> commits, HEAD advances
+assert_eq "committed" "$(maybe_commit_on_policy verify TODO-1 commit_and_next >/dev/null 2>&1 && echo committed || echo no-commit)" \
+    "commit.policy.commit_and_next.commits"
+HEAD1=$(git rev-parse HEAD)
+assert_eq "moved" "$([[ "$HEAD0" != "$HEAD1" ]] && echo moved || echo same)" \
+    "commit.policy.commit_and_next.head.moved"
+# the increment's source change landed in the commit
+assert_eq "yes" "$(git cat-file -p HEAD:file.txt >/dev/null 2>&1 && echo yes || echo no)" \
+    "commit.includes.file.txt"
+assert_eq "hello
+change1" "$(git cat-file -p HEAD:file.txt 2>/dev/null)" "commit.content.correct"
+
+# policy "commit_and_next" + NO changes -> no commit, HEAD unchanged
+assert_eq "no-commit" "$(maybe_commit_on_policy verify TODO-1 commit_and_next >/dev/null 2>&1 && echo committed || echo no-commit)" \
+    "commit.policy.nothing.to.commit"
+assert_eq "$HEAD1" "$(git rev-parse HEAD)" "commit.policy.no.changes.head.unchanged"
+
+# not a git repo -> no commit
+cd "$TMP"
+mkdir -p notgit && cd notgit
+echo "x" > f.txt
+assert_eq "no-commit" "$(maybe_commit_on_policy verify TODO-1 commit_and_next >/dev/null 2>&1 && echo committed || echo no-commit)" \
+    "commit.nongit.no.commit"
+
+cd "$TMP/proj"   # restore cwd
+
+###############################################################################
+# 12. wait_for_signal — stdout carries ONLY the signal name (regression)
+#     The orphan bug was caused by diagnostics polluting the captured stdout.
+###############################################################################
+OUTBOX="$TMP/proj/.agentic/outbox"
+mkdir -p "$OUTBOX"
+rm -f "$OUTBOX"/DONE-TODO-WFS.ready
+touch "$OUTBOX"/DONE-TODO-WFS.ready
+WFS_OUT=$(wait_for_signal TODO-WFS DONE BLOCKED 2>"$TMP/wfs.err")
+assert_eq "DONE-TODO-WFS" "$WFS_OUT" "wait_for_signal.stdout.is.signal.only [REGRESSION]"
+assert_contains "$(cat "$TMP/wfs.err")" "Waiting for agent signal" "wait_for_signal.diagnostics.on.stderr"
+assert_contains "$(cat "$TMP/wfs.err")" "Signal received" "wait_for_signal.received.msg.on.stderr"
+rm -f "$OUTBOX"/DONE-TODO-WFS.ready
+
+###############################################################################
+# 13. detect_work_evidence — orphan salvage heuristic
+###############################################################################
+cd "$GITREPO"
+CONTEXT="$GITREPO/.agentic/context"
+mkdir -p "$CONTEXT"
+DET_BASE=$(git rev-parse HEAD)
+echo "$DET_BASE" > "$CONTEXT/BASELINE-TODO-DET.sha"
+# clean tree relative to baseline -> no evidence
+assert_eq "no" "$(detect_work_evidence TODO-DET >/dev/null 2>&1 && echo yes || echo no)" "evidence.clean.no"
+# uncommitted change vs baseline -> evidence present
+echo "more" >> file.txt
+assert_eq "yes" "$(detect_work_evidence TODO-DET >/dev/null 2>&1 && echo yes || echo no)" "evidence.changed.yes"
+# missing baseline file -> no evidence
+assert_eq "no" "$(detect_work_evidence TODO-NOSUCHSHA >/dev/null 2>&1 && echo yes || echo no)" "evidence.no.baseline.no"
+cd "$TMP/proj"
+
+###############################################################################
 # Summary
 ###############################################################################
 echo

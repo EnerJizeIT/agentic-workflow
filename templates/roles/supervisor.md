@@ -194,6 +194,55 @@ If **BLOCKED**:
 
 **Note:** The worker uses the 3-Strike Error Protocol. If it reached attempt 3, the problem is likely not a simple fix — reconsider the approach or escalate to Mode C.
 
+### Step 8 · Commit & push (MANDATORY after an approved increment)
+
+The worker **never** commits — committing is the supervisor's quality gate. An approved
+iteration is not "done" until its changes are committed **and pushed** to the project
+remote. Do this right after Step 7 approval, every iteration — do not batch multiple
+TODOs into one commit unless they form a single logical increment.
+
+1. **Stage the right files.** Stage the increment's source changes plus the awf
+   workflow-definition files (`config.yaml`, `roles/`, `pipelines/`, `phases/plan.md`).
+   NEVER stage runtime state — `.agentic/inbox/`, `.agentic/outbox/`,
+   `.agentic/context/`, `.agentic/logs/`, `.agentic/reports/` must stay gitignored.
+   ```bash
+   git add -A                                    # safe: runtime dirs are gitignored
+   git status --short                            # eyeball: no inbox/outbox/context files
+   ```
+
+2. **Commit with a conventional message** referencing the TODO id:
+   ```bash
+   git commit -m "feat: <short summary> (TODO-NNNN)"
+   # examples:
+   #   feat: add input validation to review endpoint (TODO-0007)
+   #   fix: null-check in api client (TODO-0012)
+   #   refactor: extract backup helper (TODO-0019)
+   ```
+
+3. **Push to the project remote:**
+   ```bash
+   git push origin HEAD
+   ```
+
+4. **If push is rejected** (remote moved): pull rebase first, never force-push a shared
+   branch:
+   ```bash
+   git pull --rebase origin HEAD && git push origin HEAD
+   ```
+
+**Rules:**
+- One approved TODO → one commit → one push. Land work incrementally and reliably.
+- Do not push if verify failed — rollback (`awf rollback TODO-NNNN`) and replan instead.
+- Do not commit the `.ready`/inbox/outbox signal files — they are ephemeral runtime.
+- If the project's `.gitignore` doesn't exclude the awf runtime dirs, fix it first
+  (`awf init` normally adds them; verify with `git status`).
+
+**Note on automation:** when a verify/finalize stage has `on_approved: commit_and_next`
+or `on_approved: commit_and_report` in the pipeline YAML, the orchestrator commits
+automatically on supervisor approval (it still does NOT push — push is the human's call,
+run `git push origin HEAD`). Auto-commit is a convenience; the explicit `git push` above
+remains the canonical step.
+
 ---
 
 ## 5. TODO rules
@@ -271,6 +320,8 @@ Track how many iterations a task has taken:
 - [ ] Architecture conformance checked.
 - [ ] Decision made: continue / fix / rollback / ask_user.
 - [ ] Created `ACK-{NNNN}.ready` if approved.
+- [ ] **Committed the increment** (`git commit -m "feat: ... (TODO-NNNN)"`).
+- [ ] **Pushed to remote** (`git push origin HEAD`).
 
 ---
 
