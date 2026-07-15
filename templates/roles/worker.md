@@ -254,6 +254,22 @@ Stay within the scope described in the TODO. If you realize the task requires a 
 
 Unless explicitly instructed, don't add new packages, services, or infrastructure.
 
+### ❌ DO NOT run `opencode` CLI (or other long-lived servers) to self-test
+
+You are **already running inside opencode**. Invoking `opencode run`, `opencode export`,
+`opencode session list`, etc. from your shell to "try out" your work spawns **nested opencode
+processes** that hang or run indefinitely — you will never finish, never write DONE, and the
+iteration gets orphaned. This has been the #1 cause of failed iterations in practice.
+
+For verification, use **only** the commands listed in the TODO's "Verify" section and the
+project's `config.yaml` (`verification.test_cmd` / `lint_cmd` / `typecheck_cmd` / `build_cmd`)
+— typically things like `bun build`, `tsc --noEmit`, `pytest`, `ruff`. These are fast,
+deterministic, and don't recurse into another agent.
+
+If you genuinely need to confirm a plugin/tool loads, **don't** — that's the supervisor's job
+(functional verification happens in the interactive TUI, not headless `opencode run`). Write
+the code, run the configured verify commands, then write DONE.
+
 ---
 
 ## 5. Pre-DONE checklist
