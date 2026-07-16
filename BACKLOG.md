@@ -32,6 +32,34 @@
 - [x] Оркестратор показывает прогресс при ожидании сигнала.
 - [x] BLOCKED-отчёт включает таблицу попыток.
 
+## ✅ Done in v0.3.1 (dogfooding hardening)
+
+Правки, найденные при реальном использовании awf на проекте opencode-session-manager
+(supervisor↔worker цикл, несколько итераций). Каждая — реальный дефект, не ловившийся
+юнит-тестами до end-to-end прогона.
+
+- [x] **Промпт после `--`** (`b7bb9f6`) — жадный yargs `--file [array]` проглатывал
+  trailing-промпт как файл (`Error: File not found: <промпт>`), worker вообще не запускался.
+  Фикс: `--` перед промптом в `opencode run`.
+- [x] **Commit/push gap** (`9dee8f6`) — по контракту worker не коммитит, но у supervisor'а
+  не было шага commit+push, а `on_approved: commit_and_next` на verify-стадии был мёртвым
+  конфигом. Фикс: `maybe_commit_on_policy()` (вызывается и из agent-stage, и из verify/finalize)
+  + Step 8 «Commit & push» в `supervisor.md` + запрет/уточнение в `worker.md`.
+- [x] **Orphan-signal salvage** (`9dee8f6`) — worker заканчивал код, но не успевал написать
+  DONE → awf бросал работу. Фикс: при отсутствии сигнала — `detect_work_evidence` (git diff
+  vs baseline) + supervisor salvage-стадия; в `--auto` TODO остаётся активной для ручного salvage.
+- [x] **`wait_for_signal` stderr** (`9dee8f6`) — диагностика («Waiting…/TIMEOUT…») шла в stdout
+  и загрязняла `SIGNAL=$(…)` → `signal_type "unknown" → stop`. Фикс: диагностика в stderr,
+  на stdout только имя сигнала.
+- [x] **Untracked-evidence** (`e391186`) — `detect_work_evidence` проверял только `git diff`
+  (tracked), новые untracked-файлы не видел → ложно «no work». Фикс: добавлен
+  `git ls-files --others --exclude-standard`.
+- [x] **Worker self-test ban** (`29cce90`) — worker вешал итерацию, вызывая `opencode` CLI
+  для self-test (вложенные сессии). Фикс: запрет в `worker.md` §4; verify — только настроенные
+  команды (`bun build`, `pytest`, …).
+- [x] Тесты 58 → **74** (maybe_commit_on_policy, wait_for_signal stdout-isolation regression,
+  detect_work_evidence clean/changed/untracked/no-baseline).
+
 ---
 
 ### Task 1 · HTML dashboard как обертка над CLI
