@@ -311,6 +311,14 @@ assert_eq "no" "$(detect_work_evidence TODO-DET >/dev/null 2>&1 && echo yes || e
 # uncommitted change vs baseline -> evidence present
 echo "more" >> file.txt
 assert_eq "yes" "$(detect_work_evidence TODO-DET >/dev/null 2>&1 && echo yes || echo no)" "evidence.changed.yes"
+# NEW untracked file must count as work even with a clean tracked tree.
+# (Bug case: a worker that only creates new files was falsely seen as "no work"
+#  because git diff <commit> ignores untracked files.)
+git add -A && git commit -qm "chg" >/dev/null
+echo "$(git rev-parse HEAD)" > "$CONTEXT/BASELINE-TODO-UNTR.sha"
+echo "docs body" > NEW-DOC.md
+assert_eq "yes" "$(detect_work_evidence TODO-UNTR >/dev/null 2>&1 && echo yes || echo no)" "evidence.untracked.only.yes [BUG FIX]"
+rm -f NEW-DOC.md
 # missing baseline file -> no evidence
 assert_eq "no" "$(detect_work_evidence TODO-NOSUCHSHA >/dev/null 2>&1 && echo yes || echo no)" "evidence.no.baseline.no"
 cd "$TMP/proj"

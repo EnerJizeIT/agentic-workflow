@@ -552,8 +552,14 @@ detect_work_evidence() {
     base_sha=$(head -1 "$sha_file" 2>/dev/null)
     [[ "$base_sha" =~ ^[0-9a-f]{7,} ]] || return 1
     git cat-file -e "${base_sha}^{commit}" 2>/dev/null || return 1
-    # git diff <commit> covers committed-since + staged + unstaged changes.
-    ! git diff --quiet "$base_sha" 2>/dev/null
+    # Tracked changes (committed-since + staged + unstaged) vs baseline.
+    ! git diff --quiet "$base_sha" 2>/dev/null && return 0
+    # New untracked (non-ignored) files also count as work — `git diff <commit>`
+    # does NOT see them, so without this a worker that only creates new files
+    # would be falsely classified as "no work" and orphaned.
+    local untracked
+    untracked=$(git ls-files --others --exclude-standard 2>/dev/null)
+    [[ -n "$untracked" ]]
 }
 
 ###############################################################################
