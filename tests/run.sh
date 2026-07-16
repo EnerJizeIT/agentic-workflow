@@ -324,6 +324,70 @@ assert_eq "no" "$(detect_work_evidence TODO-NOSUCHSHA >/dev/null 2>&1 && echo ye
 cd "$TMP/proj"
 
 ###############################################################################
+# 14. attempt_auto_done — synthesize DONE when verify passes + work present
+###############################################################################
+AUTODIR="$TMP/auto-repo"
+mkdir -p "$AUTODIR/.agentic/inbox" "$AUTODIR/.agentic/outbox" "$AUTODIR/.agentic/context"
+cd "$AUTODIR"
+git init -q; git config user.email t@t.t; git config user.name t
+printf '.agentic/\n' > .gitignore
+echo "src" > file.txt
+git add -A && git commit -qm init
+# point awf globals at this repo
+CONFIG="$AUTODIR/.agentic/config.yaml"
+CONTEXT="$AUTODIR/.agentic/context"
+INBOX="$AUTODIR/.agentic/inbox"
+OUTBOX="$AUTODIR/.agentic/outbox"
+AUTO_BASE=$(git rev-parse HEAD)
+echo "$AUTO_BASE" > "$CONTEXT/BASELINE-TODO-AUTO.sha"
+
+write_cfg() {  # $1 = typecheck_cmd, $2 = auto_done
+  cat > "$CONFIG" <<YAML
+verification:
+  typecheck_cmd: "$1"
+automation:
+  auto_done: $2
+YAML
+}
+
+# (a) verify passes + work present -> DONE synthesized
+write_cfg "test -f file.txt" true
+echo "change" >> file.txt
+rm -f "$OUTBOX/DONE-TODO-AUTO.ready"
+assert_eq "yes" "$(attempt_auto_done TODO-AUTO >/dev/null 2>&1 && echo yes || echo no)" "autodone.verify.pass.work.present"
+assert_eq "yes" "$([[ -f "$OUTBOX/DONE-TODO-AUTO.ready" ]] && echo yes || echo no)" "autodone.writes.DONE.ready"
+
+# (b) verify FAILS -> no DONE
+git add -A && git commit -qm chg >/dev/null; echo "$(git rev-parse HEAD)" > "$CONTEXT/BASELINE-TODO-AUTO2.sha"
+write_cfg "false" true
+echo "more" >> file.txt
+rm -f "$OUTBOX/DONE-TODO-AUTO2.ready"
+assert_eq "no" "$(attempt_auto_done TODO-AUTO2 >/dev/null 2>&1 && echo yes || echo no)" "autodone.verify.fail.no.DONE"
+assert_eq "no" "$([[ -f "$OUTBOX/DONE-TODO-AUTO2.ready" ]] && echo yes || echo no)" "autodone.no.DONE.on.fail"
+
+# (c) verify passes but NO work -> no DONE
+git add -A && git commit -qm chg2 >/dev/null; echo "$(git rev-parse HEAD)" > "$CONTEXT/BASELINE-TODO-AUTO3.sha"
+write_cfg "true" true
+# (clean tree, no changes vs baseline)
+rm -f "$OUTBOX/DONE-TODO-AUTO3.ready"
+assert_eq "no" "$(attempt_auto_done TODO-AUTO3 >/dev/null 2>&1 && echo yes || echo no)" "autodone.no.work.no.DONE"
+
+# (d) auto_done disabled -> no DONE even if verify+work
+echo "$(git rev-parse HEAD)" > "$CONTEXT/BASELINE-TODO-AUTO4.sha"
+write_cfg "true" false
+echo "x" >> file.txt
+rm -f "$OUTBOX/DONE-TODO-AUTO4.ready"
+assert_eq "no" "$(attempt_auto_done TODO-AUTO4 >/dev/null 2>&1 && echo yes || echo no)" "autodone.disabled.no.DONE"
+
+# (e) no verify commands configured -> no DONE
+echo "y" >> file.txt
+printf 'automation:\n  auto_done: true\n' > "$CONFIG"
+rm -f "$OUTBOX/DONE-TODO-AUTO5.ready"
+assert_eq "no" "$(attempt_auto_done TODO-AUTO5 >/dev/null 2>&1 && echo yes || echo no)" "autodone.no.verify.cmds.no.DONE"
+
+cd "$TMP/proj"
+
+###############################################################################
 # Summary
 ###############################################################################
 echo

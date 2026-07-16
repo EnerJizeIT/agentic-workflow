@@ -60,6 +60,15 @@
 - [x] Тесты 58 → **74** (maybe_commit_on_policy, wait_for_signal stdout-isolation regression,
   detect_work_evidence clean/changed/untracked/no-baseline).
 
+## ✅ Done in v0.3.2 (auto-DONE)
+
+- [x] **Auto-DONE on verify-pass** — главная боль v0.3.x (worker исчерпывал бюджет ходов до
+  записи DONE → ~6 из 8 итераций шли через salvage). Теперь, если worker не написал сигнал,
+  оркестратор сам синтезирует DONE при условиях: прошли **структурированные verify-команды**
+  из `config.yaml` (`verification.typecheck_cmd`/`build_cmd`/`test_cmd`) И есть работа
+  (`detect_work_evidence`). Опционально отключается через `automation.auto_done: false`.
+  Заменяет Salvage — при работающих тестах не требует ручного вмешательства.
+
 ---
 
 ### Task 1 · HTML dashboard как обертка над CLI
