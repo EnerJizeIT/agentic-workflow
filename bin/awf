@@ -2,7 +2,7 @@
 # awf — Agentic Workflow Framework CLI
 set -euo pipefail
 
-AWF_VERSION="0.3.2"
+AWF_VERSION="0.3.3"
 FRAMEWORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_DIR="$FRAMEWORK_DIR/lib"
 TEMPLATES_DIR="$FRAMEWORK_DIR/templates"
@@ -42,6 +42,7 @@ Options for 'start':
   --pipeline <name>    Pipeline to run (default: from config.yaml)
   --from-stage <name>  Start from a specific stage
   --auto               Skip supervisor interactive waits
+  --background         Run detached (setsid) — don't block the terminal
   --timeout <seconds>  Agent timeout (default: 3600)
 EOF
 }
@@ -56,7 +57,22 @@ shift
 
 case "$COMMAND" in
     init)       source "$LIB_DIR/init.sh" "$@" ;;
-    start)      source "$LIB_DIR/orchestrator.sh" start "$@" ;;
+    start)
+        # --background: run detached (setsid) so it doesn't block the terminal /
+        # get killed when the parent shell exits. Without this, every user hits
+        # "awf start hung / was killed".
+        if [[ " $* " == *" --background"* ]]; then
+            args=()
+            for a in "$@"; do [[ "$a" == "--background" ]] || args+=("$a"); done
+            mkdir -p .agentic/logs
+            LOG=".agentic/logs/awf-start.out"
+            setsid awf start "${args[@]}" </dev/null >"$LOG" 2>&1 &
+            echo "awf start running in background (PID $!)"
+            echo "  log:     $LOG"
+            echo "  monitor: awf status   |   tail -f $LOG"
+            exit 0
+        fi
+        source "$LIB_DIR/orchestrator.sh" start "$@" ;;
     continue)   source "$LIB_DIR/orchestrator.sh" continue "$@" ;;
     status)     source "$LIB_DIR/status.sh" "$@" ;;
     report)     source "$LIB_DIR/report.sh" "$@" ;;

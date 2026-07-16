@@ -32,9 +32,11 @@ echo ""
 
 # Interactive questions
 read -rp "Project name: " PROJECT_NAME
-read -rp "Test command (e.g. pytest tests/): " TEST_CMD
+echo "(Verify commands below are load-bearing: when set, awf auto-confirms completed"
+echo " work whose verify passes — no manual salvage. Leave blank only if none apply.)"
+read -rp "Test command (e.g. pytest tests/, bun test): " TEST_CMD
 read -rp "Lint command (e.g. ruff check .): " LINT_CMD
-read -rp "Typecheck command (e.g. mypy src/): " TYPECHECK_CMD
+read -rp "Typecheck command (e.g. mypy src/, tsc --noEmit): " TYPECHECK_CMD
 read -rp "Build command (optional, e.g. docker compose config): " BUILD_CMD
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -129,8 +131,61 @@ fi
 
 echo ""
 echo "Created .agentic/ with ${TEMPLATE} template"
+
+# Offer to create the opencode agents awf needs (worker; +reviewer/tester for full).
+# Without these, `awf start` cannot spawn the worker — the #1 gotcha for new users.
+OFFER_AGENTS="worker"
+[[ "$TEMPLATE" == "full" ]] && OFFER_AGENTS="worker reviewer tester"
+
+create_opencode_agents() {
+    local cfg="$HOME/.config/opencode/opencode.json"
+    if [[ ! -f "$cfg" ]]; then
+        echo ""
+        echo "NOTE: no opencode config found at $cfg"
+        echo "      Create the opencode agents ($OFFER_AGENTS) manually (see README → Requirements)."
+        return
+    fi
+    command -v python3 &>/dev/null || { echo "NOTE: python3 needed to add agents automatically."; return; }
+
+    read -rp "Create opencode agents ($OFFER_AGENTS) in $cfg? [Y/n] " ans
+    [[ "${ans:-Y}" =~ ^[Yy]$ ]] || { echo "Skipping agent creation (create them manually if needed)."; return; }
+
+    local roles="$1"
+    cp "$cfg" "${cfg}.bak-$(date +%Y%m%d%H%M%S)"
+    python3 - "$cfg" "$roles" <<'PYEOF'
+import json, sys
+cfg, roles = sys.argv[1], sys.argv[2].split()
+with open(cfg) as f:
+    d = json.load(f)
+agents = d.setdefault("agent", {})
+if not isinstance(agents, dict):
+    print("  'agent' is not an object — skipping."); sys.exit(0)
+# Reuse an existing agent's model so the new agents work out of the box.
+model = None
+for a in agents.values():
+    if isinstance(a, dict) and a.get("model"):
+        model = a["model"]; break
+if not model:
+    model = d.get("model") or input("  No existing model found. Enter model id (e.g. vllm/llm): ").strip()
+if not model:
+    print("  No model — skipping agent creation."); sys.exit(0)
+added = []
+for r in roles:
+    if r not in agents:
+        agents[r] = {"description": f"awf {r} agent", "model": model}
+        added.append(r)
+if added:
+    with open(cfg, "w") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    print(f"  Added agents: {', '.join(added)} (model: {model})")
+else:
+    print(f"  All agents ({', '.join(roles)}) already present.")
+PYEOF
+}
+create_opencode_agents "$OFFER_AGENTS"
+
 echo ""
 echo "Next steps:"
 echo "  1. Edit .agentic/config.yaml if needed"
 echo "  2. Create .agentic/phases/plan.md with your implementation plan"
-echo "  3. Run: awf start"
+echo "  3. Run: awf start --auto --background   (or: awf start for interactive)"

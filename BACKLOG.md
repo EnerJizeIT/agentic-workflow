@@ -69,6 +69,24 @@
   (`detect_work_evidence`). Опционально отключается через `automation.auto_done: false`.
   Заменяет Salvage — при работающих тестах не требует ручного вмешательства.
 
+## ✅ Done in v0.3.3 (reuse-readiness)
+
+Правки, делающие awf пригодным для **чужих** проектов (не только dogfood), — найдены при
+аудите готовности к переиспользованию.
+
+- [x] **Signal-naming tolerance** (correctness bug) — `worker.md` инструктировал короткий
+  `DONE-{NNNN}`, а оркестратор искал `DONE-TODO-{NNNN}` → TODO «зависал» и перезапускался
+  (бьёт каждого нового пользователя). `read_signal_for_todo`/`find_active_todo` теперь
+  принимают оба формата; role-шаблоны стандартизированы на каноничном `{PREFIX}-TODO-{NNNN}`.
+- [x] **`awf init` создаёт opencode-агентов** — главный gotcha: без агента `worker` `awf start`
+  не может его породить. Init теперь предлагает добавить `worker` (+`reviewer`/`tester` для
+  full) в `~/.config/opencode/opencode.json`, переиспользуя модель существующего агента
+  (backup + additive через python3).
+- [x] **`awf start --background`** — detached-запуск (setsid + redirect в лог). Раньше `awf start`
+  блокировал терминал / убивался с ним (мы танцевали с wrapper+setsid). Теперь первая
+  команда для фоновой работы.
+- [x] **verify-команды подчеркнуты в init** как load-bearing для auto-DONE.
+
 ---
 
 ### Task 1 · HTML dashboard как обертка над CLI
