@@ -13,16 +13,16 @@ Run the full verification suite and compare results with baseline.
 
 ```bash
 # Tests
-{verification.test_cmd} > .agentic/outbox/TEST-RESULTS-{NNNN}.log 2>&1
+{verification.test_cmd} > .agentic/outbox/TEST-RESULTS-TODO-{NNNN}.log 2>&1
 
 # Linter
-{verification.lint_cmd} >> .agentic/outbox/TEST-RESULTS-{NNNN}.log 2>&1
+{verification.lint_cmd} >> .agentic/outbox/TEST-RESULTS-TODO-{NNNN}.log 2>&1
 
 # Type checker
-{verification.typecheck_cmd} >> .agentic/outbox/TEST-RESULTS-{NNNN}.log 2>&1
+{verification.typecheck_cmd} >> .agentic/outbox/TEST-RESULTS-TODO-{NNNN}.log 2>&1
 
 # Build (if configured)
-{verification.build_cmd} >> .agentic/outbox/TEST-RESULTS-{NNNN}.log 2>&1
+{verification.build_cmd} >> .agentic/outbox/TEST-RESULTS-TODO-{NNNN}.log 2>&1
 ```
 
 ### Step 2 · Compare with baseline
@@ -48,7 +48,7 @@ Coverage must not drop below baseline.
 
 All checks green. No new regressions.
 
-Write `.agentic/outbox/TEST-PASSED-{NNNN}.md` + `.ready`:
+Write `.agentic/outbox/TEST-PASSED-TODO-{NNNN}.md` + `.ready`:
 ```yaml
 signal: TEST_PASSED
 task_id: TODO-{NNNN}
@@ -63,7 +63,7 @@ Checks failed. Describe:
 - Is it a regression or pre-existing.
 - Error log excerpt.
 
-Write `.agentic/outbox/TEST-FAILED-{NNNN}.md` + `.ready`:
+Write `.agentic/outbox/TEST-FAILED-TODO-{NNNN}.md` + `.ready`:
 ```yaml
 signal: TEST_FAILED
 task_id: TODO-{NNNN}

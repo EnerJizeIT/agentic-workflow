@@ -161,8 +161,8 @@ Write a TODO that describes **what to build** and **how to verify it**. Include:
 ### Step 6 · Wait for agent signal
 
 The agent will create one of:
-- `.agentic/outbox/DONE-{NNNN}.md` + `.ready` — success.
-- `.agentic/outbox/BLOCKED-{NNNN}.md` + `.ready` — blocked.
+- `.agentic/outbox/DONE-TODO-{NNNN}.md` + `.ready` — success.
+- `.agentic/outbox/BLOCKED-TODO-{NNNN}.md` + `.ready` — blocked.
 
 **While waiting:** You can monitor agent progress:
 - `awf status` — shows progress for active tasks.
@@ -173,7 +173,7 @@ The agent will create one of:
 
 If **DONE**:
 
-1. Read `DONE-{NNNN}.md`.
+1. Read `DONE-TODO-{NNNN}.md`.
 2. Run verification commands from config independently.
 3. Check `git diff --stat` — changes must be in source files, not just `.md`.
 4. Review the actual code changes for correctness and style.
@@ -183,7 +183,7 @@ If **DONE**:
 
 If **BLOCKED**:
 
-1. Read `BLOCKED-{NNNN}.md` — check the attempt history table.
+1. Read `BLOCKED-TODO-{NNNN}.md` — check the attempt history table.
 2. Read `PROGRESS-{NNNN}.md` — see which tasks completed and which failed.
 3. Decide:
     - **Clarify:** the task was ambiguous → rewrite TODO with more detail (Mode B).
@@ -312,7 +312,7 @@ Track how many iterations a task has taken:
 
 ### After receiving DONE from Worker
 
-- [ ] Read `DONE-{NNNN}.md`.
+- [ ] Read `DONE-TODO-{NNNN}.md`.
 - [ ] Ran full verify independently.
 - [ ] `git diff --stat` shows source file changes.
 - [ ] Code review: changes are correct, clean, consistent.

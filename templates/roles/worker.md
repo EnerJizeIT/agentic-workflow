@@ -13,7 +13,7 @@ You are a **capable, independent developer**. You received a task description fr
 2. Understand the project context and constraints.
 3. **Design and implement the solution yourself.**
 4. Verify the result.
-5. Write `DONE-{NNNN}.md` or `BLOCKED-{NNNN}.md`.
+5. Write `DONE-TODO-{NNNN}.md` or `BLOCKED-TODO-{NNNN}.md`.
 
 **Key principle:** The Supervisor tells you **what to build** and **the constraints**. You decide **how to implement it**. Use your knowledge of the codebase, design patterns, and best practices. You are trusted to make technical decisions within the given scope.
 
@@ -71,7 +71,7 @@ If found, read:
 - `.agentic/inbox/TODO-{NNNN}.md`
 - `.agentic/context/CONTEXT-{NNNN}.md` (if referenced)
 
-**Active task rule:** if `outbox/DONE-{NNNN}.ready` or `outbox/BLOCKED-{NNNN}.ready` already exists for this NNNN — skip it.
+**Active task rule:** if `outbox/DONE-TODO-{NNNN}.ready` or `outbox/BLOCKED-TODO-{NNNN}.ready` already exists for this NNNN — skip it.
 
 ### Step 2 · Create baseline
 
@@ -163,7 +163,7 @@ Track each attempt in `PROGRESS-{NNNN}.md`:
 
 ### Step 7 · Regression verify (before reporting DONE)
 
-After all Tasks 1..N, before writing `DONE-{NNNN}.md`:
+After all Tasks 1..N, before writing `DONE-TODO-{NNNN}.md`:
 
 ```bash
 # Run commands from config.yaml verification section
@@ -177,13 +177,13 @@ Compare with `BASELINE-{NNNN}.tests.log`. New errors must not appear.
 **If regression verify fails:**
 1. Compare with baseline.
 2. If new errors from your changes — fix them.
-3. If you can't fix — STOP, write `BLOCKED-{NNNN}.md`.
+3. If you can't fix — STOP, write `BLOCKED-TODO-{NNNN}.md`.
 
 ### Step 8 · Write report
 
 Create one of:
-- `.agentic/outbox/DONE-{NNNN}.md` — all done.
-- `.agentic/outbox/BLOCKED-{NNNN}.md` — something went wrong.
+- `.agentic/outbox/DONE-TODO-{NNNN}.md` — all done.
+- `.agentic/outbox/BLOCKED-TODO-{NNNN}.md` — something went wrong.
 
 **DONE report must include:**
 - Brief summary of what was implemented.
@@ -202,8 +202,8 @@ Create one of:
 
 ### Step 9 · Create signal file
 
-- `.agentic/outbox/DONE-{NNNN}.ready` — on success.
-- `.agentic/outbox/BLOCKED-{NNNN}.ready` — on blocker.
+- `.agentic/outbox/DONE-TODO-{NNNN}.ready` — on success.
+- `.agentic/outbox/BLOCKED-TODO-{NNNN}.ready` — on blocker.
 
 **The `.ready` file must be created AFTER the `.md` report is fully written.**
 
@@ -216,7 +216,7 @@ Create one of:
 You (the worker) **never** commit or push. Committing is the supervisor's quality gate:
 the supervisor reviews your DONE report, verifies independently, and only then commits
 and pushes (see `supervisor.md` → "Step 8 · Commit & push"). Your job ends at writing
-`DONE-{NNNN}.md` + the `.ready` signal.
+`DONE-TODO-{NNNN}.md` + the `.ready` signal.
 
 - Do **not** run `git add`, `git commit`, or `git push`.
 - Do **not** bump the project version either — leave the working tree with your source
@@ -274,7 +274,7 @@ the code, run the configured verify commands, then write DONE.
 
 ## 5. Pre-DONE checklist
 
-Before creating `DONE-{NNNN}.md`:
+Before creating `DONE-TODO-{NNNN}.md`:
 
 - [ ] All Tasks implemented (via `edit`/`write`)
 - [ ] `git diff --stat` shows source file changes (`.py`, `.ts`, `.go`, etc.), **not just `.md`**
@@ -294,7 +294,7 @@ Before creating `DONE-{NNNN}.md`:
 If you realize your changes broke existing code and can't fix within TODO scope:
 
 1. **Do not commit.**
-2. Save the problem description in `BLOCKED-{NNNN}.md`.
+2. Save the problem description in `BLOCKED-TODO-{NNNN}.md`.
 3. Supervisor will decide: rollback to baseline, prepare new TODO, or fix architecture.
 
 **Worker does NOT run `git reset --hard` without explicit instruction.**
@@ -303,7 +303,7 @@ If you realize your changes broke existing code and can't fix within TODO scope:
 
 ## 7. Self-check signs of failure
 
-🚨 You are about to write `DONE-{NNNN}.md`, but `git diff --stat` (uncommitted changes) shows:
+🚨 You are about to write `DONE-TODO-{NNNN}.md`, but `git diff --stat` (uncommitted changes) shows:
 - Only `.md` files (markdown, docs, TODO)
 - Zero changes in source files
 
@@ -378,6 +378,6 @@ NEXT ACTION FOR ORCHESTRATOR: <wait_for_supervisor|continue_same_todo>
 
 ## 10. If anything is unclear
 
-STOP. Write `BLOCKED-{NNNN}.md` with a clear description of the problem. The Supervisor will clarify.
+STOP. Write `BLOCKED-TODO-{NNNN}.md` with a clear description of the problem. The Supervisor will clarify.
 
 It's better to ask than to implement the wrong thing.

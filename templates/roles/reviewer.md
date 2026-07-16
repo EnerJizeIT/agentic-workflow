@@ -37,7 +37,7 @@ If you find minor issues (typos, formatting, obvious bugs) — fix them via `edi
 
 All tasks implemented correctly. Minor fixes applied (if any).
 
-Write `.agentic/outbox/REVIEW-APPROVED-{NNNN}.md` + `.ready`:
+Write `.agentic/outbox/REVIEW-APPROVED-TODO-{NNNN}.md` + `.ready`:
 ```yaml
 signal: REVIEW_APPROVED
 task_id: TODO-{NNNN}
@@ -51,7 +51,7 @@ Problems that the worker needs to fix:
 - Specific description of each problem.
 - What needs to change.
 
-Write `.agentic/outbox/REVIEW-REJECTED-{NNNN}.md` + `.ready`:
+Write `.agentic/outbox/REVIEW-REJECTED-TODO-{NNNN}.md` + `.ready`:
 ```yaml
 signal: REVIEW_REJECTED
 task_id: TODO-{NNNN}
@@ -65,7 +65,7 @@ Critical issue (architecture broken, data lost):
 - Description of the problem.
 - Supervisor intervention required.
 
-Write `.agentic/outbox/BLOCKED-{NNNN}.md` + `.ready`.
+Write `.agentic/outbox/BLOCKED-TODO-{NNNN}.md` + `.ready`.
 
 ---
 

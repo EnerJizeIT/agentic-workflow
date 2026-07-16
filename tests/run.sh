@@ -388,6 +388,32 @@ assert_eq "no" "$(attempt_auto_done TODO-AUTO5 >/dev/null 2>&1 && echo yes || ec
 cd "$TMP/proj"
 
 ###############################################################################
+# 15. signal-naming tolerance — canonical DONE-TODO-{NNNN} AND legacy DONE-{NNNN}
+#     (without this, a worker writing the short form is invisible -> re-run)
+###############################################################################
+INBOX="$TMP/proj/.agentic/inbox"
+OUTBOX="$TMP/proj/.agentic/outbox"
+mkdir -p "$INBOX" "$OUTBOX"
+# canonical form: DONE-TODO-0001 found when polling for TODO-0001
+rm -f "$OUTBOX"/DONE-TODO-0001.ready "$OUTBOX"/DONE-0002.ready
+touch "$OUTBOX/DONE-TODO-0001.ready"
+assert_eq "DONE-TODO-0001" "$(read_signal_for_todo TODO-0001 DONE BLOCKED)" "signal.canonical.form.found"
+rm -f "$OUTBOX/DONE-TODO-0001.ready"
+# legacy short form: DONE-0002 (no TODO- prefix) must ALSO be found for TODO-0002
+touch "$OUTBOX/DONE-0002.ready"
+assert_eq "DONE-0002" "$(read_signal_for_todo TODO-0002 DONE BLOCKED)" "signal.short.form.found [BUG FIX]"
+rm -f "$OUTBOX/DONE-0002.ready"
+
+# find_active_todo must treat a TODO closed by EITHER form as done (not re-run it)
+rm -f "$INBOX"/TODO-0099.* "$OUTBOX"/DONE-0099.ready "$OUTBOX"/DONE-TODO-0099.ready
+printf 'x' > "$INBOX/TODO-0099.md"; touch "$INBOX/TODO-0099.ready"
+touch "$OUTBOX/DONE-0099.ready"   # legacy short closure
+assert_eq "" "$(find_active_todo)" "find_active_todo.skips.short.closed [BUG FIX]"
+rm -f "$INBOX"/TODO-0099.* "$OUTBOX"/DONE-0099.ready
+
+cd "$TMP/proj"
+
+###############################################################################
 # Summary
 ###############################################################################
 echo

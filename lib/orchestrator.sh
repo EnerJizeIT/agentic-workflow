@@ -143,9 +143,15 @@ get_agent_name() {
 
 find_active_todo() {
     for ready_file in $(ls -1 "$INBOX"/TODO-*.ready 2>/dev/null | sort); do
-        local ID
-        ID=$(basename "$ready_file" .ready)
-        if [[ -f "$OUTBOX/DONE-${ID}.ready" || -f "$OUTBOX/BLOCKED-${ID}.ready" || -f "$INBOX/ACK-${ID}.ready" ]]; then
+        local ID short
+        ID=$(basename "$ready_file" .ready)        # TODO-0001
+        short="${ID#TODO-}"                         # 0001 (legacy short form)
+        # Done if ANY closure signal exists in EITHER naming convention:
+        #   canonical DONE-TODO-0001 / BLOCKED-TODO-0001 / ACK-TODO-0001  (ID form)
+        #   legacy   DONE-0001      / BLOCKED-0001      / ACK-0001         (short form)
+        if [[ -f "$OUTBOX/DONE-${ID}.ready"    || -f "$OUTBOX/DONE-${short}.ready" \
+           || -f "$OUTBOX/BLOCKED-${ID}.ready" || -f "$OUTBOX/BLOCKED-${short}.ready" \
+           || -f "$INBOX/ACK-${ID}.ready"      || -f "$INBOX/ACK-${short}.ready" ]]; then
             continue
         fi
         if [[ ! -s "$INBOX/${ID}.md" ]]; then
@@ -388,13 +394,19 @@ clean_stage_signals() {
 # given prefixes, in order. Returns non-zero if none found.
 read_signal_for_todo() {
     local todo="$1"; shift
+    # Tolerate BOTH signal naming conventions: the canonical "{PREFIX}-{TODO-ID}"
+    # (e.g. DONE-TODO-0001, what the orchestrator writes) AND the legacy short
+    # "{PREFIX}-{NNNN}" (e.g. DONE-0001, what older worker.md instructed). Without
+    # this, a worker writing the short form is invisible -> re-run / salvage.
+    local short="${todo#TODO-}"
     local prefix f
     for prefix in "$@"; do
-        f="$OUTBOX/${prefix}-${todo}.ready"
-        if [[ -f "$f" ]]; then
-            basename "$f" .ready
-            return 0
-        fi
+        for f in "$OUTBOX/${prefix}-${todo}.ready" "$OUTBOX/${prefix}-${short}.ready"; do
+            if [[ -f "$f" ]]; then
+                basename "$f" .ready
+                return 0
+            fi
+        done
     done
     return 1
 }
