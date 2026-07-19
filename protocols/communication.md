@@ -29,14 +29,14 @@ Agents communicate via **files** in the `.agentic/` directory. This is simple, r
 │   ├── TODO-0001.ready
 │   └── ...
 ├── outbox/         # Reports from agents
-│   ├── DONE-0001.md
-│   ├── DONE-0001.ready
-│   ├── BLOCKED-0002.md
-│   ├── BLOCKED-0002.ready
-│   ├── PROGRESS-0001.md   # Append-only progress log
+│   ├── DONE-TODO-0001.md
+│   ├── DONE-TODO-0001.ready
+│   ├── BLOCKED-TODO-0002.md
+│   ├── BLOCKED-TODO-0002.ready
+│   ├── PROGRESS-TODO-0001.md   # Append-only progress log
 │   └── ...
 ├── context/        # Context snapshots and baselines
-│   └── BASELINE-0001.sha
+│   └── BASELINE-TODO-0001.sha
 ├── logs/           # Iteration logs
 │   └── orchestrator.log
 └── reports/        # Summary reports for the user
@@ -80,9 +80,9 @@ created_at: <ISO timestamp>
 
 ### 3.2 TASK_DONE — Agent → Supervisor
 
-**Files:**
-- `.agentic/outbox/DONE-{NNNN}.md` — report.
-- `.agentic/outbox/DONE-{NNNN}.ready` — signal file.
+**Files (canonical — `{PREFIX}-TODO-{NNNN}`):**
+- `.agentic/outbox/DONE-TODO-{NNNN}.md` — report.
+- `.agentic/outbox/DONE-TODO-{NNNN}.ready` — signal file.
 
 **Contents of `.ready`:**
 ```yaml
@@ -93,11 +93,16 @@ created_by: worker
 created_at: <ISO timestamp>
 ```
 
+> **Naming:** the canonical signal filename is `DONE-TODO-{NNNN}` — i.e. the
+> `{PREFIX}` (`DONE`) followed by the **full task id** (`TODO-0001`).
+> The legacy short form `DONE-{NNNN}` (without the `TODO-` infix) is also
+> accepted by the orchestrator for backwards compatibility — see §3.6.
+
 ### 3.3 TASK_BLOCKED — Agent → Supervisor
 
-**Files:**
-- `.agentic/outbox/BLOCKED-{NNNN}.md` — blocker report.
-- `.agentic/outbox/BLOCKED-{NNNN}.ready` — signal file.
+**Files (canonical):**
+- `.agentic/outbox/BLOCKED-TODO-{NNNN}.md` — blocker report.
+- `.agentic/outbox/BLOCKED-TODO-{NNNN}.ready` — signal file.
 
 **Contents of `.ready`:**
 ```yaml
@@ -111,7 +116,7 @@ created_at: <ISO timestamp>
 ### 3.4 TASK_ACK — Supervisor → Agent
 
 **Files:**
-- `.agentic/inbox/ACK-{NNNN}.ready` — signal file.
+- `.agentic/inbox/ACK-TODO-{NNNN}.ready` — signal file.
 
 **Contents:**
 ```yaml
@@ -128,7 +133,7 @@ created_at: <ISO timestamp>
 ### 3.5 TASK_PROGRESS — Agent → Supervisor (append-only)
 
 **Files:**
-- `.agentic/outbox/PROGRESS-{NNNN}.md` — append-only progress log.
+- `.agentic/outbox/PROGRESS-TODO-{NNNN}.md` — append-only progress log.
 
 **Format:** Markdown, one entry per task. Agent appends after completing each task.
 
@@ -147,6 +152,23 @@ created_at: <ISO timestamp>
 - If agent crashes and restarts, it reads this file to resume from last checkpoint.
 - Timestamps use `T00:00:00Z` format for KV-cache stability (normalized hours).
 
+### 3.6 Signal naming — canonical vs legacy
+
+All signal filenames embed the **task id**. Two naming conventions exist:
+
+| Convention | Example | Status |
+|---|---|---|
+| **Canonical** `{PREFIX}-TODO-{NNNN}` | `DONE-TODO-0001`, `BLOCKED-TODO-0002` | Preferred. What `awf` itself writes and what role templates instruct. |
+| **Legacy short** `{PREFIX}-{NNNN}` | `DONE-0001`, `BLOCKED-0002` | Accepted for backwards compatibility. Older worker templates produced these. |
+
+**Resolution rules (implemented in `read_signal_for_todo` / `find_active_todo`):**
+
+1. When polling for a signal for `TODO-{NNNN}`, the orchestrator checks **both** forms, canonical first.
+2. A TODO is considered closed if **either** form of `DONE`/`BLOCKED`/`ACK` exists for its `{NNNN}`.
+3. New role templates and new supervisor-written signals MUST use the canonical form. The legacy form is read-only tolerance — do not write it.
+
+**Why both:** the short form caused a silent bug (`worker.md` instructed it, orchestrator searched canonical → TODO "hung" and was re-run). Tolerance is a safety net during the migration period; new code paths rely on the canonical form only.
+
 ---
 
 ## 4. Task lifecycle
@@ -156,15 +178,15 @@ Supervisor:  [CREATE TODO-0001.md]
              [CREATE TODO-0001.ready] ──TASK_READY──▶
                                                      │
 Agent:                                               ▼
-                                          [READ TODO-0001.md]
-                                          [EXECUTE tasks]
-                                          [CREATE DONE-0001.md]
-             ◀──────TASK_DONE──────────── [CREATE DONE-0001.ready]
-             │
+                                           [READ TODO-0001.md]
+                                           [EXECUTE tasks]
+                                           [CREATE DONE-TODO-0001.md]
+              ◀──────TASK_DONE──────────── [CREATE DONE-TODO-0001.ready]
+              │
 Supervisor:  [VERIFY result]
-             [CREATE ACK-0001.ready]
-             [CREATE TODO-0002.md]
-             [CREATE TODO-0002.ready] ──TASK_READY──▶
+              [CREATE ACK-TODO-0001.ready]
+              [CREATE TODO-0002.md]
+              [CREATE TODO-0002.ready] ──TASK_READY──▶
 ```
 
 ---
@@ -173,9 +195,14 @@ Supervisor:  [VERIFY result]
 
 An active task is one where:
 - `.agentic/inbox/TODO-{NNNN}.ready` exists.
-- No matching `.agentic/outbox/DONE-{NNNN}.ready` or `.agentic/outbox/BLOCKED-{NNNN}.ready` exists.
+- No matching `.agentic/outbox/DONE-TODO-{NNNN}.ready` (or legacy `DONE-{NNNN}.ready`) exists.
+- No matching `.agentic/outbox/BLOCKED-TODO-{NNNN}.ready` (or legacy `BLOCKED-{NNNN}.ready`) exists.
 
 **An agent must not pick up a new task while an active one is open.**
+
+> When more than one TODO is simultaneously active, the orchestrator picks the
+> **highest-numbered** one (the most recently created) — see `find_active_todo()`.
+> `awf status` lists all active TODOs and warns about conflicts.
 
 ---
 
@@ -184,22 +211,22 @@ An active task is one where:
 ### 6.1 File creation order
 
 1. **Supervisor:** writes `TODO-{NNNN}.md`, then `TODO-{NNNN}.ready`.
-2. **Agent:** writes `DONE-{NNNN}.md` / `BLOCKED-{NNNN}.md`, then `.ready`.
-3. **Supervisor:** writes `ACK-{NNNN}.ready` (optional).
+2. **Agent:** writes `DONE-TODO-{NNNN}.md` / `BLOCKED-TODO-{NNNN}.md`, then `.ready`.
+3. **Supervisor:** writes `ACK-TODO-{NNNN}.ready` (optional).
 
 ### 6.2 Guardian checks
 
 Agent before starting:
 - `TODO-{NNNN}.md` exists and size > 0.
-- No active `DONE-{NNNN}.ready` or `BLOCKED-{NNNN}.ready` for the same NNNN.
+- No active `DONE-TODO-{NNNN}.ready` (or legacy `DONE-{NNNN}.ready`) for the same NNNN.
 
 Supervisor before ACK:
-- `DONE-{NNNN}.md` contains regression verify results.
+- `DONE-TODO-{NNNN}.md` contains regression verify results.
 - `git diff --stat` shows changes in source files.
 
 ### 6.3 Idempotency
 
-Agent must not re-execute a TODO that already has `DONE-{NNNN}.ready` or `BLOCKED-{NNNN}.ready`.
+Agent must not re-execute a TODO that already has `DONE-TODO-{NNNN}.ready` (or legacy `DONE-{NNNN}.ready`) / `BLOCKED-*` for the same NNNN.
 
 If restarted, agent should:
 1. Find the latest `TODO-{NNNN}.ready` without matching DONE/BLOCKED.
@@ -208,10 +235,10 @@ If restarted, agent should:
 
 ### 6.4 Session Recovery
 
-If the agent process crashes or is interrupted, it can resume from `PROGRESS-{NNNN}.md`:
+If the agent process crashes or is interrupted, it can resume from `PROGRESS-TODO-{NNNN}.md`:
 
 1. Agent starts, finds active `TODO-{NNNN}.ready`.
-2. Checks for `.agentic/outbox/PROGRESS-{NNNN}.md`.
+2. Checks for `.agentic/outbox/PROGRESS-TODO-{NNNN}.md`.
 3. If exists — reads it, identifies last completed task.
 4. Skips tasks marked `[x]`, continues from first `[~]` or next unmarked task.
 5. If no progress file — starts from Task 1.

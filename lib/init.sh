@@ -39,9 +39,41 @@ read -rp "Lint command (e.g. ruff check .): " LINT_CMD
 read -rp "Typecheck command (e.g. mypy src/, tsc --noEmit): " TYPECHECK_CMD
 read -rp "Build command (optional, e.g. docker compose config): " BUILD_CMD
 
+# Pick the worker model: reuse an existing opencode agent's model if possible,
+# otherwise ask. This replaces the old hardcoded `vllm/llm` default that silently
+# produced non-working configs on machines with a different provider.
+OC_CFG="$HOME/.config/opencode/opencode.json"
+REUSED_MODEL=""
+if [[ -f "$OC_CFG" ]] && command -v python3 &>/dev/null; then
+    REUSED_MODEL=$(python3 -c '
+import json, os
+try:
+    with open(os.path.expanduser("~/.config/opencode/opencode.json")) as f:
+        d = json.load(f)
+    agents = d.get("agent") or {}
+    if isinstance(agents, dict):
+        for a in agents.values():
+            if isinstance(a, dict) and a.get("model"):
+                print(a["model"]); break
+except Exception:
+    pass
+' 2>/dev/null)
+fi
+
+echo ""
+if [[ -n "$REUSED_MODEL" ]]; then
+    read -rp "Model for worker/reviewer/tester agents [default: $REUSED_MODEL]: " WORKER_MODEL
+    WORKER_MODEL="${WORKER_MODEL:-$REUSED_MODEL}"
+else
+    read -rp "Model id for worker/reviewer/tester agents (e.g. claude-sonnet-4-20250514, gpt-4.1): " WORKER_MODEL
+    if [[ -z "$WORKER_MODEL" ]]; then
+        echo "  (left blank — edit .agentic/config.yaml before \`awf start\`)"
+    fi
+fi
+
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
     echo "[DRY RUN] Would create:"
-    echo "  .agentic/config.yaml"
+    echo "  .agentic/config.yaml (worker model: ${WORKER_MODEL:-<blank>})"
     echo "  .agentic/roles/supervisor.md"
     echo "  .agentic/roles/worker.md"
     [[ "$TEMPLATE" == "full" ]] && {
@@ -68,15 +100,15 @@ models:
     description: "Current session model"
   worker:
     agent_name: "worker"
-    model: "vllm/llm"
+    model: "${WORKER_MODEL}"
     temperature: 0.1
   reviewer:
     agent_name: "reviewer"
-    model: "vllm/llm"
+    model: "${WORKER_MODEL}"
     temperature: 0.1
   tester:
     agent_name: "tester"
-    model: "vllm/llm"
+    model: "${WORKER_MODEL}"
     temperature: 0.1
 
 verification:
@@ -134,6 +166,8 @@ echo "Created .agentic/ with ${TEMPLATE} template"
 
 # Offer to create the opencode agents awf needs (worker; +reviewer/tester for full).
 # Without these, `awf start` cannot spawn the worker — the #1 gotcha for new users.
+# Two-phase: PROPOSE (dry-run, print what would change) → confirm → APPLY (backup + write).
+# Model is taken from $WORKER_MODEL (already chosen above), so we don't ask twice.
 OFFER_AGENTS="worker"
 [[ "$TEMPLATE" == "full" ]] && OFFER_AGENTS="worker reviewer tester"
 
@@ -147,39 +181,107 @@ create_opencode_agents() {
     fi
     command -v python3 &>/dev/null || { echo "NOTE: python3 needed to add agents automatically."; return; }
 
-    read -rp "Create opencode agents ($OFFER_AGENTS) in $cfg? [Y/n] " ans
+    # Phase 1: dry-run — what would change?
+    local proposal
+    proposal=$(python3 - "$cfg" "$OFFER_AGENTS" "${WORKER_MODEL:-}" <<'PYEOF'
+import json, sys
+cfg, roles, model = sys.argv[1], sys.argv[2].split(), sys.argv[3]
+try:
+    with open(cfg) as f: d = json.load(f)
+except Exception as e:
+    print(f"ERR:cannot read {cfg}: {e}"); sys.exit(0)
+agents = d.get("agent")
+if agents is None:
+    print(f"ERR:no 'agent' key in {cfg}"); sys.exit(0)
+if not isinstance(agents, dict):
+    print("ERR:'agent' is not an object"); sys.exit(0)
+
+to_add, to_update, unchanged = [], [], []
+for r in roles:
+    cur = agents.get(r)
+    if cur is None:
+        to_add.append(r)
+    elif isinstance(cur, dict) and model and cur.get("model") != model:
+        to_update.append(f"{r}: model {cur.get('model')!r} -> {model!r}")
+    else:
+        unchanged.append(r)
+
+if not to_add and not to_update:
+    print(f"NOTHING: all of {', '.join(roles)} already present.")
+    sys.exit(0)
+
+lines = []
+if to_add:
+    lines.append(f"  + add agents: {', '.join(to_add)}")
+if to_update:
+    lines.append("  ~ update:")
+    for u in to_update: lines.append(f"      {u}")
+if model:
+    lines.append(f"  model: {model}")
+else:
+    lines.append("  model: <blank> — agent entries will have empty model, edit them manually")
+print("PROPOSE:")
+print("\n".join(lines))
+PYEOF
+)
+
+    # If python errored or there's nothing to do, skip the apply phase.
+    case "$proposal" in
+        ERR:*|NOTE:*)
+            echo ""
+            echo "NOTE: cannot propose agent changes — ${proposal}"
+            echo "      Add $OFFER_AGENTS manually to $cfg."
+            return
+            ;;
+        NOTHING:*)
+            echo ""
+            echo "$proposal"
+            return
+            ;;
+        PROPOSE:*)
+            : # fall through to confirmation
+            ;;
+        *)
+            echo ""
+            echo "NOTE: unexpected proposal output: $proposal"
+            return
+            ;;
+    esac
+
+    echo ""
+    echo "Proposed change to $cfg:"
+    echo "$proposal" | sed 's/^PROPOSE://'
+    echo "  (a timestamped backup ${cfg}.bak-<ts> will be created before writing)"
+    read -rp "Apply this change to opencode config? [Y/n] " ans
     [[ "${ans:-Y}" =~ ^[Yy]$ ]] || { echo "Skipping agent creation (create them manually if needed)."; return; }
 
-    local roles="$1"
+    # Phase 2: APPLY — backup, then write.
     cp "$cfg" "${cfg}.bak-$(date +%Y%m%d%H%M%S)"
-    python3 - "$cfg" "$roles" <<'PYEOF'
+    python3 - "$cfg" "$OFFER_AGENTS" "${WORKER_MODEL:-}" <<'PYEOF'
 import json, sys
-cfg, roles = sys.argv[1], sys.argv[2].split()
-with open(cfg) as f:
-    d = json.load(f)
+cfg, roles, model = sys.argv[1], sys.argv[2].split(), sys.argv[3]
+with open(cfg) as f: d = json.load(f)
 agents = d.setdefault("agent", {})
 if not isinstance(agents, dict):
     print("  'agent' is not an object — skipping."); sys.exit(0)
-# Reuse an existing agent's model so the new agents work out of the box.
-model = None
-for a in agents.values():
-    if isinstance(a, dict) and a.get("model"):
-        model = a["model"]; break
-if not model:
-    model = d.get("model") or input("  No existing model found. Enter model id (e.g. vllm/llm): ").strip()
-if not model:
-    print("  No model — skipping agent creation."); sys.exit(0)
-added = []
+added, updated = [], []
 for r in roles:
-    if r not in agents:
+    cur = agents.get(r)
+    if cur is None:
         agents[r] = {"description": f"awf {r} agent", "model": model}
         added.append(r)
-if added:
+    elif isinstance(cur, dict) and model and cur.get("model") != model:
+        cur["model"] = model
+        updated.append(r)
+if added or updated:
     with open(cfg, "w") as f:
         json.dump(d, f, indent=2, ensure_ascii=False)
-    print(f"  Added agents: {', '.join(added)} (model: {model})")
+    parts = []
+    if added:   parts.append(f"added: {', '.join(added)}")
+    if updated: parts.append(f"updated model: {', '.join(updated)}")
+    print(f"  {'; '.join(parts)} (model: {model or '<blank>'})")
 else:
-    print(f"  All agents ({', '.join(roles)}) already present.")
+    print("  Nothing to write — all agents already up to date.")
 PYEOF
 }
 create_opencode_agents "$OFFER_AGENTS"

@@ -12,23 +12,26 @@ project:
 # AGENT MODELS
 # Each role can use its own model.
 ###############################################################################
+# `model` is intentionally empty: `awf init` reuses the model from an existing
+# opencode agent in ~/.config/opencode/opencode.json (or asks you to enter one).
+# You can also edit it manually to any model id your opencode provider supports.
 models:
   supervisor:
     description: "Current session model"
 
   worker:
     agent_name: "worker"
-    model: "vllm/llm"
+    model: ""
     temperature: 0.1
 
   reviewer:
     agent_name: "reviewer"
-    model: "vllm/llm"
+    model: ""
     temperature: 0.1
 
   tester:
     agent_name: "tester"
-    model: "vllm/llm"
+    model: ""
     temperature: 0.1
 
 ###############################################################################

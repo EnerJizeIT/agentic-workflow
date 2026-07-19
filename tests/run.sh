@@ -414,6 +414,109 @@ rm -f "$INBOX"/TODO-0099.* "$OUTBOX"/DONE-0099.ready
 cd "$TMP/proj"
 
 ###############################################################################
+# 16. find_active_todo picks HIGHEST-numbered active TODO (not lowest)
+#     Bug case: supervisor created TODO-0002 while TODO-0001 was still active
+#     (mid-salvage / after replan). Old code returned TODO-0001 (lowest via
+#     lexical `sort`), silently re-running the stale one.
+###############################################################################
+INBOX="$TMP/proj/.agentic/inbox"
+OUTBOX="$TMP/proj/.agentic/outbox"
+mkdir -p "$INBOX" "$OUTBOX"
+# Clean slate for this section
+rm -f "$INBOX"/TODO-* "$OUTBOX"/DONE-* "$OUTBOX"/BLOCKED-* "$OUTBOX"/PROGRESS-*
+printf 'a' > "$INBOX/TODO-0001.md"; touch "$INBOX/TODO-0001.ready"
+printf 'b' > "$INBOX/TODO-0002.md"; touch "$INBOX/TODO-0002.ready"
+assert_eq "TODO-0002" "$(find_active_todo)" "find_active_todo.picks.highest.NNNN [BUG FIX]"
+
+# Numeric, not lexical: TODO-0010 must beat TODO-0009 (lexical would reverse them)
+rm -f "$INBOX"/TODO-0002.md "$INBOX"/TODO-0002.ready
+printf 'c' > "$INBOX/TODO-0009.md"; touch "$INBOX/TODO-0009.ready"
+printf 'd' > "$INBOX/TODO-0010.md"; touch "$INBOX/TODO-0010.ready"
+assert_eq "TODO-0010" "$(find_active_todo)" "find_active_todo.numeric.sort.10.beats.9 [BUG FIX]"
+
+# Closed TODO does not get picked even if its NNNN is higher
+touch "$OUTBOX/DONE-TODO-0010.ready"
+assert_eq "TODO-0009" "$(find_active_todo)" "find_active_todo.skips.closed.even.if.highest"
+rm -f "$OUTBOX/DONE-TODO-0010.ready"
+
+# Empty .md is treated as not-yet-prepared (matches the old behaviour)
+rm -f "$INBOX"/TODO-0009.md "$INBOX"/TODO-0009.ready "$INBOX"/TODO-0010.md "$INBOX"/TODO-0010.ready
+: > "$INBOX/TODO-0005.md"; touch "$INBOX/TODO-0005.ready"   # zero-size .md
+printf 'e' > "$INBOX/TODO-0006.md"; touch "$INBOX/TODO-0006.ready"
+assert_eq "TODO-0006" "$(find_active_todo)" "find_active_todo.ignores.empty.md"
+
+###############################################################################
+# 17. list_active_todos — returns ALL active, highest first
+###############################################################################
+rm -f "$INBOX"/TODO-* "$OUTBOX"/DONE-* "$OUTBOX"/BLOCKED-* "$OUTBOX"/PROGRESS-*
+printf 'x' > "$INBOX/TODO-0001.md"; touch "$INBOX/TODO-0001.ready"
+printf 'x' > "$INBOX/TODO-0003.md"; touch "$INBOX/TODO-0003.ready"
+printf 'x' > "$INBOX/TODO-0007.md"; touch "$INBOX/TODO-0007.ready"
+# 0002 closed (canonical DONE), 0005 closed (legacy BLOCKED) -> neither appears
+touch "$INBOX/TODO-0002.md"; touch "$INBOX/TODO-0002.ready"
+touch "$OUTBOX/DONE-TODO-0002.ready"
+touch "$INBOX/TODO-0005.md"; touch "$INBOX/TODO-0005.ready"
+touch "$OUTBOX/BLOCKED-0005.ready"
+LIST_OUT=$(list_active_todos)
+assert_eq "3" "$(printf '%s\n' "$LIST_OUT" | grep -c . || echo 0)" "list_active_todos.count.excludes.closed"
+assert_eq "TODO-0007" "$(printf '%s\n' "$LIST_OUT" | head -1)" "list_active_todos.first.is.highest"
+assert_eq "TODO-0001" "$(printf '%s\n' "$LIST_OUT" | tail -1)" "list_active_todos.last.is.lowest"
+# Empty inbox -> empty output, not an error
+rm -f "$INBOX"/TODO-*
+assert_eq "" "$(list_active_todos)" "list_active_todos.empty.inbox"
+
+###############################################################################
+# 18. todo_has_progress — distinguishes dispatched vs never-dispatched TODO
+###############################################################################
+rm -f "$OUTBOX"/PROGRESS-* "$OUTBOX"/DONE-* "$OUTBOX"/BLOCKED-*
+assert_eq "no" "$(todo_has_progress TODO-0001 && echo yes || echo no)" "has_progress.no.file"
+printf 'stub' > "$OUTBOX/PROGRESS-TODO-0001.md"
+assert_eq "yes" "$(todo_has_progress TODO-0001 && echo yes || echo no)" "has_progress.canonical.form"
+rm -f "$OUTBOX/PROGRESS-TODO-0001.md"
+printf 'stub' > "$OUTBOX/PROGRESS-0042.md"
+assert_eq "yes" "$(todo_has_progress TODO-0042 && echo yes || echo no)" "has_progress.legacy.short.form"
+rm -f "$OUTBOX/PROGRESS-0042.md"
+
+###############################################################################
+# 19. awf reset --orphans — clears never-dispatched TODOs, preserves in-flight
+###############################################################################
+ORPHAN_DIR="$TMP/orphan-test"
+rm -rf "$ORPHAN_DIR"
+mkdir -p "$ORPHAN_DIR/.agentic/inbox" "$ORPHAN_DIR/.agentic/outbox"
+cd "$ORPHAN_DIR"
+# TODO-0001: orphan — has .ready + .md, no progress, no closure
+printf 'x' > .agentic/inbox/TODO-0001.md; touch .agentic/inbox/TODO-0001.ready
+# TODO-0002: in-flight — has progress
+printf 'x' > .agentic/inbox/TODO-0002.md; touch .agentic/inbox/TODO-0002.ready
+printf 'stub' > .agentic/outbox/PROGRESS-TODO-0002.md
+# TODO-0003: closed — must NOT be touched by --orphans
+printf 'x' > .agentic/inbox/TODO-0003.md; touch .agentic/inbox/TODO-0003.ready
+touch .agentic/outbox/DONE-TODO-0003.ready
+
+# reset.sh sources todos.sh with INBOX/OUTBOX relative to cwd
+INBOX="$ORPHAN_DIR/.agentic/inbox" OUTBOX="$ORPHAN_DIR/.agentic/outbox" \
+    bash "$FRAMEWORK_DIR/lib/reset.sh" --orphans --force >/dev/null 2>&1
+
+assert_eq "no" "$([[ -e .agentic/inbox/TODO-0001.ready ]] && echo yes || echo no)" "orphans.removes.orphan.ready"
+assert_eq "no" "$([[ -e .agentic/inbox/TODO-0001.md ]] && echo yes || echo no)"    "orphans.removes.orphan.md"
+assert_eq "yes" "$([[ -e .agentic/inbox/TODO-0002.ready ]] && echo yes || echo no)" "orphans.preserves.in.flight.ready"
+assert_eq "yes" "$([[ -e .agentic/inbox/TODO-0002.md ]] && echo yes || echo no)"    "orphans.preserves.in.flight.md"
+assert_eq "yes" "$([[ -e .agentic/inbox/TODO-0003.ready ]] && echo yes || echo no)" "orphans.preserves.closed.ready"
+assert_eq "yes" "$([[ -e .agentic/outbox/DONE-TODO-0003.ready ]] && echo yes || echo no)" "orphans.preserves.closed.outbox"
+
+# No orphans → exit 0, no removal
+rm -rf "$ORPHAN_DIR"
+mkdir -p "$ORPHAN_DIR/.agentic/inbox" "$ORPHAN_DIR/.agentic/outbox"
+cd "$ORPHAN_DIR"
+printf 'x' > .agentic/inbox/TODO-0050.md; touch .agentic/inbox/TODO-0050.ready
+printf 'stub' > .agentic/outbox/PROGRESS-TODO-0050.md
+INBOX="$ORPHAN_DIR/.agentic/inbox" OUTBOX="$ORPHAN_DIR/.agentic/outbox" \
+    bash "$FRAMEWORK_DIR/lib/reset.sh" --orphans --force >/dev/null 2>&1
+assert_eq "yes" "$([[ -e .agentic/inbox/TODO-0050.ready ]] && echo yes || echo no)" "orphans.no.orphans.no.removal"
+
+cd "$TMP/proj"
+
+###############################################################################
 # Summary
 ###############################################################################
 echo

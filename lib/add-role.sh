@@ -5,11 +5,12 @@ set -euo pipefail
 ROLE_NAME="${1:-}"
 if [[ -z "$ROLE_NAME" ]]; then
     echo "Usage: awf add-role <role-name> [--description <text>] [--model <model>]"
+    echo "  --model is recommended. If omitted, you will be prompted for it."
     exit 1
 fi
 
 DESCRIPTION=""
-MODEL="vllm/llm"
+MODEL=""
 
 shift
 while [[ $# -gt 0 ]]; do
@@ -19,6 +20,14 @@ while [[ $# -gt 0 ]]; do
         *) shift ;;
     esac
 done
+
+# No default: an empty model is loud and obvious in config.yaml, instead of
+# silently pointing at a provider the user does not have. `awf init` reuses an
+# existing opencode agent's model; for `awf add-role` we ask the user.
+if [[ -z "$MODEL" ]]; then
+    read -rp "Model id for role '$ROLE_NAME' (e.g. claude-sonnet-4-20250514, gpt-4.1): " MODEL
+    [[ -z "$MODEL" ]] && MODEL="<set-me-in-.agentic/config.yaml>"
+fi
 
 AGENTIC_DIR=".agentic"
 ROLES_DIR="$AGENTIC_DIR/roles"

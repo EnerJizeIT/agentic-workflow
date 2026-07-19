@@ -134,12 +134,23 @@ Supervisor → [TODO в inbox/] → Worker → [DONE/BLOCKED в outbox/] → Sup
 
 Оркестратор читает стадии из YAML файла пайплайна и выполняет их последовательно. Переходы между стадиями определяются правилами `on_*` в конфиге (`next`, `rollback_to`, `escalate`, `stop`).
 
-Все общение между ролями идет через файлы:
+Все общение между ролями идет через файлы. **Каноничный формат сигналов** — `{PREFIX}-TODO-{NNNN}` (например `DONE-TODO-0001`, `BLOCKED-TODO-0002`). Legacy-форма `{PREFIX}-{NNNN}` (без `TODO-`) тоже принимается для обратной совместимости.
+
+| Signal | Файл | Кто пишет |
+|---|---|---|
+| `TASK_READY`     | `inbox/TODO-{NNNN}.md` + `inbox/TODO-{NNNN}.ready` | Supervisor |
+| `TASK_DONE`      | `outbox/DONE-TODO-{NNNN}.md` + `.ready`           | Worker/Reviewer/Tester |
+| `TASK_BLOCKED`   | `outbox/BLOCKED-TODO-{NNNN}.md` + `.ready`        | Worker/Reviewer/Tester |
+| `TASK_ACK`       | `inbox/ACK-TODO-{NNNN}.ready`                     | Supervisor |
+| `TASK_PROGRESS`  | `outbox/PROGRESS-TODO-{NNNN}.md` (append-only)    | Worker |
+| `REVIEW_APPROVED`/`REVIEW_REJECTED` | `outbox/REVIEW-{APPROVED\|REJECTED}-TODO-{NNNN}.md` | Reviewer |
+| `TEST_PASSED`/`TEST_FAILED`         | `outbox/TEST-{PASSED\|FAILED}-TODO-{NNNN}.md`      | Tester |
+
 - **inbox/** — задачи от supervisor к worker'у.
 - **outbox/** — отчеты от worker'а к supervisor'у.
-- **.ready** сигнал — файл-триггер, сообщающий о готовности.
+- **.ready** сигнал — файл-триггер, сообщающий о готовности (создаётся ПОСЛЕ `.md`).
 
-Подробнее: `protocols/communication.md`.
+Подробнее: `protocols/communication.md` (включая §3.6 «Signal naming — canonical vs legacy»).
 
 ---
 
@@ -159,6 +170,8 @@ Supervisor → [TODO в inbox/] → Worker → [DONE/BLOCKED в outbox/] → Sup
 | `awf baseline <id>` | Снимок состояния перед задачей |
 | `awf rollback <id>` | Откат к baseline |
 | `awf reset` | Очистить runtime-данные |
+| `awf reset --tasks-only` | Очистить только inbox/outbox |
+| `awf reset --orphans [--force]` | Удалить TODO без прогресс-лога (безопасно: только никогда не запускавшиеся) |
 | `awf add-role <name>` | Добавить новую роль |
 
 ---

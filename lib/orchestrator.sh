@@ -10,6 +10,8 @@ if [[ -z "${LIB_DIR:-}" ]]; then
 fi
 # shellcheck source=yaml.sh
 source "$LIB_DIR/yaml.sh"
+# shellcheck source=todos.sh
+source "$LIB_DIR/todos.sh"
 
 MODE="${1:-start}"
 shift || true
@@ -142,25 +144,12 @@ get_agent_name() {
 ###############################################################################
 
 find_active_todo() {
-    for ready_file in $(ls -1 "$INBOX"/TODO-*.ready 2>/dev/null | sort); do
-        local ID short
-        ID=$(basename "$ready_file" .ready)        # TODO-0001
-        short="${ID#TODO-}"                         # 0001 (legacy short form)
-        # Done if ANY closure signal exists in EITHER naming convention:
-        #   canonical DONE-TODO-0001 / BLOCKED-TODO-0001 / ACK-TODO-0001  (ID form)
-        #   legacy   DONE-0001      / BLOCKED-0001      / ACK-0001         (short form)
-        if [[ -f "$OUTBOX/DONE-${ID}.ready"    || -f "$OUTBOX/DONE-${short}.ready" \
-           || -f "$OUTBOX/BLOCKED-${ID}.ready" || -f "$OUTBOX/BLOCKED-${short}.ready" \
-           || -f "$INBOX/ACK-${ID}.ready"      || -f "$INBOX/ACK-${short}.ready" ]]; then
-            continue
-        fi
-        if [[ ! -s "$INBOX/${ID}.md" ]]; then
-            continue
-        fi
-        echo "$ID"
-        return 0
-    done
-    echo ""
+    # The newest (highest-NNNN) active TODO is the orchestrator's pick.
+    # Why highest: if a supervisor creates TODO-0002 while TODO-0001 is still
+    # active (mid-salvage, or after a replan), the new one is the intent.
+    # Picking the lowest (old behaviour) silently re-ran the stale TODO.
+    # Implementation lives in lib/todos.sh so status.sh/reset.sh share it.
+    list_active_todos | head -1
 }
 
 ###############################################################################
