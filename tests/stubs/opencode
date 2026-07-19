@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# tests/stubs/opencode — mock `opencode` CLI for E2E tests.
+#
+# Recognized AWF_TEST_OPENCODE_BEHAVIOR values:
+#   done         → write DONE-TODO-{NNNN}.ready + .md, exit 0 (happy path)
+#   blocked      → write BLOCKED-TODO-{NNNN}.ready + .md, exit 0
+#   noop         → do nothing, exit 0  (orphan / no-signal scenarios)
+#   auto_done    → write PROGRESS entries + create a source file, NO DONE signal
+#                  (exercises the orchestrator's auto-DONE path: verify passes
+#                  because tests don't configure a real test_cmd, BUT we leave
+#                  work evidence so detect_work_evidence sees it)
+#
+# Invocation shape (from lib/orchestrator.sh run_agent_stage):
+#   opencode run --auto --agent worker --file .agentic/roles/worker.md \
+#                --file .agentic/inbox/TODO-0001.md -- <prompt containing "TODO-0001">
+set -euo pipefail
+
+BEHAVIOR="${AWF_TEST_OPENCODE_BEHAVIOR:-done}"
+
+# Extract TODO-NNNN from prompt (positional args after `--`)
+TODO_ID=""
+PROMPT=""
+seen_dd=false
+for arg in "$@"; do
+    if $seen_dd; then
+        PROMPT+=" $arg"
+    fi
+    [[ "$arg" == "--" ]] && seen_dd=true
+done
+
+# Find the first TODO-NNNN reference in the prompt.
+if [[ "$PROMPT" =~ (TODO-[0-9]+) ]]; then
+    TODO_ID="${BASH_REMATCH[1]}"
+fi
+
+# Default to a dummy id if none found (defensive — orchestrator always passes one).
+[[ -z "$TODO_ID" ]] && TODO_ID="TODO-0000"
+
+OUTBOX=".agentic/outbox"
+mkdir -p "$OUTBOX"
+
+write_done() {
+    cat > "$OUTBOX/DONE-${TODO_ID}.md" <<EOF
+# DONE-${TODO_ID} (mock worker)
+Stub completed per AWF_TEST_OPENCODE_BEHAVIOR=done.
+EOF
+    touch "$OUTBOX/DONE-${TODO_ID}.ready"
+}
+
+write_blocked() {
+    cat > "$OUTBOX/BLOCKED-${TODO_ID}.md" <<EOF
+# BLOCKED-${TODO_ID} (mock worker)
+Stub blocked per AWF_TEST_OPENCODE_BEHAVIOR=blocked.
+EOF
+    touch "$OUTBOX/BLOCKED-${TODO_ID}.ready"
+}
+
+write_progress_and_work() {
+    # Append a PROGRESS entry and leave a NEW source file (untracked).
+    # detect_work_evidence in lib/orchestrator.sh counts untracked files
+    # via `git ls-files --others --exclude-standard`.
+    cat >> "$OUTBOX/PROGRESS-${TODO_ID}.md" <<EOF
+## Task 1 · stub work — [x]
+- Completed at: $(date -u +%Y-%m-%dT00:00:00Z)
+- Files changed: src/stub-${TODO_ID}.txt
+- Verify: true
+- Notes: auto_done stub; no DONE signal will be written.
+EOF
+    mkdir -p src
+    echo "stub work for $TODO_ID" > "src/stub-${TODO_ID}.txt"
+}
+
+case "$BEHAVIOR" in
+    done)         write_done ;;
+    blocked)      write_blocked ;;
+    noop)         : ;;  # intentional no-op
+    auto_done)    write_progress_and_work ;;
+    *)
+        echo "tests/stubs/opencode: unknown AWF_TEST_OPENCODE_BEHAVIOR=$BEHAVIOR" >&2
+        exit 1
+        ;;
+esac
+
+exit 0
