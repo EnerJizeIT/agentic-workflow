@@ -57,12 +57,58 @@ def main(argv=None):
     p_continue = sub.add_parser("continue", help="Resume an interrupted pipeline")
     _add_start_args(p_continue)
 
+    # New commands (Wave 4c)
+    p_init = sub.add_parser("init", help="Initialize .agentic/ in current project")
+    p_init.add_argument("--template", choices=["simple", "full"], default="simple")
+    p_init.add_argument("--force", action="store_true")
+    p_init.add_argument("--dry-run", dest="dry_run", action="store_true")
+
+    p_reset = sub.add_parser("reset", help="Clean runtime data")
+    p_reset.add_argument("--tasks-only", dest="tasks_only", action="store_true")
+    p_reset.add_argument("--full", action="store_true")
+    p_reset.add_argument("--orphans", action="store_true")
+    p_reset.add_argument("--force", action="store_true")
+
+    p_add_role = sub.add_parser("add-role", help="Generate a new role template")
+    p_add_role.add_argument("name")
+    p_add_role.add_argument("--description", default="")
+    p_add_role.add_argument("--model", default="")
+
+    p_baseline = sub.add_parser("baseline", help="Create a baseline snapshot")
+    p_baseline.add_argument("todo_id")
+
+    p_rollback = sub.add_parser("rollback", help="Rollback to baseline")
+    p_rollback.add_argument("todo_id")
+    p_rollback.add_argument("--hard", action="store_true")
+    p_rollback.add_argument("--soft", action="store_true")
+    p_rollback.add_argument("--dry-run", dest="dry_run", action="store_true")
+
+    p_report = sub.add_parser("report", help="Show summary report")
+
     args = parser.parse_args(argv)
 
     if args.command == "status":
         return cmd_status.run(args)
     if args.command in ("start", "continue"):
         return cmd_start.run(args)
+    if args.command == "init":
+        from . import cmd_init
+        return cmd_init.run(args)
+    if args.command == "reset":
+        from . import cmd_reset
+        return cmd_reset.run(args)
+    if args.command == "add-role":
+        from . import cmd_add_role
+        return cmd_add_role.run(args)
+    if args.command == "baseline":
+        from . import cmd_baseline
+        return cmd_baseline.run(args)
+    if args.command == "rollback":
+        from . import cmd_rollback
+        return cmd_rollback.run(args)
+    if args.command == "report":
+        from . import cmd_report
+        return cmd_report.run(args)
 
     print(
         f"awf: '{args.command}' not implemented in Python yet",

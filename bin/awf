@@ -2,7 +2,7 @@
 # awf — Agentic Workflow Framework CLI
 set -euo pipefail
 
-AWF_VERSION="0.3.7"
+AWF_VERSION="0.3.8"
 FRAMEWORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_DIR="$FRAMEWORK_DIR/lib"
 TEMPLATES_DIR="$FRAMEWORK_DIR/templates"
@@ -56,7 +56,14 @@ COMMAND="$1"
 shift
 
 case "$COMMAND" in
-    init)       source "$LIB_DIR/init.sh" "$@" ;;
+    init)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf init "$@"
+        fi
+        source "$LIB_DIR/init.sh" "$@"
+        ;;
     start)
         # --background: run detached (setsid) so it doesn't block the terminal /
         # get killed when the parent shell exits. Without this, every user hits
@@ -93,11 +100,46 @@ case "$COMMAND" in
         fi
         source "$LIB_DIR/status.sh" "$@"
         ;;
-    report)     source "$LIB_DIR/report.sh" "$@" ;;
-    add-role)   source "$LIB_DIR/add-role.sh" "$@" ;;
-    baseline)   source "$LIB_DIR/baseline.sh" "$@" ;;
-    rollback)   source "$LIB_DIR/rollback.sh" "$@" ;;
-    reset)      source "$LIB_DIR/reset.sh" "$@" ;;
+    report)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf report "$@"
+        fi
+        source "$LIB_DIR/report.sh" "$@"
+        ;;
+    add-role)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf add-role "$@"
+        fi
+        source "$LIB_DIR/add-role.sh" "$@"
+        ;;
+    baseline)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf baseline "$@"
+        fi
+        source "$LIB_DIR/baseline.sh" "$@"
+        ;;
+    rollback)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf rollback "$@"
+        fi
+        source "$LIB_DIR/rollback.sh" "$@"
+        ;;
+    reset)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf reset "$@"
+        fi
+        source "$LIB_DIR/reset.sh" "$@"
+        ;;
     help|--help|-h) usage ;;
     *) echo "Unknown command: $COMMAND"; echo "Run 'awf help' for usage."; exit 1 ;;
 esac
