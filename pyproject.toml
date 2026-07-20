@@ -4,24 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awf"
-version = "0.3.4"
+version = "0.3.6"
 description = "Agentic Workflow Framework — declarative multi-agent pipeline"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "EnerJize" }]
-dependencies = []
+dependencies = [
+    "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
 ]
 
-[tool.setuptools]
-# No packages yet — awf core is still bash. The package metadata exists only
-# so `pip install -e .[dev]` works for contributors. When Wave 4 lands an
-# `awf/` Python package, add it under `[tool.setuptools.packages.find]`.
-py-modules = []
+[tool.setuptools.packages.find]
+include = ["awf*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

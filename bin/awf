@@ -2,7 +2,7 @@
 # awf — Agentic Workflow Framework CLI
 set -euo pipefail
 
-AWF_VERSION="0.3.5"
+AWF_VERSION="0.3.6"
 FRAMEWORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB_DIR="$FRAMEWORK_DIR/lib"
 TEMPLATES_DIR="$FRAMEWORK_DIR/templates"
@@ -74,7 +74,14 @@ case "$COMMAND" in
         fi
         source "$LIB_DIR/orchestrator.sh" start "$@" ;;
     continue)   source "$LIB_DIR/orchestrator.sh" continue "$@" ;;
-    status)     source "$LIB_DIR/status.sh" "$@" ;;
+    status)
+        if command -v python3 &>/dev/null && \
+           PYTHONPATH="$FRAMEWORK_DIR" python3 -c "import awf" &>/dev/null 2>&1; then
+            export PYTHONPATH="$FRAMEWORK_DIR:${PYTHONPATH:-}"
+            exec python3 -m awf status "$@"
+        fi
+        source "$LIB_DIR/status.sh" "$@"
+        ;;
     report)     source "$LIB_DIR/report.sh" "$@" ;;
     add-role)   source "$LIB_DIR/add-role.sh" "$@" ;;
     baseline)   source "$LIB_DIR/baseline.sh" "$@" ;;
