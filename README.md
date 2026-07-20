@@ -1,70 +1,57 @@
 # Agentic Workflow Framework
 
-Declarative multi-agent pipeline: **Supervisor plans → Worker implements → Supervisor verifies**. Communication via files on disk. Pure bash core (YAML config + Markdown instructions); YAML parsing uses `yq` when available, otherwise falls back to `python3 + PyYAML`.
+Declarative multi-agent pipeline: **Supervisor plans → Worker implements → Supervisor verifies**. Communication via files on disk. Python core (YAML config + Markdown instructions) with a thin bash wrapper (`bin/awf`).
 
 ---
 
 ## Requirements
 
-- **bash** 4+ (arrays, `mapfile`-free parsing).
+- **bash** 4+ (thin wrapper script only).
+- **python3** >= 3.9 (core logic).
+- **PyYAML** (auto-installed via `pip install -e .`).
 - **git** (the target project must be a git repo).
 - **opencode** CLI on `$PATH` (only needed for `awf start` / `awf continue`).
-- A YAML backend (one of):
-  - `yq` (preferred) — single static binary, install via your package manager, **or**
-  - `python3` with `PyYAML` (`pip install pyyaml`) — already present on most dev machines.
-
-`awf` auto-detects which backend is available. Without one, YAML parsing
-errors out loudly instead of silently mis-parsing with regex.
 
 ---
 
 ## Install
 
-The CLI uses `${BASH_SOURCE[0]}` to locate its `lib/` directory, so it must be
-invoked from its real location. Install via a **wrapper script** instead of
-copying the binary:
-
 ```bash
-# 1) Clone the framework (if not already)
+# 1) Clone the framework
 git clone git@github.com:EnerJizeIT/agentic-workflow.git
 cd agentic-workflow
 
-# 2) Create a wrapper in ~/.local/bin/
-cat > ~/.local/bin/awf << 'WRAPPER'
-#!/bin/bash
-# Replace the path below with the absolute path to your cloned repo's bin/awf
-exec "/absolute/path/to/agentic-workflow/bin/awf" "$@"
-WRAPPER
-chmod +x ~/.local/bin/awf
+# 2) Install Python dependencies
+pip install -e .
+
+# 3) Option A — invoke directly
+./bin/awf
+
+# Option B — symlink to put awf on PATH
+ln -s "$PWD/bin/awf" ~/.local/bin/awf
+awf
 ```
 
-**Важно:** замени `/absolute/path/to/agentic-workflow/bin/awf` на реальный
-абсолютный путь к `bin/awf` в твоей копии репозитория. Просто скопировать
-`bin/awf` в `~/.local/bin/` **не сработает** — см. [issue #1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
-
-```bash
-# 3) Verify
-awf help
-```
-
-**Примечание:** если `~/.local/bin/` нет в `$PATH`, добавь в `~/.bashrc`:
+If `~/.local/bin/` is not in `$PATH`, add to `~/.bashrc`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### Troubleshooting install
+### Updating awf
 
-- **"awf: command not found"** — `~/.local/bin` не в `$PATH`. Добавь
-  `export PATH="$HOME/.local/bin:$PATH"` в `~/.bashrc` и перезапусти терминал.
+```bash
+cd agentic-workflow
+git pull && pip install -e .
+```
 
-- **"lib/orchestrator.sh: No such file or directory"** — использован `cp` или
-  `ln -s` вместо wrapper-скрипта. Переустанови по инструкции выше.
-  Подробности: [issue #1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
+### Note on `cp` install
 
-- **`awf help` работает, но `awf start` падает с ошибкой пути** — в
-  wrapper-скрипте указан неправильный путь. Проверь:
-  `cat ~/.local/bin/awf` — строка `exec` должна указывать на реальный `bin/awf`
-  в твоей копии репозитория.
+`ln -s` is the recommended install method. If you `cp bin/awf` somewhere and
+delete the source tree, set `AWF_FRAMEWORK_DIR` to point to the repo root:
+
+```bash
+export AWF_FRAMEWORK_DIR="/absolute/path/to/agentic-workflow"
+```
 
 ---
 
@@ -261,26 +248,17 @@ awf reset
 ## Architecture
 
 ```
-bin/awf              # CLI entry point
-lib/
-  yaml.sh            # YAML backend (yq preferred, python3+PyYAML fallback)
-  init.sh            # создание .agentic/
-  orchestrator.sh    # ядро: выполнение пайплайна
-  baseline.sh        # снимки состояния
-  rollback.sh        # откат к baseline
-  status.sh          # текущий статус
-  report.sh          # генерация отчетов
-  add-role.sh        # добавление ролей
-  reset.sh           # очистка runtime
+bin/awf              # thin bash wrapper → python3 -m awf
+awf/                 # Python core (cli, paths, config, todos, orchestrator, ...)
 templates/
   roles/             # шаблоны инструкций (supervisor, worker, reviewer, tester)
   pipelines/         # шаблоны пайплайнов (simple, full)
   todo-template.md   # шаблон TODO
 protocols/
   communication.md   # спецификация файловой шины
-proposal/            # детальная спецификация (архитектура, конфиги, роли)
 tests/
-  run.sh             # bash test runner (zero-dep)
+  e2e/               # E2E tests (subprocess through bin/awf)
+  unit/              # Python unit tests
 BACKLOG.md           # план развития фреймворка
 ```
 
@@ -347,16 +325,14 @@ Attempt 1: Diagnose & Fix → Attempt 2: Alternative Approach → Attempt 3: Bro
 
 ## Testing
 
-The framework ships a zero-dependency bash test runner for its core logic
-(YAML parsing, stage parsing, signal classification, transition resolution,
-stale-signal filtering):
-
 ```bash
-./tests/run.sh
+pip install -e ".[dev]"
+python3 -m pytest tests/ -v
 ```
 
-No `bats` or other test framework required — just bash + a YAML backend.
-The run is hermetic (uses a `mktemp` dir) and safe to invoke from anywhere.
+163 tests: 11 E2E (subprocess through `bin/awf`) + 152 unit tests covering
+YAML parsing, stage parsing, signal classification, transition resolution,
+orchestrator logic, and all CLI commands.
 
 ---
 

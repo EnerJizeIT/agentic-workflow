@@ -13,6 +13,24 @@
 
 ---
 
+## ✅ Done in v0.4.0 (Wave 4d-part2)
+
+- [x] **Bash retired.** All `lib/*.sh` (10 files, ~1700 lines) deleted.
+- [x] **`bin/awf` — thin wrapper.** ~25 lines, delegates everything to `python3 -m awf`.
+- [x] **Symlink install works natively.** `os.path.realpath` resolves all symlinks. Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
+- [x] **`tests/run.sh` (102 bash tests) removed.** Superseded by 152 Python unit tests + 11 E2E = 163 total.
+- [x] **README simplified.** `ln -s` install, no wrapper-script boilerplate.
+
+### Migration timeline (v0.3.x)
+
+- **v0.3.4:** weak-spots closure (find_active_todo picks newest, status warns, reset --orphans, init model prompt).
+- **v0.3.5:** pytest E2E harness with mock opencode stub.
+- **v0.3.6:** Wave 4a — `awf status` ported to Python. `awf/` package created (7 modules).
+- **v0.3.7:** Wave 4b — orchestrator ported (8 modules, ~890 lines bash → Python).
+- **v0.3.8:** Wave 4c — remaining 6 commands ported (init, reset, add-role, baseline, rollback, report).
+- **v0.3.9:** Wave 4d-part1 — 152 Python unit tests covering all modules.
+- **v0.4.0:** Wave 4d-part2 — bash retired, `bin/awf` thin wrapper, symlink install fixed.
+
 ## ✅ Done in v0.2.0
 
 - [x] Оркестратор читает стадии из YAML pipeline файла.

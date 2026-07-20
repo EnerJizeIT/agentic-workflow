@@ -6,6 +6,38 @@ from . import cmd_start
 from . import cmd_status
 
 
+def _print_top_level_help() -> int:
+    """Print the high-level usage that `awf help` and bare `awf` both show."""
+    print(
+        "awf — Agentic Workflow Framework\n"
+        "\n"
+        "Usage: awf <command> [options]\n"
+        "\n"
+        "Commands:\n"
+        "  init              Initialize .agentic/ in current project\n"
+        "  start             Start the pipeline from the beginning\n"
+        "  continue          Resume an interrupted pipeline\n"
+        "  status            Show current workflow state\n"
+        "  report            Show summary report\n"
+        "  add-role <name>   Generate a template for a new role\n"
+        "  baseline <id>     Create a baseline snapshot\n"
+        "  rollback <id>     Rollback to baseline\n"
+        "  reset             Clean runtime data (inbox/outbox/logs)\n"
+        "  help              Show this message\n"
+        "\n"
+        "Run 'awf <command> --help' for command-specific options.\n"
+        "\n"
+        "Options for 'start' / 'continue':\n"
+        "  --pipeline <name>    Pipeline to run (default: from config.yaml)\n"
+        "  --from-stage <name>  Start from a specific stage\n"
+        "  --auto               Skip supervisor interactive waits\n"
+        "  --background         (start only) Run detached via setsid — must be\n"
+        "                       passed BEFORE other args, handled by bin/awf\n"
+        "  --timeout <seconds>  Agent timeout (default: 3600)"
+    )
+    return 0
+
+
 def _add_start_args(parser):
     """Add common args for start/continue subparsers."""
     parser.add_argument(
@@ -38,6 +70,22 @@ def _add_start_args(parser):
 
 
 def main(argv=None):
+    # Special-case bare invocation and `awf help`: argparse doesn't have a
+    # `help` subcommand by default, but users expect `awf help` to work
+    # (it was the canonical invocation in the bash era).
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if not raw or raw[0] in ("help", "--help", "-h"):
+        # `awf help <command>` -> redirect to `<command> --help`
+        if len(raw) >= 2 and raw[0] == "help":
+            subcmd = raw[1]
+            # Re-invoke as `<subcmd> --help`
+            return _dispatch_subcommand([subcmd, "--help"])
+        return _print_top_level_help()
+
+    return _dispatch_subcommand(raw)
+
+
+def _dispatch_subcommand(argv):
     parser = argparse.ArgumentParser(
         prog="awf",
         description="Agentic Workflow Framework",
