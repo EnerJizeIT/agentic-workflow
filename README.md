@@ -1,277 +1,282 @@
 # Agentic Workflow Framework
 
-Declarative multi-agent pipeline: **Supervisor plans → Worker implements → Supervisor verifies**. Communication via files on disk. Python core (YAML config + Markdown instructions) with a thin bash wrapper (`bin/awf`).
+> Декларативный пайплайн для multi-agent разработки: **Supervisor планирует → Worker реализует → Supervisor проверяет**. Коммуникация — через файлы на диске. Ядро на Python, тонкий bash-обёртка.
+
+**Текущая версия:** v0.4.0 (см. [Что нового](#что-нового)).
 
 ---
 
-## Requirements
+## Ключевые особенности
 
-- **bash** 4+ (thin wrapper script only).
-- **python3** >= 3.9 (core logic).
-- **PyYAML** (auto-installed via `pip install -e .`).
-- **git** (the target project must be a git repo).
-- **opencode** CLI on `$PATH` (only needed for `awf start` / `awf continue`).
+- **Supervisor ↔ Worker через file-bus.** Задачи и отчёты передаются через `.agentic/inbox/` и `.agentic/outbox/` с `.ready`-сигналами. Никаких HTTP, WebSocket, очередей.
+- **Pipeline как YAML.** Стадии, роли, transition-политики — всё декларативно в `.agentic/pipelines/default.yaml`.
+- **4 роли.** supervisor (ты), worker (агент), reviewer и tester (опционально, `--template full`).
+- **Auto-DONE** (v0.3.2+). Если worker не успел записать сигнал, но verify-команды прошли и есть work evidence — оркестратор синтезирует DONE автоматически.
+- **Auto-commit.** Стадии с `on_approved: commit_and_next` автоматически коммитят инкремент.
+- **Python core.** 22 модуля (~2100 строк) + тонкий bash-wrapper (36 строк).
+- **163 теста.** 11 E2E (subprocess через `bin/awf`) + 152 unit (все модули `awf/`).
 
 ---
 
-## Install
+## Установка
+
+### Требования
+
+- **bash** 4+ (только для тонкого wrapper-скрипта).
+- **python3** ≥ 3.9 (ядро логики).
+- **PyYAML** (устанавливается автоматически через `pip install -e .`).
+- **git** (целевой проект должен быть git-репозиторием).
+- **opencode** CLI в `$PATH` (нужен только для `awf start` / `awf continue`).
+
+### Установка
 
 ```bash
-# 1) Clone the framework
+# 1) Клонируй фреймворк
 git clone git@github.com:EnerJizeIT/agentic-workflow.git
 cd agentic-workflow
 
-# 2) Install Python dependencies
+# 2) Установи Python-зависимости
 pip install -e .
 
-# 3) Option A — invoke directly
+# 3) Вариант A — вызывай напрямую
 ./bin/awf
 
-# Option B — symlink to put awf on PATH
+# Вариант B — symlink для доступа из любого каталога
 ln -s "$PWD/bin/awf" ~/.local/bin/awf
 awf
 ```
 
-If `~/.local/bin/` is not in `$PATH`, add to `~/.bashrc`:
+Если `~/.local/bin/` нет в `$PATH`, добавь в `~/.bashrc`:
+
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-### Updating awf
+### Обновление
 
 ```bash
 cd agentic-workflow
 git pull && pip install -e .
 ```
 
-### Note on `cp` install
+### Примечание про `cp`-установку
 
-`ln -s` is the recommended install method. If you `cp bin/awf` somewhere and
-delete the source tree, set `AWF_FRAMEWORK_DIR` to point to the repo root:
+Рекомендуемый способ — `ln -s`. Если скопировал `bin/awf` в другое место и удалил исходное дерево, установи переменную `AWF_FRAMEWORK_DIR`:
 
 ```bash
-export AWF_FRAMEWORK_DIR="/absolute/path/to/agentic-workflow"
+export AWF_FRAMEWORK_DIR="/абсолютный/путь/к/agentic-workflow"
 ```
 
 ---
 
-## First run in a project
-
-### 1. Go to your project
+## Быстрый старт
 
 ```bash
-cd /path/to/your-project   # must be a git repository
+# 1. Установи awf (один раз)
+git clone git@github.com:EnerJizeIT/agentic-workflow.git
+cd agentic-workflow && pip install -e .
+ln -s "$PWD/bin/awf" ~/.local/bin/awf
+
+# 2. В любом git-проекте:
+cd /path/to/your-project
+awf init --template simple         # отвечай на вопросы
+vim .agentic/phases/plan.md        # напиши план
+awf start                          # запусти пайплайн
 ```
 
-### 2. Initialize
+### Что произойдёт
 
-```bash
-awf init --template simple   # supervisor + worker
-# or
-awf init --template full     # + reviewer + tester
+1. **`awf init`** создаст `.agentic/` с ролями, пайплайном и конфигами.
+2. **План** (`.agentic/phases/plan.md`) — чеклист шагов, который читает Supervisor.
+3. **`awf start`** запустит оркестратор:
+   - **Supervisor stage (ты):** создай TODO, положи в `.agentic/inbox/`, нажми Enter.
+   - **Worker stage (автоматически):** агент запустится, реализует задачу, напишет DONE или BLOCKED.
+   - **Verify stage (ты):** проверь результат, подтверди или запроси исправления.
+
+---
+
+## Команды
+
+| Команда | Описание |
+|---|---|
+| `awf` или `awf help` | Показать справку |
+| `awf help <command>` | Справка по конкретной команде |
+| `awf init [--template simple\|full]` | Создать `.agentic/` в проекте |
+| `awf init --force` | Пересоздать без подтверждения |
+| `awf init --dry-run` | Показать что будет создано |
+| `awf start [опции]` | Запустить пайплайн |
+| `awf start --pipeline <name>` | Конкретный пайплайн |
+| `awf start --from-stage <name>` | Начать с указанной стадии |
+| `awf start --auto` | Пропустить интерактивные паузы supervisor'а |
+| `awf start --timeout <sec>` | Таймаут агента (по умолчанию 3600) |
+| `awf start --background` | Фоновый запуск (detached через setsid, лог в `.agentic/logs/`) |
+| `awf continue [опции]` | Продолжить прерванный пайплайн |
+| `awf status` | Текущее состояние воркфлоу |
+| `awf status --project-dir <path>` | Статус другого проекта |
+| `awf report` | Сводный отчёт о работе |
+| `awf add-role <name>` | Создать шаблон новой роли |
+| `awf add-role <name> --description "..."` | С описанием |
+| `awf baseline <id>` | Снимок состояния перед задачей |
+| `awf rollback <id>` | Откат к baseline |
+| `awf rollback <id> --hard` | Жёсткий откат (git reset --hard) |
+| `awf rollback <id> --soft` | Мягкий откат (git reset --soft) |
+| `awf rollback <id> --dry-run` | Показать что будет откатано |
+| `awf reset` | Очистить runtime-данные |
+| `awf reset --tasks-only` | Очистить только inbox/outbox |
+| `awf reset --full` | Очистить все runtime-директории (по умолчанию) |
+| `awf reset --orphans [--force]` | Удалить TODO без прогресс-лога |
+
+---
+
+## Архитектура
+
+```
+bin/awf              # тонкий bash-wrapper (36 строк) → python3 -m awf
+awf/                 # Python core, 22 модуля, ~2100 строк
+  __init__.py        # package init
+  __main__.py        # entry point для python3 -m awf
+  cli.py             # argparse dispatcher
+  paths.py           # разрешение путей (realpath для symlink)
+  config.py          # загрузка config.yaml
+  yaml_utils.py      # утилиты для YAML
+  pipeline.py        # Stage dataclass, load_stages()
+  orchestrator.py    # state machine пайплайна
+  signals.py         # polling сигналов, prefix-filtering
+  transitions.py     # resolve_transition (policy lookup)
+  verify.py          # auto-DONE, detect_work_evidence
+  git_utils.py       # git-операции (commit, reset, diff)
+  todos.py           # list_active_todos, is_closed, has_progress
+  cmd_init.py        # команда init
+  cmd_start.py       # команды start / continue
+  cmd_status.py      # команда status
+  cmd_reset.py       # команда reset
+  cmd_add_role.py    # команда add-role
+  cmd_baseline.py    # команда baseline
+  cmd_rollback.py    # команда rollback
+  cmd_report.py      # команда report
+  opencode_agents.py # управление ~/.config/opencode/opencode.json
+templates/           # шаблоны для awf init
+  roles/             # supervisor.md, worker.md, reviewer.md, tester.md
+  pipelines/         # simple.yaml, full.yaml
+  config.default.yaml
+  todo-template.md
+  done-report.md
+  blocked-report.md
+protocols/           # спецификации
+  communication.md   # спецификация файловой шины
+tests/
+  e2e/               # 11 тестов, bin/awf как subprocess
+  unit/              # 152 теста для awf/*.py
+  stubs/opencode     # mock для E2E
+proposal/            # 6 исторических дизайн-документов
+BACKLOG.md           # план развития
 ```
 
-Ответь на вопросы (название проекта, команды тестов/линтинга). Будет создана структура:
+---
+
+## Как это работает
+
+### Pipeline
+
+Оркестратор читает стадии из YAML-файла пайплайна и выполняет их последовательно. Каждая стадия определяет роль и action:
+
+```yaml
+stages:
+  - name: "plan"
+    role: "supervisor"
+    action: "create_todo"
+
+  - name: "implement"
+    role: "worker"
+    action: "execute_todo"
+    on_blocked: "escalate"
+    max_retries: 3
+
+  - name: "verify"
+    role: "supervisor"
+    action: "verify_result"
+    on_approved: "commit_and_next"
+```
+
+### Стадии
+
+- **Supervisor stage** — интерактивная пауза (или `--auto` для пропуска).
+- **Agent stage** — оркестратор порождает `opencode run --auto --agent <role>`.
+
+### Сигналы
+
+Worker пишет сигналы в `.agentic/outbox/`. Каноничный формат — `{PREFIX}-TODO-{NNNN}` (например `DONE-TODO-0001`). Legacy-форма `{PREFIX}-{NNNN}` тоже принимается.
+
+| Сигнал | Файл | Кто пишет |
+|---|---|---|
+| `TASK_READY` | `inbox/TODO-{NNNN}.md` + `.ready` | Supervisor |
+| `TASK_DONE` | `outbox/DONE-TODO-{NNNN}.md` + `.ready` | Worker/Reviewer/Tester |
+| `TASK_BLOCKED` | `outbox/BLOCKED-TODO-{NNNN}.md` + `.ready` | Worker/Reviewer/Tester |
+| `TASK_ACK` | `inbox/ACK-TODO-{NNNN}.ready` | Supervisor |
+| `TASK_PROGRESS` | `outbox/PROGRESS-TODO-{NNNN}.md` (append-only) | Worker |
+| `REVIEW_APPROVED`/`REVIEW_REJECTED` | `outbox/REVIEW-{APPROVED\|REJECTED}-TODO-{NNNN}.md` | Reviewer |
+| `TEST_PASSED`/`TEST_FAILED` | `outbox/TEST-{PASSED\|FAILED}-TODO-{NNNN}.md` | Tester |
+
+Подробнее: [protocols/communication.md](protocols/communication.md) (включая §3.6 «Signal naming — canonical vs legacy»).
+
+### Transition policies
+
+Правила `on_*` в YAML определяют переход между стадиями:
+
+- `on_approved: next` — перейти к следующей стадии.
+- `on_approved: commit_and_next` — закоммитить и перейти дальше.
+- `on_approved: commit_and_report` — закоммитить и показать отчёт.
+- `on_blocked: escalate` — эскалация на supervisor.
+- `on_blocked: rollback_to:<stage>` — откат к указанной стадии.
+- `on_blocked: stop` — остановка пайплайна.
+- `on_rejected: rollback_to:<stage>` — откат при ревью-отклонении.
+- `on_failed: rollback_to:<stage>` — откат при ошибке тестов.
+
+### Auto-DONE (v0.3.2+)
+
+Если worker не записал сигнал, но выполнены оба условия, оркестратор синтезирует DONE:
+
+1. Прошли **структурированные verify-команды** из `config.yaml` (`test_cmd`, `build_cmd`, `typecheck_cmd`).
+2. Есть **work evidence** — `git diff` показывает изменения или появились untracked-файлы.
+
+Отключается через `automation.auto_done: false` в `config.yaml`.
+
+---
+
+## Файлы `.agentic/`
 
 ```
 .agentic/
-├── config.yaml           # настройки проекта
-├── roles/                # инструкции для ролей
+├── config.yaml              # модели, verify-команды, default_pipeline
+├── roles/                   # инструкции для ролей
 │   ├── supervisor.md
-│   └── worker.md
-├── pipelines/            # определение пайплайна
-│   └── default.yaml
-├── inbox/                # задачи от supervisor → worker (gitignored)
-├── outbox/               # отчеты от worker → supervisor (gitignored)
-├── context/              # baseline'ы (gitignored)
-├── logs/                 # логи оркестратора (gitignored)
-└── reports/              # итоговые отчеты (gitignored)
+│   ├── worker.md
+│   ├── reviewer.md          # (только --template full)
+│   └── tester.md            # (только --template full)
+├── pipelines/
+│   └── default.yaml         # стадии пайплайна
+├── phases/
+│   └── plan.md              # твой план реализации
+├── inbox/                   # TODO от supervisor → worker [gitignored]
+├── outbox/                  # DONE/BLOCKED/PROGRESS от worker [gitignored]
+├── context/                 # baseline SHA и тест-логи [gitignored]
+├── logs/                    # orchestrator.log [gitignored]
+└── reports/                 # сводные отчёты [gitignored]
 ```
 
-### 3. Write your plan
-
-Создай файл с планом реализации. По умолчанию путь: `.agentic/phases/plan.md`.
-
-Пример:
-
-```markdown
-# Implementation Plan
-
-- [ ] Step 1: Create project skeleton
-- [ ] Step 2: Implement health endpoint
-- [ ] Step 3: Add API routes
-- [ ] Step 4: GitLab integration
-```
-
-Этот файл читает Supervisor, чтобы определить следующий шаг.
-
-### 4. Start the pipeline
-
-```bash
-awf start
-```
-
-Оркестратор читает стадии из `.agentic/pipelines/default.yaml` и выполняет их последовательно.
-
-Что произойдет:
-
-1. **Supervisor stage (ты):** orchestrator покажет инструкцию. Ты читаешь `.agentic/roles/supervisor.md`, изучаешь проект, создаёшь TODO и кладёшь его в `.agentic/inbox/TODO-0001.md` + `.agentic/inbox/TODO-0001.ready`. Нажми Enter.
-
-2. **Worker stage (автоматически):** orchestrator запускает отдельный агент opencode. Worker читает TODO, реализует задачи, пишет DONE или BLOCKED в `.agentic/outbox/`.
-
-3. **Если worker вернул BLOCKED:** оркестратор эскалирует на тебя. Ты анализируешь проблему, создаёшь исправленный TODO. Worker перезапускается (до `max_retries` попыток).
-
-4. **Supervisor verify (ты):** orchestrator просит проверить результат. Ты проверяешь код, запускаешь тесты, решаешь: approve / fix / rollback.
-
-**Опции запуска:**
-
-```bash
-awf start                          # пайплайн по умолчанию из config.yaml
-awf start --pipeline full-review   # конкретный пайплайн
-awf start --from-stage review      # начать с указанной стадии
-awf start --auto                   # пропустить интерактивные паузы supervisor'а
-awf start --timeout 7200           # таймаут агента (сек, по умолчанию 3600)
-```
-
-После завершения итерации запусти `awf start` снова для следующего шага.
+Runtime-директории (`inbox/`, `outbox/`, `context/`, `logs/`, `reports/`) не коммитятся в git. Статические файлы (`config.yaml`, `roles/`, `pipelines/`, `phases/`) — коммитятся.
 
 ---
 
-## How it works
-
-```
-Supervisor → [TODO в inbox/] → Worker → [DONE/BLOCKED в outbox/] → Supervisor
-                                                          ↓
-                                                    Если BLOCKED:
-                                                    Supervisor replan → новый TODO
-                                                    Worker перезапускается (до max_retries)
-```
-
-Оркестратор читает стадии из YAML файла пайплайна и выполняет их последовательно. Переходы между стадиями определяются правилами `on_*` в конфиге (`next`, `rollback_to`, `escalate`, `stop`).
-
-Все общение между ролями идет через файлы. **Каноничный формат сигналов** — `{PREFIX}-TODO-{NNNN}` (например `DONE-TODO-0001`, `BLOCKED-TODO-0002`). Legacy-форма `{PREFIX}-{NNNN}` (без `TODO-`) тоже принимается для обратной совместимости.
-
-| Signal | Файл | Кто пишет |
-|---|---|---|
-| `TASK_READY`     | `inbox/TODO-{NNNN}.md` + `inbox/TODO-{NNNN}.ready` | Supervisor |
-| `TASK_DONE`      | `outbox/DONE-TODO-{NNNN}.md` + `.ready`           | Worker/Reviewer/Tester |
-| `TASK_BLOCKED`   | `outbox/BLOCKED-TODO-{NNNN}.md` + `.ready`        | Worker/Reviewer/Tester |
-| `TASK_ACK`       | `inbox/ACK-TODO-{NNNN}.ready`                     | Supervisor |
-| `TASK_PROGRESS`  | `outbox/PROGRESS-TODO-{NNNN}.md` (append-only)    | Worker |
-| `REVIEW_APPROVED`/`REVIEW_REJECTED` | `outbox/REVIEW-{APPROVED\|REJECTED}-TODO-{NNNN}.md` | Reviewer |
-| `TEST_PASSED`/`TEST_FAILED`         | `outbox/TEST-{PASSED\|FAILED}-TODO-{NNNN}.md`      | Tester |
-
-- **inbox/** — задачи от supervisor к worker'у.
-- **outbox/** — отчеты от worker'а к supervisor'у.
-- **.ready** сигнал — файл-триггер, сообщающий о готовности (создаётся ПОСЛЕ `.md`).
-
-Подробнее: `protocols/communication.md` (включая §3.6 «Signal naming — canonical vs legacy»).
-
----
-
-## Commands
-
-| Command | Описание |
-|---|---|
-| `awf init [--template simple\|full]` | Создать `.agentic/` в проекте |
-| `awf start [опции]` | Запустить пайплайн из YAML конфига |
-| `awf start --pipeline <name>` | Конкретный пайплайн |
-| `awf start --from-stage <name>` | Начать с указанной стадии |
-| `awf start --auto` | Без интерактивных пауз supervisor'а |
-| `awf start --timeout <sec>` | Таймаут агента (по умолчанию 3600) |
-| `awf continue` | Продолжить прерванный пайплайн |
-| `awf status` | Текущее состояние воркфлоу |
-| `awf report` | Сводный отчет о работе |
-| `awf baseline <id>` | Снимок состояния перед задачей |
-| `awf rollback <id>` | Откат к baseline |
-| `awf reset` | Очистить runtime-данные |
-| `awf reset --tasks-only` | Очистить только inbox/outbox |
-| `awf reset --orphans [--force]` | Удалить TODO без прогресс-лога (безопасно: только никогда не запускавшиеся) |
-| `awf add-role <name>` | Добавить новую роль |
-
----
-
-## Key files
-
-| File | Что это |
-|---|---|
-| `.agentic/config.yaml` | Настройки: модели, команды верификации, путь к плану |
-| `.agentic/pipelines/default.yaml` | Порядок стадий (plan → implement → verify) |
-| `.agentic/roles/supervisor.md` | Инструкция для тебя (supervisor) |
-| `.agentic/roles/worker.md` | Инструкция для агента-worker'а |
-| `.agentic/phases/plan.md` | Твой план реализации (чеклист шагов) |
-
----
-
-## Typical session
-
-```bash
-# Первый запуск
-cd my-project
-awf init --template simple
-# ответь на вопросы → создан .agentic/
-
-# Напиши план
-vim .agentic/phases/plan.md
-
-# Запусти пайплайн
-awf start
-# → Supervisor stage: создай TODO, нажми Enter
-# → Worker stage: агент работает автоматически (может занять время)
-# → Если BLOCKED: supervisor создает исправленный TODO, worker перезапускается
-# → Verify stage: проверь результат, нажми Enter
-
-# Следующая итерация
-awf start
-
-# Конкретный пайплайн
-awf start --pipeline full-review
-
-# Начать с конкретной стадии
-awf start --from-stage review
-
-# Без пауз (для автоматизации)
-awf start --auto
-
-# Посмотри статус
-awf status
-
-# Если нужно откатиться
-awf rollback TODO-0001
-
-# Полный сброс
-awf reset
-```
-
----
-
-## Architecture
-
-```
-bin/awf              # thin bash wrapper → python3 -m awf
-awf/                 # Python core (cli, paths, config, todos, orchestrator, ...)
-templates/
-  roles/             # шаблоны инструкций (supervisor, worker, reviewer, tester)
-  pipelines/         # шаблоны пайплайнов (simple, full)
-  todo-template.md   # шаблон TODO
-protocols/
-  communication.md   # спецификация файловой шины
-tests/
-  e2e/               # E2E tests (subprocess through bin/awf)
-  unit/              # Python unit tests
-BACKLOG.md           # план развития фреймворка
-```
-
----
-
-## Roles
+## Роли
 
 ### Supervisor (ты)
 
-Работает в текущей сессии. Не отдельный процесс. Твои задачи:
+Работает в текущей сессии, не отдельный процесс. Задачи:
+
 - Изучить состояние проекта и план.
 - Определить следующий шаг.
-- Создать TODO с описанием задачи (не Find/Replace, а "что построить").
+- Создать TODO с описанием задачи (не Find/Replace, а «что построить»).
 - Проверить результат работы worker'а.
 
 Инструкция: `.agentic/roles/supervisor.md`.
@@ -280,7 +285,7 @@ BACKLOG.md           # план развития фреймворка
 
 Запускается как отдельный процесс opencode. Получает TODO, самостоятельно проектирует и реализует решение. Возвращает DONE или BLOCKED.
 
-Worker — capable developer model. Он получает **"what to build"** и сам решает **"how"**. Supervisor опускается до точных Find/Replace только при повторных неудачах.
+Worker — capable developer model. Он получает **«what to build»** и сам решает **«how»**. Supervisor опускается до точных Find/Replace только при повторных неудачах.
 
 Инструкция: `.agentic/roles/worker.md`.
 
@@ -294,22 +299,26 @@ Reviewer проверяет качество кода. Tester запускает
 
 | Mode | Когда использовать | Что получает Worker |
 |---|---|---|
-| **A: High-level** (по умолчанию) | Обычные задачи | Описание "что построить", ограничения, verify |
+| **A: High-level** (по умолчанию) | Обычные задачи | Описание «что построить», ограничения, verify |
 | **B: Detailed** | Сложные задачи, несколько файлов | Архитектурные заметки, референсы, паттерны |
 | **C: Find/Replace** (fallback) | Предыдущие попытки не сработали | Точные блоки кода для замены |
 
-## Progress tracking
+---
 
-Worker пишет `.agentic/outbox/PROGRESS-{NNNN}.md` после каждого выполненного Task. Файл append-only, Supervisor может читать его в любое время.
+## Прогресс и восстановление
+
+### PROGRESS-логи
+
+Worker пишет `.agentic/outbox/PROGRESS-TODO-{NNNN}.md` после каждого выполненного Task. Файл append-only — Supervisor может читать его в любое время.
 
 ```bash
-awf status          # показывает прогресс для активных задач
-cat .agentic/outbox/PROGRESS-TODO-0001.md   # полный лог
+awf status                                     # прогресс активных задач
+cat .agentic/outbox/PROGRESS-TODO-0001.md     # полный лог
 ```
 
-## 3-Strike Error Protocol
+### 3-Strike Error Protocol
 
-Worker не эскалирует на первую ошибку. Протокол:
+Worker не эскалирует на первую ошибку. Протокол описан в `worker.md`:
 
 ```
 Attempt 1: Diagnose & Fix → Attempt 2: Alternative Approach → Attempt 3: Broader Rethink → Escalate
@@ -317,32 +326,80 @@ Attempt 1: Diagnose & Fix → Attempt 2: Alternative Approach → Attempt 3: Bro
 
 Каждая попытка логируется. Supervisor видит историю в BLOCKED-отчёте.
 
-## Session Recovery
+### Session Recovery
 
-Если worker-процесс упал, он восстанавливается с `PROGRESS-{NNNN}.md` при перезапуске — пропускает выполненные задачи, продолжает с первого незавершённого.
+Если worker-процесс упал, он восстанавливается с `PROGRESS-TODO-{NNNN}.md` при перезапуске — пропускает выполненные задачи, продолжает с первого незавершённого.
 
 ---
 
-## Testing
+## Тестирование
 
 ```bash
-pip install -e ".[dev]"
+# Все тесты (e2e + unit):
 python3 -m pytest tests/ -v
+
+# Только E2E (запуск bin/awf как subprocess):
+python3 -m pytest tests/e2e/ -v
+
+# Только unit:
+python3 -m pytest tests/unit/ -v
+
+# Один конкретный файл:
+python3 -m pytest tests/unit/test_signals.py -v
+
+# Coverage (если установлен pytest-cov):
+python3 -m pytest tests/ --cov=awf --cov-report=term-missing
 ```
 
-163 tests: 11 E2E (subprocess through `bin/awf`) + 152 unit tests covering
-YAML parsing, stage parsing, signal classification, transition resolution,
-orchestrator logic, and all CLI commands.
+163 теста: 11 E2E + 152 unit. E2E-тесты используют `tests/stubs/opencode` для mock'а worker'а — реальный opencode не требуется.
 
 ---
 
-## Backlog
+## Спецификации и история
 
-План развития фреймворка: `BACKLOG.md`.
+- [protocols/communication.md](protocols/communication.md) — спецификация файловой шины (сигналы, naming canonical vs legacy, task lifecycle, safety).
+- `proposal/` — 6 дизайн-документов с исходной архитектурой (историческая справка).
+- [BACKLOG.md](BACKLOG.md) — план развития (Tasks 1-7: dashboard, HTTP API, bootstrap, цепочки worker'ов, роли-скиллы, модели, real-time).
 
-Текущие направления:
-1. HTML dashboard — веб-обертка над CLI.
-2. Автоинициализация по файлу требований (`awf bootstrap`).
-3. Цепочки worker'ов (supervisor→worker₁→worker₂→...→supervisor).
-4. Выбор моделей opencode для каждой роли.
-5. Real-time обновление статуса.
+---
+
+## Что нового
+
+### v0.4.0 (2026-07-20)
+
+**Миграция bash→Python завершена.** Все 9 команд работают через Python core; `lib/*.sh` (10 файлов, ~1700 строк) удалены.
+
+- **Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1):** `bin/awf` резолвит симлинки через `os.path.realpath` — install через `ln -s` работает нативно.
+- **`awf/` Python package:** 22 модуля, ~2100 строк.
+- **163 теста:** 11 E2E (subprocess через `bin/awf`) + 152 unit (все модули `awf/`).
+- **`tests/run.sh` удалён** — заменён на pytest.
+
+### Timeline v0.3.x (миграция по волнам)
+
+- **v0.3.4** — weak-spots closure (find_active_todo, status warns, reset --orphans, init model prompt).
+- **v0.3.5** — pytest E2E harness + mock opencode stub.
+- **v0.3.6** — Wave 4a: `awf status` ported.
+- **v0.3.7** — Wave 4b: orchestrator ported (8 модулей).
+- **v0.3.8** — Wave 4c: 6 remaining commands ported.
+- **v0.3.9** — Wave 4d-part1: 152 unit tests.
+- **v0.4.0** — Wave 4d-part2: bash retired.
+
+---
+
+## На что смотреть дальше
+
+Краткий список направлений (детали — в [BACKLOG.md](BACKLOG.md)):
+
+1. **HTML dashboard** — веб-обёртка над CLI.
+2. **HTTP API** (`awf serve`) — REST-эндпоинты для dashboard.
+3. **Автоинициализация** (`awf bootstrap`) — по файлу требований.
+4. **Цепочки worker'ов** — supervisor→worker₁→worker₂→...→supervisor.
+5. **Роли-скиллы** — шаблоны для специализированных worker'ов.
+6. **Выбор моделей** — привязка LLM к каждой роли.
+7. **Real-time статус** — SSE/polling для dashboard.
+
+---
+
+## Лицензия
+
+MIT (см. `pyproject.toml`).

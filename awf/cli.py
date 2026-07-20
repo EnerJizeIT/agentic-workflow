@@ -31,8 +31,8 @@ def _print_top_level_help() -> int:
         "  --pipeline <name>    Pipeline to run (default: from config.yaml)\n"
         "  --from-stage <name>  Start from a specific stage\n"
         "  --auto               Skip supervisor interactive waits\n"
-        "  --background         (start only) Run detached via setsid — must be\n"
-        "                       passed BEFORE other args, handled by bin/awf\n"
+        "  --background         (start only) Run detached via setsid — writes\n"
+        "                       to .agentic/logs/awf-start.out\n"
         "  --timeout <seconds>  Agent timeout (default: 3600)"
     )
     return 0
@@ -101,6 +101,12 @@ def _dispatch_subcommand(argv):
 
     p_start = sub.add_parser("start", help="Start the pipeline from the beginning")
     _add_start_args(p_start)
+    p_start.add_argument(
+        "--background",
+        action="store_true",
+        help="Run detached (setsid) — don't block the terminal. Writes to "
+             ".agentic/logs/awf-start.out.",
+    )
 
     p_continue = sub.add_parser("continue", help="Resume an interrupted pipeline")
     _add_start_args(p_continue)
