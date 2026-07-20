@@ -20,16 +20,30 @@ errors out loudly instead of silently mis-parsing with regex.
 
 ## Install
 
+The CLI uses `${BASH_SOURCE[0]}` to locate its `lib/` directory, so it must be
+invoked from its real location. Install via a **wrapper script** instead of
+copying the binary:
+
 ```bash
-# Clone the framework (if not already)
+# 1) Clone the framework (if not already)
 git clone git@github.com:EnerJizeIT/agentic-workflow.git
 cd agentic-workflow
 
-# Make CLI available system-wide
-cp bin/awf ~/.local/bin/awf
+# 2) Create a wrapper in ~/.local/bin/
+cat > ~/.local/bin/awf << 'WRAPPER'
+#!/bin/bash
+# Replace the path below with the absolute path to your cloned repo's bin/awf
+exec "/absolute/path/to/agentic-workflow/bin/awf" "$@"
+WRAPPER
 chmod +x ~/.local/bin/awf
+```
 
-# Verify
+**Важно:** замени `/absolute/path/to/agentic-workflow/bin/awf` на реальный
+абсолютный путь к `bin/awf` в твоей копии репозитория. Просто скопировать
+`bin/awf` в `~/.local/bin/` **не сработает** — см. [issue #1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
+
+```bash
+# 3) Verify
 awf help
 ```
 
@@ -37,6 +51,20 @@ awf help
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+### Troubleshooting install
+
+- **"awf: command not found"** — `~/.local/bin` не в `$PATH`. Добавь
+  `export PATH="$HOME/.local/bin:$PATH"` в `~/.bashrc` и перезапусти терминал.
+
+- **"lib/orchestrator.sh: No such file or directory"** — использован `cp` или
+  `ln -s` вместо wrapper-скрипта. Переустанови по инструкции выше.
+  Подробности: [issue #1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
+
+- **`awf help` работает, но `awf start` падает с ошибкой пути** — в
+  wrapper-скрипте указан неправильный путь. Проверь:
+  `cat ~/.local/bin/awf` — строка `exec` должна указывать на реальный `bin/awf`
+  в твоей копии репозитория.
 
 ---
 
