@@ -14,7 +14,7 @@
 - **Auto-DONE** (v0.3.2+). Если worker не успел записать сигнал, но verify-команды прошли и есть work evidence — оркестратор синтезирует DONE автоматически.
 - **Auto-commit.** Стадии с `on_approved: commit_and_next` автоматически коммитят инкремент.
 - **Python core.** 22 модуля (~2100 строк) + тонкий bash-wrapper (36 строк).
-- **163 теста.** 11 E2E (subprocess через `bin/awf`) + 152 unit (все модули `awf/`).
+- **164 теста.** 12 E2E (subprocess через `bin/awf`) + 152 unit (все модули `awf/`).
 
 ---
 
@@ -165,7 +165,7 @@ templates/           # шаблоны для awf init
 protocols/           # спецификации
   communication.md   # спецификация файловой шины
 tests/
-  e2e/               # 11 тестов, bin/awf как subprocess
+  e2e/               # 12 тестов, bin/awf как subprocess
   unit/              # 152 теста для awf/*.py
   stubs/opencode     # mock для E2E
 proposal/            # 6 исторических дизайн-документов
@@ -351,7 +351,9 @@ python3 -m pytest tests/unit/test_signals.py -v
 python3 -m pytest tests/ --cov=awf --cov-report=term-missing
 ```
 
-163 теста: 11 E2E + 152 unit. E2E-тесты используют `tests/stubs/opencode` для mock'а worker'а — реальный opencode не требуется.
+164 теста: 12 E2E + 152 unit. E2E-тесты используют `tests/stubs/opencode` для mock'а worker'а — реальный opencode не требуется.
+
+**Покрытие кода:** `python3 -m pytest tests/ --cov=awf` формально показывает ~21%, потому что pytest-cov не отслеживает subprocess execution — а именно через subprocess (bin/awf) запускаются все E2E-тесты, покрывающие `cmd_*.py`, `cli.py`, `orchestrator.py`. Реальное покрытие этих модулей обеспечивается E2E. Helper-модули (`signals.py`, `pipeline.py`, `transitions.py`, `verify.py`, `todos.py`, `git_utils.py`, `config.py`, `paths.py`, `yaml_utils.py`) покрыты unit-тестами на 91-100%.
 
 ---
 
@@ -371,7 +373,7 @@ python3 -m pytest tests/ --cov=awf --cov-report=term-missing
 
 - **Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1):** `bin/awf` резолвит симлинки через `os.path.realpath` — install через `ln -s` работает нативно.
 - **`awf/` Python package:** 22 модуля, ~2100 строк.
-- **163 теста:** 11 E2E (subprocess через `bin/awf`) + 152 unit (все модули `awf/`).
+- **164 теста:** 12 E2E (subprocess через `bin/awf`) + 152 unit (все модули `awf/`).
 - **`tests/run.sh` удалён** — заменён на pytest.
 
 ### Timeline v0.3.x (миграция по волнам)
