@@ -1,376 +1,215 @@
-# BACKLOG: agentic-workflow
+# BACKLOG
 
-> **Для Supervisor:** каждая задача описана на уровне «что построить». Worker самостоятельно определяет реализацию. Опускаться до Find/Replace — только если предыдущие попытки не сработали.
-
----
-
-## Prohibitions
-
-- DO NOT break existing CLI (`awf init`, `awf start`) without backward compatibility.
-- DO NOT introduce new external dependencies (npm packages, Python libs) unless explicitly required by the task.
-- DO NOT change the file-bus protocol (`.ready` signals, inbox/outbox structure) without updating `protocols/communication.md` simultaneously.
-- DO NOT commit documentation-only changes for tasks that require code implementation.
+> План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture v1.0](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
 ---
 
-## ✅ Done in v0.4.0 (Wave 4d-part2)
+## ✅ Done
 
-- [x] **Bash retired.** All `lib/*.sh` (10 files, ~1700 lines) deleted.
-- [x] **`bin/awf` — thin wrapper.** ~25 lines, delegates everything to `python3 -m awf`.
-- [x] **Symlink install works natively.** `os.path.realpath` resolves all symlinks. Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
-- [x] **`tests/run.sh` (102 bash tests) removed.** Superseded by 152 Python unit tests + 11 E2E = 163 total.
-- [x] **README simplified.** `ln -s` install, no wrapper-script boilerplate.
+### awf v0.4.0 (текущий релиз)
 
-### Migration timeline (v0.3.x)
+- Wave 4: миграция bash→Python завершена. `lib/*.sh` удалены, `awf/` Python package = 22 модуля.
+- `bin/awf` — thin wrapper через `os.path.realpath`. Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
+- 163 теста (11 E2E + 152 unit), CI на Python 3.9-3.12.
+- README на русском, LICENSE, GitHub Actions.
+- Vision и Architecture для `agent-workflow-ui` plugin'а зафиксированы.
 
-- **v0.3.4:** weak-spots closure (find_active_todo picks newest, status warns, reset --orphans, init model prompt).
-- **v0.3.5:** pytest E2E harness with mock opencode stub.
-- **v0.3.6:** Wave 4a — `awf status` ported to Python. `awf/` package created (7 modules).
-- **v0.3.7:** Wave 4b — orchestrator ported (8 modules, ~890 lines bash → Python).
-- **v0.3.8:** Wave 4c — remaining 6 commands ported (init, reset, add-role, baseline, rollback, report).
-- **v0.3.9:** Wave 4d-part1 — 152 Python unit tests covering all modules.
-- **v0.4.0:** Wave 4d-part2 — bash retired, `bin/awf` thin wrapper, symlink install fixed.
+### Прошлые волны (хронология)
 
-## ✅ Done in v0.2.0
-
-- [x] Оркестратор читает стадии из YAML pipeline файла.
-- [x] Поддержка всех сигналов: DONE, BLOCKED, REVIEW-APPROVED/REJECTED, TEST-PASSED/FAILED.
-- [x] Retry логика с эскалацией на supervisor'а.
-- [x] Переходы между стадиями по правилам `on_*` из конфига (next, rollback_to, escalate, stop).
-- [x] Опции `--pipeline`, `--from-stage`, `--auto`, `--timeout` для `awf start`.
-- [x] Инструкции supervisor/worker переписаны для capable модели (Mode A/B/C).
-
-## ✅ Done in v0.3.0
-
-- [x] Progress tracking — worker пишет `PROGRESS-{NNNN}.md` после каждого Task.
-- [x] 3-Strike Error Protocol — структурированный протокол retries (attempt 1→2→3→escalate).
-- [x] Session recovery — worker восстанавливается с последнего checkpoint.
-- [x] Read/Write decision matrix в инструкции worker'а.
-- [x] `awf status` показывает прогресс активных задач.
-- [x] Оркестратор показывает прогресс при ожидании сигнала.
-- [x] BLOCKED-отчёт включает таблицу попыток.
-
-## ✅ Done in v0.3.1 (dogfooding hardening)
-
-Правки, найденные при реальном использовании awf на проекте opencode-session-manager
-(supervisor↔worker цикл, несколько итераций). Каждая — реальный дефект, не ловившийся
-юнит-тестами до end-to-end прогона.
-
-- [x] **Промпт после `--`** (`b7bb9f6`) — жадный yargs `--file [array]` проглатывал
-  trailing-промпт как файл (`Error: File not found: <промпт>`), worker вообще не запускался.
-  Фикс: `--` перед промптом в `opencode run`.
-- [x] **Commit/push gap** (`9dee8f6`) — по контракту worker не коммитит, но у supervisor'а
-  не было шага commit+push, а `on_approved: commit_and_next` на verify-стадии был мёртвым
-  конфигом. Фикс: `maybe_commit_on_policy()` (вызывается и из agent-stage, и из verify/finalize)
-  + Step 8 «Commit & push» в `supervisor.md` + запрет/уточнение в `worker.md`.
-- [x] **Orphan-signal salvage** (`9dee8f6`) — worker заканчивал код, но не успевал написать
-  DONE → awf бросал работу. Фикс: при отсутствии сигнала — `detect_work_evidence` (git diff
-  vs baseline) + supervisor salvage-стадия; в `--auto` TODO остаётся активной для ручного salvage.
-- [x] **`wait_for_signal` stderr** (`9dee8f6`) — диагностика («Waiting…/TIMEOUT…») шла в stdout
-  и загрязняла `SIGNAL=$(…)` → `signal_type "unknown" → stop`. Фикс: диагностика в stderr,
-  на stdout только имя сигнала.
-- [x] **Untracked-evidence** (`e391186`) — `detect_work_evidence` проверял только `git diff`
-  (tracked), новые untracked-файлы не видел → ложно «no work». Фикс: добавлен
-  `git ls-files --others --exclude-standard`.
-- [x] **Worker self-test ban** (`29cce90`) — worker вешал итерацию, вызывая `opencode` CLI
-  для self-test (вложенные сессии). Фикс: запрет в `worker.md` §4; verify — только настроенные
-  команды (`bun build`, `pytest`, …).
-- [x] Тесты 58 → **74** (maybe_commit_on_policy, wait_for_signal stdout-isolation regression,
-  detect_work_evidence clean/changed/untracked/no-baseline).
-
-## ✅ Done in v0.3.2 (auto-DONE)
-
-- [x] **Auto-DONE on verify-pass** — главная боль v0.3.x (worker исчерпывал бюджет ходов до
-  записи DONE → ~6 из 8 итераций шли через salvage). Теперь, если worker не написал сигнал,
-  оркестратор сам синтезирует DONE при условиях: прошли **структурированные verify-команды**
-  из `config.yaml` (`verification.typecheck_cmd`/`build_cmd`/`test_cmd`) И есть работа
-  (`detect_work_evidence`). Опционально отключается через `automation.auto_done: false`.
-  Заменяет Salvage — при работающих тестах не требует ручного вмешательства.
-
-## ✅ Done in v0.3.3 (reuse-readiness)
-
-Правки, делающие awf пригодным для **чужих** проектов (не только dogfood), — найдены при
-аудите готовности к переиспользованию.
-
-- [x] **Signal-naming tolerance** (correctness bug) — `worker.md` инструктировал короткий
-  `DONE-{NNNN}`, а оркестратор искал `DONE-TODO-{NNNN}` → TODO «зависал» и перезапускался
-  (бьёт каждого нового пользователя). `read_signal_for_todo`/`find_active_todo` теперь
-  принимают оба формата; role-шаблоны стандартизированы на каноничном `{PREFIX}-TODO-{NNNN}`.
-- [x] **`awf init` создаёт opencode-агентов** — главный gotcha: без агента `worker` `awf start`
-  не может его породить. Init теперь предлагает добавить `worker` (+`reviewer`/`tester` для
-  full) в `~/.config/opencode/opencode.json`, переиспользуя модель существующего агента
-  (backup + additive через python3).
-- [x] **`awf start --background`** — detached-запуск (setsid + redirect в лог). Раньше `awf start`
-  блокировал терминал / убивался с ним (мы танцевали с wrapper+setsid). Теперь первая
-  команда для фоновой работы.
-- [x] **verify-команды подчеркнуты в init** как load-bearing для auto-DONE.
+- **v0.3.4** — weak-spots closure (find_active_todo, status warns, reset --orphans, init model prompt).
+- **v0.3.5** — pytest E2E harness + mock opencode stub.
+- **v0.3.6** — Wave 4a: `awf status` ported to Python.
+- **v0.3.7** — Wave 4b: orchestrator ported (8 modules).
+- **v0.3.8** — Wave 4c: 6 remaining commands ported.
+- **v0.3.9** — Wave 4d-part1: 152 unit tests.
+- **v0.4.0** — Wave 4d-part2: bash retired.
 
 ---
 
-### Task 1 · HTML dashboard как обертка над CLI
+## 🚧 Current: MVP — agent-workflow-ui plugin
 
-**Files:** `dashboard/` (new directory), `bin/awf`
+**Goal:** реализовать [Сценарий 1 — Конструктор конфигурации](vision/agent-ui-plugin.md#сценарий-1-mvp--priority-1--конструктор-конфигурации) из Product Vision. Пользователь начинает новый проект, открывается HTML-форма с выбором ролей/скиллов/моделей/pipeline, submit → сгенерированная конфигурация.
 
-**Description:**
+**Scope:** [`vision/architecture.md`](vision/architecture.md) §12.1. Вне scope — dashboards, runtime forms, pipeline-declared forms, `awf-mcp`.
 
-Создать одностраничное HTML-приложение (один файл, без сборщиков и фреймворков), которое служит веб-оберткой над CLI. Пользователь, далекий от терминала, должен через браузер:
+### Epic 1 · Package skeleton & infrastructure
 
-- Видеть текущий статус воркфлоу (какая роль активна, что происходит).
-- Инициализировать проект (`awf init`).
-- Запускать пайплайн (`awf start`).
-- Смотреть логи и отчеты из `.agentic/outbox/`.
-- Делать rollback и baseline.
+Создать структуру `agent_workflow_ui/` как отдельный Python package внутри monorepo.
 
-Технические требования:
-- Один HTML-файл, встроенные CSS + JS (как в скилле `html-presentation`).
-- Адаптивная вёрстка.
-- Данные получаются через локальный HTTP API (см. Task 2).
-- Файл доступен через `awf serve` — запускает простой HTTP-сервер.
+- [ ] **1.1** Создать `agent_workflow_ui/` package с `__init__.py`, `__main__.py`, `pyproject.toml` (separate dist).
+- [ ] **1.2** Зависимости: `mcp` (official SDK), `jinja2>=3.1`, `pyyaml>=6.0`. Python ≥3.9.
+- [ ] **1.3** `config.py` — чтение env vars (`AWF_INPUTS_DIR`, `AWF_TEMPLATES_DIR`, `AWF_HTTP_PORT`, ...), path resolution, idempotent directory creation.
+- [ ] **1.4** `state.py` — in-memory registry открытых форм (form_id → metadata).
+- [ ] **1.5** Запуск plugin'а локально: `python -m agent_workflow_ui` запускается без ошибок, логирует startup.
+- [ ] **1.6** Workspace setup: root `pyproject.toml` без пакетов, dev-install через `pip install -e ./awf -e ./agent_workflow_ui`.
 
-**Constraints:**
-- Не ломать существующую CLI-функциональность.
-- Dashboard — опциональная надстройка; CLI продолжает работать автономно.
+**Verify:** `python -m agent_workflow_ui --help` работает, `pip install -e ./agent_workflow_ui` succeeds.
 
-**Verify:** `awf serve` запускает сервер, страница открывается, кнопки работают.
+### Epic 2 · MCP server (stdio transport)
 
-**Done when:** Страница отображает статус воркфлоу, позволяет выполнить основные операции (init, start, status, rollback).
+Реализовать MCP server через official `mcp` SDK.
+
+- [ ] **2.1** `server.py` — MCP server lifecycle (start, register tools, handle requests, shutdown).
+- [ ] **2.2** Stdio transport (JSON-RPC over stdin/stdout).
+- [ ] **2.3** Tool registry: 5 tools зарегистрированы (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`).
+- [ ] **2.4** Integration manual test: plugin подключён в opencode config, agent видит tools через `/mcp` или аналог.
+
+**Verify:** при подключении в opencode agent видит 5 tools с корректными schemas.
+
+### Epic 3 · HTTP endpoint
+
+Localhost HTTP server для приёма form submits.
+
+- [ ] **3.1** `http_endpoint.py` — HTTP server на `127.0.0.1:AWF_HTTP_PORT` (default: auto-select free port).
+- [ ] **3.2** `POST /submit/<form_id>` — парсит form-encoded body, валидирует form_id, пишет `.agentic/inputs/<form_id>.yaml`.
+- [ ] **3.3** `GET /health` — health check.
+- [ ] **3.4** Limits: max body size 1MB, only POST on `/submit/<form_id>`, остальные запросы отбрасываются.
+- [ ] **3.5** Submit acknowledgement page: после POST browser показывает «Submitted! Form ID: ...» с кнопкой «вернуться в CLI».
+
+**Verify:** POST через `curl` создаёт `.agentic/inputs/FORM-001.yaml` с правильным содержимым.
+
+### Epic 4 · Rendering layer
+
+Jinja2 rendering с frontmatter-aware templates.
+
+- [ ] **4.1** `render/engine.py` — Jinja2 Environment с autoescape, custom globals (`submit_url`, `form_id`, `template_name`).
+- [ ] **4.2** `render/frontmatter.py` — YAML frontmatter parser для `.html.j2` файлов.
+- [ ] **4.3** Template discovery: project templates (`.agentic/templates/*.html.j2`) override defaults (`render/default_templates/*.html.j2`) по имени.
+- [ ] **4.4** Plugin-injected variables доступны всем templates.
+
+**Verify:** `render_template("role-assignment", data={...})` возвращает валидный HTML с `<form action="{{ submit_url }}">`.
+
+### Epic 5 · Browser integration
+
+Cross-platform browser open.
+
+- [ ] **5.1** `browser.py` — wrapper для `xdg-open` (Linux) / `open` (macOS) / `auto` (detect platform).
+- [ ] **5.2** Fallback error handling с понятным сообщением («browser open failed, проверь окружение»).
+- [ ] **5.3** Temp HTML files cleanup на plugin shutdown.
+
+**Verify:** на Linux `xdg-open temp.html` открывает системный browser.
+
+### Epic 6 · Default templates (5 templates для Сценария 1)
+
+Шаблоны форм, ships with plugin.
+
+- [ ] **6.1** `role-assignment.html.j2` — multi-select ролей (worker/reviewer/tester) + file picker для кастомных.
+- [ ] **6.2** `skill-picker.html.j2` — multi-select скиллов + file picker.
+- [ ] **6.3** `model-picker.html.j2` — dropdown моделей для каждой выбранной роли.
+- [ ] **6.4** `pipeline-picker.html.j2` — radio (simple / full / custom file upload).
+- [ ] **6.5** `conflict-resolver.html.j2` — мини-форма (replace / save-as / cancel) для случаев когда кастомная роль конфликтует с дефолтной.
+- [ ] **6.6** Все templates с YAML frontmatter (description, required_data_keys, optional_data_keys).
+- [ ] **6.7** Минимальный inline CSS для readability (без внешних зависимостей).
+
+**Verify:** каждый template рендерится с minimum required data, HTML валидный.
+
+### Epic 7 · MCP tools implementation
+
+5 tools полностью реализованы (specs в [`architecture.md`](vision/architecture.md) §6).
+
+- [ ] **7.1** `open_form(template, data, ttl_seconds?)` → `{form_id, browser_opened, submit_url}`.
+- [ ] **7.2** `read_submit(form_id)` → `{submitted, data?, status, ...}`.
+- [ ] **7.3** `cancel_form(form_id)` → `{cancelled, form_id}`.
+- [ ] **7.4** `list_pending_forms()` → `{pending: [...], count}`.
+- [ ] **7.5** `list_templates()` → `{templates: [...]}` с metadata из frontmatter.
+- [ ] **7.6** Form ID generator: `FORM-001`, `FORM-002`, ... (max existing NNN + 1).
+
+**Verify:** integration test — полный lifecycle формы от open до read.
+
+### Epic 8 · SKILL.md
+
+LLM policy: когда/как использовать формы.
+
+- [ ] **8.1** `agent_workflow_ui/SKILL.md` — инструкция для LLM (когда форма, когда chat, patterns, mistakes to avoid). Draft в [`architecture.md`](vision/architecture.md) §9.
+- [ ] **8.2** Установка SKILL.md в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` (или аналог для текущего opencode).
+
+**Verify:** agent при тестовом сценарии «настрой проект» осознанно выбирает форму вместо chat.
+
+### Epic 9 · Testing
+
+Покрытие ≥80%.
+
+- [ ] **9.1** Unit tests в `tests/agent_workflow_ui/`: `test_render.py`, `test_forms.py`, `test_browser.py`, `test_http_endpoint.py`, `test_templates.py`, `test_frontmatter.py`.
+- [ ] **9.2** Integration tests в `tests/integration/`: `test_form_lifecycle.py` (full MCP+HTTP+file lifecycle), `test_submit_via_http.py`.
+- [ ] **9.3** Coverage report ≥80% на `agent_workflow_ui/`.
+- [ ] **9.4** CI matrix: добавить `agent_workflow_ui/` в существующий GitHub Actions workflow.
+
+**Verify:** `pytest tests/agent_workflow_ui/ tests/integration/ -v` проходит, coverage ≥80%.
+
+### Epic 10 · Documentation & release
+
+Финальная полировка для release.
+
+- [ ] **10.1** `agent_workflow_ui/README.md` — quick start, installation, usage examples.
+- [ ] **10.2** Обновить `protocols/communication.md` — добавить секции про `.agentic/inputs/` и `.agentic/templates/`.
+- [ ] **10.3** Обновить корневой `README.md` — упомянуть plugin.
+- [ ] **10.4** PyPI publish: `agent-workflow-ui` как separate package.
+- [ ] **10.5** `awf init` prompt: «Установить agent-workflow-ui plugin? [y/N]» → если yes, добавляет MCP block в `~/.config/opencode/opencode.json`.
+- [ ] **10.6** Release notes (CHANGELOG.md или GitHub Release).
+
+**Verify:** новый пользователь ставит plugin по инструкции, открывает форму через агента, получает submit.
 
 ---
 
-### Task 2 · Локальный HTTP API для dashboard
+## 🔮 Future scenarios (после MVP)
 
-**Files:** `lib/server.sh` (new), `bin/awf`
+В порядке приоритета из [Vision §6](vision/agent-ui-plugin.md#6-пользовательские-сценарии). Каждый — отдельный epic, после MVP.
 
-**Description:**
-
-Добавить подкоманду `awf serve` которая запускает минимальный HTTP-сервер на порту (по умолчанию 8080). Сервер предоставляет REST API:
-
-| Endpoint | Method | Описание |
+| Сценарий | Что добавляет | Сложность |
 |---|---|---|
-| `/api/status` | GET | Текущий статус воркфлоу (роли, сигналы, последний TODO) |
-| `/api/init` | POST | Инициализация проекта `{projectDir, pipeline}` |
-| `/api/start` | POST | Запуск пайплайна `{taskFile}` |
-| `/api/logs` | GET | Лог оркестратора |
-| `/api/outbox` | GET | Список DONE/BLOCKED отчетов |
-| `/api/report/{id}` | GET | Содержимое конкретного отчета |
-| `/api/baseline` | POST | Создание бейзлайна |
-| `/api/rollback` | POST | Откат к бейзлайну |
-| `/api/models` | GET | Список доступных моделей opencode |
-
-Сервер выполняет соответствующие CLI-команды (`awf status`, `awf init` и т.д.) и возвращает JSON.
-
-**Constraints:**
-- Использовать встроенные инструменты (bash `ncat`, `socat`, или Python `http.server` — то, что доступно).
-- Не блокировать CLI при работающем сервере (запуск в фоне).
-- Кроссплатформенность (Linux/macOS).
-
-**Verify:** Каждый endpoint возвращает корректный JSON.
-
-**Done when:** Все endpoints работают, dashboard может получать данные.
+| **2 · Decision fork** | Runtime ad-hoc forms (в любом месте pipeline). Шаблон `decision-tree.html.j2`. | Low |
+| **3 · Blockage recovery** | Шаблон `blockage-recovery.html.j2`. Multi-step flow (проблема → варианты → выбор → комментарий). | Medium |
+| **4 · Long-running monitoring** | Dashboard rendering, `dashboard.html.j2`, meta-refresh. | Medium |
+| **5 · Priority planning** | Drag-and-drop UI, новый тип template `priority-matrix.html.j2`. | High |
+| **6 · Onboarding wizard** | Multi-form state, conditional logic между формами. | High |
 
 ---
 
-### Task 3 · Автоинициализация по файлу требований
+## 🔮 Future epic · `awf-mcp` (separate MCP server)
 
-**Files:** `lib/bootstrap.sh` (new), `bin/awf`
+[Architecture §4.3](vision/architecture.md) — отдельный MCP server для awf-specific state queries. Не зависит от `agent-workflow-ui`.
 
-**Description:**
+- [ ] `awf_mcp/` package (separate dist).
+- [ ] Tools: `get_active_todos()`, `get_pipeline_state()`, `get_progress(todo_id)`, `get_recent_signals(limit)`, `list_roles()`, `list_pipelines()`.
+- [ ] Работает поверх `.agentic/` file bus.
+- [ ] Когда нужен: как только scenarios 2+ требуют от агента быстрый доступ к состоянию awf без file reads.
 
-Пользователь передает файл с требованиями (Markdown/TXT/PDF). Приложение должно:
-
-1. Проверить, есть ли `.agentic/` в текущем каталоге.
-2. **Если нет** — автоматически создать структуру:
-   - `.agentic/config.yaml` (дефолтный конфиг).
-   - `.agentic/pipelines/simple.yaml` (копия из шаблонов).
-   - `.agentic/roles/` (копии ролей из шаблонов).
-   - `.agentic/inbox/`, `.agentic/outbox/`, `.agentic/logs/`, `.agentic/context/`.
-3. Сохранить файл требований как `.agentic/phases/plan.md` — стартовую точку для Supervisor.
-4. Supervisor анализирует файл требований и декомпозирует задачи в TODO листы.
-
-Новая подкоманда: `awf bootstrap <requirements-file>` — делает всё вышеописанное.
-
-**Constraints:**
-- Если `.agentic/` уже существует — спросить пользователя (перезаписать / продолжить / отмена).
-- Поддержать форматы: `.md`, `.txt`, `.pdf`.
-
-**Verify:** `awf bootstrap requirements.md` создает структуру, `plan.md` записан.
-
-**Done when:** Файл требований загружен, структура создана, Supervisor готов к работе.
+**Trigger для старта:** Scenario 2 (Decision fork) потребует от supervisor'а контекст «на какой стадии pipeline, что worker уже сделал». Вместо ручных `cat` — typed MCP queries.
 
 ---
 
-### Task 4 · Цепочка worker'ов (supervisor→worker₁→worker₂→...→supervisor)
+## 🔮 Future considerations
 
-**Files:** `lib/orchestrator.sh`, `templates/pipelines/`
+Идеи для далёкого future, не связанные с конкретным сценарием:
 
-**Description:**
-
-Расширить оркестратор для поддержки последовательной передачи задачи между несколькими worker'ами с разными ролями. Каждый worker работает с одним и тем же TODO, но применяет свою специализацию. Результат одного worker'а (изменения в файлах + отчет) становится контекстом для следующего.
-
-Пример pipeline YAML:
-
-```yaml
-stages:
-  - name: "plan"
-    role: "supervisor"
-    action: "create_todo"
-
-  - name: "implement"
-    role: "backend-developer"
-    action: "execute_todo"
-    on_blocked: "escalate"
-    max_retries: 3
-
-  - name: "add-tests"
-    role: "test-writer"
-    action: "execute_todo"
-    on_blocked: "escalate"
-
-  - name: "review"
-    role: "code-reviewer"
-    action: "review_code"
-    on_approved: "next"
-    on_rejected: "rollback_to:implement"
-
-  - name: "verify"
-    role: "supervisor"
-    action: "verify_result"
-```
-
-Оркестратор уже поддерживает произвольные роли через YAML (v0.2.0). Нужно:
-1. Убедиться, что каждый worker видит изменения предыдущего (git diff перед запуском).
-2. Добавить прогресс-отображение: "Worker 2 of 4: test-writer".
-3. Добавить шаблон pipeline с цепочкой worker'ов.
-
-**Constraints:**
-- Обратная совместимость: один worker работает как раньше.
-- Порядок стадий в YAML определяет порядок передачи.
-
-**Verify:** Пайплайн с 3+ worker-стадиями выполняется последовательно, каждый видит работу предыдущего.
-
-**Done when:** Цепочка worker'ов работает, прогресс отображается, каждый worker видит контекст предыдущих.
+- **HTTP transport для MCP** — для remote plugin deployment (team-shared).
+- **Real-time updates через SSE/WebSocket** — smooth dashboard refresh.
+- **Multi-user** — collaborative forms (одна форма, несколько respondents).
+- **Mobile-friendly templates** — адаптивные формы для mobile browsers.
+- **Form validation DSL** — declarative validation rules в frontmatter.
+- **Form history & undo** — «в прошлой итерации выбрали X, пересматриваем».
+- **Voice interface** — speech-to-text для форм (аналог ChatGPT voice).
 
 ---
 
-### Task 5 · Роли и скиллы для worker'ов
+## ❌ Deprecated (старый BACKLOG Tasks 1-7)
 
-**Files:** `templates/roles/`, `lib/add-role.sh`
+Следующие задачи из предыдущей версии BACKLOG **более не актуальны** после стратегического pivot (см. [vision/agent-ui-plugin.md §1.2](vision/agent-ui-plugin.md)) — переход от «HTML-over-CLI dashboard» к «CLI primary + HTML supplement через MCP plugin».
 
-**Description:**
-
-Расширить систему ролей для поддержки специализированных worker'ов:
-
-1. Создать шаблонные роли-скиллы:
-   - `backend-developer.md` — разработка серверной части.
-   - `frontend-developer.md` — фронтенд и UI.
-   - `test-writer.md` — написание и исправление тестов.
-   - `code-reviewer.md` — ревью кода, поиск багов.
-   - `docs-writer.md` — документация.
-   - `security-auditor.md` — аудит безопасности.
-
-2. Каждая роль — это Markdown-файл с инструкциями (как существующие `supervisor.md` / `worker.md`).
-
-3. Команда `awf add-role <role-name>` копирует шаблон роли в `.agentic/roles/`.
-
-4. Supervisor при создании pipeline выбирает роли из доступных шаблонов.
-
-**Constraints:**
-- Роли должны быть расширяемыми: пользователь может создавать свои.
-- Шаблон новой роли генерируется по образцу `worker.md`.
-
-**Verify:** `awf add-role test-writer` создает файл, пайплайн использует роль.
-
-**Done when:** 6 шаблонных ролей созданы, можно добавлять и комбинировать их в пайплайне.
+| Старая задача | Статус | Что вместо неё |
+|---|---|---|
+| Task 1: HTML dashboard как SPA | ❌ Deprecated | Сценарий 4 (Dashboard rendering) — static HTML, не SPA. |
+| Task 2: HTTP API (`awf serve`) | ❌ Deprecated | HTTP endpoint внутри MCP server, не REST API. См. Epic 3. |
+| Task 3: `awf bootstrap <requirements>` | ❌ Deprecated | Сценарий 6 (Onboarding wizard) — через forms, не CLI команду. |
+| Task 4: Цепочки worker'ов | ✅ Сохраняется | Актуально для awf-core, вне scope plugin'а. |
+| Task 5: Шаблоны ролей (6 штук) | ✅ Сохраняется | Актуально для awf-core, частично через plugin (file picker в `role-assignment`). |
+| Task 6: Выбор моделей | ✅ Интегрировано | В MVP через `model-picker.html.j2` (Epic 6.3). |
+| Task 7: Real-time SSE | ❌ Deprecated на сейчас | Meta-refresh в Сценарии 4. SSE/WebSocket — far future. |
 
 ---
 
-### Task 6 · Выбор и настройка моделей для участников
+## 📋 Декомпозиция и запуск
 
-**Files:** `bin/awf`, `templates/config.yaml`
+Каждый epic перед стартом работы **декомпозируется в awf TODO** через supervisor↔worker pattern. Порядок выполнения epics в MVP — последовательный (1 → 2 → 3 → ...), но внутри epics задачи могут параллелиться.
 
-**Description:**
-
-Дать возможность выбрать LLM-модель для каждой роли из списка доступных моделей opencode.
-
-Функциональность:
-
-1. Команда `awf models list` — показывает доступные модели (через opencode API или конфигурацию).
-
-2. Конфиг поддерживает привязку модели к роли:
-
-```yaml
-models:
-  default: "claude-sonnet-4-20250514"
-  roles:
-    supervisor: "gpt-4.1"
-    worker: "claude-sonnet-4-20250514"
-    reviewer: "gemini-2.5-pro"
-```
-
-3. По умолчанию одна модель для всех, но можно переопределить для конкретной роли.
-
-4. При запуске воркфлоу оркестратор передает модель в соответствующий агент.
-
-**Constraints:**
-- Список моделей берется из opencode (проверить, какой API/конфиг используется).
-- Если указанная модель недоступна — fallback на default.
-
-**Verify:** `awf models list` выводит список, `awf start` использует правильные модели.
-
-**Done when:** Модели выбираются через CLI и конфиг, применяются к ролям при запуске.
-
----
-
-### Task 7 · Real-time обновление статуса на странице
-
-**Files:** `dashboard/index.html`, `lib/server.sh`
-
-**Description:**
-
-Dashboard должен обновлять статус в реальном времени, показывая:
-
-1. **Текущая фаза пайплайна:** кто сейчас активен (Supervisor / Worker N / Reviewer).
-2. **Передача задач:** визуальное отображение потока (Supervisor → Worker 1 → Worker 2 → ... → Supervisor).
-3. **Прогресс:** сколько задач выполнено из общего числа в TODO.
-4. **Логи:** последние строки лога оркестратора.
-5. **Блокировки:** если задача BLOCKED — показать причину и предложить действия.
-
-Техническая реализация:
-- WebSocket или Server-Sent Events (SSE) для real-time обновления.
-- Если SSE недоступен — polling каждые 2 секунды через `/api/status`.
-- Визуальная схема пайплайна: узлы (роли) соединены стрелками, активный узел подсвечен.
-
-UI-элементы:
-- Верхняя панель: текущий этап, прогресс-бар.
-- Центральная область: схема пайплайна с анимацией передачи.
-- Нижняя панель: лог-вывод (скроллируемый, моноширинный шрифт).
-- Боковая панель: список DONE/BLOCKED отчетов с возможностью просмотра.
-
-**Constraints:**
-- Не перегружать страницу — обновление только изменившихся данных.
-- Грация degradation: если SSE недоступен, polling работает.
-
-**Verify:** При запущенном пайплайне страница обновляется без перезагрузки.
-
-**Done when:** Страница показывает real-time статус, схему пайплайна, логи и отчеты.
-
----
-
-## Зависимости
-
-```
-Task 1 (Dashboard) → Task 2 (API) → Task 7 (Real-time)
-Task 3 (Bootstrap)  → независимо
-Task 4 (Chain)      → independently (orchestrator already reads YAML)
-Task 5 (Roles)      → независимо
-Task 6 (Models)     → независимо
-```
-
-Рекомендуемый порядок реализации:
-1. **Task 2** — API (база для dashboard).
-2. **Task 3** — Bootstrap (автоинициализация).
-3. **Task 4** — Цепочка worker'ов (расширение оркестратора).
-4. **Task 5** — Роли (шаблоны worker'ов).
-5. **Task 1** — Dashboard (сборка UI поверх API).
-6. **Task 6** — Модели (выбор LLM).
-7. **Task 7** — Real-time (дополнение dashboard).
+Когда начинать: после согласования этого BACKLOG'а и фиксации через git commit. Первый epic (1. Package skeleton) — отправная точка.

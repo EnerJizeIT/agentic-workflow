@@ -168,7 +168,7 @@ tests/
   e2e/               # 12 тестов, bin/awf как subprocess
   unit/              # 152 теста для awf/*.py
   stubs/opencode     # mock для E2E
-proposal/            # 6 исторических дизайн-документов
+docs/history/         # исторические дизайн-документы (до реализации)
 BACKLOG.md           # план развития
 ```
 
@@ -360,7 +360,7 @@ python3 -m pytest tests/ --cov=awf --cov-report=term-missing
 ## Спецификации и история
 
 - [protocols/communication.md](protocols/communication.md) — спецификация файловой шины (сигналы, naming canonical vs legacy, task lifecycle, safety).
-- `proposal/` — 6 дизайн-документов с исходной архитектурой (историческая справка).
+- `docs/history/` — исходные дизайн-документы awf (до реализации, bash era). Историческая справка.
 - [BACKLOG.md](BACKLOG.md) — план развития (Tasks 1-7: dashboard, HTTP API, bootstrap, цепочки worker'ов, роли-скиллы, модели, real-time).
 
 ---
