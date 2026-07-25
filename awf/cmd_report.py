@@ -1,4 +1,6 @@
 """Port of lib/report.sh — ``awf report`` command."""
+from __future__ import annotations
+
 import subprocess
 from datetime import datetime
 from pathlib import Path

@@ -1,4 +1,6 @@
 """Argparse dispatcher — routes subcommands to cmd_*.py modules."""
+from __future__ import annotations
+
 import argparse
 import sys
 

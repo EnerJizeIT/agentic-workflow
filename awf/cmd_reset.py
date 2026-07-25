@@ -1,4 +1,6 @@
 """Port of lib/reset.sh — ``awf reset`` command."""
+from __future__ import annotations
+
 import os
 import subprocess
 import time

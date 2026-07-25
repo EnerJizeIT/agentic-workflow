@@ -1,4 +1,6 @@
 """Port of lib/baseline.sh — ``awf baseline`` command."""
+from __future__ import annotations
+
 import shutil
 import subprocess
 from pathlib import Path

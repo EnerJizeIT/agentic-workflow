@@ -1,4 +1,6 @@
 """YAML helpers — dotted-path get and stage extraction."""
+from __future__ import annotations
+
 from pathlib import Path
 
 import yaml

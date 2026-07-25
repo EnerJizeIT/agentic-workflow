@@ -1,4 +1,6 @@
 """Path resolution for .agentic/ directories."""
+from __future__ import annotations
+
 from pathlib import Path
 
 

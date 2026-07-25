@@ -1,4 +1,6 @@
 """Port of lib/todos.sh — shared helpers for enumerating TODOs."""
+from __future__ import annotations
+
 from pathlib import Path
 
 

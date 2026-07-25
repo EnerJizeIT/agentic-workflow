@@ -1,4 +1,6 @@
 """Port of lib/add-role.sh — ``awf add-role`` command."""
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
