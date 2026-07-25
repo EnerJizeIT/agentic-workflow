@@ -13,6 +13,10 @@ dist/
 htmlcov/
 .tox/
 
+# awf dogfood: when running awf commands inside this repo (e.g. E2E tests,
+# manual smoke tests), `.agentic/` gets created in cwd. Never commit it.
+.agentic/
+
 # Editor / OS
 .vscode/
 .idea/
