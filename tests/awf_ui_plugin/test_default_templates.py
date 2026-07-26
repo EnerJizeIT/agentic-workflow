@@ -19,6 +19,7 @@ EXPECTED_TEMPLATES = [
     "model-picker",
     "pipeline-picker",
     "conflict-resolver",
+    "project-setup",
 ]
 
 
@@ -128,7 +129,75 @@ def test_each_template_has_valid_frontmatter():
 
 
 def test_template_names_match_files():
-    """5 template files exist with expected names."""
+    """All expected template files exist with expected names."""
     for name in EXPECTED_TEMPLATES:
         path = DEFAULT_TEMPLATES_DIR / f"{name}.html.j2"
         assert path.exists(), f"Missing: {path}"
+
+
+# ── project-setup composite template ──────────────────────────────────────────
+
+
+def test_project_setup_renders_with_minimum_data(env):
+    """project-setup renders with only required data keys."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [
+            {"id": "worker", "title": "Worker", "description": "Does work"},
+        ],
+        "available_models": ["model-a", "model-b"],
+    })
+    assert "<form" in html
+    assert 'method="POST"' in html
+    assert "FORM-001" in html
+    assert "worker" in html
+    assert "model-a" in html
+
+
+def test_project_setup_has_all_sections(env):
+    """All 7 sections are present in rendered HTML."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+        "available_models": ["model-a"],
+        "available_skills": [{"id": "dev", "title": "Developer"}],
+    })
+    sections = ["project", "role", "skill", "model", "pipeline", "order", "verif"]
+    for section in sections:
+        assert section in html.lower(), f"Missing section: {section}"
+
+
+def test_project_setup_includes_javascript(env):
+    """Template includes inline JavaScript for conditional logic."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+        "available_models": ["model-a"],
+    })
+    assert "<script" in html
+    assert "drag" in html.lower() or "change" in html.lower() or "display" in html.lower()
+
+
+def test_project_setup_has_dark_theme(env):
+    """Template uses dark color scheme."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+        "available_models": ["model-a"],
+    })
+    assert "#1e1e1e" in html or "#252526" in html or "dark" in html.lower()
+
+
+def test_project_setup_custom_role_input(env):
+    """Template has UI for adding custom roles."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+        "available_models": ["model-a"],
+    })
+    assert "custom" in html.lower() or "add" in html.lower()

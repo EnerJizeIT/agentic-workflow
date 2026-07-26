@@ -11,6 +11,7 @@ to chat, not a replacement.
 Call `open_form` when:
 
 - The user needs to choose from **4+ options with descriptions** (→ `decision-tree` template).
+- **Setting up a new project** with full configuration (→ `project-setup` composite template).
 - Selecting **roles, skills, or models** for a project (→ `role-assignment`, `skill-picker`, `model-picker`).
 - Choosing a **pipeline template** (→ `pipeline-picker`).
 - Resolving a **conflict** like "replace / save-as / cancel" (→ `conflict-resolver`).
@@ -118,6 +119,7 @@ Call `list_templates` to see what's available. Default templates:
 | `model-picker` | Dropdown model per role | `roles`, `available_models` |
 | `pipeline-picker` | Radio: simple / full / custom file | — |
 | `conflict-resolver` | Replace / save-as / cancel | `conflict_name`, `conflict_context` |
+| `project-setup` | Composite form: roles + skills + models + pipeline + verification | `available_roles`, `available_models` |
 
 Project-level templates in `.agentic/templates/` override defaults by name.
 

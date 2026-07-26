@@ -1,0 +1,837 @@
+---
+description: Composite form for full awf project setup (roles, skills, models, pipeline, verification)
+required_data_keys:
+  - available_roles
+  - available_models
+optional_data_keys:
+  - available_skills
+  - available_pipelines
+  - project_name
+  - project_description
+  - default_role_order
+---
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Настройка проекта — {{ project_name | default("новый проект") }}</title>
+  <style>
+    :root {
+      --bg-primary: #1e1e1e;
+      --bg-secondary: #252526;
+      --bg-card: #2d2d30;
+      --bg-input: #3c3c3c;
+      --text-primary: #d4d4d4;
+      --text-secondary: #858585;
+      --accent-blue: #569cd6;
+      --accent-green: #4ec9b0;
+      --accent-purple: #c586c0;
+      --accent-orange: #ce9178;
+      --border: #464647;
+      --hover: #094771;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 24px;
+      line-height: 1.6;
+    }
+
+    h1 {
+      font-size: 28px;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+
+    .page-header {
+      margin-bottom: 32px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .page-header .subtitle {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
+    fieldset {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    legend {
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent-blue);
+      padding: 0 8px;
+    }
+
+    .section-hint {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+
+    label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 4px;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: background 0.15s;
+    }
+
+    label:hover {
+      background: var(--hover);
+    }
+
+    input[type="text"],
+    input[type="file"],
+    textarea,
+    select {
+      background: var(--bg-input);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 14px;
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      width: 100%;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus,
+    textarea:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--accent-blue);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+
+    .field-group {
+      margin-bottom: 12px;
+    }
+
+    .field-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .field-group label.field-label {
+      display: block;
+      font-size: 13px;
+      color: var(--accent-blue);
+      margin-bottom: 4px;
+      cursor: default;
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    }
+
+    .field-group label.field-label:hover {
+      background: transparent;
+    }
+
+    .role-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+
+    .role-card:last-child {
+      margin-bottom: 0;
+    }
+
+    .role-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .role-card-header strong {
+      color: var(--accent-purple);
+      font-size: 15px;
+    }
+
+    .role-card-header .role-desc {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .role-card-body {
+      padding-left: 28px;
+    }
+
+    .skill-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 4px 16px;
+    }
+
+    .tag {
+      display: inline-block;
+      background: var(--bg-input);
+      color: var(--accent-purple);
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      margin-left: 6px;
+    }
+
+    .custom-input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
+
+    .custom-input-row input[type="text"] {
+      flex: 1;
+    }
+
+    .btn-add {
+      background: var(--bg-input);
+      color: var(--accent-green);
+      border: 1px dashed var(--accent-green);
+      border-radius: 4px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn-add:hover {
+      background: var(--hover);
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+    }
+
+    .btn-remove {
+      background: transparent;
+      color: var(--text-secondary);
+      border: none;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      transition: color 0.15s;
+    }
+
+    .btn-remove:hover {
+      color: #f44747;
+    }
+
+    .radio-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .radio-option:hover {
+      background: var(--hover);
+    }
+
+    .radio-option.selected {
+      border-color: var(--accent-blue);
+      background: var(--hover);
+    }
+
+    .radio-option strong {
+      color: var(--accent-blue);
+    }
+
+    .radio-option p {
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin: 2px 0 0 24px;
+    }
+
+    .custom-pipeline-input {
+      margin-top: 8px;
+      display: none;
+    }
+
+    .custom-pipeline-input.visible {
+      display: block;
+    }
+
+    .role-order-list {
+      list-style: none;
+      padding: 0;
+    }
+
+    .role-order-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 6px;
+      cursor: grab;
+      transition: background 0.15s, opacity 0.15s;
+      user-select: none;
+    }
+
+    .role-order-item:active {
+      cursor: grabbing;
+    }
+
+    .role-order-item.dragging {
+      opacity: 0.4;
+    }
+
+    .role-order-item.drag-over {
+      border-color: var(--accent-blue);
+      background: var(--hover);
+    }
+
+    .role-order-item .drag-handle {
+      color: var(--text-secondary);
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .role-order-item .role-name {
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      font-size: 14px;
+      color: var(--accent-purple);
+    }
+
+    .role-order-item .role-order-num {
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+      background: var(--bg-input);
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .verification-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 600px) {
+      .verification-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .submit-section {
+      text-align: center;
+      margin-top: 32px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+    }
+
+    .btn-submit {
+      background: var(--accent-green);
+      color: var(--bg-primary);
+      border: none;
+      border-radius: 6px;
+      padding: 14px 48px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    .btn-submit:hover {
+      background: #3db89a;
+      transform: translateY(-1px);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    input[type="checkbox"],
+    input[type="radio"] {
+      accent-color: var(--accent-green);
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+    }
+
+    select {
+      cursor: pointer;
+    }
+
+    select option {
+      background: var(--bg-input);
+      color: var(--text-primary);
+    }
+
+    .empty-state {
+      color: var(--text-secondary);
+      font-size: 13px;
+      font-style: italic;
+      padding: 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>Настройка проекта</h1>
+    <p class="subtitle">Заполните конфигурацию — роли, навыки, модели, pipeline и команды верификации.</p>
+  </div>
+
+  <form action="{{ submit_url }}" method="POST" id="setup-form">
+    <input type="hidden" name="form_id" value="{{ form_id }}">
+
+    {% set roles = available_roles or [] %}
+    {% set skills = available_skills or [] %}
+    {% set models = available_models or [] %}
+    {% set pipelines = available_pipelines or [
+        {'id': 'simple', 'title': 'Simple', 'description': 'plan &rarr; implement &rarr; verify. Базовый pipeline.'},
+        {'id': 'full', 'title': 'Full', 'description': 'plan &rarr; implement &rarr; review &rarr; test &rarr; verify.'}
+    ] %}
+
+    <!-- Section 1: Project Info -->
+    <fieldset id="section-project">
+      <legend>1 &middot; Проект</legend>
+      <p class="section-hint">Базовая информация о проекте.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="project_name">Название проекта</label>
+        <input type="text" id="project_name" name="project_name" value="{{ project_name | default('', true) }}" required placeholder="internet-shop">
+      </div>
+
+      <div class="field-group">
+        <label class="field-label" for="project_description">Описание</label>
+        <textarea id="project_description" name="project_description" placeholder="Краткое описание проекта...">{{ project_description | default('', true) }}</textarea>
+      </div>
+    </fieldset>
+
+    <!-- Section 2: Roles -->
+    <fieldset id="section-roles">
+      <legend>2 &middot; Роли</legend>
+      <p class="section-hint">Отметьте роли, которые будут участвовать в разработке.</p>
+
+      <div id="roles-list">
+        {% for role in roles %}
+        <label class="role-check">
+          <input type="checkbox" name="role" value="{{ role.id }}" data-role-id="{{ role.id }}" data-role-default="{{ 'true' if role.get('default') else 'false' }}"
+            {% if role.get('default') %}checked{% endif %}
+            onchange="onRoleToggle()">
+          <strong style="color: var(--accent-purple)">{{ role.title }}</strong>
+          <span class="role-desc">{{ role.description | default('', true) }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      <div class="custom-input-row">
+        <input type="text" id="custom-role-name" placeholder="Имя кастомной роли (например: security-auditor)">
+        <button type="button" class="btn-add" onclick="addCustomRole()">+ Добавить роль</button>
+      </div>
+      <div id="custom-roles-container"></div>
+    </fieldset>
+
+    <!-- Section 3: Skills per role -->
+    <fieldset id="section-skills" class="hidden">
+      <legend>3 &middot; Навыки</legend>
+      <p class="section-hint">Выберите навыки для каждой роли.</p>
+      <div id="skills-container"></div>
+    </fieldset>
+
+    <!-- Section 4: Models per role -->
+    <fieldset id="section-models" class="hidden">
+      <legend>4 &middot; Модели</legend>
+      <p class="section-hint">Привяжите LLM-модель к каждой роли.</p>
+      <div id="models-container"></div>
+    </fieldset>
+
+    <!-- Section 5: Pipeline -->
+    <fieldset id="section-pipeline">
+      <legend>5 &middot; Pipeline</legend>
+      <p class="section-hint">Последовательность стадий работы над задачами.</p>
+
+      {% for pipe in pipelines %}
+      <label class="radio-option" id="pipe-opt-{{ pipe.id }}">
+        <input type="radio" name="pipeline" value="{{ pipe.id }}"
+          {% if pipe.id == 'simple' %}checked{% endif %}
+          onchange="onPipelineChange()">
+        <div>
+          <strong>{{ pipe.title }}</strong>
+          <p>{{ pipe.description }}</p>
+        </div>
+      </label>
+      {% endfor %}
+
+      <div class="custom-pipeline-input" id="custom-pipeline-wrap">
+        <div class="field-group">
+          <label class="field-label" for="custom_pipeline_path">Путь к файлу pipeline</label>
+          <input type="text" id="custom_pipeline_path" name="custom_pipeline_path" placeholder=".agentic/pipelines/my-pipeline.yaml">
+        </div>
+      </div>
+    </fieldset>
+
+    <!-- Section 6: Role Order -->
+    <fieldset id="section-role-order" class="hidden">
+      <legend>6 &middot; Порядок ролей</legend>
+      <p class="section-hint">Перетащите роли для изменения порядка вызова.</p>
+      <ul class="role-order-list" id="role-order-list"></ul>
+      <input type="hidden" name="role_order" id="role-order-input" value="">
+    </fieldset>
+
+    <!-- Section 7: Verification Commands -->
+    <fieldset id="section-verification">
+      <legend>7 &middot; Команды верификации</legend>
+      <p class="section-hint">Опционально: команды для автоматической проверки кода.</p>
+
+      <div class="verification-grid">
+        <div class="field-group">
+          <label class="field-label" for="test_cmd">Тесты</label>
+          <input type="text" id="test_cmd" name="test_cmd" placeholder="pytest tests/">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="lint_cmd">Линтер</label>
+          <input type="text" id="lint_cmd" name="lint_cmd" placeholder="ruff check .">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="typecheck_cmd">Typecheck</label>
+          <input type="text" id="typecheck_cmd" name="typecheck_cmd" placeholder="mypy .">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="build_cmd">Сборка</label>
+          <input type="text" id="build_cmd" name="build_cmd" placeholder="npm run build">
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="submit-section">
+      <button type="submit" class="btn-submit">Создать конфигурацию</button>
+    </div>
+  </form>
+
+  <script>
+    (function() {
+      var allSkills = [
+        {% for s in skills %}
+        {"id": "{{ s.id }}", "title": "{{ s.title | default(s.id, true) }}"}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+      var allModels = [
+        {% for m in models %}
+        "{{ m }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
+      window.onRoleToggle = function() {
+        buildSkillsSection();
+        buildModelsSection();
+        buildRoleOrder();
+      };
+
+      window.addCustomRole = function() {
+        var input = document.getElementById('custom-role-name');
+        var name = input.value.trim();
+        if (!name) return;
+        if (document.querySelector('[data-role-id="' + name + '"]')) {
+          input.value = '';
+          return;
+        }
+
+        var container = document.getElementById('custom-roles-container');
+        var div = document.createElement('div');
+        div.className = 'custom-input-row';
+        div.setAttribute('data-custom-role', name);
+        div.innerHTML =
+          '<span class="tag">' + escapeHtml(name) + '</span>' +
+          '<input type="checkbox" name="role" value="' + escapeHtml(name) + '" data-role-id="' + escapeHtml(name) + '" data-role-default="false" checked onchange="onRoleToggle()">' +
+          '<button type="button" class="btn-remove" onclick="removeCustomRole(this, \'' + escapeHtml(name).replace(/'/g, "\\'") + '\')">&times;</button>';
+        container.appendChild(div);
+        input.value = '';
+        onRoleToggle();
+      };
+
+      window.removeCustomRole = function(btn, name) {
+        var row = btn.closest('.custom-input-row');
+        row.remove();
+        onRoleToggle();
+      };
+
+      function getSelectedRoles() {
+        var checks = document.querySelectorAll('input[name="role"]:checked');
+        var result = [];
+        checks.forEach(function(c) { result.push(c.value); });
+        return result;
+      }
+
+      function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+      }
+
+      function buildSkillsSection() {
+        var section = document.getElementById('section-skills');
+        var container = document.getElementById('skills-container');
+        var roles = getSelectedRoles();
+
+        if (roles.length === 0) {
+          section.classList.add('hidden');
+          return;
+        }
+        section.classList.remove('hidden');
+        container.innerHTML = '';
+
+        roles.forEach(function(roleId) {
+          var card = document.createElement('div');
+          card.className = 'role-card';
+          card.setAttribute('data-role-skills', roleId);
+
+          var title = roleId;
+          var roleLabel = document.querySelector('[data-role-id="' + roleId + '"]');
+          if (roleLabel) {
+            var strong = roleLabel.querySelector('strong');
+            if (strong) title = strong.textContent;
+          }
+
+          var header = '<div class="role-card-header"><strong>' + escapeHtml(title) + '</strong></div>';
+          var body = '<div class="role-card-body"><div class="skill-grid">';
+
+          allSkills.forEach(function(sk) {
+            body += '<label><input type="checkbox" name="skills_' + escapeHtml(roleId) + '" value="' + escapeHtml(sk.id) + '">' + escapeHtml(sk.title) + '</label>';
+          });
+
+          body += '</div>';
+          body += '<div class="custom-input-row" style="margin-top:10px">';
+          body += '<input type="text" placeholder="Имя кастомного навыка" class="custom-skill-input-' + escapeHtml(roleId) + '">';
+          body += '<button type="button" class="btn-add" onclick="addCustomSkill(\'' + escapeHtml(roleId).replace(/'/g, "\\'") + '\')">+ Добавить</button>';
+          body += '</div></div>';
+
+          card.innerHTML = header + body;
+          container.appendChild(card);
+        });
+      }
+
+      window.addCustomSkill = function(roleId) {
+        var input = document.querySelector('.custom-skill-input-' + roleId);
+        if (!input) return;
+        var name = input.value.trim();
+        if (!name) return;
+
+        var grid = document.querySelector('[data-role-skills="' + roleId + '"] .skill-grid');
+        if (!grid) return;
+
+        var label = document.createElement('label');
+        label.innerHTML = '<input type="checkbox" name="skills_' + escapeHtml(roleId) + '" value="' + escapeHtml(name) + '">' + escapeHtml(name) + ' <span class="tag">custom</span>';
+        grid.appendChild(label);
+        input.value = '';
+      };
+
+      function buildModelsSection() {
+        var section = document.getElementById('section-models');
+        var container = document.getElementById('models-container');
+        var roles = getSelectedRoles();
+
+        if (roles.length === 0) {
+          section.classList.add('hidden');
+          return;
+        }
+        section.classList.remove('hidden');
+        container.innerHTML = '';
+
+        roles.forEach(function(roleId) {
+          var title = roleId;
+          var roleLabel = document.querySelector('[data-role-id="' + roleId + '"]');
+          if (roleLabel) {
+            var strong = roleLabel.querySelector('strong');
+            if (strong) title = strong.textContent;
+          }
+
+          var card = document.createElement('div');
+          card.className = 'role-card';
+          var html = '<div class="role-card-header"><strong>' + escapeHtml(title) + '</strong></div>';
+          html += '<div class="role-card-body"><div class="field-group">';
+          html += '<label class="field-label">Модель для ' + escapeHtml(title) + '</label>';
+          html += '<select name="model_' + escapeHtml(roleId) + '">';
+
+          if (allModels.length === 0) {
+            html += '<option value="">(нет доступных моделей)</option>';
+          } else {
+            allModels.forEach(function(m, i) {
+              html += '<option value="' + escapeHtml(m) + '" ' + (i === 0 ? 'selected' : '') + '>' + escapeHtml(m) + '</option>';
+            });
+          }
+
+          html += '</select></div></div>';
+          card.innerHTML = html;
+          container.appendChild(card);
+        });
+      }
+
+      function buildRoleOrder() {
+        var section = document.getElementById('section-role-order');
+        var list = document.getElementById('role-order-list');
+        var roles = getSelectedRoles();
+
+        if (roles.length === 0) {
+          section.classList.add('hidden');
+          return;
+        }
+        section.classList.remove('hidden');
+        list.innerHTML = '';
+
+        roles.forEach(function(roleId, idx) {
+          var title = roleId;
+          var roleLabel = document.querySelector('[data-role-id="' + roleId + '"]');
+          if (roleLabel) {
+            var strong = roleLabel.querySelector('strong');
+            if (strong) title = strong.textContent;
+          }
+
+          var li = document.createElement('li');
+          li.className = 'role-order-item';
+          li.setAttribute('draggable', 'true');
+          li.setAttribute('data-role', roleId);
+          li.innerHTML =
+            '<span class="role-order-num">' + (idx + 1) + '</span>' +
+            '<span class="drag-handle">&#9776;</span>' +
+            '<span class="role-name">' + escapeHtml(title) + '</span>';
+
+          li.addEventListener('dragstart', handleDragStart);
+          li.addEventListener('dragover', handleDragOver);
+          li.addEventListener('dragenter', handleDragEnter);
+          li.addEventListener('dragleave', handleDragLeave);
+          li.addEventListener('drop', handleDrop);
+          li.addEventListener('dragend', handleDragEnd);
+          list.appendChild(li);
+        });
+        updateRoleOrderInput();
+      }
+
+      var dragSrcEl = null;
+
+      function handleDragStart(e) {
+        dragSrcEl = this;
+        this.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', this.getAttribute('data-role'));
+      }
+
+      function handleDragOver(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      }
+
+      function handleDragEnter(e) {
+        if (this !== dragSrcEl) {
+          this.classList.add('drag-over');
+        }
+      }
+
+      function handleDragLeave(e) {
+        this.classList.remove('drag-over');
+      }
+
+      function handleDrop(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.classList.remove('drag-over');
+
+        if (dragSrcEl !== this) {
+          var list = this.parentNode;
+          var children = Array.from(list.children);
+          var srcIdx = children.indexOf(dragSrcEl);
+          var tgtIdx = children.indexOf(this);
+
+          if (srcIdx < tgtIdx) {
+            list.insertBefore(dragSrcEl, this.nextSibling);
+          } else {
+            list.insertBefore(dragSrcEl, this);
+          }
+          updateRoleOrderInput();
+          updateOrderNumbers();
+        }
+      }
+
+      function handleDragEnd(e) {
+        document.querySelectorAll('.role-order-item').forEach(function(item) {
+          item.classList.remove('dragging');
+          item.classList.remove('drag-over');
+        });
+      }
+
+      function updateOrderNumbers() {
+        var items = document.querySelectorAll('#role-order-list .role-order-item');
+        items.forEach(function(item, idx) {
+          item.querySelector('.role-order-num').textContent = idx + 1;
+        });
+      }
+
+      function updateRoleOrderInput() {
+        var items = document.querySelectorAll('#role-order-list .role-order-item');
+        var order = [];
+        items.forEach(function(item) {
+          order.push(item.getAttribute('data-role'));
+        });
+        document.getElementById('role-order-input').value = JSON.stringify(order);
+      }
+
+      window.onPipelineChange = function() {
+        var customWrap = document.getElementById('custom-pipeline-wrap');
+        var radios = document.querySelectorAll('input[name="pipeline"]');
+        var isCustom = false;
+        radios.forEach(function(r) {
+          if (r.checked && r.value === 'custom') isCustom = true;
+          var opt = document.getElementById('pipe-opt-' + r.value);
+          if (opt) {
+            opt.classList.toggle('selected', r.checked);
+          }
+        });
+        customWrap.classList.toggle('visible', isCustom);
+      };
+
+      document.addEventListener('DOMContentLoaded', function() {
+        onRoleToggle();
+        onPipelineChange();
+
+        document.getElementById('custom-role-name').addEventListener('keydown', function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            addCustomRole();
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
