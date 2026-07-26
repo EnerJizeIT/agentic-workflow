@@ -331,7 +331,7 @@ optional_data_keys: []
   <h1>Настройка проекта</h1>
   <p class="page-hint">Опишите проект и соберите команду агентов</p>
 
-  <form action="{{ submit_url }}" method="POST" id="setup-form" enctype="multipart/form-data" novalidate>
+  <form action="{{ submit_url }}" method="POST" id="setup-form" novalidate>
     <input type="hidden" name="form_id" value="{{ form_id }}">
 
     {% set roles = available_roles or [] %}
@@ -345,15 +345,15 @@ optional_data_keys: []
 
       <label>Спецификация / ТЗ</label>
       <label for="spec-file-input" class="file-upload-btn">📎 Прикрепить файл(ы)</label>
-      <input type="file" id="spec-file-input" multiple accept=".md,.txt,.pdf,.doc">
+      <input type="file" id="spec-file-input" multiple accept=".md,.txt">
       <div class="file-attachments" id="spec-attachments"></div>
       <input type="hidden" name="spec_files_json" id="spec-files-json" value="">
       <p class="hint">Можно прикрепить несколько файлов. Markdown или текст.</p>
     </fieldset>
 
     <fieldset>
-      <legend>Команда агентов</legend>
-      <p class="section-hint">Добавьте агентов, которые будут работать над проектом</p>
+      <legend>Команда агентов <span style="color: var(--accent-green)">*</span></legend>
+      <p class="section-hint">Добавьте агентов, которые будут работать над проектом. Minimum 1.</p>
 
       <table id="team-table">
         <thead>
@@ -392,17 +392,32 @@ optional_data_keys: []
         {% endfor %}
       ];
 
+      var recentModels = [
+        {% for m in (recent_models or []) %}
+        "{{ m }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
       var specFiles = [];
 
       function buildModelOptions() {
         var opts = '';
+        if (recentModels.length > 0) {
+          opts += '<optgroup label="Recent">';
+          for (var i = 0; i < recentModels.length; i++) {
+            opts += '<option value="' + recentModels[i] + '">' + recentModels[i] + '</option>';
+          }
+          opts += '</optgroup>';
+        }
+        opts += '<optgroup label="All models">';
         if (allModels.length === 0) {
-          opts = '<option value="">(нет моделей)</option>';
+          opts += '<option value="">(нет моделей)</option>';
         } else {
           for (var i = 0; i < allModels.length; i++) {
             opts += '<option value="' + allModels[i] + '">' + allModels[i] + '</option>';
           }
         }
+        opts += '</optgroup>';
         return opts;
       }
 
@@ -427,10 +442,19 @@ optional_data_keys: []
       }
 
       function validateForm() {
-        var context = document.getElementById('context_message').value.trim();
-        var hasSpec = specFiles.length > 0;
         var hasTeam = document.querySelectorAll('.team-row').length > 0;
-        var valid = (context.length > 0 || hasSpec) && hasTeam;
+
+        // Check custom agents have name + skill filled
+        var customRows = document.querySelectorAll('.custom-agent-row');
+        var customValid = true;
+        customRows.forEach(function(row) {
+          var nameInput = row.querySelector('.agent-input');
+          var skillContent = row.querySelector('.skill-content');
+          if (!nameInput || !nameInput.value.trim()) customValid = false;
+          if (!skillContent || !skillContent.value.trim()) customValid = false;
+        });
+
+        var valid = hasTeam && customValid;
         var btn = document.getElementById('submit-btn');
         if (valid) {
           btn.disabled = false;
@@ -443,6 +467,10 @@ optional_data_keys: []
 
       document.addEventListener('input', validateForm);
       document.addEventListener('change', validateForm);
+
+      // Also validate when custom agent fields change
+      document.getElementById('team-rows').addEventListener('input', validateForm);
+      document.getElementById('team-rows').addEventListener('change', validateForm);
 
       window.addRow = function () {
         var tbody = document.getElementById('team-rows');
@@ -461,26 +489,22 @@ optional_data_keys: []
         if (sel.value !== '__custom__') return;
         var row = sel.closest('.team-row');
         var agentTd = row.cells[0];
-        var modelTd = row.cells[1];
-        var removeTd = row.cells[2];
 
         var existingInput = agentTd.querySelector('.agent-input');
         if (existingInput) return;
 
+        var rowIdx = rowIdxCounter++;
         row.classList.add('custom-agent-row');
         agentTd.innerHTML =
           '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Название агента" required>' +
-          '<label for="skill-file-' + row.index + '" class="file-upload-btn skill-upload-label">📎 Прикрепить скилл (.md)</label>' +
-          '<input type="file" id="skill-file-' + row.index + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file" required>' +
+          '<label for="skill-file-' + rowIdx + '" class="file-upload-btn skill-upload-label">\uD83D\uDCCE Прикрепить скилл (.md)</label>' +
+          '<input type="file" id="skill-file-' + rowIdx + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file">' +
           '<input type="hidden" name="custom_agent_content" class="skill-content">' +
           '<span class="skill-chip-container"></span>';
 
         var fileInput = agentTd.querySelector('.skill-file');
         var hiddenContent = agentTd.querySelector('.skill-content');
         var chipContainer = agentTd.querySelector('.skill-chip-container');
-        var rowIdx = rowIdxCounter++;
-        fileInput.id = 'skill-file-' + rowIdx;
-        agentTd.querySelector('.skill-upload-label').htmlFor = fileInput.id;
 
         fileInput.addEventListener('change', function (e) {
           var file = e.target.files[0];
@@ -488,7 +512,7 @@ optional_data_keys: []
           chipContainer.innerHTML = '';
           var chip = document.createElement('span');
           chip.className = 'file-chip';
-          chip.innerHTML = '<span class="file-chip-name">\U0001F4CE ' + file.name + '</span>' +
+          chip.innerHTML = '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
             '<button type="button" class="file-chip-remove" onclick="this.parentElement.remove()">&times;</button>';
           chipContainer.appendChild(chip);
           var reader = new FileReader();
@@ -523,7 +547,7 @@ optional_data_keys: []
             chip.className = 'file-chip';
             chip.id = 'spec-chip-' + idx;
             var removeIdx = idx;
-            chip.innerHTML = '<span class="file-chip-name">\U0001F4CE ' + file.name + '</span>' +
+            chip.innerHTML = '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
               '<button type="button" class="file-chip-remove" onclick="removeSpecFile(' + removeIdx + ', this)">&times;</button>';
             container.appendChild(chip);
             updateSpecJson();
