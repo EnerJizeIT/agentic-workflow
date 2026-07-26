@@ -48,7 +48,7 @@ def _is_valid_form_id(form_id: str) -> bool:
 
 
 def _ack_page(form_id: str, already_submitted: bool) -> str:
-    """Generate HTML acknowledgement page."""
+    """Generate HTML acknowledgement page shown after submit."""
     message = "Already submitted earlier." if already_submitted else "Submitted successfully!"
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -59,14 +59,30 @@ def _ack_page(form_id: str, already_submitted: bool) -> str:
     body {{ font-family: system-ui, sans-serif; max-width: 500px; margin: 80px auto; padding: 0 20px; text-align: center; color: #333; }}
     h1 {{ color: #2e7d32; margin-bottom: 8px; }}
     .form-id {{ font-family: monospace; background: #f5f5f5; padding: 8px 16px; border-radius: 4px; display: inline-block; margin: 16px 0; }}
-    .hint {{ margin-top: 32px; color: #666; font-size: 14px; }}
+    .next-steps {{ margin-top: 32px; padding: 20px; background: #e3f2fd; border-radius: 8px; text-align: left; }}
+    .next-steps h2 {{ font-size: 16px; margin: 0 0 12px 0; color: #1565c0; }}
+    .next-steps ol {{ margin: 0; padding-left: 20px; }}
+    .next-steps li {{ margin-bottom: 8px; }}
+    .next-steps code {{ background: #fff; padding: 2px 6px; border-radius: 3px; font-family: monospace; }}
   </style>
 </head>
 <body>
   <h1>{html.escape(message)}</h1>
   <p>Form ID:</p>
   <div class="form-id">{html.escape(form_id)}</div>
-  <p class="hint">You can close this tab and return to your opencode CLI session.</p>
+
+  <div class="next-steps">
+    <h2>⚠️ Next step — go back to your CLI</h2>
+    <ol>
+      <li>Switch to your <strong>opencode CLI</strong> terminal.</li>
+      <li>Type a message to the agent, e.g.: <code>done</code> or <code>I submitted the form</code>.</li>
+      <li>The agent will read your submission and continue.</li>
+    </ol>
+    <p style="margin: 12px 0 0 0; font-size: 14px; color: #666;">
+      The agent is <strong>not blocked</strong> waiting for you — it continues working.
+      When you tell it you're done, it will pick up your form data.
+    </p>
+  </div>
 </body>
 </html>
 """
