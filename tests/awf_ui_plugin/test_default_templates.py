@@ -10,7 +10,8 @@ from agent_workflow_ui.render.engine import create_env, render_template
 from agent_workflow_ui.render.frontmatter import parse_frontmatter_from_file
 
 
-DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "agent_workflow_ui" / "render" / "default_templates"
+import agent_workflow_ui as _awui
+DEFAULT_TEMPLATES_DIR = Path(_awui.__file__).parent / "render" / "default_templates"
 
 EXPECTED_TEMPLATES = [
     "role-assignment",
