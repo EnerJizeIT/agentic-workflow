@@ -23,8 +23,8 @@ The plugin is started automatically by opencode when configured in
 {
   "mcp": {
     "agent-workflow-ui": {
-      "command": "python",
-      "args": ["-m", "agent_workflow_ui"]
+      "type": "local",
+      "command": ["python3", "-m", "agent_workflow_ui"]
     }
   }
 }

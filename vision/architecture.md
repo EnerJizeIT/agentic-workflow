@@ -520,9 +520,9 @@ optional_data_keys:
 {
   "mcp": {
     "agent-workflow-ui": {
-      "command": "python",
-      "args": ["-m", "agent_workflow_ui"],
-      "env": {
+      "type": "local",
+      "command": ["python3", "-m", "agent_workflow_ui"],
+      "environment": {
         "AWF_INPUTS_DIR": ".agentic/inputs",
         "AWF_TEMPLATES_DIR": ".agentic/templates"
       }

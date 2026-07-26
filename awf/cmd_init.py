@@ -274,8 +274,8 @@ def _add_mcp_config_to_opencode():
         return
 
     mcp["agent-workflow-ui"] = {
-        "command": "python",
-        "args": ["-m", "agent_workflow_ui"],
+        "type": "local",
+        "command": ["python3", "-m", "agent_workflow_ui"],
     }
 
     with cfg_path.open("w") as f:

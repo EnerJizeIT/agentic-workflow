@@ -293,8 +293,8 @@ pip install -e ./agent_workflow_ui    # в разработке
 {
   "mcp": {
     "agent-workflow-ui": {
-      "command": "python",
-      "args": ["-m", "agent_workflow_ui"]
+      "type": "local",
+      "command": ["python3", "-m", "agent_workflow_ui"]
     }
   }
 }
