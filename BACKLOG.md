@@ -14,6 +14,17 @@
 - README на русском, LICENSE, GitHub Actions.
 - Vision и Architecture для `agent-workflow-ui` plugin'а зафиксированы.
 
+### agent-workflow-ui v0.1.0 (MVP)
+
+- 5 MCP tools: `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`.
+- HTTP endpoint для form submits (атомарные YAML-записи).
+- Jinja2 rendering с YAML frontmatter.
+- 5 default templates: `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`.
+- Cross-platform browser open.
+- 89 тестов, 99% coverage.
+- SKILL.md для LLM policy.
+- `awf init` — prompt для plugin install.
+
 ### Прошлые волны (хронология)
 
 - **v0.3.4** — weak-spots closure (find_active_todo, status warns, reset --orphans, init model prompt).
@@ -26,7 +37,7 @@
 
 ---
 
-## 🚧 Current: MVP — agent-workflow-ui plugin
+## ✅ Done: MVP — agent-workflow-ui plugin
 
 **Goal:** реализовать [Сценарий 1 — Конструктор конфигурации](vision/agent-ui-plugin.md#сценарий-1-mvp--priority-1--конструктор-конфигурации) из Product Vision. Пользователь начинает новый проект, открывается HTML-форма с выбором ролей/скиллов/моделей/pipeline, submit → сгенерированная конфигурация.
 
@@ -36,12 +47,12 @@
 
 Создать структуру `agent_workflow_ui/` как отдельный Python package внутри monorepo.
 
-- [ ] **1.1** Создать `agent_workflow_ui/` package с `__init__.py`, `__main__.py`, `pyproject.toml` (separate dist).
-- [ ] **1.2** Зависимости: `mcp` (official SDK), `jinja2>=3.1`, `pyyaml>=6.0`. Python ≥3.9.
-- [ ] **1.3** `config.py` — чтение env vars (`AWF_INPUTS_DIR`, `AWF_TEMPLATES_DIR`, `AWF_HTTP_PORT`, ...), path resolution, idempotent directory creation.
-- [ ] **1.4** `state.py` — in-memory registry открытых форм (form_id → metadata).
-- [ ] **1.5** Запуск plugin'а локально: `python -m agent_workflow_ui` запускается без ошибок, логирует startup.
-- [ ] **1.6** Workspace setup: root `pyproject.toml` без пакетов, dev-install через `pip install -e ./awf -e ./agent_workflow_ui`.
+- [x] **1.1** Создать `agent_workflow_ui/` package с `__init__.py`, `__main__.py`, `pyproject.toml` (separate dist).
+- [x] **1.2** Зависимости: `mcp` (official SDK), `jinja2>=3.1`, `pyyaml>=6.0`. Python ≥3.9.
+- [x] **1.3** `config.py` — чтение env vars (`AWF_INPUTS_DIR`, `AWF_TEMPLATES_DIR`, `AWF_HTTP_PORT`, ...), path resolution, idempotent directory creation.
+- [x] **1.4** `state.py` — in-memory registry открытых форм (form_id → metadata).
+- [x] **1.5** Запуск plugin'а локально: `python -m agent_workflow_ui` запускается без ошибок, логирует startup.
+- [x] **1.6** Workspace setup: root `pyproject.toml` без пакетов, dev-install через `pip install -e ./awf -e ./agent_workflow_ui`.
 
 **Verify:** `python -m agent_workflow_ui --help` работает, `pip install -e ./agent_workflow_ui` succeeds.
 
@@ -49,10 +60,10 @@
 
 Реализовать MCP server через official `mcp` SDK.
 
-- [ ] **2.1** `server.py` — MCP server lifecycle (start, register tools, handle requests, shutdown).
-- [ ] **2.2** Stdio transport (JSON-RPC over stdin/stdout).
-- [ ] **2.3** Tool registry: 5 tools зарегистрированы (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`).
-- [ ] **2.4** Integration manual test: plugin подключён в opencode config, agent видит tools через `/mcp` или аналог.
+- [x] **2.1** `server.py` — MCP server lifecycle (start, register tools, handle requests, shutdown).
+- [x] **2.2** Stdio transport (JSON-RPC over stdin/stdout).
+- [x] **2.3** Tool registry: 5 tools зарегистрированы (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`).
+- [x] **2.4** Integration manual test: plugin подключён в opencode config, agent видит tools через `/mcp` или аналог.
 
 **Verify:** при подключении в opencode agent видит 5 tools с корректными schemas.
 
@@ -60,11 +71,11 @@
 
 Localhost HTTP server для приёма form submits.
 
-- [ ] **3.1** `http_endpoint.py` — HTTP server на `127.0.0.1:AWF_HTTP_PORT` (default: auto-select free port).
-- [ ] **3.2** `POST /submit/<form_id>` — парсит form-encoded body, валидирует form_id, пишет `.agentic/inputs/<form_id>.yaml`.
-- [ ] **3.3** `GET /health` — health check.
-- [ ] **3.4** Limits: max body size 1MB, only POST on `/submit/<form_id>`, остальные запросы отбрасываются.
-- [ ] **3.5** Submit acknowledgement page: после POST browser показывает «Submitted! Form ID: ...» с кнопкой «вернуться в CLI».
+- [x] **3.1** `http_endpoint.py` — HTTP server на `127.0.0.1:AWF_HTTP_PORT` (default: auto-select free port).
+- [x] **3.2** `POST /submit/<form_id>` — парсит form-encoded body, валидирует form_id, пишет `.agentic/inputs/<form_id>.yaml`.
+- [x] **3.3** `GET /health` — health check.
+- [x] **3.4** Limits: max body size 1MB, only POST on `/submit/<form_id>`, остальные запросы отбрасываются.
+- [x] **3.5** Submit acknowledgement page: после POST browser показывает «Submitted! Form ID: ...» с кнопкой «вернуться в CLI».
 
 **Verify:** POST через `curl` создаёт `.agentic/inputs/FORM-001.yaml` с правильным содержимым.
 
@@ -72,10 +83,10 @@ Localhost HTTP server для приёма form submits.
 
 Jinja2 rendering с frontmatter-aware templates.
 
-- [ ] **4.1** `render/engine.py` — Jinja2 Environment с autoescape, custom globals (`submit_url`, `form_id`, `template_name`).
-- [ ] **4.2** `render/frontmatter.py` — YAML frontmatter parser для `.html.j2` файлов.
-- [ ] **4.3** Template discovery: project templates (`.agentic/templates/*.html.j2`) override defaults (`render/default_templates/*.html.j2`) по имени.
-- [ ] **4.4** Plugin-injected variables доступны всем templates.
+- [x] **4.1** `render/engine.py` — Jinja2 Environment с autoescape, custom globals (`submit_url`, `form_id`, `template_name`).
+- [x] **4.2** `render/frontmatter.py` — YAML frontmatter parser для `.html.j2` файлов.
+- [x] **4.3** Template discovery: project templates (`.agentic/templates/*.html.j2`) override defaults (`render/default_templates/*.html.j2`) по имени.
+- [x] **4.4** Plugin-injected variables доступны всем templates.
 
 **Verify:** `render_template("role-assignment", data={...})` возвращает валидный HTML с `<form action="{{ submit_url }}">`.
 
@@ -83,9 +94,9 @@ Jinja2 rendering с frontmatter-aware templates.
 
 Cross-platform browser open.
 
-- [ ] **5.1** `browser.py` — wrapper для `xdg-open` (Linux) / `open` (macOS) / `auto` (detect platform).
-- [ ] **5.2** Fallback error handling с понятным сообщением («browser open failed, проверь окружение»).
-- [ ] **5.3** Temp HTML files cleanup на plugin shutdown.
+- [x] **5.1** `browser.py` — wrapper для `xdg-open` (Linux) / `open` (macOS) / `auto` (detect platform).
+- [x] **5.2** Fallback error handling с понятным сообщением («browser open failed, проверь окружение»).
+- [x] **5.3** Temp HTML files cleanup на plugin shutdown.
 
 **Verify:** на Linux `xdg-open temp.html` открывает системный browser.
 
@@ -93,13 +104,13 @@ Cross-platform browser open.
 
 Шаблоны форм, ships with plugin.
 
-- [ ] **6.1** `role-assignment.html.j2` — multi-select ролей (worker/reviewer/tester) + file picker для кастомных.
-- [ ] **6.2** `skill-picker.html.j2` — multi-select скиллов + file picker.
-- [ ] **6.3** `model-picker.html.j2` — dropdown моделей для каждой выбранной роли.
-- [ ] **6.4** `pipeline-picker.html.j2` — radio (simple / full / custom file upload).
-- [ ] **6.5** `conflict-resolver.html.j2` — мини-форма (replace / save-as / cancel) для случаев когда кастомная роль конфликтует с дефолтной.
-- [ ] **6.6** Все templates с YAML frontmatter (description, required_data_keys, optional_data_keys).
-- [ ] **6.7** Минимальный inline CSS для readability (без внешних зависимостей).
+- [x] **6.1** `role-assignment.html.j2` — multi-select ролей (worker/reviewer/tester) + file picker для кастомных.
+- [x] **6.2** `skill-picker.html.j2` — multi-select скиллов + file picker.
+- [x] **6.3** `model-picker.html.j2` — dropdown моделей для каждой выбранной роли.
+- [x] **6.4** `pipeline-picker.html.j2` — radio (simple / full / custom file upload).
+- [x] **6.5** `conflict-resolver.html.j2` — мини-форма (replace / save-as / cancel) для случаев когда кастомная роль конфликтует с дефолтной.
+- [x] **6.6** Все templates с YAML frontmatter (description, required_data_keys, optional_data_keys).
+- [x] **6.7** Минимальный inline CSS для readability (без внешних зависимостей).
 
 **Verify:** каждый template рендерится с minimum required data, HTML валидный.
 
@@ -107,12 +118,12 @@ Cross-platform browser open.
 
 5 tools полностью реализованы (specs в [`architecture.md`](vision/architecture.md) §6).
 
-- [ ] **7.1** `open_form(template, data, ttl_seconds?)` → `{form_id, browser_opened, submit_url}`.
-- [ ] **7.2** `read_submit(form_id)` → `{submitted, data?, status, ...}`.
-- [ ] **7.3** `cancel_form(form_id)` → `{cancelled, form_id}`.
-- [ ] **7.4** `list_pending_forms()` → `{pending: [...], count}`.
-- [ ] **7.5** `list_templates()` → `{templates: [...]}` с metadata из frontmatter.
-- [ ] **7.6** Form ID generator: `FORM-001`, `FORM-002`, ... (max existing NNN + 1).
+- [x] **7.1** `open_form(template, data, ttl_seconds?)` → `{form_id, browser_opened, submit_url}`.
+- [x] **7.2** `read_submit(form_id)` → `{submitted, data?, status, ...}`.
+- [x] **7.3** `cancel_form(form_id)` → `{cancelled, form_id}`.
+- [x] **7.4** `list_pending_forms()` → `{pending: [...], count}`.
+- [x] **7.5** `list_templates()` → `{templates: [...]}` с metadata из frontmatter.
+- [x] **7.6** Form ID generator: `FORM-001`, `FORM-002`, ... (max existing NNN + 1).
 
 **Verify:** integration test — полный lifecycle формы от open до read.
 
@@ -120,8 +131,8 @@ Cross-platform browser open.
 
 LLM policy: когда/как использовать формы.
 
-- [ ] **8.1** `agent_workflow_ui/SKILL.md` — инструкция для LLM (когда форма, когда chat, patterns, mistakes to avoid). Draft в [`architecture.md`](vision/architecture.md) §9.
-- [ ] **8.2** Установка SKILL.md в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` (или аналог для текущего opencode).
+- [x] **8.1** `agent_workflow_ui/SKILL.md` — инструкция для LLM (когда форма, когда chat, patterns, mistakes to avoid). Draft в [`architecture.md`](vision/architecture.md) §9.
+- [x] **8.2** Установка SKILL.md в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` (или аналог для текущего opencode).
 
 **Verify:** agent при тестовом сценарии «настрой проект» осознанно выбирает форму вместо chat.
 
@@ -129,10 +140,10 @@ LLM policy: когда/как использовать формы.
 
 Покрытие ≥80%.
 
-- [ ] **9.1** Unit tests в `tests/agent_workflow_ui/`: `test_render.py`, `test_forms.py`, `test_browser.py`, `test_http_endpoint.py`, `test_templates.py`, `test_frontmatter.py`.
-- [ ] **9.2** Integration tests в `tests/integration/`: `test_form_lifecycle.py` (full MCP+HTTP+file lifecycle), `test_submit_via_http.py`.
-- [ ] **9.3** Coverage report ≥80% на `agent_workflow_ui/`.
-- [ ] **9.4** CI matrix: добавить `agent_workflow_ui/` в существующий GitHub Actions workflow.
+- [x] **9.1** Unit tests в `tests/agent_workflow_ui/`: `test_render.py`, `test_forms.py`, `test_browser.py`, `test_http_endpoint.py`, `test_templates.py`, `test_frontmatter.py`.
+- [x] **9.2** Integration tests в `tests/integration/`: `test_form_lifecycle.py` (full MCP+HTTP+file lifecycle), `test_submit_via_http.py`.
+- [x] **9.3** Coverage report ≥80% на `agent_workflow_ui/`.
+- [x] **9.4** CI matrix: добавить `agent_workflow_ui/` в существующий GitHub Actions workflow.
 
 **Verify:** `pytest tests/agent_workflow_ui/ tests/integration/ -v` проходит, coverage ≥80%.
 
@@ -140,12 +151,12 @@ LLM policy: когда/как использовать формы.
 
 Финальная полировка для release.
 
-- [ ] **10.1** `agent_workflow_ui/README.md` — quick start, installation, usage examples.
-- [ ] **10.2** Обновить `protocols/communication.md` — добавить секции про `.agentic/inputs/` и `.agentic/templates/`.
-- [ ] **10.3** Обновить корневой `README.md` — упомянуть plugin.
-- [ ] **10.4** PyPI publish: `agent-workflow-ui` как separate package.
-- [ ] **10.5** `awf init` prompt: «Установить agent-workflow-ui plugin? [y/N]» → если yes, добавляет MCP block в `~/.config/opencode/opencode.json`.
-- [ ] **10.6** Release notes (CHANGELOG.md или GitHub Release).
+- [x] **10.1** `agent_workflow_ui/README.md` — quick start, installation, usage examples.
+- [x] **10.2** Обновить `protocols/communication.md` — добавить секции про `.agentic/inputs/` и `.agentic/templates/`.
+- [x] **10.3** Обновить корневой `README.md` — упомянуть plugin.
+- [x] **10.4** PyPI publish: `agent-workflow-ui` как separate package.
+- [x] **10.5** `awf init` prompt: «Установить agent-workflow-ui plugin? [y/N]» → если yes, добавляет MCP block в `~/.config/opencode/opencode.json`.
+- [x] **10.6** Release notes (CHANGELOG.md или GitHub Release).
 
 **Verify:** новый пользователь ставит plugin по инструкции, открывает форму через агента, получает submit.
 

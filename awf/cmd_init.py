@@ -211,9 +211,76 @@ def run(args: Any) -> int:
         print(f"NOTE: no opencode config found at {oc_cfg}")
         print(f"      Create the opencode agents ({', '.join(offer_agents)}) manually (see README → Requirements).")
 
+    _offer_plugin_install(project_name)
+
     print()
     print("Next steps:")
     print("  1. Edit .agentic/config.yaml if needed")
     print("  2. Create .agentic/phases/plan.md with your implementation plan")
     print("  3. Run: awf start --auto --background   (or: awf start for interactive)")
     return 0
+
+
+def _offer_plugin_install(project_name):
+    """Offer to configure agent-workflow-ui plugin."""
+    print()
+    print("agent-workflow-ui plugin (optional):")
+    print("  HTML forms + dashboards for opencode agents.")
+    print("  See: vision/agent-ui-plugin.md")
+
+    try:
+        import importlib
+        importlib.import_module("agent_workflow_ui")
+        plugin_installed = True
+    except ImportError:
+        plugin_installed = False
+
+    if plugin_installed:
+        print("  ✓ agent_workflow_ui detected.")
+        ans = input("  Add MCP config to opencode.json? [y/N]: ").strip().lower()
+        if ans in ("y", "yes"):
+            _add_mcp_config_to_opencode()
+    else:
+        print("  Plugin not installed. Install with:")
+        print("    pip install agent-workflow-ui")
+        print("  Or from source:")
+        print("    pip install -e ./agent_workflow_ui")
+        print("  Then re-run `awf init` to configure automatically.")
+
+
+def _add_mcp_config_to_opencode():
+    """Add agent-workflow-ui MCP block to opencode.json."""
+    import json
+    from datetime import datetime
+
+    cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    if not cfg_path.exists():
+        print(f"  NOTE: {cfg_path} not found. Skipping.")
+        return
+
+    backup = cfg_path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
+    shutil.copy2(cfg_path, backup)
+
+    try:
+        with cfg_path.open() as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"  ERROR: cannot parse {cfg_path}: {e}")
+        return
+
+    mcp = cfg.setdefault("mcp", {})
+    if "agent-workflow-ui" in mcp:
+        print("  ✓ agent-workflow-ui already in opencode.json.")
+        return
+
+    mcp["agent-workflow-ui"] = {
+        "command": "python",
+        "args": ["-m", "agent_workflow_ui"],
+    }
+
+    with cfg_path.open("w") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    print(f"  ✓ Added agent-workflow-ui to {cfg_path}")
+    print(f"  Backup: {backup}")

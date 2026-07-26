@@ -250,7 +250,43 @@ If the agent process crashes or is interrupted, it can resume from `PROGRESS-TOD
 
 ---
 
-## 7. Git status
+## 7. Form inputs and templates (agent-workflow-ui plugin)
+
+When the `agent-workflow-ui` plugin is installed, two additional directories
+appear under `.agentic/`:
+
+### 7.1 inputs/
+
+Form submits from the browser to the agent. Each submit is a separate YAML file.
+
+**Path:** `.agentic/inputs/<form_id>.yaml` (e.g. `.agentic/inputs/FORM-001.yaml`)
+
+**Gitignored.** Transient runtime state, like inbox/outbox.
+
+**Schema:**
+- `form_id` (string, required) — form ID.
+- `template` (string, required) — which template was used.
+- `submitted_at` (ISO 8601 UTC, required) — when the user pressed Submit.
+- `data` (object, required) — payload from the form.
+
+See [`vision/architecture.md`](../vision/architecture.md) §7.2 for details.
+
+### 7.2 templates/
+
+Jinja2 templates for HTML forms. Project-scoped; override the plugin's default
+templates by name.
+
+**Path:** `.agentic/templates/<name>.html.j2`
+
+**Committed to git.** Part of the project design, like `pipelines/`.
+
+**Format:** YAML frontmatter + Jinja2 template body.
+
+See [`vision/architecture.md`](../vision/architecture.md) §7.3 for details.
+
+---
+
+## 8. Git status
 
 Runtime files (`inbox/`, `outbox/`, `context/`, `logs/`, `reports/`) are **not committed** to git. Add to `.gitignore`:
 

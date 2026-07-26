@@ -60,7 +60,7 @@ def empty_project(tmp_path) -> Path:
 @pytest.fixture
 def initialized_project(empty_project: Path, awf_bin: str, awf_env: dict) -> Path:
     """empty_project after `awf init --template simple` (non-interactive input)."""
-    init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\n"
+    init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\nn\n"
     subprocess.run(
         [awf_bin, "init", "--template", "simple"],
         cwd=empty_project,

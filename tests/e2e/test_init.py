@@ -9,7 +9,7 @@ class TestInit:
 
     def test_init_creates_structure(self, empty_project: Path, awf_bin: str, awf_env: dict):
         """awf init --template simple creates all expected files and directories."""
-        init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\n"
+        init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\nn\n"
         result = run_awf(awf_bin, ["init", "--template", "simple"],
                          cwd=empty_project, env=awf_env, input_data=init_input)
         assert result.returncode == 0, f"awf init failed: {result.stderr.decode()}"
@@ -35,7 +35,7 @@ class TestInit:
 
     def test_init_full_template(self, empty_project: Path, awf_bin: str, awf_env: dict):
         """awf init --template full creates reviewer and tester roles."""
-        init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\n"
+        init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\nn\n"
         result = run_awf(awf_bin, ["init", "--template", "full"],
                          cwd=empty_project, env=awf_env, input_data=init_input)
         assert result.returncode == 0, f"awf init failed: {result.stderr.decode()}"
@@ -48,7 +48,7 @@ class TestInit:
 
     def test_init_gitignore_correct(self, empty_project: Path, awf_bin: str, awf_env: dict):
         """awf init creates .gitignore with correct entries and git respects them."""
-        init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\n"
+        init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\nn\n"
         run_awf(awf_bin, ["init", "--template", "simple"],
                 cwd=empty_project, env=awf_env, input_data=init_input)
 
@@ -76,7 +76,7 @@ class TestInit:
         )
 
         # Answer model prompt with empty input to accept the default
-        init_input = b"test-project\npytest\nruff\nmypy\n\n\nn\n"
+        init_input = b"test-project\npytest\nruff\nmypy\n\n\nn\nn\n"
         result = run_awf(awf_bin, ["init", "--template", "simple"],
                          cwd=empty_project, env=awf_env, input_data=init_input)
         assert result.returncode == 0, f"awf init failed: {result.stderr.decode()}"

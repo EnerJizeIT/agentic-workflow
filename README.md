@@ -268,6 +268,53 @@ Runtime-директории (`inbox/`, `outbox/`, `context/`, `logs/`, `reports
 
 ---
 
+## agent-workflow-ui plugin (опционально)
+
+[`agent-workflow-ui`](agent_workflow_ui/) — standalone MCP plugin для opencode,
+который даёт supervisor-агенту инструменты визуального взаимодействия с
+пользователем: HTML-формы для структурированного ввода и dashboards для
+наблюдения за pipeline.
+
+**Status:** v0.1.0 (MVP). См. [`vision/agent-ui-plugin.md`](vision/agent-ui-plugin.md)
+для product vision.
+
+### Установка
+
+```bash
+pip install -e ./agent_workflow_ui    # в разработке
+# или pip install agent-workflow-ui    # после PyPI publish
+```
+
+### Настройка
+
+1. **Добавить MCP server** в `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "agent-workflow-ui": {
+      "command": "python",
+      "args": ["-m", "agent_workflow_ui"]
+    }
+  }
+}
+```
+
+2. **Установить SKILL.md** (LLM policy):
+
+```bash
+mkdir -p ~/.config/opencode/skills/agent-workflow-ui
+cp agent_workflow_ui/SKILL.md ~/.config/opencode/skills/agent-workflow-ui/SKILL.md
+```
+
+После этого supervisor-агент видит 5 tools: `open_form`, `read_submit`,
+`cancel_form`, `list_pending_forms`, `list_templates`.
+
+Подробнее: [`agent_workflow_ui/README.md`](agent_workflow_ui/README.md),
+[`vision/architecture.md`](vision/architecture.md).
+
+---
+
 ## Роли
 
 ### Supervisor (ты)
