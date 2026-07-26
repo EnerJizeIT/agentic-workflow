@@ -2,23 +2,23 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import time
-import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-
-from agent_workflow_ui.config import load, ensure_directories
+import yaml
+from agent_workflow_ui.config import ensure_directories, load
 from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.state import (
-    set_config, set_jinja_env, set_http_port,
-    get_registry, reset_registry,
+    get_registry,
+    reset_registry,
+    set_config,
+    set_http_port,
+    set_jinja_env,
 )
 
-
 import agent_workflow_ui as _awui
+
 DEFAULT_TEMPLATES_DIR = Path(_awui.__file__).parent / "render" / "default_templates"
 
 
@@ -147,7 +147,7 @@ def test_read_submit_unknown_form_id(plugin_setup):
 # --- cancel_form ---
 
 def test_cancel_form(plugin_setup):
-    from agent_workflow_ui.tools.forms import open_form, cancel_form, read_submit
+    from agent_workflow_ui.tools.forms import cancel_form, open_form, read_submit
     open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
 
@@ -159,7 +159,7 @@ def test_cancel_form(plugin_setup):
 
 
 def test_cancel_form_already_submitted(plugin_setup):
-    from agent_workflow_ui.tools.forms import open_form, cancel_form
+    from agent_workflow_ui.tools.forms import cancel_form, open_form
     open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
     get_registry().update_status(form_id, "submitted")
@@ -186,7 +186,7 @@ def test_list_pending_forms_initially_empty(plugin_setup):
 
 
 def test_list_pending_forms_after_open(plugin_setup):
-    from agent_workflow_ui.tools.forms import open_form, list_pending_forms
+    from agent_workflow_ui.tools.forms import list_pending_forms, open_form
     asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
     asyncio.run(open_form(template="skill-picker", data={"available_skills": ["backend-developer"]}))
 
@@ -198,7 +198,7 @@ def test_list_pending_forms_after_open(plugin_setup):
 
 
 def test_list_pending_forms_excludes_cancelled(plugin_setup):
-    from agent_workflow_ui.tools.forms import open_form, cancel_form, list_pending_forms
+    from agent_workflow_ui.tools.forms import cancel_form, list_pending_forms, open_form
     r1 = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
     asyncio.run(open_form(template="skill-picker", data={"available_skills": ["x"]}))
     asyncio.run(cancel_form(r1["form_id"]))
@@ -256,6 +256,7 @@ required_data_keys:
 def test_read_submit_lazy_expiration(plugin_setup):
     """read_submit returns status='expired' when TTL passed."""
     from datetime import timedelta
+
     from agent_workflow_ui.state import get_registry
     from agent_workflow_ui.tools.forms import open_form, read_submit
 
@@ -277,8 +278,9 @@ def test_read_submit_lazy_expiration(plugin_setup):
 def test_list_pending_forms_excludes_expired(plugin_setup):
     """Expired forms filtered out from list_pending_forms."""
     from datetime import timedelta
+
     from agent_workflow_ui.state import get_registry
-    from agent_workflow_ui.tools.forms import open_form, list_pending_forms
+    from agent_workflow_ui.tools.forms import list_pending_forms, open_form
 
     asyncio.run(open_form(
         template="role-assignment",
@@ -294,7 +296,7 @@ def test_list_pending_forms_excludes_expired(plugin_setup):
 
 def test_open_form_no_http_port_returns_error(plugin_setup, monkeypatch):
     """open_form returns error when HTTP endpoint not started."""
-    from agent_workflow_ui.state import set_http_port, get_http_port
+    from agent_workflow_ui.state import get_http_port, set_http_port
     from agent_workflow_ui.tools.forms import open_form
 
     saved = get_http_port()

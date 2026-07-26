@@ -58,6 +58,9 @@ class TestInit:
         assert ".agentic/context/" in gitignore
         assert ".agentic/logs/" in gitignore
         assert ".agentic/reports/" in gitignore
+        # agent-workflow-ui runtime dirs (added when plugin is installed)
+        assert ".agentic/inputs/" in gitignore
+        assert ".agentic/dashboards/" in gitignore
 
         # Create a file in inbox and verify git doesn't see it
         (empty_project / ".agentic/inbox/test-file.md").write_text("test")

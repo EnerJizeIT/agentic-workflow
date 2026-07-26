@@ -22,7 +22,7 @@ def read_opencode_models() -> list[str]:
     try:
         result = subprocess.run(
             ["opencode", "models"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, check=False,
         )
         if result.returncode == 0:
             models = []
@@ -107,10 +107,7 @@ def _read_models_from_config() -> list[str]:
     for provider_name, provider_cfg in (cfg.get("provider") or {}).items():
         if isinstance(provider_cfg, dict):
             models_raw = provider_cfg.get("models") or {}
-            if isinstance(models_raw, dict):
-                for model_id in models_raw:
-                    models.add(f"{provider_name}/{model_id}")
-            elif isinstance(models_raw, list):
+            if isinstance(models_raw, dict) or isinstance(models_raw, list):
                 for model_id in models_raw:
                     models.add(f"{provider_name}/{model_id}")
 
@@ -169,12 +166,13 @@ def save_custom_role(name: str, content: str, role_type: str = "agent") -> Path:
         Path to saved file.
     """
     GLOBAL_ROLES_DIR.mkdir(parents=True, exist_ok=True)
-    slug = re.sub(r"[^a-zA-Z0-9_-]", "-", name.lower()).strip("-")
-    if not slug:
-        slug = "unnamed"
+    slug = _slugify(name)
     if role_type == "supervisor" and not slug.startswith("supervisor-"):
         slug = f"supervisor-{slug}"
-    path = GLOBAL_ROLES_DIR / f"{slug}.md"
+    path = (GLOBAL_ROLES_DIR / f"{slug}.md").resolve()
+    # Defense-in-depth: ensure resolved path stays inside GLOBAL_ROLES_DIR.
+    if not path.is_relative_to(GLOBAL_ROLES_DIR.resolve()):
+        raise ValueError(f"Slug {slug!r} escapes roles dir")
     path.write_text(content, encoding="utf-8")
     log.info("Saved custom role: %s", path)
     return path
@@ -189,9 +187,26 @@ def delete_custom_role(name: str) -> bool:
     Returns:
         True if deleted, False if not found.
     """
-    path = GLOBAL_ROLES_DIR / f"{name}.md"
+    # Reject anything that could escape GLOBAL_ROLES_DIR via path traversal.
+    if "/" in name or "\\" in name or name in (".", ".."):
+        log.warning("Rejected delete_custom_role with suspicious name: %r", name)
+        return False
+    path = (GLOBAL_ROLES_DIR / f"{name}.md").resolve()
+    if not path.is_relative_to(GLOBAL_ROLES_DIR.resolve()):
+        log.warning("Rejected delete_custom_role: path escapes roles dir: %s", path)
+        return False
     if path.exists():
         path.unlink()
         log.info("Deleted custom role: %s", path)
         return True
     return False
+
+
+def _slugify(name: str) -> str:
+    """Convert role name to filesystem-safe slug.
+
+    Must match JS slugify() in project-setup.html.j2 for client-side conflict
+    detection to work correctly. Test cross-check: tests/awf_ui_plugin/test_slugify.py.
+    """
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "-", name.lower()).strip("-")
+    return slug or "unnamed"

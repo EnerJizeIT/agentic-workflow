@@ -3,10 +3,7 @@ from __future__ import annotations
 
 import platform as platform_module
 import subprocess
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from agent_workflow_ui import browser
 

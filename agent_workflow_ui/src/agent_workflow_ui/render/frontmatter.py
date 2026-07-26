@@ -18,7 +18,6 @@ from typing import Any
 
 import yaml
 
-
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
 
 

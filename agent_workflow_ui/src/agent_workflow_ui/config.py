@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def load() -> Config:
         dashboards_dir=_path("AWF_DASHBOARDS_DIR", ".agentic/dashboards"),
         http_port=int(os.environ.get("AWF_HTTP_PORT", "0")),
         open_browser_cmd=os.environ.get("AWF_OPEN_BROWSER_CMD", "auto"),
-        temp_dir=_path("AWF_TEMP_DIR", "/tmp"),
+        temp_dir=_path("AWF_TEMP_DIR", tempfile.gettempdir()),
         default_ttl_seconds=int(os.environ.get("AWF_DEFAULT_TTL_SECONDS", "86400")),
     )
 

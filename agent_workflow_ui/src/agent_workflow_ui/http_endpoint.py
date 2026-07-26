@@ -7,7 +7,6 @@ from __future__ import annotations
 import html
 import json
 import logging
-import re
 import socket
 import threading
 import urllib.parse
@@ -95,7 +94,7 @@ class SubmitHandler(BaseHTTPRequestHandler):
     inputs_dir: Path = None  # type: ignore[assignment]
     registry: FormRegistry = None  # type: ignore[assignment]
 
-    def do_POST(self):  # noqa: N802 - http.server API
+    def do_POST(self):
         """Handle POST /submit/<form_id>."""
         path = urllib.parse.urlparse(self.path).path
         if not path.startswith("/submit/"):
@@ -120,7 +119,11 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(410, f"Form {form_id} was cancelled.")
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            self._send_text(400, "Invalid Content-Length header")
+            return
         if content_length > MAX_BODY_BYTES:
             # Drain request body before responding, otherwise client gets
             # BrokenPipeError when server closes connection mid-write.
@@ -157,17 +160,17 @@ class SubmitHandler(BaseHTTPRequestHandler):
 
         self.registry.update_status(form_id, "submitted")
 
-        # Persist custom roles if requested
-        self._maybe_save_custom_roles(data)
+        # Persist custom roles if requested (delegates to roles_processor)
+        from .roles_processor import process_role_deletions, process_role_saves
 
-        # Delete custom roles if requested
-        self._maybe_delete_custom_roles(data)
+        process_role_saves(data)
+        process_role_deletions(data)
 
         log.info("Submit received for %s, written to %s", form_id, target)
 
         self._send_html(200, _ack_page(form_id, already_submitted=False))
 
-    def do_GET(self):  # noqa: N802 - http.server API
+    def do_GET(self):
         """Handle GET /health."""
         path = urllib.parse.urlparse(self.path).path
         if path == "/health":
@@ -176,62 +179,8 @@ class SubmitHandler(BaseHTTPRequestHandler):
         self._send_text(404, "Not Found")
 
     # Silence default logging to stdout (would corrupt MCP stdio protocol if it leaked)
-    def log_message(self, format, *args):  # noqa: A002, D401
+    def log_message(self, format, *args):
         log.debug("HTTP %s - %s", self.address_string(), format % args)
-
-    def _maybe_save_custom_roles(self, data: dict[str, Any]) -> None:
-        """Save custom agent .md and supervisor .md files if user requested."""
-        from .opencode_config import save_custom_role
-
-        # Parse team_config JSON for custom agents
-        team_json = data.get("team_config", "")
-        if team_json:
-            import json
-            try:
-                team = json.loads(team_json)
-            except (json.JSONDecodeError, TypeError):
-                team = []
-            for member in team:
-                if isinstance(member, dict) and member.get("type") == "custom":
-                    name = member.get("agent", "").strip()
-                    content = member.get("skill_content", "").strip()
-                    save_flag = member.get("save", False)
-                    if name and content and save_flag:
-                        try:
-                            save_custom_role(name, content, role_type="agent")
-                            log.info("Saved custom agent: %s", name)
-                        except Exception as e:
-                            log.error("Failed to save custom agent %s: %s", name, e)
-
-        # Save supervisor .md if requested
-        sv_content = data.get("supervisor_content", "").strip()
-        save_sv = data.get("save_supervisor", "") == "true"
-        if sv_content and save_sv:
-            # Use a name from the content's first heading, or timestamp
-            first_line = sv_content.strip().split("\n")[0]
-            name = first_line.lstrip("# ").strip() or "custom"
-            try:
-                save_custom_role(name, sv_content, role_type="supervisor")
-                log.info("Saved custom supervisor: %s", name)
-            except Exception as e:
-                log.error("Failed to save supervisor: %s", e)
-
-    def _maybe_delete_custom_roles(self, data: dict[str, Any]) -> None:
-        """Delete custom role .md files if user requested."""
-        from .opencode_config import delete_custom_role
-
-        # delete_agent can be a single name or comma-separated
-        delete_str = data.get("delete_agent", "").strip()
-        if not delete_str:
-            return
-        for name in delete_str.split(","):
-            name = name.strip()
-            if name:
-                try:
-                    if delete_custom_role(name):
-                        log.info("Deleted custom role: %s", name)
-                except Exception as e:
-                    log.error("Failed to delete %s: %s", name, e)
 
     # Helpers
     def _send_html(self, code: int, body: str) -> None:

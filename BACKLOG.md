@@ -10,7 +10,7 @@
 
 - Wave 4: миграция bash→Python завершена. `lib/*.sh` удалены, `awf/` Python package = 22 модуля.
 - `bin/awf` — thin wrapper через `os.path.realpath`. Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
-- 163 теста (11 E2E + 152 unit), CI на Python 3.10-3.12.
+- 164 теста (12 E2E + 152 unit), CI на Python 3.10-3.12.
 - README на русском, LICENSE, GitHub Actions.
 - Vision и Architecture для `agent-workflow-ui` plugin'а зафиксированы.
 
@@ -20,12 +20,14 @@
 - HTTP endpoint для form submits (атомарные YAML-записи) — **всегда включён**, не опциональный.
 - Jinja2 rendering с YAML frontmatter + ChoiceLoader (project → defaults).
 - **Composite template `project-setup`** (primary для MVP): context + ТЗ files + supervisor + team + models. Остальные 5 templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`) зарезервированы для будущих сценариев.
-- Custom roles persistence (`~/.config/awf/roles/`): save/delete через HTTP endpoint.
+- Custom roles persistence (`~/.config/awf/roles/`): save/delete через `roles_processor.py` (вынесен из HTTP handler).
+- Path traversal defense в `delete_custom_role` (отвергает `../`, `/`, `\`).
 - Inline conflict resolution через JS `confirm()` перед перезаписью роли.
-- **Lazy skill install** — SKILL.md автоматически копируется в `~/.config/opencode/skills/` при первом запуске.
+- **Lazy skill install** (через `skill_installer.py`) — SKILL.md автоматически копируется в `~/.config/opencode/skills/` при каждом старте plugin'а (idempotent). Заменяет изначально запланированный setuptools post-install hook.
 - Cross-platform browser open.
-- 104 теста, 79% coverage.
+- **147 тестов + 33 slugify cross-check cases = 180 тестов, 93% coverage**.
 - SKILL.md с инструкцией для LLM (non-blocking pattern, agent-driven templates).
+- Slugify Python↔JS cross-check test (гарантирует consistency conflict detection).
 - `awf init` — prompt для plugin install.
 
 ### Прошлые волны (хронология)
@@ -126,7 +128,7 @@ Cross-platform browser open.
 - [x] **7.3** `cancel_form(form_id)` → `{cancelled, form_id}`.
 - [x] **7.4** `list_pending_forms()` → `{pending: [...], count}`.
 - [x] **7.5** `list_templates()` → `{templates: [...]}` с metadata из frontmatter.
-- [x] **7.6** Form ID generator: `FORM-001`, `FORM-002`, ... (max existing NNN + 1).
+- [x] **7.6** Form ID generator: `FORM-YYYYMMDDHHMMSS-XXXX` (timestamp + 4 random alphanumeric). Не sequence — избегаем коллизий со stale-файлами прошлых сессий.
 
 **Verify:** integration test — полный lifecycle формы от open до read.
 
@@ -157,7 +159,7 @@ LLM policy: когда/как использовать формы.
 - [x] **10.1** `agent_workflow_ui/README.md` — quick start, installation, usage examples.
 - [x] **10.2** Обновить `protocols/communication.md` — добавить секции про `.agentic/inputs/` и `.agentic/templates/`.
 - [x] **10.3** Обновить корневой `README.md` — упомянуть plugin.
-- [x] **10.4** PyPI publish: `agent-workflow-ui` как separate package.
+- [ ] **10.4** PyPI publish: `agent-workflow-ui` как separate package (пока не опубликован — `pip install agent-workflow-ui` вернёт 404).
 - [x] **10.5** `awf init` prompt: «Установить agent-workflow-ui plugin? [y/N]» → если yes, добавляет MCP block в `~/.config/opencode/opencode.json`.
 - [x] **10.6** Release notes (CHANGELOG.md или GitHub Release).
 

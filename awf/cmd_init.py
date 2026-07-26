@@ -162,13 +162,20 @@ def run(args: Any) -> int:
     shutil.copy2(templates_dir / "todo-template.md", agentic / "todo-template.md")
 
     # Update .gitignore
-    gitignore_block = ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n.agentic/logs/\n.agentic/reports/"
+    # inputs/ and dashboards/ — runtime state from agent-workflow-ui plugin (submits, rendered dashboards).
+    gitignore_block = (
+        ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n.agentic/logs/\n.agentic/reports/\n"
+        ".agentic/inputs/\n.agentic/dashboards/"
+    )
     gitignore = Path(".gitignore")
 
     if gitignore.exists():
         content = gitignore.read_text(encoding="utf-8")
         if ".agentic/inbox/" not in content:
             gitignore.write_text(content + "\n# Agentic workflow runtime files\n" + gitignore_block + "\n", encoding="utf-8")
+        elif ".agentic/inputs/" not in content:
+            # Pre-existing gitignore from older awf — append plugin runtime dirs.
+            gitignore.write_text(content + "\n# agent-workflow-ui runtime\n.agentic/inputs/\n.agentic/dashboards/\n", encoding="utf-8")
     else:
         gitignore.write_text("# Agentic workflow runtime files\n" + gitignore_block + "\n", encoding="utf-8")
 
@@ -241,11 +248,10 @@ def _offer_plugin_install(project_name):
         if ans in ("y", "yes"):
             _add_mcp_config_to_opencode()
     else:
-        print("  Plugin not installed. Install with:")
-        print("    pip install agent-workflow-ui")
-        print("  Or from source:")
+        print("  Plugin not installed. Install from source:")
         print("    pip install -e ./agent_workflow_ui")
-        print("  Then re-run `awf init` to configure automatically.")
+        print("  (PyPI publish pending — `pip install agent-workflow-ui` not yet available.)")
+        print("  After install, re-run `awf init` to configure automatically.")
 
 
 def _add_mcp_config_to_opencode():

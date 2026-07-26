@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-
 from agent_workflow_ui.state import FormRecord, FormRegistry
 
 
@@ -74,8 +73,8 @@ def test_list_pending():
 
 def test_http_port_accessor():
     """set_http_port / get_http_port roundtrip."""
-    from agent_workflow_ui.state import set_http_port, get_http_port
     import agent_workflow_ui.state as state_mod
+    from agent_workflow_ui.state import get_http_port, set_http_port
     state_mod._http_port = None
 
     assert get_http_port() is None

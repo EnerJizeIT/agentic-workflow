@@ -1,11 +1,14 @@
 """MCP tool: list available templates."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
-from ..state import get_config
 from ..render.frontmatter import parse_frontmatter_from_file
+from ..state import get_config
+
+log = logging.getLogger(__name__)
 
 
 async def list_templates() -> dict[str, Any]:
@@ -31,8 +34,8 @@ async def list_templates() -> dict[str, Any]:
                     "required_data_keys": meta.get("required_data_keys", []),
                     "optional_data_keys": meta.get("optional_data_keys", []),
                 }
-            except Exception:
-                continue
+            except Exception as e:
+                log.warning("Skipped default template %s: %s", path.name, e)
 
     if config.templates_dir.is_dir():
         for path in sorted(config.templates_dir.glob("*.html.j2")):
@@ -46,8 +49,8 @@ async def list_templates() -> dict[str, Any]:
                     "required_data_keys": meta.get("required_data_keys", []),
                     "optional_data_keys": meta.get("optional_data_keys", []),
                 }
-            except Exception:
-                continue
+            except Exception as e:
+                log.warning("Skipped project template %s: %s", path.name, e)
 
     return {
         "templates": list(templates.values()),

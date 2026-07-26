@@ -5,8 +5,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-
-from agent_workflow_ui.config import load, ensure_directories
+from agent_workflow_ui.config import ensure_directories, load
 from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.server import create_server
 from agent_workflow_ui.state import (
@@ -16,8 +15,8 @@ from agent_workflow_ui.state import (
     set_jinja_env,
 )
 
-
 import agent_workflow_ui as _awui
+
 DEFAULT_TEMPLATES_DIR = Path(_awui.__file__).parent / "render" / "default_templates"
 
 

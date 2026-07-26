@@ -1,12 +1,10 @@
 """Unit tests for agent_workflow_ui.config."""
 from __future__ import annotations
 
-import os
+import tempfile
 from pathlib import Path
 
-import pytest
-
-from agent_workflow_ui.config import Config, load, ensure_directories
+from agent_workflow_ui.config import ensure_directories, load
 
 
 def test_load_defaults(tmp_path, monkeypatch):
@@ -27,7 +25,7 @@ def test_load_defaults(tmp_path, monkeypatch):
     assert config.dashboards_dir == (tmp_path / ".agentic" / "dashboards").resolve()
     assert config.http_port == 0
     assert config.open_browser_cmd == "auto"
-    assert config.temp_dir == Path("/tmp")
+    assert config.temp_dir == Path(tempfile.gettempdir())
     assert config.default_ttl_seconds == 86400
 
 

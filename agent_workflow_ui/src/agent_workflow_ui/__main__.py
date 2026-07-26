@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import load, ensure_directories
+from .config import ensure_directories, load
 from .http_endpoint import start_http_server
 from .opencode_config import read_opencode_models, read_recent_models
 from .render.engine import create_env
@@ -13,6 +13,7 @@ from .server import create_server
 from .skill_installer import ensure_skill_installed
 from .state import get_registry, set_config, set_http_port, set_jinja_env
 
+log = logging.getLogger(__name__)
 
 DEFAULT_TEMPLATES_DIR = Path(__file__).parent / "render" / "default_templates"
 
@@ -25,29 +26,37 @@ def main() -> int:
         stream=sys.stderr,
     )
 
-    # Lazy skill install: copy SKILL.md to ~/.config/opencode/skills/agent-workflow-ui/
-    # Idempotent — overwrites if bundled version differs. No-op if already current.
-    ensure_skill_installed()
+    try:
+        # Lazy skill install: copy SKILL.md to ~/.config/opencode/skills/agent-workflow-ui/
+        # Idempotent — overwrites if bundled version differs. No-op if already current.
+        ensure_skill_installed()
 
-    config = load()
-    ensure_directories(config)
-    set_config(config)
+        config = load()
+        ensure_directories(config)
+        set_config(config)
 
-    env = create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR])
-    env.globals["available_models"] = read_opencode_models()
-    env.globals["recent_models"] = read_recent_models()
-    set_jinja_env(env)
+        env = create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR])
+        env.globals["available_models"] = read_opencode_models()
+        env.globals["recent_models"] = read_recent_models()
+        set_jinja_env(env)
 
-    registry = get_registry()
-    server, port = start_http_server(config, registry)
-    set_http_port(port)
-    logging.info("agent_workflow_ui started (HTTP on port %d)", port)
+        registry = get_registry()
+        server, port = start_http_server(config, registry)
+        set_http_port(port)
+        log.info("agent_workflow_ui started (HTTP on port %d)", port)
 
-    mcp = create_server()
-    mcp.run()  # blocks; stdio transport
+        mcp = create_server()
+        mcp.run()  # blocks; stdio transport
 
-    server.shutdown()
-    return 0
+        server.shutdown()
+        return 0
+    except KeyboardInterrupt:
+        log.info("agent_workflow_ui interrupted by user")
+        return 130
+    except Exception:
+        log.exception("agent_workflow_ui crashed during startup/runtime")
+        print("FATAL: agent_workflow_ui failed to start", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

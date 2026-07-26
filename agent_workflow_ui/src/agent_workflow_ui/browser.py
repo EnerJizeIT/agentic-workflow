@@ -54,6 +54,7 @@ def open_path(target: Path | str, command: str = "auto") -> tuple[bool, str]:
             [cmd, str(target)],
             capture_output=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             return True, f"opened via {cmd}"

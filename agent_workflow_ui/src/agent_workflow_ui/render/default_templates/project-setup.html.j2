@@ -741,7 +741,12 @@ optional_data_keys: []
         if (svContent && svContent.value.trim() && saveSv && saveSv.checked) {
           var firstLine = svContent.value.trim().split('\n')[0];
           var svName = firstLine.replace(/^#+\s*/, '').trim() || 'custom';
-          var svSlug = 'supervisor-' + slugify(svName);
+          var svSlug = slugify(svName);
+          // Python save_custom_role adds 'supervisor-' prefix only if slug doesn't already have it.
+          // Mirror that logic here to keep conflict detection in sync.
+          if (svSlug.indexOf('supervisor-') !== 0) {
+            svSlug = 'supervisor-' + svSlug;
+          }
           if (existingSupervisorSlugs.indexOf(svSlug) !== -1) {
             conflicts.push('Supervisor "' + svName + '" (→ ' + svSlug + '.md)');
           }

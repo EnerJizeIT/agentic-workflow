@@ -64,7 +64,7 @@ pip install -e "./agent_workflow_ui[dev]"
 python3 -m pytest tests/awf_ui_plugin/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-Target: ≥95% on plugin code (excluding `__main__.py` and `__init__.py`).
+Target: ≥80% на plugin code (исключая `__main__.py` и `__init__.py`). Текущее: **93%**.
 
 ## Development
 

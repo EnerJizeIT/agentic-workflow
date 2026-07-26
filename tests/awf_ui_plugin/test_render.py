@@ -1,12 +1,12 @@
 """Tests for Jinja2 render layer."""
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
 from agent_workflow_ui.render.engine import create_env, render_template
-from agent_workflow_ui.render.frontmatter import parse_frontmatter, parse_frontmatter_from_file
+from agent_workflow_ui.render.frontmatter import (
+    parse_frontmatter,
+    parse_frontmatter_from_file,
+)
 
 
 def test_parse_frontmatter_basic():

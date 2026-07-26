@@ -218,7 +218,7 @@ Plugin запускается opencode как subprocess при старте с�
 | Submit неполный (required fields пустые) | HTML5 form validation (`required`) блокирует submit в browser. Пользователь видит стандартное сообщение. |
 | Submit semantic invalid (валидный YAML, но неверный выбор) | Агент получает данные через `read_submit`, валидирует semantic на LLM-side. При ошибке открывает новую форму с pre-filled данными и комментарием. |
 | Submit не пришёл | `read_submit` возвращает `{submitted: false, status: "pending"}`. Агент может подождать, отменить через `cancel_form`, или продолжить другую работу. |
-| Duplicate submit | Plugin идемпотентен по `form_id`. Повторные POST на `/submit/FORM-001` игнорируются после первого. |
+| Duplicate submit | Plugin идемпотентен по `form_id`. Повторные POST на `/submit/FORM-...` игнорируются после первого. |
 | Concurrent `open_form` | Каждый вызов создаёт новый `form_id`. Старый остаётся pending. |
 | Agent перезапустился между `open_form` и `read_submit` | Form ID — это имя файла в `.agentic/inputs/`. Новый агент вызывает `read_submit(form_id)` и читает файл. Stateless recovery. |
 
@@ -242,9 +242,9 @@ Plugin запускается opencode как subprocess при старте с�
 
 ```json
 {
-  "form_id": "FORM-001",
+  "form_id": "FORM-20260726143022-a1b2",
   "browser_opened": true,
-  "submit_url": "http://localhost:13747/submit/FORM-001",
+  "submit_url": "http://127.0.0.1:13747/submit/FORM-20260726143022-a1b2",
   "expires_at": null
 }
 ```
@@ -253,14 +253,14 @@ Plugin запускается opencode как subprocess при старте с�
 
 ```json
 {
-  "form_id": "FORM-002",
+  "form_id": "FORM-20260726143022-c3d4",
   "browser_opened": false,
   "error": "Browser open failed: xdg-open exit code 1"
 }
 ```
 
 **Внутри:**
-1. Сгенерировать form_id (следующий sequence).
+1. Сгенерировать form_id (timestamp + random suffix, формат см. §7.4).
 2. Найти template: `.agentic/templates/<name>.html.j2` (project override) → `render/default_templates/<name>.html.j2` (default).
 3. Рендерить Jinja2 с переменными `form_id`, `submit_url`, `template_name` + ключи из `data`.
 4. Сохранить HTML во временный файл (`/tmp/agent-workflow-ui-<form_id>.html`).
@@ -284,9 +284,9 @@ Plugin запускается opencode как subprocess при старте с�
 ```json
 {
   "submitted": false,
-  "form_id": "FORM-001",
+  "form_id": "FORM-20260726143022-a1b2",
   "status": "pending",
-  "opened_at": "2026-07-25T14:30:22Z"
+  "opened_at": "2026-07-26T14:30:22Z"
 }
 ```
 
@@ -295,27 +295,30 @@ Plugin запускается opencode как subprocess при старте с�
 ```json
 {
   "submitted": true,
-  "form_id": "FORM-001",
+  "form_id": "FORM-20260726143022-a1b2",
   "status": "submitted",
-  "submitted_at": "2026-07-25T14:31:45Z",
-  "template": "role-assignment",
+  "submitted_at": "2026-07-26T14:31:45Z",
+  "template": "project-setup",
   "data": {
-    "selected_roles": ["worker", "reviewer"],
-    "project_name": "internet-shop"
+    "context_message": "...",
+    "team_config": "[...]",
+    "spec_files_json": "..."
   }
 }
 ```
 
-**Возвращает (форма cancelled):**
+**Возвращает (форма cancelled/expired):**
 
 ```json
 {
   "submitted": false,
-  "form_id": "FORM-001",
+  "form_id": "FORM-20260726143022-a1b2",
   "status": "cancelled",
-  "cancelled_at": "2026-07-25T14:35:00Z"
+  "opened_at": "2026-07-26T14:30:22Z"
 }
 ```
+
+> **Note:** `read_submit` возвращает `status` и `opened_at` для всех не-submitted состояний. `cancelled_at`/`expires_at` доступны в in-memory `FormRecord`, но не включены в response — статус сигнализирует о состоянии формы.
 
 **Поведение:**
 - Idempotent —多次ые вызовы возвращают тот же результат.
@@ -336,13 +339,13 @@ Plugin запускается opencode как subprocess при старте с�
 **Возвращает:**
 
 ```json
-{ "cancelled": true, "form_id": "FORM-001" }
+{ "cancelled": true, "form_id": "FORM-20260726143022-a1b2" }
 ```
 
 **При попытке отменить уже submitted:**
 
 ```json
-{ "cancelled": false, "form_id": "FORM-001", "reason": "already_submitted" }
+{ "cancelled": false, "form_id": "FORM-20260726143022-a1b2", "reason": "already_submitted" }
 ```
 
 ---
@@ -359,8 +362,8 @@ Plugin запускается opencode как subprocess при старте с�
 {
   "pending": [
     {
-      "form_id": "FORM-001",
-      "template": "role-assignment",
+      "form_id": "FORM-20260726143022-a1b2",
+      "template": "project-setup",
       "opened_at": "2026-07-25T14:30:22Z",
       "age_seconds": 45
     }
@@ -580,11 +583,15 @@ optional_data_keys:
 
 Skill markdown (`SKILL.md`) — инструкция для LLM, когда и как использовать формы.
 
-**Установка:** `pip install agent-workflow-ui` запускает **post-install hook** (setuptools entry point), который автоматически копирует `SKILL.md` в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md`. Пользователю **не нужно** делать это вручную — после `pip install` plugin готов к работе.
+**Установка:** **lazy install при каждом старте plugin'а** (через `skill_installer.py`). При запуске `python -m agent_workflow_ui` plugin проверяет bundled `SKILL.md` и копирует его в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md`, если файла нет или содержимое устарело. Это **заменило** изначально запланированный setuptools post-install hook — последний оказался ненадёжным для user-locale paths (`~/.config/`).
 
-Если каталога `~/.config/opencode/skills/` ещё нет — hook создаёт его. Если файл уже существует — hook перезаписывает (idempotent, поддерживает `pip install --upgrade`).
+Преимущества lazy install:
+- **Self-healing:** `pip install --upgrade` обновляет SKILL.md автоматически при следующем старте opencode.
+- **Idempotent:** проверяет содержимое файла, не timestamp — копирует только если bundled отличается.
+- **Не зависит от setuptools internals:** работает в virtualenv, pip cache, editable installs.
+- **End-user experience:** после `pip install agent-workflow-ui` plugin готов к работе. Никаких ручных шагов.
 
-Реализация: setuptools `entry_points` с `console_scripts` или `data_files` + post-install wrapper. См. §11 (Migration).
+Реализация: `agent_workflow_ui/skill_installer.py:ensure_skill_installed()` — вызывается из `__main__.py` при каждом старте.
 
 ```markdown
 # Agent Workflow UI
@@ -700,10 +707,12 @@ pip install agent-workflow-ui
 ```
 
 После установки:
-- **SKILL.md автоматически копируется** в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` через post-install hook (setuptools entry point). Дополнительных ручных шагов нет.
+- **SKILL.md автоматически копируется** в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` через **lazy install** при первом старте plugin'а (см. `skill_installer.py`). Дополнительных ручных шагов нет.
 - MCP-конфиг в `~/.config/opencode/opencode.json` пользователь добавляет один раз (или через `awf init` — см. §11.1).
 
 Принцип: **после `pip install` plugin полностью готов к работе** — никаких костылей, ручных копирований, активаций. Это сознательное решение для end-user experience.
+
+> **Note:** изначально планировался setuptools post-install hook, но он оказался ненадёжным для user-locale paths (`~/.config/`). Заменён на lazy install при каждом старте plugin'а.
 
 ---
 
@@ -722,7 +731,7 @@ pip install agent-workflow-ui
 - **Custom roles persistence**: save/delete через `_maybe_save_custom_roles` / `_maybe_delete_custom_roles` в HTTP endpoint.
 - **Inline conflict resolution** через JS `confirm()` перед перезаписью существующей роли.
 - **Models auto-discovery**: `opencode models` CLI + recent models из SQLite.
-- **Post-install hook** для автоматического копирования `SKILL.md` в opencode skills dir.
+- **Lazy skill install** при каждом старте plugin'а (через `skill_installer.py`) — автоматически копирует `SKILL.md` в opencode skills dir.
 
 ❌ НЕ включено:
 - Dashboards (Сценарий 4 — later).
@@ -761,7 +770,7 @@ pip install agent-workflow-ui
 | **Inline conflict resolution** через JS `confirm()` | Не требует отдельной follow-up мини-формы (как планировалось в vision v0.3). Быстрее, проще UX. |
 | **Agent-driven project templates** | `.agentic/templates/` override только через агента (front+back). Пользователь не кладёт файлы вручную — избегаем «битых» templates. |
 | **Custom roles в `~/.config/awf/roles/`** (глобально, не per-project) | Кастомные роли — переиспользуемый актив. Создал в одном проекте → доступен во всех. |
-| **Post-install hook** для SKILL.md | End-user principle: после `pip install` plugin готов к работе. Никаких ручных копирований. |
+| **Lazy skill install** (через `skill_installer.py`) | End-user principle: после `pip install` plugin готов к работе при первом старте opencode. Заменяет ненадёжные setuptools post-install hooks для user-locale paths. |
 | Templates коммитятся в git (`.agentic/templates/`) | Часть дизайна проекта, как `pipelines/`. Submits — runtime state, gitignored. |
 | Browser open через `xdg-open`/`open` | Без native browser bindings. Используем браузер по умолчанию пользователя. |
 | `awf-mcp` отдельный от `agent-workflow-ui` | Clean separation: UI layer agnostic, awf layer specific. Plugin reusable с другими orchestrators. |

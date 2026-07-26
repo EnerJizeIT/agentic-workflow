@@ -7,7 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # Avoid circular import: config.py imports nothing from state.py at module level,
+    # but the type hint is enough to trigger circular import if imported eagerly.
+    from .config import Config
 
 
 @dataclass
@@ -17,9 +22,9 @@ class FormRecord:
     template: str
     opened_at: datetime
     status: str = "pending"
-    submitted_at: Optional[datetime] = None
-    cancelled_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
+    submitted_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    expires_at: datetime | None = None
     data_keys: list = field(default_factory=list)
 
 
@@ -28,16 +33,14 @@ class FormRegistry:
 
     def __init__(self) -> None:
         self._forms: dict[str, FormRecord] = {}
-        self._counter = 0
-        self._counter: int = 0
 
     def add(self, record: FormRecord) -> None:
         self._forms[record.form_id] = record
 
-    def get(self, form_id: str) -> Optional[FormRecord]:
+    def get(self, form_id: str) -> FormRecord | None:
         return self._forms.get(form_id)
 
-    def update_status(self, form_id: str, status: str) -> Optional[FormRecord]:
+    def update_status(self, form_id: str, status: str) -> FormRecord | None:
         record = self._forms.get(form_id)
         if record is None:
             return None
@@ -61,9 +64,9 @@ class FormRegistry:
         This is globally unique — no collision with stale files from previous
         sessions in .agentic/inputs/.
         """
-        import time
         import random
         import string
+        import time
 
         timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
         suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
@@ -80,7 +83,6 @@ def get_registry() -> FormRegistry:
 def reset_registry() -> None:
     """Reset the global registry. Used by tests for isolation."""
     _registry._forms.clear()
-    _registry._counter = 0
 
 
 _http_port: int | None = None
@@ -97,30 +99,30 @@ def get_http_port() -> int | None:
     return _http_port
 
 
-_config: "Config | None" = None  # type: ignore[name-defined]
-_jinja_env: "Any | None" = None  # Environment instance
+_config: Config | None = None
+_jinja_env: Any | None = None  # Environment instance
 
 
-def set_config(config: "Config") -> None:
+def set_config(config: Config) -> None:
     """Set the plugin Config (called once at startup)."""
     global _config
     _config = config
 
 
-def get_config() -> "Config":
+def get_config() -> Config:
     """Get the plugin Config. Raises RuntimeError if not set."""
     if _config is None:
         raise RuntimeError("Config not initialized. Call set_config() at startup.")
     return _config
 
 
-def set_jinja_env(env: "Any") -> None:
+def set_jinja_env(env: Any) -> None:
     """Set the Jinja2 Environment (called once at startup)."""
     global _jinja_env
     _jinja_env = env
 
 
-def get_jinja_env() -> "Any":
+def get_jinja_env() -> Any:
     """Get the Jinja2 Environment. Raises RuntimeError if not set."""
     if _jinja_env is None:
         raise RuntimeError("Jinja env not initialized. Call set_jinja_env() at startup.")

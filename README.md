@@ -282,7 +282,7 @@ Runtime-директории (`inbox/`, `outbox/`, `context/`, `logs/`, `reports
 
 ```bash
 pip install -e ./agent_workflow_ui    # в разработке
-# или pip install agent-workflow-ui    # после PyPI publish
+# или pip install agent-workflow-ui    # после PyPI publish (пока не опубликован)
 ```
 
 ### Настройка
@@ -300,12 +300,9 @@ pip install -e ./agent_workflow_ui    # в разработке
 }
 ```
 
-2. **Установить SKILL.md** (LLM policy):
-
-```bash
-mkdir -p ~/.config/opencode/skills/agent-workflow-ui
-cp agent_workflow_ui/SKILL.md ~/.config/opencode/skills/agent-workflow-ui/SKILL.md
-```
+2. **SKILL.md устанавливается автоматически** при первом старте plugin'а (lazy install
+   через `skill_installer.py`). Никаких ручных шагов — после `pip install` и MCP-конфигурации
+   plugin готов к работе.
 
 После этого supervisor-агент видит 5 tools: `open_form`, `read_submit`,
 `cancel_form`, `list_pending_forms`, `list_templates`.
@@ -437,15 +434,13 @@ python3 -m pytest tests/ --cov=awf --cov-report=term-missing
 
 ## На что смотреть дальше
 
-Краткий список направлений (детали — в [BACKLOG.md](BACKLOG.md)):
+Подробный roadmap — в [BACKLOG.md](BACKLOG.md). Кратко:
 
-1. **HTML dashboard** — веб-обёртка над CLI.
-2. **HTTP API** (`awf serve`) — REST-эндпоинты для dashboard.
-3. **Автоинициализация** (`awf bootstrap`) — по файлу требований.
-4. **Цепочки worker'ов** — supervisor→worker₁→worker₂→...→supervisor.
-5. **Роли-скиллы** — шаблоны для специализированных worker'ов.
-6. **Выбор моделей** — привязка LLM к каждой роли.
-7. **Real-time статус** — SSE/polling для dashboard.
+1. **agent-workflow-ui scenarios 2-6** — Decision fork, Blockage recovery, Monitoring dashboard, Priority planning, Onboarding wizard. См. [vision/agent-ui-plugin.md](vision/agent-ui-plugin.md) §6.
+2. **`awf-mcp`** — отдельный MCP server для awf state queries (`get_active_todos`, `get_pipeline_state`, ...).
+3. **PyPI publish** — `agent-workflow-ui` и `awf` как separate packages.
+
+> Старые Tasks 1-3, 7 (HTML SPA dashboard, `awf serve` REST API, `awf bootstrap`, real-time SSE) — **deprecated**, см. [BACKLOG.md §"Deprecated"](BACKLOG.md#-deprecated-старый-backlog-tasks-1-7).
 
 ---
 
