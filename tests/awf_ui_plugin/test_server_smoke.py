@@ -71,6 +71,7 @@ def test_all_tools_registered():
     expected = {
         "open_form",
         "read_submit",
+        "wait_for_submit",
         "cancel_form",
         "list_pending_forms",
         "list_templates",

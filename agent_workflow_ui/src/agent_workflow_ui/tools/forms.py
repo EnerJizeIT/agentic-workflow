@@ -223,3 +223,45 @@ async def list_pending_forms() -> dict[str, Any]:
         "pending": result,
         "count": len(result),
     }
+
+
+async def wait_for_submit(
+    form_id: str,
+    timeout_seconds: int = 300,
+    poll_interval_seconds: int = 5,
+) -> dict[str, Any]:
+    """Wait for the user to submit the form. Blocks until submit, cancel, or timeout.
+
+    Use this instead of manually polling read_submit in a loop. The agent
+    gets a single response when the form is submitted (or after timeout).
+
+    Args:
+        form_id: Form ID returned by open_form.
+        timeout_seconds: Max wait time in seconds. Default 300 (5 min).
+        poll_interval_seconds: How often to check. Default 5 sec.
+
+    Returns:
+        Same shape as read_submit on success/timeout. Returns immediately
+        if form is already submitted, cancelled, or unknown.
+    """
+    import asyncio
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        result = await read_submit(form_id)
+        status = result.get("status")
+        # Return immediately if form reached a terminal state
+        if result.get("submitted"):
+            return result
+        if status in ("cancelled", "expired", "unknown"):
+            return result
+        await asyncio.sleep(poll_interval_seconds)
+
+    return {
+        "submitted": False,
+        "form_id": form_id,
+        "status": "timeout",
+        "error": f"No submit within {timeout_seconds}s. Form may still be pending — call read_submit later.",
+    }

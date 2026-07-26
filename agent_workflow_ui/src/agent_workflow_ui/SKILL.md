@@ -31,10 +31,13 @@ Call `open_form` when:
 1. Agent decides a form is needed.
 2. Call `open_form(template="...", data={...})` — receives `form_id`.
 3. Tell the user in CLI: "I opened a form in your browser. Fill it out and click Submit."
-4. Continue other work OR periodically call `read_submit(form_id)` to check for submission.
-5. When `read_submit` returns `submitted: true`, analyze `data` and proceed.
+4. Call `wait_for_submit(form_id)` — this blocks until the user submits (up to 5 min).
+5. When `wait_for_submit` returns `submitted: true`, analyze `data` and proceed.
 6. If data is semantically invalid, open a new form with pre-filled data and error context.
 7. If the user changed their mind, call `cancel_form(form_id)`.
+
+**PREFERRED: Use `wait_for_submit`** after `open_form`. It handles polling internally
+and returns as soon as the user submits. Don't manually loop with `read_submit`.
 
 ## Available templates
 
@@ -55,16 +58,16 @@ Project-level templates in `.agentic/templates/` override defaults by name.
 - **DO NOT** open a form for Y/N questions — use chat.
 - **DO NOT** open more than 3 forms simultaneously — the user will be confused.
 - **DO NOT** forget to tell the user in CLI that a form is open in their browser.
-- **DO NOT** block on `read_submit` — it's async. Poll every 5-15 seconds.
+- **DO NOT** manually poll `read_submit` in a loop — use `wait_for_submit` instead.
 - **DO NOT** use forms as a chat replacement — they're a supplement.
-- **DO NOT** assume the user will submit quickly — they may take minutes.
+- **DO NOT** assume the user will submit quickly — they may take minutes. `wait_for_submit` handles this.
 
 ## End-user UX guidelines
 
 When you open a form:
 
 - Inform the user in CLI: "I opened a form in your browser. ID: FORM-XXX".
-- Wait a reasonable time before polling `read_submit` (5-15 seconds between polls).
+- Call `wait_for_submit(form_id)` — it will return when the user submits.
 - When submission arrives, confirm in CLI: "Got your choice: ...".
 - If the user answers in CLI instead of the form, cancel the form via `cancel_form`.
 - If the user says they can't open the browser, offer a CLI fallback (ask them to type the answer).
@@ -89,6 +92,19 @@ Check if user submitted the form. Non-blocking — returns immediately.
 **Returns:** `{submitted, form_id, status, data?, submitted_at?, error?}`
 
 **Status values:** `pending`, `submitted`, `cancelled`, `expired`, `unknown`, `error`
+
+### `wait_for_submit(form_id, timeout_seconds?, poll_interval_seconds?)` — PREFERRED
+
+Wait for the user to submit. Blocks (async) until submit, cancel, or timeout.
+
+**Arguments:**
+- `form_id` (str, required) — Form ID returned by open_form.
+- `timeout_seconds` (int, default 300) — Max wait time.
+- `poll_interval_seconds` (int, default 5) — Check frequency.
+
+**Returns:** same as `read_submit` on success, or `{submitted: false, status: "timeout"}`.
+
+**Use this instead of manually looping read_submit.** One call, one result.
 
 ### `cancel_form(form_id)`
 
@@ -126,16 +142,10 @@ Agent: "I need to configure roles for your project. Let me open a form."
   Returns: {form_id: "FORM-001", browser_opened: true, submit_url: "..."}
 
 Agent (to user): "I opened a role assignment form in your browser (FORM-001).
-                  Fill it out and click Submit when done."
+                   Fill it out and click Submit when done."
 
-→ [Agent continues other work...]
-
-→ read_submit("FORM-001")
-  Returns: {submitted: false, status: "pending"}
-
-→ [5 seconds later...]
-
-→ read_submit("FORM-001")
+→ wait_for_submit("FORM-001")
+  [blocks until user submits, up to 5 min]
   Returns: {submitted: true, data: {"selected_roles": ["worker", "reviewer"]}}
 
 Agent (to user): "Got it — worker and reviewer roles selected. Proceeding..."
