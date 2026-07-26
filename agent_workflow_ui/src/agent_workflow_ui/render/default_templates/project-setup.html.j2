@@ -238,12 +238,21 @@ optional_data_keys: []
               </select>
             </td>
             <td>
-              <select name="model" class="model-select">
-                {% for model in (available_models or []) %}
-                <option value="{{ model }}">{{ model }}</option>
-                {% endfor %}
-              </select>
-            </td>
+               <select name="model" class="model-select">
+                 {% if recent_models %}
+                 <optgroup label="Recent">
+                   {% for model in recent_models %}
+                   <option value="{{ model }}">{{ model }}</option>
+                   {% endfor %}
+                 </optgroup>
+                 {% endif %}
+                 <optgroup label="All models">
+                   {% for model in (available_models or []) %}
+                   <option value="{{ model }}">{{ model }}</option>
+                   {% endfor %}
+                 </optgroup>
+               </select>
+             </td>
             <td>
               <button type="button" class="remove-btn" onclick="removeRow(this)">&times;</button>
             </td>
@@ -283,10 +292,8 @@ optional_data_keys: []
         var tbody = document.getElementById('team-rows');
         var row = document.createElement('tr');
         row.className = 'team-row custom-agent-row';
-        var modelOptions = '';
-        allModels.forEach(function (m) {
-          modelOptions += '<option value="' + m + '">' + m + '</option>';
-        });
+        // Clone model options from existing select (includes Recent + All groups)
+        var modelOptions = document.querySelector('.model-select').innerHTML;
         row.innerHTML =
           '<td>' +
             '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Например: Security Auditor" required>' +

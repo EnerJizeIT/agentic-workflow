@@ -1,8 +1,9 @@
-"""Read available models from opencode."""
+"""Read available and recent models from opencode."""
 from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -12,34 +13,79 @@ log = logging.getLogger(__name__)
 def read_opencode_models() -> list[str]:
     """Get all available model IDs from opencode.
 
-    Primary source: `opencode models` CLI command. Covers all providers
-    including those authenticated via /connect (stored in auth.json).
-
-    Fallback: parse ~/.config/opencode/opencode.json for provider/agent models.
-    Used if opencode binary is not on PATH.
+    Primary: `opencode models` CLI. Covers all providers including /connect auth.
+    Fallback: parse opencode.json.
     """
-    # Try CLI first — most accurate, includes auth.json providers
     try:
         result = subprocess.run(
             ["opencode", "models"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
         if result.returncode == 0:
             models = []
             for line in result.stdout.strip().splitlines():
                 line = line.strip()
-                # Skip log lines like "[page-assist] ..."
                 if line and not line.startswith("[") and "/" in line:
                     models.append(line)
             if models:
                 return sorted(models)
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        log.warning("opencode models CLI failed: %s, falling back to config", e)
+        log.warning("opencode models CLI failed: %s", e)
 
-    # Fallback: parse opencode.json
     return _read_models_from_config()
+
+
+def read_recent_models(limit: int = 8) -> list[str]:
+    """Get recently used models from opencode session history (SQLite).
+
+    Reads ~/.local/share/opencode/opencode.db, extracts distinct model IDs
+    from session table, ordered by most recent usage.
+
+    Returns list of 'provider/model' strings, deduplicated.
+    """
+    db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    if not db_path.exists():
+        return []
+
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=3)
+        rows = conn.execute(
+            """
+            SELECT model, MAX(time_created) as last_used
+            FROM session
+            WHERE model IS NOT NULL
+            GROUP BY model
+            ORDER BY last_used DESC
+            LIMIT ?
+            """,
+            (limit * 2,),  # fetch extra, dedup after parsing
+        ).fetchall()
+        conn.close()
+    except Exception as e:
+        log.warning("Failed to read recent models from DB: %s", e)
+        return []
+
+    seen: set[str] = set()
+    recent: list[str] = []
+    for row in rows:
+        model_json = row[0]
+        if not model_json:
+            continue
+        try:
+            m = json.loads(model_json)
+            provider = m.get("providerID", "")
+            model_id = m.get("id", "")
+            if provider and model_id:
+                full_id = f"{provider}/{model_id}"
+                if full_id not in seen:
+                    seen.add(full_id)
+                    recent.append(full_id)
+                    if len(recent) >= limit:
+                        break
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    return recent
 
 
 def _read_models_from_config() -> list[str]:
