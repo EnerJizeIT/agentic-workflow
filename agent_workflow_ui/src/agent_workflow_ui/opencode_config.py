@@ -1,21 +1,49 @@
-"""Read model configuration from opencode.json."""
+"""Read available models from opencode."""
 from __future__ import annotations
 
 import json
+import logging
+import subprocess
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 def read_opencode_models() -> list[str]:
-    """Read available model IDs from ~/.config/opencode/opencode.json.
+    """Get all available model IDs from opencode.
 
-    Scans three locations:
-    - provider.<name>.models.<model_id> -> "<name>/<model_id>"
-    - agent.<name>.model -> the model string as-is
-    - top-level "model" -> the model string as-is
+    Primary source: `opencode models` CLI command. Covers all providers
+    including those authenticated via /connect (stored in auth.json).
 
-    Returns sorted list of unique model IDs. Returns [] if config not found
-    or unreadable.
+    Fallback: parse ~/.config/opencode/opencode.json for provider/agent models.
+    Used if opencode binary is not on PATH.
     """
+    # Try CLI first — most accurate, includes auth.json providers
+    try:
+        result = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            models = []
+            for line in result.stdout.strip().splitlines():
+                line = line.strip()
+                # Skip log lines like "[page-assist] ..."
+                if line and not line.startswith("[") and "/" in line:
+                    models.append(line)
+            if models:
+                return sorted(models)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        log.warning("opencode models CLI failed: %s, falling back to config", e)
+
+    # Fallback: parse opencode.json
+    return _read_models_from_config()
+
+
+def _read_models_from_config() -> list[str]:
+    """Parse ~/.config/opencode/opencode.json for model IDs."""
     cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
     if not cfg_path.exists():
         return []
@@ -27,7 +55,6 @@ def read_opencode_models() -> list[str]:
 
     models: set[str] = set()
 
-    # From provider configs
     for provider_name, provider_cfg in (cfg.get("provider") or {}).items():
         if isinstance(provider_cfg, dict):
             models_raw = provider_cfg.get("models") or {}
@@ -38,12 +65,10 @@ def read_opencode_models() -> list[str]:
                 for model_id in models_raw:
                     models.add(f"{provider_name}/{model_id}")
 
-    # From agent configs
-    for agent_name, agent_cfg in (cfg.get("agent") or {}).items():
+    for agent_cfg in (cfg.get("agent") or {}).values():
         if isinstance(agent_cfg, dict) and agent_cfg.get("model"):
             models.add(agent_cfg["model"])
 
-    # From top-level model
     if cfg.get("model"):
         models.add(cfg["model"])
 
