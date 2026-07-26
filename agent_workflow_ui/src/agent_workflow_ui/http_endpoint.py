@@ -149,6 +149,12 @@ class SubmitHandler(BaseHTTPRequestHandler):
 
         self.registry.update_status(form_id, "submitted")
 
+        # Persist custom roles if requested
+        self._maybe_save_custom_roles(data)
+
+        # Delete custom roles if requested
+        self._maybe_delete_custom_roles(data)
+
         log.info("Submit received for %s, written to %s", form_id, target)
 
         self._send_html(200, _ack_page(form_id, already_submitted=False))
@@ -164,6 +170,60 @@ class SubmitHandler(BaseHTTPRequestHandler):
     # Silence default logging to stdout (would corrupt MCP stdio protocol if it leaked)
     def log_message(self, format, *args):  # noqa: A002, D401
         log.debug("HTTP %s - %s", self.address_string(), format % args)
+
+    def _maybe_save_custom_roles(self, data: dict[str, Any]) -> None:
+        """Save custom agent .md and supervisor .md files if user requested."""
+        from .opencode_config import save_custom_role
+
+        # Parse team_config JSON for custom agents
+        team_json = data.get("team_config", "")
+        if team_json:
+            import json
+            try:
+                team = json.loads(team_json)
+            except (json.JSONDecodeError, TypeError):
+                team = []
+            for member in team:
+                if isinstance(member, dict) and member.get("type") == "custom":
+                    name = member.get("agent", "").strip()
+                    content = member.get("skill_content", "").strip()
+                    save_flag = member.get("save", False)
+                    if name and content and save_flag:
+                        try:
+                            save_custom_role(name, content, role_type="agent")
+                            log.info("Saved custom agent: %s", name)
+                        except Exception as e:
+                            log.error("Failed to save custom agent %s: %s", name, e)
+
+        # Save supervisor .md if requested
+        sv_content = data.get("supervisor_content", "").strip()
+        save_sv = data.get("save_supervisor", "") == "true"
+        if sv_content and save_sv:
+            # Use a name from the content's first heading, or timestamp
+            first_line = sv_content.strip().split("\n")[0]
+            name = first_line.lstrip("# ").strip() or "custom"
+            try:
+                save_custom_role(name, sv_content, role_type="supervisor")
+                log.info("Saved custom supervisor: %s", name)
+            except Exception as e:
+                log.error("Failed to save supervisor: %s", e)
+
+    def _maybe_delete_custom_roles(self, data: dict[str, Any]) -> None:
+        """Delete custom role .md files if user requested."""
+        from .opencode_config import delete_custom_role
+
+        # delete_agent can be a single name or comma-separated
+        delete_str = data.get("delete_agent", "").strip()
+        if not delete_str:
+            return
+        for name in delete_str.split(","):
+            name = name.strip()
+            if name:
+                try:
+                    if delete_custom_role(name):
+                        log.info("Deleted custom role: %s", name)
+                except Exception as e:
+                    log.error("Failed to delete %s: %s", name, e)
 
     # Helpers
     def _send_html(self, code: int, body: str) -> None:

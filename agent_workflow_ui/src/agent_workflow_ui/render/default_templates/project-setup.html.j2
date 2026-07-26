@@ -376,7 +376,7 @@ optional_data_keys: []
       <select name="supervisor_role" id="supervisor-select" onchange="handleSupervisorSelect(this)">
         <option value="">Default (универсальный supervisor)</option>
         {% for sv in (custom_supervisor_roles or []) %}
-        <option value="{{ sv.id }}">{{ sv.title }}</option>
+        <option value="{{ sv.id }}" data-custom="true">{{ sv.title }}</option>
         {% endfor %}
         <option value="__custom__">+ Загрузить свой .md...</option>
       </select>
@@ -422,6 +422,7 @@ optional_data_keys: []
     </fieldset>
 
     <input type="hidden" name="team_config" id="team-config" value="">
+    <input type="hidden" name="delete_agent" id="delete-agent-names" value="">
 
     <button type="submit" class="disabled" id="submit-btn">Создать конфигурацию</button>
   </form>
@@ -485,7 +486,7 @@ optional_data_keys: []
         if (customAgents.length > 0) {
           s += '<optgroup label="Мои агенты">';
           for (var i = 0; i < customAgents.length; i++) {
-            s += '<option value="' + customAgents[i].id + '">' + customAgents[i].title + '</option>';
+            s += '<option value="' + customAgents[i].id + '" data-custom="true">' + customAgents[i].title + '</option>';
           }
           s += '</optgroup>';
         }
@@ -566,6 +567,46 @@ optional_data_keys: []
       };
 
       window.handleAgentSelect = function (sel) {
+        // Check if a saved custom agent was selected
+        var selectedOpt = sel.options[sel.selectedIndex];
+        if (selectedOpt && selectedOpt.dataset.custom === 'true' && sel.value !== '__custom__') {
+          // Show delete button next to the select
+          var row = sel.closest('.team-row');
+          var agentTd = row.cells[0];
+          // Remove existing delete button
+          var existingDel = agentTd.querySelector('.delete-agent-btn');
+          if (existingDel) existingDel.remove();
+          // Add delete button
+          var delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'remove-btn delete-agent-btn';
+          delBtn.title = 'Удалить из сохранённых';
+          delBtn.style.cssText = 'font-size:13px; color:var(--danger); opacity:0.6; border:none; background:none; cursor:pointer; margin-left:4px;';
+          delBtn.textContent = '\uD83D\uDDD1';
+          delBtn.onclick = function() {
+            if (confirm('Удалить агента "' + selectedOpt.textContent + '" из сохранённых?')) {
+              // Set hidden field for deletion on submit
+              var existing = document.getElementById('delete-agent-names');
+              var names = existing.value ? existing.value.split(',') : [];
+              names.push(sel.value);
+              existing.value = names.join(',');
+              // Remove from dropdown
+              selectedOpt.remove();
+              // Reset select to first option
+              sel.selectedIndex = 0;
+              delBtn.remove();
+              validateForm();
+            }
+          };
+          sel.parentElement.appendChild(delBtn);
+          return;
+        }
+
+        // Remove delete button if switching away from custom agent
+        var row = sel.closest('.team-row');
+        var existingDel = row.querySelector('.delete-agent-btn');
+        if (existingDel) existingDel.remove();
+
         if (sel.value !== '__custom__') return;
         var row = sel.closest('.team-row');
         var agentTd = row.cells[0];
@@ -582,7 +623,10 @@ optional_data_keys: []
             '<input type="file" id="skill-file-' + rowIdx + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file">' +
             '<input type="hidden" name="custom_agent_content" class="skill-content">' +
             '<span class="skill-chip-container"></span>' +
-          '</div>';
+          '</div>' +
+          '<label class="save-checkbox" style="font-size:11px; white-space:nowrap;">' +
+            '<input type="checkbox" name="save_custom_agent" class="save-agent-cb" value="true" checked> \uD83D\uDCBE' +
+          '</label>';
 
         var fileInput = agentTd.querySelector('.skill-file');
         var hiddenContent = agentTd.querySelector('.skill-content');
@@ -699,12 +743,14 @@ optional_data_keys: []
               model: row.querySelector('.model-select').value,
             });
           } else if (agentInput) {
+            var saveCb = row.querySelector('.save-agent-cb');
             team.push({
               type: 'custom',
               agent: agentInput.value,
               skill_content: skillContent ? skillContent.value : '',
               skill_filename: skillFile && skillFile.files[0] ? skillFile.files[0].name : '',
               model: row.querySelector('.model-select').value,
+              save: saveCb ? saveCb.checked : false,
             });
           }
         });
@@ -715,13 +761,40 @@ optional_data_keys: []
 
       window.handleSupervisorSelect = function (sel) {
         var area = document.getElementById('supervisor-custom-area');
+
+        // Remove existing delete button
+        var existingDel = sel.parentElement.querySelector('.delete-sv-btn');
+        if (existingDel) existingDel.remove();
+
+        // Check if a saved custom supervisor was selected
+        var selectedOpt = sel.options[sel.selectedIndex];
+        if (selectedOpt && selectedOpt.dataset.custom === 'true' && sel.value !== '__custom__') {
+          // Show delete button
+          var delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'delete-sv-btn';
+          delBtn.title = 'Удалить из сохранённых';
+          delBtn.style.cssText = 'font-size:13px; color:var(--danger); opacity:0.6; border:none; background:none; cursor:pointer; margin-left:4px;';
+          delBtn.textContent = '\uD83D\uDDD1';
+          delBtn.onclick = function() {
+            if (confirm('Удалить supervisor роль "' + selectedOpt.textContent + '"?')) {
+              var existing = document.getElementById('delete-agent-names');
+              var names = existing.value ? existing.value.split(',') : [];
+              names.push(sel.value);
+              existing.value = names.join(',');
+              selectedOpt.remove();
+              sel.selectedIndex = 0;
+              delBtn.remove();
+            }
+          };
+          sel.parentElement.appendChild(delBtn);
+        }
+
         if (sel.value === '__custom__') {
           area.style.display = 'block';
-          // Auto-trigger file dialog
           setTimeout(function() { document.getElementById('supervisor-file').click(); }, 50);
         } else {
           area.style.display = 'none';
-          // Clear custom data
           document.getElementById('supervisor-content').value = '';
           document.getElementById('supervisor-chip-container').innerHTML = '';
           document.getElementById('supervisor-upload-label').classList.remove('hidden');
