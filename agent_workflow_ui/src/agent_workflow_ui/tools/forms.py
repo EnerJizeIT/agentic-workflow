@@ -10,6 +10,7 @@ from jinja2 import TemplateNotFound
 
 from ..state import FormRecord, get_registry, get_config, get_jinja_env, get_http_port
 from ..render.engine import render_template
+from ..opencode_config import scan_global_roles
 from ..browser import open_path
 
 
@@ -46,11 +47,16 @@ async def open_form(
     form_id = registry.next_form_id()
     submit_url = f"http://127.0.0.1:{port}/submit/{form_id}"
 
+    # Scan global custom roles for supervisor variants + custom agents
+    supervisor_variants, custom_agents = scan_global_roles()
+
     try:
         rendered = render_template(env, template, {
             **data,
             "form_id": form_id,
             "submit_url": submit_url,
+            "custom_supervisor_roles": supervisor_variants,
+            "custom_agents": custom_agents,
         })
     except TemplateNotFound:
         return {

@@ -370,6 +370,36 @@ optional_data_keys: []
     </fieldset>
 
     <fieldset>
+      <legend>Supervisor</legend>
+
+      <label>Дополнительная роль / инструкции для supervisor</label>
+      <select name="supervisor_role" id="supervisor-select" onchange="handleSupervisorSelect(this)">
+        <option value="">Default (универсальный supervisor)</option>
+        {% for sv in (custom_supervisor_roles or []) %}
+        <option value="{{ sv.id }}">{{ sv.title }}</option>
+        {% endfor %}
+        <option value="__custom__">+ Загрузить свой .md...</option>
+      </select>
+
+      <div id="supervisor-custom-area" style="display:none; margin-top:8px;">
+        <div style="display:flex; gap:6px; align-items:center;">
+          <div class="skill-area" style="flex:1;">
+            <label for="supervisor-file" class="file-upload-btn skill-upload-label" id="supervisor-upload-label">\uD83D\uDCCE .md</label>
+            <input type="file" id="supervisor-file" accept=".md,.txt" style="display:none;">
+            <input type="hidden" name="supervisor_content" id="supervisor-content">
+            <span id="supervisor-chip-container" style="flex:1;"></span>
+          </div>
+        </div>
+        <label style="margin-top:8px;">
+          <input type="checkbox" name="save_supervisor" value="true">
+          Сохранить для будущих сессий
+        </label>
+      </div>
+
+      <p class="hint">Выбранные инструкции ДОПОЛНЯют default supervisor.md. Supervisor будет действовать по обеим.</p>
+    </fieldset>
+
+    <fieldset>
       <legend>Команда агентов <span style="color: var(--accent-green)">*</span></legend>
       <p class="section-hint">Добавьте агентов, которые будут работать над проектом. Minimum 1.</p>
 
@@ -439,12 +469,25 @@ optional_data_keys: []
         return opts;
       }
 
+      var customAgents = [
+        {% for ca in (custom_agents or []) %}
+        {id: "{{ ca.id }}", title: "{{ ca.title }}"}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
       function buildAgentSelect(onchange) {
         var s = '<select name="agent" class="agent-select" onchange="' + onchange + '">';
         for (var i = 0; i < allRoles.length; i++) {
           var r = allRoles[i];
           var label = r.title + (r.desc ? ' \u2014 ' + r.desc : '');
           s += '<option value="' + r.id + '">' + label + '</option>';
+        }
+        if (customAgents.length > 0) {
+          s += '<optgroup label="Мои агенты">';
+          for (var i = 0; i < customAgents.length; i++) {
+            s += '<option value="' + customAgents[i].id + '">' + customAgents[i].title + '</option>';
+          }
+          s += '</optgroup>';
         }
         s += '<option value="__custom__">+ Свой агент...</option>';
         s += '</select>';
@@ -667,6 +710,51 @@ optional_data_keys: []
         });
         document.getElementById('team-config').value = JSON.stringify(team);
       });
+
+      // === Supervisor section ===
+
+      window.handleSupervisorSelect = function (sel) {
+        var area = document.getElementById('supervisor-custom-area');
+        if (sel.value === '__custom__') {
+          area.style.display = 'block';
+          // Auto-trigger file dialog
+          setTimeout(function() { document.getElementById('supervisor-file').click(); }, 50);
+        } else {
+          area.style.display = 'none';
+          // Clear custom data
+          document.getElementById('supervisor-content').value = '';
+          document.getElementById('supervisor-chip-container').innerHTML = '';
+          document.getElementById('supervisor-upload-label').classList.remove('hidden');
+        }
+      };
+
+      // Supervisor file handler
+      var svFile = document.getElementById('supervisor-file');
+      var svContent = document.getElementById('supervisor-content');
+      var svChipContainer = document.getElementById('supervisor-chip-container');
+      var svUploadLabel = document.getElementById('supervisor-upload-label');
+
+      svFile.addEventListener('change', function (e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        svUploadLabel.classList.add('hidden');
+        svChipContainer.innerHTML = '<span class="file-chip">' +
+          '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
+          '<button type="button" class="file-chip-remove" onclick="removeSupervisorFile()">&times;</button>' +
+          '</span>';
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+          svContent.value = ev.target.result;
+        };
+        reader.readAsText(file);
+      });
+
+      window.removeSupervisorFile = function () {
+        svChipContainer.innerHTML = '';
+        svContent.value = '';
+        svFile.value = '';
+        svUploadLabel.classList.remove('hidden');
+      };
 
       validateForm();
     })();
