@@ -1,9 +1,8 @@
 ---
-description: Setup form for awf project — agents, models, spec upload
+description: Setup form — context message, spec upload, agent team configuration
 required_data_keys:
   - available_roles
-optional_data_keys:
-  - project_name
+optional_data_keys: []
 ---
 <!DOCTYPE html>
 <html lang="ru">
@@ -20,37 +19,22 @@ optional_data_keys:
       --text-muted: #858585;
       --accent: #569cd6;
       --accent-green: #4ec9b0;
+      --accent-purple: #c586c0;
       --border: #464647;
+      --danger: #f14c4c;
       --radius: 6px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: system-ui, -apple-system, sans-serif;
       background: var(--bg);
       color: var(--text);
-      max-width: 640px;
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 700px;
       margin: 40px auto;
       padding: 0 20px;
       line-height: 1.5;
-    }
-
-    h1 {
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-
-    .page-header {
-      margin-bottom: 28px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .page-header p {
-      color: var(--text-muted);
-      font-size: 14px;
     }
 
     fieldset {
@@ -62,11 +46,11 @@ optional_data_keys:
     }
 
     legend {
-      font-size: 12px;
+      color: var(--accent);
       font-weight: 600;
+      font-size: 14px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      color: var(--text-muted);
       padding: 0 8px;
     }
 
@@ -81,8 +65,8 @@ optional_data_keys:
     label:first-child { margin-top: 0; }
 
     input[type="text"],
-    input[type="file"],
-    select {
+    select,
+    textarea {
       background: var(--bg-input);
       color: var(--text);
       border: 1px solid var(--border);
@@ -95,17 +79,17 @@ optional_data_keys:
     }
 
     input[type="text"]:focus,
-    select:focus {
+    select:focus,
+    textarea:focus {
       outline: none;
       border-color: var(--accent);
     }
 
     input[type="file"] {
-      padding: 6px 8px;
-      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 14px;
     }
 
-    /* Team table */
     table {
       width: 100%;
       border-collapse: collapse;
@@ -113,18 +97,16 @@ optional_data_keys:
     }
 
     th {
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
-      color: var(--text-muted);
       text-align: left;
-      padding: 0 8px 10px 8px;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      padding: 8px;
       border-bottom: 1px solid var(--border);
     }
 
     td {
-      padding: 8px 8px;
+      padding: 8px;
       vertical-align: middle;
       border-bottom: 1px solid var(--border);
     }
@@ -142,84 +124,69 @@ optional_data_keys:
       padding: 6px 8px;
     }
 
-    .btn-add {
+    .remove-btn {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+
+    .remove-btn:hover {
+      color: #ff6b6b;
+    }
+
+    button[type="button"] {
       background: transparent;
       color: var(--accent);
-      border: 1px dashed var(--accent);
+      border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 6px 14px;
-      font-size: 13px;
+      padding: 8px 16px;
       cursor: pointer;
-      margin-top: 10px;
-      transition: all 0.15s;
+      font-size: 14px;
       font-family: system-ui, -apple-system, sans-serif;
     }
 
-    .btn-add:hover {
+    button[type="button"]:hover {
       background: var(--bg-input);
     }
 
-    .btn-add-custom {
-      background: transparent;
-      color: var(--accent-green);
-      border: 1px dashed var(--accent-green);
-      border-radius: 4px;
-      padding: 6px 14px;
-      font-size: 13px;
-      cursor: pointer;
-      margin-top: 10px;
-      margin-left: 8px;
-      transition: all 0.15s;
-      font-family: system-ui, -apple-system, sans-serif;
-    }
-
-    .btn-add-custom:hover {
-      background: var(--bg-input);
-    }
-
-    .btn-remove {
-      background: transparent;
-      color: var(--text-muted);
-      border: none;
-      cursor: pointer;
-      font-size: 18px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      line-height: 1;
-    }
-
-    .btn-remove:hover {
-      color: #f44747;
-    }
-
-    .btn-submit {
-      background: var(--accent);
-      color: #ffffff;
+    button[type="submit"] {
+      background: var(--accent-green);
+      color: var(--bg);
       border: none;
       border-radius: var(--radius);
       padding: 12px 32px;
-      font-size: 15px;
+      font-size: 16px;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.15s;
+      width: 100%;
       font-family: system-ui, -apple-system, sans-serif;
     }
 
-    .btn-submit:hover {
-      background: #4a8cc7;
-    }
-
-    .submit-section {
-      text-align: center;
-      margin-top: 28px;
-      padding-top: 16px;
-      border-top: 1px solid var(--border);
+    button[type="submit"]:hover {
+      background: #6edbba;
     }
 
     .hint {
-      font-size: 13px;
       color: var(--text-muted);
-      margin-top: 8px;
+      font-size: 12px;
+      margin: 4px 0 12px 0;
+    }
+
+    .team-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .custom-agent-row .agent-input {
+      margin-bottom: 4px;
+    }
+
+    .custom-agent-row .skill-file {
+      font-size: 12px;
     }
 
     select option {
@@ -229,37 +196,27 @@ optional_data_keys:
   </style>
 </head>
 <body>
-  <div class="page-header">
-    <h1>Настройка проекта</h1>
-    <p>Укажите название проекта, загрузите спецификацию и соберите команду агентов.</p>
-  </div>
-
   <form action="{{ submit_url }}" method="POST" id="setup-form" enctype="multipart/form-data">
     <input type="hidden" name="form_id" value="{{ form_id }}">
 
     {% set roles = available_roles or [] %}
-    {% set models = available_models or [] %}
 
-    <!-- Section 1: Project -->
     <fieldset>
-      <legend>Project</legend>
+      <legend>Контекст</legend>
 
-      <label for="project_name">Название проекта</label>
-      <input type="text" id="project_name" name="project_name"
-        value="{{ project_name | default('', true) }}"
-        required placeholder="internet-shop">
+      <label for="context_message">Опишите проект, цели, пожелания</label>
+      <textarea name="context_message" id="context_message" rows="5"
+        placeholder="Например: Делаю интернет-магазин на Django. Нужен MVP за 2 недели. Фокус на backend и API. Команда из 2 человек..."></textarea>
 
-      <label for="spec_file">Спецификация / ТЗ (опционально)</label>
-      <input type="file" id="spec_file" name="spec_file" accept=".md,.txt,.pdf,.docx">
-      <input type="hidden" name="spec_content" id="spec_content" value="">
-      <input type="hidden" name="spec_filename" id="spec_filename" value="">
+      <label for="spec-file">Спецификация / ТЗ (опционально)</label>
+      <input type="file" name="spec_file" accept=".md,.txt" id="spec-file">
+      <input type="hidden" name="spec_content" id="spec-content">
+      <input type="hidden" name="spec_filename" id="spec-filename">
       <p class="hint">Загрузите markdown или текстовый файл с описанием проекта.</p>
     </fieldset>
 
-    <!-- Section 2: Team -->
     <fieldset>
-      <legend>Команда</legend>
-      <p class="hint">Каждая строка — один агент. Добавляйте и удаляйте по необходимости.</p>
+      <legend>Команда агентов</legend>
 
       <table id="team-table">
         <thead>
@@ -273,53 +230,49 @@ optional_data_keys:
           <tr class="team-row">
             <td>
               <select name="agent" class="agent-select">
-                {% for agent in roles %}
-                <option value="{{ agent.id }}"{% if agent.get('default') %} selected{% endif %}>
-                  {{ agent.title }}
+                {% for role in roles %}
+                <option value="{{ role.id }}"{% if role.get('default') %} selected{% endif %}>
+                  {{ role.title }} — {{ role.get('description', '') }}
                 </option>
                 {% endfor %}
               </select>
             </td>
             <td>
               <select name="model" class="model-select">
-                {% if models %}
-                  {% for model in models %}
-                  <option value="{{ model }}">{{ model }}</option>
-                  {% endfor %}
-                {% else %}
-                  <option value="">нет моделей</option>
-                {% endif %}
+                {% for model in (available_models or []) %}
+                <option value="{{ model }}">{{ model }}</option>
+                {% endfor %}
               </select>
             </td>
             <td>
-              <button type="button" class="btn-remove" onclick="removeRow(this)">&times;</button>
+              <button type="button" class="remove-btn" onclick="removeRow(this)">&times;</button>
             </td>
           </tr>
         </tbody>
       </table>
 
-      <button type="button" class="btn-add" onclick="addRow()">+ Добавить агента</button>
-      <button type="button" class="btn-add-custom" onclick="addCustomAgent()">+ Свой агент</button>
+      <div class="team-actions">
+        <button type="button" onclick="addRow()">+ Добавить агента</button>
+        <button type="button" onclick="addCustomAgent()">+ Свой агент (.md)</button>
+      </div>
     </fieldset>
 
     <input type="hidden" name="team_config" id="team-config" value="">
 
-    <div class="submit-section">
-      <button type="submit" class="btn-submit">Создать конфигурацию</button>
-    </div>
+    <button type="submit">Создать конфигурацию</button>
   </form>
 
   <script>
     (function () {
       var allModels = [
-        {% for m in models %}
+        {% for m in (available_models or []) %}
         "{{ m }}"{% if not loop.last %},{% endif %}
         {% endfor %}
       ];
 
       window.addRow = function () {
         var tbody = document.getElementById('team-rows');
-        var firstRow = tbody.querySelector('.team-row');
+        var firstRow = tbody.querySelector('.team-row:not(.custom-agent-row)');
         if (!firstRow) return;
         var newRow = firstRow.cloneNode(true);
         newRow.querySelectorAll('select').forEach(function (s) { s.selectedIndex = 0; });
@@ -329,16 +282,32 @@ optional_data_keys:
       window.addCustomAgent = function () {
         var tbody = document.getElementById('team-rows');
         var row = document.createElement('tr');
-        row.className = 'team-row';
+        row.className = 'team-row custom-agent-row';
         var modelOptions = '';
         allModels.forEach(function (m) {
           modelOptions += '<option value="' + m + '">' + m + '</option>';
         });
         row.innerHTML =
-          '<td><input type="text" name="custom_agent" class="agent-input" placeholder="Например: Security Auditor"></td>' +
+          '<td>' +
+            '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Например: Security Auditor" required>' +
+            '<input type="file" name="custom_agent_skill" accept=".md,.txt" class="skill-file" required>' +
+            '<input type="hidden" name="custom_agent_content" class="skill-content">' +
+          '</td>' +
           '<td><select name="model" class="model-select">' + modelOptions + '</select></td>' +
-          '<td><button type="button" class="btn-remove" onclick="removeRow(this)">&times;</button></td>';
+          '<td><button type="button" class="remove-btn" onclick="removeRow(this)">&times;</button></td>';
         tbody.appendChild(row);
+
+        var fileInput = row.querySelector('.skill-file');
+        var hiddenContent = row.querySelector('.skill-content');
+        fileInput.addEventListener('change', function (e) {
+          var file = e.target.files[0];
+          if (!file) return;
+          var reader = new FileReader();
+          reader.onload = function (ev) {
+            hiddenContent.value = ev.target.result;
+          };
+          reader.readAsText(file);
+        });
       };
 
       window.removeRow = function (button) {
@@ -349,13 +318,13 @@ optional_data_keys:
         }
       };
 
-      document.getElementById('spec_file').addEventListener('change', function (e) {
+      document.getElementById('spec-file').addEventListener('change', function (e) {
         var file = e.target.files[0];
         if (!file) return;
-        document.getElementById('spec_filename').value = file.name;
+        document.getElementById('spec-filename').value = file.name;
         var reader = new FileReader();
         reader.onload = function (ev) {
-          document.getElementById('spec_content').value = ev.target.result;
+          document.getElementById('spec-content').value = ev.target.result;
         };
         reader.readAsText(file);
       });
@@ -366,11 +335,24 @@ optional_data_keys:
         rows.forEach(function (row) {
           var agentSelect = row.querySelector('.agent-select');
           var agentInput = row.querySelector('.agent-input');
-          var agentName = agentSelect ? agentSelect.value : (agentInput ? agentInput.value.trim() : '');
-          team.push({
-            agent: agentName,
-            model: row.querySelector('.model-select').value,
-          });
+          var skillFile = row.querySelector('.skill-file');
+          var skillContent = row.querySelector('.skill-content');
+
+          if (agentSelect) {
+            team.push({
+              type: 'default',
+              agent: agentSelect.value,
+              model: row.querySelector('.model-select').value,
+            });
+          } else if (agentInput) {
+            team.push({
+              type: 'custom',
+              agent: agentInput.value,
+              skill_content: skillContent ? skillContent.value : '',
+              skill_filename: skillFile && skillFile.files[0] ? skillFile.files[0].name : '',
+              model: row.querySelector('.model-select').value,
+            });
+          }
         });
         document.getElementById('team-config').value = JSON.stringify(team);
       });

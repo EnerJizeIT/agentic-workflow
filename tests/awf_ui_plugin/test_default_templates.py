@@ -221,7 +221,7 @@ def test_project_setup_has_file_picker(env):
     })
     assert 'type="file"' in html
     assert "spec_file" in html
-    assert "spec_content" in html
+    assert "spec-content" in html
     assert "FileReader" in html
 
 
@@ -269,3 +269,51 @@ def test_project_setup_team_has_hidden_json_input(env):
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
     assert 'team_config' in html or 'team' in html.lower()
+
+
+def test_project_setup_has_context_textarea(env):
+    """Context section has textarea for project description."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert 'name="context_message"' in html
+    assert "<textarea" in html
+
+
+def test_project_setup_custom_agent_has_file_upload(env):
+    """Custom agent row includes file input for .md skill + FileReader."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert "custom_agent_name" in html
+    assert "custom_agent_skill" in html
+    assert "custom_agent_content" in html
+    assert 'accept=".md' in html
+    assert "FileReader" in html
+
+
+def test_project_setup_submit_builds_team_json(env):
+    """Submit handler builds team_config JSON with type: default/custom."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert "type: 'default'" in html or 'type: "default"' in html
+    assert "type: 'custom'" in html or 'type: "custom"' in html
+    assert "skill_content" in html
+    assert "skill_filename" in html
+
+
+def test_project_setup_no_project_name_field(env):
+    """Project name field removed — only context message remains."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert 'name="project_name"' not in html
