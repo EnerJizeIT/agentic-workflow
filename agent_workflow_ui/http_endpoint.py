@@ -100,6 +100,10 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_html(200, _ack_page(form_id, already_submitted=True))
             return
 
+        if record.status == "cancelled":
+            self._send_text(410, f"Form {form_id} was cancelled.")
+            return
+
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length > MAX_BODY_BYTES:
             self._send_text(413, "Payload Too Large (max 1MB)")

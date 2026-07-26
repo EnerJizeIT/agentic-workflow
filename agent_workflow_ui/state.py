@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -19,6 +19,7 @@ class FormRecord:
     status: str = "pending"
     submitted_at: Optional[datetime] = None
     cancelled_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
     data_keys: list = field(default_factory=list)
 
 
@@ -96,3 +97,33 @@ def set_http_port(port: int) -> None:
 def get_http_port() -> int | None:
     """Get the HTTP endpoint port. None if not started yet."""
     return _http_port
+
+
+_config: "Config | None" = None  # type: ignore[name-defined]
+_jinja_env: "Any | None" = None  # Environment instance
+
+
+def set_config(config: "Config") -> None:
+    """Set the plugin Config (called once at startup)."""
+    global _config
+    _config = config
+
+
+def get_config() -> "Config":
+    """Get the plugin Config. Raises RuntimeError if not set."""
+    if _config is None:
+        raise RuntimeError("Config not initialized. Call set_config() at startup.")
+    return _config
+
+
+def set_jinja_env(env: "Any") -> None:
+    """Set the Jinja2 Environment (called once at startup)."""
+    global _jinja_env
+    _jinja_env = env
+
+
+def get_jinja_env() -> "Any":
+    """Get the Jinja2 Environment. Raises RuntimeError if not set."""
+    if _jinja_env is None:
+        raise RuntimeError("Jinja env not initialized. Call set_jinja_env() at startup.")
+    return _jinja_env

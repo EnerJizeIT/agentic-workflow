@@ -2,16 +2,57 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+
 import pytest
 
+from agent_workflow_ui.config import load, ensure_directories
+from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.server import create_server
-from agent_workflow_ui.state import reset_registry
+from agent_workflow_ui.state import (
+    reset_registry,
+    set_config,
+    set_http_port,
+    set_jinja_env,
+)
+
+
+DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "agent_workflow_ui" / "render" / "default_templates"
 
 
 @pytest.fixture(autouse=True)
 def _clean_registry():
     """Reset the global form registry before each test."""
     reset_registry()
+
+
+@pytest.fixture
+def plugin_initialized(tmp_path, monkeypatch):
+    """Initialize plugin state so tools can run through the server.
+
+    CRITICAL: monkeypatch browser.open_path to a no-op so tests don't actually
+    open real browser tabs. Redirects temp_dir to tmp_path so HTML files
+    don't leak into /tmp/.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AWF_TEMP_DIR", str(tmp_path / "tmp"))
+    config = load()
+    ensure_directories(config)
+    set_config(config)
+    set_http_port(13747)
+    set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
+    reset_registry()
+
+    # Mock browser.open_path so tests are hermetic — don't open real browser.
+    def _fake_open_path(target, command="auto"):
+        return True, f"mocked open for {target}"
+
+    import agent_workflow_ui.tools.forms as forms_mod
+    monkeypatch.setattr(forms_mod, "open_path", _fake_open_path, raising=True)
+    import agent_workflow_ui.browser as browser_mod
+    monkeypatch.setattr(browser_mod, "open_path", _fake_open_path, raising=True)
+
+    return config
 
 
 def test_server_creates():
@@ -36,13 +77,14 @@ def test_all_tools_registered():
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 
 
-def test_open_form_stub_returns_form_id():
-    """open_form stub returns a form_id and not-implemented error."""
+def test_open_form_stub_returns_form_id(plugin_initialized):
+    """open_form returns a form_id and submit_url."""
     server = create_server()
-    result = asyncio.run(server.call_tool("open_form", {"template": "test"}))
+    result = asyncio.run(server.call_tool("open_form", {"template": "role-assignment", "data": {"available_roles": ["worker"]}}))
     assert result is not None
     _, structured = result
     assert "form_id" in structured
+    assert "submit_url" in structured
 
 
 def test_list_pending_returns_empty():

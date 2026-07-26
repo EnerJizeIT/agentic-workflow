@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 from .config import load, ensure_directories
 from .http_endpoint import start_http_server
+from .render.engine import create_env
 from .server import create_server
-from .state import get_registry, set_http_port
+from .state import get_registry, set_config, set_http_port, set_jinja_env
+
+
+DEFAULT_TEMPLATES_DIR = Path(__file__).parent / "render" / "default_templates"
 
 
 def main() -> int:
@@ -20,6 +25,10 @@ def main() -> int:
 
     config = load()
     ensure_directories(config)
+    set_config(config)
+
+    env = create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR])
+    set_jinja_env(env)
 
     registry = get_registry()
     server, port = start_http_server(config, registry)
