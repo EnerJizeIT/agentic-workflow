@@ -1,13 +1,16 @@
-"""Read available and recent models from opencode."""
+"""Read available models, recent models, and custom roles from opencode/awf."""
 from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import subprocess
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+GLOBAL_ROLES_DIR = Path.home() / ".config" / "awf" / "roles"
 
 
 def read_opencode_models() -> list[str]:
@@ -119,3 +122,76 @@ def _read_models_from_config() -> list[str]:
         models.add(cfg["model"])
 
     return sorted(models)
+
+
+def scan_global_roles() -> tuple[list[dict], list[dict]]:
+    """Scan ~/.config/awf/roles/ for custom roles.
+
+    Returns:
+        Tuple (supervisor_variants, custom_agents).
+        supervisor_variants: files starting with 'supervisor-'.
+        custom_agents: all other .md files.
+    """
+    if not GLOBAL_ROLES_DIR.exists():
+        return [], []
+
+    supervisor_variants: list[dict] = []
+    custom_agents: list[dict] = []
+
+    for md_file in sorted(GLOBAL_ROLES_DIR.glob("*.md")):
+        name = md_file.stem
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            first_line = content.strip().split("\n")[0]
+            title = first_line.lstrip("# ").strip() or name
+        except Exception:
+            title = name
+
+        entry = {"id": name, "title": title, "filename": md_file.name}
+
+        if name.startswith("supervisor-"):
+            supervisor_variants.append(entry)
+        else:
+            custom_agents.append(entry)
+
+    return supervisor_variants, custom_agents
+
+
+def save_custom_role(name: str, content: str, role_type: str = "agent") -> Path:
+    """Save a custom role .md to ~/.config/awf/roles/.
+
+    Args:
+        name: Role name (will be slugified).
+        content: .md file content.
+        role_type: 'agent' or 'supervisor'. Supervisor gets 'supervisor-' prefix.
+
+    Returns:
+        Path to saved file.
+    """
+    GLOBAL_ROLES_DIR.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "-", name.lower()).strip("-")
+    if not slug:
+        slug = "unnamed"
+    if role_type == "supervisor" and not slug.startswith("supervisor-"):
+        slug = f"supervisor-{slug}"
+    path = GLOBAL_ROLES_DIR / f"{slug}.md"
+    path.write_text(content, encoding="utf-8")
+    log.info("Saved custom role: %s", path)
+    return path
+
+
+def delete_custom_role(name: str) -> bool:
+    """Delete a custom role .md from ~/.config/awf/roles/.
+
+    Args:
+        name: Role name (slug).
+
+    Returns:
+        True if deleted, False if not found.
+    """
+    path = GLOBAL_ROLES_DIR / f"{name}.md"
+    if path.exists():
+        path.unlink()
+        log.info("Deleted custom role: %s", path)
+        return True
+    return False

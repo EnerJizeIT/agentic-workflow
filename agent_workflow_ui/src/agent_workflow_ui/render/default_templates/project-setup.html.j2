@@ -299,17 +299,35 @@ optional_data_keys: []
 
     .custom-agent-row td:first-child {
       display: flex;
-      flex-direction: column;
-      gap: 4px;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
     }
 
     .custom-agent-row .agent-input {
-      width: 100%;
+      flex: 1;
+      min-width: 80px;
+    }
+
+    .custom-agent-row .skill-area {
+      flex: 1;
+      min-width: 80px;
     }
 
     .custom-agent-row .skill-upload-label {
       font-size: 12px;
-      padding: 4px 10px;
+      padding: 6px 10px;
+      white-space: nowrap;
+      width: 100%;
+      text-align: center;
+    }
+
+    .custom-agent-row .skill-upload-label.hidden {
+      display: none;
+    }
+
+    .custom-agent-row .skill-chip-container {
+      flex: 1;
     }
 
     .section-hint {
@@ -447,11 +465,16 @@ optional_data_keys: []
         // Check custom agents have name + skill filled
         var customRows = document.querySelectorAll('.custom-agent-row');
         var customValid = true;
+        var hasIncompleteCustom = false;
         customRows.forEach(function(row) {
           var nameInput = row.querySelector('.agent-input');
           var skillContent = row.querySelector('.skill-content');
-          if (!nameInput || !nameInput.value.trim()) customValid = false;
-          if (!skillContent || !skillContent.value.trim()) customValid = false;
+          var nameFilled = nameInput && nameInput.value.trim();
+          var skillFilled = skillContent && skillContent.value.trim();
+          if (!nameFilled || !skillFilled) {
+            customValid = false;
+            hasIncompleteCustom = true;
+          }
         });
 
         var valid = hasTeam && customValid;
@@ -462,6 +485,20 @@ optional_data_keys: []
         } else {
           btn.disabled = true;
           btn.classList.add('disabled');
+        }
+
+        // Disable "Add agent" button while custom agent is incomplete
+        var addBtn = document.querySelector('.team-actions button[type="button"]');
+        if (addBtn) {
+          if (hasIncompleteCustom) {
+            addBtn.disabled = true;
+            addBtn.style.opacity = '0.4';
+            addBtn.style.cursor = 'not-allowed';
+          } else {
+            addBtn.disabled = false;
+            addBtn.style.opacity = '';
+            addBtn.style.cursor = '';
+          }
         }
       }
 
@@ -496,15 +533,48 @@ optional_data_keys: []
         var rowIdx = rowIdxCounter++;
         row.classList.add('custom-agent-row');
         agentTd.innerHTML =
-          '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Название агента" required>' +
-          '<label for="skill-file-' + rowIdx + '" class="file-upload-btn skill-upload-label">\uD83D\uDCCE Прикрепить скилл (.md)</label>' +
-          '<input type="file" id="skill-file-' + rowIdx + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file">' +
-          '<input type="hidden" name="custom_agent_content" class="skill-content">' +
-          '<span class="skill-chip-container"></span>';
+          '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Имя агента" required>' +
+          '<div class="skill-area">' +
+            '<label for="skill-file-' + rowIdx + '" class="file-upload-btn skill-upload-label">\uD83D\uDCCE .md</label>' +
+            '<input type="file" id="skill-file-' + rowIdx + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file">' +
+            '<input type="hidden" name="custom_agent_content" class="skill-content">' +
+            '<span class="skill-chip-container"></span>' +
+          '</div>';
 
         var fileInput = agentTd.querySelector('.skill-file');
         var hiddenContent = agentTd.querySelector('.skill-content');
         var chipContainer = agentTd.querySelector('.skill-chip-container');
+        var uploadLabel = agentTd.querySelector('.skill-upload-label');
+
+        fileInput.addEventListener('change', function (e) {
+          var file = e.target.files[0];
+          if (!file) return;
+          // Hide upload button, show chip
+          uploadLabel.classList.add('hidden');
+          chipContainer.innerHTML = '<span class="file-chip">' +
+            '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
+            '<button type="button" class="file-chip-remove" onclick="removeSkillFile(this)">&times;</button>' +
+            '</span>';
+          var reader = new FileReader();
+          reader.onload = function (ev) {
+            hiddenContent.value = ev.target.result;
+            validateForm();
+          };
+          reader.readAsText(file);
+          validateForm();
+        });
+
+        // Expose removeSkillFile for chip remove → restore upload button
+        window.removeSkillFile = function(btn) {
+          chipContainer.innerHTML = '';
+          hiddenContent.value = '';
+          fileInput.value = '';
+          uploadLabel.classList.remove('hidden');
+          validateForm();
+        };
+
+        validateForm();
+      };
 
         fileInput.addEventListener('change', function (e) {
           var file = e.target.files[0];
