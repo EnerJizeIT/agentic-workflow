@@ -663,26 +663,6 @@ optional_data_keys: []
         validateForm();
       };
 
-        fileInput.addEventListener('change', function (e) {
-          var file = e.target.files[0];
-          if (!file) return;
-          chipContainer.innerHTML = '';
-          var chip = document.createElement('span');
-          chip.className = 'file-chip';
-          chip.innerHTML = '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
-            '<button type="button" class="file-chip-remove" onclick="this.parentElement.remove()">&times;</button>';
-          chipContainer.appendChild(chip);
-          var reader = new FileReader();
-          reader.onload = function (ev) {
-            hiddenContent.value = ev.target.result;
-          };
-          reader.readAsText(file);
-          validateForm();
-        });
-
-        validateForm();
-      };
-
       var rowIdxCounter = 0;
 
       window.removeRow = function (button) {
