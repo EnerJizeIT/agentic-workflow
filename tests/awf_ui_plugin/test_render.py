@@ -100,3 +100,22 @@ def test_render_template_missing_raises(tmp_path):
     from jinja2 import TemplateNotFound
     with pytest.raises(TemplateNotFound):
         render_template(env, "does-not-exist", {})
+
+
+def test_create_env_empty_dirs_raises():
+    """create_env with empty list raises ValueError."""
+    with pytest.raises(ValueError, match="must not be empty"):
+        create_env([])
+
+
+def test_parse_frontmatter_non_dict_yaml():
+    """Frontmatter that parses to non-dict returns empty metadata."""
+    content = """---
+- just a list
+- not a dict
+---
+<body>foo</body>
+"""
+    meta, body = parse_frontmatter(content)
+    assert meta == {}
+    assert "<body>" in body

@@ -1,0 +1,11 @@
+[run]
+omit =
+    agent_workflow_ui/__main__.py
+    agent_workflow_ui/__init__.py
+    */tests/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError

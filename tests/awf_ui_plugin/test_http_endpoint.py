@@ -165,3 +165,68 @@ def test_submit_too_large_body_returns_413(http_setup):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req)
     assert exc_info.value.code == 413
+
+
+# --- Task 4: http_endpoint.py coverage gaps ---
+
+def test_get_submit_path_returns_404(http_setup):
+    """GET /submit/... returns 404 (only POST allowed)."""
+    config, registry, port = http_setup
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/submit/FORM-001")
+    assert exc_info.value.code == 404
+
+
+def test_submit_cancelled_form_returns_410(http_setup):
+    """POST to cancelled form returns 410 Gone."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-001",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+        status="cancelled",
+    ))
+
+    data = b"foo=bar"
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-001",
+        data=data,
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 410
+
+
+def test_submit_empty_body_returns_400(http_setup):
+    """POST with Content-Length: 0 returns 400."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-001",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-001",
+        data=b"",
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 400
+
+
+def test_post_non_submit_path_returns_404(http_setup):
+    """POST to non-/submit/ path returns 404."""
+    config, registry, port = http_setup
+
+    data = b"foo=bar"
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/other-path",
+        data=data,
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 404

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from agent_workflow_ui.state import FormRecord, FormRegistry
 
 
@@ -83,3 +85,53 @@ def test_http_port_accessor():
     assert get_http_port() == 13747
 
     state_mod._http_port = None
+
+
+def test_update_status_unknown_form_returns_none():
+    """update_status for unknown form_id returns None."""
+    registry = FormRegistry()
+    assert registry.update_status("FORM-999", "submitted") is None
+
+
+def test_update_status_cancelled_sets_cancelled_at():
+    """update_status to 'cancelled' sets cancelled_at timestamp."""
+    registry = FormRegistry()
+    registry.add(FormRecord(
+        form_id="FORM-001",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+
+    updated = registry.update_status("FORM-001", "cancelled")
+    assert updated.status == "cancelled"
+    assert updated.cancelled_at is not None
+    assert updated.submitted_at is None
+
+
+def test_next_form_id_ignores_malformed():
+    """next_form_id ignores malformed form_ids in registry."""
+    registry = FormRegistry()
+    registry.add(FormRecord(
+        form_id="INVALID",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+    assert registry.next_form_id() == "FORM-001"
+
+
+def test_get_config_raises_when_not_set():
+    """get_config raises RuntimeError when config not initialized."""
+    import agent_workflow_ui.state as state_mod
+    state_mod._config = None
+    from agent_workflow_ui.state import get_config
+    with pytest.raises(RuntimeError, match="Config not initialized"):
+        get_config()
+
+
+def test_get_jinja_env_raises_when_not_set():
+    """get_jinja_env raises RuntimeError when env not initialized."""
+    import agent_workflow_ui.state as state_mod
+    state_mod._jinja_env = None
+    from agent_workflow_ui.state import get_jinja_env
+    with pytest.raises(RuntimeError, match="Jinja env not initialized"):
+        get_jinja_env()

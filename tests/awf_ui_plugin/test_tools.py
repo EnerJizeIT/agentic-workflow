@@ -249,3 +249,144 @@ required_data_keys:
     role_template = next(t for t in r["templates"] if t["name"] == "role-assignment")
     assert role_template["source"] == "project"
     assert role_template["description"] == "PROJECT OVERRIDE"
+
+
+# --- Task 2: forms.py coverage gaps ---
+
+def test_read_submit_lazy_expiration(plugin_setup):
+    """read_submit returns status='expired' when TTL passed."""
+    from datetime import timedelta
+    from agent_workflow_ui.state import get_registry
+    from agent_workflow_ui.tools.forms import open_form, read_submit
+
+    result = asyncio.run(open_form(
+        template="role-assignment",
+        data={"available_roles": ["worker"]},
+        ttl_seconds=1,
+    ))
+    form_id = result["form_id"]
+
+    record = get_registry().get(form_id)
+    record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+
+    r = asyncio.run(read_submit(form_id))
+    assert r["status"] == "expired"
+    assert r["submitted"] is False
+
+
+def test_list_pending_forms_excludes_expired(plugin_setup):
+    """Expired forms filtered out from list_pending_forms."""
+    from datetime import timedelta
+    from agent_workflow_ui.state import get_registry
+    from agent_workflow_ui.tools.forms import open_form, list_pending_forms
+
+    asyncio.run(open_form(
+        template="role-assignment",
+        data={"available_roles": ["worker"]},
+        ttl_seconds=1,
+    ))
+    for rec in get_registry()._forms.values():
+        rec.expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+
+    r = asyncio.run(list_pending_forms())
+    assert r["count"] == 0
+
+
+def test_open_form_no_http_port_returns_error(plugin_setup, monkeypatch):
+    """open_form returns error when HTTP endpoint not started."""
+    from agent_workflow_ui.state import set_http_port, get_http_port
+    from agent_workflow_ui.tools.forms import open_form
+
+    saved = get_http_port()
+    set_http_port(None)
+    result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    set_http_port(saved)
+
+    assert "error" in result
+    assert "not started" in result["error"].lower()
+
+
+def test_read_submit_malformed_yaml(plugin_setup):
+    """read_submit returns error status when submit file has invalid YAML."""
+    from agent_workflow_ui.tools.forms import open_form, read_submit
+
+    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    form_id = open_result["form_id"]
+
+    submit_file = plugin_setup.inputs_dir / f"{form_id}.yaml"
+    submit_file.write_text("not: valid: yaml: [")
+
+    r = asyncio.run(read_submit(form_id))
+    assert r["submitted"] is False
+    assert r["status"] == "error"
+    assert "error" in r
+
+
+def test_read_submit_non_dict_yaml(plugin_setup):
+    """read_submit returns error when submit file is valid YAML but not a dict."""
+    from agent_workflow_ui.tools.forms import open_form, read_submit
+
+    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    form_id = open_result["form_id"]
+
+    submit_file = plugin_setup.inputs_dir / f"{form_id}.yaml"
+    submit_file.write_text("- just a list\n- not a dict")
+
+    r = asyncio.run(read_submit(form_id))
+    assert r["submitted"] is False
+    assert r["status"] == "error"
+
+
+def test_open_form_browser_open_fails(plugin_setup, monkeypatch):
+    """open_form sets error when browser open fails."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    def _fail_open(target, command="auto"):
+        return False, "xdg-open not found"
+
+    import agent_workflow_ui.browser as browser_mod
+    monkeypatch.setattr(browser_mod, "open_path", _fail_open, raising=True)
+    import agent_workflow_ui.tools.forms as forms_mod
+    monkeypatch.setattr(forms_mod, "open_path", _fail_open, raising=True)
+
+    result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    assert result["browser_opened"] is False
+    assert "error" in result
+    assert "xdg-open" in result["error"]
+
+
+# --- Task 3: templates.py coverage gaps ---
+
+def test_list_templates_malformed_template_skipped(plugin_setup, monkeypatch):
+    """Malformed template that raises during parsing is skipped silently."""
+    from agent_workflow_ui.tools.templates import list_templates
+
+    bad = plugin_setup.templates_dir / "malformed.html.j2"
+    bad.write_text("<html></html>")
+
+    import agent_workflow_ui.tools.templates as tpl_mod
+    real_parse = tpl_mod.parse_frontmatter_from_file
+
+    def _raise_on_path(path):
+        if path.name == "malformed.html.j2":
+            raise ValueError("simulated parse error")
+        return real_parse(path)
+
+    monkeypatch.setattr(tpl_mod, "parse_frontmatter_from_file", _raise_on_path)
+
+    r = asyncio.run(list_templates())
+    names = {t["name"] for t in r["templates"]}
+    assert "malformed" not in names
+
+
+def test_list_templates_no_frontmatter_in_project_template(plugin_setup):
+    """Project template without frontmatter gets empty metadata."""
+    from agent_workflow_ui.tools.templates import list_templates
+
+    no_meta = plugin_setup.templates_dir / "no-meta.html.j2"
+    no_meta.write_text("<html><body>no frontmatter</body></html>")
+
+    r = asyncio.run(list_templates())
+    found = next((t for t in r["templates"] if t["name"] == "no-meta"), None)
+    assert found is not None
+    assert found["source"] == "project"
