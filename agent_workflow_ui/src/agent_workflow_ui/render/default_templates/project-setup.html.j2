@@ -1,11 +1,9 @@
 ---
-description: Composite form for full awf project setup
+description: Setup form for awf project — agents, models, spec upload
 required_data_keys:
   - available_roles
 optional_data_keys:
-  - available_skills
   - project_name
-  - project_description
 ---
 <!DOCTYPE html>
 <html lang="ru">
@@ -15,14 +13,14 @@ optional_data_keys:
   <title>Настройка проекта</title>
   <style>
     :root {
-      --bg: #ffffff;
-      --text: #1a1a1a;
-      --text-muted: #666666;
-      --border: #e0e0e0;
-      --accent: #2563eb;
-      --accent-hover: #1d4ed8;
-      --bg-card: #f9fafb;
-      --bg-input: #ffffff;
+      --bg: #1e1e1e;
+      --bg-card: #252526;
+      --bg-input: #3c3c3c;
+      --text: #d4d4d4;
+      --text-muted: #858585;
+      --accent: #569cd6;
+      --accent-green: #4ec9b0;
+      --border: #464647;
       --radius: 6px;
     }
 
@@ -83,7 +81,7 @@ optional_data_keys:
     label:first-child { margin-top: 0; }
 
     input[type="text"],
-    textarea,
+    input[type="file"],
     select {
       background: var(--bg-input);
       color: var(--text);
@@ -97,15 +95,14 @@ optional_data_keys:
     }
 
     input[type="text"]:focus,
-    textarea:focus,
     select:focus {
       outline: none;
       border-color: var(--accent);
     }
 
-    textarea {
-      resize: vertical;
-      min-height: 60px;
+    input[type="file"] {
+      padding: 6px 8px;
+      cursor: pointer;
     }
 
     /* Team table */
@@ -134,56 +131,17 @@ optional_data_keys:
 
     tr:last-child td { border-bottom: none; }
 
-    td:nth-child(4) {
+    td:last-child {
       width: 1px;
       text-align: center;
     }
 
-    td select {
+    td select,
+    td input[type="text"] {
       font-size: 13px;
       padding: 6px 8px;
     }
 
-    input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-      cursor: pointer;
-    }
-
-    /* Radio buttons for pipeline */
-    .radio-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 10px 12px;
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      margin-top: 10px;
-      cursor: pointer;
-      transition: border-color 0.15s;
-    }
-
-    .radio-row:hover {
-      border-color: var(--accent);
-    }
-
-    .radio-row input[type="radio"] {
-      margin-top: 2px;
-      cursor: pointer;
-    }
-
-    .radio-row strong {
-      font-size: 14px;
-    }
-
-    .radio-row p {
-      font-size: 13px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-
-    /* Buttons */
     .btn-add {
       background: transparent;
       color: var(--accent);
@@ -194,10 +152,29 @@ optional_data_keys:
       cursor: pointer;
       margin-top: 10px;
       transition: all 0.15s;
+      font-family: system-ui, -apple-system, sans-serif;
     }
 
     .btn-add:hover {
-      background: var(--bg-card);
+      background: var(--bg-input);
+    }
+
+    .btn-add-custom {
+      background: transparent;
+      color: var(--accent-green);
+      border: 1px dashed var(--accent-green);
+      border-radius: 4px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      margin-top: 10px;
+      margin-left: 8px;
+      transition: all 0.15s;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    .btn-add-custom:hover {
+      background: var(--bg-input);
     }
 
     .btn-remove {
@@ -205,13 +182,14 @@ optional_data_keys:
       color: var(--text-muted);
       border: none;
       cursor: pointer;
-      font-size: 16px;
+      font-size: 18px;
       padding: 2px 6px;
       border-radius: 3px;
+      line-height: 1;
     }
 
     .btn-remove:hover {
-      color: #dc2626;
+      color: #f44747;
     }
 
     .btn-submit {
@@ -228,7 +206,7 @@ optional_data_keys:
     }
 
     .btn-submit:hover {
-      background: var(--accent-hover);
+      background: #4a8cc7;
     }
 
     .submit-section {
@@ -244,17 +222,8 @@ optional_data_keys:
       margin-top: 8px;
     }
 
-    .inline-input {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .inline-input input[type="text"] { flex: 1; }
-    .inline-input .btn-add { margin-top: 0; white-space: nowrap; }
-
     select option {
-      background: var(--bg);
+      background: var(--bg-input);
       color: var(--text);
     }
   </style>
@@ -262,14 +231,13 @@ optional_data_keys:
 <body>
   <div class="page-header">
     <h1>Настройка проекта</h1>
-    <p>Заполните конфигурацию: команда, pipeline, команды проверки.</p>
+    <p>Укажите название проекта, загрузите спецификацию и соберите команду агентов.</p>
   </div>
 
-  <form action="{{ submit_url }}" method="POST" id="setup-form">
+  <form action="{{ submit_url }}" method="POST" id="setup-form" enctype="multipart/form-data">
     <input type="hidden" name="form_id" value="{{ form_id }}">
 
     {% set roles = available_roles or [] %}
-    {% set skills = available_skills or [] %}
     {% set models = available_models or [] %}
 
     <!-- Section 1: Project -->
@@ -281,21 +249,22 @@ optional_data_keys:
         value="{{ project_name | default('', true) }}"
         required placeholder="internet-shop">
 
-      <label for="project_description">Описание</label>
-      <textarea id="project_description" name="project_description"
-        placeholder="Краткое описание проекта...">{{ project_description | default('', true) }}</textarea>
+      <label for="spec_file">Спецификация / ТЗ (опционально)</label>
+      <input type="file" id="spec_file" name="spec_file" accept=".md,.txt,.pdf,.docx">
+      <input type="hidden" name="spec_content" id="spec_content" value="">
+      <input type="hidden" name="spec_filename" id="spec_filename" value="">
+      <p class="hint">Загрузите markdown или текстовый файл с описанием проекта.</p>
     </fieldset>
 
     <!-- Section 2: Team -->
     <fieldset>
       <legend>Команда</legend>
-      <p class="hint">Каждая строка — одна роль. Добавляйте и удаляйте по необходимости.</p>
+      <p class="hint">Каждая строка — один агент. Добавляйте и удаляйте по необходимости.</p>
 
       <table id="team-table">
         <thead>
           <tr>
-            <th>Роль</th>
-            <th>Специализация</th>
+            <th>Агент</th>
             <th>Модель</th>
             <th></th>
           </tr>
@@ -303,26 +272,17 @@ optional_data_keys:
         <tbody id="team-rows">
           <tr class="team-row">
             <td>
-              <select name="role" class="role-select">
-                {% for role in roles %}
-                <option value="{{ role.id }}"{% if role.get('default') %} selected{% endif %}>
-                  {{ role.title }}
+              <select name="agent" class="agent-select">
+                {% for agent in roles %}
+                <option value="{{ agent.id }}"{% if agent.get('default') %} selected{% endif %}>
+                  {{ agent.title }}
                 </option>
-                {% endfor %}
-              </select>
-            </td>
-            <td>
-              <select name="skill" class="skill-select">
-                <option value="">— выбрать —</option>
-                {% for skill in skills %}
-                <option value="{{ skill.id }}">{{ skill.title | default(skill.id, true) }}</option>
                 {% endfor %}
               </select>
             </td>
             <td>
               <select name="model" class="model-select">
                 {% if models %}
-                  <option value="">— выбрать —</option>
                   {% for model in models %}
                   <option value="{{ model }}">{{ model }}</option>
                   {% endfor %}
@@ -338,40 +298,8 @@ optional_data_keys:
         </tbody>
       </table>
 
-      <button type="button" class="btn-add" onclick="addRow()">+ Добавить роль</button>
-    </fieldset>
-
-    <!-- Section 3: Settings -->
-    <fieldset>
-      <legend>Настройки</legend>
-
-      <label>Pipeline</label>
-      <label class="radio-row">
-        <input type="radio" name="pipeline" value="simple" checked>
-        <div>
-          <strong>Simple</strong>
-          <p>plan &rarr; implement &rarr; verify</p>
-        </div>
-      </label>
-      <label class="radio-row">
-        <input type="radio" name="pipeline" value="full">
-        <div>
-          <strong>Full</strong>
-          <p>plan &rarr; implement &rarr; review &rarr; test &rarr; verify</p>
-        </div>
-      </label>
-
-      <label style="margin-top: 20px;">Команды проверки</label>
-      <p class="hint" style="margin-top: 0;">Оставьте пустыми если не нужны.</p>
-
-      <label for="test_cmd">Test</label>
-      <input type="text" id="test_cmd" name="test_cmd" placeholder="pytest tests/">
-
-      <label for="lint_cmd">Lint</label>
-      <input type="text" id="lint_cmd" name="lint_cmd" placeholder="ruff check .">
-
-      <label for="typecheck_cmd">Typecheck</label>
-      <input type="text" id="typecheck_cmd" name="typecheck_cmd" placeholder="mypy src/">
+      <button type="button" class="btn-add" onclick="addRow()">+ Добавить агента</button>
+      <button type="button" class="btn-add-custom" onclick="addCustomAgent()">+ Свой агент</button>
     </fieldset>
 
     <input type="hidden" name="team_config" id="team-config" value="">
@@ -383,16 +311,6 @@ optional_data_keys:
 
   <script>
     (function () {
-      var allRoles = [
-        {% for r in roles %}
-        "{{ r.id }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
-      var allSkills = [
-        {% for s in skills %}
-        {"id": "{{ s.id }}", "title": "{{ s.title | default(s.id, true) }}"}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
       var allModels = [
         {% for m in models %}
         "{{ m }}"{% if not loop.last %},{% endif %}
@@ -402,9 +320,25 @@ optional_data_keys:
       window.addRow = function () {
         var tbody = document.getElementById('team-rows');
         var firstRow = tbody.querySelector('.team-row');
+        if (!firstRow) return;
         var newRow = firstRow.cloneNode(true);
         newRow.querySelectorAll('select').forEach(function (s) { s.selectedIndex = 0; });
         tbody.appendChild(newRow);
+      };
+
+      window.addCustomAgent = function () {
+        var tbody = document.getElementById('team-rows');
+        var row = document.createElement('tr');
+        row.className = 'team-row';
+        var modelOptions = '';
+        allModels.forEach(function (m) {
+          modelOptions += '<option value="' + m + '">' + m + '</option>';
+        });
+        row.innerHTML =
+          '<td><input type="text" name="custom_agent" class="agent-input" placeholder="Например: Security Auditor"></td>' +
+          '<td><select name="model" class="model-select">' + modelOptions + '</select></td>' +
+          '<td><button type="button" class="btn-remove" onclick="removeRow(this)">&times;</button></td>';
+        tbody.appendChild(row);
       };
 
       window.removeRow = function (button) {
@@ -415,13 +349,26 @@ optional_data_keys:
         }
       };
 
+      document.getElementById('spec_file').addEventListener('change', function (e) {
+        var file = e.target.files[0];
+        if (!file) return;
+        document.getElementById('spec_filename').value = file.name;
+        var reader = new FileReader();
+        reader.onload = function (ev) {
+          document.getElementById('spec_content').value = ev.target.result;
+        };
+        reader.readAsText(file);
+      });
+
       document.getElementById('setup-form').addEventListener('submit', function () {
         var rows = document.querySelectorAll('.team-row');
         var team = [];
         rows.forEach(function (row) {
+          var agentSelect = row.querySelector('.agent-select');
+          var agentInput = row.querySelector('.agent-input');
+          var agentName = agentSelect ? agentSelect.value : (agentInput ? agentInput.value.trim() : '');
           team.push({
-            role: row.querySelector('.role-select').value,
-            skill: row.querySelector('.skill-select').value,
+            agent: agentName,
             model: row.querySelector('.model-select').value,
           });
         });

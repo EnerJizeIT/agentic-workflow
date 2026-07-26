@@ -30,8 +30,13 @@ def read_opencode_models() -> list[str]:
     # From provider configs
     for provider_name, provider_cfg in (cfg.get("provider") or {}).items():
         if isinstance(provider_cfg, dict):
-            for model_id in (provider_cfg.get("models") or {}):
-                models.add(f"{provider_name}/{model_id}")
+            models_raw = provider_cfg.get("models") or {}
+            if isinstance(models_raw, dict):
+                for model_id in models_raw:
+                    models.add(f"{provider_name}/{model_id}")
+            elif isinstance(models_raw, list):
+                for model_id in models_raw:
+                    models.add(f"{provider_name}/{model_id}")
 
     # From agent configs
     for agent_name, agent_cfg in (cfg.get("agent") or {}).items():

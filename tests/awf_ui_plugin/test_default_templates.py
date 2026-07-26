@@ -156,36 +156,37 @@ def test_project_setup_renders_with_minimum_data(env):
 
 
 def test_project_setup_has_team_table(env):
-    """Team section has a table with role/skill/model columns."""
+    """Team section has a table with agent/model columns."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
     assert "<table" in html
-    assert "команд" in html.lower() or "role" in html.lower()
+    assert "агент" in html.lower() or "agent" in html.lower()
 
 
-def test_project_setup_has_pipeline_radio(env):
-    """Settings section has pipeline radio buttons."""
+def test_project_setup_no_pipeline_section(env):
+    """Pipeline section removed — user builds pipeline via agent selection."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
-    assert 'type="radio"' in html
-    assert "simple" in html.lower()
-    assert "full" in html.lower()
+    assert 'type="radio"' not in html
+    assert 'name="pipeline"' not in html
 
 
-def test_project_setup_has_verify_commands(env):
-    """Settings section has verification command inputs."""
+def test_project_setup_no_verify_commands(env):
+    """Verification commands section removed."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
-    assert "test_cmd" in html
+    assert "test_cmd" not in html
+    assert "lint_cmd" not in html
+    assert "typecheck_cmd" not in html
 
 
 def test_project_setup_uses_available_models_global(env):
@@ -200,37 +201,53 @@ def test_project_setup_uses_available_models_global(env):
     assert "test-model-2" in html
 
 
-def test_project_setup_has_custom_role_input(env):
-    """Template has UI for adding custom roles."""
+def test_project_setup_has_custom_agent_button(env):
+    """Template has button for adding custom agents."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
-    assert "add" in html.lower() or "custom" in html.lower()
+    assert "addCustomAgent" in html
+    assert "Свой агент" in html
 
 
-def test_project_setup_has_light_theme(env):
-    """Template uses light/minimal color scheme."""
+def test_project_setup_has_file_picker(env):
+    """Template has file input for spec upload."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
-    assert "#ffffff" in html or "#f9fafb" in html
+    assert 'type="file"' in html
+    assert "spec_file" in html
+    assert "spec_content" in html
+    assert "FileReader" in html
 
 
-def test_project_setup_team_has_role_select(env):
-    """Team section has <select> for roles, not checkboxes."""
+def test_project_setup_has_dark_theme(env):
+    """Template uses VS Code dark theme."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert "#1e1e1e" in html
+    assert "#252526" in html
+
+
+def test_project_setup_team_has_agent_select(env):
+    """Team section has <select> for agents (merged role+skill)."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker", "default": True}],
     })
     assert '<select' in html
-    assert 'role' in html.lower()
-    # Should NOT have role checkboxes
-    assert 'type="checkbox"' not in html or 'name="roles"' not in html
+    assert 'name="agent"' in html
+    # Should NOT have separate role+skill selects
+    assert 'name="role"' not in html
+    assert 'name="skill"' not in html
 
 
 def test_project_setup_team_has_add_remove_buttons(env):
