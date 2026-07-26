@@ -53,23 +53,21 @@ class FormRegistry:
         return [r for r in self._forms.values() if r.status == "pending"]
 
     def next_form_id(self) -> str:
-        """Generate next form_id in sequence (FORM-001, FORM-002, ...).
+        """Generate a globally unique form_id.
 
-        Uses an internal counter that starts at max(existing NNN) + 1, then
-        increments on each call. For session-only uniqueness;
-        file system scanning for cross-session continuity — Epic 7.
+        Format: FORM-YYYYMMDDHHMMSS-XXXX
+        Where XXXX = 4 random alphanumeric chars.
+
+        This is globally unique — no collision with stale files from previous
+        sessions in .agentic/inputs/.
         """
-        existing_numbers = []
-        for form_id in self._forms:
-            try:
-                n = int(form_id.split("-")[1])
-                existing_numbers.append(n)
-            except (IndexError, ValueError):
-                continue
-        max_existing = max(existing_numbers) if existing_numbers else 0
-        self._counter = max(self._counter, max_existing)
-        self._counter += 1
-        return f"FORM-{self._counter:03d}"
+        import time
+        import random
+        import string
+
+        timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        return f"FORM-{timestamp}-{suffix}"
 
 
 _registry = FormRegistry()

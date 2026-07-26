@@ -43,8 +43,8 @@ def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
 
 
 def _is_valid_form_id(form_id: str) -> bool:
-    """Check if form_id matches FORM-NNN pattern."""
-    return bool(re.match(r"^FORM-\d{3,}$", form_id))
+    """Check if form_id looks valid (FORM-* prefix, reasonable length)."""
+    return form_id.startswith("FORM-") and 6 < len(form_id) < 100
 
 
 def _ack_page(form_id: str, already_submitted: bool) -> str:

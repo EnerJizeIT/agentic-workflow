@@ -60,18 +60,17 @@ def plugin_setup(tmp_path, monkeypatch):
 def test_open_form_returns_form_id(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
     result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
-    assert result["form_id"] == "FORM-001"
+    assert result["form_id"].startswith("FORM-")
     assert "browser_opened" in result
     assert "submit_url" in result
-    assert "127.0.0.1:13747/submit/FORM-001" in result["submit_url"]
+    assert result["form_id"] in result["submit_url"]
 
 
 def test_open_form_increments_form_id(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
     r1 = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
     r2 = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
-    assert r1["form_id"] == "FORM-001"
-    assert r2["form_id"] == "FORM-002"
+    assert r1["form_id"] != r2["form_id"]
 
 
 def test_open_form_unknown_template(plugin_setup):
@@ -103,7 +102,7 @@ def test_open_form_registers_in_registry(plugin_setup):
 def test_open_form_no_data(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
     result = asyncio.run(open_form(template="role-assignment"))
-    assert result["form_id"] == "FORM-001"
+    assert result["form_id"].startswith("FORM-")
     assert "submit_url" in result
 
 

@@ -8,24 +8,22 @@ import pytest
 from agent_workflow_ui.state import FormRecord, FormRegistry
 
 
-def test_next_form_id_first():
-    """First form_id is FORM-001."""
+def test_next_form_id_format():
+    """next_form_id returns timestamp-based ID: FORM-YYYYMMDDHHMMSS-XXXX."""
     registry = FormRegistry()
-    assert registry.next_form_id() == "FORM-001"
+    form_id = registry.next_form_id()
+    assert form_id.startswith("FORM-")
+    parts = form_id.split("-")
+    assert len(parts) == 3  # FORM, timestamp, suffix
+    assert len(parts[1]) == 14  # YYYYMMDDHHMMSS
+    assert len(parts[2]) == 4   # random suffix
 
 
-def test_next_form_id_sequence():
-    """form_ids increment correctly."""
+def test_next_form_id_unique():
+    """Each call produces a unique form_id."""
     registry = FormRegistry()
-    assert registry.next_form_id() == "FORM-001"
-    assert registry.next_form_id() == "FORM-002"
-
-    registry.add(FormRecord(
-        form_id="FORM-005",
-        template="test",
-        opened_at=datetime.now(timezone.utc),
-    ))
-    assert registry.next_form_id() == "FORM-006"
+    ids = {registry.next_form_id() for _ in range(20)}
+    assert len(ids) == 20, "Duplicate form_ids generated"
 
 
 def test_add_and_get():
@@ -108,15 +106,17 @@ def test_update_status_cancelled_sets_cancelled_at():
     assert updated.submitted_at is None
 
 
-def test_next_form_id_ignores_malformed():
-    """next_form_id ignores malformed form_ids in registry."""
+def test_next_form_id_ignores_registry_contents():
+    """next_form_id is timestamp-based, not affected by existing entries."""
     registry = FormRegistry()
     registry.add(FormRecord(
-        form_id="INVALID",
+        form_id="FORM-99999999999999-zzzz",
         template="test",
         opened_at=datetime.now(timezone.utc),
     ))
-    assert registry.next_form_id() == "FORM-001"
+    new_id = registry.next_form_id()
+    assert new_id != "FORM-99999999999999-zzzz"
+    assert new_id.startswith("FORM-")
 
 
 def test_get_config_raises_when_not_set():
