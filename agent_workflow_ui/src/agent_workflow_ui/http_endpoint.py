@@ -122,6 +122,14 @@ class SubmitHandler(BaseHTTPRequestHandler):
 
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length > MAX_BODY_BYTES:
+            # Drain request body before responding, otherwise client gets
+            # BrokenPipeError when server closes connection mid-write.
+            remaining = content_length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
             self._send_text(413, "Payload Too Large (max 1MB)")
             return
         if content_length == 0:
