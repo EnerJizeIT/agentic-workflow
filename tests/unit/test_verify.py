@@ -2,7 +2,6 @@
 import subprocess
 from pathlib import Path
 
-from awf import config as cfg_mod
 from awf import verify
 
 

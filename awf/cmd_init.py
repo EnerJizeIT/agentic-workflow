@@ -1,17 +1,11 @@
 """Port of lib/init.sh — ``awf init`` command."""
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
-from . import config as cfg_mod
-from . import git_utils
-from . import opencode_agents
-from . import paths
+from . import git_utils, opencode_agents
 
 
 def _find_framework_dir() -> Path:

@@ -1,7 +1,7 @@
 """Unit tests for awf.todos — is_closed, has_progress, list_active_todos."""
 from pathlib import Path
 
-from awf.todos import is_closed, has_progress, list_active_todos
+from awf.todos import has_progress, is_closed, list_active_todos
 
 
 class TestIsClosed:

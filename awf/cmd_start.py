@@ -6,9 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import config as cfg_mod
-from . import paths
-from . import todos
+from . import paths, todos
 from .orchestrator import run_pipeline
 
 

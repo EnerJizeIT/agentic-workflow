@@ -61,7 +61,7 @@ No manual steps required after `pip install agent-workflow-ui`.
 
 ```bash
 pip install -e "./agent_workflow_ui[dev]"
-python3 -m pytest tests/awf_ui_plugin/ --cov=agent_workflow_ui --cov-report=term-missing
+python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
 Target: ≥80% на plugin code (исключая `__main__.py` и `__init__.py`). Текущее: **93%**.
@@ -76,5 +76,5 @@ pip install -e ./awf -e ./agent_workflow_ui
 python3 -m pytest tests/
 
 # Run only plugin tests
-python3 -m pytest tests/awf_ui_plugin/
+python3 -m pytest tests/agent_workflow_ui/
 ```

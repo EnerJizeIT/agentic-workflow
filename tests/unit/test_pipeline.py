@@ -1,5 +1,4 @@
 """Unit tests for awf.pipeline — Stage, load_stages, resolve_pipeline_file."""
-from pathlib import Path
 
 import pytest
 

@@ -1,8 +1,6 @@
 """Unit tests for awf.yaml_utils — yaml_get."""
 from pathlib import Path
 
-import yaml
-
 from awf import yaml_utils
 
 

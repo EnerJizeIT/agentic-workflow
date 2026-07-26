@@ -206,7 +206,7 @@ def _slugify(name: str) -> str:
     """Convert role name to filesystem-safe slug.
 
     Must match JS slugify() in project-setup.html.j2 for client-side conflict
-    detection to work correctly. Test cross-check: tests/awf_ui_plugin/test_slugify.py.
+    detection to work correctly. Test cross-check: tests/agent_workflow_ui/test_slugify.py.
     """
     slug = re.sub(r"[^a-zA-Z0-9_-]", "-", name.lower()).strip("-")
     return slug or "unnamed"

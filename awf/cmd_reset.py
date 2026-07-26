@@ -1,14 +1,11 @@
 """Port of lib/reset.sh — ``awf reset`` command."""
 from __future__ import annotations
 
-import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
-from . import paths
-from . import todos
+from . import paths, todos
 
 
 def run(args: Any) -> int:

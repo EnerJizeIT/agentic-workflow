@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
-from . import git_utils
-from . import paths
-from . import todos
-from . import verify
+from . import git_utils, paths, todos, verify
 from .pipeline import Stage, load_stages, resolve_pipeline_file
 from .signals import (
     clean_stage_signals,
@@ -88,7 +84,7 @@ def _run_supervisor_stage(
     print(f"  SUPERVISOR STAGE: {action}")
     print("=" * 41)
     print()
-    print(f"Instructions: .agentic/roles/supervisor.md")
+    print("Instructions: .agentic/roles/supervisor.md")
     print(f"Phases file: {phases_file}")
     print()
 
@@ -268,7 +264,10 @@ def run_pipeline(args: Any) -> int:
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
-    timeout = getattr(args, "timeout", 3600)
+    # --timeout is accepted by argparse for backward compatibility but not yet
+    # wired into wait_for_signal. Tracked separately in awf-core backlog.
+    _timeout = getattr(args, "timeout", 3600)
+    del _timeout
 
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)

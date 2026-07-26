@@ -4,8 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import cmd_start
-from . import cmd_status
+from . import cmd_start, cmd_status
 
 
 def _print_top_level_help() -> int:
@@ -139,7 +138,7 @@ def _dispatch_subcommand(argv):
     p_rollback.add_argument("--soft", action="store_true")
     p_rollback.add_argument("--dry-run", dest="dry_run", action="store_true")
 
-    p_report = sub.add_parser("report", help="Show summary report")
+    sub.add_parser("report", help="Show summary report")
 
     args = parser.parse_args(argv)
 

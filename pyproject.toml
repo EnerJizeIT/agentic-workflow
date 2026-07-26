@@ -31,3 +31,24 @@ python_functions = ["test_*"]
 # To get per-test timeouts, install pytest-timeout and uncomment:
 # timeout = 60
 # timeout_method = "signal"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"  # awf-core requires >=3.9; plugin requires >=3.10 (separate dist)
+
+[tool.ruff.lint]
+# F: pyflakes (real bugs)
+# E/W: pycodestyle (PEP 8)
+# I: isort (import sorting)
+# UP: pyupgrade (modernize syntax)
+select = ["F", "E", "W", "I", "UP"]
+ignore = [
+    "E501",  # line too long — handled by formatter, not linter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "F841",  # unused local variables (test fixtures often have them)
+    "E501",  # long lines common in test data
+    "E702",  # semicolons used in compact setup helpers (e.g. create(); activate())
+]

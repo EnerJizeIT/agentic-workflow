@@ -1,13 +1,14 @@
 """Unit tests for awf.signals — signal_type, prefixes, read, clean, wait."""
 import threading
 from pathlib import Path
+
 import pytest
 
 from awf.signals import (
-    signal_type,
+    clean_stage_signals,
     expected_signal_prefixes,
     read_signal_for_todo,
-    clean_stage_signals,
+    signal_type,
     wait_for_signal,
 )
 

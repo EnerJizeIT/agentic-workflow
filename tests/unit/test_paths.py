@@ -1,7 +1,7 @@
 """Unit tests for awf.paths — path resolution functions."""
 from pathlib import Path
 
-from awf.paths import agentic_dir, inbox, outbox, context_dir, config_file
+from awf.paths import agentic_dir, config_file, context_dir, inbox, outbox
 
 
 class TestPaths:

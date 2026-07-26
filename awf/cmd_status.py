@@ -5,8 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
-from . import paths
-from . import todos
+from . import paths, todos
 
 
 def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]:
@@ -44,8 +43,8 @@ def _read_progress(outbox: Path, todo_id: str) -> dict[str, Any]:
     text = progress_file.read_text(encoding="utf-8")
     task_lines = [line for line in text.splitlines() if line.startswith("## Task")]
     total = len(task_lines)
-    done = sum(1 for l in task_lines if "[x]" in l)
-    failed = sum(1 for l in task_lines if "[!]" in l)
+    done = sum(1 for ln in task_lines if "[x]" in ln)
+    failed = sum(1 for ln in task_lines if "[!]" in ln)
     last = task_lines[-1] if task_lines else ""
 
     return {
