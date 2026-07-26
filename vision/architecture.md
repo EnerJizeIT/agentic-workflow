@@ -2,8 +2,8 @@
 
 > Архитектурный документ для `agent-workflow-ui` — standalone UI plugin к opencode, который даёт агенту инструменты визуального взаимодействия с пользователем: HTML-формы для структурированного ввода и HTML-дашборды для наблюдения за agent workflow.
 
-**Версия:** 1.0
-**Дата:** 2026-07-25
+**Версия:** 1.1
+**Дата:** 2026-07-26
 **Связанные документы:** [Product Vision](agent-ui-plugin.md), [File Bus Protocol](../protocols/communication.md), [awf README](../README.md)
 
 ---
@@ -115,10 +115,10 @@ flowchart TD
 | Ограничение | Обоснование |
 |---|---|
 | MCP transport: stdio | Стандарт для opencode local plugins. HTTP/remote — future. |
-| Python ≥ 3.9 | Совпадает с awf. |
+| Python ≥ 3.10 | Требование зависимости `mcp>=1.0`. Awf-core остаётся ≥3.9 (не зависит от mcp). |
 | Single-user, single-session | Multi-user — far future. |
 | Desktop browser только | Mobile/CLI-only — не target audience. |
-| Runtime dependencies: PyYAML, Jinja2 | Минимум. |
+| Runtime dependencies: PyYAML, Jinja2, mcp | Минимум для typed MCP server. |
 | Browser open через `xdg-open`/`open` | Без native browser bindings. |
 
 ---
@@ -131,41 +131,46 @@ flowchart TD
 agent_workflow_ui/
 ├── __init__.py
 ├── __main__.py                # entry: python -m agent_workflow_ui
-├── server.py                  # MCP server (stdio transport)
-├── http_endpoint.py           # localhost HTTP для приёма submits
+├── server.py                  # MCP server (stdio transport), регистрирует 5 tools
+├── http_endpoint.py           # localhost HTTP для приёма submits + save/delete custom roles
 ├── browser.py                 # xdg-open / open wrapper
-├── config.py                  # env vars, paths
-├── state.py                   # in-memory registry of open forms
+├── config.py                  # env vars, paths (relative to cwd opencode = project root)
+├── state.py                   # in-memory registry of open forms, form_id generation
+├── opencode_config.py         # read opencode models (CLI + SQLite recent), scan/save/delete roles
+├── skill_installer.py         # auto-install SKILL.md to ~/.config/opencode/skills/ on startup (lazy, idempotent)
 ├── tools/                     # MCP tool implementations
 │   ├── forms.py               # open_form, read_submit, cancel_form, list_pending_forms
 │   └── templates.py           # list_templates
 ├── render/                    # Jinja2 rendering layer
-│   ├── engine.py              # Environment setup, filters
+│   ├── engine.py              # Environment setup, ChoiceLoader (project first → defaults)
 │   ├── frontmatter.py         # YAML frontmatter parser
 │   └── default_templates/     # templates shipped with plugin
-│       ├── role-assignment.html.j2
-│       ├── skill-picker.html.j2
-│       ├── model-picker.html.j2
-│       ├── pipeline-picker.html.j2
-│       └── conflict-resolver.html.j2
-├── pyproject.toml             # package metadata (separate dist)
-└── SKILL.md                   # policy для LLM
+│       ├── project-setup.html.j2       # ← MVP composite template (Сценарий 1)
+│       ├── role-assignment.html.j2     # ← reserved for Сценарий 6 wizard
+│       ├── skill-picker.html.j2        # ← reserved for Сценарий 6 wizard
+│       ├── model-picker.html.j2        # ← reserved for Сценарий 6 wizard
+│       ├── pipeline-picker.html.j2     # ← reserved (в MVP pipeline выводится supervisor'ом)
+│       └── conflict-resolver.html.j2   # ← reserved for inline conflict (в MVP заменён на JS confirm)
+├── pyproject.toml             # package metadata (separate dist), post-install hook for SKILL.md
+└── SKILL.md                   # policy для LLM (копируется в ~/.config/opencode/skills/agent-workflow-ui/)
 ```
 
 ### 4.2 Component responsibilities
 
 | Компонент | Ответственность |
 |---|---|
-| `server.py` | MCP protocol handling, tool dispatch, lifecycle. |
-| `http_endpoint.py` | Localhost HTTP server, accepts `/submit/<form_id>` POSTs, writes YAML to `inputs/`. |
+| `server.py` | MCP protocol handling, tool dispatch, lifecycle. Регистрирует ровно 5 tools (без `wait_for_submit` / `open_form_and_wait`). |
+| `http_endpoint.py` | Localhost HTTP server, accepts `/submit/<form_id>` POSTs, writes YAML в `inputs/`, после submit: `_maybe_save_custom_roles()` и `_maybe_delete_custom_roles()` синхронизируют `~/.config/awf/roles/`. |
 | `browser.py` | Cross-platform browser open (`xdg-open` Linux, `open` macOS, fallback error). |
-| `config.py` | Reads env vars at startup, resolves paths against cwd opencode. |
-| `state.py` | In-memory registry: `{form_id, template, opened_at, status}`. File system = source of truth, registry = cache for fast `list_pending_forms`. |
-| `tools/forms.py` | Implements form lifecycle tools. |
-| `tools/templates.py` | Implements template discovery. |
-| `render/engine.py` | Jinja2 environment with autoescape, filters, globals (`submit_url`, `form_id`, `template_name`). |
+| `config.py` | Reads env vars at startup, resolves paths. Defaults: `.agentic/inputs`, `.agentic/templates`, `.agentic/dashboards` (relative to cwd opencode). |
+| `state.py` | In-memory registry: `{form_id, template, opened_at, status}`. **Form ID generator:** `FORM-YYYYMMDDHHMMSS-XXXX` (timestamp + 4 random alphanumeric). |
+| `opencode_config.py` | `read_opencode_models()` (через `opencode models` CLI), `read_recent_models()` (SQLite history), `scan_global_roles()` / `save_custom_role()` / `delete_custom_role()` для `~/.config/awf/roles/`. |
+| `skill_installer.py` | `ensure_skill_installed()` — вызывается из `__main__.py` при каждом старте. Idempotent: копирует bundled SKILL.md в `~/.config/opencode/skills/agent-workflow-ui/` если отсутствует или содержимое устарело. Заменяет хрупкие setuptools post-install hooks для user-locale paths. |
+| `tools/forms.py` | Implements form lifecycle tools. `open_form` scans global roles и injects `custom_supervisor_roles`, `custom_agents` в template context. |
+| `tools/templates.py` | Implements template discovery. Сканирует defaults (в пакете) + project-level (`.agentic/templates/`) если есть. |
+| `render/engine.py` | Jinja2 environment с `ChoiceLoader`: project templates first, defaults second. Strips frontmatter из output. |
 | `render/frontmatter.py` | Parses YAML frontmatter at top of `.html.j2` files. |
-| `render/default_templates/` | Templates shipped with plugin. Project templates (`.agentic/templates/`) override by name. |
+| `render/default_templates/` | Templates shipped with plugin. **MVP primary: `project-setup.html.j2`** (composite). Остальные — reserved для будущих сценариев. |
 
 ### 4.3 Lifecycle
 
@@ -185,24 +190,25 @@ Plugin запускается opencode как subprocess при старте с�
 
 ### 5.1 Полный flow (на примере)
 
-Сценарий: пользователь начинает новый проект. Агент хочет спросить про технологический stack.
+Сценарий: пользователь начинает новый проект. Supervisor открывает composite-форму настройки.
 
-1. **Пользователь** в CLI: «хочу начать новый проект, интернет-магазин».
-2. **Агент** решает спросить через форму, вызывает `open_form(template="role-assignment", data={project_name: "internet-shop", available_roles: ["worker", "reviewer", "tester"]})`.
+1. **Пользователь** в CLI: «хочу настроить проект».
+2. **Агент** вызывает `open_form(template="project-setup", data={available_roles: [...]})`. Plugin автоматически injects `available_models`, `recent_models` (из Jinja2 globals), `custom_supervisor_roles`, `custom_agents` (из `scan_global_roles()`).
 3. **Plugin:**
-   - Генерирует `form_id` (`FORM-001`).
-   - Рендерит Jinja2 template, inject'ит `submit_url=http://localhost:PORT/submit/FORM-001`.
-   - Сохраняет HTML во временный файл.
-   - Открывает browser (`xdg-open`).
-   - Записывает в registry: `{form_id: "FORM-001", status: "pending"}`.
-   - Возвращает агенту: `{form_id: "FORM-001", browser_opened: true, submit_url: "..."}`.
-4. **Агент** в CLI: «Я открыл форму в браузере. Заполни и нажми Submit».
-5. **Пользователь** заполняет форму в браузере, нажимает **Submit**.
-6. **Browser** отправляет стандартный HTML form POST на `http://localhost:PORT/submit/FORM-001`.
-7. **Plugin's HTTP endpoint** ловит POST, сериализует form data в YAML, пишет в `.agentic/inputs/FORM-001.yaml`. Browser показывает страницу «Submitted!».
-8. **Агент** вызывает `read_submit(form_id="FORM-001")`.
-9. **Plugin** читает YAML, возвращает: `{submitted: true, data: {...}, submitted_at: "..."}`.
-10. **Агент** анализирует данные, генерирует `.agentic/config.yaml` + roles + pipelines, сообщает пользователю «готово».
+   - Генерирует `form_id` (`FORM-20260726143022-a1b2`).
+   - Рендерит Jinja2, inject'ит `submit_url=http://127.0.0.1:PORT/submit/FORM-...`.
+   - Сохраняет HTML во временный файл, открывает browser.
+   - Возвращает: `{form_id, browser_opened: true, submit_url}`.
+4. **Агент** в CLI: «Я открыл форму. Заполни и нажми Submit, потом скажи здесь».
+5. **Пользователь** заполняет composite-форму: контекст, supervisor, команда агентов (выбор/inline custom + модель), при необходимости удаляет сохранённые роли через 🗑. Нажимает Submit.
+6. **Browser** отправляет `<form method="POST">` на `/submit/FORM-...`.
+7. **HTTP endpoint:**
+   - Парсит form-urlencoded body.
+   - Пишет YAML в `inputs/FORM-....yaml`.
+   - Вызывает `_maybe_save_custom_roles()` (если были галочки 💾) и `_maybe_delete_custom_roles()` (если были 🗑).
+   - Возвращает HTML ack page.
+8. **Агент** получает от пользователя «done» → `read_submit(form_id)` → `{submitted: true, data: {...}}`.
+9. **Агент** анализирует `data` (включая `team_config` JSON, `spec_files_json` JSON) и **сам** генерирует `.agentic/config.yaml`, `roles/`, `pipelines/`, `.gitignore`. Plugin этого не делает — он agnostic.
 
 ### 5.2 Failure modes
 
@@ -404,24 +410,36 @@ Plugin запускается opencode как subprocess при старте с�
 
 | Directory | Назначение | Gitignored? | Naming |
 |---|---|---|---|
-| `.agentic/inputs/` | Submit файлы (от browser к агенту) | yes | `<form_id>.yaml` |
-| `.agentic/templates/` | Jinja2 templates (project-scoped) | no (committed) | `<name>.html.j2` |
-| `.agentic/dashboards/` | Rendered dashboards (transient) | yes | `<name>.html` |
+| `.agentic/inputs/` | Submit файлы (от browser к агенту). Per-project. | yes | `<form_id>.yaml` |
+| `.agentic/templates/` | Project-level Jinja2 templates. **Agent-driven** — пользователь не кладёт файлы вручную, только агент (LLM) создаёт front+back. | no (committed) | `<name>.html.j2` |
+| `.agentic/dashboards/` | Rendered dashboards (transient, future scope) | yes | `<name>.html` |
+
+**Вне `.agentic/` (глобально, `~/.config/awf/`):**
+
+| Path | Назначение | Содержимое |
+|---|---|---|
+| `~/.config/awf/roles/` | Библиотека кастомных ролей (supervisor variants + custom agents). | `<slug>.md` для agents, `supervisor-<slug>.md` для supervisor variants. |
+| `~/.config/awf/inputs/` | Fallback если `.agentic/inputs/` недоступен (не используется в normal flow). | — |
+
+**Почему роли глобальные, а не per-project:** кастомные роли — переиспользуемый актив пользователя. Создал `ml-engineer.md` в одном проекте → доступен во всех. Это согласовано с UX формой: dropdown «Мои агенты» и «Supervisor variants» показывает глобальные saved roles.
 
 ### 7.2 Submit file format
 
 **Path:** `.agentic/inputs/<form_id>.yaml`
 
 ```yaml
-form_id: FORM-001
-template: role-assignment
-submitted_at: 2026-07-25T14:31:45Z
+form_id: FORM-20260726143022-a1b2
+template: project-setup
+submitted_at: 2026-07-26T14:31:45Z
 data:
-  # Структура зависит от template. Пример для role-assignment:
-  selected_roles:
-    - worker
-    - reviewer
-  project_name: internet-shop
+  # Структура зависит от template. Пример для composite project-setup:
+  context_message: "Интернет-магазин на FastAPI..."
+  spec_files_json: '[{"filename":"tz.md","content":"..."}]'   # JSON-строка, агент парсит сам
+  supervisor_role: ""                                          # "" = default, "supervisor-architect" = saved, "__custom__" = uploaded
+  supervisor_content: "..."                                    # только если __custom__
+  save_supervisor: "true"                                      # только если галочка
+  team_config: '[{"type":"default","agent":"backend-dev","model":"anthropic/claude-3.5"},{"type":"custom","agent":"ml-augmentor","skill_content":"...","model":"...","save":true}]'
+  delete_agent: "old-role,another-role"                        # comma-separated id удалённых ролей
 ```
 
 **Schema:**
@@ -429,6 +447,8 @@ data:
 - `template` (string, required) — какой template использовался.
 - `submitted_at` (ISO 8601 UTC, required) — когда пользователь нажал Submit.
 - `data` (object, required) — payload из формы. Структура определяется HTML form fields.
+  - **JSON-строки** (`team_config`, `spec_files_json`) — backend сохраняет как есть, парсинг — ответственность LLM. Это позволяет backend'у оставаться agnostic к структуре team/spec.
+  - **Исключение:** `team_config` парсится backend'ом **один раз** в `_maybe_save_custom_roles()` чтобы найти custom agents с `save=true`. Это не нарушает agnostic принцип — backend читает только служебные поля, не интерпретирует содержимое.
 
 ### 7.3 Template file format
 
@@ -491,11 +511,17 @@ optional_data_keys:
 
 ### 7.4 Form ID format
 
-`FORM-001`, `FORM-002`, ..., `FORM-NNN` — простой sequence в рамках проекта.
+`FORM-YYYYMMDDHHMMSS-XXXX`, где:
+- `YYYYMMDDHHMMSS` — UTC timestamp в момент `open_form` (readable, человеко-читаемый).
+- `XXXX` — 4 случайных alphanumeric-символа (`[a-z0-9]`) — гарантирует уникальность при нескольких формах в одну секунду и **защищает от коллизий со stale-файлами** в `.agentic/inputs/` от прошлых сессий.
 
-**Генерация:** plugin вычисляет next ID как max существующий NNN + 1 (сканирование `.agentic/inputs/FORM-*.yaml`). Альтернатива: счётчик в `.agentic/inputs/.counter` (TBD при реализации, §11).
+Пример: `FORM-20260726143022-a1b2`.
 
-**Коллизии:** невозможны — single-user, single-session.
+**Реализация:** `state.py:FormRegistry.next_form_id()` использует `time.strftime` + `random.choices(string.ascii_lowercase + string.digits, k=4)`.
+
+**Почему не sequence (`FORM-001`)?** Sequence-based IDs вызывают коллизию: новая сессия начинает счёт с 1 → submit'ит в файл `FORM-001.yaml`, который уже существует от прошлой сессии → stale data. Timestamp + random suffix этой проблемы лишён.
+
+**Коллизии:** практически невозможны. Вероятность повтора 4-char suffix в ту же секунду ≈ 1 / 1.6M.
 
 ---
 
@@ -507,8 +533,9 @@ optional_data_keys:
 
 | Env var | Default | Описание |
 |---|---|---|
-| `AWF_INPUTS_DIR` | `.agentic/inputs` | Куда пишутся submits (relative to cwd opencode = project root). |
-| `AWF_TEMPLATES_DIR` | `.agentic/templates` | Project-level templates. |
+| `AWF_INPUTS_DIR` | `.agentic/inputs` | Куда пишутся submits (relative to cwd opencode = project root). Per-project. |
+| `AWF_TEMPLATES_DIR` | `.agentic/templates` | Project-level templates (**agent-driven** — пользователь не кладёт файлы вручную). |
+| `AWF_DASHBOARDS_DIR` | `.agentic/dashboards` | Rendered dashboards (future scope). |
 | `AWF_HTTP_PORT` | `0` (auto-select) | Порт HTTP endpoint. `0` = автоматически выбрать свободный. |
 | `AWF_OPEN_BROWSER_CMD` | `auto` | `xdg-open` / `open` / `auto` (detect platform). |
 | `AWF_TEMP_DIR` | `/tmp` | Куда писать временные HTML файлы. |
@@ -551,59 +578,69 @@ optional_data_keys:
 
 ## 9. SKILL — policy for LLM
 
-Skill markdown (`SKILL.md`) — инструкция для LLM, когда и как использовать формы. Копируется в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` при установке.
+Skill markdown (`SKILL.md`) — инструкция для LLM, когда и как использовать формы.
+
+**Установка:** `pip install agent-workflow-ui` запускает **post-install hook** (setuptools entry point), который автоматически копирует `SKILL.md` в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md`. Пользователю **не нужно** делать это вручную — после `pip install` plugin готов к работе.
+
+Если каталога `~/.config/opencode/skills/` ещё нет — hook создаёт его. Если файл уже существует — hook перезаписывает (idempotent, поддерживает `pip install --upgrade`).
+
+Реализация: setuptools `entry_points` с `console_scripts` или `data_files` + post-install wrapper. См. §11 (Migration).
 
 ```markdown
 # Agent Workflow UI
 
-Используй формы для структурированного ввода от пользователя. HTML-формы
-эффективнее chat для выбора из множества опций, файловых загрузок, приоритизации.
+Plugin for opencode that gives agent tools for visual interaction with users:
+HTML forms for structured input, dashboards for monitoring. Use forms when chat
+is inefficient — they are a supplement to chat, not a replacement.
 
-## Когда использовать форму
+## When to use a form
 
-Используй `open_form` когда:
-- Нужно выбрать из 4+ опций с описаниями (→ template `decision-tree`).
-- Нужно выбрать роли/скиллы/модели для проекта (→ `role-assignment`, `model-picker`).
-- Нужен file upload (product-vision, custom role .md).
-- Нужно расставить приоритеты (→ `priority-matrix`).
-- Long-running pipeline — показать dashboard (→ `dashboard`).
+Call `open_form` when:
+- **Setting up a new project** with full configuration (→ `project-setup` composite template — MVP primary).
+- Selecting roles/skills/models for a project (→ reserved templates для будущих wizard).
+- A **file upload** is needed (ТЗ, product-vision, custom role .md).
+- Need to choose from 4+ options with descriptions.
+- Prioritizing 10+ items (→ `priority-matrix`, future).
+- Long-running pipeline monitoring (→ dashboard, future).
 
-## Когда НЕ использовать форму (использовать chat)
+## When NOT to use a form (use chat instead)
 
-- Y/N ответ.
-- Выбор из 2-3 коротких вариантов.
-- Уточнения в процессе работы.
-- Tone calibration, обсуждение подхода.
+- Y/N answer.
+- Choice between 2-3 short options.
+- Clarifying questions during work.
+- Tone calibration, approach discussion.
 
-## Pattern использования
+## Pattern использования — NON-BLOCKING
 
-1. Агент решает «нужна форма».
-2. Вызывает `open_form(template=..., data=...)` — получает `form_id`.
-3. Сообщает пользователю в CLI: «Я открыл форму в браузере. Заполни и нажми Submit.»
-4. Продолжает другую работу (форма асинхронна) ИЛИ периодически вызывает
-   `read_submit(form_id)` для проверки.
-5. Когда `read_submit` возвращает `submitted: true` — анализирует `data`, продолжает.
-6. Если данные semantically некорректны — открывает новую форму с pre-filled
-   данными и пояснением ошибки.
-7. Если передумал — `cancel_form(form_id)`.
+**Always use `open_form` (non-blocking). Never use `open_form_and_wait`.**
 
-## Доступные templates
+1. Agent decides a form is needed.
+2. Call `open_form(template="...", data={...})` — opens form, returns `form_id` immediately.
+3. Tell the user in CLI: «I opened a form in your browser. Fill it out, click Submit, then tell me here when you're done.»
+4. Agent is now free — can continue other work or wait.
+5. When the user types something in CLI (e.g., "done"):
+   - Call `read_submit(form_id)` to retrieve the submitted data.
+   - Analyze `data` and proceed.
 
-Список доступных templates: вызови `list_templates`. Базовые:
-- `role-assignment` — multi-select ролей + кастомные.
-- `skill-picker` — multi-select скиллов + кастомные.
-- `model-picker` — dropdown моделей для каждой роли.
-- `pipeline-picker` — radio (simple / full / custom file).
-- `conflict-resolver` — мини-форма (replace / save-as / cancel).
+**Critical:** You MUST tell the user to come back to CLI and notify you after submitting.
+
+## Available templates
+
+Call `list_templates` to see what's available. Primary (MVP):
+- `project-setup` — composite form: context + supervisor + team + models. Models pulled from opencode config automatically.
+
+Reserved for future scenarios:
+- `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`.
+
+Project-level templates in `.agentic/templates/` override defaults by name. **Только агент может создавать templates** (пишет front + описывает back в supervisor.md).
 
 ## Mistakes to avoid
 
-- НЕ открывай форму для Y/N ответов.
-- НЕ открывай >3 форм одновременно (пользователь запутается).
-- НЕ забывай сообщить пользователю в CLI, что форма открыта в браузере.
-- НЕ блокируйся на `read_submit` — он async. Между poll'ами делай полезную работу
-  или жди разумное время (5-15 сек между вызовами).
-- НЕ используй формы как replacement chat — они supplement, не primary.
+- DO NOT use `open_form_and_wait` — it blocks the agent.
+- DO NOT forget to tell the user to come back to CLI after submitting.
+- DO NOT open a form for Y/N questions — use chat.
+- DO NOT open more than 3 forms simultaneously — the user will be confused.
+- DO NOT use forms as a chat replacement — they're a supplement.
 ```
 
 ---
@@ -662,7 +699,11 @@ Fixtures: `tmp_path` для изоляции. Не трогают реальну
 pip install agent-workflow-ui
 ```
 
-После установки — добавить блок в `~/.config/opencode/opencode.json` (см. §8.2). В будущем — CLI helper для авто-настройки.
+После установки:
+- **SKILL.md автоматически копируется** в `~/.config/opencode/skills/agent-workflow-ui/SKILL.md` через post-install hook (setuptools entry point). Дополнительных ручных шагов нет.
+- MCP-конфиг в `~/.config/opencode/opencode.json` пользователь добавляет один раз (или через `awf init` — см. §11.1).
+
+Принцип: **после `pip install` plugin полностью готов к работе** — никаких костылей, ручных копирований, активаций. Это сознательное решение для end-user experience.
 
 ---
 
@@ -672,11 +713,16 @@ pip install agent-workflow-ui
 
 ✅ Включено:
 - MCP server с 5 tools (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`).
-- HTTP endpoint для приёма submits.
-- Jinja2 rendering.
-- 5 базовых templates: `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`.
+- **HTTP endpoint всегда включён** (единственный способ принять submit из браузера).
+- Jinja2 rendering с ChoiceLoader (project → defaults).
+- **1 primary composite template:** `project-setup.html.j2` (context + supervisor + team + models + spec files).
+- **5 reserved templates** для будущих сценариев: `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`. Не используются как primary interface в MVP.
 - Browser open через `xdg-open`/`open`.
-- File bus: `.agentic/inputs/`, `.agentic/templates/`.
+- File bus: `.agentic/inputs/`, `.agentic/templates/` (project), `~/.config/awf/roles/` (global custom roles).
+- **Custom roles persistence**: save/delete через `_maybe_save_custom_roles` / `_maybe_delete_custom_roles` в HTTP endpoint.
+- **Inline conflict resolution** через JS `confirm()` перед перезаписью существующей роли.
+- **Models auto-discovery**: `opencode models` CLI + recent models из SQLite.
+- **Post-install hook** для автоматического копирования `SKILL.md` в opencode skills dir.
 
 ❌ НЕ включено:
 - Dashboards (Сценарий 4 — later).
@@ -707,11 +753,16 @@ pip install agent-workflow-ui
 |---|---|
 | MCP transport: stdio | Стандарт для opencode local plugins (codebase-memory-mcp pattern). HTTP/remote — future. |
 | HTTP endpoint для submits (всегда включён) | Smooth UX: пользователь нажимает Submit → данные автоматически попадают в plugin. Никаких ручных скачиваний файла. |
-| Form ID = sequence (`FORM-001`) | Single-user, single-session — никогда не будет 2 форм в одну секунду. Человеко-читаемый, как `TODO-0001` в awf. |
-| MCP SDK = official `mcp` package | Не пишем свою реализацию JSON-RPC protocol. Стандарт, как `requests` для HTTP. |
+| Form ID = timestamp + random suffix (`FORM-YYYYMMDDHHMMSS-XXXX`) | Sequence-based (`FORM-001`) вызывал коллизии со stale-файлами прошлых сессий. Timestamp + 4-char random — практически impossible collision + human-readable. |
+| MCP SDK = official `mcp` package (требует Python ≥3.10) | Не пишем свою реализацию JSON-RPC. Стандарт, как `requests` для HTTP. |
 | Нативный HTML `<form method="POST">` | Browser сам отправляет данные. Никакого JS injection, никаких YAML serializers в JavaScript. |
 | Jinja2 templates | Стандарт Python-шаблонизатор (Flask, Django, Ansible). Простой синтаксис, мощные возможности. |
-| Templates коммитятся в git | Часть дизайна проекта, как `pipelines/`. Submits — runtime state, gitignored. |
+| **Composite template `project-setup`** вместо 5 отдельных | Меньше кликов, нагляднее. Все секции (context + supervisor + team + models) на одной странице. Pipeline НЕ выбирается явно — выводится supervisor'ом. |
+| **Inline conflict resolution** через JS `confirm()` | Не требует отдельной follow-up мини-формы (как планировалось в vision v0.3). Быстрее, проще UX. |
+| **Agent-driven project templates** | `.agentic/templates/` override только через агента (front+back). Пользователь не кладёт файлы вручную — избегаем «битых» templates. |
+| **Custom roles в `~/.config/awf/roles/`** (глобально, не per-project) | Кастомные роли — переиспользуемый актив. Создал в одном проекте → доступен во всех. |
+| **Post-install hook** для SKILL.md | End-user principle: после `pip install` plugin готов к работе. Никаких ручных копирований. |
+| Templates коммитятся в git (`.agentic/templates/`) | Часть дизайна проекта, как `pipelines/`. Submits — runtime state, gitignored. |
 | Browser open через `xdg-open`/`open` | Без native browser bindings. Используем браузер по умолчанию пользователя. |
 | `awf-mcp` отдельный от `agent-workflow-ui` | Clean separation: UI layer agnostic, awf layer specific. Plugin reusable с другими orchestrators. |
 | Standalone package на PyPI | Не быть заложником текущей версии awf. Plugin работает с любым orchestrator'ом, реализующим file bus. |
@@ -721,16 +772,24 @@ pip install agent-workflow-ui
 
 ## 14. Open questions
 
-Вопросы, которые решатся при кодинге MVP:
+Вопросы из §14 v1.0 — статус после реализации MVP:
 
-1. **MCP SDK конкретная версия** — `mcp>=0.5` или иная. Зафиксируется при первой попытке `pip install`.
-2. **HTTP port auto-selection** — bind на port 0, получить фактический port через socket API.
-3. **In-memory state vs stateless** — держать registry открытых форм в памяти для быстрых ответов, file system как source of truth для recovery.
-4. **Form ID counter storage** — `.agentic/inputs/.counter` файл или max existing NNN + 1?
-5. **Template frontmatter parser** — PyYAML для парсинга YAML блока в начале `.html.j2`.
-6. **HTML escaping** — Jinja2 autoescape включён по умолчанию; для user-provided data — обязательно.
-7. **Error response shape** — стандартный MCP error response с `code`, `message`, `data`.
-8. **Submit acknowledgement page** — после POST browser показывает страницу «Submitted!» с кнопкой «вернуться в CLI». Дизайн страницы — при реализации.
+| # | Вопрос | Статус |
+|---|---|---|
+| 1 | MCP SDK конкретная версия | ✅ Закрыто: `mcp>=1.0`, требует Python ≥3.10. |
+| 2 | HTTP port auto-selection | ✅ Закрыто: bind на port 0, `socket.getsockname()` для actual port. |
+| 3 | In-memory state vs stateless | ✅ Закрыто: in-memory registry (`state.py`) + filesystem как source of truth. |
+| 4 | Form ID counter storage | ✅ Закрыто: не нужен. Timestamp + random suffix, нет counter file. |
+| 5 | Template frontmatter parser | ✅ Закрыто: `render/frontmatter.py` + PyYAML. |
+| 6 | HTML escaping | ✅ Закрыто: Jinja2 autoescape включён. |
+| 7 | Error response shape | ✅ Закрыто: dict с `error` key, HTTP status codes для browser. |
+| 8 | Submit acknowledgement page | ✅ Закрыто: `_ack_page()` в `http_endpoint.py` — HTML страница «Submitted!» с инструкцией «вернуться в CLI». |
+
+**Новые open questions** (после MVP):
+
+1. **Spec files в YAML vs отдельные файлы** — сейчас spec files embedded в `spec_files_json` (строка в YAML). Для больших ТЗ это раздувает submit file. Возможно стоит писать в `~/.config/awf/specs/` отдельно и в YAML только paths.
+2. **Skill picker vs merged concept** — сейчас custom agent = name + skill .md (merged). `skill-picker` template зарезервирован, но может оказаться unused, если merged concept победит.
+3. **Expired forms принимают submit** — `do_POST` проверяет только `submitted` и `cancelled`. Expired-формы принимают submit (мягкий TTL). Фиксить или оставить как feature?
 
 ---
 

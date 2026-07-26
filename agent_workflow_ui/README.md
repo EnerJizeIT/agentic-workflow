@@ -48,17 +48,14 @@ python -m agent_workflow_ui
 
 See [architecture.md](../vision/architecture.md) §6 for full reference.
 
-## SKILL.md setup (for opencode)
+## SKILL.md setup
 
-After installing the plugin, copy SKILL.md to opencode's skills directory so
-the supervisor agent knows when and how to use forms:
+**Automatic.** On first plugin start (every opencode session), the plugin copies
+its bundled `SKILL.md` to `~/.config/opencode/skills/agent-workflow-ui/SKILL.md`.
+The copy is idempotent — overwrites only if the bundled version differs (so
+`pip install --upgrade` refreshes the skill automatically).
 
-```bash
-mkdir -p ~/.config/opencode/skills/agent-workflow-ui
-cp agent_workflow_ui/SKILL.md ~/.config/opencode/skills/agent-workflow-ui/SKILL.md
-```
-
-Opencode will automatically load the skill at session start.
+No manual steps required after `pip install agent-workflow-ui`.
 
 ## Coverage
 

@@ -1,6 +1,6 @@
 # BACKLOG
 
-> План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture v1.0](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
+> План развития. Основан на [Product Vision v0.4](vision/agent-ui-plugin.md) и [Architecture v1.1](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
 ---
 
@@ -10,19 +10,22 @@
 
 - Wave 4: миграция bash→Python завершена. `lib/*.sh` удалены, `awf/` Python package = 22 модуля.
 - `bin/awf` — thin wrapper через `os.path.realpath`. Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
-- 163 теста (11 E2E + 152 unit), CI на Python 3.9-3.12.
+- 163 теста (11 E2E + 152 unit), CI на Python 3.10-3.12.
 - README на русском, LICENSE, GitHub Actions.
 - Vision и Architecture для `agent-workflow-ui` plugin'а зафиксированы.
 
 ### agent-workflow-ui v0.1.0 (MVP)
 
 - 5 MCP tools: `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`.
-- HTTP endpoint для form submits (атомарные YAML-записи).
-- Jinja2 rendering с YAML frontmatter.
-- 5 default templates: `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`.
+- HTTP endpoint для form submits (атомарные YAML-записи) — **всегда включён**, не опциональный.
+- Jinja2 rendering с YAML frontmatter + ChoiceLoader (project → defaults).
+- **Composite template `project-setup`** (primary для MVP): context + ТЗ files + supervisor + team + models. Остальные 5 templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`) зарезервированы для будущих сценариев.
+- Custom roles persistence (`~/.config/awf/roles/`): save/delete через HTTP endpoint.
+- Inline conflict resolution через JS `confirm()` перед перезаписью роли.
+- **Lazy skill install** — SKILL.md автоматически копируется в `~/.config/opencode/skills/` при первом запуске.
 - Cross-platform browser open.
-- 89 тестов, 99% coverage.
-- SKILL.md для LLM policy.
+- 104 теста, 79% coverage.
+- SKILL.md с инструкцией для LLM (non-blocking pattern, agent-driven templates).
 - `awf init` — prompt для plugin install.
 
 ### Прошлые волны (хронология)
@@ -39,7 +42,7 @@
 
 ## ✅ Done: MVP — agent-workflow-ui plugin
 
-**Goal:** реализовать [Сценарий 1 — Конструктор конфигурации](vision/agent-ui-plugin.md#сценарий-1-mvp--priority-1--конструктор-конфигурации) из Product Vision. Пользователь начинает новый проект, открывается HTML-форма с выбором ролей/скиллов/моделей/pipeline, submit → сгенерированная конфигурация.
+**Goal:** реализовать [Сценарий 1 — Конструктор конфигурации](vision/agent-ui-plugin.md) из Product Vision. Пользователь начинает новый проект → открывается composite HTML-форма `project-setup` → submit → supervisor генерирует `.agentic/config.yaml` + roles.
 
 **Scope:** [`vision/architecture.md`](vision/architecture.md) §12.1. Вне scope — dashboards, runtime forms, pipeline-declared forms, `awf-mcp`.
 
@@ -48,10 +51,10 @@
 Создать структуру `agent_workflow_ui/` как отдельный Python package внутри monorepo.
 
 - [x] **1.1** Создать `agent_workflow_ui/` package с `__init__.py`, `__main__.py`, `pyproject.toml` (separate dist).
-- [x] **1.2** Зависимости: `mcp` (official SDK), `jinja2>=3.1`, `pyyaml>=6.0`. Python ≥3.9.
+- [x] **1.2** Зависимости: `mcp>=1.0`, `jinja2>=3.1`, `pyyaml>=6.0`. Python ≥3.10 (требование mcp dep).
 - [x] **1.3** `config.py` — чтение env vars (`AWF_INPUTS_DIR`, `AWF_TEMPLATES_DIR`, `AWF_HTTP_PORT`, ...), path resolution, idempotent directory creation.
-- [x] **1.4** `state.py` — in-memory registry открытых форм (form_id → metadata).
-- [x] **1.5** Запуск plugin'а локально: `python -m agent_workflow_ui` запускается без ошибок, логирует startup.
+- [x] **1.4** `state.py` — in-memory registry открытых форм (form_id → metadata). Form ID: `FORM-YYYYMMDDHHMMSS-XXXX` (timestamp + random).
+- [x] **1.5** Запуск plugin'а локально: `python -m agent_workflow_ui` запускается без ошибок, логирует startup + lazy skill install.
 - [x] **1.6** Workspace setup: root `pyproject.toml` без пакетов, dev-install через `pip install -e ./awf -e ./agent_workflow_ui`.
 
 **Verify:** `python -m agent_workflow_ui --help` работает, `pip install -e ./agent_workflow_ui` succeeds.

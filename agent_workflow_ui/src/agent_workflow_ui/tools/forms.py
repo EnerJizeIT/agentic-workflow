@@ -50,6 +50,10 @@ async def open_form(
     # Scan global custom roles for supervisor variants + custom agents
     supervisor_variants, custom_agents = scan_global_roles()
 
+    # Existing slugs for client-side conflict detection (JS confirm before overwrite)
+    existing_supervisor_slugs = [sv["id"] for sv in supervisor_variants]
+    existing_agent_slugs = [ca["id"] for ca in custom_agents]
+
     try:
         rendered = render_template(env, template, {
             **data,
@@ -57,6 +61,8 @@ async def open_form(
             "submit_url": submit_url,
             "custom_supervisor_roles": supervisor_variants,
             "custom_agents": custom_agents,
+            "existing_supervisor_slugs": existing_supervisor_slugs,
+            "existing_agent_slugs": existing_agent_slugs,
         })
     except TemplateNotFound:
         return {
@@ -228,95 +234,4 @@ async def list_pending_forms() -> dict[str, Any]:
     return {
         "pending": result,
         "count": len(result),
-    }
-
-
-async def wait_for_submit(
-    form_id: str,
-    timeout_seconds: int = 300,
-    poll_interval_seconds: int = 5,
-) -> dict[str, Any]:
-    """Wait for the user to submit the form. Blocks until submit, cancel, or timeout.
-
-    Use this instead of manually polling read_submit in a loop. The agent
-    gets a single response when the form is submitted (or after timeout).
-
-    Args:
-        form_id: Form ID returned by open_form.
-        timeout_seconds: Max wait time in seconds. Default 300 (5 min).
-        poll_interval_seconds: How often to check. Default 5 sec.
-
-    Returns:
-        Same shape as read_submit on success/timeout. Returns immediately
-        if form is already submitted, cancelled, or unknown.
-    """
-    import asyncio
-    import time
-
-    deadline = time.monotonic() + timeout_seconds
-
-    while time.monotonic() < deadline:
-        result = await read_submit(form_id)
-        status = result.get("status")
-        # Return immediately if form reached a terminal state
-        if result.get("submitted"):
-            return result
-        if status in ("cancelled", "expired", "unknown"):
-            return result
-        await asyncio.sleep(poll_interval_seconds)
-
-    return {
-        "submitted": False,
-        "form_id": form_id,
-        "status": "timeout",
-        "error": f"No submit within {timeout_seconds}s. Form may still be pending — call read_submit later.",
-    }
-
-
-async def open_form_and_wait(
-    template: str,
-    data: dict[str, Any] | None = None,
-    timeout_seconds: int = 300,
-    poll_interval_seconds: int = 5,
-) -> dict[str, Any]:
-    """Open a form in the browser AND wait for the user to submit it.
-
-    This is the SIMPLEST way to ask the user a question via form. One call,
-    one result. Combines open_form + wait_for_submit internally.
-
-    Use this when you need structured input from the user and don't need
-    to do other work while waiting.
-
-    Args:
-        template: Template name (e.g., "role-assignment").
-        data: Variables to render in the template.
-        timeout_seconds: Max wait time. Default 300 (5 min).
-        poll_interval_seconds: Poll frequency. Default 5 sec.
-
-    Returns:
-        On success: {form_id, browser_opened, submitted: true, data: {...}, ...}
-        On browser failure: {form_id, browser_opened: false, error: "..."}
-        On timeout: {form_id, submitted: false, status: "timeout", ...}
-    """
-    open_result = await open_form(template=template, data=data)
-
-    # If browser didn't open, don't wait — return error immediately
-    if not open_result.get("browser_opened"):
-        return {
-            **open_result,
-            "submitted": False,
-            "status": "browser_failed",
-        }
-
-    form_id = open_result["form_id"]
-    wait_result = await wait_for_submit(
-        form_id=form_id,
-        timeout_seconds=timeout_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-    )
-
-    # Merge: keep form_id, submit_url from open; add submitted/data from wait
-    return {
-        **open_result,
-        **wait_result,
     }

@@ -100,7 +100,7 @@ CLI остаётся **primary medium** для dialogue, стратегичес�
 2. **HTML — точечный инструмент.** Не replacement CLI, а supplement там, где chat ломается.
 3. **Форма — это contract.** И supervisor, и пользователь знают схему: что ожидается, какие поля, какой формат ответа.
 4. **Async submit.** Form submit создаёт signal (`.agentic/inputs/<form_id>.yaml`), supervisor читает когда готов. Pipeline может ожидать signal — supervisor (LLM) не расходует токены в ожидании.
-5. **Шаблоны в проекте.** `.agentic/templates/`. Коммитятся в git, versioned, переиспользуются. Supervisor должен переиспользовать существующие шаблоны; если подходящего нет — генерирует новый и добавляет в базу.
+5. **Шаблоны — agent-driven.** Plugin ships с default templates (внутри пакета). Project-level templates в `.agentic/templates/` могут override'нуть default по имени, **но пользователь не кладёт их туда вручную** — только агент (LLM) может создать template: пишет front (`.html.j2`) и описывает в SKILL.md / supervisor.md как интерпретировать submit (back). Это гарантирует, что каждый custom template имеет полный цикл front+back, а не «битый» HTML без обработчика.
 6. **Plugin реализован как MCP server + Skill markdown.** MCP даёт typed tools (агент вызывает `open_form(...)`, не bash-команду). Skill markdown даёт LLM-readable policy (когда/как использовать). Awf не меняется.
 7. **Plugin agnostic.** Plugin ядро не знает про `.agentic/` напрямую — связка с awf через `supervisor.md` инструкции и через MCP tools, которые агент вызывает осознанно.
 8. **Pipeline-declared forms preferred.** Статичные формы (объявленные в YAML pipeline) — preferred, понятные, дешёвые. Ad-hoc динамические формы (supervisor решает в моменте) — важная power feature, но не основной режим.
@@ -108,13 +108,13 @@ CLI остаётся **primary medium** для dialogue, стратегичес�
 ### Ограничения (что НЕ делаем)
 
 1. **Не SPA.** Никакого React/Vue/сборщиков. Static HTML + minimal JS.
-2. **Не persistent HTTP server (по умолчанию).** File-based I/O. Опциональный minimal localhost HTTP — для auto-submit, но не default.
-3. **Не WebSocket.** Дашборд обновляется через meta-refresh.
-4. **Не mobile-first.** Desktop browser.
-5. **Не real-time collaboration.** Один пользователь — одна сессия. Multi-user — далёкий backlog.
-6. **Не для junior.** Требует CLI/opencode компетенций.
-7. **Не заменяет CLI.** Если форма не может — fallback на chat.
-8. **Не делает architectural решений за пользователя.** Plugin предоставляет interface, не заменяет judgement.
+2. **Не WebSocket.** Дашборд обновляется через meta-refresh.
+3. **Не mobile-first.** Desktop browser.
+4. **Не real-time collaboration.** Один пользователь — одна сессия. Multi-user — далёкий backlog.
+5. **Не для junior.** Требует CLI/opencode компетенций.
+6. **Не заменяет CLI.** Если форма не может — fallback на chat.
+7. **Не делает architectural решений за пользователя.** Plugin предоставляет interface, не заменяет judgement.
+8. **Не поддерживает Python < 3.10.** Зависимость `mcp>=1.0` требует Python ≥3.10. Это сознательное ограничение, не баг.
 
 ## 6. Пользовательские сценарии
 
@@ -127,23 +127,34 @@ CLI остаётся **primary medium** для dialogue, стратегичес�
 **Шаги:**
 1. Пользователь в CLI: «хочу начать новый проект» (или «хочу перенастроить конфигурацию»).
 2. Supervisor: «Я открыл конструктор конфигурации в браузере».
-3. В браузере — форма:
-   - **Роли:** multi-select из дефолтных (`worker`, `reviewer`, `tester`) + file picker для загрузки своего `.md`.
-   - **Скиллы:** multi-select из библиотеки дефолтных (`backend-developer`, `frontend-developer`, …) + file picker.
-   - **Модели:** dropdown для каждой выбранной роли (список берётся из opencode).
-   - **Pipeline:** выбор из шаблонов (`simple`, `full`) или загрузка custom YAML.
-4. **Конфликт-резолюция (если применимо):** если пользователь загрузил файл с именем, совпадающим с дефолтным, MCP server открывает follow-up мини-форму:
-   - «Заменить дефолтный `worker.md`» (overwrites default).
-   - «Сохранить как `worker-custom.md`» (новая роль, default сохранён).
-   - «Отмена».
+3. В браузере — **composite-форма `project-setup`** (одна страница, три секции):
+   - **Контекст:** textarea для описания проекта + file picker для прикрепления ТЗ (`.md`/`.txt`, можно несколько файлов — содержимое отправляется агенту).
+   - **Supervisor:** dropdown (Default + сохранённые кастомные варианты `.md`), опционально загрузка своего `.md` с галочкой «сохранить для будущих сессий». Инструкции **дополняют** default supervisor.md, не заменяют.
+   - **Команда агентов:** добавление строк `[agent + model]`. Agent = выбор из дефолтных ролей или из сохранённых кастомных, либо inline-создание своего (имя + загрузка `.md` скилла + галочка «сохранить» 💾). Model = dropdown из opencode, сгруппированный: `<optgroup label="Recent">` (из истории сессий) + `<optgroup label="All models">` (полный список).
+   - **Pipeline:** явно НЕ выбирается. Определяется **гибко через состав команды** — supervisor (LLM) выводит структуру pipeline из выбранного пула агентов и контекста проекта.
+4. **Конфликт-резолюция (inline):** если пользователь сохраняет кастомную роль (agent или supervisor variant) с именем, совпадающим с уже существующим файлом в `~/.config/awf/roles/`, форма показывает JS `confirm()` диалог **до отправки submit**: «Перезаписать существующую роль X?». Подтверждение → перезапись; отмена → пользователь меняет имя или отписывается от сохранения. Никаких отдельных мини-форм.
 5. Пользователь заполняет основную форму, нажимает **Submit**.
-6. Supervisor: читает submit, генерирует `.agentic/config.yaml` + `roles/` + `pipelines/` + `.gitignore`. В CLI: «Готово. Конфигурация сохранена. Что дальше?».
+6. **Plugin** только принимает submit и сохраняет кастомные `.md` (если были галочки «сохранить») в `~/.config/awf/roles/`. **Генерация `.agentic/config.yaml`, директорий `roles/`, `pipelines/`, `.gitignore` — ответственность supervisor (LLM)**, не plugin'а. Plugin остаётся agnostic к internals awf. Supervisor в CLI: «Готово. Конфигурация сохранена. Что дальше?».
 
 **Ценность:** снижает cognitive load при setup; ошибка в конфигурации (забытая роль, неверная модель) исключена — форма валидирует. Кастомные роли/скиллы подгружаются без ручного копирования файлов.
 
-**Сложность:** средняя (одна комплексная форма + опциональная follow-up для конфликтов).
+**Сложность:** средняя (одна composite-форма + inline conflict resolution через JS confirm).
 
-**Связанные шаблоны:** `role-assignment.html.j2`, `skill-picker.html.j2`, `model-picker.html.j2`, `pipeline-picker.html.j2`, `conflict-resolver.html.j2` (мини-форма).
+**Связанный шаблон:** `project-setup.html.j2` (composite). Остальные отдельные templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`) зарезервированы для будущих сценариев (wizard в Сценарии 6, ad-hoc forms в Сценарии 2-3).
+
+---
+
+### Сценарий 1.1 · MVP features (вне базового сценария, реализовано)
+
+В ходе итеративной разработки composite-формы добавлены следующие features, не предусмотренные первоначальным сценарием, но доказавшие полезность:
+
+| Feature | Где | Зачем |
+|---|---|---|
+| **Spec files upload** (ТЗ) | Секция «Контекст», file picker multiple `.md`/`.txt` | Передать supervisor'у дополнительный контекст: product vision, бэклог, требования. Содержимое идёт в submit JSON, агент парсит сам. |
+| **Recent models grouping** | Dropdown моделей, `<optgroup label="Recent">` сверху | Сужает выбор: последние использованные модели (из opencode SQLite history) — обычно то, что нужно. Полный список ниже под `<optgroup label="All models">`. |
+| **Inline delete 🗑** | В dropdown сохранённых ролей/supervisor variants | Управление библиотекой кастомных ролей прямо из формы — без файлового менеджера. Confirm → при submit роль удаляется с диска. |
+| **Supervisor variants как отдельный concept** | Секция Supervisor, dropdown с custom `.md` | Default supervisor.md — universal. Custom variants (`supervisor-architect.md`, `supervisor-ml-engineer.md`) — ДОПОЛНЯЮТ default, узкоспециализированные инструкции. Хранятся в `~/.config/awf/roles/supervisor-*.md`. |
+| **Save checkbox 💾 для custom agents** | Inline custom agent row, default checked | Решение пользователя — сохранить новый агент в библиотеку для будущих проектов, или использовать только в этой сессии. Чекбокс виден прямо в строке команды. |
 
 ---
 
@@ -253,9 +264,11 @@ CLI остаётся **primary medium** для dialogue, стратегичес�
 
 **MVP = Сценарий 1 (Конструктор конфигурации awf).**
 
+**MVP реализован как одна composite-форма `project-setup`** (а не 5 отдельных форм). Все секции (контекст, supervisor, команда, модели) на одной странице — меньше кликов, нагляднее. Pipeline НЕ выбирается явно — выводится supervisor'ом из состава команды. Отдельные templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`) зарезервированы для будущих сценариев (Сценарий 6 wizard, Сценарий 2 ad-hoc), в MVP не используются как primary interface.
+
 ### Почему Сценарий 1 — первый
 
-1. **Дешёвый по сложности.** Одна статичная форма, без итеративного state.
+1. **Дешёвый по сложности.** Одна composite-форма, без итеративного state.
 2. **Самый видимый value.** Пользователь сразу видит «агент мне помог настроить проект» — яркий demo.
 3. **Демонстрирует plugin concept без runtime интеграции.** Не требует работы с pipeline execution, signal polling, etc.
 4. **Решает реальную боль.** Сейчас конфигурация делается текстово в `awf init` — это первая точка контакта пользователя с awf, и она может быть лучше.
@@ -353,7 +366,7 @@ flowchart TD
 
 ## 9. Принятые решения
 
-Все принципиальные вопросы закрыты 2026-07-25 после совместного обсуждения. Решения зафиксированы как **контракт vision v0.2** — пересмотру не подлежат без явного bug-ridden обоснования.
+Все принципиальные вопросы закрыты 2026-07-25 после совместного обсуждения. Решения зафиксированы как **контракт vision v0.4** — пересмотру не подлежат без явного bug-ridden обоснования.
 
 ### 9.1 Идентичность product'а
 
@@ -388,7 +401,7 @@ agentic-workflow/                 # monorepo
 
 ### 9.2 Data flow
 
-**Q3 · Data return mechanism:** **file-based default**. Submit form → MCP server writes `.agentic/inputs/<form_id>.yaml`. Опциональный minimal localhost HTTP server для auto-submit (form JS POST → server → file) — будет рассмотрен в архитектуре, **не обязателен для MVP**.
+**Q3 · Data return mechanism:** **local HTTP endpoint (всегда включён).** Browser отправляет стандартный `<form method="POST">` на `http://127.0.0.1:PORT/submit/<form_id>` → plugin пишет `.agentic/inputs/<form_id>.yaml`. Это **единственный способ** принять submit — без HTTP браузер просто не сможет отправить данные. Опциональности нет: HTTP endpoint — core архитектура, не feature.
 
 **Q4 · Form validation — три уровня, разная ответственность:**
 
@@ -412,7 +425,7 @@ agentic-workflow/                 # monorepo
 
 **Q9 · Dashboard refresh:** **от простого к сложному.** MVP — meta-refresh 10 сек. JS polling (smooth, но сложнее) — backlog. SSE (real-time) — far backlog.
 
-**Q10 · Form ID:** **timestamp-based, человеко-читаемый.** Формат: `FORM-YYYYMMDDHHMMSS-NNN`, где NNN — счётчик внутри секунды (если несколько форм создано одновременно). Например: `FORM-20260725143022-001`. Не UUID — readability важнее microsecond-precision.
+**Q10 · Form ID:** **timestamp-based, человеко-читаемый.** Формат: `FORM-YYYYMMDDHHMMSS-XXXX`, где XXXX — 4 случайных alphanumeric-символа (гарантия уникальности при нескольких формах в одну секунду и против коллизий со stale-файлами от прошлых сессий). Не UUID — readability важнее. Sequence-based IDs (`FORM-001`) **не используется** — вызывают коллизию со старыми submits в `inputs/`.
 
 **Q11 · Pipeline не держит waiter-process.** Submit — асинхронное событие. Supervisor реагирует на submit как **hook**: когда submit-файл появляется → supervisor (через MCP tool `read_submit(form_id)`) его видит и продолжает работу. **Никакого фонового подпроцесса ожидания.** Если pipeline дошёл до `request_input` стадии и submit'а ещё нет — pipeline останавливается (как при любой supervisor-стадии), ожидает ручного continue или submit.
 
@@ -441,23 +454,26 @@ agentic-workflow/                 # monorepo
 
 ## 10. Дальнейшие шаги
 
-1. ✅ ~~Согласовать vision~~ — выполнено, v0.2 зафиксирована.
-2. **Переработать `BACKLOG.md`** под новый vision. Старые Tasks 1-7 (HTML dashboard, HTTP API, bootstrap, real-time) — deprecated, перепрофилировать под новые 6 сценариев.
-3. **Проработать архитектуру** (отдельный документ `vision/architecture.md`): MCP server design (`awf/agent_workflow_ui/`), Jinja2 template rendering, form lifecycle (open → submit → MCP hook), file-based I/O, три validation layers.
-4. **Проработать MVP** (Сценарий 1 — Конструктор конфигурации): детали 4 templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`), MCP tool signatures, skill markdown draft, integration с `awf init`.
-5. **Реализовать MVP.** Получить feedback. Итерировать.
-6. **Расширять по приоритетам** — Сценарии 2, 3, 4, 5, 6.
+1. ✅ ~~Согласовать vision~~ — выполнено.
+2. ✅ ~~Проработать архитектуру~~ — выполнено, [architecture.md](architecture.md) v1.1.
+3. ✅ ~~Проработать MVP~~ — выполнено. Реализован как **composite template `project-setup`** (вместо 4 отдельных). MCP tool signatures зафиксированы. SKILL.md обновлён.
+4. ✅ ~~Реализовать MVP~~ — выполнено v0.1.0: 5 MCP tools, HTTP endpoint, custom roles persistence, lazy skill install, 104 теста, 79% coverage.
+5. ✅ ~~Переработать `BACKLOG.md`~~ — BACKLOG.md синхронизирован с vision.
+6. **Расширять по приоритетам** — Сценарии 2, 3, 4, 5, 6 (см. соответствующие секции).
 
 ---
 
-**Версия документа:** v0.3 (standalone product framing, monorepo with separate top-level package)
-**Дата последнего обновления:** 2026-07-25
+**Версия документа:** v0.4 (синхронизация с реализацией MVP — composite template, agent-driven templates, HTTP всегда включён, Python ≥3.10)
+**Дата последнего обновления:** 2026-07-26
 **Зафиксированные принципы:**
 - **Standalone UI product**, не часть awf. Awf — default orchestrator, не единственный.
-- CLI primary, async submit (hook model, без waiter-process).
-- Templates в проекте (`.agentic/templates/`), без versioning, без composition.
-- MCP-based plugin (`agent-workflow-ui`), Jinja2 template engine, timestamp-based form IDs.
+- CLI primary, async submit (hook model, без waiter-process). HTTP endpoint **всегда включён** — это единственный способ принять submit из браузера.
+- **Agent-driven templates.** Plugin ships с defaults; project-level override в `.agentic/templates/` создаётся только агентом (front+back), не пользователем.
+- **MVP = composite template `project-setup`.** Все секции на одной странице. Pipeline НЕ выбирается явно — выводится supervisor'ом из состава команды. Отдельные templates зарезервированы для будущих сценариев.
+- MCP-based plugin (`agent-workflow-ui`), Jinja2 template engine, **timestamp-based form IDs** (`FORM-YYYYMMDDHHMMSS-XXXX`).
 - Plugin agnostic через MCP-параметр `inputs_dir`, отдельный `awf-mcp` для state queries.
-- **Расположение:** `/agent_workflow_ui/` в monorepo, отдельный package на PyPI.
-- Conflict resolution при загрузке кастомных ролей/скиллов (replace / save-as / cancel).
-**Что осталось для архитектуры:** точные MCP tool signatures, internal module structure, transport, конкретные Jinja2 templates для MVP.
+- **Расположение:** `/agent_workflow_ui/` в monorepo, отдельный package на PyPI. **Python ≥3.10** (mcp dep).
+- **Inline conflict resolution** через JS confirm() диалог перед перезаписью существующей роли.
+- **Plugin НЕ генерирует** файлы конфигурации проекта (`.agentic/config.yaml`, roles/, pipelines/). Это работа supervisor (LLM). Plugin только хранит custom .md в `~/.config/awf/roles/`.
+- **MVP features**: spec files upload, recent models grouping, inline delete 🗑 для ролей, supervisor variants, save checkbox 💾.
+**Что осталось для архитектуры:** точные MCP tool signatures, internal module structure, transport, конкретные Jinja2 templates.

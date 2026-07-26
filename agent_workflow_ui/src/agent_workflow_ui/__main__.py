@@ -10,6 +10,7 @@ from .http_endpoint import start_http_server
 from .opencode_config import read_opencode_models, read_recent_models
 from .render.engine import create_env
 from .server import create_server
+from .skill_installer import ensure_skill_installed
 from .state import get_registry, set_config, set_http_port, set_jinja_env
 
 
@@ -23,6 +24,10 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stderr,
     )
+
+    # Lazy skill install: copy SKILL.md to ~/.config/opencode/skills/agent-workflow-ui/
+    # Idempotent — overwrites if bundled version differs. No-op if already current.
+    ensure_skill_installed()
 
     config = load()
     ensure_directories(config)

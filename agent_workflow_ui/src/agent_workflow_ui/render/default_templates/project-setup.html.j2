@@ -429,6 +429,22 @@ optional_data_keys: []
         {% endfor %}
       ];
 
+      var existingSupervisorSlugs = [
+        {% for s in (existing_supervisor_slugs or []) %}
+        "{{ s }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
+      var existingAgentSlugs = [
+        {% for s in (existing_agent_slugs or []) %}
+        "{{ s }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
+      function slugify(name) {
+        return (name || '').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unnamed';
+      }
+
       var specFiles = [];
       var rowIdxCounter = 0;
 
@@ -697,7 +713,50 @@ optional_data_keys: []
 
       // === Submit ===
 
-      document.getElementById('setup-form').addEventListener('submit', function () {
+      document.getElementById('setup-form').addEventListener('submit', function (e) {
+        // Conflict detection: confirm before overwriting existing custom roles
+        var conflicts = [];
+
+        // Check custom agents with save=true
+        document.querySelectorAll('#team-rows .team-row').forEach(function (row) {
+          var sel = row.querySelector('.agent-select');
+          var nameInput = row.querySelector('.agent-name');
+          var saveCb = row.querySelector('.save-agent-cb');
+
+          if (nameInput && saveCb && saveCb.checked) {
+            var name = nameInput.value.trim();
+            if (name) {
+              var slug = slugify(name);
+              if (existingAgentSlugs.indexOf(slug) !== -1) {
+                conflicts.push('Агент "' + name + '" (→ ' + slug + '.md)');
+              }
+            }
+          }
+        });
+
+        // Check custom supervisor with save_supervisor=true
+        var svSelect = document.getElementById('supervisor-select');
+        var svContent = document.getElementById('sv-content');
+        var saveSv = document.querySelector('input[name="save_supervisor"]');
+        if (svContent && svContent.value.trim() && saveSv && saveSv.checked) {
+          var firstLine = svContent.value.trim().split('\n')[0];
+          var svName = firstLine.replace(/^#+\s*/, '').trim() || 'custom';
+          var svSlug = 'supervisor-' + slugify(svName);
+          if (existingSupervisorSlugs.indexOf(svSlug) !== -1) {
+            conflicts.push('Supervisor "' + svName + '" (→ ' + svSlug + '.md)');
+          }
+        }
+
+        if (conflicts.length > 0) {
+          var msg = 'Следующие роли уже существуют:\n\n' + conflicts.join('\n') +
+            '\n\nПерезаписать? Старое содержимое будет утрачено.';
+          if (!confirm(msg)) {
+            e.preventDefault();
+            return;
+          }
+        }
+
+        // Build team_config JSON
         var team = [];
         document.querySelectorAll('#team-rows .team-row').forEach(function (row) {
           var sel = row.querySelector('.agent-select');
