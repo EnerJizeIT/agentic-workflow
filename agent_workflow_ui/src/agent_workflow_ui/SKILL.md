@@ -28,16 +28,21 @@ Call `open_form` when:
 
 ## Usage pattern
 
-1. Agent decides a form is needed.
-2. Call `open_form(template="...", data={...})` — receives `form_id`.
-3. Tell the user in CLI: "I opened a form in your browser. Fill it out and click Submit."
-4. Call `wait_for_submit(form_id)` — this blocks until the user submits (up to 5 min).
-5. When `wait_for_submit` returns `submitted: true`, analyze `data` and proceed.
-6. If data is semantically invalid, open a new form with pre-filled data and error context.
-7. If the user changed their mind, call `cancel_form(form_id)`.
+**SIMPLEST (recommended for most cases):**
 
-**PREFERRED: Use `wait_for_submit`** after `open_form`. It handles polling internally
-and returns as soon as the user submits. Don't manually loop with `read_submit`.
+1. Agent decides a form is needed.
+2. Call `open_form_and_wait(template="...", data={...})` — opens form AND waits for submit.
+3. Tell the user in CLI: "I opened a form in your browser. Fill it out and click Submit."
+4. Tool returns with `submitted: true` + `data` when the user submits.
+5. Analyze `data` and proceed.
+
+One call, one result. Don't overthink it.
+
+**ADVANCED (if you need to do other work while waiting):**
+
+1. `open_form(template="...", data={...})` — opens form, returns form_id immediately.
+2. Do other work, or call `wait_for_submit(form_id)` to block until submit.
+3. Or poll `read_submit(form_id)` periodically.
 
 ## Available templates
 
@@ -58,7 +63,8 @@ Project-level templates in `.agentic/templates/` override defaults by name.
 - **DO NOT** open a form for Y/N questions — use chat.
 - **DO NOT** open more than 3 forms simultaneously — the user will be confused.
 - **DO NOT** forget to tell the user in CLI that a form is open in their browser.
-- **DO NOT** manually poll `read_submit` in a loop — use `wait_for_submit` instead.
+- **DO NOT** use `open_form` alone without a plan to check the result — use `open_form_and_wait` instead (one call, handles everything).
+- **DO NOT** manually poll `read_submit` in a loop — use `wait_for_submit` or `open_form_and_wait`.
 - **DO NOT** use forms as a chat replacement — they're a supplement.
 - **DO NOT** assume the user will submit quickly — they may take minutes. `wait_for_submit` handles this.
 

@@ -70,6 +70,7 @@ def test_all_tools_registered():
     tool_names = {t.name for t in tools}
     expected = {
         "open_form",
+        "open_form_and_wait",
         "read_submit",
         "wait_for_submit",
         "cancel_form",

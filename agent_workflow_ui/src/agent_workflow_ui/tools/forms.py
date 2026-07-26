@@ -265,3 +265,52 @@ async def wait_for_submit(
         "status": "timeout",
         "error": f"No submit within {timeout_seconds}s. Form may still be pending — call read_submit later.",
     }
+
+
+async def open_form_and_wait(
+    template: str,
+    data: dict[str, Any] | None = None,
+    timeout_seconds: int = 300,
+    poll_interval_seconds: int = 5,
+) -> dict[str, Any]:
+    """Open a form in the browser AND wait for the user to submit it.
+
+    This is the SIMPLEST way to ask the user a question via form. One call,
+    one result. Combines open_form + wait_for_submit internally.
+
+    Use this when you need structured input from the user and don't need
+    to do other work while waiting.
+
+    Args:
+        template: Template name (e.g., "role-assignment").
+        data: Variables to render in the template.
+        timeout_seconds: Max wait time. Default 300 (5 min).
+        poll_interval_seconds: Poll frequency. Default 5 sec.
+
+    Returns:
+        On success: {form_id, browser_opened, submitted: true, data: {...}, ...}
+        On browser failure: {form_id, browser_opened: false, error: "..."}
+        On timeout: {form_id, submitted: false, status: "timeout", ...}
+    """
+    open_result = await open_form(template=template, data=data)
+
+    # If browser didn't open, don't wait — return error immediately
+    if not open_result.get("browser_opened"):
+        return {
+            **open_result,
+            "submitted": False,
+            "status": "browser_failed",
+        }
+
+    form_id = open_result["form_id"]
+    wait_result = await wait_for_submit(
+        form_id=form_id,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+    # Merge: keep form_id, submit_url from open; add submitted/data from wait
+    return {
+        **open_result,
+        **wait_result,
+    }
