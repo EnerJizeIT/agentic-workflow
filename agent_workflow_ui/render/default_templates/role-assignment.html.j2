@@ -1,0 +1,52 @@
+---
+description: Multi-select ролей для проекта (worker, reviewer, tester, + кастомные)
+required_data_keys:
+  - available_roles
+optional_data_keys:
+  - default_selection
+  - project_name
+---
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Выбор ролей — {{ project_name | default("проект") }}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; color: #333; }
+    h1 { margin-bottom: 8px; }
+    .hint { color: #666; font-size: 14px; margin-bottom: 24px; }
+    fieldset { border: 1px solid #ddd; padding: 16px; margin-bottom: 16px; border-radius: 4px; }
+    legend { font-weight: bold; padding: 0 8px; }
+    label { display: block; padding: 6px 0; cursor: pointer; }
+    label:hover { background: #f5f5f5; }
+    .actions { margin-top: 24px; }
+    button { padding: 10px 24px; font-size: 16px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #1565c0; }
+  </style>
+</head>
+<body>
+  <h1>Выберите роли для проекта</h1>
+  {% if project_name %}<p class="hint">Проект: {{ project_name }}</p>{% endif %}
+  <p class="hint">Отметьте роли, которые будут участвовать в разработке.</p>
+
+  <form action="{{ submit_url }}" method="POST">
+    <input type="hidden" name="form_id" value="{{ form_id }}">
+    <input type="hidden" name="project_name" value="{{ project_name | default('') }}">
+
+    <fieldset>
+      <legend>Роли</legend>
+      {% for role in available_roles %}
+      <label>
+        <input type="checkbox" name="selected_roles" value="{{ role }}"
+          {% if role in (default_selection or []) %}checked{% endif %}>
+        <strong>{{ role }}</strong>
+      </label>
+      {% endfor %}
+    </fieldset>
+
+    <div class="actions">
+      <button type="submit">Submit</button>
+    </div>
+  </form>
+</body>
+</html>

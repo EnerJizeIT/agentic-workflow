@@ -1,0 +1,86 @@
+---
+description: Разрешение конфликта имён (replace existing / save as new / cancel)
+required_data_keys:
+  - conflict_name
+  - conflict_context
+optional_data_keys:
+  - existing_description
+  - new_description
+---
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Конфликт имён — {{ conflict_name }}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; color: #333; }
+    h1 { color: #d32f2f; margin-bottom: 8px; }
+    .hint { color: #666; font-size: 14px; margin-bottom: 24px; }
+    .conflict-info { background: #fff3e0; padding: 12px; border-radius: 4px; margin-bottom: 24px; }
+    .conflict-info strong { color: #e65100; }
+    .option { border: 1px solid #ddd; padding: 12px; margin-bottom: 8px; border-radius: 4px; cursor: pointer; }
+    .option:hover { background: #f5f5f5; }
+    .option input[type="radio"] { margin-right: 8px; }
+    .option label { display: inline; }
+    #save-as-input { display: none; padding: 8px 0 8px 28px; }
+    #save-as-input input { padding: 6px; font-size: 14px; width: 80%; }
+    .actions { margin-top: 24px; }
+    button { padding: 10px 24px; font-size: 16px; background: #1976d2; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #1565c0; }
+  </style>
+</head>
+<body>
+  <h1>⚠️ Конфликт имён</h1>
+  <p class="hint">Имя «{{ conflict_name }}» уже существует в {{ conflict_context }}.</p>
+
+  <div class="conflict-info">
+    {% if existing_description %}
+    <p><strong>Существующий:</strong> {{ existing_description }}</p>
+    {% endif %}
+    {% if new_description %}
+    <p><strong>Новый:</strong> {{ new_description }}</p>
+    {% endif %}
+  </div>
+
+  <form action="{{ submit_url }}" method="POST">
+    <input type="hidden" name="form_id" value="{{ form_id }}">
+    <input type="hidden" name="conflict_name" value="{{ conflict_name }}">
+    <input type="hidden" name="conflict_context" value="{{ conflict_context }}">
+
+    <label class="option">
+      <input type="radio" name="resolution" value="replace" required>
+      <strong>Replace</strong> — заменить существующий файл.
+    </label>
+
+    <label class="option">
+      <input type="radio" name="resolution" value="save_as" id="save-as-radio">
+      <strong>Save as new</strong> — сохранить с новым именем.
+    </label>
+    <div id="save-as-input">
+      <input type="text" name="new_name" placeholder="новое_имя.md">
+    </div>
+
+    <label class="option">
+      <input type="radio" name="resolution" value="cancel">
+      <strong>Cancel</strong> — отменить операцию.
+    </label>
+
+    <div class="actions">
+      <button type="submit">Submit</button>
+    </div>
+  </form>
+
+  <script>
+    document.getElementById('save-as-radio').addEventListener('change', function() {
+      document.getElementById('save-as-input').style.display = 'block';
+    });
+    document.querySelectorAll('input[name="resolution"]').forEach(function(radio) {
+      if (radio.value !== 'save_as') {
+        radio.addEventListener('change', function() {
+          document.getElementById('save-as-input').style.display = 'none';
+        });
+      }
+    });
+  </script>
+</body>
+</html>
