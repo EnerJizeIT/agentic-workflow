@@ -17,9 +17,7 @@ def create_server() -> FastMCP:
     )
 
     mcp.add_tool(forms.open_form, name="open_form")
-    mcp.add_tool(forms.open_form_and_wait, name="open_form_and_wait")
     mcp.add_tool(forms.read_submit, name="read_submit")
-    mcp.add_tool(forms.wait_for_submit, name="wait_for_submit")
     mcp.add_tool(forms.cancel_form, name="cancel_form")
     mcp.add_tool(forms.list_pending_forms, name="list_pending_forms")
 
