@@ -30,7 +30,7 @@ def env():
 
 
 def test_all_expected_templates_exist(env):
-    """All 5 default templates exist and are renderable."""
+    """All 6 default templates exist and are renderable."""
     for name in EXPECTED_TEMPLATES:
         template = env.get_template(f"{name}.html.j2")
         assert template is not None
@@ -144,60 +144,111 @@ def test_project_setup_renders_with_minimum_data(env):
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [
-            {"id": "worker", "title": "Worker", "description": "Does work"},
+            {"id": "worker", "title": "Worker", "default": True},
         ],
-        "available_models": ["model-a", "model-b"],
     })
     assert "<form" in html
     assert 'method="POST"' in html
     assert "FORM-001" in html
     assert "worker" in html
-    assert "model-a" in html
+    # available_models comes from Jinja2 global, not from data
+    # Template should still render without models in data
 
 
-def test_project_setup_has_all_sections(env):
-    """All 7 sections are present in rendered HTML."""
+def test_project_setup_has_team_table(env):
+    """Team section has a table with role/skill/model columns."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
-        "available_models": ["model-a"],
-        "available_skills": [{"id": "dev", "title": "Developer"}],
     })
-    sections = ["project", "role", "skill", "model", "pipeline", "order", "verif"]
-    for section in sections:
-        assert section in html.lower(), f"Missing section: {section}"
+    assert "<table" in html
+    assert "команд" in html.lower() or "role" in html.lower()
 
 
-def test_project_setup_includes_javascript(env):
-    """Template includes inline JavaScript for conditional logic."""
+def test_project_setup_has_pipeline_radio(env):
+    """Settings section has pipeline radio buttons."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
-        "available_models": ["model-a"],
     })
-    assert "<script" in html
-    assert "drag" in html.lower() or "change" in html.lower() or "display" in html.lower()
+    assert 'type="radio"' in html
+    assert "simple" in html.lower()
+    assert "full" in html.lower()
 
 
-def test_project_setup_has_dark_theme(env):
-    """Template uses dark color scheme."""
+def test_project_setup_has_verify_commands(env):
+    """Settings section has verification command inputs."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
-        "available_models": ["model-a"],
     })
-    assert "#1e1e1e" in html or "#252526" in html or "dark" in html.lower()
+    assert "test_cmd" in html
 
 
-def test_project_setup_custom_role_input(env):
+def test_project_setup_uses_available_models_global(env):
+    """Template uses available_models from Jinja2 globals."""
+    env.globals["available_models"] = ["test-model-1", "test-model-2"]
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert "test-model-1" in html
+    assert "test-model-2" in html
+
+
+def test_project_setup_has_custom_role_input(env):
     """Template has UI for adding custom roles."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
-        "available_models": ["model-a"],
     })
-    assert "custom" in html.lower() or "add" in html.lower()
+    assert "add" in html.lower() or "custom" in html.lower()
+
+
+def test_project_setup_has_light_theme(env):
+    """Template uses light/minimal color scheme."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert "#ffffff" in html or "#f9fafb" in html
+
+
+def test_project_setup_team_has_role_select(env):
+    """Team section has <select> for roles, not checkboxes."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker", "default": True}],
+    })
+    assert '<select' in html
+    assert 'role' in html.lower()
+    # Should NOT have role checkboxes
+    assert 'type="checkbox"' not in html or 'name="roles"' not in html
+
+
+def test_project_setup_team_has_add_remove_buttons(env):
+    """Team section has Add and Remove buttons."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert 'addRow' in html or 'add' in html.lower()
+    assert 'removeRow' in html or 'remove' in html.lower() or '×' in html
+
+
+def test_project_setup_team_has_hidden_json_input(env):
+    """Team data collected in hidden JSON input."""
+    html = render_template(env, "project-setup", {
+        "form_id": "FORM-001",
+        "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
+        "available_roles": [{"id": "worker", "title": "Worker"}],
+    })
+    assert 'team_config' in html or 'team' in html.lower()

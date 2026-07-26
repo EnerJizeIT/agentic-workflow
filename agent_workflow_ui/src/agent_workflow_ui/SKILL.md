@@ -119,7 +119,7 @@ Call `list_templates` to see what's available. Default templates:
 | `model-picker` | Dropdown model per role | `roles`, `available_models` |
 | `pipeline-picker` | Radio: simple / full / custom file | — |
 | `conflict-resolver` | Replace / save-as / cancel | `conflict_name`, `conflict_context` |
-| `project-setup` | Composite form: roles + skills + models + pipeline + verification | `available_roles`, `available_models` |
+| `project-setup` | Composite form: roles + skills + models + pipeline + verification. Models pulled from opencode config automatically. | `available_roles` |
 
 Project-level templates in `.agentic/templates/` override defaults by name.
 

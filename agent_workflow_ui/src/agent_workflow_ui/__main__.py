@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import load, ensure_directories
 from .http_endpoint import start_http_server
+from .opencode_config import read_opencode_models
 from .render.engine import create_env
 from .server import create_server
 from .state import get_registry, set_config, set_http_port, set_jinja_env
@@ -28,6 +29,7 @@ def main() -> int:
     set_config(config)
 
     env = create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR])
+    env.globals["available_models"] = read_opencode_models()
     set_jinja_env(env)
 
     registry = get_registry()
