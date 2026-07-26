@@ -31,10 +31,23 @@ optional_data_keys: []
       background: var(--bg);
       color: var(--text);
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 700px;
-      margin: 40px auto;
-      padding: 0 20px;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 32px 20px 60px;
       line-height: 1.5;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .page-hint {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-bottom: 24px;
     }
 
     fieldset {
@@ -48,7 +61,7 @@ optional_data_keys: []
     legend {
       color: var(--accent);
       font-weight: 600;
-      font-size: 14px;
+      font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
       padding: 0 8px;
@@ -85,9 +98,84 @@ optional_data_keys: []
       border-color: var(--accent);
     }
 
+    select {
+      min-width: 150px;
+      cursor: pointer;
+    }
+
+    select option {
+      background: var(--bg-input);
+      color: var(--text);
+    }
+
     input[type="file"] {
+      display: none;
+    }
+
+    .file-upload-btn {
+      display: inline-block;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 7px 14px;
+      cursor: pointer;
+      font-size: 13px;
       color: var(--text-muted);
-      font-size: 14px;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .file-upload-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .file-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0;
+      margin-top: 6px;
+    }
+
+    .file-chip {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-input);
+      border: 1px solid var(--accent);
+      border-radius: 16px;
+      padding: 4px 10px 4px 12px;
+      margin: 4px 4px 0 0;
+      font-size: 12px;
+      color: var(--accent);
+      animation: fadeIn 0.2s ease;
+    }
+
+    .file-chip-name {
+      margin-right: 6px;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-chip-remove {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 2px;
+      opacity: 0.7;
+      transition: opacity 0.15s;
+    }
+
+    .file-chip-remove:hover {
+      opacity: 1;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     table {
@@ -99,24 +187,30 @@ optional_data_keys: []
     th {
       text-align: left;
       color: var(--text-muted);
-      font-size: 12px;
+      font-size: 11px;
       text-transform: uppercase;
-      padding: 8px;
+      letter-spacing: 0.3px;
+      padding: 8px 8px 8px 0;
       border-bottom: 1px solid var(--border);
     }
 
+    th:last-child {
+      text-align: center;
+      width: 36px;
+    }
+
     td {
-      padding: 8px;
+      padding: 6px 6px 6px 0;
       vertical-align: middle;
       border-bottom: 1px solid var(--border);
     }
 
-    tr:last-child td { border-bottom: none; }
-
     td:last-child {
-      width: 1px;
+      width: 36px;
       text-align: center;
     }
+
+    tr:last-child td { border-bottom: none; }
 
     td select,
     td input[type="text"] {
@@ -129,27 +223,47 @@ optional_data_keys: []
       border: none;
       color: var(--danger);
       font-size: 18px;
+      line-height: 1;
       cursor: pointer;
-      padding: 4px 8px;
+      padding: 4px;
+      opacity: 0.6;
+      transition: opacity 0.15s;
     }
 
     .remove-btn:hover {
-      color: #ff6b6b;
+      opacity: 1;
     }
 
-    button[type="button"] {
+    .empty-hint {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .team-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+    }
+
+    .team-actions button[type="button"] {
       background: transparent;
       color: var(--accent);
       border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 8px 16px;
+      padding: 7px 14px;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 13px;
       font-family: system-ui, -apple-system, sans-serif;
+      transition: background 0.15s, border-color 0.15s;
     }
 
-    button[type="button"]:hover {
+    .team-actions button[type="button"]:hover {
       background: var(--bg-input);
+      border-color: var(--accent);
     }
 
     button[type="submit"] {
@@ -158,45 +272,66 @@ optional_data_keys: []
       border: none;
       border-radius: var(--radius);
       padding: 12px 32px;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 600;
       cursor: pointer;
       width: 100%;
       font-family: system-ui, -apple-system, sans-serif;
+      margin-top: 8px;
+      transition: opacity 0.2s, background 0.2s;
     }
 
-    button[type="submit"]:hover {
+    button[type="submit"]:hover:not(.disabled) {
       background: #6edbba;
+    }
+
+    button[type="submit"].disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      background: var(--text-muted);
     }
 
     .hint {
       color: var(--text-muted);
       font-size: 12px;
-      margin: 4px 0 12px 0;
+      margin: 6px 0 0 0;
     }
 
-    .team-actions {
+    .custom-agent-row td:first-child {
       display: flex;
-      gap: 8px;
-      margin-top: 12px;
+      flex-direction: column;
+      gap: 4px;
     }
 
     .custom-agent-row .agent-input {
-      margin-bottom: 4px;
+      width: 100%;
     }
 
-    .custom-agent-row .skill-file {
+    .custom-agent-row .skill-upload-label {
       font-size: 12px;
+      padding: 4px 10px;
     }
 
-    select option {
-      background: var(--bg-input);
-      color: var(--text);
+    .section-hint {
+      color: var(--text-muted);
+      font-size: 12px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 520px) {
+      body { padding: 20px 12px 40px; }
+      fieldset { padding: 14px; }
+      .team-actions { flex-direction: column; }
+      .team-actions button[type="button"] { width: 100%; text-align: center; }
+      td, th { padding: 6px 4px 6px 0; font-size: 12px; }
     }
   </style>
 </head>
 <body>
-  <form action="{{ submit_url }}" method="POST" id="setup-form" enctype="multipart/form-data">
+  <h1>Настройка проекта</h1>
+  <p class="page-hint">Опишите проект и соберите команду агентов</p>
+
+  <form action="{{ submit_url }}" method="POST" id="setup-form" enctype="multipart/form-data" novalidate>
     <input type="hidden" name="form_id" value="{{ form_id }}">
 
     {% set roles = available_roles or [] %}
@@ -206,17 +341,19 @@ optional_data_keys: []
 
       <label for="context_message">Опишите проект, цели, пожелания</label>
       <textarea name="context_message" id="context_message" rows="5"
-        placeholder="Например: Делаю интернет-магазин на Django. Нужен MVP за 2 недели. Фокус на backend и API. Команда из 2 человек..."></textarea>
+        placeholder="Например: Делаю интернет-магазин на Django. Нужен MVP за 2 недели. Фокус на backend и API..."></textarea>
 
-      <label for="spec-file">Спецификация / ТЗ (опционально)</label>
-      <input type="file" name="spec_file" accept=".md,.txt" id="spec-file">
-      <input type="hidden" name="spec_content" id="spec-content">
-      <input type="hidden" name="spec_filename" id="spec-filename">
-      <p class="hint">Загрузите markdown или текстовый файл с описанием проекта.</p>
+      <label>Спецификация / ТЗ</label>
+      <label for="spec-file-input" class="file-upload-btn">📎 Прикрепить файл(ы)</label>
+      <input type="file" id="spec-file-input" multiple accept=".md,.txt,.pdf,.doc">
+      <div class="file-attachments" id="spec-attachments"></div>
+      <input type="hidden" name="spec_files_json" id="spec-files-json" value="">
+      <p class="hint">Можно прикрепить несколько файлов. Markdown или текст.</p>
     </fieldset>
 
     <fieldset>
       <legend>Команда агентов</legend>
+      <p class="section-hint">Добавьте агентов, которые будут работать над проектом</p>
 
       <table id="team-table">
         <thead>
@@ -227,114 +364,187 @@ optional_data_keys: []
           </tr>
         </thead>
         <tbody id="team-rows">
-          <tr class="team-row">
-            <td>
-              <select name="agent" class="agent-select">
-                {% for role in roles %}
-                <option value="{{ role.id }}"{% if role.get('default') %} selected{% endif %}>
-                  {{ role.title }} — {{ role.get('description', '') }}
-                </option>
-                {% endfor %}
-              </select>
-            </td>
-            <td>
-               <select name="model" class="model-select">
-                 {% if recent_models %}
-                 <optgroup label="Recent">
-                   {% for model in recent_models %}
-                   <option value="{{ model }}">{{ model }}</option>
-                   {% endfor %}
-                 </optgroup>
-                 {% endif %}
-                 <optgroup label="All models">
-                   {% for model in (available_models or []) %}
-                   <option value="{{ model }}">{{ model }}</option>
-                   {% endfor %}
-                 </optgroup>
-               </select>
-             </td>
-            <td>
-              <button type="button" class="remove-btn" onclick="removeRow(this)">&times;</button>
-            </td>
-          </tr>
         </tbody>
       </table>
+      <p class="empty-hint" id="empty-hint">Добавьте агентов в команду</p>
 
       <div class="team-actions">
         <button type="button" onclick="addRow()">+ Добавить агента</button>
-        <button type="button" onclick="addCustomAgent()">+ Свой агент (.md)</button>
       </div>
     </fieldset>
 
     <input type="hidden" name="team_config" id="team-config" value="">
 
-    <button type="submit">Создать конфигурацию</button>
+    <button type="submit" class="disabled" id="submit-btn">Создать конфигурацию</button>
   </form>
 
   <script>
     (function () {
+      var allRoles = [
+        {% for role in roles %}
+        {id: "{{ role.id }}", title: "{{ role.title }}", desc: "{{ role.get('description', '') }}"}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
       var allModels = [
         {% for m in (available_models or []) %}
         "{{ m }}"{% if not loop.last %},{% endif %}
         {% endfor %}
       ];
 
+      var specFiles = [];
+
+      function buildModelOptions() {
+        var opts = '';
+        if (allModels.length === 0) {
+          opts = '<option value="">(нет моделей)</option>';
+        } else {
+          for (var i = 0; i < allModels.length; i++) {
+            opts += '<option value="' + allModels[i] + '">' + allModels[i] + '</option>';
+          }
+        }
+        return opts;
+      }
+
+      function buildAgentSelect(onchange) {
+        var s = '<select name="agent" class="agent-select" onchange="' + onchange + '">';
+        for (var i = 0; i < allRoles.length; i++) {
+          var r = allRoles[i];
+          var label = r.title + (r.desc ? ' \u2014 ' + r.desc : '');
+          s += '<option value="' + r.id + '">' + label + '</option>';
+        }
+        s += '<option value="__custom__">+ Свой агент...</option>';
+        s += '</select>';
+        return s;
+      }
+
+      function updateEmptyHint() {
+        var rows = document.querySelectorAll('.team-row');
+        var hint = document.getElementById('empty-hint');
+        if (hint) {
+          hint.style.display = rows.length > 0 ? 'none' : '';
+        }
+      }
+
+      function validateForm() {
+        var context = document.getElementById('context_message').value.trim();
+        var hasSpec = specFiles.length > 0;
+        var hasTeam = document.querySelectorAll('.team-row').length > 0;
+        var valid = (context.length > 0 || hasSpec) && hasTeam;
+        var btn = document.getElementById('submit-btn');
+        if (valid) {
+          btn.disabled = false;
+          btn.classList.remove('disabled');
+        } else {
+          btn.disabled = true;
+          btn.classList.add('disabled');
+        }
+      }
+
+      document.addEventListener('input', validateForm);
+      document.addEventListener('change', validateForm);
+
       window.addRow = function () {
         var tbody = document.getElementById('team-rows');
-        var firstRow = tbody.querySelector('.team-row:not(.custom-agent-row)');
-        if (!firstRow) return;
-        var newRow = firstRow.cloneNode(true);
-        newRow.querySelectorAll('select').forEach(function (s) { s.selectedIndex = 0; });
-        tbody.appendChild(newRow);
-      };
-
-      window.addCustomAgent = function () {
-        var tbody = document.getElementById('team-rows');
         var row = document.createElement('tr');
-        row.className = 'team-row custom-agent-row';
-        // Clone model options from existing select (includes Recent + All groups)
-        var modelOptions = document.querySelector('.model-select').innerHTML;
+        row.className = 'team-row';
         row.innerHTML =
-          '<td>' +
-            '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Например: Security Auditor" required>' +
-            '<input type="file" name="custom_agent_skill" accept=".md,.txt" class="skill-file" required>' +
-            '<input type="hidden" name="custom_agent_content" class="skill-content">' +
-          '</td>' +
-          '<td><select name="model" class="model-select">' + modelOptions + '</select></td>' +
+          '<td>' + buildAgentSelect('handleAgentSelect(this)') + '</td>' +
+          '<td><select name="model" class="model-select">' + buildModelOptions() + '</select></td>' +
           '<td><button type="button" class="remove-btn" onclick="removeRow(this)">&times;</button></td>';
         tbody.appendChild(row);
+        updateEmptyHint();
+        validateForm();
+      };
 
-        var fileInput = row.querySelector('.skill-file');
-        var hiddenContent = row.querySelector('.skill-content');
+      window.handleAgentSelect = function (sel) {
+        if (sel.value !== '__custom__') return;
+        var row = sel.closest('.team-row');
+        var agentTd = row.cells[0];
+        var modelTd = row.cells[1];
+        var removeTd = row.cells[2];
+
+        var existingInput = agentTd.querySelector('.agent-input');
+        if (existingInput) return;
+
+        row.classList.add('custom-agent-row');
+        agentTd.innerHTML =
+          '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Название агента" required>' +
+          '<label for="skill-file-' + row.index + '" class="file-upload-btn skill-upload-label">📎 Прикрепить скилл (.md)</label>' +
+          '<input type="file" id="skill-file-' + row.index + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file" required>' +
+          '<input type="hidden" name="custom_agent_content" class="skill-content">' +
+          '<span class="skill-chip-container"></span>';
+
+        var fileInput = agentTd.querySelector('.skill-file');
+        var hiddenContent = agentTd.querySelector('.skill-content');
+        var chipContainer = agentTd.querySelector('.skill-chip-container');
+        var rowIdx = rowIdxCounter++;
+        fileInput.id = 'skill-file-' + rowIdx;
+        agentTd.querySelector('.skill-upload-label').htmlFor = fileInput.id;
+
         fileInput.addEventListener('change', function (e) {
           var file = e.target.files[0];
           if (!file) return;
+          chipContainer.innerHTML = '';
+          var chip = document.createElement('span');
+          chip.className = 'file-chip';
+          chip.innerHTML = '<span class="file-chip-name">\U0001F4CE ' + file.name + '</span>' +
+            '<button type="button" class="file-chip-remove" onclick="this.parentElement.remove()">&times;</button>';
+          chipContainer.appendChild(chip);
           var reader = new FileReader();
           reader.onload = function (ev) {
             hiddenContent.value = ev.target.result;
           };
           reader.readAsText(file);
+          validateForm();
         });
+
+        validateForm();
       };
+
+      var rowIdxCounter = 0;
 
       window.removeRow = function (button) {
         var row = button.closest('.team-row');
-        var tbody = document.getElementById('team-rows');
-        if (tbody.querySelectorAll('.team-row').length > 1) {
-          row.remove();
-        }
+        row.remove();
+        updateEmptyHint();
+        validateForm();
       };
 
-      document.getElementById('spec-file').addEventListener('change', function (e) {
-        var file = e.target.files[0];
-        if (!file) return;
-        document.getElementById('spec-filename').value = file.name;
-        var reader = new FileReader();
-        reader.onload = function (ev) {
-          document.getElementById('spec-content').value = ev.target.result;
-        };
-        reader.readAsText(file);
+      document.getElementById('spec-file-input').addEventListener('change', function (e) {
+        var chosen = Array.from(e.target.files);
+        var container = document.getElementById('spec-attachments');
+        chosen.forEach(function (file) {
+          var idx = specFiles.length;
+          var reader = new FileReader();
+          reader.onload = function (ev) {
+            specFiles[idx] = { filename: file.name, content: ev.target.result };
+            var chip = document.createElement('span');
+            chip.className = 'file-chip';
+            chip.id = 'spec-chip-' + idx;
+            var removeIdx = idx;
+            chip.innerHTML = '<span class="file-chip-name">\U0001F4CE ' + file.name + '</span>' +
+              '<button type="button" class="file-chip-remove" onclick="removeSpecFile(' + removeIdx + ', this)">&times;</button>';
+            container.appendChild(chip);
+            updateSpecJson();
+            validateForm();
+          };
+          reader.readAsText(file);
+        });
+        e.target.value = '';
       });
+
+      window.removeSpecFile = function (idx, btn) {
+        specFiles[idx] = null;
+        btn.parentElement.remove();
+        updateSpecJson();
+        validateForm();
+      };
+
+      function updateSpecJson() {
+        var active = specFiles.filter(function (f) { return f !== null; });
+        document.getElementById('spec-files-json').value = JSON.stringify(active);
+      }
 
       document.getElementById('setup-form').addEventListener('submit', function () {
         var rows = document.querySelectorAll('.team-row');
@@ -342,10 +552,10 @@ optional_data_keys: []
         rows.forEach(function (row) {
           var agentSelect = row.querySelector('.agent-select');
           var agentInput = row.querySelector('.agent-input');
-          var skillFile = row.querySelector('.skill-file');
           var skillContent = row.querySelector('.skill-content');
+          var skillFile = row.querySelector('.skill-file');
 
-          if (agentSelect) {
+          if (agentSelect && agentSelect.value !== '__custom__') {
             team.push({
               type: 'default',
               agent: agentSelect.value,
@@ -363,6 +573,8 @@ optional_data_keys: []
         });
         document.getElementById('team-config').value = JSON.stringify(team);
       });
+
+      validateForm();
     })();
   </script>
 </body>

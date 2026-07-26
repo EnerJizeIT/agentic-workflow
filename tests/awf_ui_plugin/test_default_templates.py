@@ -201,28 +201,30 @@ def test_project_setup_uses_available_models_global(env):
     assert "test-model-2" in html
 
 
-def test_project_setup_has_custom_agent_button(env):
-    """Template has button for adding custom agents."""
+def test_project_setup_has_custom_agent_option(env):
+    """Template has 'Свой агент' as a dropdown option (not a separate button)."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
-    assert "addCustomAgent" in html
+    assert "__custom__" in html
     assert "Свой агент" in html
 
 
 def test_project_setup_has_file_picker(env):
-    """Template has file input for spec upload."""
+    """Template has file input for spec upload (multiple files, chips)."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
     assert 'type="file"' in html
-    assert "spec_file" in html
-    assert "spec-content" in html
+    assert "spec-file-input" in html
+    assert 'multiple' in html
+    assert "spec-files-json" in html
     assert "FileReader" in html
+    assert "file-chip" in html
 
 
 def test_project_setup_has_dark_theme(env):
@@ -283,7 +285,7 @@ def test_project_setup_has_context_textarea(env):
 
 
 def test_project_setup_custom_agent_has_file_upload(env):
-    """Custom agent row includes file input for .md skill + FileReader."""
+    """Custom agent row (generated via JS) includes file input for .md skill + FileReader."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
@@ -294,6 +296,8 @@ def test_project_setup_custom_agent_has_file_upload(env):
     assert "custom_agent_content" in html
     assert 'accept=".md' in html
     assert "FileReader" in html
+    assert "handleAgentSelect" in html
+    assert "__custom__" in html
 
 
 def test_project_setup_submit_builds_team_json(env):

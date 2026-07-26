@@ -6,6 +6,8 @@ from typing import Any
 
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader, select_autoescape
 
+from .frontmatter import parse_frontmatter
+
 
 def create_env(templates_dirs: list[Path]) -> Environment:
     """Create Jinja2 environment.
@@ -34,7 +36,7 @@ def render_template(
     template_name: str,
     context: dict[str, Any],
 ) -> str:
-    """Render a template by name.
+    """Render a template by name, stripping YAML frontmatter from output.
 
     Args:
         env: Jinja2 environment.
@@ -45,10 +47,12 @@ def render_template(
             - template_name (str)
 
     Returns:
-        Rendered HTML string.
+        Rendered HTML string (without frontmatter).
     """
     template_file = f"{template_name}.html.j2"
-    template = env.get_template(template_file)
+    source, _, _ = env.loader.get_source(env, template_file)
+    _, body = parse_frontmatter(source)
+    template = env.from_string(body)
     full_context = {
         "template_name": template_name,
         **context,
