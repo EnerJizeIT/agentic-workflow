@@ -1,5 +1,5 @@
 ---
-description: Setup form — context message, spec upload, agent team configuration
+description: Setup form — context message, spec upload, supervisor role, agent team configuration
 required_data_keys:
   - available_roles
 optional_data_keys: []
@@ -15,14 +15,15 @@ optional_data_keys: []
       --bg: #1e1e1e;
       --bg-card: #252526;
       --bg-input: #3c3c3c;
+      --bg-hover: #094771;
       --text: #d4d4d4;
       --text-muted: #858585;
       --accent: #569cd6;
       --accent-green: #4ec9b0;
-      --accent-purple: #c586c0;
       --border: #464647;
       --danger: #f14c4c;
       --radius: 6px;
+      --spacing: 12px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -31,379 +32,357 @@ optional_data_keys: []
       background: var(--bg);
       color: var(--text);
       font-family: system-ui, -apple-system, sans-serif;
-      max-width: 720px;
+      font-size: 14px;
+      max-width: 680px;
       margin: 0 auto;
       padding: 32px 20px 60px;
       line-height: 1.5;
     }
 
     h1 {
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 600;
-      color: var(--text);
-      margin-bottom: 4px;
+      margin-bottom: 2px;
     }
 
     .page-hint {
       color: var(--text-muted);
       font-size: 13px;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
     }
 
-    fieldset {
+    /* === Sections === */
+
+    .section {
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 20px;
-      margin-bottom: 16px;
+      padding: 16px 20px;
+      margin-bottom: var(--spacing);
     }
 
-    legend {
+    .section-title {
       color: var(--accent);
+      font-size: 12px;
       font-weight: 600;
-      font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      padding: 0 8px;
+      margin-bottom: 12px;
     }
 
-    label {
+    .section-title .req { color: var(--accent-green); }
+
+    .section-hint {
+      color: var(--text-muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    /* === Form elements === */
+
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+
+    .field-label {
       display: block;
-      font-size: 13px;
+      font-size: 12px;
       color: var(--text-muted);
       margin-bottom: 4px;
-      margin-top: 12px;
     }
 
-    label:first-child { margin-top: 0; }
-
-    input[type="text"],
-    select,
-    textarea {
+    input[type="text"], select, textarea {
       background: var(--bg-input);
       color: var(--text);
       border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 8px 12px;
-      font-size: 14px;
-      font-family: system-ui, -apple-system, sans-serif;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: inherit;
       width: 100%;
       transition: border-color 0.15s;
     }
 
-    input[type="text"]:focus,
-    select:focus,
-    textarea:focus {
+    input[type="text"]:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--accent);
     }
 
-    select {
-      min-width: 150px;
-      cursor: pointer;
-    }
+    textarea { resize: vertical; min-height: 80px; }
 
-    select option {
+    select { cursor: pointer; }
+    select option, select optgroup { background: var(--bg-input); color: var(--text); }
+
+    input[type="file"] { display: none; }
+
+    input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); }
+
+    /* === Buttons === */
+
+    .btn {
       background: var(--bg-input);
-      color: var(--text);
-    }
-
-    input[type="file"] {
-      display: none;
-    }
-
-    .file-upload-btn {
-      display: inline-block;
-      background: var(--bg-input);
+      color: var(--text-muted);
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 7px 14px;
+      font-size: 12px;
+      font-family: inherit;
       cursor: pointer;
-      font-size: 13px;
-      color: var(--text-muted);
       transition: border-color 0.15s, color 0.15s;
+      white-space: nowrap;
     }
 
-    .file-upload-btn:hover {
+    .btn:hover {
       border-color: var(--accent);
       color: var(--accent);
     }
 
-    .file-attachments {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0;
-      margin-top: 6px;
+    .btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
     }
 
-    .file-chip {
-      display: inline-flex;
-      align-items: center;
-      background: var(--bg-input);
-      border: 1px solid var(--accent);
-      border-radius: 16px;
-      padding: 4px 10px 4px 12px;
-      margin: 4px 4px 0 0;
-      font-size: 12px;
-      color: var(--accent);
-      animation: fadeIn 0.2s ease;
-    }
-
-    .file-chip-name {
-      margin-right: 6px;
-      max-width: 180px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .file-chip-remove {
-      background: none;
-      border: none;
-      color: var(--danger);
-      font-size: 16px;
-      line-height: 1;
-      cursor: pointer;
-      padding: 0 2px;
-      opacity: 0.7;
-      transition: opacity 0.15s;
-    }
-
-    .file-chip-remove:hover {
-      opacity: 1;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(-4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 12px;
-    }
-
-    th {
-      text-align: left;
-      color: var(--text-muted);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-      padding: 8px 8px 8px 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    th:last-child {
-      text-align: center;
-      width: 36px;
-    }
-
-    td {
-      padding: 6px 6px 6px 0;
-      vertical-align: middle;
-      border-bottom: 1px solid var(--border);
-    }
-
-    td:last-child {
-      width: 36px;
-      text-align: center;
-    }
-
-    tr:last-child td { border-bottom: none; }
-
-    td select,
-    td input[type="text"] {
-      font-size: 13px;
-      padding: 6px 8px;
-    }
-
-    .remove-btn {
-      background: none;
-      border: none;
-      color: var(--danger);
-      font-size: 18px;
-      line-height: 1;
-      cursor: pointer;
-      padding: 4px;
-      opacity: 0.6;
-      transition: opacity 0.15s;
-    }
-
-    .remove-btn:hover {
-      opacity: 1;
-    }
-
-    .empty-hint {
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 13px;
-      padding: 20px 0;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .team-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 12px;
-      flex-wrap: wrap;
-    }
-
-    .team-actions button[type="button"] {
+    .btn-add {
       background: transparent;
       color: var(--accent);
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 7px 14px;
-      cursor: pointer;
       font-size: 13px;
-      font-family: system-ui, -apple-system, sans-serif;
-      transition: background 0.15s, border-color 0.15s;
+      cursor: pointer;
+      font-family: inherit;
     }
 
-    .team-actions button[type="button"]:hover {
-      background: var(--bg-input);
-      border-color: var(--accent);
+    .btn-add:hover { background: var(--bg-input); border-color: var(--accent); }
+    .btn-add:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .btn-remove {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px;
+      opacity: 0.5;
+      line-height: 1;
     }
 
-    button[type="submit"] {
+    .btn-remove:hover { opacity: 1; }
+
+    .btn-icon {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 13px;
+      cursor: pointer;
+      padding: 2px 4px;
+      opacity: 0.5;
+    }
+
+    .btn-icon:hover { opacity: 1; }
+
+    .btn-submit {
       background: var(--accent-green);
       color: var(--bg);
       border: none;
       border-radius: var(--radius);
-      padding: 12px 32px;
+      padding: 12px;
       font-size: 15px;
       font-weight: 600;
-      cursor: pointer;
       width: 100%;
-      font-family: system-ui, -apple-system, sans-serif;
-      margin-top: 8px;
-      transition: opacity 0.2s, background 0.2s;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.2s;
     }
 
-    button[type="submit"]:hover:not(.disabled) {
-      background: #6edbba;
-    }
+    .btn-submit:hover:not(:disabled) { filter: brightness(1.15); }
+    .btn-submit:disabled { opacity: 0.35; cursor: not-allowed; background: var(--text-muted); }
 
-    button[type="submit"].disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
-      background: var(--text-muted);
-    }
+    /* === File chips === */
 
-    .hint {
-      color: var(--text-muted);
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-input);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      padding: 3px 8px 3px 10px;
       font-size: 12px;
-      margin: 6px 0 0 0;
+      color: var(--accent);
+      animation: chipIn 0.2s ease;
     }
 
-    .custom-agent-row td:first-child {
+    .chip-name {
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-right: 4px;
+    }
+
+    .chip-close {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+    }
+
+    @keyframes chipIn {
+      from { opacity: 0; transform: translateY(-3px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* === Team table === */
+
+    .team-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 8px;
+    }
+
+    .team-table th {
+      text-align: left;
+      color: var(--text-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      padding: 6px 6px 6px 0;
+      border-bottom: 1px solid var(--border);
+      font-weight: normal;
+      letter-spacing: 0.3px;
+    }
+
+    .team-table th:last-child { width: 32px; text-align: center; }
+
+    .team-table td {
+      padding: 6px 6px 6px 0;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    .team-table td:last-child { width: 32px; text-align: center; }
+    .team-table tr:last-child td { border-bottom: none; }
+    .team-table select, .team-table input[type="text"] { font-size: 12px; padding: 6px 8px; }
+
+    .team-empty {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* === Custom agent inline === */
+
+    .custom-agent-cell {
       display: flex;
-      flex-direction: row;
       align-items: center;
       gap: 6px;
     }
 
-    .custom-agent-row .agent-input {
-      flex: 1;
-      min-width: 80px;
+    .custom-agent-cell .agent-name { flex: 1; min-width: 60px; }
+    .custom-agent-cell .skill-zone { flex: 1; min-width: 60px; display: flex; align-items: center; gap: 4px; }
+    .custom-agent-cell .save-cb { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+    .upload-btn.hidden { display: none; }
+
+    /* === Supervisor custom area === */
+
+    .sv-custom-area { margin-top: 8px; display: none; }
+    .sv-custom-area.visible { display: block; }
+
+    .sv-custom-area .upload-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
     }
 
-    .custom-agent-row .skill-area {
-      flex: 1;
-      min-width: 80px;
-    }
-
-    .custom-agent-row .skill-upload-label {
+    .sv-custom-area .save-label {
       font-size: 12px;
-      padding: 6px 10px;
-      white-space: nowrap;
-      width: 100%;
-      text-align: center;
-    }
-
-    .custom-agent-row .skill-upload-label.hidden {
-      display: none;
-    }
-
-    .custom-agent-row .skill-chip-container {
-      flex: 1;
-    }
-
-    .section-hint {
       color: var(--text-muted);
-      font-size: 12px;
-      margin-top: 12px;
     }
+
+    /* === Misc === */
+
+    .team-actions { margin-top: 8px; }
+    .hint { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
 
     @media (max-width: 520px) {
       body { padding: 20px 12px 40px; }
-      fieldset { padding: 14px; }
-      .team-actions { flex-direction: column; }
-      .team-actions button[type="button"] { width: 100%; text-align: center; }
-      td, th { padding: 6px 4px 6px 0; font-size: 12px; }
+      .section { padding: 12px 14px; }
+      .custom-agent-cell { flex-wrap: wrap; }
+      .custom-agent-cell .agent-name, .custom-agent-cell .skill-zone { min-width: 100%; }
     }
   </style>
 </head>
 <body>
   <h1>Настройка проекта</h1>
-  <p class="page-hint">Опишите проект и соберите команду агентов</p>
+  <p class="page-hint">Опишите проект, выберите supervisor и соберите команду</p>
 
   <form action="{{ submit_url }}" method="POST" id="setup-form" novalidate>
     <input type="hidden" name="form_id" value="{{ form_id }}">
+    <input type="hidden" name="team_config" id="team-config" value="">
+    <input type="hidden" name="delete_agent" id="delete-agent-names" value="">
 
     {% set roles = available_roles or [] %}
 
-    <fieldset>
-      <legend>Контекст</legend>
+    <!-- === Section 1: Контекст === -->
+    <div class="section">
+      <div class="section-title">Контекст</div>
 
-      <label for="context_message">Опишите проект, цели, пожелания</label>
-      <textarea name="context_message" id="context_message" rows="5"
-        placeholder="Например: Делаю интернет-магазин на Django. Нужен MVP за 2 недели. Фокус на backend и API..."></textarea>
+      <div class="field">
+        <textarea name="context_message" id="context_message" rows="4"
+          placeholder="Опишите проект, цели, пожелания для supervisor..."></textarea>
+      </div>
 
-      <label>Спецификация / ТЗ</label>
-      <label for="spec-file-input" class="file-upload-btn">📎 Прикрепить файл(ы)</label>
-      <input type="file" id="spec-file-input" multiple accept=".md,.txt">
-      <div class="file-attachments" id="spec-attachments"></div>
-      <input type="hidden" name="spec_files_json" id="spec-files-json" value="">
-      <p class="hint">Можно прикрепить несколько файлов. Markdown или текст.</p>
-    </fieldset>
+      <div class="field">
+        <label class="btn" for="spec-file-input">📎 Прикрепить ТЗ</label>
+        <input type="file" id="spec-file-input" multiple accept=".md,.txt">
+        <div class="chips" id="spec-chips"></div>
+        <input type="hidden" name="spec_files_json" id="spec-files-json" value="">
+        <p class="hint">Markdown или текст. Можно несколько файлов.</p>
+      </div>
+    </div>
 
-    <fieldset>
-      <legend>Supervisor</legend>
+    <!-- === Section 2: Supervisor === -->
+    <div class="section">
+      <div class="section-title">Supervisor</div>
 
-      <label>Дополнительная роль / инструкции для supervisor</label>
-      <select name="supervisor_role" id="supervisor-select" onchange="handleSupervisorSelect(this)">
-        <option value="">Default (универсальный supervisor)</option>
-        {% for sv in (custom_supervisor_roles or []) %}
-        <option value="{{ sv.id }}" data-custom="true">{{ sv.title }}</option>
-        {% endfor %}
-        <option value="__custom__">+ Загрузить свой .md...</option>
-      </select>
+      <div class="field">
+        <select name="supervisor_role" id="supervisor-select" onchange="handleSupervisorSelect(this)">
+          <option value="">Default (универсальный)</option>
+          {% for sv in (custom_supervisor_roles or []) %}
+          <option value="{{ sv.id }}" data-custom="true">{{ sv.title }}</option>
+          {% endfor %}
+          <option value="__custom__">+ Загрузить свой .md...</option>
+        </select>
+      </div>
 
-      <div id="supervisor-custom-area" style="display:none; margin-top:8px;">
-        <div style="display:flex; gap:6px; align-items:center;">
-          <div class="skill-area" style="flex:1;">
-            <label for="supervisor-file" class="file-upload-btn skill-upload-label" id="supervisor-upload-label">\uD83D\uDCCE .md</label>
-            <input type="file" id="supervisor-file" accept=".md,.txt" style="display:none;">
-            <input type="hidden" name="supervisor_content" id="supervisor-content">
-            <span id="supervisor-chip-container" style="flex:1;"></span>
-          </div>
+      <div class="sv-custom-area" id="sv-custom">
+        <div class="upload-row">
+          <label class="btn upload-btn" for="sv-file" id="sv-upload-btn">📎 .md файл</label>
+          <input type="file" id="sv-file" accept=".md,.txt">
+          <input type="hidden" name="supervisor_content" id="sv-content">
+          <div class="chips" id="sv-chips"></div>
         </div>
-        <label style="margin-top:8px;">
-          <input type="checkbox" name="save_supervisor" value="true">
-          Сохранить для будущих сессий
+        <label class="save-label">
+          <input type="checkbox" name="save_supervisor" value="true"> Сохранить для будущих сессий
         </label>
       </div>
 
-      <p class="hint">Выбранные инструкции ДОПОЛНЯют default supervisor.md. Supervisor будет действовать по обеим.</p>
-    </fieldset>
+      <p class="hint">Инструкции ДОПОЛНЯЮТ default supervisor.md.</p>
+    </div>
 
-    <fieldset>
-      <legend>Команда агентов <span style="color: var(--accent-green)">*</span></legend>
-      <p class="section-hint">Добавьте агентов, которые будут работать над проектом. Minimum 1.</p>
+    <!-- === Section 3: Команда === -->
+    <div class="section">
+      <div class="section-title">Команда агентов <span class="req">*</span></div>
+      <p class="section-hint">Добавьте агентов. Minimum 1.</p>
 
-      <table id="team-table">
+      <table class="team-table">
         <thead>
           <tr>
             <th>Агент</th>
@@ -411,25 +390,22 @@ optional_data_keys: []
             <th></th>
           </tr>
         </thead>
-        <tbody id="team-rows">
-        </tbody>
+        <tbody id="team-rows"></tbody>
       </table>
-      <p class="empty-hint" id="empty-hint">Добавьте агентов в команду</p>
+
+      <p class="team-empty" id="team-empty">Команда пуста — добавьте агентов</p>
 
       <div class="team-actions">
-        <button type="button" onclick="addRow()">+ Добавить агента</button>
+        <button type="button" class="btn-add" id="add-agent-btn" onclick="addRow()">+ Добавить агента</button>
       </div>
-    </fieldset>
+    </div>
 
-    <input type="hidden" name="team_config" id="team-config" value="">
-    <input type="hidden" name="delete_agent" id="delete-agent-names" value="">
-
-    <button type="submit" class="disabled" id="submit-btn">Создать конфигурацию</button>
+    <button type="submit" class="btn-submit" id="submit-btn" disabled>Создать конфигурацию</button>
   </form>
 
   <script>
     (function () {
-      var allRoles = [
+      var roles = [
         {% for role in roles %}
         {id: "{{ role.id }}", title: "{{ role.title }}", desc: "{{ role.get('description', '') }}"}{% if not loop.last %},{% endif %}
         {% endfor %}
@@ -447,288 +423,297 @@ optional_data_keys: []
         {% endfor %}
       ];
 
-      var specFiles = [];
-
-      function buildModelOptions() {
-        var opts = '';
-        if (recentModels.length > 0) {
-          opts += '<optgroup label="Recent">';
-          for (var i = 0; i < recentModels.length; i++) {
-            opts += '<option value="' + recentModels[i] + '">' + recentModels[i] + '</option>';
-          }
-          opts += '</optgroup>';
-        }
-        opts += '<optgroup label="All models">';
-        if (allModels.length === 0) {
-          opts += '<option value="">(нет моделей)</option>';
-        } else {
-          for (var i = 0; i < allModels.length; i++) {
-            opts += '<option value="' + allModels[i] + '">' + allModels[i] + '</option>';
-          }
-        }
-        opts += '</optgroup>';
-        return opts;
-      }
-
       var customAgents = [
         {% for ca in (custom_agents or []) %}
         {id: "{{ ca.id }}", title: "{{ ca.title }}"}{% if not loop.last %},{% endif %}
         {% endfor %}
       ];
 
-      function buildAgentSelect(onchange) {
-        var s = '<select name="agent" class="agent-select" onchange="' + onchange + '">';
-        for (var i = 0; i < allRoles.length; i++) {
-          var r = allRoles[i];
-          var label = r.title + (r.desc ? ' \u2014 ' + r.desc : '');
-          s += '<option value="' + r.id + '">' + label + '</option>';
+      var specFiles = [];
+      var rowIdxCounter = 0;
+
+      // === Helpers ===
+
+      function modelOptions() {
+        var h = '';
+        if (recentModels.length > 0) {
+          h += '<optgroup label="Recent">';
+          recentModels.forEach(function (m) { h += '<option value="' + m + '">' + m + '</option>'; });
+          h += '</optgroup>';
         }
+        h += '<optgroup label="All models">';
+        if (allModels.length === 0) {
+          h += '<option value="">(нет моделей)</option>';
+        } else {
+          allModels.forEach(function (m) { h += '<option value="' + m + '">' + m + '</option>'; });
+        }
+        h += '</optgroup>';
+        return h;
+      }
+
+      function agentOptions() {
+        var h = '';
+        roles.forEach(function (r) {
+          h += '<option value="' + r.id + '">' + r.title + (r.desc ? ' — ' + r.desc : '') + '</option>';
+        });
         if (customAgents.length > 0) {
-          s += '<optgroup label="Мои агенты">';
-          for (var i = 0; i < customAgents.length; i++) {
-            s += '<option value="' + customAgents[i].id + '" data-custom="true">' + customAgents[i].title + '</option>';
-          }
-          s += '</optgroup>';
+          h += '<optgroup label="Мои агенты">';
+          customAgents.forEach(function (c) {
+            h += '<option value="' + c.id + '" data-custom="true">' + c.title + '</option>';
+          });
+          h += '</optgroup>';
         }
-        s += '<option value="__custom__">+ Свой агент...</option>';
-        s += '</select>';
-        return s;
+        h += '<option value="__custom__">+ Свой агент...</option>';
+        return h;
       }
 
-      function updateEmptyHint() {
-        var rows = document.querySelectorAll('.team-row');
-        var hint = document.getElementById('empty-hint');
-        if (hint) {
-          hint.style.display = rows.length > 0 ? 'none' : '';
-        }
+      function makeChip(name, onRemove) {
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        var n = document.createElement('span');
+        n.className = 'chip-name';
+        n.textContent = '📎 ' + name;
+        chip.appendChild(n);
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'chip-close';
+        x.innerHTML = '&times;';
+        x.onclick = function () { chip.remove(); if (onRemove) onRemove(); };
+        chip.appendChild(x);
+        return chip;
       }
 
-      function validateForm() {
-        var hasTeam = document.querySelectorAll('.team-row').length > 0;
+      function updateEmpty() {
+        var empty = document.getElementById('team-empty');
+        var rows = document.querySelectorAll('#team-rows .team-row');
+        empty.style.display = rows.length > 0 ? 'none' : '';
+      }
 
-        // Check custom agents have name + skill filled
-        var customRows = document.querySelectorAll('.custom-agent-row');
-        var customValid = true;
-        var hasIncompleteCustom = false;
-        customRows.forEach(function(row) {
-          var nameInput = row.querySelector('.agent-input');
-          var skillContent = row.querySelector('.skill-content');
-          var nameFilled = nameInput && nameInput.value.trim();
-          var skillFilled = skillContent && skillContent.value.trim();
-          if (!nameFilled || !skillFilled) {
-            customValid = false;
-            hasIncompleteCustom = true;
+      function validate() {
+        var rows = document.querySelectorAll('#team-rows .team-row');
+        var hasTeam = rows.length > 0;
+        var customOk = true;
+        var hasIncomplete = false;
+
+        rows.forEach(function (row) {
+          if (row.classList.contains('custom-agent-row')) {
+            var name = row.querySelector('.agent-name');
+            var skill = row.querySelector('.skill-hidden');
+            var nameOk = name && name.value.trim();
+            var skillOk = skill && skill.value.trim();
+            if (!nameOk || !skillOk) { customOk = false; hasIncomplete = true; }
           }
         });
 
-        var valid = hasTeam && customValid;
-        var btn = document.getElementById('submit-btn');
-        if (valid) {
-          btn.disabled = false;
-          btn.classList.remove('disabled');
-        } else {
-          btn.disabled = true;
-          btn.classList.add('disabled');
-        }
+        document.getElementById('submit-btn').disabled = !(hasTeam && customOk);
 
-        // Disable "Add agent" button while custom agent is incomplete
-        var addBtn = document.querySelector('.team-actions button[type="button"]');
-        if (addBtn) {
-          if (hasIncompleteCustom) {
-            addBtn.disabled = true;
-            addBtn.style.opacity = '0.4';
-            addBtn.style.cursor = 'not-allowed';
-          } else {
-            addBtn.disabled = false;
-            addBtn.style.opacity = '';
-            addBtn.style.cursor = '';
-          }
-        }
+        var addBtn = document.getElementById('add-agent-btn');
+        addBtn.disabled = hasIncomplete;
       }
 
-      document.addEventListener('input', validateForm);
-      document.addEventListener('change', validateForm);
-
-      // Also validate when custom agent fields change
-      document.getElementById('team-rows').addEventListener('input', validateForm);
-      document.getElementById('team-rows').addEventListener('change', validateForm);
+      // === Team rows ===
 
       window.addRow = function () {
         var tbody = document.getElementById('team-rows');
-        var row = document.createElement('tr');
-        row.className = 'team-row';
-        row.innerHTML =
-          '<td>' + buildAgentSelect('handleAgentSelect(this)') + '</td>' +
-          '<td><select name="model" class="model-select">' + buildModelOptions() + '</select></td>' +
-          '<td><button type="button" class="remove-btn" onclick="removeRow(this)">&times;</button></td>';
-        tbody.appendChild(row);
-        updateEmptyHint();
-        validateForm();
+        var tr = document.createElement('tr');
+        tr.className = 'team-row';
+        tr.innerHTML =
+          '<td><select name="agent" class="agent-select" onchange="handleAgentSelect(this)">' + agentOptions() + '</select></td>' +
+          '<td><select name="model" class="model-select">' + modelOptions() + '</select></td>' +
+          '<td><button type="button" class="btn-remove" onclick="removeRow(this)">&times;</button></td>';
+        tbody.appendChild(tr);
+        updateEmpty();
+        validate();
+      };
+
+      window.removeRow = function (btn) {
+        btn.closest('tr').remove();
+        updateEmpty();
+        validate();
       };
 
       window.handleAgentSelect = function (sel) {
-        // Check if a saved custom agent was selected
-        var selectedOpt = sel.options[sel.selectedIndex];
-        if (selectedOpt && selectedOpt.dataset.custom === 'true' && sel.value !== '__custom__') {
-          // Show delete button next to the select
-          var row = sel.closest('.team-row');
-          var agentTd = row.cells[0];
-          // Remove existing delete button
-          var existingDel = agentTd.querySelector('.delete-agent-btn');
-          if (existingDel) existingDel.remove();
-          // Add delete button
-          var delBtn = document.createElement('button');
-          delBtn.type = 'button';
-          delBtn.className = 'remove-btn delete-agent-btn';
-          delBtn.title = 'Удалить из сохранённых';
-          delBtn.style.cssText = 'font-size:13px; color:var(--danger); opacity:0.6; border:none; background:none; cursor:pointer; margin-left:4px;';
-          delBtn.textContent = '\uD83D\uDDD1';
-          delBtn.onclick = function() {
-            if (confirm('Удалить агента "' + selectedOpt.textContent + '" из сохранённых?')) {
-              // Set hidden field for deletion on submit
-              var existing = document.getElementById('delete-agent-names');
-              var names = existing.value ? existing.value.split(',') : [];
-              names.push(sel.value);
-              existing.value = names.join(',');
-              // Remove from dropdown
-              selectedOpt.remove();
-              // Reset select to first option
+        var row = sel.closest('tr');
+        var cell = row.cells[0];
+
+        // Remove existing delete icons
+        cell.querySelectorAll('.btn-icon').forEach(function (b) { b.remove(); });
+
+        var opt = sel.options[sel.selectedIndex];
+
+        // Saved custom agent → show delete
+        if (opt.dataset.custom === 'true' && sel.value !== '__custom__') {
+          var del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'btn-icon';
+          del.innerHTML = '\uD83D\uDDD1';
+          del.title = 'Удалить из сохранённых';
+          del.onclick = function () {
+            if (confirm('Удалить агента "' + opt.textContent + '"?')) {
+              var hidden = document.getElementById('delete-agent-names');
+              var list = hidden.value ? hidden.value.split(',') : [];
+              list.push(sel.value);
+              hidden.value = list.join(',');
+              opt.remove();
               sel.selectedIndex = 0;
-              delBtn.remove();
-              validateForm();
+              del.remove();
             }
           };
-          sel.parentElement.appendChild(delBtn);
+          cell.appendChild(del);
           return;
         }
 
-        // Remove delete button if switching away from custom agent
-        var row = sel.closest('.team-row');
-        var existingDel = row.querySelector('.delete-agent-btn');
-        if (existingDel) existingDel.remove();
-
         if (sel.value !== '__custom__') return;
-        var row = sel.closest('.team-row');
-        var agentTd = row.cells[0];
 
-        var existingInput = agentTd.querySelector('.agent-input');
-        if (existingInput) return;
-
-        var rowIdx = rowIdxCounter++;
+        // Convert to custom agent row
         row.classList.add('custom-agent-row');
-        agentTd.innerHTML =
-          '<input type="text" name="custom_agent_name" class="agent-input" placeholder="Имя агента" required>' +
-          '<div class="skill-area">' +
-            '<label for="skill-file-' + rowIdx + '" class="file-upload-btn skill-upload-label">\uD83D\uDCCE .md</label>' +
-            '<input type="file" id="skill-file-' + rowIdx + '" name="custom_agent_skill" accept=".md,.txt" class="skill-file">' +
-            '<input type="hidden" name="custom_agent_content" class="skill-content">' +
-            '<span class="skill-chip-container"></span>' +
-          '</div>' +
-          '<label class="save-checkbox" style="font-size:11px; white-space:nowrap;">' +
-            '<input type="checkbox" name="save_custom_agent" class="save-agent-cb" value="true" checked> \uD83D\uDCBE' +
-          '</label>';
+        var idx = rowIdxCounter++;
+        cell.innerHTML =
+          '<div class="custom-agent-cell">' +
+            '<input type="text" class="agent-name" name="custom_agent_name" placeholder="Имя агента">' +
+            '<div class="skill-zone">' +
+              '<label class="btn upload-btn" for="skill-' + idx + '">📎 .md</label>' +
+              '<input type="file" id="skill-' + idx + '" accept=".md,.txt">' +
+              '<input type="hidden" class="skill-hidden" name="custom_agent_content">' +
+            '</div>' +
+            '<label class="save-cb"><input type="checkbox" class="save-agent-cb" checked> \uD83D\uDCBE</label>' +
+          '</div>';
 
-        var fileInput = agentTd.querySelector('.skill-file');
-        var hiddenContent = agentTd.querySelector('.skill-content');
-        var chipContainer = agentTd.querySelector('.skill-chip-container');
-        var uploadLabel = agentTd.querySelector('.skill-upload-label');
+        var fileInput = cell.querySelector('#skill-' + idx);
+        var hiddenContent = cell.querySelector('.skill-hidden');
+        var uploadLabel = cell.querySelector('.upload-btn');
+        var skillZone = cell.querySelector('.skill-zone');
 
         fileInput.addEventListener('change', function (e) {
-          var file = e.target.files[0];
-          if (!file) return;
-          // Hide upload button, show chip
+          var f = e.target.files[0];
+          if (!f) return;
           uploadLabel.classList.add('hidden');
-          chipContainer.innerHTML = '<span class="file-chip">' +
-            '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
-            '<button type="button" class="file-chip-remove" onclick="removeSkillFile(this)">&times;</button>' +
-            '</span>';
+          var oldChips = skillZone.querySelectorAll('.chip');
+          oldChips.forEach(function (c) { c.remove(); });
+          skillZone.appendChild(makeChip(f.name, function () {
+            hiddenContent.value = '';
+            fileInput.value = '';
+            uploadLabel.classList.remove('hidden');
+            validate();
+          }));
           var reader = new FileReader();
-          reader.onload = function (ev) {
-            hiddenContent.value = ev.target.result;
-            validateForm();
-          };
-          reader.readAsText(file);
-          validateForm();
+          reader.onload = function (ev) { hiddenContent.value = ev.target.result; validate(); };
+          reader.readAsText(f);
+          validate();
         });
 
-        // Expose removeSkillFile for chip remove → restore upload button
-        window.removeSkillFile = function(btn) {
-          chipContainer.innerHTML = '';
-          hiddenContent.value = '';
-          fileInput.value = '';
-          uploadLabel.classList.remove('hidden');
-          validateForm();
-        };
-
-        validateForm();
+        validate();
       };
 
-      var rowIdxCounter = 0;
-
-      window.removeRow = function (button) {
-        var row = button.closest('.team-row');
-        row.remove();
-        updateEmptyHint();
-        validateForm();
-      };
+      // === Spec files ===
 
       document.getElementById('spec-file-input').addEventListener('change', function (e) {
-        var chosen = Array.from(e.target.files);
-        var container = document.getElementById('spec-attachments');
-        chosen.forEach(function (file) {
+        var container = document.getElementById('spec-chips');
+        Array.from(e.target.files).forEach(function (file) {
           var idx = specFiles.length;
           var reader = new FileReader();
           reader.onload = function (ev) {
             specFiles[idx] = { filename: file.name, content: ev.target.result };
-            var chip = document.createElement('span');
-            chip.className = 'file-chip';
-            chip.id = 'spec-chip-' + idx;
-            var removeIdx = idx;
-            chip.innerHTML = '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
-              '<button type="button" class="file-chip-remove" onclick="removeSpecFile(' + removeIdx + ', this)">&times;</button>';
-            container.appendChild(chip);
+            container.appendChild(makeChip(file.name, function () {
+              specFiles[idx] = null;
+              updateSpecJson();
+              validate();
+            }));
             updateSpecJson();
-            validateForm();
+            validate();
           };
           reader.readAsText(file);
         });
         e.target.value = '';
       });
 
-      window.removeSpecFile = function (idx, btn) {
-        specFiles[idx] = null;
-        btn.parentElement.remove();
-        updateSpecJson();
-        validateForm();
-      };
-
       function updateSpecJson() {
         var active = specFiles.filter(function (f) { return f !== null; });
         document.getElementById('spec-files-json').value = JSON.stringify(active);
       }
 
-      document.getElementById('setup-form').addEventListener('submit', function () {
-        var rows = document.querySelectorAll('.team-row');
-        var team = [];
-        rows.forEach(function (row) {
-          var agentSelect = row.querySelector('.agent-select');
-          var agentInput = row.querySelector('.agent-input');
-          var skillContent = row.querySelector('.skill-content');
-          var skillFile = row.querySelector('.skill-file');
+      // === Supervisor ===
 
-          if (agentSelect && agentSelect.value !== '__custom__') {
-            team.push({
-              type: 'default',
-              agent: agentSelect.value,
-              model: row.querySelector('.model-select').value,
-            });
-          } else if (agentInput) {
-            var saveCb = row.querySelector('.save-agent-cb');
+      window.handleSupervisorSelect = function (sel) {
+        var area = document.getElementById('sv-custom');
+        var wrapper = sel.parentElement;
+
+        // Remove existing delete icon
+        wrapper.querySelectorAll('.btn-icon').forEach(function (b) { b.remove(); });
+
+        var opt = sel.options[sel.selectedIndex];
+
+        // Saved custom supervisor → show delete
+        if (opt.dataset.custom === 'true' && sel.value !== '__custom__') {
+          var del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'btn-icon';
+          del.innerHTML = '\uD83D\uDDD1';
+          del.title = 'Удалить из сохранённых';
+          del.onclick = function () {
+            if (confirm('Удалить supervisor роль "' + opt.textContent + '"?')) {
+              var hidden = document.getElementById('delete-agent-names');
+              var list = hidden.value ? hidden.value.split(',') : [];
+              list.push(sel.value);
+              hidden.value = list.join(',');
+              opt.remove();
+              sel.selectedIndex = 0;
+              del.remove();
+            }
+          };
+          wrapper.appendChild(del);
+        }
+
+        if (sel.value === '__custom__') {
+          area.classList.add('visible');
+          setTimeout(function () { document.getElementById('sv-file').click(); }, 50);
+        } else {
+          area.classList.remove('visible');
+          document.getElementById('sv-content').value = '';
+          document.getElementById('sv-chips').innerHTML = '';
+          document.getElementById('sv-upload-btn').classList.remove('hidden');
+        }
+      };
+
+      var svFile = document.getElementById('sv-file');
+      var svContent = document.getElementById('sv-content');
+      var svChips = document.getElementById('sv-chips');
+      var svUploadBtn = document.getElementById('sv-upload-btn');
+
+      svFile.addEventListener('change', function (e) {
+        var f = e.target.files[0];
+        if (!f) return;
+        svUploadBtn.classList.add('hidden');
+        svChips.innerHTML = '';
+        svChips.appendChild(makeChip(f.name, function () {
+          svContent.value = '';
+          svFile.value = '';
+          svUploadBtn.classList.remove('hidden');
+        }));
+        var reader = new FileReader();
+        reader.onload = function (ev) { svContent.value = ev.target.result; };
+        reader.readAsText(f);
+      });
+
+      // === Submit ===
+
+      document.getElementById('setup-form').addEventListener('submit', function () {
+        var team = [];
+        document.querySelectorAll('#team-rows .team-row').forEach(function (row) {
+          var sel = row.querySelector('.agent-select');
+          var nameInput = row.querySelector('.agent-name');
+          var skillContent = row.querySelector('.skill-hidden');
+          var skillInput = row.querySelector('input[type="file"]');
+          var saveCb = row.querySelector('.save-agent-cb');
+
+          if (sel && sel.value !== '__custom__') {
+            team.push({ type: 'default', agent: sel.value, model: row.querySelector('.model-select').value });
+          } else if (nameInput) {
             team.push({
               type: 'custom',
-              agent: agentInput.value,
+              agent: nameInput.value,
               skill_content: skillContent ? skillContent.value : '',
-              skill_filename: skillFile && skillFile.files[0] ? skillFile.files[0].name : '',
+              skill_filename: skillInput && skillInput.files[0] ? skillInput.files[0].name : '',
               model: row.querySelector('.model-select').value,
               save: saveCb ? saveCb.checked : false,
             });
@@ -737,79 +722,13 @@ optional_data_keys: []
         document.getElementById('team-config').value = JSON.stringify(team);
       });
 
-      // === Supervisor section ===
+      // === Listeners ===
 
-      window.handleSupervisorSelect = function (sel) {
-        var area = document.getElementById('supervisor-custom-area');
+      document.addEventListener('input', validate);
+      document.addEventListener('change', validate);
+      document.getElementById('team-rows').addEventListener('input', validate);
 
-        // Remove existing delete button
-        var existingDel = sel.parentElement.querySelector('.delete-sv-btn');
-        if (existingDel) existingDel.remove();
-
-        // Check if a saved custom supervisor was selected
-        var selectedOpt = sel.options[sel.selectedIndex];
-        if (selectedOpt && selectedOpt.dataset.custom === 'true' && sel.value !== '__custom__') {
-          // Show delete button
-          var delBtn = document.createElement('button');
-          delBtn.type = 'button';
-          delBtn.className = 'delete-sv-btn';
-          delBtn.title = 'Удалить из сохранённых';
-          delBtn.style.cssText = 'font-size:13px; color:var(--danger); opacity:0.6; border:none; background:none; cursor:pointer; margin-left:4px;';
-          delBtn.textContent = '\uD83D\uDDD1';
-          delBtn.onclick = function() {
-            if (confirm('Удалить supervisor роль "' + selectedOpt.textContent + '"?')) {
-              var existing = document.getElementById('delete-agent-names');
-              var names = existing.value ? existing.value.split(',') : [];
-              names.push(sel.value);
-              existing.value = names.join(',');
-              selectedOpt.remove();
-              sel.selectedIndex = 0;
-              delBtn.remove();
-            }
-          };
-          sel.parentElement.appendChild(delBtn);
-        }
-
-        if (sel.value === '__custom__') {
-          area.style.display = 'block';
-          setTimeout(function() { document.getElementById('supervisor-file').click(); }, 50);
-        } else {
-          area.style.display = 'none';
-          document.getElementById('supervisor-content').value = '';
-          document.getElementById('supervisor-chip-container').innerHTML = '';
-          document.getElementById('supervisor-upload-label').classList.remove('hidden');
-        }
-      };
-
-      // Supervisor file handler
-      var svFile = document.getElementById('supervisor-file');
-      var svContent = document.getElementById('supervisor-content');
-      var svChipContainer = document.getElementById('supervisor-chip-container');
-      var svUploadLabel = document.getElementById('supervisor-upload-label');
-
-      svFile.addEventListener('change', function (e) {
-        var file = e.target.files[0];
-        if (!file) return;
-        svUploadLabel.classList.add('hidden');
-        svChipContainer.innerHTML = '<span class="file-chip">' +
-          '<span class="file-chip-name">\uD83D\uDCCE ' + file.name + '</span>' +
-          '<button type="button" class="file-chip-remove" onclick="removeSupervisorFile()">&times;</button>' +
-          '</span>';
-        var reader = new FileReader();
-        reader.onload = function (ev) {
-          svContent.value = ev.target.result;
-        };
-        reader.readAsText(file);
-      });
-
-      window.removeSupervisorFile = function () {
-        svChipContainer.innerHTML = '';
-        svContent.value = '';
-        svFile.value = '';
-        svUploadLabel.classList.remove('hidden');
-      };
-
-      validateForm();
+      validate();
     })();
   </script>
 </body>

@@ -224,7 +224,7 @@ def test_project_setup_has_file_picker(env):
     assert 'multiple' in html
     assert "spec-files-json" in html
     assert "FileReader" in html
-    assert "file-chip" in html
+    assert "chip" in html  # chip class (was file-chip, now just chip)
 
 
 def test_project_setup_has_dark_theme(env):
@@ -292,7 +292,6 @@ def test_project_setup_custom_agent_has_file_upload(env):
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
     assert "custom_agent_name" in html
-    assert "custom_agent_skill" in html
     assert "custom_agent_content" in html
     assert 'accept=".md' in html
     assert "FileReader" in html
