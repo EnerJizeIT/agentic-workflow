@@ -70,3 +70,16 @@ def test_list_pending():
     assert len(pending) == 3
     pending_ids = {r.form_id for r in pending}
     assert pending_ids == {"FORM-001", "FORM-002", "FORM-003"}
+
+
+def test_http_port_accessor():
+    """set_http_port / get_http_port roundtrip."""
+    from agent_workflow_ui.state import set_http_port, get_http_port
+    import agent_workflow_ui.state as state_mod
+    state_mod._http_port = None
+
+    assert get_http_port() is None
+    set_http_port(13747)
+    assert get_http_port() == 13747
+
+    state_mod._http_port = None

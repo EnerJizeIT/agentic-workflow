@@ -82,3 +82,17 @@ def reset_registry() -> None:
     """Reset the global registry. Used by tests for isolation."""
     _registry._forms.clear()
     _registry._counter = 0
+
+
+_http_port: int | None = None
+
+
+def set_http_port(port: int) -> None:
+    """Set the HTTP endpoint port (called once at startup)."""
+    global _http_port
+    _http_port = port
+
+
+def get_http_port() -> int | None:
+    """Get the HTTP endpoint port. None if not started yet."""
+    return _http_port
