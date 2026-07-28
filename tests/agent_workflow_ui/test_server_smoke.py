@@ -1,10 +1,18 @@
-"""Smoke test: server starts and registers all 5 tools."""
+"""Smoke test: server starts and registers all 5 tools.
+
+Requires the ``mcp`` package (provided by opencode at runtime). Skipped
+in CI environments where ``mcp`` is not installed.
+"""
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
 
 import pytest
+
+# Skip entire module if mcp isn't available (CI runners without opencode).
+pytest.importorskip("mcp.server.fastmcp")
+
 from agent_workflow_ui.config import ensure_directories, load
 from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.server import create_server
