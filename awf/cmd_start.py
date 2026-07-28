@@ -44,6 +44,12 @@ def _run_in_background(args: Any) -> int:
     if "--project-dir" not in child_argv:
         child_argv += ["--project-dir", str(project_dir)]
 
+    # --background implies --auto: detached process has stdin=DEVNULL, so any
+    # supervisor interactive pause (input()) would EOFError. There's no human
+    # at the wheel in background mode by definition.
+    if "--auto" not in child_argv and "-a" not in child_argv:
+        child_argv.append("--auto")
+
     with open(log_file, "wb") as out:
         proc = subprocess.Popen(
             child_argv,

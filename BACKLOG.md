@@ -219,6 +219,34 @@ A — правильное архитектурно, но feature-work. C — wo
 
 **Found during:** dogfood session 2026-07-28.
 
+### BD-7 · `awf start --background` EOFError on supervisor input()
+
+**Symptom:** `awf start --background` crashes immediately:
+```
+File ".../awf/orchestrator.py", line 171, in _run_supervisor_stage
+  input()
+EOFError: EOF when reading a line
+```
+
+**Root cause:** `--background` runs detached via setsid — stdin is closed
+(/dev/null or actual EOF). Supervisor stage calls `input()` to wait for
+human confirm. With no stdin → EOFError → pipeline crashes.
+
+**Fix:** In `awf start`, `--background` should imply `--auto` (skip
+supervisor interactive pauses). Detached mode has no human at the wheel
+by definition — there's nothing to wait for.
+
+In `cmd_start.run` (around args parsing): if `args.background` is set,
+force `args.auto = True`. Add a unit test that exercises this.
+
+Alternative: in `_run_supervisor_stage`, if `auto` is True OR background
+mode is active, skip the `input()` call. Less centralized but explicit.
+
+**Found during:** dogfood session 2026-07-28, first `awf start --background`
+on TODO-0002.
+
+---
+
 ### BD-6 · Plugin runs from HOME, not project — `.agentic/` polluted in HOME, project_dir wrong
 
 **Symptom:** After `awf start` and form submit, plugin wrote submit YAMLs to
