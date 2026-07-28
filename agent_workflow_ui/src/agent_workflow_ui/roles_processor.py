@@ -173,11 +173,99 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
         if written:
             log.info("Pipeline written to %s", written)
 
+        # BD-12: also patch config.yaml so each role maps to a working agent.
+        # Without this, awf tries `opencode run --agent <role>` which fails
+        # because only `worker` exists in opencode.json (other roles are
+        # skill.md instructions, not real agents).
+        update_config_role_mapping(team, project_dir)
+
     # BD-10-B: mark normalize needed so awf start picks it up
     if team and project_dir:
         mark_needs_normalize(project_dir, team)
 
     return saved
+
+
+# Default agent that loads role .md as instruction. All non-supervisor
+# roles run through this — opencode.json only has `worker` (plus
+# optionally `reviewer`, `tester` defined per-project).
+_DEFAULT_AGENT_FOR_ROLE = "worker"
+
+# Roles that already have an agent_name in config.yaml or are special
+# (supervisor = current session, not a subprocess).
+_SKIP_ROLE_MAPPING = {"supervisor"}
+
+
+def update_config_role_mapping(team: list[dict[str, Any]], project_dir: Path) -> Path | None:
+    """BD-12: ensure each team role has models.<role>.agent_name in config.yaml.
+
+    For each role in team that is not supervisor and has no agent_name,
+    set ``agent_name: "worker"`` (the default agent that loads role .md
+    as instruction). Existing agent_name values are preserved. Also
+    preserves any sibling keys (model, temperature, description).
+
+    Args:
+        team: list of team member dicts with ``role`` key.
+        project_dir: awf project root (must contain .agentic/config.yaml).
+
+    Returns:
+        Path to written config.yaml, or None if nothing to do.
+    """
+    import yaml
+
+    config_path = project_dir / ".agentic" / "config.yaml"
+    if not config_path.is_file():
+        log.warning("BD-12: no config.yaml at %s — skip role mapping", config_path)
+        return None
+
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        log.error("BD-12: config.yaml parse error: %s", e)
+        return None
+    if not isinstance(config, dict):
+        log.error("BD-12: config.yaml root is not a mapping — skip")
+        return None
+
+    models = config.setdefault("models", {})
+    if not isinstance(models, dict):
+        log.error("BD-12: config.yaml 'models' is not a mapping — skip")
+        return None
+
+    changed = False
+    for member in team:
+        if not isinstance(member, dict):
+            continue
+        role = str(member.get("role") or member.get("agent") or "").strip()
+        if not role or role in _SKIP_ROLE_MAPPING:
+            continue
+        entry = models.get(role)
+        if not isinstance(entry, dict):
+            entry = {}
+            models[role] = entry
+        if not entry.get("agent_name"):
+            entry["agent_name"] = _DEFAULT_AGENT_FOR_ROLE
+            changed = True
+            log.info("BD-12: mapped role %r -> agent_name=%s", role, _DEFAULT_AGENT_FOR_ROLE)
+
+    if not changed:
+        return None
+
+    # Backup then atomic write.
+    backup = config_path.with_suffix(".yaml.bak")
+    try:
+        backup.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
+    except OSError as e:
+        log.warning("BD-12: backup failed: %s", e)
+
+    from .state import _atomic_write_text
+
+    _atomic_write_text(
+        config_path,
+        yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
+    )
+    log.info("BD-12: config.yaml updated with role mappings")
+    return config_path
 
 
 def process_role_deletions(data: dict[str, Any], project_dir: Path | None = None) -> int:

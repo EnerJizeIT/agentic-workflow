@@ -718,6 +718,159 @@ def test_bd10b_normalize_state_no_agentic(isolated_roles_dir, reset_project_dir,
     process_role_saves(data, project_dir=proj)
 
 
+# ── BD-12: config.yaml role→agent_name mapping ────────────────────────────────
+
+
+def _make_project_with_config(tmp_path: Path, config_yaml: str = "") -> Path:
+    """Project with .agentic/roles/ + config.yaml pre-populated."""
+    import yaml as _yaml
+
+    proj = tmp_path / "project"
+    proj.mkdir()
+    (proj / ".agentic" / "roles").mkdir(parents=True)
+    cfg = proj / ".agentic" / "config.yaml"
+    if config_yaml:
+        cfg.write_text(config_yaml)
+    else:
+        cfg.write_text(_yaml.safe_dump({
+            "project": {"name": "test", "root": "."},
+            "models": {
+                "supervisor": {"description": "current session"},
+                "worker": {"agent_name": "worker", "model": "vllm/llm"},
+            },
+        }, allow_unicode=True, sort_keys=False))
+    return proj
+
+
+def test_bd12_maps_team_roles_to_worker_agent(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-12: each team role gets agent_name=worker if not already set."""
+    proj = _make_project_with_config(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "system-analysis"},
+            {"type": "default", "agent": "developer"},
+            {"type": "default", "agent": "qa"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    import yaml as _yaml
+
+    cfg = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+    models = cfg["models"]
+    assert models["system-analysis"]["agent_name"] == "worker"
+    assert models["developer"]["agent_name"] == "worker"
+    assert models["qa"]["agent_name"] == "worker"
+    # supervisor and worker untouched
+    assert "agent_name" not in models["supervisor"]
+    assert models["worker"]["agent_name"] == "worker"
+
+
+def test_bd12_preserves_existing_agent_name(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-12: existing agent_name is NOT overwritten."""
+    import yaml as _yaml
+
+    initial = {
+        "models": {
+            "supervisor": {"description": "x"},
+            "worker": {"agent_name": "worker"},
+            "qa": {"agent_name": "custom-qa-agent", "model": "vllm/llm"},
+        },
+    }
+    proj = _make_project_with_config(tmp_path, _yaml.safe_dump(initial, sort_keys=False))
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "qa"},
+            {"type": "default", "agent": "developer"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    cfg = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+    assert cfg["models"]["qa"]["agent_name"] == "custom-qa-agent"
+    assert cfg["models"]["qa"]["model"] == "vllm/llm"
+    assert cfg["models"]["developer"]["agent_name"] == "worker"
+
+
+def test_bd12_creates_config_backup(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-12: original config.yaml is backed up to config.yaml.bak."""
+    proj = _make_project_with_config(tmp_path)
+    original = (proj / ".agentic" / "config.yaml").read_text()
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "developer"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    backup = proj / ".agentic" / "config.yaml.bak"
+    assert backup.exists()
+    assert backup.read_text() == original
+
+
+def test_bd12_idempotent_on_resubmit(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-12: re-submitting same team doesn't create churn (config identical)."""
+
+    proj = _make_project_with_config(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "developer"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+    first = (proj / ".agentic" / "config.yaml").read_text()
+
+    # Second submit with same team — should be identical (no double backup churn)
+    process_role_saves(data, project_dir=proj)
+    second = (proj / ".agentic" / "config.yaml").read_text()
+
+    assert first == second
+
+
+def test_bd12_no_config_yaml_logs_and_skips(isolated_roles_dir, reset_project_dir, tmp_path, caplog):
+    """BD-12: missing config.yaml — log warning, no crash."""
+    proj = _make_project(tmp_path)  # no config.yaml
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "developer"},
+        ]),
+    }
+    # Should not raise
+    process_role_saves(data, project_dir=proj)
+    # No config.yaml created
+    assert not (proj / ".agentic" / "config.yaml").exists()
+
+
+def test_bd12_skips_supervisor_role(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-12: supervisor role is never mapped (it's the current session)."""
+    import yaml as _yaml
+
+    proj = _make_project_with_config(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "supervisor"},
+            {"type": "default", "agent": "developer"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    cfg = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+    assert "agent_name" not in cfg["models"]["supervisor"]
+    assert cfg["models"]["developer"]["agent_name"] == "worker"
+
+
 # ── _delete_from_project path traversal (F2) ─────────────────────────────────
 
 

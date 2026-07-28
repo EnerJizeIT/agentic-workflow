@@ -454,6 +454,257 @@ becomes pipeline).
 
 ---
 
+### BD-11 · Agent dropdown shows '---' instead of role names (YAML frontmatter parsing) — FIXED
+
+**Status:** Fixed in commit `7aeea36`.
+
+**Problem.** `scan_global_roles()` in `opencode_config.py` extracted
+title from the first content line. Roles saved via `save_custom_role()`
+start with YAML frontmatter (`---\nname: auditor\n---\n<body>`), so the
+first line was `---`. Dropdown in `project-setup` form showed a list of
+`---` entries.
+
+**Fix.** New `_extract_role_title(content, fallback)` parses in priority:
+1. `name:` field from YAML frontmatter (handles quoted values)
+2. First Markdown H1 outside frontmatter
+3. Filename stem as last resort
+
+Tests: 5 new BD-11 cases + 1 existing updated (plain text now falls back
+to filename stem instead of arbitrary first line).
+
+**Found during:** dogfood session 2026-07-28 — user opened project-setup
+form after restart and saw `---` in dropdown.
+
+---
+
+### BD-12 · `project-setup` form writes pipeline.yaml but NOT config.yaml role→agent_name mapping — FIXED
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** User picked 4 roles in form (system-analysis, developer,
+qa, project-auditor). Plugin copied role .md files to
+`.agentic/roles/`, wrote `.agentic/pipelines/default.yaml` with 6
+stages. But `config.yaml` was not updated. Each new role needs a
+mapping `models.<role>.agent_name: "worker"` so awf launches
+`opencode run --agent worker --file <role>.md ...`. Without mapping,
+awf tries `opencode run --agent system-analysis` — fails (no such
+agent in opencode.json, only `worker`).
+
+**Workaround:** manually edit config.yaml.
+
+**Fix plan.** In `roles_processor.process_role_saves()` after
+`write_pipeline(team, project_dir)`:
+1. Load `.agentic/config.yaml`.
+2. For each role in team: if `models.<role>` has no `agent_name`, set
+   `agent_name: "worker"` (the universal agent that loads role .md as
+   instruction).
+3. Atomic write config.yaml (use existing `_atomic_write_yaml`).
+4. Backup as `config.yaml.bak` (mirrors pipeline.yaml.bak).
+
+Tests: form submit produces config.yaml with all 4 roles mapped to
+worker; existing `agent_name` values preserved; idempotent.
+
+**Found during:** dogfood session 2026-07-28, jira-epic-presenter —
+manual config.yaml edit needed before `awf start` could run.
+
+---
+
+### BD-13 · `normalize_skills` stage refuses to run in `--background`, blocking `awf start --background` — FIXED
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** When form submit creates `.agentic/state/needs_normalize.yaml`
+(BD-10-B), `awf start --background` calls `_run_normalize_stage()` which
+explicitly `SystemExit(1)` with "ERROR: normalize_skills stage cannot
+run in --background mode". Result: pipeline cannot start at all — needs
+manual `awf normalize` first (which doesn't actually run normalize, just
+sets a flag).
+
+**Dead-end loop:**
+1. Form submit → `needs_normalize.yaml` written.
+2. `awf start --background` → refuses to run normalize.
+3. `awf normalize` → just re-marks `needed: true`, doesn't do work.
+4. Supervisor must manually create local skills (current workaround).
+
+**Fix plan.** In `--background` mode, normalize_skills stage should:
+1. Print WARNING to log: "normalize_skills deferred — supervisor
+   should run `awf normalize` interactively later".
+2. **Preserve** `needs_normalize.yaml` (don't consume).
+3. **Continue** pipeline normally.
+4. NOT exit.
+
+Rationale: normalize is "nice to have" for skill consistency. Pipeline
+can run with raw role .md files (which is what agent stages actually
+use). Skipping normalize in background is safe.
+
+Tests: `awf start --background` with needs_normalize=true no longer
+exits; pipeline runs all stages; needs_normalize.yaml still present
+after completion.
+
+**Found during:** dogfood session 2026-07-28, jira-epic-presenter —
+had to delete needs_normalize.yaml by hand to start pipeline.
+
+---
+
+### BD-14 · `supervisor plan` stage in `--auto`/`--background` auto-skips without creating TODO — FIXED
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** `_run_supervisor_stage()` in auto mode just prints
+instructions to stdout and skips. Supervisor plan stage is supposed to
+read `phases/plan.md`, create next TODO + baseline + .ready signal.
+In `--background --auto` this never happens — pipeline advances to
+agent stage with no active TODO → agent stages fail.
+
+Current workaround: create TODO + baseline + .ready manually in
+current opencode session before `awf start --background`.
+
+**Fix plan.** For supervisor stages in `--auto` mode:
+- Treat supervisor as another agent: spawn
+  `opencode run --agent worker --file .agentic/roles/supervisor.md
+  --file .agentic/phases/plan.md -- "Create next TODO from plan"`
+- This runs supervisor work in a subprocess (current opencode session
+  is NOT involved).
+- Same for verify stage: `opencode run --agent worker --file
+  supervisor.md --file outbox/DONE-NNNN.md -- "Verify and ack"`.
+
+Caveat: this changes the supervisor model from "current session human"
+to "subprocess agent". Document explicitly in supervisor.md. The
+"current session" path still works for foreground `awf start` without
+`--auto`.
+
+Tests: `awf start --background --auto` creates TODO-NNNN.md +
+.ready + BASELINE-NNNN.sha automatically; agent stage finds the TODO.
+
+**Found during:** dogfood session 2026-07-28 — TODO-0002 had to be
+hand-authored before `awf start` could proceed.
+
+---
+
+### BD-15 · No handoff chain between pipeline stages — each role only sees TODO + own skill — FIXED
+
+**Status:** Fixed in commit (pending). **Priority:** HIGH.
+
+**Problem.** `_run_agent_stage()` passes to each role only:
+- `--file <role>.md`
+- `--file TODO-NNNN.md`
+- `--file <local_skill>.md` (if exists)
+
+It does NOT pass the previous stage's output. PROGRESS-NNNN.md is
+written to `.agentic/outbox/` but never fed forward. Each role sees
+the project filesystem (where previous role's work is visible) but
+has no explicit signal of "this is what was done, this is what's
+expected of you".
+
+**Observed failure:** system-analysis (role 1) saw detailed TODO-0002,
+executed the entire task itself (wrote all 6 Chrome extension files).
+When developer (role 2) started, it saw files already in place and
+did nothing. QA and auditor saw finished work and rubber-stamped.
+The pipeline produced 1 effective stage out of 4.
+
+**Architecture intent (per user).** Pipeline = serial conveyor. Each
+role:
+1. **Inherits** previous role's result (sees the work, not isolated).
+2. **Receives its own instruction** (role.md with contract).
+3. **Does its part** (not the whole job).
+4. **Hands off** to next role: explicit artifact describing what was
+   done and what next role should pick up.
+
+Supervisor does NOT micromanage — TODO declares the goal, each role
+autonomously decides HOW within its zone.
+
+**Fix plan.**
+
+A. **Handoff files.** After each agent stage, awf collects:
+- `outbox/PROGRESS-NNNN.md` (worker's progress notes)
+- `outbox/DONE-NNNN.md` (worker's done summary, if signal was DONE)
+- Git diff summary vs baseline
+
+...and writes `.agentic/handoff/<role>.md` (one file per role, latest
+wins on replan).
+
+B. **Forward-pass as `--file`.** When launching next stage, awf passes
+all previous handoff files in pipeline order:
+```
+opencode run --agent worker \
+  --file <current-role>.md \
+  --file TODO-NNNN.md \
+  --file .agentic/handoff/system-analysis.md \
+  --file .agentic/handoff/developer.md \
+  ...
+```
+Each role sees what came before. Order matters — most recent first or
+chronological, TBD.
+
+C. **Handoff instruction in role.md template.** Each role's skill must
+end with: "When done, write `.agentic/handoff/<your-role>.md`
+describing: (1) what you received, (2) what you did, (3) what the next
+role should pick up, (4) open questions."
+
+D. **TODO generation shift.** Supervisor writes a **goal-level** TODO
+(what success looks like), not step-by-step instructions per role.
+Per-role instructions live in role.md (the contract), not in TODO.
+
+Tests: e2e pipeline with 3 stages — each stage receives previous
+handoff files as `--file` args; handoff/<role>.md exists after each
+stage; verify stage sees all handoffs.
+
+**Found during:** dogfood session 2026-07-28 — 4-role pipeline
+collapsed into 1 effective stage.
+
+---
+
+### BD-16 · Local skill has no pipeline contract — role doesn't know its position or neighbors — FIXED
+
+**Status:** Fixed in commit (pending). Pairs with BD-15.
+
+**Problem.** BD-10 introduced local skill files
+(`.agentic/skills/<role>.md`) — a copy of global skill with frontmatter
+(`derived_from_global`, `global_sha`, `pipeline_context`). But the
+"contract" section is missing: role doesn't know:
+- Who runs before it (what artifact to expect as input).
+- Who runs after it (what artifact it must produce).
+- Its zone of responsibility (what it must NOT do — e.g., system-analysis
+  must not write code, that's developer's job).
+
+Without contract, system-analysis behaves as a generic system analyst
+and does the entire task. With contract, system-analysis knows "I write
+requirements handoff for developer, I do NOT touch code files".
+
+**Fix plan.** During normalize_skills, for each role in pipeline order,
+generate local skill with explicit contract section:
+
+```markdown
+## Pipeline contract
+
+**Position:** Stage N of M (role name)
+**Receives from:** <prev role or "supervisor TODO">
+  - Expected artifact: <what kind of file/output>
+**Produces for:** <next role or "supervisor verify">
+  - Required artifact: <what to write to handoff/<role>.md>
+**Zone of responsibility:** <bullet list of in-scope work>
+**Out of scope (do NOT do):** <bullet list — typically "next role's job">
+```
+
+The contract is derived from a **role registry** (per-role template
+in awf or plugin). Initial set:
+- `system-analysis`: in = TODO goal; out = `requirements.md`; zone =
+  analyze, decompose, write requirements; NOT in scope = code.
+- `developer`: in = requirements; out = code + `implementation.md`;
+  zone = implement; NOT = testing/audit.
+- `qa`: in = code; out = test report + bug fixes; zone = test/review;
+  NOT = new features.
+- `project-auditor`: in = everything; out = audit report; zone =
+  holistic review; NOT = new code.
+
+Tests: normalize_skills produces local skill with "Pipeline contract"
+section; contract content matches role registry.
+
+**Found during:** dogfood session 2026-07-28 — system-analysis did
+the entire task because no contract limited its scope.
+
+---
+
 ### BD-9 · `project-setup` form selections do NOT become pipeline stages — FIXED
 
 **Status:** Fixed in commit `e884d09`.

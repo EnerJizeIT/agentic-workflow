@@ -7,13 +7,16 @@ import pytest
 from awf.orchestrator import (
     _check_needs_normalize,
     _check_skill_drift,
+    _collect_handoff,
     _consume_needs_normalize,
     _global_roles_dir,
     _maybe_commit,
     _needs_normalize,
+    _resolve_prev_handoffs,
     _resolve_role_file,
     _run_agent_stage,
     _run_normalize_stage,
+    _run_supervisor_stage,
 )
 from awf.pipeline import Stage
 
@@ -536,16 +539,22 @@ class TestCheckSkillDrift:
 
 class TestRunNormalizeStage:
 
-    def test_raises_systemexit_background(self, tmp_path: Path) -> None:
+    def test_background_defers_without_exit(self, tmp_path: Path, capsys) -> None:
+        """BD-13: in --background mode normalize_skills defers and returns
+        (does NOT raise SystemExit). Pipeline can continue."""
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         (project_dir / ".agentic").mkdir()
         logs_dir = project_dir / ".agentic" / "logs"
         logs_dir.mkdir()
 
-        with pytest.raises(SystemExit) as exc_info:
-            _run_normalize_stage([], project_dir, logs_dir, background=True)
-        assert exc_info.value.code == 1
+        # Must NOT raise
+        _run_normalize_stage([], project_dir, logs_dir, background=True)
+
+        out = capsys.readouterr().out
+        assert "NORMALIZE_SKILLS STAGE" in out
+        assert "deferred" in out
+        assert "WARNING" in out
 
     def test_background_false_with_mocked_input(self, tmp_path: Path, capsys, monkeypatch) -> None:
         project_dir = tmp_path / "proj"
@@ -602,3 +611,256 @@ class TestRunNormalizeStage:
         assert "worker" in captured.out
         assert "reviewer" in captured.out
         assert "primary" in captured.out
+
+
+# ── BD-14: supervisor via subprocess in auto mode ─────────────────────────────
+
+
+class TestSupervisorViaSubprocess:
+    """BD-14: in auto mode, supervisor plan/verify spawn opencode subprocess."""
+
+    def _make_proj(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        agentic = proj / ".agentic"
+        (agentic / "roles").mkdir(parents=True)
+        (agentic / "roles" / "supervisor.md").write_text("# Supervisor\nplan/verify")
+        (agentic / "phases").mkdir()
+        (agentic / "phases" / "plan.md").write_text("# Plan\nStep 1: do X")
+        (agentic / "inbox").mkdir()
+        (agentic / "outbox").mkdir()
+        (agentic / "context").mkdir()
+        (agentic / "logs").mkdir()
+        # minimal config.yaml
+        (agentic / "config.yaml").write_text(
+            "project:\n  name: test\n  root: .\n"
+            "models:\n  supervisor:\n    description: current\n"
+            "phases:\n  current: .agentic/phases/plan.md\n"
+        )
+        return proj
+
+    def test_create_todo_spawns_subprocess_when_no_active_todo(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda cmd, *a, **kw: calls.append(cmd) or None,
+        )
+
+        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
+
+        assert len(calls) == 1
+        cmd = calls[0]
+        assert cmd[0] == "opencode"
+        assert "--auto" in cmd
+        assert "--agent" in cmd
+        # role file passed
+        assert any("supervisor.md" in c for c in cmd)
+        # phases file passed
+        assert any("plan.md" in c for c in cmd)
+        out = capsys.readouterr().out
+        assert "Spawning supervisor subprocess" in out
+
+    def test_create_todo_skips_subprocess_when_active_todo_exists(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+        # Seed an active TODO
+        (proj / ".agentic" / "inbox" / "TODO-0042.md").write_text("# TODO\nbody")
+        (proj / ".agentic" / "inbox" / "TODO-0042.ready").write_text("")
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda cmd, *a, **kw: calls.append(cmd) or None,
+        )
+
+        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
+
+        assert calls == [], "subprocess must NOT be spawned when active TODO exists"
+        out = capsys.readouterr().out
+        assert "Active TODO already exists" in out
+        assert "TODO-0042" in out
+
+    def test_verify_spawns_subprocess_with_done_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+        (proj / ".agentic" / "outbox" / "DONE-TODO-0042.md").write_text("# DONE\nall good")
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda cmd, *a, **kw: calls.append(cmd) or None,
+        )
+
+        stage = Stage(name="verify", role="supervisor", action="verify_result", description="d")
+        _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+
+        assert len(calls) == 1
+        cmd = calls[0]
+        # DONE file is passed as --file
+        assert any("DONE-TODO-0042.md" in c for c in cmd)
+
+    def test_auto_no_supervisor_md_falls_back_to_skip(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentic" / "logs").mkdir(parents=True)
+        (proj / ".agentic" / "config.yaml").write_text(
+            "project:\n  name: t\nmodels:\n  supervisor:\n    description: x\n"
+        )
+
+        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        # Should NOT raise even without supervisor.md
+        _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=proj / ".agentic" / "logs")
+        out = capsys.readouterr().out
+        assert "skipping" in out.lower()
+
+    def test_interactive_mode_waits_for_input(self, tmp_path: Path, monkeypatch) -> None:
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+
+        pressed: list[bool] = []
+        def fake_input(*a, **kw):
+            pressed.append(True)
+            return ""
+        monkeypatch.setattr("builtins.input", fake_input)
+
+        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        _run_supervisor_stage(stage, todo_id="", auto=False, project_dir=proj, logs_dir=logs)
+        assert pressed == [True], "interactive mode must call input()"
+
+
+# ── BD-15: handoff chain ──────────────────────────────────────────────────────
+
+
+class TestHandoffChain:
+    """BD-15: agent stages receive previous handoffs as --file and produce
+    their own handoff for the next stage."""
+
+    def _setup_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        agentic = project_dir / ".agentic"
+        (agentic / "roles").mkdir(parents=True)
+        (agentic / "roles" / "worker.md").write_text("role")
+        (agentic / "roles" / "developer.md").write_text("role")
+        (agentic / "inbox").mkdir(parents=True)
+        (agentic / "inbox" / "TODO-0001.md").write_text("task")
+        (agentic / "outbox").mkdir(parents=True)
+        (agentic / "context").mkdir(parents=True)
+        (agentic / "logs").mkdir(parents=True)
+        fake_home = tmp_path / "home"
+        (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        return project_dir
+
+    def test_run_agent_stage_forwards_prev_handoffs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-15: prev_handoffs list is passed as --file args."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        # Seed handoffs from previous stages
+        handoff_dir = proj / ".agentic" / "handoff"
+        handoff_dir.mkdir(parents=True)
+        (handoff_dir / "system-analysis.md").write_text("# Handoff sys-analysis\n...")
+        (handoff_dir / "developer.md").write_text("# Handoff developer\n...")
+
+        stage = Stage(name="qa", role="worker", action="execute_todo")
+        captured: list[list[str]] = []
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda cmd, *a, **kw: captured.append(cmd) or None,
+        )
+
+        prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
+        _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
+
+        # First captured cmd is the opencode run invocation
+        opencode_cmd = captured[0]
+        assert "--file" in opencode_cmd
+        # both handoffs should appear
+        assert any("system-analysis.md" in c for c in opencode_cmd)
+        assert any("developer.md" in c for c in opencode_cmd)
+
+    def test_collect_handoff_writes_file_with_progress_and_done(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-15: _collect_handoff writes handoff .md with PROGRESS + DONE."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        # Worker wrote progress + done
+        (proj / ".agentic" / "outbox" / "PROGRESS-TODO-0001.md").write_text("did X, Y")
+        (proj / ".agentic" / "outbox" / "DONE-TODO-0001.md").write_text("# DONE\nall good")
+
+        # Stub git calls
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        assert out is not None
+        assert out.name == "worker.md"
+        body = out.read_text()
+        assert "Handoff from `worker`" in body
+        assert "did X, Y" in body
+        assert "# DONE" in body
+        assert "all good" in body
+        assert "next role" in body.lower()
+
+    def test_collect_handoff_skips_git_when_no_baseline(self, tmp_path, monkeypatch) -> None:
+        """BD-15: no BASELINE-*.sha → no git diff section (and no git subprocess)."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        runs: list = []
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda cmd, *a, **kw: runs.append(cmd) or None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        assert out is not None
+        body = out.read_text()
+        assert "Git diff summary" not in body
+        # Only the "git log" call should have happened (no git diff)
+        git_calls = [c for c in runs if isinstance(c, list) and c[:1] == ["git"]]
+        # git log may still be called; assert no git diff
+        assert not any("diff" in c for c in git_calls)
+
+    def test_resolve_prev_handoffs_skips_supervisor_stages(self, tmp_path) -> None:
+        """BD-15: supervisor stages don't produce handoffs — only agent roles."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentic").mkdir()
+        stages = [
+            Stage(name="plan", role="supervisor", action="create_todo"),
+            Stage(name="r1", role="analyst", action="execute_todo"),
+            Stage(name="r2", role="dev", action="execute_todo"),
+            Stage(name="verify", role="supervisor", action="verify_result"),
+            Stage(name="r3", role="qa", action="execute_todo"),
+        ]
+        # Current stage is index 4 (qa). Previous agent stages = analyst, dev.
+        prev = _resolve_prev_handoffs(stages, 4, proj)
+        prev_names = [p.name for p in prev]
+        assert prev_names == ["analyst.md", "dev.md"]
+
+    def test_resolve_prev_handoffs_empty_for_first_agent_stage(self, tmp_path) -> None:
+        """First agent stage has no prior handoffs."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentic").mkdir()
+        stages = [
+            Stage(name="plan", role="supervisor", action="create_todo"),
+            Stage(name="impl", role="worker", action="execute_todo"),
+        ]
+        prev = _resolve_prev_handoffs(stages, 1, proj)
+        assert prev == []

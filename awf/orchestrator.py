@@ -110,7 +110,13 @@ def _run_supervisor_stage(
     project_dir: Path,
     logs_dir: Path,
 ) -> None:
-    """Handle a supervisor stage. In auto mode, skip interactively."""
+    """Handle a supervisor stage.
+
+    In interactive mode (auto=False): print instructions, wait for Enter.
+    In auto mode (BD-14): spawn ``opencode run`` subprocess that loads
+    supervisor.md as instruction and does the work — writes TODO/.ready
+    for plan, ACK for verify, etc.
+    """
     action = stage.action
     config = cfg_mod.load(project_dir)
     phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
@@ -167,13 +173,124 @@ def _run_supervisor_stage(
         print("After writing a signal (or a new TODO), press Enter to continue.")
 
     print()
-    if auto:
-        print("[auto mode] Skipping supervisor wait.")
-        _log(logs_dir, f"Supervisor stage {action} auto-skipped")
-    else:
+    if not auto:
         print("When done, press Enter to continue...")
         input()
         _log(logs_dir, f"Supervisor stage {action} completed by user")
+        return
+
+    # BD-14: auto mode — spawn opencode subprocess to do supervisor work.
+    _run_supervisor_via_subprocess(action, todo_id, project_dir, config, phases_file, logs_dir)
+
+
+def _run_supervisor_via_subprocess(
+    action: str,
+    todo_id: str,
+    project_dir: Path,
+    config: dict,
+    phases_file: str,
+    logs_dir: Path,
+) -> None:
+    """BD-14: spawn ``opencode run --auto --agent worker --file supervisor.md``
+    to do supervisor work (create TODO, verify, replan) without human.
+
+    Falls back to old "auto-skip" behavior if supervisor.md is missing or
+    if subprocess fails (logged).
+    """
+    import subprocess
+
+    try:
+        role_file = _resolve_role_file("supervisor", project_dir)
+    except RuntimeError as e:
+        print(f"[auto mode] supervisor.md not found — skipping. ({e})")
+        _log(logs_dir, f"Supervisor stage {action} auto-skipped (no supervisor.md)")
+        return
+    if not role_file or not Path(role_file).is_file():
+        print(f"[auto mode] No supervisor.md at {role_file} — skipping.")
+        _log(logs_dir, f"Supervisor stage {action} auto-skipped (no supervisor.md)")
+        return
+
+    extra_files: list[str] = []
+    prompt = ""
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    phases_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
+
+    if action == "create_todo":
+        # Skip if there is already an active TODO (supervisor would no-op).
+        active = todos.list_active_todos(inbox, outbox)
+        if active:
+            print(f"[auto mode] Active TODO already exists: {active[0]} — skip create.")
+            _log(logs_dir, f"Supervisor create_todo auto-skipped (active TODO {active[0]})")
+            return
+        if phases_path.is_file():
+            extra_files.append(str(phases_path))
+        prompt = (
+            "You are the supervisor. Read the phases/plan file. Determine the next step "
+            "that is not yet completed. Create a TODO file at "
+            ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID), create baseline "
+            "via `awf baseline TODO-{NNNN}`, then create the .ready signal at "
+            ".agentic/inbox/TODO-{NNNN}.ready. Do NOT implement the TODO yourself — "
+            "later roles do that. Keep the TODO at the goal level (what success looks like), "
+            "do NOT micromanage individual roles — each role's skill.md already defines its zone."
+        )
+    elif action in ("verify_result", "final_verify"):
+        if not todo_id:
+            print("[auto mode] No todo_id for verify — skip.")
+            _log(logs_dir, f"Supervisor {action} auto-skipped (no todo_id)")
+            return
+        done_md = outbox / f"DONE-{todo_id}.md"
+        if done_md.is_file():
+            extra_files.append(str(done_md))
+        progress = outbox / f"PROGRESS-{todo_id}.md"
+        if progress.is_file():
+            extra_files.append(str(progress))
+        prompt = (
+            f"You are the supervisor. Verify TODO {todo_id}: read the DONE report and PROGRESS notes, "
+            "check `git diff --stat` against the baseline SHA in "
+            f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
+            "If yes, write ACK signal at "
+            f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
+            f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
+        )
+    elif action == "replan":
+        if not todo_id:
+            print("[auto mode] No todo_id for replan — skip.")
+            return
+        blocked = outbox / f"BLOCKED-{todo_id}.md"
+        if blocked.is_file():
+            extra_files.append(str(blocked))
+        prompt = (
+            f"Worker reported BLOCKED on {todo_id}. Read the BLOCKED note, analyze the problem, "
+            "create a refined TODO at .agentic/inbox/TODO-{NNNN}.md (next sequential ID), "
+            "baseline it, and create the .ready signal."
+        )
+    else:
+        # salvage or unknown — skip in auto mode (too risky to automate).
+        print(f"[auto mode] Action {action!r} not automated — skipping.")
+        _log(logs_dir, f"Supervisor stage {action} auto-skipped (not automatable)")
+        return
+
+    agent_name = _get_agent_name(config, "supervisor")
+    cmd = [
+        "opencode", "run", "--auto",
+        "--agent", agent_name,
+        "--file", str(role_file),
+    ]
+    for f in extra_files:
+        cmd += ["--file", f]
+    cmd += ["--", prompt]
+
+    print(f"[auto mode] Spawning supervisor subprocess: agent={agent_name}")
+    print(f"  role: {role_file}")
+    for f in extra_files:
+        print(f"  ctx:  {f}")
+    print()
+
+    _log(logs_dir, f"Supervisor {action} subprocess started (agent={agent_name})")
+    subprocess.run(cmd, cwd=str(project_dir), check=False)
+    _log(logs_dir, f"Supervisor {action} subprocess finished")
 
 
 def _run_agent_stage(
@@ -182,8 +299,15 @@ def _run_agent_stage(
     project_dir: Path,
     config: dict,
     logs_dir: Path,
+    prev_handoffs: list[Path] | None = None,
 ) -> None:
-    """Spawn opencode run for an agent stage."""
+    """Spawn opencode run for an agent stage.
+
+    BD-15: ``prev_handoffs`` is a list of handoff .md files from previous
+    pipeline stages (in pipeline order). Each is passed to the agent as
+    ``--file`` so the agent sees what previous roles did and what is
+    expected of it.
+    """
     role = stage.role
     action = stage.action
     agent_name = _get_agent_name(config, role)
@@ -218,8 +342,17 @@ def _run_agent_stage(
         "--agent", agent_name,
         "--file", str(role_file),
         "--file", str(todo_file),
-        "--", prompt,
     ]
+
+    # BD-15: forward previous stages' handoffs as --file args
+    if prev_handoffs:
+        for hf in prev_handoffs:
+            if hf.is_file():
+                cmd += ["--file", str(hf)]
+                print(f"Handoff in:  {hf}")
+                _log(logs_dir, f"Forwarding handoff: {hf}")
+
+    cmd += ["--", prompt]
 
     skills_dir = paths.agentic_dir(project_dir) / "skills"
     local_skill = skills_dir / f"{role}.md"
@@ -234,6 +367,118 @@ def _run_agent_stage(
     subprocess.run(cmd, cwd=project_dir, check=False)
 
     _log(logs_dir, f"Agent stage finished: {role} ({action}) for {todo_id}")
+
+    # BD-15: collect this stage's output into a handoff for the next role
+    _collect_handoff(role, todo_id, project_dir, logs_dir)
+
+
+def _collect_handoff(
+    role: str,
+    todo_id: str,
+    project_dir: Path,
+    logs_dir: Path,
+) -> Path | None:
+    """BD-15: gather PROGRESS/DONE + git diff summary into ``.agentic/handoff/<role>.md``.
+
+    The next pipeline stage receives this file via ``--file`` so it can see
+    what this role produced without re-deriving it from the filesystem.
+    Returns the path written, or None if nothing was written.
+    """
+    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    handoff_dir.mkdir(parents=True, exist_ok=True)
+    outbox = paths.outbox(project_dir)
+
+    progress = outbox / f"PROGRESS-{todo_id}.md"
+    done = outbox / f"DONE-{todo_id}.md"
+
+    parts: list[str] = [
+        f"# Handoff from `{role}` (TODO {todo_id})",
+        "",
+        "**Generated:** by awf orchestrator (BD-15)",
+        f"**Stage role:** {role}",
+        f"**TODO:** {todo_id}",
+        "",
+    ]
+
+    if progress.is_file():
+        parts += ["## PROGRESS notes (from worker)", "", progress.read_text(encoding="utf-8").strip(), ""]
+
+    if done.is_file():
+        parts += ["## DONE summary (from worker)", "", done.read_text(encoding="utf-8").strip(), ""]
+
+    # Git diff summary vs baseline (if available)
+    context_dir = paths.context_dir(project_dir)
+    sha_file = context_dir / f"BASELINE-{todo_id}.sha"
+    if sha_file.is_file():
+        base_sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+        if base_sha:
+            try:
+                diff = subprocess.run(
+                    ["git", "diff", "--stat", base_sha],
+                    cwd=str(project_dir),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+                if diff is not None and getattr(diff, "stdout", "").strip():
+                    parts += ["## Git diff summary (vs baseline)", "", "```", diff.stdout.strip(), "```", ""]
+            except (subprocess.TimeoutExpired, OSError) as e:
+                _log(logs_dir, f"handoff git-diff failed: {e}")
+
+    # Last commit message if any (indicates what was committed)
+    try:
+        last = subprocess.run(
+            ["git", "log", "-1", "--pretty=%h %s"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if last is not None and getattr(last, "stdout", "").strip():
+            parts += ["## Latest commit", "", f"`{last.stdout.strip()}`", ""]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    parts += [
+        "## What the next role should know",
+        "",
+        "- Read this handoff first. The TODO file declares the goal; this file shows what's done.",
+        "- Pick up where this role left off. Do NOT redo work already done.",
+        "- Write your own handoff at `.agentic/handoff/<your-role>.md` when finished.",
+        "",
+    ]
+
+    out_file = handoff_dir / f"{role}.md"
+    out_file.write_text("\n".join(parts), encoding="utf-8")
+    print(f"Handoff out: {out_file}")
+    _log(logs_dir, f"Handoff written: {out_file}")
+    return out_file
+
+
+def _resolve_prev_handoffs(
+    pipeline_stages: list[Stage],
+    current_stage_idx: int,
+    project_dir: Path,
+) -> list[Path]:
+    """BD-15: return handoff paths for all AGENT stages before ``current_stage_idx``.
+
+    Returns paths in pipeline order (oldest first). Missing files are
+    filtered out by the caller.
+    """
+    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    result: list[Path] = []
+    for i in range(current_stage_idx):
+        if i >= len(pipeline_stages):
+            break
+        st = pipeline_stages[i]
+        # Only forward handoffs from agent stages (supervisor stages don't
+        # produce handoffs; they produce TODOs/signals).
+        if st.role == "supervisor":
+            continue
+        result.append(handoff_dir / f"{st.role}.md")
+    return result
 
 
 def _maybe_commit(
@@ -352,18 +597,13 @@ def _run_normalize_stage(
     *,
     background: bool = False,
 ) -> None:
-    """Run normalize_skills stage — supervisor (current session) does the work."""
-    if background:
-        print(
-            "ERROR: normalize_skills stage cannot run in --background mode.",
-            file=sys.stderr,
-        )
-        print(
-            "Run 'awf normalize' manually first, then 'awf start' (without --background).",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+    """Run normalize_skills stage — supervisor (current session) does the work.
 
+    BD-13: in background mode this stage cannot run interactively (no human
+    at the wheel). Instead of SystemExit, log a warning, preserve the
+    needs_normalize state file, and let the pipeline continue. The supervisor
+    can run `awf normalize` interactively later.
+    """
     effective_team = team
     if not effective_team:
         roles_dir = paths.agentic_dir(project_dir) / "roles"
@@ -388,6 +628,39 @@ def _run_normalize_stage(
         role_type = member.get("type", "")
         print(f"  {i}. {role} ({role_type})")
     print()
+
+    # BD-16: print per-role pipeline contracts so supervisor knows what to write.
+    try:
+        from .skills_contract import render_pipeline_contract
+
+        n = len(effective_team)
+        if n > 0:
+            print("Per-role pipeline contracts (BD-16):")
+            print("-" * 51)
+            for i, member in enumerate(effective_team, 1):
+                role = str(member.get("role", ""))
+                prev_role = effective_team[i - 2].get("role", "") if i >= 2 else None
+                next_role = effective_team[i].get("role", "") if i < n else None
+                print(f"\n[{i}/{n}] {role}:")
+                print(render_pipeline_contract(role, i, n, prev_role, next_role))
+            print("-" * 51)
+            print()
+    except ImportError:
+        pass
+
+    if background:
+        # BD-13: don't exit, just defer.
+        print("WARNING: normalize_skills deferred in --background mode.")
+        print("Supervisor should run `awf normalize` interactively to update")
+        print("local skills. Pipeline continues with whatever role .md files")
+        print("currently exist in .agentic/roles/.")
+        print()
+        _log(
+            logs_dir,
+            "normalize_skills deferred in --background mode (state preserved)",
+        )
+        return
+
     print("Your job as supervisor:")
     print("  1. Read global skills for each role:")
     print("     ~/.config/opencode/skills/<role-slug>/SKILL.md")
@@ -400,9 +673,9 @@ def _run_normalize_stage(
     print("     global_sha, normalized_at, pipeline_context) + full copy of")
     print("     global skill + 'Project-specific adaptation' section.")
     print("  4. Heuristics for conflicts:")
-    print("     - Priority = pipeline order (first wins).")
-    print("     - Output contracts per role type (see supervisor.md).")
-    print("     - Unresolved conflicts -> plan.md 'Open questions' section.")
+    print("    - Priority = pipeline order (first wins).")
+    print("    - Output contracts per role type (see supervisor.md).")
+    print("    - Unresolved conflicts -> plan.md 'Open questions' section.")
     print("  5. When done, press Enter to continue pipeline.")
     print()
     _log(logs_dir, f"Normalize stage started for team of {len(effective_team)}")
@@ -570,7 +843,11 @@ def run_pipeline(args: Any) -> int:
                 if needed:
                     try:
                         _run_normalize_stage(team, project_dir, logs_dir, background=background)
-                        _consume_needs_normalize(state_file)
+                        # BD-13: only consume state file when normalize actually ran
+                        # (i.e., not in background mode). In background, _run_normalize_stage
+                        # returns immediately with a warning — state preserved for later.
+                        if not background:
+                            _consume_needs_normalize(state_file)
                     except Exception:
                         _log(logs_dir, "normalize_skills failed — state file preserved for retry")
                         raise
@@ -584,7 +861,9 @@ def run_pipeline(args: Any) -> int:
                 print(f"No active TODO for agent stage '{s_name}'. Run supervisor stage first.")
                 return 1
 
-        _run_agent_stage(stage, current_todo, project_dir, config, logs_dir)
+        # BD-15: forward handoffs from previous agent stages
+        prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir)
+        _run_agent_stage(stage, current_todo, project_dir, config, logs_dir, prev_handoffs=prev_handoffs)
 
         prefixes = expected_signal_prefixes(s_action)
 
