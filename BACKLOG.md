@@ -477,6 +477,72 @@ form after restart and saw `---` in dropdown.
 
 ---
 
+### BD-17 · BD-8 + BD-14 signal mismatch — supervisor verify subprocess writes ACK but `_maybe_commit` waits for APPROVE
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** BD-14 made supervisor verify spawn `opencode run` subprocess
+that writes `ACK-TODO-NNNN.ready`. BD-8 made `_maybe_commit` wait for
+`APPROVE-TODO-NNNN.ready`. The two never meet: subprocess writes ACK,
+orchestrator waits for APPROVE → 30 min → TimeoutError → pipeline dies.
+Pipeline cannot complete end-to-end in auto+background mode.
+
+**Fix.** `_maybe_commit` now accepts BOTH signals:
+- `APPROVE-{todo}.ready` from `awf approve` / human supervisor
+- `ACK-{todo}.ready` from supervisor verify subprocess
+
+Loops while neither exists, logs which one was received.
+
+Tests: BD-17 ACK signal accepted + commit happens; both missing still
+raises TimeoutError with updated message.
+
+**Found during:** independent audit (project-auditor + qa-review skills
+applied to awf-core) 2026-07-28 — signal flow analysis revealed mismatch.
+
+---
+
+### BD-18 · Subprocess exit codes silently ignored — pipeline advances after agent/supervisor crash
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** `_run_supervisor_via_subprocess` (BD-14) and `_run_agent_stage`
+both called `subprocess.run(cmd, check=False)`. Non-zero exit (segfault,
+OOM, opencode not in PATH, agent couldn't load role.md) was logged as
+"finished" with no error. Pipeline continued → next stage failed with
+confusing "No active TODO" / "No signal after agent stage" errors.
+
+**Fix.** Both call sites now capture `result = subprocess.run(...)` and
+`raise RuntimeError(...)` if `result.returncode != 0`. Error message
+includes exit code and full command for debugging.
+
+Tests: BD-18 supervisor subprocess failure raises; BD-18 agent
+subprocess failure raises.
+
+**Found during:** independent audit (qa-review) 2026-07-28.
+
+---
+
+### BD-19 · Handoff filename `<role>.md` overwrites on retry — audit trail lost
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** `_collect_handoff` wrote `.agentic/handoff/<role>.md` (one
+file per role). On retry (BLOCKED → replan → retry), the previous
+attempt's handoff was overwritten. Next role saw only the latest, with
+no history of what was tried before.
+
+**Fix.** Handoff filename is now `<role>-<todo_id>.md`. Each TODO has its
+own handoff file. `_resolve_prev_handoffs` accepts `todo_id` and returns
+the precise files. When `todo_id` is empty (legacy/unknown caller),
+falls back to scanning for newest `<role>-*.md` match.
+
+Tests: BD-19 handoff naming includes todo_id; BD-19 retries don't
+overwrite prior handoffs; BD-19 fallback to glob when no todo_id.
+
+**Found during:** independent audit (qa-review) 2026-07-28.
+
+---
+
 ### BD-12 · `project-setup` form writes pipeline.yaml but NOT config.yaml role→agent_name mapping — FIXED
 
 **Status:** Fixed in commit (pending).

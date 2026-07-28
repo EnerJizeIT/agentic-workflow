@@ -205,10 +205,6 @@ def _run_supervisor_via_subprocess(
         print(f"[auto mode] supervisor.md not found — skipping. ({e})")
         _log(logs_dir, f"Supervisor stage {action} auto-skipped (no supervisor.md)")
         return
-    if not role_file or not Path(role_file).is_file():
-        print(f"[auto mode] No supervisor.md at {role_file} — skipping.")
-        _log(logs_dir, f"Supervisor stage {action} auto-skipped (no supervisor.md)")
-        return
 
     extra_files: list[str] = []
     prompt = ""
@@ -257,6 +253,7 @@ def _run_supervisor_via_subprocess(
     elif action == "replan":
         if not todo_id:
             print("[auto mode] No todo_id for replan — skip.")
+            _log(logs_dir, f"Supervisor {action} auto-skipped (no todo_id)")
             return
         blocked = outbox / f"BLOCKED-{todo_id}.md"
         if blocked.is_file():
@@ -289,8 +286,13 @@ def _run_supervisor_via_subprocess(
     print()
 
     _log(logs_dir, f"Supervisor {action} subprocess started (agent={agent_name})")
-    subprocess.run(cmd, cwd=str(project_dir), check=False)
-    _log(logs_dir, f"Supervisor {action} subprocess finished")
+    result = subprocess.run(cmd, cwd=str(project_dir), check=False)
+    _log(logs_dir, f"Supervisor {action} subprocess finished (exit={result.returncode})")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Supervisor {action} subprocess exited with code {result.returncode}. "
+            f"Cmd: {' '.join(cmd)}"
+        )
 
 
 def _run_agent_stage(
@@ -364,9 +366,13 @@ def _run_agent_stage(
     else:
         _log(logs_dir, f"No local skill for {role} (using role .md only)")
 
-    subprocess.run(cmd, cwd=project_dir, check=False)
-
-    _log(logs_dir, f"Agent stage finished: {role} ({action}) for {todo_id}")
+    result = subprocess.run(cmd, cwd=project_dir, check=False)
+    _log(logs_dir, f"Agent stage finished: {role} ({action}) for {todo_id} (exit={result.returncode})")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Agent stage {role} ({action}) subprocess exited with code {result.returncode}. "
+            f"Cmd: {' '.join(cmd)}"
+        )
 
     # BD-15: collect this stage's output into a handoff for the next role
     _collect_handoff(role, todo_id, project_dir, logs_dir)
@@ -377,12 +383,16 @@ def _collect_handoff(
     todo_id: str,
     project_dir: Path,
     logs_dir: Path,
-) -> Path | None:
-    """BD-15: gather PROGRESS/DONE + git diff summary into ``.agentic/handoff/<role>.md``.
+) -> Path:
+    """BD-15/19: gather PROGRESS/DONE + git diff summary into handoff .md.
 
-    The next pipeline stage receives this file via ``--file`` so it can see
-    what this role produced without re-deriving it from the filesystem.
-    Returns the path written, or None if nothing was written.
+    BD-19: filename is ``<role>-<todo_id>.md`` (not just ``<role>.md``)
+    so retry on the same role (after BLOCKED → replan → retry) doesn't
+    overwrite the previous attempt's handoff. Each retry produces a new
+    handoff file keeping the audit trail.
+
+    Always writes a file (may contain only header + instructions if no
+    PROGRESS/DONE exist). Returns the path written.
     """
     handoff_dir = paths.agentic_dir(project_dir) / "handoff"
     handoff_dir.mkdir(parents=True, exist_ok=True)
@@ -436,7 +446,7 @@ def _collect_handoff(
             check=False,
             timeout=5,
         )
-        if last is not None and getattr(last, "stdout", "").strip():
+        if last is not None and (getattr(last, "stdout", "") or "").strip():
             parts += ["## Latest commit", "", f"`{last.stdout.strip()}`", ""]
     except (subprocess.TimeoutExpired, OSError):
         pass
@@ -450,7 +460,8 @@ def _collect_handoff(
         "",
     ]
 
-    out_file = handoff_dir / f"{role}.md"
+    # BD-19: include todo_id in filename so retries don't overwrite prior handoffs.
+    out_file = handoff_dir / f"{role}-{todo_id}.md"
     out_file.write_text("\n".join(parts), encoding="utf-8")
     print(f"Handoff out: {out_file}")
     _log(logs_dir, f"Handoff written: {out_file}")
@@ -461,8 +472,14 @@ def _resolve_prev_handoffs(
     pipeline_stages: list[Stage],
     current_stage_idx: int,
     project_dir: Path,
+    todo_id: str = "",
 ) -> list[Path]:
-    """BD-15: return handoff paths for all AGENT stages before ``current_stage_idx``.
+    """BD-15/19: return handoff paths for all AGENT stages before ``current_stage_idx``.
+
+    BD-19: handoff files are named ``<role>-<todo_id>.md``. When ``todo_id``
+    is provided, returns those specific files. When ``todo_id`` is empty
+    (legacy/unknown), falls back to scanning handoff_dir for any file
+    starting with ``<role>-`` (newest first).
 
     Returns paths in pipeline order (oldest first). Missing files are
     filtered out by the caller.
@@ -470,14 +487,23 @@ def _resolve_prev_handoffs(
     handoff_dir = paths.agentic_dir(project_dir) / "handoff"
     result: list[Path] = []
     for i in range(current_stage_idx):
-        if i >= len(pipeline_stages):
-            break
         st = pipeline_stages[i]
         # Only forward handoffs from agent stages (supervisor stages don't
         # produce handoffs; they produce TODOs/signals).
         if st.role == "supervisor":
             continue
-        result.append(handoff_dir / f"{st.role}.md")
+        if todo_id:
+            # BD-19: precise file path.
+            result.append(handoff_dir / f"{st.role}-{todo_id}.md")
+        else:
+            # Fallback: find newest file matching <role>-*.md
+            candidates = sorted(
+                handoff_dir.glob(f"{st.role}-*.md"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                result.append(candidates[0])
     return result
 
 
@@ -504,25 +530,30 @@ def _maybe_commit(
 
     if auto:
         inbox = paths.inbox(project_dir)
+        # BD-17: accept either APPROVE-{todo}.ready (from `awf approve` /
+        # human) or ACK-{todo}.ready (from supervisor verify subprocess in
+        # auto mode). Both authorize the commit.
         approve_signal = inbox / f"APPROVE-{todo_id}.ready"
+        ack_signal = inbox / f"ACK-{todo_id}.ready"
         print("Auto-mode: waiting for supervisor approval to commit.", file=sys.stderr)
-        print(f"  Create signal: awf approve {todo_id}", file=sys.stderr)
-        print(f"  Or manually:  touch {approve_signal}", file=sys.stderr)
-        _log(logs_dir, f"Auto-mode: waiting for APPROVE signal for {todo_id}")
+        print(f"  Approve signal: awf approve {todo_id}", file=sys.stderr)
+        print("  Or ACK from supervisor verify subprocess.", file=sys.stderr)
+        _log(logs_dir, f"Auto-mode: waiting for APPROVE or ACK signal for {todo_id}")
 
         import time
         deadline = time.time() + APPROVE_TIMEOUT_SECONDS
-        while not approve_signal.exists():
+        while not approve_signal.exists() and not ack_signal.exists():
             if time.time() > deadline:
                 print(
-                    f"ERROR: APPROVE signal not received within {APPROVE_TIMEOUT_SECONDS}s. "
+                    f"ERROR: APPROVE/ACK signal not received within {APPROVE_TIMEOUT_SECONDS}s. "
                     f"Pipeline aborting.",
                     file=sys.stderr,
                 )
-                _log(logs_dir, f"APPROVE timeout for {todo_id}")
-                raise TimeoutError(f"APPROVE signal not received for {todo_id}")
+                _log(logs_dir, f"APPROVE/ACK timeout for {todo_id}")
+                raise TimeoutError(f"APPROVE/ACK signal not received for {todo_id}")
             time.sleep(APPROVE_POLL_INTERVAL)
-        _log(logs_dir, f"APPROVE signal received for {todo_id}")
+        which = "APPROVE" if approve_signal.exists() else "ACK"
+        _log(logs_dir, f"{which} signal received for {todo_id}")
 
     if git_utils.commit_all(project_dir, f"awf({stage_name}): {todo_id}"):
         sha = subprocess.run(
@@ -861,8 +892,8 @@ def run_pipeline(args: Any) -> int:
                 print(f"No active TODO for agent stage '{s_name}'. Run supervisor stage first.")
                 return 1
 
-        # BD-15: forward handoffs from previous agent stages
-        prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir)
+        # BD-15/19: forward handoffs from previous agent stages (named with todo_id)
+        prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
         _run_agent_stage(stage, current_todo, project_dir, config, logs_dir, prev_handoffs=prev_handoffs)
 
         prefixes = expected_signal_prefixes(s_action)

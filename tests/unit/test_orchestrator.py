@@ -1,4 +1,5 @@
 """Unit tests for awf.orchestrator — role file resolution."""
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,9 @@ from awf.orchestrator import (
     _run_supervisor_stage,
 )
 from awf.pipeline import Stage
+
+# BD-18: subprocess.run return value for "success" mocks.
+_OK_RESULT = subprocess.CompletedProcess(args=[], returncode=0)
 
 
 class TestResolveRoleFile:
@@ -218,6 +222,63 @@ class TestMaybeCommitBD8:
         )
         assert "file.txt" not in status.stdout
 
+    def test_maybe_commit_auto_accepts_ack_signal_bd17(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-17: ACK signal (from supervisor verify subprocess) authorizes commit too."""
+        project_dir = self._init_git(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        inbox = project_dir / ".agentic" / "inbox"
+        inbox.mkdir(parents=True)
+
+        # Only ACK exists — no APPROVE
+        (inbox / "ACK-TODO-0001.ready").touch()
+        (project_dir / "file.txt").write_text("modified")
+
+        sleep_calls: list = []
+        monkeypatch.setattr("time.sleep", lambda _d: sleep_calls.append(_d))
+
+        _maybe_commit(
+            "verify", "TODO-0001", "commit_and_next",
+            project_dir, logs_dir, auto=True,
+        )
+
+        # Should not have polled (signal detected on first check)
+        assert sleep_calls == []
+        # Commit happened — file.txt no longer in `git status`
+        import subprocess
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_dir, capture_output=True, text=True,
+        )
+        assert "file.txt" not in status.stdout
+
+    def test_maybe_commit_auto_no_signal_still_times_out_bd17(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-17: when neither APPROVE nor ACK exists, still raises TimeoutError."""
+        project_dir = self._init_git(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        inbox = project_dir / ".agentic" / "inbox"
+        inbox.mkdir(parents=True)
+
+        (project_dir / "file.txt").write_text("modified")
+
+        _t = [0.0]
+        monkeypatch.setattr("time.time", lambda: _t[0])
+        monkeypatch.setattr("time.sleep", lambda d: _t.__setitem__(0, _t[0] + d))
+        monkeypatch.setattr("awf.orchestrator.APPROVE_TIMEOUT_SECONDS", 0)
+
+        with pytest.raises(TimeoutError) as exc_info:
+            _maybe_commit(
+                "verify", "TODO-0001", "commit_and_next",
+                project_dir, logs_dir, auto=True,
+            )
+        # Error message should mention both signal types
+        assert "APPROVE/ACK" in str(exc_info.value)
+
 
 class TestRunAgentStageLocalSkill:
 
@@ -247,6 +308,7 @@ class TestRunAgentStageLocalSkill:
 
         def fake_run(cmd, **kwargs):
             captured.extend(cmd)
+            return _OK_RESULT
 
         with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
             _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
@@ -267,6 +329,7 @@ class TestRunAgentStageLocalSkill:
 
         def fake_run(cmd, **kwargs):
             captured.extend(cmd)
+            return _OK_RESULT
 
         with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
             _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
@@ -285,6 +348,7 @@ class TestRunAgentStageLocalSkill:
 
         def fake_run(cmd, **kwargs):
             captured.extend(cmd)
+            return _OK_RESULT
 
         with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
             _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
@@ -648,7 +712,7 @@ class TestSupervisorViaSubprocess:
         calls: list[list[str]] = []
         monkeypatch.setattr(
             "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: calls.append(cmd) or None,
+            lambda cmd, *a, **kw: calls.append(cmd) or _OK_RESULT,
         )
 
         stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
@@ -678,7 +742,7 @@ class TestSupervisorViaSubprocess:
         calls: list[list[str]] = []
         monkeypatch.setattr(
             "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: calls.append(cmd) or None,
+            lambda cmd, *a, **kw: calls.append(cmd) or _OK_RESULT,
         )
 
         stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
@@ -699,7 +763,7 @@ class TestSupervisorViaSubprocess:
         calls: list[list[str]] = []
         monkeypatch.setattr(
             "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: calls.append(cmd) or None,
+            lambda cmd, *a, **kw: calls.append(cmd) or _OK_RESULT,
         )
 
         stage = Stage(name="verify", role="supervisor", action="verify_result", description="d")
@@ -739,6 +803,75 @@ class TestSupervisorViaSubprocess:
         stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
         _run_supervisor_stage(stage, todo_id="", auto=False, project_dir=proj, logs_dir=logs)
         assert pressed == [True], "interactive mode must call input()"
+
+    def test_supervisor_subprocess_failure_raises_bd18(self, tmp_path: Path, monkeypatch) -> None:
+        """BD-18: non-zero exit code from supervisor subprocess raises RuntimeError."""
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+
+        failing = subprocess.CompletedProcess(args=[], returncode=42)
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: failing,
+        )
+
+        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        with pytest.raises(RuntimeError) as exc_info:
+            _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
+        assert "42" in str(exc_info.value)
+        assert "Supervisor" in str(exc_info.value)
+
+    def test_agent_subprocess_failure_raises_bd18(self, tmp_path: Path, monkeypatch) -> None:
+        """BD-18: non-zero exit code from agent subprocess raises RuntimeError."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        agentic = proj / ".agentic"
+        (agentic / "roles").mkdir(parents=True)
+        (agentic / "roles" / "worker.md").write_text("role")
+        (agentic / "inbox").mkdir(parents=True)
+        (agentic / "inbox" / "TODO-0001.md").write_text("task")
+        (agentic / "logs").mkdir(parents=True)
+        fake_home = tmp_path / "home"
+        (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        failing = subprocess.CompletedProcess(args=[], returncode=7)
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: failing,
+        )
+
+        stage = Stage(name="impl", role="worker", action="execute_todo")
+        with pytest.raises(RuntimeError) as exc_info:
+            _run_agent_stage(stage, "TODO-0001", proj, {}, agentic / "logs")
+        assert "7" in str(exc_info.value)
+        assert "worker" in str(exc_info.value)
+
+    def test_replan_skips_when_no_todo_id(self, tmp_path: Path, capsys) -> None:
+        """BD-14: replan with empty todo_id should skip gracefully and log."""
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+
+        stage = Stage(name="replan", role="supervisor", action="replan", description="d")
+        _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
+
+        out = capsys.readouterr().out
+        assert "No todo_id for replan" in out
+        # Verify it was logged
+        log_file = logs / "orchestrator.log"
+        assert log_file.exists()
+        assert "auto-skipped" in log_file.read_text()
+
+    def test_salvage_skips_in_auto_mode(self, tmp_path: Path, capsys) -> None:
+        """BD-14: salvage action is not automatable — should skip."""
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+
+        stage = Stage(name="salvage", role="supervisor", action="salvage", description="d")
+        _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+
+        out = capsys.readouterr().out
+        assert "not automated" in out
 
 
 # ── BD-15: handoff chain ──────────────────────────────────────────────────────
@@ -780,7 +913,7 @@ class TestHandoffChain:
         captured: list[list[str]] = []
         monkeypatch.setattr(
             "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: captured.append(cmd) or None,
+            lambda cmd, *a, **kw: captured.append(cmd) or _OK_RESULT,
         )
 
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
@@ -792,6 +925,30 @@ class TestHandoffChain:
         # both handoffs should appear
         assert any("system-analysis.md" in c for c in opencode_cmd)
         assert any("developer.md" in c for c in opencode_cmd)
+
+    def test_run_agent_stage_filters_missing_handoffs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-15: prev_handoffs that don't exist on disk are skipped."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        handoff_dir = proj / ".agentic" / "handoff"
+        handoff_dir.mkdir(parents=True)
+        (handoff_dir / "system-analysis.md").write_text("# Handoff\n...")
+        # developer.md intentionally NOT created
+
+        stage = Stage(name="qa", role="worker", action="execute_todo")
+        captured: list[list[str]] = []
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda cmd, *a, **kw: captured.append(cmd) or _OK_RESULT,
+        )
+
+        prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
+        _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
+
+        opencode_cmd = captured[0]
+        assert any("system-analysis.md" in c for c in opencode_cmd)
+        assert not any("developer.md" in c for c in opencode_cmd)
 
     def test_collect_handoff_writes_file_with_progress_and_done(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -810,7 +967,7 @@ class TestHandoffChain:
 
         out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
         assert out is not None
-        assert out.name == "worker.md"
+        assert out.name == "worker-TODO-0001.md"  # BD-19: role-todo naming
         body = out.read_text()
         assert "Handoff from `worker`" in body
         assert "did X, Y" in body
@@ -836,8 +993,32 @@ class TestHandoffChain:
         # git log may still be called; assert no git diff
         assert not any("diff" in c for c in git_calls)
 
+    def test_collect_handoff_always_writes_even_without_progress_or_done(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-15: _collect_handoff always writes a file (never returns None),
+        even when PROGRESS and DONE are both missing."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        # Do NOT create PROGRESS or DONE files
+
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        assert out is not None
+        assert out.exists()
+        body = out.read_text()
+        assert "Handoff from `worker`" in body
+        assert "next role" in body.lower()
+        # Should NOT have PROGRESS or DONE sections
+        assert "PROGRESS notes" not in body
+        assert "DONE summary" not in body
+
     def test_resolve_prev_handoffs_skips_supervisor_stages(self, tmp_path) -> None:
-        """BD-15: supervisor stages don't produce handoffs — only agent roles."""
+        """BD-15/19: supervisor stages don't produce handoffs — only agent roles.
+        With todo_id, paths are role-todo.md."""
         proj = tmp_path / "proj"
         proj.mkdir()
         (proj / ".agentic").mkdir()
@@ -849,9 +1030,9 @@ class TestHandoffChain:
             Stage(name="r3", role="qa", action="execute_todo"),
         ]
         # Current stage is index 4 (qa). Previous agent stages = analyst, dev.
-        prev = _resolve_prev_handoffs(stages, 4, proj)
+        prev = _resolve_prev_handoffs(stages, 4, proj, todo_id="TODO-0042")
         prev_names = [p.name for p in prev]
-        assert prev_names == ["analyst.md", "dev.md"]
+        assert prev_names == ["analyst-TODO-0042.md", "dev-TODO-0042.md"]
 
     def test_resolve_prev_handoffs_empty_for_first_agent_stage(self, tmp_path) -> None:
         """First agent stage has no prior handoffs."""
@@ -864,3 +1045,49 @@ class TestHandoffChain:
         ]
         prev = _resolve_prev_handoffs(stages, 1, proj)
         assert prev == []
+
+    def test_handoff_naming_includes_todo_id_bd19(self, tmp_path, monkeypatch) -> None:
+        """BD-19: filename is role-<todo>.md so retries don't overwrite prior handoffs."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        agentic = proj / ".agentic"
+        (agentic / "logs").mkdir(parents=True)
+        (agentic / "outbox").mkdir(parents=True)
+        (agentic / "context").mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        # First attempt for TODO-0001
+        out1 = _collect_handoff("worker", "TODO-0001", proj, agentic / "logs")
+        assert out1.name == "worker-TODO-0001.md"
+
+        # Replan → new TODO-0002 on same role. Previous handoff must survive.
+        out2 = _collect_handoff("worker", "TODO-0002", proj, agentic / "logs")
+        assert out2.name == "worker-TODO-0002.md"
+
+        # Both files exist (no overwrite)
+        handoff_dir = agentic / "handoff"
+        assert (handoff_dir / "worker-TODO-0001.md").exists()
+        assert (handoff_dir / "worker-TODO-0002.md").exists()
+
+    def test_resolve_prev_handoffs_no_todo_id_falls_back_to_glob(self, tmp_path) -> None:
+        """BD-19: when todo_id is empty, scan handoff_dir for <role>-*.md files."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        handoff_dir = proj / ".agentic" / "handoff"
+        handoff_dir.mkdir(parents=True)
+        # Seed multiple handoffs for analyst across TODOs
+        (handoff_dir / "analyst-TODO-0001.md").write_text("v1")
+        (handoff_dir / "analyst-TODO-0002.md").write_text("v2")  # newer
+
+        stages = [
+            Stage(name="r1", role="analyst", action="execute_todo"),
+            Stage(name="r2", role="dev", action="execute_todo"),
+        ]
+        # No todo_id provided — should pick newest analyst-*.md
+        prev = _resolve_prev_handoffs(stages, 1, proj, todo_id="")
+        assert len(prev) == 1
+        assert "analyst-TODO-0002.md" in prev[0].name
