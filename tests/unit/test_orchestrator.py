@@ -21,8 +21,95 @@ from awf.orchestrator import (
 )
 from awf.pipeline import Stage
 
-# BD-18: subprocess.run return value for "success" mocks.
+# BD-18: subprocess.run return value for "success" mocks (legacy — kept for
+# any tests still using subprocess.run-style asserts).
 _OK_RESULT = subprocess.CompletedProcess(args=[], returncode=0)
+
+
+class _FakePopen:
+    """Mock subprocess.Popen for tests that exercise _run_subprocess_until_signal.
+
+    Returns ``returncode`` from poll() on first call, then exits. Simulates
+    immediate subprocess completion — does NOT exercise the signal-watch
+    loop (which is what BD-20 unit tests below do separately).
+
+    Records the cmd in ``self.cmd`` for tests that need to assert on args.
+    Supports context-manager protocol so it can also stub subprocess.run
+    call sites that use ``with Popen(...)`` style (used by git helpers).
+    """
+    pid = 12345
+    # Class-level sink so tests can introspect the last invocation.
+    _last_cmds: list[list[str]] = []
+    stdout = ""
+    stderr = ""
+
+    def __init__(self, cmd, cwd=None, **kwargs):
+        self.cmd = cmd
+        self.cwd = cwd
+        self.returncode = 0
+        type(self)._last_cmds.append(list(cmd) if isinstance(cmd, list) else [cmd])
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+    def communicate(self, input=None, timeout=None):
+        return (self.stdout, self.stderr)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @classmethod
+    def reset(cls):
+        cls._last_cmds.clear()
+
+
+class _FailingPopen(_FakePopen):
+    """Mock Popen that returns non-zero exit code (for BD-18 failure tests)."""
+    _exit_code = 42
+
+    def __init__(self, cmd, cwd=None, **kwargs):
+        super().__init__(cmd, cwd, **kwargs)
+        self.returncode = self._exit_code
+
+    def poll(self):
+        return self._exit_code
+
+    def wait(self, timeout=None):
+        return self._exit_code
+
+
+def _fake_run(cmd, *args, **kwargs):
+    """Stub subprocess.run so git command calls inside _collect_handoff
+    and elsewhere don't actually shell out during tests."""
+    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+
+def _patch_subprocess_for_awf(monkeypatch):
+    """Helper for tests that exercise _run_agent_stage / _run_supervisor_stage.
+
+    Patches ONLY awf.orchestrator's subprocess.Popen and subprocess.run so
+    the rest of the test (git init in _init_git, git status assertions, etc.)
+    can use the real subprocess module.
+
+    NOTE: monkeypatch.setattr("awf.orchestrator.subprocess.run", ...) does
+    mutate the shared subprocess module — pytest undoes it on teardown.
+    """
+    _FakePopen.reset()
+    monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("awf.orchestrator.subprocess.run", _fake_run)
+    monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
 
 class TestResolveRoleFile:
@@ -304,17 +391,12 @@ class TestRunAgentStageLocalSkill:
         local_skill.write_text("skill content")
 
         stage = Stage(name="execute", role="worker", action="execute_todo")
-        captured = []
+        _patch_subprocess_for_awf(monkeypatch)
+        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
-        def fake_run(cmd, **kwargs):
-            captured.extend(cmd)
-            return _OK_RESULT
-
-        with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
-            _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
-
+        assert _FakePopen._last_cmds, "Popen must have been called"
+        captured = _FakePopen._last_cmds[-1]
         assert "--file" in captured
-        skill_idx = captured.index("--file")
         assert str(local_skill) in captured
         file_indices = [i for i, x in enumerate(captured) if x == "--file"]
         assert len(file_indices) == 3
@@ -325,15 +407,10 @@ class TestRunAgentStageLocalSkill:
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
         stage = Stage(name="execute", role="worker", action="execute_todo")
-        captured = []
+        _patch_subprocess_for_awf(monkeypatch)
+        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
-        def fake_run(cmd, **kwargs):
-            captured.extend(cmd)
-            return _OK_RESULT
-
-        with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
-            _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
-
+        captured = _FakePopen._last_cmds[-1]
         file_indices = [i for i, x in enumerate(captured) if x == "--file"]
         assert len(file_indices) == 2
 
@@ -344,15 +421,10 @@ class TestRunAgentStageLocalSkill:
         (project_dir / ".agentic" / "skills").mkdir(parents=True)
 
         stage = Stage(name="execute", role="worker", action="execute_todo")
-        captured = []
+        _patch_subprocess_for_awf(monkeypatch)
+        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
-        def fake_run(cmd, **kwargs):
-            captured.extend(cmd)
-            return _OK_RESULT
-
-        with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
-            _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
-
+        captured = _FakePopen._last_cmds[-1]
         file_indices = [i for i, x in enumerate(captured) if x == "--file"]
         assert len(file_indices) == 2
 
@@ -772,23 +844,16 @@ class TestSupervisorViaSubprocess:
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
 
-        calls: list[list[str]] = []
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: calls.append(cmd) or _OK_RESULT,
-        )
-
+        _patch_subprocess_for_awf(monkeypatch)
         stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
         _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
 
-        assert len(calls) == 1
-        cmd = calls[0]
+        assert len(_FakePopen._last_cmds) == 1
+        cmd = _FakePopen._last_cmds[0]
         assert cmd[0] == "opencode"
         assert "--auto" in cmd
         assert "--agent" in cmd
-        # role file passed
         assert any("supervisor.md" in c for c in cmd)
-        # phases file passed
         assert any("plan.md" in c for c in cmd)
         out = capsys.readouterr().out
         assert "Spawning supervisor subprocess" in out
@@ -798,20 +863,14 @@ class TestSupervisorViaSubprocess:
     ) -> None:
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
-        # Seed an active TODO
         (proj / ".agentic" / "inbox" / "TODO-0042.md").write_text("# TODO\nbody")
         (proj / ".agentic" / "inbox" / "TODO-0042.ready").write_text("")
 
-        calls: list[list[str]] = []
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: calls.append(cmd) or _OK_RESULT,
-        )
-
+        _patch_subprocess_for_awf(monkeypatch)
         stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
         _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
 
-        assert calls == [], "subprocess must NOT be spawned when active TODO exists"
+        assert _FakePopen._last_cmds == [], "Popen must NOT be called when active TODO exists"
         out = capsys.readouterr().out
         assert "Active TODO already exists" in out
         assert "TODO-0042" in out
@@ -823,18 +882,12 @@ class TestSupervisorViaSubprocess:
         logs = proj / ".agentic" / "logs"
         (proj / ".agentic" / "outbox" / "DONE-TODO-0042.md").write_text("# DONE\nall good")
 
-        calls: list[list[str]] = []
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: calls.append(cmd) or _OK_RESULT,
-        )
-
+        _patch_subprocess_for_awf(monkeypatch)
         stage = Stage(name="verify", role="supervisor", action="verify_result", description="d")
         _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
 
-        assert len(calls) == 1
-        cmd = calls[0]
-        # DONE file is passed as --file
+        assert len(_FakePopen._last_cmds) == 1
+        cmd = _FakePopen._last_cmds[0]
         assert any("DONE-TODO-0042.md" in c for c in cmd)
 
     def test_auto_no_supervisor_md_falls_back_to_skip(
@@ -872,11 +925,7 @@ class TestSupervisorViaSubprocess:
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
 
-        failing = subprocess.CompletedProcess(args=[], returncode=42)
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda *a, **kw: failing,
-        )
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
 
         stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
         with pytest.raises(RuntimeError) as exc_info:
@@ -898,43 +947,221 @@ class TestSupervisorViaSubprocess:
         (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: fake_home)
 
-        failing = subprocess.CompletedProcess(args=[], returncode=7)
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda *a, **kw: failing,
-        )
+        # Use _FailingPopen with exit code 7
+        _FailingPopen._exit_code = 7
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
 
         stage = Stage(name="impl", role="worker", action="execute_todo")
         with pytest.raises(RuntimeError) as exc_info:
             _run_agent_stage(stage, "TODO-0001", proj, {}, agentic / "logs")
         assert "7" in str(exc_info.value)
         assert "worker" in str(exc_info.value)
+        _FailingPopen._exit_code = 42  # reset
 
-    def test_replan_skips_when_no_todo_id(self, tmp_path: Path, capsys) -> None:
-        """BD-14: replan with empty todo_id should skip gracefully and log."""
-        proj = self._make_proj(tmp_path)
-        logs = proj / ".agentic" / "logs"
 
-        stage = Stage(name="replan", role="supervisor", action="replan", description="d")
-        _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
+# ── BD-20: signal-watch + terminate subprocess ────────────────────────────────
 
-        out = capsys.readouterr().out
-        assert "No todo_id for replan" in out
-        # Verify it was logged
-        log_file = logs / "orchestrator.log"
-        assert log_file.exists()
-        assert "auto-skipped" in log_file.read_text()
 
-    def test_salvage_skips_in_auto_mode(self, tmp_path: Path, capsys) -> None:
-        """BD-14: salvage action is not automatable — should skip."""
-        proj = self._make_proj(tmp_path)
-        logs = proj / ".agentic" / "logs"
+class TestRunSubprocessUntilSignal:
+    """BD-20: _run_subprocess_until_signal watches for files and terminates."""
 
-        stage = Stage(name="salvage", role="supervisor", action="salvage", description="d")
-        _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+    def test_exits_naturally_with_zero(self, tmp_path, monkeypatch) -> None:
+        """If subprocess exits naturally rc=0, return CompletedProcess(0)."""
+        from awf.orchestrator import _run_subprocess_until_signal
 
-        out = capsys.readouterr().out
-        assert "not automated" in out
+        _patch_subprocess_for_awf(monkeypatch)
+        # _FakePopen.poll() returns 0 immediately
+        result = _run_subprocess_until_signal(
+            cmd=["sleep", "1"],
+            cwd=tmp_path,
+            watch_paths=[tmp_path / "DOES-NOT-EXIST"],
+            logs_dir=None,
+        )
+        assert result.returncode == 0
+
+    def test_exits_naturally_nonzero_propagates(self, tmp_path, monkeypatch) -> None:
+        """Natural non-zero exit propagates (no signal-watch interference)."""
+        from awf.orchestrator import _run_subprocess_until_signal
+
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+        _FailingPopen._exit_code = 99
+        result = _run_subprocess_until_signal(
+            cmd=["false"],
+            cwd=tmp_path,
+            watch_paths=[],
+            logs_dir=None,
+        )
+        assert result.returncode == 99
+        _FailingPopen._exit_code = 42
+
+    def test_signal_appears_then_terminate(self, tmp_path, monkeypatch) -> None:
+        """BD-20: when signal file appears, grace period elapses, terminate."""
+        from awf.orchestrator import _run_subprocess_until_signal
+
+        class _HangingPopen(_FakePopen):
+            """Popen that never exits on its own — forces signal-watch path."""
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                type(self).terminated = True
+
+            def wait(self, timeout=None):
+                # Simulate that terminate() worked
+                return 0
+
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        signal_file = tmp_path / "DONE-TODO-0001.ready"
+        signal_file.write_text("")  # already exists
+
+        result = _run_subprocess_until_signal(
+            cmd=["opencode", "run"],
+            cwd=tmp_path,
+            watch_paths=[signal_file],
+            logs_dir=None,
+            grace_seconds=0,  # don't wait
+        )
+        assert result.returncode == 0
+        assert _HangingPopen.terminated, "terminate() must have been called"
+
+    def test_new_glob_signal_detected(self, tmp_path, monkeypatch) -> None:
+        """BD-20: watch_new_glob detects new file appearing in directory."""
+        from awf.orchestrator import _run_subprocess_until_signal
+
+        class _HangingPopen(_FakePopen):
+            terminated = False
+            _call_count = 0
+
+            def poll(self):
+                # On second poll, simulate that supervisor created TODO-0099.ready
+                type(self)._call_count += 1
+                if type(self)._call_count >= 2:
+                    (tmp_path / "TODO-0099.ready").write_text("")
+                return None
+
+            def terminate(self):
+                type(self).terminated = True
+
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        result = _run_subprocess_until_signal(
+            cmd=["opencode", "run"],
+            cwd=tmp_path,
+            watch_paths=[],
+            watch_new_glob=(tmp_path, "TODO-*.ready"),
+            logs_dir=None,
+            grace_seconds=0,
+        )
+        assert result.returncode == 0
+        assert _HangingPopen.terminated
+
+    def test_hard_timeout_raises(self, tmp_path, monkeypatch) -> None:
+        """BD-20: hard timeout raises TimeoutError if no signal ever appears."""
+
+        from awf.orchestrator import _run_subprocess_until_signal
+
+        class _HangingPopen(_FakePopen):
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        # Simulate time advancing past the deadline.
+        t = [0.0]
+        monkeypatch.setattr("time.monotonic", lambda: t[0])
+        monkeypatch.setattr("time.sleep", lambda d: t.__setitem__(0, t[0] + d + 1000))
+
+        with pytest.raises(TimeoutError):
+            _run_subprocess_until_signal(
+                cmd=["hang"],
+                cwd=tmp_path,
+                watch_paths=[tmp_path / "NEVER"],
+                logs_dir=None,
+                hard_timeout=60,
+            )
+
+
+def _make_supervisor_proj(tmp_path: Path) -> Path:
+    """Module-level helper for tests outside TestSupervisorViaSubprocess."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    agentic = proj / ".agentic"
+    (agentic / "roles").mkdir(parents=True)
+    (agentic / "roles" / "supervisor.md").write_text("# Supervisor\nplan/verify")
+    (agentic / "phases").mkdir()
+    (agentic / "phases" / "plan.md").write_text("# Plan\nStep 1: do X")
+    (agentic / "inbox").mkdir()
+    (agentic / "outbox").mkdir()
+    (agentic / "context").mkdir()
+    (agentic / "logs").mkdir()
+    (agentic / "config.yaml").write_text(
+        "project:\n  name: test\n  root: .\n"
+        "models:\n  supervisor:\n    description: current\n"
+        "phases:\n  current: .agentic/phases/plan.md\n"
+    )
+    return proj
+
+
+def test_replan_skips_when_no_todo_id_module(tmp_path: Path, capsys) -> None:
+    """BD-14: replan with empty todo_id should skip gracefully and log."""
+    proj = _make_supervisor_proj(tmp_path)
+    logs = proj / ".agentic" / "logs"
+
+    stage = Stage(name="replan", role="supervisor", action="replan", description="d")
+    _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
+
+    out = capsys.readouterr().out
+    assert "No todo_id for replan" in out
+    log_file = logs / "orchestrator.log"
+    assert log_file.exists()
+    assert "auto-skipped" in log_file.read_text()
+
+
+def test_salvage_skips_in_auto_mode_module(tmp_path: Path, capsys) -> None:
+    """BD-14: salvage action is not automatable — should skip."""
+    proj = _make_supervisor_proj(tmp_path)
+    logs = proj / ".agentic" / "logs"
+
+    stage = Stage(name="salvage", role="supervisor", action="salvage", description="d")
+    _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+
+    out = capsys.readouterr().out
+    assert "not automated" in out
+
+
+def _make_supervisor_proj(tmp_path: Path) -> Path:
+    """Module-level helper for tests outside TestSupervisorViaSubprocess."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    agentic = proj / ".agentic"
+    (agentic / "roles").mkdir(parents=True)
+    (agentic / "roles" / "supervisor.md").write_text("# Supervisor\nplan/verify")
+    (agentic / "phases").mkdir()
+    (agentic / "phases" / "plan.md").write_text("# Plan\nStep 1: do X")
+    (agentic / "inbox").mkdir()
+    (agentic / "outbox").mkdir()
+    (agentic / "context").mkdir()
+    (agentic / "logs").mkdir()
+    (agentic / "config.yaml").write_text(
+        "project:\n  name: test\n  root: .\n"
+        "models:\n  supervisor:\n    description: current\n"
+        "phases:\n  current: .agentic/phases/plan.md\n"
+    )
+    return proj
 
 
 # ── BD-18 graceful handling: run_pipeline catches RuntimeError ────────────────
@@ -994,26 +1221,18 @@ class TestHandoffChain:
     ) -> None:
         """BD-15: prev_handoffs list is passed as --file args."""
         proj = self._setup_project(tmp_path, monkeypatch)
-        # Seed handoffs from previous stages
         handoff_dir = proj / ".agentic" / "handoff"
         handoff_dir.mkdir(parents=True)
         (handoff_dir / "system-analysis.md").write_text("# Handoff sys-analysis\n...")
         (handoff_dir / "developer.md").write_text("# Handoff developer\n...")
 
         stage = Stage(name="qa", role="worker", action="execute_todo")
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: captured.append(cmd) or _OK_RESULT,
-        )
-
+        _patch_subprocess_for_awf(monkeypatch)
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
         _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
 
-        # First captured cmd is the opencode run invocation
-        opencode_cmd = captured[0]
+        opencode_cmd = _FakePopen._last_cmds[0]
         assert "--file" in opencode_cmd
-        # both handoffs should appear
         assert any("system-analysis.md" in c for c in opencode_cmd)
         assert any("developer.md" in c for c in opencode_cmd)
 
@@ -1028,16 +1247,11 @@ class TestHandoffChain:
         # developer.md intentionally NOT created
 
         stage = Stage(name="qa", role="worker", action="execute_todo")
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
-            lambda cmd, *a, **kw: captured.append(cmd) or _OK_RESULT,
-        )
-
+        _patch_subprocess_for_awf(monkeypatch)
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
         _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
 
-        opencode_cmd = captured[0]
+        opencode_cmd = _FakePopen._last_cmds[0]
         assert any("system-analysis.md" in c for c in opencode_cmd)
         assert not any("developer.md" in c for c in opencode_cmd)
 

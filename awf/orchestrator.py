@@ -34,6 +34,114 @@ def _log(logs_dir: Path, message: str) -> None:
         f.write(f"[{ts}] {message}\n")
 
 
+# BD-20: opencode run --auto sometimes doesn't exit after task is done
+# (keeps looping). Awf watches for signal files that indicate "work is
+# complete" and terminates the subprocess if it doesn't exit on its own.
+BD20_SIGNAL_GRACE_SECONDS = 10  # grace after signal before terminate
+BD20_POLL_INTERVAL = 2          # how often to check for signals
+BD20_HARD_TIMEOUT = 1800        # absolute cap (30 min)
+
+
+def _run_subprocess_until_signal(
+    cmd: list[str],
+    cwd: str | Path,
+    watch_paths: list[Path] | None = None,
+    watch_new_glob: tuple[Path, str] | None = None,
+    logs_dir: Path | None = None,
+    hard_timeout: int = BD20_HARD_TIMEOUT,
+    grace_seconds: int = BD20_SIGNAL_GRACE_SECONDS,
+) -> subprocess.CompletedProcess:
+    """BD-20: run subprocess, watch for signal files, terminate if it lingers.
+
+    Polls the subprocess every ``BD20_POLL_INTERVAL`` seconds. As soon as
+    ANY of these conditions fires, gives ``grace_seconds`` to exit, then
+    SIGTERM (and SIGKILL after 5s if still alive):
+
+    - any path in ``watch_paths`` exists (concrete filenames — used when
+      we know the signal name ahead of time, e.g. ``ACK-TODO-0001.ready``)
+    - any NEW file matching ``watch_new_glob`` appears in the snapshot
+      taken at start (used when the filename is picked by the subprocess
+      itself, e.g. ``TODO-*.ready`` for supervisor create_todo)
+
+    Args:
+        cmd: command list.
+        cwd: working directory.
+        watch_paths: concrete paths whose existence means "work is done".
+        watch_new_glob: (directory, glob_pattern) — detect NEW files matching
+            the pattern that didn't exist at subprocess start.
+        logs_dir: optional, for logging.
+        hard_timeout: absolute cap.
+        grace_seconds: grace period after signal detected.
+    """
+    import time
+
+    watch_paths = watch_paths or []
+    snapshot: set[str] = set()
+    if watch_new_glob is not None:
+        watch_dir, pattern = watch_new_glob
+        if watch_dir.is_dir():
+            snapshot = {p.name for p in watch_dir.glob(pattern)}
+
+    proc = subprocess.Popen(cmd, cwd=str(cwd))
+    deadline = time.monotonic() + hard_timeout
+    signal_seen_at: float | None = None
+
+    while True:
+        rc = proc.poll()
+        if rc is not None:
+            if logs_dir:
+                _log(logs_dir, f"subprocess exited naturally with code {rc}")
+            return subprocess.CompletedProcess(cmd, rc)
+
+        now = time.monotonic()
+
+        if signal_seen_at is None:
+            triggered = any(p.exists() for p in watch_paths)
+            if not triggered and watch_new_glob is not None:
+                watch_dir, pattern = watch_new_glob
+                if watch_dir.is_dir():
+                    current = {p.name for p in watch_dir.glob(pattern)}
+                    if current - snapshot:
+                        triggered = True
+            if triggered:
+                signal_seen_at = now
+                if logs_dir:
+                    _log(
+                        logs_dir,
+                        f"BD-20: signal detected, granting {grace_seconds}s grace "
+                        f"for subprocess to exit (pid={proc.pid})",
+                    )
+            elif now > deadline:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                if logs_dir:
+                    _log(logs_dir, "BD-20: hard timeout reached, subprocess killed")
+                raise TimeoutError(
+                    f"Subprocess (cmd: {cmd[0]}...) exceeded hard timeout "
+                    f"of {hard_timeout}s without producing a signal"
+                )
+        else:
+            if now - signal_seen_at >= grace_seconds:
+                if logs_dir:
+                    _log(
+                        logs_dir,
+                        f"BD-20: grace expired, terminating subprocess (pid={proc.pid})",
+                    )
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                return subprocess.CompletedProcess(cmd, 0)
+
+        time.sleep(BD20_POLL_INTERVAL)
+
+
 def _get_agent_name(config: dict, role: str) -> str:
     """Get the agent_name override for a role, defaulting to the role itself."""
     return cfg_mod.get(config, f"models.{role}.agent_name", role) or role
@@ -197,8 +305,6 @@ def _run_supervisor_via_subprocess(
     Falls back to old "auto-skip" behavior if supervisor.md is missing or
     if subprocess fails (logged).
     """
-    import subprocess
-
     try:
         role_file = _resolve_role_file("supervisor", project_dir)
     except RuntimeError as e:
@@ -286,7 +392,31 @@ def _run_supervisor_via_subprocess(
     print()
 
     _log(logs_dir, f"Supervisor {action} subprocess started (agent={agent_name})")
-    result = subprocess.run(cmd, cwd=str(project_dir), check=False)
+
+    # BD-20: watch for the signal this supervisor action would produce.
+    # create_todo / replan → new TODO-*.ready in inbox (we don't know the
+    #   ID ahead of time — use snapshot-based glob watch)
+    # verify_result / final_verify → ACK-{todo_id}.ready in inbox (or
+    #   REVIEW-{todo_id}.md in outbox if supervisor chose not to ack)
+    watch_paths: list[Path] = []
+    watch_new_glob: tuple[Path, str] | None = None
+    if action in ("create_todo", "replan"):
+        watch_new_glob = (inbox, "TODO-*.ready")
+    elif action in ("verify_result", "final_verify") and todo_id:
+        watch_paths = [
+            inbox / f"ACK-{todo_id}.ready",
+            inbox / f"APPROVE-{todo_id}.ready",
+            outbox / f"REVIEW-{todo_id}.md",
+        ]
+
+    result = _run_subprocess_until_signal(
+        cmd,
+        cwd=str(project_dir),
+        watch_paths=watch_paths,
+        watch_new_glob=watch_new_glob,
+        logs_dir=logs_dir,
+    )
+
     _log(logs_dir, f"Supervisor {action} subprocess finished (exit={result.returncode})")
     if result.returncode != 0:
         raise RuntimeError(
@@ -366,7 +496,20 @@ def _run_agent_stage(
     else:
         _log(logs_dir, f"No local skill for {role} (using role .md only)")
 
-    result = subprocess.run(cmd, cwd=project_dir, check=False)
+    # BD-20: watch for DONE / BLOCKED signal in outbox for this todo_id.
+    # If subprocess finishes the task but doesn't exit (known opencode hang),
+    # awf detects the signal and terminates after grace period.
+    outbox = paths.outbox(project_dir)
+    watch_paths: list[Path] = []
+    if todo_id:
+        watch_paths = [
+            outbox / f"DONE-{todo_id}.ready",
+            outbox / f"BLOCKED-{todo_id}.ready",
+        ]
+
+    result = _run_subprocess_until_signal(
+        cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
+    )
     _log(logs_dir, f"Agent stage finished: {role} ({action}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:
         raise RuntimeError(
