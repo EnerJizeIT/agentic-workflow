@@ -121,6 +121,49 @@ def _read_models_from_config() -> list[str]:
     return sorted(models)
 
 
+def _extract_role_title(content: str, fallback: str = "") -> str:
+    """Extract human-readable title from role .md content.
+
+    Order of preference:
+    1. ``name:`` field from YAML frontmatter (if content starts with ``---``).
+    2. First Markdown H1 heading (``# Title``) outside frontmatter.
+    3. ``fallback`` (typically filename stem).
+
+    Args:
+        content: full .md file content.
+        fallback: title to return if no name/H1 found.
+
+    Returns:
+        Title string (never empty — falls back to filename stem).
+    """
+    body = content
+    # YAML frontmatter: ---\n...\n---\n
+    if body.lstrip().startswith("---"):
+        lines = body.lstrip().split("\n")
+        # find closing ---
+        end = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end = i
+                break
+        if end is not None:
+            for line in lines[1:end]:
+                # name: auditor   →  title="auditor"
+                m = re.match(r'^\s*name\s*:\s*["\']?(.+?)["\']?\s*$', line)
+                if m:
+                    return m.group(1).strip()
+            # No name field — strip frontmatter for H1 search
+            body = "\n".join(lines[end + 1 :])
+
+    # First Markdown H1 outside frontmatter
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+
+    return fallback
+
+
 def scan_global_roles() -> tuple[list[dict], list[dict]]:
     """Scan ~/.config/awf/roles/ for custom roles.
 
@@ -139,8 +182,7 @@ def scan_global_roles() -> tuple[list[dict], list[dict]]:
         name = md_file.stem
         try:
             content = md_file.read_text(encoding="utf-8")
-            first_line = content.strip().split("\n")[0]
-            title = first_line.lstrip("# ").strip() or name
+            title = _extract_role_title(content, fallback=name)
         except Exception:
             title = name
 

@@ -193,14 +193,42 @@ def test_scan_global_roles_extracts_title(isolated_roles_dir):
 
 
 def test_scan_global_roles_fallback_to_filename(isolated_roles_dir):
-    """If first line isn't a markdown heading, title = first line as-is.
+    """Plain text without H1 heading or frontmatter → title falls back to filename stem.
 
-    Note: scan_global_roles does NOT validate that the first line is a heading.
-    It strips leading '#' but otherwise takes the first line verbatim.
+    BD-11: previously took first line verbatim, which produced "---" titles for
+    files with YAML frontmatter.
     """
     (isolated_roles_dir / "worker.md").write_text("no heading here\nmore lines")
     _, agents = scan_global_roles()
-    assert agents[0]["title"] == "no heading here"
+    assert agents[0]["title"] == "worker"
+
+
+def test_scan_global_roles_yaml_frontmatter_name(isolated_roles_dir):
+    """BD-11: title comes from `name:` field in YAML frontmatter."""
+    (isolated_roles_dir / "worker.md").write_text("---\nname: auditor\n---\ntest")
+    _, agents = scan_global_roles()
+    assert agents[0]["title"] == "auditor"
+
+
+def test_scan_global_roles_yaml_frontmatter_quoted_name(isolated_roles_dir):
+    """BD-11: quoted YAML name value is unquoted."""
+    (isolated_roles_dir / "worker.md").write_text('---\nname: "My Cool Agent"\n---\nbody')
+    _, agents = scan_global_roles()
+    assert agents[0]["title"] == "My Cool Agent"
+
+
+def test_scan_global_roles_yaml_frontmatter_no_name_falls_to_h1(isolated_roles_dir):
+    """BD-11: frontmatter without `name:` → look for H1 in body."""
+    (isolated_roles_dir / "worker.md").write_text("---\nfoo: bar\n---\n# Real Title\nbody")
+    _, agents = scan_global_roles()
+    assert agents[0]["title"] == "Real Title"
+
+
+def test_scan_global_roles_yaml_frontmatter_empty_name_to_filename(isolated_roles_dir):
+    """BD-11: frontmatter with no name and no H1 → filename stem."""
+    (isolated_roles_dir / "worker.md").write_text("---\nfoo: bar\n---\njust body")
+    _, agents = scan_global_roles()
+    assert agents[0]["title"] == "worker"
 
 
 def test_scan_global_roles_strips_heading_marker(isolated_roles_dir):
