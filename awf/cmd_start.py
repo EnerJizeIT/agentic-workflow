@@ -11,11 +11,8 @@ from .orchestrator import run_pipeline
 
 
 def _find_active_todo(project_dir: Path) -> str:
-    """Find the newest active TODO."""
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-    active = todos.list_active_todos(inbox, outbox)
-    return active[0] if active else ""
+    """Find the newest active TODO (delegates to todos.newest_active)."""
+    return todos.newest_active(project_dir)
 
 
 def _run_in_background(args: Any) -> int:

@@ -410,11 +410,33 @@ def _collect_handoff(
         "",
     ]
 
+    has_output = False
     if progress.is_file():
-        parts += ["## PROGRESS notes (from worker)", "", progress.read_text(encoding="utf-8").strip(), ""]
+        body = progress.read_text(encoding="utf-8").strip()
+        if body:
+            parts += ["## PROGRESS notes (from worker)", "", body, ""]
+            has_output = True
 
     if done.is_file():
-        parts += ["## DONE summary (from worker)", "", done.read_text(encoding="utf-8").strip(), ""]
+        body = done.read_text(encoding="utf-8").strip()
+        if body:
+            parts += ["## DONE summary (from worker)", "", body, ""]
+            has_output = True
+
+    if not has_output:
+        # Explicit marker so the next role knows the previous stage produced
+        # NO report (crash, timeout, BLOCKED without notes) — not just empty
+        # sections that look like an oversight.
+        parts += [
+            "## ⚠️ NO OUTPUT FROM PREVIOUS STAGE",
+            "",
+            f"Role `{role}` did not write PROGRESS-{todo_id}.md or DONE-{todo_id}.md.",
+            "Likely causes: worker crashed, hit turn-budget, or signalled",
+            "BLOCKED without leaving notes. Treat prior stage work as",
+            "unverified — inspect `git diff` against baseline before",
+            "proceeding. If this is unexpected, escalate via BLOCKED signal.",
+            "",
+        ]
 
     # Git diff summary vs baseline (if available)
     context_dir = paths.context_dir(project_dir)
@@ -577,11 +599,26 @@ def _find_stage_index(stages: list[Stage], name: str) -> int:
 
 
 def _find_active_todo(project_dir: Path) -> str:
-    """Find the newest active TODO."""
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-    active = todos.list_active_todos(inbox, outbox)
-    return active[0] if active else ""
+    """Find the newest active TODO.
+
+    Thin wrapper around ``todos.newest_active`` kept for backward compat
+    with internal callers that already have a Path.
+    """
+    return todos.newest_active(project_dir)
+
+
+def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
+    """Return SHA from ``.agentic/context/BASELINE-<todo>.sha`` or empty string.
+
+    Single source of truth for baseline SHA reads — used by auto-DONE and
+    salvage paths. Avoids duplicating the file-read + parse logic.
+    """
+    if not todo_id:
+        return ""
+    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+    if not sha_file.exists():
+        return ""
+    return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
 
 
 def _check_needs_normalize(project_dir: Path) -> tuple[bool, list[dict], Path | None]:
@@ -608,17 +645,6 @@ def _consume_needs_normalize(state_file: Path | None) -> None:
     """Delete the needs_normalize state file after successful normalize."""
     if state_file and state_file.exists():
         state_file.unlink()
-
-
-def _needs_normalize(project_dir: Path) -> tuple[bool, list[dict]]:
-    """Check and consume .agentic/state/needs_normalize.yaml.
-
-    Returns (needed, team_list). Legacy wrapper for backward compatibility.
-    """
-    needed, team, _state_file = _check_needs_normalize(project_dir)
-    if needed and _state_file:
-        _consume_needs_normalize(_state_file)
-    return needed, team
 
 
 def _run_normalize_stage(
@@ -786,10 +812,11 @@ def run_pipeline(args: Any) -> int:
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
     background = getattr(args, "background", False)
-    # --timeout is accepted by argparse for backward compatibility but not yet
-    # wired into wait_for_signal. Tracked separately in awf-core backlog.
-    _timeout = getattr(args, "timeout", 3600)
-    del _timeout
+    # NOTE: --timeout (default 3600s) is accepted for backward compat but is
+    # intended for the agent subprocess execution limit, which is not yet
+    # implemented (subprocess.run is blocking). The 30s fallback poll below
+    # is hard-coded on purpose: agent subprocess is blocking so signal
+    # should already exist when run() returns — 30s covers a small race only.
 
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
@@ -902,7 +929,8 @@ def run_pipeline(args: Any) -> int:
         signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
         if not signal:
-            # Brief fallback poll
+            # Brief fallback poll (30s) — agent subprocess is blocking, signal
+            # should already exist; this covers a small race.
             try:
                 signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
             except TimeoutError:
@@ -910,12 +938,7 @@ def run_pipeline(args: Any) -> int:
 
         if not signal:
             # No signal: try auto-DONE
-            baseline_sha = ""
-            if current_todo:
-                sha_file = context_dir / f"BASELINE-{current_todo}.sha"
-                if sha_file.exists():
-                    baseline_sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
-
+            baseline_sha = _read_baseline_sha(project_dir, current_todo)
             if baseline_sha and verify.attempt_auto_done(project_dir, current_todo, config, baseline_sha):
                 signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
@@ -929,11 +952,7 @@ def run_pipeline(args: Any) -> int:
             _log(logs_dir, f"No signal after {s_name} — salvage path")
 
             if auto:
-                baseline_sha = ""
-                if current_todo:
-                    sha_file = context_dir / f"BASELINE-{current_todo}.sha"
-                    if sha_file.exists():
-                        baseline_sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+                baseline_sha = _read_baseline_sha(project_dir, current_todo)
 
                 if baseline_sha and verify.detect_work_evidence(project_dir, baseline_sha):
                     print(

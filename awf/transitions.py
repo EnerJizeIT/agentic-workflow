@@ -1,7 +1,11 @@
 """Transition resolver — maps signal type to stage policy."""
 from __future__ import annotations
 
+import logging
+
 from .pipeline import Stage
+
+log = logging.getLogger(__name__)
 
 
 def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
@@ -35,4 +39,12 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
             return ("escalate", "")
         return ("escalate", "")
 
+    # Unknown signal — log loudly so user can diagnose (filename typo,
+    # worker wrote unexpected signal name, etc.).
+    log.warning(
+        "Unknown signal type %r at stage %r — falling back to 'stop'. "
+        "Expected one of: done, blocked, approved, rejected, passed, failed.",
+        sig_type,
+        stage.name,
+    )
     return ("stop", "")

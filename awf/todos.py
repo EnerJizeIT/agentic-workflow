@@ -66,3 +66,19 @@ def list_active_todos(inbox: Path, outbox: Path) -> list[str]:
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return [todo_id for _, todo_id in candidates]
+
+
+def newest_active(project_root: str | Path) -> str:
+    """Return the highest-numbered active TODO id, or empty string if none.
+
+    Convenience wrapper around ``list_active_todos`` for callers that just
+    need "the current TODO" without managing inbox/outbox paths themselves.
+    Used by orchestrator and cmd_start.
+    """
+    from . import paths
+
+    project_root = Path(project_root)
+    inbox = paths.inbox(project_root)
+    outbox = paths.outbox(project_root)
+    active = list_active_todos(inbox, outbox)
+    return active[0] if active else ""

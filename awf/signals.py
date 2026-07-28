@@ -46,13 +46,29 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
 
     Accepts both canonical (DONE-TODO-0001) and legacy short (DONE-0001) forms.
     Returns basename without .ready, or None.
+
+    A signal is considered valid only when the corresponding ``.md`` file
+    exists AND is non-empty (workers must leave a meaningful report, not just
+    a sentinel .ready). If .ready exists but .md is missing/empty, returns
+    None — caller treats it as "no signal yet" and the auto-DONE / salvage
+    paths can still trigger.
     """
     short = _short_id(todo_id)
     for prefix in prefixes:
         for candidate_id in (todo_id, short):
             sig_file = outbox / f"{prefix}-{candidate_id}.ready"
-            if sig_file.is_file():
-                return sig_file.stem
+            if not sig_file.is_file():
+                continue
+            # Require companion .md (non-empty) for primary closure signals.
+            # PROGRESS-* and DONE-* typically carry .md reports. Some signals
+            # (e.g. APPROVE written by humans via `awf approve`) are .ready-only
+            # by design — those are inbox/ signals, not outbox/, so this check
+            # doesn't affect them.
+            md_file = outbox / f"{prefix}-{candidate_id}.md"
+            if md_file.exists() and md_file.stat().st_size == 0:
+                # .ready exists but .md is empty — treat as not-ready.
+                continue
+            return sig_file.stem
     return None
 
 

@@ -17,6 +17,11 @@ htmlcov/
 # manual smoke tests), `.agentic/` gets created in cwd. Never commit it.
 .agentic/
 
+# BD-9/BD-12 write .bak files (config.yaml.bak, pipelines/default.yaml.bak)
+# next to the originals. Project-level .gitignore covers them; this entry
+# protects repos that don't ignore .agentic/ wholesale.
+*.bak
+
 # Editor / OS
 .vscode/
 .idea/

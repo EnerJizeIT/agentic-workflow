@@ -6,8 +6,11 @@ stage, what it must produce for the next stage, and its zone of responsibility
 
 Without a contract, a role like ``system-analysis`` may execute the entire
 TODO itself because nothing tells it "your zone is requirements, not code".
-The contract is injected into the role's local skill at normalize time so
-the agent sees it on every run.
+
+The contract is **printed by the normalize_skills stage** as guidance for the
+supervisor (or auto-writer) to copy into each role's local skill file at
+``.agentic/skills/<role>.md``. It is NOT automatically injected — the
+supervisor decides how to phrase the adaptation for the project.
 
 Usage:
 

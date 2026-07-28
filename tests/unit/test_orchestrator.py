@@ -12,7 +12,6 @@ from awf.orchestrator import (
     _consume_needs_normalize,
     _global_roles_dir,
     _maybe_commit,
-    _needs_normalize,
     _resolve_prev_handoffs,
     _resolve_role_file,
     _run_agent_stage,
@@ -364,11 +363,12 @@ class TestNeedsNormalize:
         project_dir.mkdir()
         (project_dir / ".agentic").mkdir()
 
-        needed, team = _needs_normalize(project_dir)
+        needed, team, _sf = _check_needs_normalize(project_dir)
         assert needed is False
         assert team == []
 
-    def test_needed_true_consumes_file(self, tmp_path: Path) -> None:
+    def test_needed_true_returns_state_file(self, tmp_path: Path) -> None:
+        """_check_needs_normalize returns (needed, team, state_file) — does NOT consume."""
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         state_dir = project_dir / ".agentic" / "state"
@@ -382,11 +382,25 @@ class TestNeedsNormalize:
             yaml.dump({"needed": True, "team": team_data})
         )
 
-        needed, team = _needs_normalize(project_dir)
+        needed, team, state_file = _check_needs_normalize(project_dir)
         assert needed is True
         assert len(team) == 2
         assert team[0]["role"] == "worker"
-        assert not (state_dir / "needs_normalize.yaml").exists()
+        assert state_file is not None
+        # State file is NOT consumed by _check_needs_normalize (BD-13 fix).
+        assert state_file.exists()
+
+    def test_consume_deletes_state_file(self, tmp_path: Path) -> None:
+        """_consume_needs_normalize deletes the file."""
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        sf = state_dir / "needs_normalize.yaml"
+        sf.write_text("needed: true\n")
+
+        _consume_needs_normalize(sf)
+        assert not sf.exists()
 
     def test_needed_false(self, tmp_path: Path) -> None:
         project_dir = tmp_path / "proj"
@@ -398,11 +412,12 @@ class TestNeedsNormalize:
             yaml.dump({"needed": False, "team": [{"role": "x"}]})
         )
 
-        needed, team = _needs_normalize(project_dir)
+        needed, team, _sf = _check_needs_normalize(project_dir)
         assert needed is False
         assert team == []
 
-    def test_consumed_idempotent(self, tmp_path: Path) -> None:
+    def test_check_does_not_consume(self, tmp_path: Path) -> None:
+        """_check_needs_normalize is read-only — file survives."""
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         state_dir = project_dir / ".agentic" / "state"
@@ -412,11 +427,12 @@ class TestNeedsNormalize:
             yaml.dump({"needed": True, "team": [{"role": "w"}]})
         )
 
-        needed1, _ = _needs_normalize(project_dir)
+        needed1, _t, sf1 = _check_needs_normalize(project_dir)
         assert needed1 is True
-
-        needed2, _ = _needs_normalize(project_dir)
-        assert needed2 is False
+        # File still there — check is idempotent.
+        needed2, _t, sf2 = _check_needs_normalize(project_dir)
+        assert needed2 is True
+        assert sf1 is not None and sf2 is not None
 
     def test_invalid_yaml(self, tmp_path: Path) -> None:
         project_dir = tmp_path / "proj"
@@ -425,7 +441,7 @@ class TestNeedsNormalize:
         state_dir.mkdir(parents=True)
         (state_dir / "needs_normalize.yaml").write_text(":::invalid{{{")
 
-        needed, team = _needs_normalize(project_dir)
+        needed, team, _sf = _check_needs_normalize(project_dir)
         assert needed is False
         assert team == []
 
@@ -439,7 +455,7 @@ class TestNeedsNormalize:
             yaml.dump({"needed": True, "team": "worker"})
         )
 
-        needed, team = _needs_normalize(project_dir)
+        needed, team, _sf = _check_needs_normalize(project_dir)
         assert needed is True
         assert team == []
 

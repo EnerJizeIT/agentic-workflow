@@ -21,8 +21,13 @@ def detect_work_evidence(project_dir: str | Path, baseline_sha: str) -> bool:
     return False
 
 
-def run_verify_commands(config: dict) -> bool:
-    """Run each non-empty verify command. Returns True if all pass."""
+def run_verify_commands(config: dict, project_dir: str | Path | None = None) -> bool:
+    """Run each non-empty verify command. Returns True if all pass.
+
+    ``project_dir`` is forwarded to ``subprocess.run(cwd=...)`` so commands
+    like ``pytest`` / ``npm test`` execute in the project, not in the
+    orchestrator's CWD. If None, runs in current CWD (legacy behaviour).
+    """
     cmd_keys = ["test_cmd", "lint_cmd", "typecheck_cmd", "build_cmd"]
     cmds = []
     for key in cmd_keys:
@@ -33,13 +38,14 @@ def run_verify_commands(config: dict) -> bool:
     if not cmds:
         return False  # no commands configured → can't verify
 
+    cwd = str(project_dir) if project_dir is not None else None
     for cmd in cmds:
         parts = shlex.split(cmd)
         if not parts:
             return False
         try:
             result = subprocess.run(
-                parts, capture_output=True, check=False,
+                parts, capture_output=True, check=False, cwd=cwd,
             )
         except (FileNotFoundError, OSError):
             return False
@@ -72,8 +78,8 @@ def attempt_auto_done(
     if not detect_work_evidence(cwd, baseline_sha):
         return False
 
-    # Verify commands must all pass
-    if not run_verify_commands(config):
+    # Verify commands must all pass (run in project_dir)
+    if not run_verify_commands(config, project_dir=project_dir):
         return False
 
     # Synthesize DONE
