@@ -442,7 +442,11 @@ optional_data_keys: []
       ];
 
       function slugify(name) {
-        return (name || '').toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '') || 'unnamed';
+        var m = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};
+        var s = (name || '').toLowerCase().split('').map(function(c) { return m[c] !== undefined ? m[c] : c; }).join('');
+        s = s.replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '');
+        if (!s) throw new Error('No usable characters in role name: ' + name);
+        return s;
       }
 
       var specFiles = [];

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -101,6 +102,7 @@ def get_http_port() -> int | None:
 
 _config: Config | None = None
 _jinja_env: Any | None = None  # Environment instance
+_project_dir: Path | None = None
 
 
 def set_config(config: Config) -> None:
@@ -114,6 +116,17 @@ def get_config() -> Config:
     if _config is None:
         raise RuntimeError("Config not initialized. Call set_config() at startup.")
     return _config
+
+
+def set_project_dir(path: Path | None) -> None:
+    """Set the active project directory (called once at startup)."""
+    global _project_dir
+    _project_dir = path
+
+
+def get_project_dir() -> Path | None:
+    """Get the active project directory. None if not inside an awf project."""
+    return _project_dir
 
 
 def set_jinja_env(env: Any) -> None:

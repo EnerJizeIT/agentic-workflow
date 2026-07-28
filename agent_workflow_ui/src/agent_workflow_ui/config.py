@@ -45,6 +45,23 @@ def load() -> Config:
     )
 
 
+def detect_project_dir() -> Path | None:
+    """Detect active awf project directory.
+
+    Returns Path.cwd() if it contains .agentic/ directory, None otherwise.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    cwd = Path.cwd()
+    agentic = cwd / ".agentic"
+    if agentic.is_dir():
+        log.debug("Detected awf project directory: %s", cwd)
+        return cwd
+    log.debug("No .agentic/ found at %s — not inside an awf project", cwd)
+    return None
+
+
 def ensure_directories(config: Config) -> None:
     """Create runtime directories if missing. Idempotent."""
     config.inputs_dir.mkdir(parents=True, exist_ok=True)

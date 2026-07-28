@@ -5,13 +5,13 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import ensure_directories, load
+from .config import detect_project_dir, ensure_directories, load
 from .http_endpoint import start_http_server
 from .opencode_config import read_opencode_models, read_recent_models
 from .render.engine import create_env
 from .server import create_server
 from .skill_installer import ensure_skill_installed
-from .state import get_registry, set_config, set_http_port, set_jinja_env
+from .state import get_registry, set_config, set_http_port, set_jinja_env, set_project_dir
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ def main() -> int:
         config = load()
         ensure_directories(config)
         set_config(config)
+        set_project_dir(detect_project_dir())
 
         env = create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR])
         env.globals["available_models"] = read_opencode_models()

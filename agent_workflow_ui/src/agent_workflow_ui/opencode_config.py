@@ -202,11 +202,27 @@ def delete_custom_role(name: str) -> bool:
     return False
 
 
+_CYRILLIC_MAP = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
+    "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
+    "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+    "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch",
+    "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
+    "э": "e", "ю": "yu", "я": "ya",
+}
+
+
 def _slugify(name: str) -> str:
     """Convert role name to filesystem-safe slug.
 
+    Transliterates Cyrillic to Latin before stripping non-ASCII.
     Must match JS slugify() in project-setup.html.j2 for client-side conflict
     detection to work correctly. Test cross-check: tests/agent_workflow_ui/test_slugify.py.
     """
-    slug = re.sub(r"[^a-zA-Z0-9_-]", "-", name.lower()).strip("-")
-    return slug or "unnamed"
+    lower = name.lower()
+    transliterated = "".join(_CYRILLIC_MAP.get(c, c) for c in lower)
+    slug = re.sub(r"[^a-zA-Z0-9_-]", "-", transliterated).strip("-")
+    if not slug:
+        raise ValueError(f"Role name {name!r} has no usable characters after slugify")
+    return slug

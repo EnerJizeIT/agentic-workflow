@@ -392,3 +392,85 @@ def test_list_templates_no_frontmatter_in_project_template(plugin_setup):
     found = next((t for t in r["templates"] if t["name"] == "no-meta"), None)
     assert found is not None
     assert found["source"] == "project"
+
+
+# --- BD-2: _normalize_available_roles ---
+
+def test_normalize_available_roles_list_of_strings():
+    """List of strings → normalized to list of dicts."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles(["worker", "reviewer"])
+    assert result == [
+        {"id": "worker", "title": "worker", "description": ""},
+        {"id": "reviewer", "title": "reviewer", "description": ""},
+    ]
+
+
+def test_normalize_available_roles_mixed_list():
+    """Mixed list (str + dict) → normalized."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles([
+        "worker",
+        {"id": "reviewer", "title": "Reviewer", "description": "Reviews code"},
+    ])
+    assert result == [
+        {"id": "worker", "title": "worker", "description": ""},
+        {"id": "reviewer", "title": "Reviewer", "description": "Reviews code"},
+    ]
+
+
+def test_normalize_available_roles_single_string():
+    """Single string → one-element list of dicts."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles("worker")
+    assert result == [{"id": "worker", "title": "worker", "description": ""}]
+
+
+def test_normalize_available_roles_already_dicts():
+    """Already-correct list of dicts → unchanged."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    input_val = [
+        {"id": "worker", "title": "Worker", "description": "Does work"},
+    ]
+    result = _normalize_available_roles(input_val)
+    assert result == input_val
+
+
+def test_normalize_available_roles_none():
+    """Missing key (None) → unchanged behavior."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    assert _normalize_available_roles(None) is None
+
+
+def test_open_form_with_string_roles_project_setup(plugin_setup):
+    """open_form with list-of-strings available_roles renders project-setup without crash."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    result = asyncio.run(open_form(
+        template="project-setup",
+        data={"available_roles": ["worker", "reviewer"]},
+    ))
+    assert result["form_id"].startswith("FORM-")
+    assert "error" not in result
+
+
+def test_open_form_with_mixed_roles_project_setup(plugin_setup):
+    """open_form with mixed str+dict roles renders project-setup without crash."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    result = asyncio.run(open_form(
+        template="project-setup",
+        data={
+            "available_roles": [
+                "worker",
+                {"id": "reviewer", "title": "Reviewer", "description": "Reviews code"},
+            ],
+        },
+    ))
+    assert result["form_id"].startswith("FORM-")
+    assert "error" not in result

@@ -13,6 +13,23 @@ from ..render.engine import render_template
 from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_registry
 
 
+def _normalize_available_roles(value: str | list[str | dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """Normalize available_roles to list[dict] with id/title/description keys."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [{"id": value, "title": value, "description": ""}]
+    if not isinstance(value, list):
+        return value
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, str):
+            result.append({"id": item, "title": item, "description": ""})
+        else:
+            result.append(item)
+    return result
+
+
 async def open_form(
     template: str,
     data: dict[str, Any] | None = None,
@@ -43,6 +60,8 @@ async def open_form(
         }
 
     data = data or {}
+    if "available_roles" in data:
+        data["available_roles"] = _normalize_available_roles(data["available_roles"])
     form_id = registry.next_form_id()
     submit_url = f"http://127.0.0.1:{port}/submit/{form_id}"
 

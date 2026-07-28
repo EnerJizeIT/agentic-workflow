@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pytest
 from agent_workflow_ui.config import load
 from agent_workflow_ui.http_endpoint import (
+    _ack_page,
     _find_free_port,
     _is_valid_form_id,
     start_http_server,
@@ -232,3 +233,35 @@ def test_post_non_submit_path_returns_404(http_setup):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(req)
     assert exc_info.value.code == 404
+
+
+# --- BD-4: ack page Russian + dark theme ---
+
+def test_ack_page_russian_dark_theme():
+    page = _ack_page("FORM-test-1234", already_submitted=False)
+    assert "Форма отправлена!" in page
+    assert "Эта форма уже была отправлена" not in page
+    assert 'lang="ru"' in page
+    assert "Подтверждение отправки" in page
+    assert "ID формы:" in page
+    assert "Что дальше — вернись в CLI" in page
+    assert "Переключись на терминал" in page
+    assert "я отправил форму" in page
+    assert "Агент прочитает твои ответы" in page
+    assert "не блокируется в ожидании" in page
+    assert "#1565c0" not in page
+    assert "#e3f2fd" not in page
+    assert "#f14c4c" in page
+    assert "#3d1a1a" in page
+    assert "#1e1e1e" in page
+    assert "#d4d4d4" in page
+    assert "FORM-test-1234" in page
+
+
+def test_ack_page_already_submitted():
+    page = _ack_page("FORM-abc-5678", already_submitted=True)
+    assert "Эта форма уже была отправлена ранее." in page
+    assert "Форма отправлена!" not in page
+    assert 'lang="ru"' in page
+    assert "FORM-abc-5678" in page
+    assert "#f14c4c" in page

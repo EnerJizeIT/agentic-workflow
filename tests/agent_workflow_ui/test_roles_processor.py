@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from agent_workflow_ui.roles_processor import process_role_deletions, process_role_saves
 
-from agent_workflow_ui import opencode_config
+from agent_workflow_ui import opencode_config, state
 
 
 @pytest.fixture
@@ -165,3 +166,127 @@ def test_deletions_mixed_existing_and_missing(isolated_roles_dir):
     (isolated_roles_dir / "x.md").write_text("x")
     data = {"delete_agent": "x, nope1, nope2"}
     assert process_role_deletions(data) == 1
+
+
+# ── project copy (BD-3-B) ─────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def reset_project_dir():
+    """Reset project_dir after each test."""
+    original = state._project_dir
+    state._project_dir = None
+    yield
+    state._project_dir = original
+
+
+def _make_project(tmp_path: Path) -> Path:
+    """Create a project dir with .agentic/roles/ structure."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    (proj / ".agentic" / "roles").mkdir(parents=True)
+    return proj
+
+
+def test_save_copies_to_project(isolated_roles_dir, reset_project_dir, tmp_path):
+    """Save custom agent → copied to project .agentic/roles/."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Auditor", "skill_content": "# Auditor\nCheck code.", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (isolated_roles_dir / "auditor.md").exists()
+    assert (proj / ".agentic" / "roles" / "auditor.md").exists()
+    assert (proj / ".agentic" / "roles" / "auditor.md").read_text() == "# Auditor\nCheck code."
+
+
+def test_save_supervisor_copies_to_project(isolated_roles_dir, reset_project_dir, tmp_path):
+    """Save supervisor → copied to project .agentic/roles/."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    data = {
+        "supervisor_content": "# Strict Lead\nBe strict.",
+        "save_supervisor": "true",
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (isolated_roles_dir / "supervisor-strict-lead.md").exists()
+    assert (proj / ".agentic" / "roles" / "supervisor-strict-lead.md").exists()
+
+
+def test_save_no_project_dir(isolated_roles_dir, reset_project_dir):
+    """project_dir=None → save succeeds globally, no copy, no error."""
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Worker", "skill_content": "# W", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (isolated_roles_dir / "worker.md").exists()
+
+
+def test_save_no_agentic_roles(isolated_roles_dir, reset_project_dir, tmp_path, monkeypatch):
+    """project_dir set but .agentic/roles/ missing → save globally, no copy."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    (proj / ".agentic").mkdir()  # .agentic exists but no roles/ subdir
+    state._project_dir = proj
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Tester", "skill_content": "# T", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (isolated_roles_dir / "tester.md").exists()
+    assert not (proj / ".agentic" / "roles").exists()
+
+
+def test_delete_copies_to_project(isolated_roles_dir, reset_project_dir, tmp_path):
+    """Delete custom role → also deleted from project .agentic/roles/."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    # Create role in both global and project
+    content = "# Worker\nDo work."
+    (isolated_roles_dir / "worker.md").write_text(content)
+    (proj / ".agentic" / "roles" / "worker.md").write_text(content)
+
+    data = {"delete_agent": "worker"}
+    deleted = process_role_deletions(data)
+    assert deleted == 1
+    assert not (isolated_roles_dir / "worker.md").exists()
+    assert not (proj / ".agentic" / "roles" / "worker.md").exists()
+
+
+def test_delete_project_only_global_exists(isolated_roles_dir, reset_project_dir, tmp_path):
+    """Delete when project copy doesn't exist → no error."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "worker.md").write_text("x")
+    data = {"delete_agent": "worker"}
+    deleted = process_role_deletions(data)
+    assert deleted == 1
+    assert not (isolated_roles_dir / "worker.md").exists()
+
+
+def test_delete_no_project_dir(isolated_roles_dir, reset_project_dir):
+    """project_dir=None → delete succeeds globally, no project side-effect."""
+    state._project_dir = None
+    (isolated_roles_dir / "worker.md").write_text("x")
+
+    data = {"delete_agent": "worker"}
+    deleted = process_role_deletions(data)
+    assert deleted == 1
+    assert not (isolated_roles_dir / "worker.md").exists()

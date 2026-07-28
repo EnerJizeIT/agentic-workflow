@@ -48,38 +48,39 @@ def _is_valid_form_id(form_id: str) -> bool:
 
 def _ack_page(form_id: str, already_submitted: bool) -> str:
     """Generate HTML acknowledgement page shown after submit."""
-    message = "Already submitted earlier." if already_submitted else "Submitted successfully!"
+    message = "Эта форма уже была отправлена ранее." if already_submitted else "Форма отправлена!"
     return f"""<!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Submit acknowledgement</title>
+  <title>Подтверждение отправки</title>
   <style>
-    body {{ font-family: system-ui, sans-serif; max-width: 500px; margin: 80px auto; padding: 0 20px; text-align: center; color: #333; }}
-    h1 {{ color: #2e7d32; margin-bottom: 8px; }}
-    .form-id {{ font-family: monospace; background: #f5f5f5; padding: 8px 16px; border-radius: 4px; display: inline-block; margin: 16px 0; }}
-    .next-steps {{ margin-top: 32px; padding: 20px; background: #e3f2fd; border-radius: 8px; text-align: left; }}
-    .next-steps h2 {{ font-size: 16px; margin: 0 0 12px 0; color: #1565c0; }}
+    body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 500px; margin: 80px auto; padding: 0 20px; text-align: center; color: #d4d4d4; background: #1e1e1e; }}
+    h1 {{ color: #4ec9b0; margin-bottom: 8px; }}
+    .form-id {{ font-family: monospace; background: #252526; padding: 8px 16px; border-radius: 4px; display: inline-block; margin: 16px 0; border: 1px solid #464647; }}
+    .next-steps {{ margin-top: 32px; padding: 20px; background: #3d1a1a; border-radius: 8px; text-align: left; border: 1px solid #5a2a2a; }}
+    .next-steps h2 {{ font-size: 16px; margin: 0 0 12px 0; color: #f14c4c; }}
     .next-steps ol {{ margin: 0; padding-left: 20px; }}
     .next-steps li {{ margin-bottom: 8px; }}
-    .next-steps code {{ background: #fff; padding: 2px 6px; border-radius: 3px; font-family: monospace; }}
+    .next-steps code {{ background: #4a2020; padding: 2px 6px; border-radius: 3px; font-family: monospace; }}
+    .hint {{ margin: 12px 0 0 0; font-size: 13px; color: #858585; }}
   </style>
 </head>
 <body>
   <h1>{html.escape(message)}</h1>
-  <p>Form ID:</p>
+  <p>ID формы:</p>
   <div class="form-id">{html.escape(form_id)}</div>
 
   <div class="next-steps">
-    <h2>⚠️ Next step — go back to your CLI</h2>
+    <h2>⚠️ Что дальше — вернись в CLI</h2>
     <ol>
-      <li>Switch to your <strong>opencode CLI</strong> terminal.</li>
-      <li>Type a message to the agent, e.g.: <code>done</code> or <code>I submitted the form</code>.</li>
-      <li>The agent will read your submission and continue.</li>
+      <li>Переключись на терминал с <strong>opencode CLI</strong>.</li>
+      <li>Напиши агенту, например: <code>done</code> или <code>я отправил форму</code>.</li>
+      <li>Агент прочитает твои ответы и продолжит работу.</li>
     </ol>
-    <p style="margin: 12px 0 0 0; font-size: 14px; color: #666;">
-      The agent is <strong>not blocked</strong> waiting for you — it continues working.
-      When you tell it you're done, it will pick up your form data.
+    <p class="hint">
+      Агент не блокируется в ожидании — он продолжает работать.
+      Когда сообщишь, что готово, он заберёт данные формы.
     </p>
   </div>
 </body>

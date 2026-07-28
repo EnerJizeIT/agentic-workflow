@@ -167,6 +167,74 @@ LLM policy: когда/как использовать формы.
 
 ---
 
+## 🐛 Known bugs / Tech debt
+
+Обнаружено при dogfooding на jira-epic-presenter.
+
+### BD-1 · `_slugify` молча глотает кириллицу → `unnamed.md`
+
+**Symptom:** Custom agent с именем на кириллице (например «Аудиитор») сохраняется в
+`~/.config/awf/roles/unnamed.md`. Пользователь не получает ошибки, но роль не находится
+по имени и засоряет global dir.
+
+**Root cause:** `_slugify` в `opencode_config.py:205` режет non-ASCII символы, оставляя
+пустую строку. Нет fallback'а на транслитерацию или явной ошибки.
+
+**Fix options:**
+- A) Транслитерация через `python unicodedata` + транслит-таблицу (ru→lat).
+- B) Если после slugify строка пуста — raise `ValueError("Role name must contain ASCII chars")` с user-friendly message в форме.
+- C)两者: транслитерация, а если не получилось — raise.
+
+**Found during:** dogfood session 2026-07-28, форма `project-setup`, агент «Аудиитор».
+
+### BD-2 · `available_roles` принимает только dict, не string — нет валидации
+
+**Symptom:** `open_form(template="project-setup", data={"available_roles": ["worker"]})`
+падает с `'str' object has no attribute 'get'` (template line 410:
+`r.get('description', '')`).
+
+**Root cause:** Template ожидает `[{id, title, description}, ...]`. Plugin не валидирует
+тип `data` перед рендером. MCP tool signature принимает `dict` без schema — agent
+не знает контракта.
+
+**Fix options:**
+- A) В `tools/forms.py:open_form` — нормализовать `available_roles`: если строка → `{id: s, title: s, description: ""}`.
+- B) JSON-schema валидация в `open_form` с понятной ошибкой.
+- C) Документировать контракт в docstring + SKILL.md (минимум).
+
+**Found during:** dogfood session 2026-07-28, first call fell, пришлось дебажить исходники plugin'а.
+
+### BD-3 · Custom roles сохраняются в global, awf-core не видит их в проекте
+
+**Architectural gap:** Plugin writes custom roles to `~/.config/awf/roles/`, but
+awf-core resolves roles only from `.agentic/roles/`. No bridge. Для проекта с custom
+agent'ами supervisor должен вручную копировать `.md` в `.agentic/roles/` после submit'а.
+
+**Fix options:**
+- A) awf-core: при резолвинге роли fallback на `~/.config/awf/roles/<name>.md` если нет в project.
+- B) Plugin: после submit'а `project-setup` опционально копировать выбранные custom roles в `.agentic/roles/`.
+- C) Supervisor prompt в SKILL.md: «после submit'а custom agent — скопируй в `.agentic/roles/`».
+
+A — правильное архитектурно, но feature-work. C — workaround сейчас.
+
+**Found during:** dogfood session 2026-07-28.
+
+### BD-4 · Submit confirmation page: EN, light theme, blue accent
+
+**Symptoms (3 issue from dogfood):**
+1. Текст на английском — основная форма на русском, confirmation отвалился.
+2. Светлая тема — основная форма тёмная. Расхождение стиля.
+3. Блок "Next step" на голубом фоне — должен быть на красном (visibility/urgency).
+
+**Where:** HTTP endpoint response после POST `/submit/{form_id}`. См. `http_endpoint.py`
+confirmation HTML.
+
+**Fix:** единый стиль с `project-setup.html.j2` (dark theme + RU + red accent для next-step).
+
+**Found during:** dogfood session 2026-07-28.
+
+---
+
 ## 🔮 Future scenarios (после MVP)
 
 В порядке приоритета из [Vision §6](vision/agent-ui-plugin.md#6-пользовательские-сценарии). Каждый — отдельный epic, после MVP.

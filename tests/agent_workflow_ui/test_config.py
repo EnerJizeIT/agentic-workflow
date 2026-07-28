@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from agent_workflow_ui.config import ensure_directories, load
+from agent_workflow_ui.config import detect_project_dir, ensure_directories, load
 
 
 def test_load_defaults(tmp_path, monkeypatch):
@@ -77,3 +77,23 @@ def test_ensure_directories_partial_existing(tmp_path, monkeypatch):
     ensure_directories(config)
 
     assert (config.inputs_dir / "existing.yaml").read_text() == "test"
+
+
+def test_detect_project_dir_with_agentic(tmp_path, monkeypatch):
+    """Returns cwd when .agentic/ exists."""
+    (tmp_path / ".agentic").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert detect_project_dir() == tmp_path
+
+
+def test_detect_project_dir_without_agentic(tmp_path, monkeypatch):
+    """Returns None when .agentic/ is missing."""
+    monkeypatch.chdir(tmp_path)
+    assert detect_project_dir() is None
+
+
+def test_detect_project_dir_agentic_file_not_dir(tmp_path, monkeypatch):
+    """Returns None when .agentic is a file, not a directory."""
+    (tmp_path / ".agentic").write_text("not a dir")
+    monkeypatch.chdir(tmp_path)
+    assert detect_project_dir() is None

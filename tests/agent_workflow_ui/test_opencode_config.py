@@ -44,17 +44,29 @@ def test_slugify_special_chars():
 
 
 def test_slugify_empty():
-    assert _slugify("") == "unnamed"
-    assert _slugify("   ") == "unnamed"
-    assert _slugify("---") == "unnamed"
+    with pytest.raises(ValueError, match="no usable characters"):
+        _slugify("")
+    with pytest.raises(ValueError, match="no usable characters"):
+        _slugify("   ")
+    with pytest.raises(ValueError, match="no usable characters"):
+        _slugify("---")
 
 
 def test_slugify_unicode():
-    # Non-ASCII chars become '-', strip removes trailing/leading '-'.
-    # Result: ASCII prefix survives, trailing unicode → stripped to nothing.
-    assert _slugify("Разработчик") == "unnamed"
-    assert _slugify("dev-разработчик") == "dev"
-    assert _slugify("汉字") == "unnamed"
+    # Cyrillic is transliterated, other non-ASCII → dash then strip.
+    assert _slugify("Разработчик") == "razrabotchik"
+    assert _slugify("dev-разработчик") == "dev-razrabotchik"
+    with pytest.raises(ValueError, match="no usable characters"):
+        _slugify("汉字")
+
+
+def test_slugify_cyrillic():
+    """Cyrillic names are transliterated to Latin."""
+    assert _slugify("Аудитор") == "auditor"
+    assert _slugify("Системный аналитик") == "sistemnyy-analitik"
+    assert _slugify("привет-world") == "privet-world"
+    assert _slugify("Журналист") == "zhurnalist"
+    assert _slugify("Язык") == "yazyk"
 
 
 # ── save_custom_role ─────────────────────────────────────────────────────────
@@ -95,9 +107,10 @@ def test_save_custom_role_overwrites(isolated_roles_dir):
     assert path.read_text() == "v2"
 
 
-def test_save_custom_role_empty_name_becomes_unnamed(isolated_roles_dir):
-    path = save_custom_role("", "content")
-    assert path.name == "unnamed.md"
+def test_save_custom_role_empty_name_raises(isolated_roles_dir):
+    """Empty name raises ValueError — no silent 'unnamed' fallback."""
+    with pytest.raises(ValueError, match="no usable characters"):
+        save_custom_role("", "content")
 
 
 # ── delete_custom_role ────────────────────────────────────────────────────────

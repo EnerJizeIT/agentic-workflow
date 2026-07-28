@@ -1,6 +1,7 @@
 """Pipeline execution engine — the core state machine."""
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,37 @@ def _build_prompt(action: str, todo_id: str) -> str:
         action,
         f"Execute action '{action}' for {todo_id} following role instructions. "
         f"Write result to .agentic/outbox/ with .ready signal.",
+    )
+
+
+log = logging.getLogger(__name__)
+
+
+def _global_roles_dir() -> Path:
+    """Return the global roles directory: ~/.config/awf/roles/."""
+    return Path.home() / ".config" / "awf" / "roles"
+
+
+def _resolve_role_file(role: str, project_dir: Path) -> Path:
+    """Resolve role file with project-local → global fallback.
+
+    Returns the existing ``<role>.md`` path or raises ``RuntimeError``
+    listing both checked locations.
+    """
+    project_role = paths.agentic_dir(project_dir) / "roles" / f"{role}.md"
+    global_role = _global_roles_dir() / f"{role}.md"
+
+    if project_role.exists():
+        return project_role
+
+    if global_role.exists():
+        log.info("Role '%s' not in project, falling back to global: %s", role, global_role)
+        return global_role
+
+    raise RuntimeError(
+        f"Role file '{role}' not found.\n"
+        f"  Checked: {project_role}\n"
+        f"  Checked: {global_role}"
     )
 
 
@@ -159,13 +191,9 @@ def _run_agent_stage(
     print("=" * 41)
     print()
 
-    roles_dir = paths.agentic_dir(project_dir) / "roles"
-    role_file = roles_dir / f"{role}.md"
+    role_file = _resolve_role_file(role, project_dir)
     inbox = paths.inbox(project_dir)
     todo_file = inbox / f"{todo_id}.md"
-
-    if not role_file.exists():
-        raise RuntimeError(f"Role file not found: {role_file}")
 
     prompt = _build_prompt(action, todo_id)
 
