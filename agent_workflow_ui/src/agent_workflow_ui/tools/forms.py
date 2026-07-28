@@ -17,20 +17,31 @@ from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_re
 log = logging.getLogger(__name__)
 
 
-def _normalize_available_roles(value: str | list[str | dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-    """Normalize available_roles to list[dict] with id/title/description keys."""
+def _normalize_available_roles(value: Any) -> list[dict[str, Any]]:
+    """Normalize available_roles to list of dicts.
+
+    Accepts: list of str | dict, single str, single dict.
+    Filters out: None, empty strings, non-str-non-dict items.
+    """
     if value is None:
-        return None
-    if isinstance(value, str):
-        return [{"id": value, "title": value, "description": ""}]
+        return []
+    if isinstance(value, (str, dict)):
+        value = [value]
     if not isinstance(value, list):
-        return value
+        return []
+
     result: list[dict[str, Any]] = []
     for item in value:
+        if item is None:
+            continue
         if isinstance(item, str):
+            item = item.strip()
+            if not item:
+                continue
             result.append({"id": item, "title": item, "description": ""})
-        else:
-            result.append(item)
+        elif isinstance(item, dict):
+            if item.get("id"):
+                result.append(item)
     return result
 
 
@@ -63,7 +74,7 @@ async def open_form(
             "error": "HTTP endpoint not started.",
         }
 
-    data = data or {}
+    data = dict(data) if data else {}
     # BD-6: extract project_dir from data so submit paths resolve to the project,
     # not cwd (which is $HOME when opencode launches MCP subprocess).
     project_dir_raw = data.pop("project_dir", None)

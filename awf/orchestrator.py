@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +19,9 @@ from .signals import (
     wait_for_signal,
 )
 from .transitions import resolve_transition
+
+APPROVE_TIMEOUT_SECONDS: int = int(os.environ.get("AWF_APPROVE_TIMEOUT_SECONDS", "1800"))
+APPROVE_POLL_INTERVAL: int = 2
 
 
 def _log(logs_dir: Path, message: str) -> None:
@@ -262,8 +266,17 @@ def _maybe_commit(
         _log(logs_dir, f"Auto-mode: waiting for APPROVE signal for {todo_id}")
 
         import time
+        deadline = time.time() + APPROVE_TIMEOUT_SECONDS
         while not approve_signal.exists():
-            time.sleep(2)
+            if time.time() > deadline:
+                print(
+                    f"ERROR: APPROVE signal not received within {APPROVE_TIMEOUT_SECONDS}s. "
+                    f"Pipeline aborting.",
+                    file=sys.stderr,
+                )
+                _log(logs_dir, f"APPROVE timeout for {todo_id}")
+                raise TimeoutError(f"APPROVE signal not received for {todo_id}")
+            time.sleep(APPROVE_POLL_INTERVAL)
         _log(logs_dir, f"APPROVE signal received for {todo_id}")
 
     if git_utils.commit_all(project_dir, f"awf({stage_name}): {todo_id}"):
@@ -295,34 +308,60 @@ def _find_active_todo(project_dir: Path) -> str:
     return active[0] if active else ""
 
 
-def _needs_normalize(project_dir: Path) -> tuple[bool, list[dict]]:
+def _check_needs_normalize(project_dir: Path) -> tuple[bool, list[dict], Path | None]:
     """Check .agentic/state/needs_normalize.yaml.
 
-    Returns (needed, team_list). needed=False if file missing or
-    needed: false. Consumes the file (deletes it) — normalize is one-shot
-    per submit.
+    Returns (needed, team_list, state_file_path). Does NOT delete the file.
     """
     import yaml
 
     state_file = paths.agentic_dir(project_dir) / "state" / "needs_normalize.yaml"
     if not state_file.exists():
-        return False, []
+        return False, [], None
     try:
         data = yaml.safe_load(state_file.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):
-        return False, []
+        return False, [], None
     if not isinstance(data, dict) or not data.get("needed"):
-        return False, []
+        return False, [], None
     team = data.get("team", [])
-    state_file.unlink()
-    return True, team if isinstance(team, list) else []
+    return True, team if isinstance(team, list) else [], state_file
 
 
-def _run_normalize_stage(team: list[dict], project_dir: Path, logs_dir: Path) -> None:
+def _consume_needs_normalize(state_file: Path | None) -> None:
+    """Delete the needs_normalize state file after successful normalize."""
+    if state_file and state_file.exists():
+        state_file.unlink()
+
+
+def _needs_normalize(project_dir: Path) -> tuple[bool, list[dict]]:
+    """Check and consume .agentic/state/needs_normalize.yaml.
+
+    Returns (needed, team_list). Legacy wrapper for backward compatibility.
+    """
+    needed, team, _state_file = _check_needs_normalize(project_dir)
+    if needed and _state_file:
+        _consume_needs_normalize(_state_file)
+    return needed, team
+
+
+def _run_normalize_stage(
+    team: list[dict],
+    project_dir: Path,
+    logs_dir: Path,
+    *,
+    background: bool = False,
+) -> None:
     """Run normalize_skills stage — supervisor (current session) does the work."""
-    if sys.stdin.isatty() is False:
-        print("ERROR: normalize_skills stage requires interactive terminal.", file=sys.stderr)
-        print("Run 'awf normalize' manually first, then 'awf start'.", file=sys.stderr)
+    if background:
+        print(
+            "ERROR: normalize_skills stage cannot run in --background mode.",
+            file=sys.stderr,
+        )
+        print(
+            "Run 'awf normalize' manually first, then 'awf start' (without --background).",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     effective_team = team
@@ -442,6 +481,7 @@ def run_pipeline(args: Any) -> int:
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
+    background = getattr(args, "background", False)
     # --timeout is accepted by argparse for backward compatibility but not yet
     # wired into wait_for_signal. Tracked separately in awf-core backlog.
     _timeout = getattr(args, "timeout", 3600)
@@ -526,9 +566,14 @@ def run_pipeline(args: Any) -> int:
 
             # BD-10-C: insert normalize_skills stage after plan
             if s_name == "plan":
-                needed, team = _needs_normalize(project_dir)
+                needed, team, state_file = _check_needs_normalize(project_dir)
                 if needed:
-                    _run_normalize_stage(team, project_dir, logs_dir)
+                    try:
+                        _run_normalize_stage(team, project_dir, logs_dir, background=background)
+                        _consume_needs_normalize(state_file)
+                    except Exception:
+                        _log(logs_dir, "normalize_skills failed — state file preserved for retry")
+                        raise
 
             continue
 

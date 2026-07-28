@@ -52,10 +52,16 @@ def _copy_to_project(global_path: Path, filename: str, project_dir: Path | None 
 
 def _delete_from_project(filename: str, project_dir: Path | None = None) -> None:
     """Delete a role file from project .agentic/roles/."""
+    if "/" in filename or "\\" in filename or filename in (".", ".."):
+        log.warning("Rejected _delete_from_project with suspicious filename: %r", filename)
+        return
     proj = _project_roles_dir(project_dir)
     if proj is None:
         return
-    target = proj / filename
+    target = (proj / filename).resolve()
+    if not target.is_relative_to(proj.resolve()):
+        log.warning("Rejected _delete_from_project: path escapes: %s", target)
+        return
     if target.exists():
         target.unlink()
         log.info("Deleted role %s from project %s", filename, proj)

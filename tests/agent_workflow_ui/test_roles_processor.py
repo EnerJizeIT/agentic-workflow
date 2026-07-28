@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 from agent_workflow_ui.opencode_config import _slugify
-from agent_workflow_ui.roles_processor import process_role_deletions, process_role_saves
+from agent_workflow_ui.roles_processor import (
+    _delete_from_project,
+    process_role_deletions,
+    process_role_saves,
+)
 
 from agent_workflow_ui import opencode_config, state
 
@@ -712,3 +716,57 @@ def test_bd10b_normalize_state_no_agentic(isolated_roles_dir, reset_project_dir,
         ]),
     }
     process_role_saves(data, project_dir=proj)
+
+
+# ── _delete_from_project path traversal (F2) ─────────────────────────────────
+
+
+def test_delete_from_project_path_traversal_dotdot(isolated_roles_dir, tmp_path):
+    """_delete_from_project with ../.. is rejected."""
+    proj = _make_project(tmp_path)
+    secret = tmp_path / "secret.md"
+    secret.write_text("secret")
+    _delete_from_project("../../secret.md", project_dir=proj)
+    assert secret.exists()
+
+
+def test_delete_from_project_path_traversal_slash(isolated_roles_dir, tmp_path):
+    """_delete_from_project with / is rejected."""
+    proj = _make_project(tmp_path)
+    secret = tmp_path / "secret.md"
+    secret.write_text("secret")
+    _delete_from_project(f"../{tmp_path.name}/secret.md", project_dir=proj)
+    assert secret.exists()
+
+
+def test_delete_from_project_path_traversal_backslash(isolated_roles_dir, tmp_path):
+    """_delete_from_project with \\ is rejected."""
+    proj = _make_project(tmp_path)
+    _delete_from_project("..\\..\\secret.md", project_dir=proj)
+
+
+def test_delete_from_project_dotdot_alone(isolated_roles_dir, tmp_path):
+    """_delete_from_project with '..' is rejected."""
+    proj = _make_project(tmp_path)
+    _delete_from_project("..", project_dir=proj)
+
+
+def test_delete_from_project_dot_alone(isolated_roles_dir, tmp_path):
+    """_delete_from_project with '.' is rejected."""
+    proj = _make_project(tmp_path)
+    _delete_from_project(".", project_dir=proj)
+
+
+def test_delete_from_project_normal_file(isolated_roles_dir, tmp_path):
+    """_delete_from_project with a normal filename works."""
+    proj = _make_project(tmp_path)
+    role_file = proj / ".agentic" / "roles" / "normal.md"
+    role_file.write_text("content")
+    _delete_from_project("normal.md", project_dir=proj)
+    assert not role_file.exists()
+
+
+def test_delete_from_project_normal_missing(isolated_roles_dir, tmp_path):
+    """_delete_from_project with a normal filename that doesn't exist — no error."""
+    proj = _make_project(tmp_path)
+    _delete_from_project("nonexistent.md", project_dir=proj)

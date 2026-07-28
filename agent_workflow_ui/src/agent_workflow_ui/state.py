@@ -5,10 +5,12 @@ is a cache for fast `list_pending_forms` queries and form_id assignment.
 """
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import yaml
 
@@ -37,27 +39,32 @@ class FormRegistry:
 
     def __init__(self) -> None:
         self._forms: dict[str, FormRecord] = {}
+        self._lock = threading.Lock()
 
     def add(self, record: FormRecord) -> None:
-        self._forms[record.form_id] = record
+        with self._lock:
+            self._forms[record.form_id] = record
 
     def get(self, form_id: str) -> FormRecord | None:
-        return self._forms.get(form_id)
+        with self._lock:
+            return self._forms.get(form_id)
 
     def update_status(self, form_id: str, status: str) -> FormRecord | None:
-        record = self._forms.get(form_id)
-        if record is None:
-            return None
-        record.status = status
-        now = datetime.now(timezone.utc)
-        if status == "submitted":
-            record.submitted_at = now
-        elif status == "cancelled":
-            record.cancelled_at = now
-        return record
+        with self._lock:
+            record = self._forms.get(form_id)
+            if record is None:
+                return None
+            record.status = status
+            now = datetime.now(timezone.utc)
+            if status == "submitted":
+                record.submitted_at = now
+            elif status == "cancelled":
+                record.cancelled_at = now
+            return record
 
     def list_pending(self) -> list[FormRecord]:
-        return [r for r in self._forms.values() if r.status == "pending"]
+        with self._lock:
+            return [r for r in self._forms.values() if r.status == "pending"]
 
     def next_form_id(self) -> str:
         """Generate a globally unique form_id.
@@ -86,7 +93,8 @@ def get_registry() -> FormRegistry:
 
 def reset_registry() -> None:
     """Reset the global registry. Used by tests for isolation."""
-    _registry._forms.clear()
+    with _registry._lock:
+        _registry._forms.clear()
 
 
 _http_port: int | None = None
@@ -145,6 +153,14 @@ def get_jinja_env() -> Any:
     return _jinja_env
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text file atomically (temp + rename)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{uuid4().hex}.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+
 def mark_needs_normalize(project_dir: Path | None, team: list[dict]) -> None:
     """Write .agentic/state/needs_normalize.yaml so awf start triggers normalize stage."""
     if project_dir is None or not (project_dir / ".agentic").is_dir():
@@ -156,6 +172,6 @@ def mark_needs_normalize(project_dir: Path | None, team: list[dict]) -> None:
         "needed": True,
         "marked_at": datetime.now(timezone.utc).isoformat(),
         "team": [{"role": m.get("agent", ""), "type": m.get("type", "default")}
-                 for m in team if m.get("agent")],
+                  for m in team if m.get("agent")],
     }
-    target.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
+    _atomic_write_text(target, yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))

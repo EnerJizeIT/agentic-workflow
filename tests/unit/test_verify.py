@@ -52,18 +52,18 @@ class TestRunVerifyCommands:
         assert verify.run_verify_commands(cfg) is False
 
     def test_one_passing_command(self) -> None:
-        cfg = {"verification": {"test_cmd": "true"}}
+        cfg = {"verification": {"test_cmd": "/bin/true"}}
         assert verify.run_verify_commands(cfg) is True
 
     def test_one_failing_command(self) -> None:
-        cfg = {"verification": {"test_cmd": "false"}}
+        cfg = {"verification": {"test_cmd": "/bin/false"}}
         assert verify.run_verify_commands(cfg) is False
 
     def test_mix_passing_and_failing(self) -> None:
         cfg = {
             "verification": {
-                "test_cmd": "true",
-                "lint_cmd": "false",
+                "test_cmd": "/bin/true",
+                "lint_cmd": "/bin/false",
             }
         }
         assert verify.run_verify_commands(cfg) is False
@@ -71,9 +71,9 @@ class TestRunVerifyCommands:
     def test_all_passing(self) -> None:
         cfg = {
             "verification": {
-                "test_cmd": "true",
-                "lint_cmd": "true",
-                "typecheck_cmd": "true",
+                "test_cmd": "/bin/true",
+                "lint_cmd": "/bin/true",
+                "typecheck_cmd": "/bin/true",
             }
         }
         assert verify.run_verify_commands(cfg) is True
@@ -81,13 +81,29 @@ class TestRunVerifyCommands:
     def test_empty_string_cmd_skipped(self) -> None:
         cfg = {
             "verification": {
-                "test_cmd": "true",
+                "test_cmd": "/bin/true",
                 "lint_cmd": "",
                 "typecheck_cmd": "",
                 "build_cmd": "",
             }
         }
         assert verify.run_verify_commands(cfg) is True
+
+    def test_shell_injection_not_executed(self) -> None:
+        """shell=False: semicolon becomes part of executable name → FileNotFoundError → False."""
+        cfg = {"verification": {"test_cmd": "/bin/true; /bin/false"}}
+        assert verify.run_verify_commands(cfg) is False
+
+    def test_shell_injection_semicolon_as_argument(self) -> None:
+        """echo hello; /bin/true → shlex splits to ['echo', 'hello;', '/bin/true'].
+        echo succeeds with those args; /bin/true is NOT run as separate command."""
+        cfg = {"verification": {"test_cmd": "echo hello; /bin/true"}}
+        assert verify.run_verify_commands(cfg) is True
+
+    def test_empty_cmd_after_split(self) -> None:
+        """Command that is only whitespace → shlex.split returns [] → False."""
+        cfg = {"verification": {"test_cmd": "   "}}
+        assert verify.run_verify_commands(cfg) is False
 
 
 class TestAttemptAutoDone:
@@ -110,7 +126,7 @@ class TestAttemptAutoDone:
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
         cfg = {
-            "verification": {"typecheck_cmd": "true"},
+            "verification": {"typecheck_cmd": "/bin/true"},
             "automation": {"auto_done": "true"},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0001", cfg, sha)
@@ -123,7 +139,7 @@ class TestAttemptAutoDone:
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
         cfg = {
-            "verification": {"typecheck_cmd": "false"},
+            "verification": {"typecheck_cmd": "/bin/false"},
             "automation": {"auto_done": True},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0002", cfg, sha)
@@ -133,7 +149,7 @@ class TestAttemptAutoDone:
     def test_no_work_no_done(self, tmp_git_repo: Path) -> None:
         outbox, sha = self._setup_repo(tmp_git_repo)
         cfg = {
-            "verification": {"typecheck_cmd": "true"},
+            "verification": {"typecheck_cmd": "/bin/true"},
             "automation": {"auto_done": True},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0003", cfg, sha)
@@ -144,7 +160,7 @@ class TestAttemptAutoDone:
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
         cfg = {
-            "verification": {"typecheck_cmd": "true"},
+            "verification": {"typecheck_cmd": "/bin/true"},
             "automation": {"auto_done": False},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0004", cfg, sha)
@@ -155,7 +171,7 @@ class TestAttemptAutoDone:
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
         cfg = {
-            "verification": {"typecheck_cmd": "true"},
+            "verification": {"typecheck_cmd": "/bin/true"},
             "automation": {"auto_done": "false"},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0005", cfg, sha)
@@ -175,7 +191,7 @@ class TestAttemptAutoDone:
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
         cfg = {
-            "verification": {"test_cmd": "true"},
+            "verification": {"test_cmd": "/bin/true"},
             "automation": {"auto_done": "true"},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0007", cfg, sha)

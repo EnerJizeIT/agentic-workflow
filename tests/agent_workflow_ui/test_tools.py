@@ -441,10 +441,55 @@ def test_normalize_available_roles_already_dicts():
 
 
 def test_normalize_available_roles_none():
-    """Missing key (None) → unchanged behavior."""
+    """None input → empty list."""
     from agent_workflow_ui.tools.forms import _normalize_available_roles
 
-    assert _normalize_available_roles(None) is None
+    assert _normalize_available_roles(None) == []
+
+
+def test_normalize_available_roles_none_in_list():
+    """None items in list are filtered out."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles(["worker", None, "tester"])
+    assert len(result) == 2
+    assert result[0]["id"] == "worker"
+    assert result[1]["id"] == "tester"
+
+
+def test_normalize_available_roles_empty_string_in_list():
+    """Empty strings in list are filtered out."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles(["worker", "", "tester"])
+    assert len(result) == 2
+    assert result[0]["id"] == "worker"
+    assert result[1]["id"] == "tester"
+
+
+def test_normalize_available_roles_dict_without_id():
+    """Dicts without 'id' field are filtered out."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles([{"id": "a"}, {"name": "no-id"}])
+    assert len(result) == 1
+    assert result[0]["id"] == "a"
+
+
+def test_normalize_available_roles_non_list_type():
+    """Non-list, non-str, non-dict input (e.g. int) → empty list."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    assert _normalize_available_roles(5) == []
+
+
+def test_normalize_available_roles_mixed_invalid():
+    """Mixed valid + invalid items → only valid kept."""
+    from agent_workflow_ui.tools.forms import _normalize_available_roles
+
+    result = _normalize_available_roles(["worker", 42, []])
+    assert len(result) == 1
+    assert result[0]["id"] == "worker"
 
 
 def test_open_form_with_string_roles_project_setup(plugin_setup):
@@ -554,6 +599,25 @@ def test_open_form_project_dir_not_leaked_to_template(plugin_setup, tmp_path):
     record = get_registry().get(result["form_id"])
     assert record is not None
     assert "project_dir" not in record.data_keys
+
+
+def test_open_form_data_not_mutated(plugin_setup, tmp_path):
+    """open_form does not mutate the caller's data dict."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj = tmp_path / "myproject"
+    proj.mkdir()
+    (proj / ".agentic").mkdir()
+
+    caller_data = {"project_dir": str(proj), "other": "x"}
+    original_keys = set(caller_data.keys())
+
+    asyncio.run(open_form(
+        template="role-assignment",
+        data=caller_data,
+    ))
+    assert set(caller_data.keys()) == original_keys
+    assert "project_dir" in caller_data
 
 
 def test_read_submit_with_project_dir(plugin_setup, tmp_path):

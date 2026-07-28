@@ -36,10 +36,15 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
         ),
     ]
 
+    seen_roles: set[str] = set()
     for member in team_order:
-        role = member.get("agent", "").strip()
+        role = str(member.get("agent", "")).strip()
         if not role:
             continue
+        if role in seen_roles:
+            log.warning("Duplicate role %r in team_order — skipping", role)
+            continue
+        seen_roles.add(role)
         stages.append(
             _stage_yaml(
                 name=role,

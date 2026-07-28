@@ -64,7 +64,7 @@ pip install -e "./agent_workflow_ui[dev]"
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-Target: ≥80% на plugin code (исключая `__main__.py` и `__init__.py`). Текущее: **93%**.
+Target: ≥80% на plugin code (исключая `__main__.py` и `__init__.py`). Текущее: **86%**.
 
 ## Development
 

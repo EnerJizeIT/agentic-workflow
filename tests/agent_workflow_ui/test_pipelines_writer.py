@@ -77,11 +77,18 @@ def test_empty_agent_skipped():
     assert stages[1]["name"] == "worker"
 
 
-def test_duplicate_roles_allowed():
-    """Same role twice is allowed (user's choice)."""
-    stages = build_pipeline_stages([{"agent": "worker"}, {"agent": "worker"}])
+def test_duplicate_roles_deduped():
+    """Same role twice → deduped, first occurrence kept."""
+    stages = build_pipeline_stages([{"agent": "worker"}, {"agent": "worker"}, {"agent": "tester"}])
     assert len(stages) == 4
-    assert [s["name"] for s in stages] == ["plan", "worker", "worker", "verify"]
+    assert [s["name"] for s in stages] == ["plan", "worker", "tester", "verify"]
+
+
+def test_empty_agent_skipped_dedup():
+    """Member with empty agent string is skipped during dedup."""
+    stages = build_pipeline_stages([{"agent": ""}, {"agent": "worker"}])
+    assert len(stages) == 3
+    assert [s["name"] for s in stages] == ["plan", "worker", "verify"]
 
 
 def test_custom_agent_type():

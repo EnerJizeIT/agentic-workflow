@@ -1,6 +1,7 @@
 """Verify commands and auto-DONE logic."""
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -33,9 +34,15 @@ def run_verify_commands(config: dict) -> bool:
         return False  # no commands configured → can't verify
 
     for cmd in cmds:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, check=False,
-        )
+        parts = shlex.split(cmd)
+        if not parts:
+            return False
+        try:
+            result = subprocess.run(
+                parts, capture_output=True, check=False,
+            )
+        except (FileNotFoundError, OSError):
+            return False
         if result.returncode != 0:
             return False
     return True

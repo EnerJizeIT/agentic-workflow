@@ -5,7 +5,9 @@ from unittest.mock import patch
 import pytest
 
 from awf.orchestrator import (
+    _check_needs_normalize,
     _check_skill_drift,
+    _consume_needs_normalize,
     _global_roles_dir,
     _maybe_commit,
     _needs_normalize,
@@ -129,7 +131,7 @@ class TestMaybeCommitBD8:
         result = project_dir.joinpath(".git").joinpath("HEAD").read_text().strip()
         assert "refs/heads/master" in result or "refs/heads/main" in result
 
-    def test_maybe_commit_auto_no_signal_raises(
+    def test_maybe_commit_auto_no_signal_raises_timeout(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         project_dir = self._init_git(tmp_path)
@@ -138,29 +140,60 @@ class TestMaybeCommitBD8:
         inbox = project_dir / ".agentic" / "inbox"
         inbox.mkdir(parents=True)
 
-        # No approve signal — monkeypatch sleep to raise after first call
-        call_count = [0]
-        def fail_after_one(_d):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                raise InterruptedError("test timeout")
-        monkeypatch.setattr("time.sleep", fail_after_one)
-
         (project_dir / "file.txt").write_text("modified")
 
-        with pytest.raises(InterruptedError):
+        # time.time advances so deadline (t=0 + 0s = 0) is passed on check (t=1)
+        _t = [0.0]
+        def fake_time():
+            return _t[0]
+
+        def fake_sleep(_dur):
+            _t[0] += _dur
+
+        monkeypatch.setattr("time.time", fake_time)
+        monkeypatch.setattr("time.sleep", fake_sleep)
+        monkeypatch.setattr(
+            "awf.orchestrator.APPROVE_TIMEOUT_SECONDS", 0
+        )
+
+        with pytest.raises(TimeoutError) as exc_info:
             _maybe_commit(
                 "verify", "TODO-0001", "commit_and_next",
                 project_dir, logs_dir, auto=True,
             )
 
-        # Verify no commit was made — file.txt still modified but not committed
+        assert "TODO-0001" in str(exc_info.value)
+
+        # Verify no commit was made
         import subprocess
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=project_dir, capture_output=True, text=True,
         )
         assert "file.txt" in status.stdout
+
+    def test_maybe_commit_timeout_uses_env_default(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        project_dir = self._init_git(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        inbox = project_dir / ".agentic" / "inbox"
+        inbox.mkdir(parents=True)
+
+        (project_dir / "file.txt").write_text("modified")
+
+        # Set 1-second timeout via module constant
+        monkeypatch.setattr(
+            "awf.orchestrator.APPROVE_TIMEOUT_SECONDS", 1
+        )
+        monkeypatch.setattr(
+            "awf.orchestrator.APPROVE_POLL_INTERVAL", 1
+        )
+
+        with pytest.raises(TimeoutError):
+            _maybe_commit(
+                "verify", "TODO-0001", "commit_and_next",
+                project_dir, logs_dir, auto=True,
+            )
 
     def test_maybe_commit_non_auto_commits_immediately(self, tmp_path: Path) -> None:
         project_dir = self._init_git(tmp_path)
@@ -344,6 +377,68 @@ class TestNeedsNormalize:
         assert team == []
 
 
+class TestCheckNeedsNormalize:
+
+    def _setup_state_file(self, tmp_path: Path) -> Path:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        import yaml
+        (state_dir / "needs_normalize.yaml").write_text(
+            yaml.dump({"needed": True, "team": [{"role": "worker", "type": "primary"}]})
+        )
+        return project_dir
+
+    def test_check_does_not_delete_file(self, tmp_path: Path) -> None:
+        project_dir = self._setup_state_file(tmp_path)
+        state_file = project_dir / ".agentic" / "state" / "needs_normalize.yaml"
+
+        needed, team, returned_path = _check_needs_normalize(project_dir)
+        assert needed is True
+        assert len(team) == 1
+        assert returned_path == state_file
+        assert state_file.exists()
+
+    def test_check_idempotent(self, tmp_path: Path) -> None:
+        project_dir = self._setup_state_file(tmp_path)
+
+        needed1, _, _ = _check_needs_normalize(project_dir)
+        assert needed1 is True
+
+        needed2, _, _ = _check_needs_normalize(project_dir)
+        assert needed2 is True
+
+    def test_consume_deletes_file(self, tmp_path: Path) -> None:
+        project_dir = self._setup_state_file(tmp_path)
+        state_file = project_dir / ".agentic" / "state" / "needs_normalize.yaml"
+
+        _consume_needs_normalize(state_file)
+        assert not state_file.exists()
+
+    def test_consume_none_safe(self, tmp_path: Path) -> None:
+        _consume_needs_normalize(None)
+
+    def test_consume_nonexistent_safe(self, tmp_path: Path) -> None:
+        _consume_needs_normalize(tmp_path / "nope" / "file.yaml")
+
+    def test_state_file_survives_normalize_failure(self, tmp_path: Path) -> None:
+        project_dir = self._setup_state_file(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir()
+        state_file = project_dir / ".agentic" / "state" / "needs_normalize.yaml"
+
+        needed, team, returned_path = _check_needs_normalize(project_dir)
+        assert needed is True
+
+        with patch("builtins.input", side_effect=RuntimeError("simulated failure")):
+            with patch("sys.stdin.isatty", return_value=True):
+                with pytest.raises(RuntimeError):
+                    _run_normalize_stage(team, project_dir, logs_dir, background=False)
+
+        assert state_file.exists()
+
+
 class TestCheckSkillDrift:
 
     def test_no_skills_dir(self, tmp_path: Path) -> None:
@@ -441,17 +536,30 @@ class TestCheckSkillDrift:
 
 class TestRunNormalizeStage:
 
-    def test_raises_systemexit_not_tty(self, tmp_path: Path) -> None:
+    def test_raises_systemexit_background(self, tmp_path: Path) -> None:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         (project_dir / ".agentic").mkdir()
         logs_dir = project_dir / ".agentic" / "logs"
         logs_dir.mkdir()
 
-        with patch("sys.stdin.isatty", return_value=False):
-            with pytest.raises(SystemExit) as exc_info:
-                _run_normalize_stage([], project_dir, logs_dir)
-            assert exc_info.value.code == 1
+        with pytest.raises(SystemExit) as exc_info:
+            _run_normalize_stage([], project_dir, logs_dir, background=True)
+        assert exc_info.value.code == 1
+
+    def test_background_false_with_mocked_input(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        agentic = project_dir / ".agentic"
+        logs_dir = agentic / "logs"
+        logs_dir.mkdir(parents=True)
+
+        monkeypatch.setattr("builtins.input", lambda: "")
+
+        _run_normalize_stage([], project_dir, logs_dir, background=False)
+
+        captured = capsys.readouterr()
+        assert "NORMALIZE_SKILLS STAGE" in captured.out
 
     def test_empty_team_reads_roles_dir(self, tmp_path: Path, capsys, monkeypatch) -> None:
         project_dir = tmp_path / "proj"
@@ -464,10 +572,9 @@ class TestRunNormalizeStage:
         logs_dir = agentic / "logs"
         logs_dir.mkdir()
 
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda: "")
 
-        _run_normalize_stage([], project_dir, logs_dir)
+        _run_normalize_stage([], project_dir, logs_dir, background=False)
 
         captured = capsys.readouterr()
         assert "architect" in captured.out
@@ -486,10 +593,9 @@ class TestRunNormalizeStage:
             {"role": "reviewer", "type": "secondary"},
         ]
 
-        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         monkeypatch.setattr("builtins.input", lambda: "")
 
-        _run_normalize_stage(team, project_dir, logs_dir)
+        _run_normalize_stage(team, project_dir, logs_dir, background=False)
 
         captured = capsys.readouterr()
         assert "NORMALIZE_SKILLS STAGE" in captured.out

@@ -1,6 +1,7 @@
 """Port of lib/baseline.sh — ``awf baseline`` command."""
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -43,15 +44,19 @@ def run(args: Any) -> int:
         config_data = cfg_mod.load(".")
         test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
         if test_cmd:
-            result = subprocess.run(
-                test_cmd, shell=True,
-                capture_output=True, text=True,
-            )
-            tests_log.write_text(result.stdout + result.stderr, encoding="utf-8")
-            if result.returncode == 0:
-                print("Test baseline saved.")
+            parts = shlex.split(test_cmd)
+            if parts:
+                result = subprocess.run(
+                    parts,
+                    capture_output=True, text=True,
+                )
+                tests_log.write_text(result.stdout + result.stderr, encoding="utf-8")
+                if result.returncode == 0:
+                    print("Test baseline saved.")
+                else:
+                    print("Test baseline saved (command exited non-zero — recorded as-is).")
             else:
-                print("Test baseline saved (command exited non-zero — recorded as-is).")
+                tests_log.write_text("No test_cmd configured, skipping test baseline.\n", encoding="utf-8")
         else:
             tests_log.write_text("No test_cmd configured, skipping test baseline.\n", encoding="utf-8")
     else:
@@ -63,8 +68,8 @@ def run(args: Any) -> int:
         python_cmd = "python"
 
     env_parts = []
-    for cmd in [f"{python_cmd} --version", f"{python_cmd} -m pip list"]:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    for cmd in [[python_cmd, "--version"], [python_cmd, "-m", "pip", "list"]]:
+        result = subprocess.run(cmd, capture_output=True, text=True)
         env_parts.append(result.stdout + result.stderr)
 
     (context_dir / f"BASELINE-{todo_id}.env.log").write_text(

@@ -185,8 +185,8 @@ agentic-workflow/             # monorepo (два независимых прод
 ├── vision/                   # product vision + architecture docs
 ├── tests/
 │   ├── e2e/                  # 12 E2E (subprocess через bin/awf)
-│   ├── unit/                 # 152 unit для awf/*.py
-│   └── agent_workflow_ui/    # 180 unit/integration для plugin'а
+│   ├── unit/                 # 214 unit для awf/*.py
+│   └── agent_workflow_ui/    # 284 unit/integration для plugin'а
 ├── docs/history/             # исторические дизайн-документы (до реализации)
 ├── pyproject.toml            # workspace metadata + ruff/pytest config
 ├── BACKLOG.md                # план развития
@@ -298,7 +298,7 @@ Runtime-директории (`inbox/`, `outbox/`, `inputs/`, `dashboards/`, `co
 Даёт supervisor-агенту инструменты визуального взаимодействия с пользователем:
 HTML-формы для структурированного ввода (когда chat неэффективен).
 
-**Status:** v0.1.0 — реализован (5 MCP tools, HTTP endpoint, composite template `project-setup`, custom roles persistence, lazy skill install, 180 тестов, 93% coverage).
+**Status:** v0.1.0 — реализован (5 MCP tools, HTTP endpoint, composite template `project-setup`, custom roles persistence, lazy skill install, 284 теста, 86% coverage).
 
 ### Установка
 
@@ -413,12 +413,12 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**344 теста:** 12 E2E + 152 awf-unit + 180 plugin.
+**510 тест:** 12 E2E + 214 awf-unit + 284 plugin.
 
 E2E-тесты используют `tests/stubs/opencode` для mock'а worker'а — реальный opencode не требуется.
 
 **Покрытие:**
-- **agent-workflow-ui:** **93%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).
+- **agent-workflow-ui:** **86%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).
 - **awf-core helper modules** (`signals.py`, `pipeline.py`, `transitions.py`, `verify.py`, `todos.py`, `git_utils.py`, `config.py`, `paths.py`, `yaml_utils.py`) — 91-100% unit-покрытие.
 - **awf-core cmd_*.py** — формально ~0% через pytest-cov, потому что execute через subprocess (bin/awf). Реальное покрытие обеспечивается E2E.
 
@@ -449,7 +449,7 @@ E2E-тесты используют `tests/stubs/opencode` для mock'а worker
 - **Inline conflict resolution** через JS `confirm()` перед перезаписью роли.
 - **Lazy skill install** при каждом старте plugin'а (заменяет ненадёжные setuptools post-install hooks).
 - **Models auto-discovery** через `opencode models` CLI + recent models из SQLite history.
-- **180 тестов, 93% coverage.**
+- **284 теста, 86% coverage.**
 
 ### awf v0.4.0 (2026-07-20)
 
@@ -457,7 +457,7 @@ E2E-тесты используют `tests/stubs/opencode` для mock'а worker
 
 - **Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1):** `bin/awf` резолвит симлинки через `os.path.realpath` — install через `ln -s` работает нативно.
 - **`awf/` Python package:** 22 модуля, ~2100 строк.
-- **164 теста:** 12 E2E + 152 unit.
+- **164 теста:** 12 E2E + 152 unit (на момент релиза; сейчас 214 unit после BD-фиксов).
 - **`tests/run.sh` удалён** — заменён на pytest.
 
 ### Timeline awf v0.3.x (миграция по волнам)

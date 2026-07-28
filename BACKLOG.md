@@ -10,7 +10,7 @@
 
 - Wave 4: миграция bash→Python завершена. `lib/*.sh` удалены, `awf/` Python package = 22 модуля.
 - `bin/awf` — thin wrapper через `os.path.realpath`. Closes [#1](https://github.com/EnerJizeIT/agentic-workflow/issues/1).
-- 164 теста (12 E2E + 152 unit), CI на Python 3.10-3.12.
+- 164 теста (12 E2E + 152 unit) на момент релиза; сейчас 510 (12 E2E + 214 unit + 284 plugin), CI на Python 3.10-3.12.
 - README на русском, LICENSE, GitHub Actions.
 - Vision и Architecture для `agent-workflow-ui` plugin'а зафиксированы.
 
@@ -25,7 +25,7 @@
 - Inline conflict resolution через JS `confirm()` перед перезаписью роли.
 - **Lazy skill install** (через `skill_installer.py`) — SKILL.md автоматически копируется в `~/.config/opencode/skills/` при каждом старте plugin'а (idempotent). Заменяет изначально запланированный setuptools post-install hook.
 - Cross-platform browser open.
-- **147 тестов + 33 slugify cross-check cases = 180 тестов, 93% coverage**.
+- **284 теста, 86% coverage** (расширено после BD-фиксов).
 - SKILL.md с инструкцией для LLM (non-blocking pattern, agent-driven templates).
 - Slugify Python↔JS cross-check test (гарантирует consistency conflict detection).
 - `awf init` — prompt для plugin install.
@@ -171,7 +171,9 @@ LLM policy: когда/как использовать формы.
 
 Обнаружено при dogfooding на jira-epic-presenter.
 
-### BD-1 · `_slugify` молча глотает кириллицу → `unnamed.md`
+### BD-1 · `_slugify` молча глотает кириллицу → `unnamed.md` — FIXED
+
+**Status:** Fixed in commit `1fba8ff`.
 
 **Symptom:** Custom agent с именем на кириллице (например «Аудиитор») сохраняется в
 `~/.config/awf/roles/unnamed.md`. Пользователь не получает ошибки, но роль не находится
@@ -187,7 +189,9 @@ LLM policy: когда/как использовать формы.
 
 **Found during:** dogfood session 2026-07-28, форма `project-setup`, агент «Аудиитор».
 
-### BD-2 · `available_roles` принимает только dict, не string — нет валидации
+### BD-2 · `available_roles` принимает только dict, не string — нет валидации — FIXED
+
+**Status:** Fixed in commit `1fba8ff`.
 
 **Symptom:** `open_form(template="project-setup", data={"available_roles": ["worker"]})`
 падает с `'str' object has no attribute 'get'` (template line 410:
@@ -204,7 +208,9 @@ LLM policy: когда/как использовать формы.
 
 **Found during:** dogfood session 2026-07-28, first call fell, пришлось дебажить исходники plugin'а.
 
-### BD-3 · Custom roles сохраняются в global, awf-core не видит их в проекте
+### BD-3 · Custom roles сохраняются в global, awf-core не видит их в проекте — FIXED
+
+**Status:** Fixed in commit `1fba8ff`.
 
 **Architectural gap:** Plugin writes custom roles to `~/.config/awf/roles/`, but
 awf-core resolves roles only from `.agentic/roles/`. No bridge. Для проекта с custom
@@ -219,7 +225,125 @@ A — правильное архитектурно, но feature-work. C — wo
 
 **Found during:** dogfood session 2026-07-28.
 
-### BD-10 · Skills normalization layer (global reference + local adaptation) — FEATURE
+---
+
+## 🏛️ Architectural debt (A-series, from QA audit 2026-07-28)
+
+Найдены project-auditor + qa-review skills. Не блокируют работу, требуют
+дизайн-решения или крупного refactor. Каждое — отдельная задача.
+
+### A1 · `git add -A` in commit_all captures unrelated working-tree changes
+
+**Symptom.** Worker finishes TODO, orchestrator auto-commits via
+`git_utils.commit_all` (`awf/git_utils.py:47`) which does `git add -A`.
+Any uncommitted supervisor changes (config.yaml mid-edit, role files
+just copied) get mixed into the worker's commit. Happened in
+jira-epic-presenter `0614b8d` (4 worker + 4 supervisor files).
+
+**Approaches:**
+- A) Compute diff vs `BASELINE-TODO-NNNN.sha`, `git add` only matched files. Loses intentional supervisor staging.
+- B) Require clean tree before `awf start` (document + enforce).
+- C) Stash supervisor changes at start, pop at end. Risk: stash conflicts.
+- D) `git commit` with explicit paths from baseline diff (no `git add`).
+
+### A2 · HTTP endpoint lacks CSRF protection
+
+**Symptom.** POST `/submit/FORM-...` accepts data without CSRF token,
+no Origin/Referer check. Form IDs predictable (`FORM-YYYYMMDDHHMMSS-XXXX`).
+
+**Risk.** 127.0.0.1-only limits to local processes. Browser XSS on
+another localhost service can still fetch. Local malware can spoof submit.
+
+**Approaches:** per-form random token in HTML, validated on POST; OR
+Origin header whitelist; OR double-submit cookie.
+
+**Location:** `agent_workflow_ui/src/agent_workflow_ui/http_endpoint.py:98-174`.
+
+### A3 · `_ack_page` HTML embedded in Python f-string
+
+**Symptom.** `http_endpoint._ack_page` (`:49-88`) builds HTML as f-string.
+No Jinja2 autoescape (manual `html.escape`), cannot be overridden
+project-level, duplicates dark-theme CSS from form templates.
+
+**Refactor.** Move to `render/default_templates/ack.html.j2`. Render via
+`render_template()`. Benefits: localization, project override, autoescape,
+consistent styling.
+
+### A4 · Temp HTML files never cleaned up — disk leak
+
+**Symptom.** Each `open_form()` creates `agent-workflow-ui-FORM-*.html`
+in `tempfile.gettempdir()` (`tools/forms.py:108-110`). Files never deleted.
+Active use → hundreds stale in `/tmp/`.
+
+**Approach:** cleanup pass at plugin startup (remove files older than
+`default_ttl_seconds`) + delete on `read_submit()` when form consumed.
+
+### A5 · `attempt_auto_done` autocommits without explicit approval
+
+**Symptom.** Worker finishes without DONE signal, verify commands pass,
+git diff shows changes → orchestrator synthesizes DONE and runs
+`commit_and_next`. Auto-commit happens with no human review, even in
+non-auto mode.
+
+**Decision needed:** treat auto-DONE same as worker-DONE for approval
+purposes? If yes — apply BD-8 APPROVE gate. If no — document explicitly.
+
+**Location:** `awf/verify.py:55`, `awf/orchestrator.py:564`.
+
+### A6 · orchestrator.py 677+ lines — SRP violation
+
+**Symptom.** `awf/orchestrator.py` hosts: state machine (`run_pipeline`),
+normalize stage, drift detection, role resolution, prompt building,
+commit gate, signal helpers. Mixed concerns.
+
+**Refactor proposal:**
+- `awf/normalize.py` — normalize stage + drift detection.
+- `awf/commit_gate.py` — `_maybe_commit` + APPROVE polling.
+- `awf/orchestrator.py` — only state machine + stage iteration.
+
+Risk: import changes, possible test breakage.
+
+### A7 · `_check_skill_drift` duplicates `cmd_normalize._check_drift`
+
+**Symptom.** Two implementations of skill SHA256 comparison:
+- `awf/orchestrator.py:_check_skill_drift` — returns bool, prints warnings.
+- `awf/cmd_normalize.py:_check_drift` — returns int, structured report.
+
+Same logic copy-pasted.
+
+**Refactor.** Extract `awf/skills.py` with `compute_drift(skills_dir) -> list[DriftResult]`. Both callers format the data differently.
+
+### A8 · `awf/cmd_init.py` imports plugin (architecture boundary violation)
+
+**Symptom.** `awf/cmd_init.py:234` does `importlib.import_module("agent_workflow_ui")`. Core → plugin dependency. Vision says plugin is agnostic.
+
+**Why kept.** Lazy import in try/except — graceful on missing plugin.
+
+**Options:** `pip show agent-workflow-ui` subprocess; OR separate
+`awf plugin check` command; OR document as accepted exception.
+
+### A9 · `GLOBAL_ROLES_DIR` doesn't respect `XDG_CONFIG_HOME`
+
+**Symptom.** `opencode_config.py:13` hardcodes `Path.home() / ".config"`.
+Same in `skill_installer.py:32`. Users with `XDG_CONFIG_HOME=/custom/path`
+find roles in wrong location.
+
+**Fix.** `Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))`.
+
+### A10 · FormRegistry in-memory only — data loss on crash
+
+**Symptom.** All open forms in module-level `_forms` dict (`state.py:35-78`).
+MCP subprocess crash/restart → pending forms lost. Submit to dead form_id →
+silent failure. Pipeline waiting for submit hangs.
+
+**Fix.** Persist registry to `.agentic/state/forms_registry.yaml` on every
+mutation. Restore on startup.
+
+---
+
+### BD-10 · Skills normalization layer (global reference + local adaptation) — FIXED
+
+**Status:** Fixed in commit `8a8557f`.
 
 **Problem.** When user picks multiple custom agents in `project-setup`
 form (e.g., worker + system-analyst + project-auditor), each brings its
@@ -330,7 +454,9 @@ becomes pipeline).
 
 ---
 
-### BD-9 · `project-setup` form selections do NOT become pipeline stages (CRITICAL)
+### BD-9 · `project-setup` form selections do NOT become pipeline stages — FIXED
+
+**Status:** Fixed in commit `e884d09`.
 
 **Critical architectural gap.** User opens `project-setup` form, selects
 supervisor + team (worker, tester, custom agents like system-analysis,
@@ -385,7 +511,9 @@ Worker ran solo despite user selecting worker + tester + 2 custom agents.
 
 ---
 
-### BD-8 · `--background --auto` auto-commits without explicit supervisor approval + mixes unrelated files
+### BD-8 · `--background --auto` auto-commits without explicit supervisor approval + mixes unrelated files — FIXED
+
+**Status:** Fixed in commit `e884d09`.
 
 **Symptom:** `awf start --background` ran TODO-0002. Worker created 4 files
 (manifest, content.js, background.js, README.md). Orchestrator hit verify
@@ -420,7 +548,9 @@ worker output + supervisor's role/config changes; rolled back via
 
 ---
 
-### BD-7 · `awf start --background` EOFError on supervisor input()
+### BD-7 · `awf start --background` EOFError on supervisor input() — FIXED
+
+**Status:** Fixed in commit `8d97dc7`.
 
 **Symptom:** `awf start --background` crashes immediately:
 ```
@@ -448,7 +578,9 @@ on TODO-0002.
 
 ---
 
-### BD-6 · Plugin runs from HOME, not project — `.agentic/` polluted in HOME, project_dir wrong
+### BD-6 · Plugin runs from HOME, not project — `.agentic/` polluted in HOME, project_dir wrong — FIXED
+
+**Status:** Fixed in commit `ed85699`.
 
 **Symptom:** After `awf start` and form submit, plugin wrote submit YAMLs to
 `/home/pklochkov/.agentic/inputs/` (HOME), NOT to project's `.agentic/inputs/`.
@@ -480,7 +612,9 @@ restart port сменился (53921→54073), но кдw всё равно HOME
 
 ---
 
-### BD-5 · Custom supervisor variant selected from dropdown not copied to project; empty content allowed
+### BD-5 · Custom supervisor variant selected from dropdown not copied to project; empty content allowed — FIXED
+
+**Status:** Fixed in commit `84197dc`.
 
 **Symptoms (2 issues from dogfood):**
 1. User selected existing `supervisor-architect` from dropdown in `project-setup` form (no new content). Plugin did NOT copy the variant into project's `.agentic/roles/`. As a result, awf-core's generic `.agentic/roles/supervisor.md` is what the supervisor agent reads — not the chosen variant.
@@ -499,7 +633,9 @@ restart port сменился (53921→54073), но кдw всё равно HOME
 
 ---
 
-### BD-4 · Submit confirmation page: EN, light theme, blue accent
+### BD-4 · Submit confirmation page: EN, light theme, blue accent — FIXED
+
+**Status:** Fixed in commit `1fba8ff`.
 
 **Symptoms (3 issue from dogfood):**
 1. Текст на английском — основная форма на русском, confirmation отвалился.
