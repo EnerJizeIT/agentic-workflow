@@ -175,6 +175,16 @@ def _get_agent_name(config: dict, role: str) -> str:
     return cfg_mod.get(config, f"models.{role}.agent_name", role) or role
 
 
+def _get_role_model(config: dict, role: str) -> str | None:
+    """BD-24: get the model override for a role from config.yaml.
+
+    Returns the model string (e.g. "vllm/llm") if set, else None (let
+    opencode pick its default).
+    """
+    val = cfg_mod.get(config, f"models.{role}.model", "")
+    return val if val else None
+
+
 def _build_prompt(action: str, todo_id: str) -> str:
     """Build the prompt string for an agent stage, matching bash run_agent_stage."""
     prompts = {
@@ -407,8 +417,15 @@ def _run_supervisor_via_subprocess(
     cmd = [
         "opencode", "run", "--auto",
         "--agent", agent_name,
-        "--file", str(role_file),
+        # BD-24: pass model from config.yaml so role uses correct LLM
+        # (without this, opencode uses default model which may differ).
+        "--title", f"awf-supervisor-{action}",
     ]
+    # BD-24: --model only if explicitly set in config.yaml
+    role_model = _get_role_model(config, "supervisor")
+    if role_model:
+        cmd += ["--model", role_model]
+    cmd += ["--file", str(role_file)]
     for f in extra_files:
         cmd += ["--file", f]
     cmd += ["--", prompt]
@@ -500,9 +517,15 @@ def _run_agent_stage(
     cmd = [
         "opencode", "run", "--auto",
         "--agent", agent_name,
+        # BD-23: unique title per stage isolates session from interactive opencode
+        "--title", f"awf-{role}-{todo_id}",
         "--file", str(role_file),
         "--file", str(todo_file),
     ]
+    # BD-24: pass --model from config.yaml if explicitly set
+    role_model = _get_role_model(config, role)
+    if role_model:
+        cmd += ["--model", role_model]
 
     # BD-15: forward previous stages' handoffs as --file args
     if prev_handoffs:

@@ -522,6 +522,71 @@ subprocess failure raises.
 
 ---
 
+### BD-23 · Awf subprocess shares session with interactive opencode (no isolation) — FIXED
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** `opencode run` launched by awf inherited the session/title
+of the user's currently running interactive opencode (PID 588380 →
+session `ses_084117...`). Awf subprocess step counter and the user's
+own steps interleaved in the same session log, slowing each other down.
+User observed "session need permission" notifications despite BD-22 fix
+because the interactive opencode (not the awf subprocess) was the one
+prompting — they shared state.
+
+**Fix.** Pass `--title awf-{role}-{todo_id}` to every spawned
+`opencode run`. Unique title forces a new session per stage, isolated
+from any interactive opencode running in the same directory.
+
+Tests: BD-23 title present in Popen cmd; includes role + todo_id.
+
+**Found during:** dogfood v7 (2026-07-28) — awf subprocess showed same
+session.id as interactive opencode in opencode.log.
+
+---
+
+### BD-24 · Awf doesn't pass `--model` from config.yaml — agent uses wrong LLM — FIXED
+
+**Status:** Fixed in commit (pending).
+
+**Problem.** `cmd = ["opencode", "run", "--auto", "--agent", ...]` did
+not include `--model`. Opencode fell back to the default model from
+global `~/.config/opencode/opencode.json`. Result: config.yaml said
+`system-analysis → vllm/llm`, but the subprocess ran on
+`zai-coding-plan/glm-5.2` (the user's default). Wrong model = slow,
+expensive, or wrong behaviour.
+
+**Fix.**
+1. New helper `_get_role_model(config, role)` reads
+   `models.<role>.model` from config.yaml.
+2. Both `_run_supervisor_via_subprocess` and `_run_agent_stage` add
+   `--model <value>` to cmd ONLY when the role has an explicit model
+   set (avoids overriding opencode default when not configured).
+
+Tests: BD-24 --model present when set; absent when not set.
+
+**Found during:** dogfood v7 — system-analysis ran on glm-5.2 instead
+of vllm/llm despite config.yaml mapping.
+
+---
+
+### BD-25 · Awf subprocess attaches to running `opencode serve` — OPEN
+
+**Status:** OPEN. Lower priority — may be related to BD-23 fix.
+
+**Problem.** When `opencode serve` is already running (port 8080 in
+user's setup), `opencode run` subprocess may attach to it instead of
+spawning a fresh process. This shares state, sessions, and possibly
+causes the "session need permission" issue observed in dogfood v7.
+
+**Possible fix.** Pass `--pure` flag to disable plugin/share discovery,
+or ensure awf subprocess doesn't see `OPENCODE_SERVER_*` env vars.
+
+**Not yet fixed** — BD-23 (unique --title) may already mitigate. Verify
+after dogfood v8 if the issue persists.
+
+---
+
 ### BD-22 · BD-20 false positive — terminates subprocess on stale signals from previous runs
 
 **Status:** OPEN. **Priority:** CRITICAL — blocks reliable dogfooding.

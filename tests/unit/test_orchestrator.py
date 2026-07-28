@@ -414,6 +414,53 @@ class TestRunAgentStageLocalSkill:
         file_indices = [i for i, x in enumerate(captured) if x == "--file"]
         assert len(file_indices) == 2
 
+    def test_run_agent_stage_passes_model_when_set_bd24(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-24: --model added when config.yaml has models.<role>.model."""
+        project_dir = self._setup_project(tmp_path, monkeypatch)
+
+        stage = Stage(name="execute", role="worker", action="execute_todo")
+        _patch_subprocess_for_awf(monkeypatch)
+        config = {"models": {"worker": {"agent_name": "worker", "model": "vllm/llm"}}}
+        _run_agent_stage(stage, "TODO-0001", project_dir, config, project_dir / ".agentic" / "logs")
+
+        captured = _FakePopen._last_cmds[-1]
+        assert "--model" in captured
+        idx = captured.index("--model")
+        assert captured[idx + 1] == "vllm/llm"
+
+    def test_run_agent_stage_no_model_when_not_set_bd24(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-24: no --model flag when config has no model for the role."""
+        project_dir = self._setup_project(tmp_path, monkeypatch)
+
+        stage = Stage(name="execute", role="worker", action="execute_todo")
+        _patch_subprocess_for_awf(monkeypatch)
+        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+
+        captured = _FakePopen._last_cmds[-1]
+        assert "--model" not in captured
+
+    def test_run_agent_stage_has_unique_title_bd23(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BD-23: --title isolates awf subprocess session from interactive opencode."""
+        project_dir = self._setup_project(tmp_path, monkeypatch)
+
+        stage = Stage(name="execute", role="worker", action="execute_todo")
+        _patch_subprocess_for_awf(monkeypatch)
+        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+
+        captured = _FakePopen._last_cmds[-1]
+        assert "--title" in captured
+        idx = captured.index("--title")
+        title = captured[idx + 1]
+        # Title includes role + todo for uniqueness
+        assert "worker" in title
+        assert "TODO-0001" in title
+
     def test_run_agent_stage_skill_dir_no_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
