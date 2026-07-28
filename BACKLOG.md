@@ -219,6 +219,96 @@ A — правильное архитектурно, но feature-work. C — wo
 
 **Found during:** dogfood session 2026-07-28.
 
+### BD-9 · `project-setup` form selections do NOT become pipeline stages (CRITICAL)
+
+**Critical architectural gap.** User opens `project-setup` form, selects
+supervisor + team (worker, tester, custom agents like system-analysis,
+project-auditor). Form saves role files to global/project, updates
+config.yaml models section. But `awf start` reads `.agentic/pipelines/default.yaml`
+which is **static** — created by `awf init --template simple|full`. The
+selected roles never become pipeline stages.
+
+**Result:** user thinks "I configured my pipeline", actually configured
+nothing. Worker runs alone, tester/reviewer/custom agents are ignored.
+Form promises one thing, runtime does another.
+
+**Architecture decision required (3 options):**
+
+- **A) Form = pipeline.** Form presents an ordered list (drag-and-drop or
+  numbered). Each role becomes a stage in this order. supervisor (plan)
+  auto-prepended, supervisor (verify) auto-appended. Plugin writes
+  `.agentic/pipelines/default.yaml` after submit. Custom agents get
+  `action: "execute_todo"` (same as worker — receive TODO, do work, write
+  DONE). Intuitive, but custom agents with very different purposes
+  (analysis vs audit) may need different actions later.
+
+- **B) Form splits pipeline-roles vs advisory-agents.** Two sections in
+  form: "Pipeline team" (worker/tester/reviewer in order) and "Advisory
+  agents" (custom — available to supervisor ad-hoc, not pipeline stages).
+  Plugin writes pipeline from team section only. Semantically clean but
+  more UX complexity.
+
+- **C) Hybrid.** Form shows ordered list of any roles (default + custom),
+  drag-and-drop, plugin writes pipeline. Each role = stage. User can put
+  tester before worker (pipeline accepts it, may not be smart). Maximum
+  flexibility, no semantic guardrails.
+
+**Recommended: A** — closest to user mental model. UI change + plugin
+pipeline-writer. No awf-core changes needed (orchestrator already iterates
+stages from YAML).
+
+**Sub-tasks for option A:**
+1. Add ordering to form (drag-and-drop library or simple up/down arrows).
+2. Plugin: `_write_pipeline_yaml(team_order: list[str]) -> Path` in
+   roles_processor.py or new pipelines_writer.py. Writes to
+   `.agentic/pipelines/default.yaml` (with project_dir from BD-6).
+3. Pipeline structure: supervisor(plan) → [team in order] → supervisor(verify).
+   Each team stage: `{name: <role>, role: <role>, action: "execute_todo",
+   on_blocked: "escalate", max_retries: 3}`.
+4. Tests: pipeline-writer unit tests, e2e verify form → awf start uses
+   correct stages.
+5. Update SKILL.md: explain that form order = pipeline order.
+
+**Found during:** dogfood session 2026-07-28, jira-epic-presenter Step 1.
+Worker ran solo despite user selecting worker + tester + 2 custom agents.
+
+---
+
+### BD-8 · `--background --auto` auto-commits without explicit supervisor approval + mixes unrelated files
+
+**Symptom:** `awf start --background` ran TODO-0002. Worker created 4 files
+(manifest, content.js, background.js, README.md). Orchestrator hit verify
+stage with `on_approved: commit_and_next`. In `--auto` mode (forced by
+`--background` per BD-7), no human approval gate — orchestrator ran
+`git add -A && git commit`. The commit included not just worker output but
+also supervisor's prior in-progress changes (config.yaml update, copied
+role files). Mixed sources, no review checkpoint.
+
+**Root cause:** `commit_and_next` policy is documented as "auto-commit on
+supervisor approval", but `--auto` skips the supervisor pause entirely —
+so "approval" is implicit, not actual. Also `git add -A` captures every
+uncommitted change in the worktree, not just the files worker touched.
+
+**Fix options:**
+- A) `--auto` skips supervisor **pause** (input), NOT supervisor **approval**.
+  Pipeline should pause at verify stage waiting for explicit ACK file
+  (`ACK-TODO-NNNN.ready`) even in `--auto` mode. Supervisor (in another
+  session) inspects, then creates ACK → orchestrator proceeds with commit.
+- B) Orchestrator's auto-commit should only stage files worker touched
+  (compute diff vs baseline, add only those). Avoids mixing unrelated
+  changes. Requires git diff logic in orchestrator.
+- C) Both A + B. Belt and suspenders.
+
+**Recommended: A.** Aligns with awf's stated philosophy: supervisor
+approves explicitly. Background mode just means "no live terminal", not
+"no supervisor". Supervisor reviews asynchronously via ACK files.
+
+**Found during:** dogfood session 2026-07-28, commit `0614b8d` mixed
+worker output + supervisor's role/config changes; rolled back via
+`git reset --hard 40bcb4a`.
+
+---
+
 ### BD-7 · `awf start --background` EOFError on supervisor input()
 
 **Symptom:** `awf start --background` crashes immediately:

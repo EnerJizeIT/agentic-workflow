@@ -227,8 +227,13 @@ def _maybe_commit(
     policy: str,
     project_dir: Path,
     logs_dir: Path,
+    auto: bool = False,
 ) -> None:
-    """Auto-commit if policy is commit_and_next or commit_and_report."""
+    """Auto-commit if policy is commit_and_next or commit_and_report.
+
+    In auto mode, blocks waiting for APPROVE-TODO-NNNN.ready signal file
+    before committing. This preserves supervisor approval gate.
+    """
     if policy not in ("commit_and_next", "commit_and_report"):
         return
 
@@ -236,6 +241,19 @@ def _maybe_commit(
         print(f"Not a git repo — skipping auto-commit for '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"No git repo; auto-commit skipped at {stage_name}")
         return
+
+    if auto:
+        inbox = paths.inbox(project_dir)
+        approve_signal = inbox / f"APPROVE-{todo_id}.ready"
+        print("Auto-mode: waiting for supervisor approval to commit.", file=sys.stderr)
+        print(f"  Create signal: awf approve {todo_id}", file=sys.stderr)
+        print(f"  Or manually:  touch {approve_signal}", file=sys.stderr)
+        _log(logs_dir, f"Auto-mode: waiting for APPROVE signal for {todo_id}")
+
+        import time
+        while not approve_signal.exists():
+            time.sleep(2)
+        _log(logs_dir, f"APPROVE signal received for {todo_id}")
 
     if git_utils.commit_all(project_dir, f"awf({stage_name}): {todo_id}"):
         sha = subprocess.run(
@@ -358,7 +376,7 @@ def run_pipeline(args: Any) -> int:
 
             if s_action in ("verify_result", "final_verify"):
                 print("Supervisor verification complete.")
-                _maybe_commit(s_name, current_todo, stage.on_approved, project_dir, logs_dir)
+                _maybe_commit(s_name, current_todo, stage.on_approved, project_dir, logs_dir, auto=auto)
                 stage_idx += 1
                 continue
 
@@ -447,7 +465,7 @@ def run_pipeline(args: Any) -> int:
         _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
 
         if action in ("next", "commit_and_next", "commit_and_report"):
-            _maybe_commit(s_name, current_todo, action, project_dir, logs_dir)
+            _maybe_commit(s_name, current_todo, action, project_dir, logs_dir, auto=auto)
             print("Moving to next stage.")
             retry_counts[stage_idx] = 0
             stage_idx += 1

@@ -8,11 +8,20 @@ from conftest import run_awf
 
 
 def _create_todo(proj: Path, todo_id: str = "TODO-0001"):
-    """Create a TODO in inbox so the orchestrator can find it."""
+    """Create a TODO in inbox so the orchestrator can find it.
+
+    Also pre-creates APPROVE-TODO-NNNN.ready signal so BD-8 auto-mode
+    commit gate doesn't block pipeline. Tests run with --auto, which
+    (per BD-8) requires explicit approval before commit_and_next commits.
+    """
     inbox = proj / ".agentic/inbox"
     inbox.mkdir(exist_ok=True)
     (inbox / f"{todo_id}.md").write_text(f"# {todo_id}\nstub task\n")
     (inbox / f"{todo_id}.ready").write_text(f"signal: TASK_READY\ntask_id: {todo_id}\n")
+    # BD-8: pre-authorize commit so pipeline doesn't wait in --auto mode
+    (inbox / f"APPROVE-{todo_id}.ready").write_text(
+        f"signal: APPROVE\ntask_id: {todo_id}\n"
+    )
     (proj / ".agentic/context").mkdir(exist_ok=True)
 
 

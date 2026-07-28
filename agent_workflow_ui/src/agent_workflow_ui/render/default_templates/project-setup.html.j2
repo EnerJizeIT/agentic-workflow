@@ -168,6 +168,19 @@ optional_data_keys: []
 
     .btn-remove:hover { opacity: 1; }
 
+    .btn-reorder {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 2px 5px;
+      opacity: 0.5;
+      line-height: 1;
+    }
+
+    .btn-reorder:hover { opacity: 1; color: var(--accent); }
+
     .btn-icon {
       background: none;
       border: none;
@@ -255,6 +268,7 @@ optional_data_keys: []
       letter-spacing: 0.3px;
     }
 
+    .team-table th:nth-last-child(2) { width: 48px; text-align: center; }
     .team-table th:last-child { width: 32px; text-align: center; }
 
     .team-table td {
@@ -263,6 +277,7 @@ optional_data_keys: []
       vertical-align: middle;
     }
 
+    .team-table td:nth-last-child(2) { width: 48px; text-align: center; }
     .team-table td:last-child { width: 32px; text-align: center; }
     .team-table tr:last-child td { border-bottom: none; }
     .team-table select, .team-table input[type="text"] { font-size: 12px; padding: 6px 8px; }
@@ -380,7 +395,7 @@ optional_data_keys: []
     <!-- === Section 3: Команда === -->
     <div class="section">
       <div class="section-title">Команда агентов <span class="req">*</span></div>
-      <p class="section-hint">Добавьте агентов. Minimum 1.</p>
+      <p class="section-hint">Добавьте агентов. Minimum 1. Порядок ролей = порядок pipeline.</p>
 
       <table class="team-table">
         <thead>
@@ -388,6 +403,7 @@ optional_data_keys: []
             <th>Агент</th>
             <th>Модель</th>
             <th></th>
+            <th style="width: 48px; text-align: center;">Порядок</th>
           </tr>
         </thead>
         <tbody id="team-rows"></tbody>
@@ -533,13 +549,14 @@ optional_data_keys: []
 
       // === Team rows ===
 
-      window.addRow = function () {
+       window.addRow = function () {
         var tbody = document.getElementById('team-rows');
         var tr = document.createElement('tr');
         tr.className = 'team-row';
         tr.innerHTML =
           '<td><select name="agent" class="agent-select" onchange="handleAgentSelect(this)">' + agentOptions() + '</select></td>' +
           '<td><select name="model" class="model-select">' + modelOptions() + '</select></td>' +
+          '<td><button type="button" class="btn-reorder team-up" title="Вверх">&#9650;</button><button type="button" class="btn-reorder team-down" title="Вниз">&#9660;</button></td>' +
           '<td><button type="button" class="btn-remove" onclick="removeRow(this)">&times;</button></td>';
         tbody.appendChild(tr);
         updateEmpty();
@@ -795,6 +812,18 @@ optional_data_keys: []
       document.addEventListener('input', validate);
       document.addEventListener('change', validate);
       document.getElementById('team-rows').addEventListener('input', validate);
+      document.getElementById('team-rows').addEventListener('click', function (e) {
+        var row = e.target.closest('.team-row');
+        if (!row) return;
+        if (e.target.classList.contains('team-up')) {
+          var prev = row.previousElementSibling;
+          if (prev) row.parentNode.insertBefore(row, prev);
+        } else if (e.target.classList.contains('team-down')) {
+          var next = row.nextElementSibling;
+          if (next) row.parentNode.insertBefore(next, row);
+        }
+        validate();
+      });
 
       validate();
     })();

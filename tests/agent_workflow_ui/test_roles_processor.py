@@ -591,3 +591,56 @@ def test_bd6_bd5c_explicit_project_dir(isolated_roles_dir, reset_project_dir, tm
     saved = process_role_saves(data, project_dir=proj)
     assert saved == 1
     assert (proj / ".agentic" / "roles" / "auditor.md").exists()
+
+
+# ── BD-9: process_role_saves triggers pipeline write ──────────────────────────
+
+
+def test_bd9_pipeline_written_with_team_and_project(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with team_config + project_dir → writes pipeline.yaml."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "worker"},
+            {"type": "default", "agent": "tester"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    target = proj / ".agentic" / "pipelines" / "default.yaml"
+    assert target.exists()
+    import yaml as _yaml
+
+    parsed = _yaml.safe_load(target.read_text())
+    assert len(parsed["stages"]) == 4
+    assert [s["name"] for s in parsed["stages"]] == ["plan", "worker", "tester", "verify"]
+
+
+def test_bd9_pipeline_skipped_no_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with project_dir=None → no pipeline written."""
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "worker"},
+        ]),
+    }
+    process_role_saves(data, project_dir=None)
+
+    # Should not crash and should not try to write pipeline
+    # (no .agentic/ in tmp_path so nothing to check)
+
+
+def test_bd9_pipeline_skipped_malformed_json(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with malformed team_config → no crash, no pipeline."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": "not valid json at all",
+    }
+    saved = process_role_saves(data, project_dir=proj)
+    assert saved == 0
+    assert not (proj / ".agentic" / "pipelines").exists()

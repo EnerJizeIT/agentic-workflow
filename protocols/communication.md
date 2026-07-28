@@ -20,6 +20,7 @@ Agents communicate via **files** in the `.agentic/` directory. This is simple, r
 - `TASK_PROGRESS` — Agent reports intermediate progress (append-only).
 - `REVIEW_APPROVED` / `REVIEW_REJECTED` — Reviewer verdict (optional roles).
 - `TEST_PASSED` / `TEST_FAILED` — Tester verdict (optional roles).
+- `APPROVE` — Supervisor authorizes auto-commit in `--auto`/`--background` mode.
 
 ---
 
@@ -99,7 +100,7 @@ created_at: <ISO timestamp>
 > **Naming:** the canonical signal filename is `DONE-TODO-{NNNN}` — i.e. the
 > `{PREFIX}` (`DONE`) followed by the **full task id** (`TODO-0001`).
 > The legacy short form `DONE-{NNNN}` (without the `TODO-` infix) is also
-> accepted by the orchestrator for backwards compatibility — see §3.6.
+> accepted by the orchestrator for backwards compatibility — see §3.7.
 
 ### 3.3 TASK_BLOCKED — Agent → Supervisor
 
@@ -155,7 +156,24 @@ created_at: <ISO timestamp>
 - If agent crashes and restarts, it reads this file to resume from last checkpoint.
 - Timestamps use `T00:00:00Z` format for KV-cache stability (normalized hours).
 
-### 3.6 Signal naming — canonical vs legacy
+### 3.6 APPROVE — Supervisor (auto-commit authorization)
+
+**Files:**
+- `.agentic/inbox/APPROVE-TODO-{NNNN}.ready` — signal file.
+
+**Purpose:** When the pipeline runs in `--auto` mode (e.g. `--background`), the
+`commit_and_next` and `commit_and_report` policies at the verify stage require
+an explicit APPROVE signal before committing. Use `awf approve <TODO-ID>` to
+authorize. Without it, the pipeline blocks indefinitely.
+
+**Creation:**
+```bash
+awf approve TODO-0001
+# or manually:
+touch .agentic/inbox/APPROVE-TODO-0001.ready
+```
+
+### 3.7 Signal naming — canonical vs legacy
 
 All signal filenames embed the **task id**. Two naming conventions exist:
 

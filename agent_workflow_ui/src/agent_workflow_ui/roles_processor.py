@@ -155,6 +155,19 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
         if _copy_existing_role_to_project(agent_id, project_dir=project_dir):
             saved += 1
 
+    # BD-9: write pipeline.yaml from team order
+    if team_json and project_dir:
+        try:
+            team = json.loads(team_json)
+            if isinstance(team, list):
+                from .pipelines_writer import write_pipeline
+
+                written = write_pipeline(team, project_dir)
+                if written:
+                    log.info("Pipeline written to %s", written)
+        except (json.JSONDecodeError, TypeError) as e:
+            log.warning("Failed to parse team_config for pipeline write: %s", e)
+
     return saved
 
 

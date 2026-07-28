@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from awf.orchestrator import _global_roles_dir, _resolve_role_file
+from awf.orchestrator import _global_roles_dir, _maybe_commit, _resolve_role_file
 
 
 class TestResolveRoleFile:
@@ -72,3 +72,102 @@ class TestGlobalRolesDir:
         fake_home = Path("/fake/home")
         monkeypatch.setattr(Path, "home", lambda: fake_home)
         assert _global_roles_dir() == fake_home / ".config" / "awf" / "roles"
+
+
+class TestMaybeCommitBD8:
+
+    def _init_git(self, tmp_path: Path) -> Path:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".git").mkdir()
+        (project_dir / "file.txt").write_text("hello")
+        import subprocess
+        subprocess.run(["git", "init"], cwd=project_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=project_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "A"], cwd=project_dir, capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], cwd=project_dir, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=project_dir, capture_output=True, check=True)
+        return project_dir
+
+    def test_maybe_commit_auto_waits_for_approve_signal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = self._init_git(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        inbox = project_dir / ".agentic" / "inbox"
+        inbox.mkdir(parents=True)
+
+        # Pre-create the approve signal so polling exits immediately
+        (inbox / "APPROVE-TODO-0001.ready").touch()
+
+        # Create a change to commit
+        (project_dir / "file.txt").write_text("modified")
+
+        sleep_calls = []
+        monkeypatch.setattr(
+            "time.sleep", lambda _d: sleep_calls.append(_d)
+        )
+
+        _maybe_commit(
+            "verify", "TODO-0001", "commit_and_next",
+            project_dir, logs_dir, auto=True,
+        )
+
+        # Polling should have seen the signal on first check
+        assert len(sleep_calls) == 0
+        result = project_dir.joinpath(".git").joinpath("HEAD").read_text().strip()
+        assert "refs/heads/master" in result or "refs/heads/main" in result
+
+    def test_maybe_commit_auto_no_signal_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = self._init_git(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        inbox = project_dir / ".agentic" / "inbox"
+        inbox.mkdir(parents=True)
+
+        # No approve signal — monkeypatch sleep to raise after first call
+        call_count = [0]
+        def fail_after_one(_d):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise InterruptedError("test timeout")
+        monkeypatch.setattr("time.sleep", fail_after_one)
+
+        (project_dir / "file.txt").write_text("modified")
+
+        with pytest.raises(InterruptedError):
+            _maybe_commit(
+                "verify", "TODO-0001", "commit_and_next",
+                project_dir, logs_dir, auto=True,
+            )
+
+        # Verify no commit was made — file.txt still modified but not committed
+        import subprocess
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_dir, capture_output=True, text=True,
+        )
+        assert "file.txt" in status.stdout
+
+    def test_maybe_commit_non_auto_commits_immediately(self, tmp_path: Path) -> None:
+        project_dir = self._init_git(tmp_path)
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+
+        (project_dir / "file.txt").write_text("modified")
+
+        _maybe_commit(
+            "verify", "TODO-0001", "commit_and_next",
+            project_dir, logs_dir, auto=False,
+        )
+
+        # Verify commit was made — no uncommitted changes
+        import subprocess
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=project_dir, capture_output=True, text=True,
+        )
+        assert "file.txt" not in status.stdout

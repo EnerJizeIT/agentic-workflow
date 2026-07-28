@@ -59,6 +59,10 @@ class TestSignals:
         for n in ["0001", "0002"]:
             (inbox / f"TODO-{n}.md").write_text(f"stub {n}\n")
             (inbox / f"TODO-{n}.ready").write_text(f"signal: TASK_READY\ntask_id: TODO-{n}\n")
+            # BD-8: pre-authorize commit so --auto mode doesn't block on approval
+            (inbox / f"APPROVE-TODO-{n}.ready").write_text(
+                f"signal: APPROVE\ntask_id: TODO-{n}\n"
+            )
 
         awf_env["AWF_TEST_OPENCODE_BEHAVIOR"] = "done"
 

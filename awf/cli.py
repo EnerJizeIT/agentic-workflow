@@ -21,6 +21,7 @@ def _print_top_level_help() -> int:
         "  status            Show current workflow state\n"
         "  report            Show summary report\n"
         "  add-role <name>   Generate a template for a new role\n"
+        "  approve <id>      Approve auto-commit for a TODO in --auto mode\n"
         "  baseline <id>     Create a baseline snapshot\n"
         "  rollback <id>     Rollback to baseline\n"
         "  reset             Clean runtime data (inbox/outbox/logs)\n"
@@ -138,6 +139,14 @@ def _dispatch_subcommand(argv):
     p_rollback.add_argument("--soft", action="store_true")
     p_rollback.add_argument("--dry-run", dest="dry_run", action="store_true")
 
+    p_approve = sub.add_parser("approve", help="Approve auto-commit for a TODO in --auto mode")
+    p_approve.add_argument("todo_id")
+    p_approve.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     sub.add_parser("report", help="Show summary report")
 
     args = parser.parse_args(argv)
@@ -161,6 +170,9 @@ def _dispatch_subcommand(argv):
     if args.command == "rollback":
         from . import cmd_rollback
         return cmd_rollback.run(args)
+    if args.command == "approve":
+        from . import cmd_approve
+        return cmd_approve.run(args)
     if args.command == "report":
         from . import cmd_report
         return cmd_report.run(args)
