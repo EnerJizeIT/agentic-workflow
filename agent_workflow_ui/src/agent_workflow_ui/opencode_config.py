@@ -165,6 +165,9 @@ def save_custom_role(name: str, content: str, role_type: str = "agent") -> Path:
     Returns:
         Path to saved file.
     """
+    stripped = content.strip()
+    if not stripped:
+        raise ValueError("Role content cannot be empty")
     GLOBAL_ROLES_DIR.mkdir(parents=True, exist_ok=True)
     slug = _slugify(name)
     if role_type == "supervisor" and not slug.startswith("supervisor-"):

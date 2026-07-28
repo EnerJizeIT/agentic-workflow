@@ -219,6 +219,25 @@ A — правильное архитектурно, но feature-work. C — wo
 
 **Found during:** dogfood session 2026-07-28.
 
+### BD-5 · Custom supervisor variant selected from dropdown not copied to project; empty content allowed
+
+**Symptoms (2 issues from dogfood):**
+1. User selected existing `supervisor-architect` from dropdown in `project-setup` form (no new content). Plugin did NOT copy the variant into project's `.agentic/roles/`. As a result, awf-core's generic `.agentic/roles/supervisor.md` is what the supervisor agent reads — not the chosen variant.
+2. `supervisor-architect.md` in global was empty (just `# Supervisor Architect` heading, no instructions). `save_custom_role` accepts empty content silently.
+
+**Root cause:**
+- `roles_processor.process_role_saves` saves supervisor variant only when `supervisor_content` is non-empty AND `save_supervisor=="true"`. There's no path for "use existing selected variant" → just copy from global to project.
+- `opencode_config.save_custom_role` writes content as-is without validating non-emptiness.
+
+**Fix:**
+- **BD-5-A:** `save_custom_role` raises `ValueError` if content empty after strip.
+- **BD-5-B:** `process_role_saves` reads `supervisor_role` form field (existing variant id). If non-empty and not "default" — copy `<global>/<id>.md` to project `.agentic/roles/`.
+- **BD-5-C:** Same logic for `agent[]` field — selected existing custom agents (without new content) get copied to project too. Currently only newly-saved custom agents are copied (BD-3-B).
+
+**Found during:** dogfood session 2026-07-28, supervisor-architect role selected, file empty, project uses generic supervisor.md.
+
+---
+
 ### BD-4 · Submit confirmation page: EN, light theme, blue accent
 
 **Symptoms (3 issue from dogfood):**

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from agent_workflow_ui.opencode_config import _slugify
 from agent_workflow_ui.roles_processor import process_role_deletions, process_role_saves
 
 from agent_workflow_ui import opencode_config, state
@@ -290,3 +291,177 @@ def test_delete_no_project_dir(isolated_roles_dir, reset_project_dir):
     deleted = process_role_deletions(data)
     assert deleted == 1
     assert not (isolated_roles_dir / "worker.md").exists()
+
+
+# ── BD-5-B: copy existing supervisor variant ──────────────────────────────────
+
+
+def test_bd5b_existing_supervisor_variant_copied(isolated_roles_dir, reset_project_dir, tmp_path):
+    """supervisor_role set, no new content → copy existing variant to project."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "supervisor-architect.md").write_text("# Architect\nBe smart.")
+
+    data = {
+        "supervisor_role": "supervisor-architect",
+        "supervisor_content": "",
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (proj / ".agentic" / "roles" / "supervisor-architect.md").exists()
+    assert (proj / ".agentic" / "roles" / "supervisor-architect.md").read_text() == "# Architect\nBe smart."
+
+
+def test_bd5b_supervisor_default_no_copy(isolated_roles_dir, reset_project_dir, tmp_path):
+    """supervisor_role='default' → no copy."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "supervisor-architect.md").write_text("# Architect")
+
+    data = {
+        "supervisor_role": "default",
+        "supervisor_content": "",
+    }
+    saved = process_role_saves(data)
+    assert saved == 0
+    assert not list((proj / ".agentic" / "roles").iterdir())
+
+
+def test_bd5b_supervisor_nonexistent_no_error(isolated_roles_dir, reset_project_dir, tmp_path):
+    """supervisor_role points to missing file → no error, no copy."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    data = {
+        "supervisor_role": "nonexistent-variant",
+        "supervisor_content": "",
+    }
+    saved = process_role_saves(data)
+    assert saved == 0
+    assert not list((proj / ".agentic" / "roles").iterdir())
+
+
+def test_bd5b_new_content_takes_precedence(isolated_roles_dir, reset_project_dir, tmp_path):
+    """When supervisor_content is provided with save_supervisor, BD-5-B path is skipped."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "supervisor-architect.md").write_text("# Old Architect")
+
+    data = {
+        "supervisor_role": "supervisor-architect",
+        "supervisor_content": "# New Architect\nFresh content.",
+        "save_supervisor": "true",
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    proj_role = proj / ".agentic" / "roles" / "supervisor-new-architect.md"
+    assert proj_role.exists()
+    assert "Fresh content" in proj_role.read_text()
+
+
+# ── BD-5-C: copy existing custom agents from agent[] ──────────────────────────
+
+
+def test_bd5c_custom_agent_copied(isolated_roles_dir, reset_project_dir, tmp_path):
+    """agent=['auditor'] where auditor.md exists globally → copy to project."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "auditor.md").write_text("# Auditor\nCheck code.")
+
+    data = {
+        "agent": ["worker", "tester", "auditor"],
+        "team_config": "[]",
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (proj / ".agentic" / "roles" / "auditor.md").exists()
+    assert not (proj / ".agentic" / "roles" / "worker.md").exists()
+    assert not (proj / ".agentic" / "roles" / "tester.md").exists()
+
+
+def test_bd5c_single_string_agent(isolated_roles_dir, reset_project_dir, tmp_path):
+    """agent='auditor' (single string, not list) → handled correctly."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "auditor.md").write_text("# Auditor")
+
+    data = {
+        "agent": "auditor",
+        "team_config": "[]",
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (proj / ".agentic" / "roles" / "auditor.md").exists()
+
+
+def test_bd5c_only_default_agents_no_copy(isolated_roles_dir, reset_project_dir, tmp_path):
+    """agent=['worker', 'tester'] (all default) → no copies."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "worker.md").write_text("# Worker")
+    (isolated_roles_dir / "tester.md").write_text("# Tester")
+
+    data = {
+        "agent": ["worker", "tester"],
+        "team_config": "[]",
+    }
+    saved = process_role_saves(data)
+    assert saved == 0
+    assert not list((proj / ".agentic" / "roles").iterdir())
+
+
+def test_bd5c_no_double_copy_with_team_config(isolated_roles_dir, reset_project_dir, tmp_path):
+    """Custom agent saved via team_config AND in agent[] → copied only once."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "auditor.md").write_text("# Old Auditor")
+
+    slug = _slugify("Auditor")
+    data = {
+        "agent": ["worker", "auditor"],
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Auditor", "skill_content": "# New Auditor\nFresh.", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data)
+    assert saved == 1
+    assert (proj / ".agentic" / "roles" / "auditor.md").read_text() == "# New Auditor\nFresh."
+
+
+def test_bd5c_multiple_custom_agents(isolated_roles_dir, reset_project_dir, tmp_path):
+    """Multiple custom agents in agent[] → all copied."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    (isolated_roles_dir / "auditor.md").write_text("# Auditor")
+    (isolated_roles_dir / "system-analysis.md").write_text("# SA")
+
+    data = {
+        "agent": ["worker", "auditor", "system-analysis"],
+        "team_config": "[]",
+    }
+    saved = process_role_saves(data)
+    assert saved == 2
+    assert (proj / ".agentic" / "roles" / "auditor.md").exists()
+    assert (proj / ".agentic" / "roles" / "system-analysis.md").exists()
+
+
+def test_bd5c_missing_custom_agent_skipped(isolated_roles_dir, reset_project_dir, tmp_path):
+    """agent=['phantom'] where phantom.md doesn't exist globally → no error."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    data = {
+        "agent": ["phantom"],
+        "team_config": "[]",
+    }
+    saved = process_role_saves(data)
+    assert saved == 0
+    assert not list((proj / ".agentic" / "roles").iterdir())

@@ -113,6 +113,25 @@ def test_save_custom_role_empty_name_raises(isolated_roles_dir):
         save_custom_role("", "content")
 
 
+def test_save_custom_role_empty_content_raises(isolated_roles_dir):
+    """Empty content raises ValueError — prevents empty role files."""
+    with pytest.raises(ValueError, match="cannot be empty"):
+        save_custom_role("foo", "")
+
+
+def test_save_custom_role_whitespace_only_content_raises(isolated_roles_dir):
+    """Whitespace-only content raises ValueError."""
+    with pytest.raises(ValueError, match="cannot be empty"):
+        save_custom_role("foo", "   \n\n  ")
+
+
+def test_save_custom_role_valid_content_succeeds(isolated_roles_dir):
+    """Non-empty content saves successfully (existing behavior unchanged)."""
+    path = save_custom_role("foo", "# Hello\nContent here")
+    assert path.exists()
+    assert path.read_text() == "# Hello\nContent here"
+
+
 # ── delete_custom_role ────────────────────────────────────────────────────────
 
 

@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from . import opencode_config as _oc
 from .opencode_config import delete_custom_role, save_custom_role
 from .state import get_project_dir
 
@@ -50,6 +51,24 @@ def _delete_from_project(filename: str) -> None:
         log.info("Deleted role %s from project %s", filename, proj)
 
 
+_DEFAULT_AGENT_IDS = {"worker", "reviewer", "tester"}
+
+
+def _copy_existing_role_to_project(role_id: str) -> bool:
+    """Copy an existing global role .md to project .agentic/roles/ if it exists.
+
+    Returns True if copied, False otherwise (missing, default sentinel, or no project).
+    """
+    if not role_id or role_id == "default":
+        return False
+    src = _oc.GLOBAL_ROLES_DIR / f"{role_id}.md"
+    if not src.exists():
+        log.debug("Role %s not in global store, skip copy to project", role_id)
+        return False
+    _copy_to_project(src, src.name)
+    return True
+
+
 def process_role_saves(data: dict[str, Any]) -> int:
     """Save custom agent .md and supervisor .md files if user requested.
 
@@ -57,10 +76,13 @@ def process_role_saves(data: dict[str, Any]) -> int:
     - team_config (JSON string with [{type, agent, skill_content, save, ...}])
     - supervisor_content (string)
     - save_supervisor ("true" if checkbox checked)
+    - supervisor_role (string id of selected existing supervisor variant)
+    - agent[] (list of selected agent ids)
 
-    Returns count of successfully saved roles. Failures are logged and skipped.
+    Returns count of successfully saved/copied roles. Failures are logged and skipped.
     """
     saved = 0
+    saved_agent_ids: set[str] = set()
 
     # Custom agents (from team_config JSON)
     team_json = data.get("team_config", "")
@@ -80,17 +102,18 @@ def process_role_saves(data: dict[str, Any]) -> int:
                     continue
                 try:
                     saved_path = save_custom_role(name, content, role_type="agent")
+                    slug = saved_path.stem
+                    saved_agent_ids.add(slug)
                     log.info("Saved custom agent: %s", name)
                     _copy_to_project(saved_path, saved_path.name)
                     saved += 1
                 except Exception as e:
                     log.error("Failed to save custom agent %s: %s", name, e)
 
-    # Supervisor variant (from supervisor_content + save_supervisor)
+    # Supervisor variant (new content + save_supervisor)
     sv_content = str(data.get("supervisor_content", "")).strip()
     save_sv = data.get("save_supervisor", "") == "true"
     if sv_content and save_sv:
-        # Derive role name from the first markdown heading, fallback to "custom".
         first_line = sv_content.split("\n", 1)[0]
         name = first_line.lstrip("# ").strip() or "custom"
         try:
@@ -100,6 +123,27 @@ def process_role_saves(data: dict[str, Any]) -> int:
             saved += 1
         except Exception as e:
             log.error("Failed to save supervisor: %s", e)
+
+    # BD-5-B: copy existing supervisor variant selected from dropdown
+    if not sv_content:
+        sv_role = str(data.get("supervisor_role", "")).strip()
+        if _copy_existing_role_to_project(sv_role):
+            saved += 1
+
+    # BD-5-C: copy existing custom agents selected from agent[]
+    agent_list = data.get("agent", [])
+    if isinstance(agent_list, str):
+        agent_list = [agent_list]
+    for agent_id in agent_list:
+        agent_id = str(agent_id).strip()
+        if not agent_id:
+            continue
+        if agent_id in _DEFAULT_AGENT_IDS:
+            continue
+        if agent_id in saved_agent_ids:
+            continue
+        if _copy_existing_role_to_project(agent_id):
+            saved += 1
 
     return saved
 
