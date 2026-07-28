@@ -1094,6 +1094,42 @@ class TestRunSubprocessUntilSignal:
                 hard_timeout=60,
             )
 
+    def test_awf_subprocess_env_overrides_permissions_bd22(self) -> None:
+        """BD-22: env includes OPENCODE_CONFIG_CONTENT with allow rules."""
+        import json
+
+        from awf.orchestrator import _awf_subprocess_env
+
+        env = _awf_subprocess_env()
+        assert "OPENCODE_CONFIG_CONTENT" in env
+        cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+        assert cfg["permission"]["edit"] == "allow"
+        assert cfg["permission"]["bash"] == "allow"
+        assert cfg["permission"]["write"] == "allow"
+
+    def test_popen_receives_awf_env_bd22(self, tmp_path, monkeypatch) -> None:
+        """BD-22: Popen is called with env containing permission override."""
+        from awf.orchestrator import _run_subprocess_until_signal
+
+        captured_env: dict = {}
+
+        class _EnvCheckingPopen(_FakePopen):
+            def __init__(self, cmd, env=None, **kw):
+                super().__init__(cmd, **kw)
+                captured_env.update(env or {})
+
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _EnvCheckingPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        _run_subprocess_until_signal(
+            cmd=["opencode", "run"],
+            cwd=tmp_path,
+            watch_paths=[],
+            logs_dir=None,
+        )
+        assert "OPENCODE_CONFIG_CONTENT" in captured_env
+        assert '"allow"' in captured_env["OPENCODE_CONFIG_CONTENT"]
+
 
 def _make_supervisor_proj(tmp_path: Path) -> Path:
     """Module-level helper for tests outside TestSupervisorViaSubprocess."""

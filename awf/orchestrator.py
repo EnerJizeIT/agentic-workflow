@@ -42,6 +42,34 @@ BD20_POLL_INTERVAL = 2          # how often to check for signals
 BD20_HARD_TIMEOUT = 1800        # absolute cap (30 min)
 
 
+def _awf_subprocess_env() -> dict[str, str]:
+    """BD-22: env for opencode subprocess spawned by awf.
+
+    Sets ``OPENCODE_CONFIG_CONTENT`` to override global permission rules so
+    the subprocess can run ``edit``/``bash``/``write`` without prompting
+    the user (who isn't watching the subprocess anyway). Without this,
+    every awf-launched opencode hangs on permission prompts → BD-20
+    terminates it before any real work happens.
+
+    Inline config has higher precedence than ``~/.config/opencode/opencode.json``
+    (per opencode docs precedence order: remote < global < custom < project
+    < .opencode < INLINE < managed).
+    """
+    import json
+    import os
+
+    env = os.environ.copy()
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps({
+        "permission": {
+            "edit": "allow",
+            "bash": "allow",
+            "write": "allow",
+            "webfetch": "allow",
+        }
+    })
+    return env
+
+
 def _run_subprocess_until_signal(
     cmd: list[str],
     cwd: str | Path,
@@ -82,7 +110,7 @@ def _run_subprocess_until_signal(
         if watch_dir.is_dir():
             snapshot = {p.name for p in watch_dir.glob(pattern)}
 
-    proc = subprocess.Popen(cmd, cwd=str(cwd))
+    proc = subprocess.Popen(cmd, cwd=str(cwd), env=_awf_subprocess_env())
     deadline = time.monotonic() + hard_timeout
     signal_seen_at: float | None = None
 

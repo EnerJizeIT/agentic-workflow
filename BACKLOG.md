@@ -522,6 +522,124 @@ subprocess failure raises.
 
 ---
 
+### BD-22 · BD-20 false positive — terminates subprocess on stale signals from previous runs
+
+**Status:** OPEN. **Priority:** CRITICAL — blocks reliable dogfooding.
+
+**Problem.** BD-20 (`_run_subprocess_until_signal`) watches for signal
+files like `DONE-{todo_id}.ready`. When awf is re-run after a previous
+run that produced those signals (without manual cleanup), BD-20 detects
+the EXISTING stale signal immediately on first poll → grants 10s grace
+→ terminates the new subprocess before it has any chance to work.
+
+Observed during dogfood v5 (4-role pipeline): all 4 agent stages were
+killed within 10-15 seconds each. Handoffs all said "⚠️ NO OUTPUT FROM
+PREVIOUS STAGE". Pipeline completed in 9 minutes but produced zero new
+work — the commit just contained leftover files from a previous run.
+
+**Fix plan.**
+1. **Snapshot signals at subprocess start.** Before launching subprocess,
+   record existing `DONE-*.ready`, `BLOCKED-*.ready`, `ACK-*.ready` files.
+   Only treat NEW files (not in snapshot) as signals.
+2. **mtime check.** Alternative: ignore signals with mtime older than
+   subprocess start time.
+3. **`awf start` cleanup.** Optionally: at pipeline start, clean stale
+   signal files from previous runs (warn + remove `outbox/*.ready` older
+   than baseline).
+
+Approach (1) is cleanest — matches BD-20's existing `watch_new_glob`
+mechanism. Extend it to concrete `watch_paths` too.
+
+Tests: BD-20 with pre-existing signal files → must NOT terminate
+subprocess prematurely; only newly-created signals count.
+
+**Found during:** dogfood v5 (2026-07-28) — false-positive success.
+
+---
+
+### BD-23 · Pipeline stages don't produce verifiable contribution — branch chain + diff-monitoring
+
+**Status:** OPEN. **Priority:** HIGH — fundamental to "pipeline as conveyor".
+
+**Problem.** Currently each agent stage runs in the same project directory
+and shares the filesystem with previous stages. Observed failure modes:
+1. **Free-rider:** agent N sees that work is already done → writes
+   `DONE-{todo_id}.ready` without adding anything. Awf cannot tell.
+2. **Zone violation:** agent N does the entire task (out of scope for its
+   role). Subsequent agents have nothing to add.
+3. **Audit opacity:** final commit contains mixed contributions —
+   supervisor cannot see which role produced which file.
+
+Without infrastructure to track per-role contribution, the pipeline
+collapses to "1 effective agent + N rubber-stamps".
+
+**Architecture (per user direction — preserve role flexibility):**
+
+> "Каждая роль работает на ветке от предыдущего. Каждая роль приносит
+> свой вклад. Не уходить в детерминизм — пользователь может загружать
+> свой skill и придумывать свою роль."
+
+**Fix plan.** Branch chain + contribution monitor (NO role zoning):
+
+A. **Branch per stage.**
+   - Each agent stage runs on its own git branch:
+     `awf/todo-{NNNN}/{stage-N}-{role}` (e.g. `awf/todo-0042/2-developer`)
+   - Branch is created from the previous stage's branch tip (or from
+     baseline for stage 1)
+   - Agent works on its branch, commits freely
+   - After stage: awf records the branch tip SHA in handoff metadata
+
+B. **Contribution monitor.**
+   - After each stage, awf computes `git diff prev_branch..this_branch`
+   - Records the diff summary in handoff (already partially done by
+     `_collect_handoff`, but currently diffed against baseline)
+   - **WARNING** if diff is empty (agent wrote DONE but added nothing)
+   - **WARNING** if diff is identical to previous stage's diff (agent
+     just re-staged existing work)
+   - Awf does NOT block — just records. Supervisor verify sees the
+     warnings and decides.
+
+C. **Supervisor verify gets full audit.**
+   - `git log --oneline awf/todo-NNNN/*` shows what each role committed
+   - `git diff awf/todo-NNNN/1-system-analysis..awf/todo-NNNN/4-qa`
+     shows total contribution chain
+   - Supervisor can accept (fast-forward main to last branch) or reject
+     (cherry-pick specific branches)
+
+D. **User-defined roles preserved.**
+   - Role contracts (skill.md) define ZONE HINTS not ENFORCED zones
+   - User can load any skill via form, invent any role
+   - Awf doesn't second-guess what the role should do — it only verifies
+     that the role DID something
+
+**Why branch chain (not worktree per stage).**
+- Worktree = full filesystem isolation → agents can't see each other's
+  work without explicit copy. User explicitly rejected this.
+- Branch chain = same filesystem (agent sees prior work) + git tracking
+  (awf sees what each added). Matches "conveyor" model: each role
+  inherits + adds.
+
+**Implementation scope.**
+- `awf/git_utils.py`: `create_stage_branch()`, `diff_branches()`
+- `awf/orchestrator.py`: wire branch creation before each agent stage,
+  diff after
+- `awf/cmd_verify.py` (new): supervisor tool to inspect branch chain
+- Tests: branch creation, diff computation, empty-diff warning
+
+**Open questions.**
+- Should branches be deleted after merge? (probably yes, optional flag)
+- What if agent doesn't commit? (currently opencode --auto sometimes
+  doesn't commit — need to detect "branch unchanged after stage")
+- Cross-stage file conflicts: if developer edits `content.js` and qa
+  also edits `content.js` — git handles this fine on branch chain, but
+  may confuse users
+
+**Found during:** dogfood v5 (2026-07-28) — user observed "very strange
+that system-analysis did all the work" → investigation revealed 4-role
+pipeline produced no real contribution tracking.
+
+---
+
 ### BD-19 · Handoff filename `<role>.md` overwrites on retry — audit trail lost
 
 **Status:** Fixed in commit (pending).
