@@ -336,6 +336,11 @@ awf init      # предложит автоматически добавить M
 - Создать TODO с описанием задачи (не Find/Replace, а «что построить»).
 - Проверить результат работы worker'а.
 
+**Skill normalization:** когда команда из 2+ ролей, supervisor автоматически
+запускает стадию `normalize_skills` при `awf start` — адаптирует глобальные
+скиллы под конкретный проект, разрешает конфликты зон ответственности.
+Подробнее: [protocols/communication.md](protocols/communication.md) §8.
+
 Инструкция: `.agentic/roles/supervisor.md`.
 
 ### Worker (агент)

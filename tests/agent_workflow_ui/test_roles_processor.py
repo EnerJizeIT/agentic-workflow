@@ -644,3 +644,71 @@ def test_bd9_pipeline_skipped_malformed_json(isolated_roles_dir, reset_project_d
     saved = process_role_saves(data, project_dir=proj)
     assert saved == 0
     assert not (proj / ".agentic" / "pipelines").exists()
+
+
+# ── BD-10-B: process_role_saves triggers normalize state ──────────────────────
+
+
+def test_bd10b_normalize_state_written(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with team_config + project_dir → writes needs_normalize.yaml."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "worker"},
+            {"type": "custom", "agent": "auditor", "skill_content": "# A", "save": True},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    target = proj / ".agentic" / "state" / "needs_normalize.yaml"
+    assert target.exists()
+    import yaml as _yaml
+    parsed = _yaml.safe_load(target.read_text())
+    assert parsed["needed"] is True
+    assert "marked_at" in parsed
+    assert len(parsed["team"]) == 2
+    assert parsed["team"][0] == {"role": "worker", "type": "default"}
+    assert parsed["team"][1] == {"role": "auditor", "type": "custom"}
+
+
+def test_bd10b_normalize_state_no_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with project_dir=None → no state file written."""
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "worker"},
+        ]),
+    }
+    process_role_saves(data, project_dir=None)
+
+
+def test_bd10b_normalize_state_no_team_config(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves without team_config → no state file written."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "supervisor_content": "# Lead\n...",
+        "save_supervisor": "true",
+    }
+    process_role_saves(data, project_dir=proj)
+
+    target = proj / ".agentic" / "state" / "needs_normalize.yaml"
+    assert not target.exists()
+
+
+def test_bd10b_normalize_state_no_agentic(isolated_roles_dir, reset_project_dir, tmp_path):
+    """project_dir without .agentic/ → no state file written (back-compat)."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "worker"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)

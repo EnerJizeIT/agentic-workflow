@@ -27,3 +27,8 @@ def context_dir(project_dir: str | Path = ".") -> Path:
 def config_file(project_dir: str | Path = ".") -> Path:
     """Return .agentic/config.yaml."""
     return agentic_dir(project_dir) / "config.yaml"
+
+
+def skills_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/skills/."""
+    return agentic_dir(project_dir) / "skills"

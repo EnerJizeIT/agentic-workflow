@@ -304,7 +304,61 @@ See [`vision/architecture.md`](../vision/architecture.md) §7.3 for details.
 
 ---
 
-## 8. Git status
+## 8. Skill normalization layer (BD-10)
+
+### Two-layer skill model
+
+| Layer | Path | Owner | Mutable |
+|---|---|---|---|
+| Global | `~/.config/opencode/skills/<name>/SKILL.md` | opencode-skill-creator / user | no (reference) |
+| Local | `.agentic/skills/<role>.md` | supervisor (per-project) | yes (adaptation) |
+
+Local skills are overlays on global. Awf passes both files to agent via
+`--file <role.md> --file <skill.md>` (orchestrator, BD-10-A).
+
+### Link local → global
+
+Frontmatter in local skill records origin:
+
+```yaml
+---
+derived_from_global: true
+global_path: ~/.config/opencode/skills/<role>/SKILL.md
+global_sha: <sha256 at normalization>
+normalized_at: <ISO 8601>
+pipeline_context:
+  team: [...]
+  priority: <N>
+---
+```
+
+### Triggers
+
+| Trigger | Effect |
+|---|---|
+| `project-setup` form submit | Plugin writes `.agentic/state/needs_normalize.yaml` (BD-10-B). |
+| Next `awf start` after submit | Runs `normalize_skills` stage after plan (BD-10-C). |
+| `awf normalize` | Manual re-normalization. |
+| `awf normalize --check-drift` | Reports stale locals (SHA mismatch). |
+| SHA mismatch at `awf start` | Auto-triggers normalize (BD-10-D). |
+
+### Conflict resolution heuristics
+
+1. **Priority = pipeline order.** First role wins.
+2. **Output contracts** per role type (see supervisor.md §8).
+3. Unresolved → plan.md "Open questions" section.
+
+### normalize_skills stage
+
+Interactive (requires TTY). Supervisor (current session agent) reads
+global skills, builds conflict matrix, writes local skills, presses
+Enter. NOT background-friendly — exit with error if no TTY.
+
+Manual workaround: run `awf normalize` first, then `awf start`.
+
+---
+
+## 9. Git status
 
 Runtime files (`inbox/`, `outbox/`, `context/`, `logs/`, `reports/`) are **not committed** to git. Add to `.gitignore`:
 

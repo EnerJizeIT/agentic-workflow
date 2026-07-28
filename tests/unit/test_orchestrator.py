@@ -1,9 +1,19 @@
 """Unit tests for awf.orchestrator — role file resolution."""
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from awf.orchestrator import _global_roles_dir, _maybe_commit, _resolve_role_file
+from awf.orchestrator import (
+    _check_skill_drift,
+    _global_roles_dir,
+    _maybe_commit,
+    _needs_normalize,
+    _resolve_role_file,
+    _run_agent_stage,
+    _run_normalize_stage,
+)
+from awf.pipeline import Stage
 
 
 class TestResolveRoleFile:
@@ -171,3 +181,318 @@ class TestMaybeCommitBD8:
             cwd=project_dir, capture_output=True, text=True,
         )
         assert "file.txt" not in status.stdout
+
+
+class TestRunAgentStageLocalSkill:
+
+    def _setup_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic" / "roles").mkdir(parents=True)
+        (project_dir / ".agentic" / "roles" / "worker.md").write_text("role content")
+        (project_dir / ".agentic" / "inbox").mkdir(parents=True)
+        (project_dir / ".agentic" / "inbox" / "TODO-0001.md").write_text("task content")
+        (project_dir / ".agentic" / "logs").mkdir(parents=True)
+        fake_home = tmp_path / "home"
+        (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        return project_dir
+
+    def test_run_agent_stage_passes_local_skill_when_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = self._setup_project(tmp_path, monkeypatch)
+        (project_dir / ".agentic" / "skills").mkdir(parents=True)
+        local_skill = project_dir / ".agentic" / "skills" / "worker.md"
+        local_skill.write_text("skill content")
+
+        stage = Stage(name="execute", role="worker", action="execute_todo")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.extend(cmd)
+
+        with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
+            _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+
+        assert "--file" in captured
+        skill_idx = captured.index("--file")
+        assert str(local_skill) in captured
+        file_indices = [i for i, x in enumerate(captured) if x == "--file"]
+        assert len(file_indices) == 3
+
+    def test_run_agent_stage_no_skill_unchanged_cmd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = self._setup_project(tmp_path, monkeypatch)
+
+        stage = Stage(name="execute", role="worker", action="execute_todo")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.extend(cmd)
+
+        with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
+            _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+
+        file_indices = [i for i, x in enumerate(captured) if x == "--file"]
+        assert len(file_indices) == 2
+
+    def test_run_agent_stage_skill_dir_no_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_dir = self._setup_project(tmp_path, monkeypatch)
+        (project_dir / ".agentic" / "skills").mkdir(parents=True)
+
+        stage = Stage(name="execute", role="worker", action="execute_todo")
+        captured = []
+
+        def fake_run(cmd, **kwargs):
+            captured.extend(cmd)
+
+        with patch("awf.orchestrator.subprocess.run", side_effect=fake_run):
+            _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+
+        file_indices = [i for i, x in enumerate(captured) if x == "--file"]
+        assert len(file_indices) == 2
+
+
+class TestNeedsNormalize:
+
+    def test_no_state_file(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic").mkdir()
+
+        needed, team = _needs_normalize(project_dir)
+        assert needed is False
+        assert team == []
+
+    def test_needed_true_consumes_file(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        team_data = [
+            {"role": "worker", "type": "primary"},
+            {"role": "reviewer", "type": "secondary"},
+        ]
+        import yaml
+        (state_dir / "needs_normalize.yaml").write_text(
+            yaml.dump({"needed": True, "team": team_data})
+        )
+
+        needed, team = _needs_normalize(project_dir)
+        assert needed is True
+        assert len(team) == 2
+        assert team[0]["role"] == "worker"
+        assert not (state_dir / "needs_normalize.yaml").exists()
+
+    def test_needed_false(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        import yaml
+        (state_dir / "needs_normalize.yaml").write_text(
+            yaml.dump({"needed": False, "team": [{"role": "x"}]})
+        )
+
+        needed, team = _needs_normalize(project_dir)
+        assert needed is False
+        assert team == []
+
+    def test_consumed_idempotent(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        import yaml
+        (state_dir / "needs_normalize.yaml").write_text(
+            yaml.dump({"needed": True, "team": [{"role": "w"}]})
+        )
+
+        needed1, _ = _needs_normalize(project_dir)
+        assert needed1 is True
+
+        needed2, _ = _needs_normalize(project_dir)
+        assert needed2 is False
+
+    def test_invalid_yaml(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        (state_dir / "needs_normalize.yaml").write_text(":::invalid{{{")
+
+        needed, team = _needs_normalize(project_dir)
+        assert needed is False
+        assert team == []
+
+    def test_team_not_list(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        state_dir = project_dir / ".agentic" / "state"
+        state_dir.mkdir(parents=True)
+        import yaml
+        (state_dir / "needs_normalize.yaml").write_text(
+            yaml.dump({"needed": True, "team": "worker"})
+        )
+
+        needed, team = _needs_normalize(project_dir)
+        assert needed is True
+        assert team == []
+
+
+class TestCheckSkillDrift:
+
+    def test_no_skills_dir(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic").mkdir()
+
+        assert _check_skill_drift(project_dir) is False
+
+    def test_skills_dir_no_frontmatter(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        skills_dir = project_dir / ".agentic" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "worker.md").write_text("just plain text, no frontmatter")
+
+        assert _check_skill_drift(project_dir) is False
+
+    def test_skills_dir_no_derived_from_global(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        skills_dir = project_dir / ".agentic" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "worker.md").write_text("---\nauthor: me\n---\ncontent")
+
+        assert _check_skill_drift(project_dir) is False
+
+    def test_matching_sha(self, tmp_path: Path) -> None:
+        import hashlib
+
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        skills_dir = project_dir / ".agentic" / "skills"
+        skills_dir.mkdir(parents=True)
+
+        global_dir = tmp_path / "global_skills"
+        global_dir.mkdir()
+        global_skill = global_dir / "worker.md"
+        global_skill.write_text("global skill content")
+
+        expected_sha = hashlib.sha256(global_skill.read_bytes()).hexdigest()
+        fm = {
+            "derived_from_global": True,
+            "global_path": str(global_skill),
+            "global_sha": expected_sha,
+        }
+        local_content = f"---\n{yaml.dump(fm, default_flow_style=False)}---\nlocal content"
+        (skills_dir / "worker.md").write_text(local_content)
+
+        assert _check_skill_drift(project_dir) is False
+
+    def test_mismatched_sha(self, tmp_path: Path) -> None:
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        skills_dir = project_dir / ".agentic" / "skills"
+        skills_dir.mkdir(parents=True)
+
+        global_dir = tmp_path / "global_skills"
+        global_dir.mkdir()
+        global_skill = global_dir / "worker.md"
+        global_skill.write_text("original content")
+
+        fm = {
+            "derived_from_global": True,
+            "global_path": str(global_skill),
+            "global_sha": "0" * 64,
+        }
+        local_content = f"---\n{yaml.dump(fm, default_flow_style=False)}---\nlocal content"
+        (skills_dir / "worker.md").write_text(local_content)
+
+        assert _check_skill_drift(project_dir) is True
+
+    def test_global_path_missing(self, tmp_path: Path) -> None:
+        import yaml
+
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        skills_dir = project_dir / ".agentic" / "skills"
+        skills_dir.mkdir(parents=True)
+
+        fm = {
+            "derived_from_global": True,
+            "global_path": "/nonexistent/path/skill.md",
+            "global_sha": "abc123",
+        }
+        local_content = f"---\n{yaml.dump(fm, default_flow_style=False)}---\nlocal content"
+        (skills_dir / "worker.md").write_text(local_content)
+
+        assert _check_skill_drift(project_dir) is False
+
+
+class TestRunNormalizeStage:
+
+    def test_raises_systemexit_not_tty(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic").mkdir()
+        logs_dir = project_dir / ".agentic" / "logs"
+        logs_dir.mkdir()
+
+        with patch("sys.stdin.isatty", return_value=False):
+            with pytest.raises(SystemExit) as exc_info:
+                _run_normalize_stage([], project_dir, logs_dir)
+            assert exc_info.value.code == 1
+
+    def test_empty_team_reads_roles_dir(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        agentic = project_dir / ".agentic"
+        roles_dir = agentic / "roles"
+        roles_dir.mkdir(parents=True)
+        (roles_dir / "architect.md").write_text("arch role")
+        (roles_dir / "worker.md").write_text("worker role")
+        logs_dir = agentic / "logs"
+        logs_dir.mkdir()
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda: "")
+
+        _run_normalize_stage([], project_dir, logs_dir)
+
+        captured = capsys.readouterr()
+        assert "architect" in captured.out
+        assert "worker" in captured.out
+        assert "(local)" in captured.out
+
+    def test_with_team_prints_members(self, tmp_path: Path, capsys, monkeypatch) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        agentic = project_dir / ".agentic"
+        logs_dir = agentic / "logs"
+        logs_dir.mkdir(parents=True)
+
+        team = [
+            {"role": "worker", "type": "primary"},
+            {"role": "reviewer", "type": "secondary"},
+        ]
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda: "")
+
+        _run_normalize_stage(team, project_dir, logs_dir)
+
+        captured = capsys.readouterr()
+        assert "NORMALIZE_SKILLS STAGE" in captured.out
+        assert "worker" in captured.out
+        assert "reviewer" in captured.out
+        assert "primary" in captured.out

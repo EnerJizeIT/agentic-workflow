@@ -14,7 +14,7 @@ from typing import Any
 
 from . import opencode_config as _oc
 from .opencode_config import delete_custom_role, save_custom_role
-from .state import get_project_dir
+from .state import get_project_dir, mark_needs_normalize
 
 log = logging.getLogger(__name__)
 
@@ -93,32 +93,36 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
     """
     saved = 0
     saved_agent_ids: set[str] = set()
+    team: list[Any] = []
 
-    # Custom agents (from team_config JSON)
+    # Parse team_config once for reuse throughout
     team_json = data.get("team_config", "")
     if team_json:
         try:
             team = json.loads(team_json)
+            if not isinstance(team, list):
+                team = []
         except (json.JSONDecodeError, TypeError):
             team = []
-        if isinstance(team, list):
-            for member in team:
-                if not isinstance(member, dict) or member.get("type") != "custom":
-                    continue
-                name = str(member.get("agent", "")).strip()
-                content = str(member.get("skill_content", "")).strip()
-                save_flag = member.get("save", False)
-                if not (name and content and save_flag):
-                    continue
-                try:
-                    saved_path = save_custom_role(name, content, role_type="agent")
-                    slug = saved_path.stem
-                    saved_agent_ids.add(slug)
-                    log.info("Saved custom agent: %s", name)
-                    _copy_to_project(saved_path, saved_path.name, project_dir=project_dir)
-                    saved += 1
-                except Exception as e:
-                    log.error("Failed to save custom agent %s: %s", name, e)
+
+    # Custom agents (from team_config JSON)
+    for member in team:
+        if not isinstance(member, dict) or member.get("type") != "custom":
+            continue
+        name = str(member.get("agent", "")).strip()
+        content = str(member.get("skill_content", "")).strip()
+        save_flag = member.get("save", False)
+        if not (name and content and save_flag):
+            continue
+        try:
+            saved_path = save_custom_role(name, content, role_type="agent")
+            slug = saved_path.stem
+            saved_agent_ids.add(slug)
+            log.info("Saved custom agent: %s", name)
+            _copy_to_project(saved_path, saved_path.name, project_dir=project_dir)
+            saved += 1
+        except Exception as e:
+            log.error("Failed to save custom agent %s: %s", name, e)
 
     # Supervisor variant (new content + save_supervisor)
     sv_content = str(data.get("supervisor_content", "")).strip()
@@ -156,17 +160,16 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
             saved += 1
 
     # BD-9: write pipeline.yaml from team order
-    if team_json and project_dir:
-        try:
-            team = json.loads(team_json)
-            if isinstance(team, list):
-                from .pipelines_writer import write_pipeline
+    if team and project_dir:
+        from .pipelines_writer import write_pipeline
 
-                written = write_pipeline(team, project_dir)
-                if written:
-                    log.info("Pipeline written to %s", written)
-        except (json.JSONDecodeError, TypeError) as e:
-            log.warning("Failed to parse team_config for pipeline write: %s", e)
+        written = write_pipeline(team, project_dir)
+        if written:
+            log.info("Pipeline written to %s", written)
+
+    # BD-10-B: mark normalize needed so awf start picks it up
+    if team and project_dir:
+        mark_needs_normalize(project_dir, team)
 
     return saved
 

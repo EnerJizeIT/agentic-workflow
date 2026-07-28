@@ -802,7 +802,30 @@ pip install agent-workflow-ui
 
 ---
 
-## 15. Glossary
+## 15. BD-10 · Skills normalization layer
+
+When a pipeline has 2+ roles, global skills (`~/.config/opencode/skills/`) are
+written generically and don't know about each other. The **skill normalization
+layer** runs automatically before agent stages to resolve conflicts.
+
+**Two-layer model:** global skills are read-only reference; supervisor generates
+per-project local skills (`.agentic/skills/<role>.md`) that adapt each global
+skill to the specific team composition, assigning zones of responsibility and
+output contracts.
+
+**Conflict resolution:** pipeline order = priority. First role wins; losers get
+explicit prohibitions. Unresolved conflicts go to `plan.md` "Open questions".
+
+**Triggers:** `project-setup` submit → `.agentic/state/needs_normalize.yaml` → next
+`awf start` runs `normalize_skills` stage. Manual: `awf normalize`.
+
+See [`protocols/communication.md`](../protocols/communication.md) §8 for full spec
+and [`templates/roles/supervisor.md`](../templates/roles/supervisor.md) §8 for
+supervisor instructions.
+
+---
+
+## 16. Glossary
 
 | Термин | Определение |
 |---|---|

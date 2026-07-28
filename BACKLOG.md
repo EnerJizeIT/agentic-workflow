@@ -219,6 +219,117 @@ A — правильное архитектурно, но feature-work. C — wo
 
 **Found during:** dogfood session 2026-07-28.
 
+### BD-10 · Skills normalization layer (global reference + local adaptation) — FEATURE
+
+**Problem.** When user picks multiple custom agents in `project-setup`
+form (e.g., worker + system-analyst + project-auditor), each brings its
+own global skill (`~/.config/opencode/skills/<name>/SKILL.md`). Skills
+overlap and contradict:
+- system-analyst says "write requirements to docs/"
+- project-auditor says "audit the project, do not write"
+- worker says "get TODO, write code immediately"
+- All three may say "use MCP graph tools"
+
+Running them in one pipeline (per BD-9) guarantees mental-model conflicts.
+
+**Architecture (agreed with user):**
+
+Two-layer model:
+- **Global skills** (`~/.config/opencode/skills/<name>/SKILL.md`) — reference,
+  owned by opencode-skill-creator, never modified by awf.
+- **Local skills** (`.agentic/skills/<role>.md`) — supervisor-generated
+  adaptation for the current pipeline. What agents actually read.
+
+Link local→global via frontmatter:
+```yaml
+---
+derived_from_global: true
+global_path: ~/.config/opencode/skills/system-analyst/SKILL.md
+global_sha: <sha256 at normalization time>
+normalized_at: <ISO timestamp>
+pipeline_context:
+  team: [worker, system-analyst, project-auditor, tester]
+  priority: 2  # position in pipeline = priority for conflict resolution
+---
+```
+
+Local skill = full markdown (not deltas), self-contained for LLM consumption:
+- Top: full copy of global skill (reference body).
+- Bottom: "Project-specific adaptation" section with:
+  - "Зона ответственности" — what ONLY this agent does.
+  - "Что НЕ делает (делегирует)" — explicit prohibitions with target agent.
+  - "Контракты с другими агентами" — output paths, coordination files.
+  - "Адаптации под стек проекта" — project-specific overrides.
+
+**Conflict resolution heuristics (agreed):**
+1. **Priority = pipeline order.** First in pipeline wins conflicts.
+   Loser gets explicit prohibition.
+2. **Output contracts per role type (fixed):**
+   | Role type | Output path |
+   |---|---|
+   | supervisor | (none — communicates via inbox) |
+   | system-analyst | `docs/requirements/` |
+   | architect | `docs/architecture/` |
+   | worker | source files + `.agentic/outbox/DONE-TODO-NNNN.md` |
+   | reviewer | `.agentic/outbox/REVIEW-APPROVED|REJECTED-TODO-NNNN.md` |
+   | tester | `.agentic/outbox/TEST-PASSED|FAILED-TODO-NNNN.md` + logs |
+   | project-auditor | `docs/audits/<YYYY-MM-DD>.md` |
+   | custom | `<role-slug>/` (per-role subfolder) |
+3. If both heuristics fail → supervisor writes conflict description to
+   `plan.md` under "Open questions" section. User responds in chat.
+
+**Triggers for normalize:**
+| Trigger | Action |
+|---|---|
+| Submit `project-setup` form | Plugin sets `state.needs_normalize=True` with team list. |
+| Next `awf start` after submit | Pipeline runs `normalize_skills` stage first (supervisor in current session). |
+| `awf normalize` command | Manual re-normalization. |
+| `awf normalize --check-drift` | Compare `global_sha` in locals vs current global. Report drift, no write. |
+| Mismatched `global_sha` at `awf start` | Auto-trigger normalize. |
+
+**Key design: normalize is done by supervisor (current session agent), NOT subprocess.**
+- Awf provides: storage layer, orchestrator stage hook, --file passing.
+- Supervisor provides: actual LLM work — read globals, build conflict
+  matrix, write locals. This is documented in updated SKILL.md /
+  supervisor.md instructions.
+
+**Subtasks:**
+1. **BD-10-A (awf-core storage):** `.agentic/skills/` resolution in
+   orchestrator. When launching agent stage, pass second `--file`:
+   `.agentic/skills/<role>.md` if exists. Fallback: role .md only.
+   Mirror BD-3-A pattern.
+2. **BD-10-B (plugin trigger):** After `process_role_saves` writes roles,
+   also write `.agentic/state/needs_normalize.yaml` with team list.
+   At next `awf start`, orchestrator detects this and inserts a
+   `normalize_skills` stage before team stages.
+3. **BD-10-C (orchestrator normalize stage):** New action type
+   `normalize_skills`. Runs in supervisor mode (current session pauses
+   with prompt to supervisor agent: "Read team skills, write locals,
+   then press Enter"). NOT a subprocess.
+4. **BD-10-D (drift detection):** On `awf start`, before stages — if
+   `.agentic/skills/<role>.md` exists, compute SHA256 of current global
+   and compare to `global_sha` in frontmatter. Mismatch → trigger
+   normalize stage.
+5. **BD-10-E (awf normalize command):** `awf normalize` (write locals
+   from current team) + `awf normalize --check-drift` (report only).
+6. **BD-10-F (supervisor instructions):** Update `.agentic/roles/supervisor.md`
+   (template) with section "How to normalize skills". Document the
+   overlay format, heuristics, output contracts table.
+7. **BD-10-G (documentation):** Update protocols/communication.md
+   (skill layer), architecture.md (BD-10 section), SKILL.md (agent-workflow-ui
+   — when to expect normalize stage).
+8. **BD-10-H (tests):** Unit tests for storage resolution, drift
+   detection; integration test for normalize trigger; e2e test with
+   multi-role team.
+
+**Status:** architecture agreed. Implementation TODO.
+
+**Found during:** dogfood session 2026-07-28, jira-epic-presenter —
+user predicted skill conflicts will surface once BD-9 lands (form
+becomes pipeline).
+
+---
+
 ### BD-9 · `project-setup` form selections do NOT become pipeline stages (CRITICAL)
 
 **Critical architectural gap.** User opens `project-setup` form, selects

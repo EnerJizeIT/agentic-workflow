@@ -216,6 +216,17 @@ def _run_agent_stage(
         "--file", str(todo_file),
         "--", prompt,
     ]
+
+    skills_dir = paths.agentic_dir(project_dir) / "skills"
+    local_skill = skills_dir / f"{role}.md"
+    if local_skill.exists():
+        cmd.insert(cmd.index("--"), "--file")
+        cmd.insert(cmd.index("--"), str(local_skill))
+        print(f"Local skill: {local_skill}")
+        _log(logs_dir, f"Using local skill: {local_skill}")
+    else:
+        _log(logs_dir, f"No local skill for {role} (using role .md only)")
+
     subprocess.run(cmd, cwd=project_dir, check=False)
 
     _log(logs_dir, f"Agent stage finished: {role} ({action}) for {todo_id}")
@@ -284,6 +295,127 @@ def _find_active_todo(project_dir: Path) -> str:
     return active[0] if active else ""
 
 
+def _needs_normalize(project_dir: Path) -> tuple[bool, list[dict]]:
+    """Check .agentic/state/needs_normalize.yaml.
+
+    Returns (needed, team_list). needed=False if file missing or
+    needed: false. Consumes the file (deletes it) — normalize is one-shot
+    per submit.
+    """
+    import yaml
+
+    state_file = paths.agentic_dir(project_dir) / "state" / "needs_normalize.yaml"
+    if not state_file.exists():
+        return False, []
+    try:
+        data = yaml.safe_load(state_file.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError):
+        return False, []
+    if not isinstance(data, dict) or not data.get("needed"):
+        return False, []
+    team = data.get("team", [])
+    state_file.unlink()
+    return True, team if isinstance(team, list) else []
+
+
+def _run_normalize_stage(team: list[dict], project_dir: Path, logs_dir: Path) -> None:
+    """Run normalize_skills stage — supervisor (current session) does the work."""
+    if sys.stdin.isatty() is False:
+        print("ERROR: normalize_skills stage requires interactive terminal.", file=sys.stderr)
+        print("Run 'awf normalize' manually first, then 'awf start'.", file=sys.stderr)
+        raise SystemExit(1)
+
+    effective_team = team
+    if not effective_team:
+        roles_dir = paths.agentic_dir(project_dir) / "roles"
+        if roles_dir.is_dir():
+            for rf in sorted(roles_dir.glob("*.md")):
+                effective_team.append({"role": rf.stem, "type": "local"})
+        else:
+            skills_dir = paths.agentic_dir(project_dir) / "skills"
+            if skills_dir.is_dir():
+                for sf in sorted(skills_dir.glob("*.md")):
+                    effective_team.append({"role": sf.stem, "type": "skill-derived"})
+
+    print()
+    print("=" * 51)
+    print("  NORMALIZE_SKILLS STAGE")
+    print("=" * 51)
+    print()
+    print("Pipeline detected team selection from form submit.")
+    print("Team roles (in pipeline order):")
+    for i, member in enumerate(effective_team, 1):
+        role = member.get("role", "")
+        role_type = member.get("type", "")
+        print(f"  {i}. {role} ({role_type})")
+    print()
+    print("Your job as supervisor:")
+    print("  1. Read global skills for each role:")
+    print("     ~/.config/opencode/skills/<role-slug>/SKILL.md")
+    print("     (use Read tool)")
+    print("  2. Build conflict matrix: identify overlaps, contradictions")
+    print("     in zones of responsibility across roles.")
+    print("  3. For each role, write local skill:")
+    print(f"     {paths.agentic_dir(project_dir) / 'skills' / '<role>.md'}")
+    print("     Format: frontmatter (derived_from_global: true, global_path,")
+    print("     global_sha, normalized_at, pipeline_context) + full copy of")
+    print("     global skill + 'Project-specific adaptation' section.")
+    print("  4. Heuristics for conflicts:")
+    print("     - Priority = pipeline order (first wins).")
+    print("     - Output contracts per role type (see supervisor.md).")
+    print("     - Unresolved conflicts -> plan.md 'Open questions' section.")
+    print("  5. When done, press Enter to continue pipeline.")
+    print()
+    _log(logs_dir, f"Normalize stage started for team of {len(effective_team)}")
+    input()
+    _log(logs_dir, "Normalize stage completed (supervisor released)")
+
+
+def _check_skill_drift(project_dir: Path) -> bool:
+    """Check if any local skill has stale global_sha.
+
+    Returns True if any drift detected.
+    """
+    import hashlib
+
+    import yaml
+
+    skills_dir = paths.agentic_dir(project_dir) / "skills"
+    if not skills_dir.is_dir():
+        return False
+
+    drifted = []
+    for local in sorted(skills_dir.glob("*.md")):
+        content = local.read_text(encoding="utf-8")
+        if not content.startswith("---\n"):
+            continue
+        end = content.find("\n---\n", 4)
+        if end == -1:
+            continue
+        try:
+            fm = yaml.safe_load(content[4:end]) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(fm, dict) or not fm.get("derived_from_global"):
+            continue
+        global_path = Path(str(fm.get("global_path", ""))).expanduser()
+        stored_sha = str(fm.get("global_sha", ""))
+        if not global_path.exists():
+            continue
+        current = hashlib.sha256(global_path.read_bytes()).hexdigest()
+        if current != stored_sha:
+            drifted.append((local.name, global_path.name))
+
+    if drifted:
+        print("WARNING: Skill drift detected:", file=sys.stderr)
+        for local_name, global_name in drifted:
+            print(f"  {local_name} <- {global_name}", file=sys.stderr)
+        print("Run 'awf normalize --check-drift' for details, then 'awf normalize'.",
+              file=sys.stderr)
+        return True
+    return False
+
+
 def run_pipeline(args: Any) -> int:
     """Execute the pipeline and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
@@ -333,6 +465,16 @@ def run_pipeline(args: Any) -> int:
     print()
     _log(logs_dir, f"Pipeline started with {total} stages: {' '.join(s.name for s in stages)}")
 
+    # BD-10-D: drift detection at start
+    if _check_skill_drift(project_dir):
+        print("Pipeline will run normalize_skills stage due to drift.", file=sys.stderr)
+        state_dir = paths.agentic_dir(project_dir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime, timezone
+        (state_dir / "needs_normalize.yaml").write_text(
+            f"needed: true\ntrigger: drift\nmarked_at: {datetime.now(timezone.utc).isoformat()}\n"
+        )
+
     # Retry counts — one per stage
     retry_counts = [0] * total
 
@@ -381,6 +523,13 @@ def run_pipeline(args: Any) -> int:
                 continue
 
             stage_idx += 1
+
+            # BD-10-C: insert normalize_skills stage after plan
+            if s_name == "plan":
+                needed, team = _needs_normalize(project_dir)
+                if needed:
+                    _run_normalize_stage(team, project_dir, logs_dir)
+
             continue
 
         # --- Agent stage ---

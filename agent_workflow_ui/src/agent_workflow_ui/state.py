@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 if TYPE_CHECKING:
     # Avoid circular import: config.py imports nothing from state.py at module level,
     # but the type hint is enough to trigger circular import if imported eagerly.
@@ -141,3 +143,19 @@ def get_jinja_env() -> Any:
     if _jinja_env is None:
         raise RuntimeError("Jinja env not initialized. Call set_jinja_env() at startup.")
     return _jinja_env
+
+
+def mark_needs_normalize(project_dir: Path | None, team: list[dict]) -> None:
+    """Write .agentic/state/needs_normalize.yaml so awf start triggers normalize stage."""
+    if project_dir is None or not (project_dir / ".agentic").is_dir():
+        return
+    state_dir = project_dir / ".agentic" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    target = state_dir / "needs_normalize.yaml"
+    payload = {
+        "needed": True,
+        "marked_at": datetime.now(timezone.utc).isoformat(),
+        "team": [{"role": m.get("agent", ""), "type": m.get("type", "default")}
+                 for m in team if m.get("agent")],
+    }
+    target.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
