@@ -212,10 +212,13 @@ def render_pipeline_contract(
     lines.append("")
     lines.append(
         "**How to report your work:** write your running notes to "
-        "`outbox/PROGRESS-{TODO-ID}.md` during the task and your final summary "
-        "to `outbox/DONE-{TODO-ID}.md` when finished (use the actual TODO ID, "
-        "e.g. `DONE-TODO-0042.md`). The orchestrator compiles these into a "
-        "handoff file for the next role automatically — do NOT write handoff "
+        "`outbox/PROGRESS-{TODO-ID}.md` during the task. When finished, write "
+        "TWO files: (1) `outbox/DONE-{TODO-ID}.md` with your summary, and "
+        "(2) an empty sentinel file `outbox/DONE-{TODO-ID}.ready` (NOTE: "
+        "`.ready` extension, NOT `.md.ready` — the orchestrator watches for "
+        "exactly this filename). Example for TODO-0042: `outbox/DONE-TODO-0042.md` "
+        "+ `outbox/DONE-TODO-0042.ready`. The orchestrator compiles these into "
+        "a handoff file for the next role automatically — do NOT write handoff "
         "files yourself."
     )
     return "\n".join(lines)

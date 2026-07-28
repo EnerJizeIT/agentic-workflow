@@ -499,12 +499,16 @@ def _run_agent_stage(
     # BD-20: watch for DONE / BLOCKED signal in outbox for this todo_id.
     # If subprocess finishes the task but doesn't exit (known opencode hang),
     # awf detects the signal and terminates after grace period.
+    # BD-21: watch BOTH `.ready` and `.md.ready` — LLMs sometimes append
+    # .ready to the .md filename instead of replacing .md with .ready.
     outbox = paths.outbox(project_dir)
     watch_paths: list[Path] = []
     if todo_id:
         watch_paths = [
             outbox / f"DONE-{todo_id}.ready",
+            outbox / f"DONE-{todo_id}.md.ready",
             outbox / f"BLOCKED-{todo_id}.ready",
+            outbox / f"BLOCKED-{todo_id}.md.ready",
         ]
 
     result = _run_subprocess_until_signal(

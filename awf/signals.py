@@ -44,8 +44,13 @@ def expected_signal_prefixes(action: str) -> list[str]:
 def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | None:
     """Find the first matching signal for a TODO among given prefixes.
 
-    Accepts both canonical (DONE-TODO-0001) and legacy short (DONE-0001) forms.
-    Returns basename without .ready, or None.
+    Accepts multiple filename variants:
+    - canonical:   ``DONE-TODO-0001.ready``
+    - legacy short: ``DONE-0001.ready``
+    - agent typo:   ``DONE-TODO-0001.md.ready`` (LLMs sometimes append .ready
+      to the .md filename instead of replacing .md with .ready)
+
+    Returns basename without extension, or None.
 
     A signal is considered valid when the companion ``.md`` file either
     doesn't exist (``.ready``-only signals are accepted) OR exists and is
@@ -56,19 +61,22 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
     short = _short_id(todo_id)
     for prefix in prefixes:
         for candidate_id in (todo_id, short):
-            sig_file = outbox / f"{prefix}-{candidate_id}.ready"
-            if not sig_file.is_file():
-                continue
-            # Require companion .md (non-empty) for primary closure signals.
-            # PROGRESS-* and DONE-* typically carry .md reports. Some signals
-            # (e.g. APPROVE written by humans via `awf approve`) are .ready-only
-            # by design — those are inbox/ signals, not outbox/, so this check
-            # doesn't affect them.
-            md_file = outbox / f"{prefix}-{candidate_id}.md"
-            if md_file.exists() and md_file.stat().st_size == 0:
-                # .ready exists but .md is empty — treat as not-ready.
-                continue
-            return sig_file.stem
+            # Try multiple filename conventions.
+            sig_candidates = [
+                outbox / f"{prefix}-{candidate_id}.ready",
+                outbox / f"{prefix}-{candidate_id}.md.ready",  # BD-21: agent typo
+            ]
+            for sig_file in sig_candidates:
+                if not sig_file.is_file():
+                    continue
+                md_file = outbox / f"{prefix}-{candidate_id}.md"
+                if md_file.exists() and md_file.stat().st_size == 0:
+                    # .ready exists but .md is empty — treat as not-ready.
+                    continue
+                # Return the stem (strip the trailing suffix). For
+                # `DONE-TODO-0001.ready` → `DONE-TODO-0001`.
+                # For `DONE-TODO-0001.md.ready` → `DONE-TODO-0001.md`.
+                return sig_file.stem.rsplit(".md", 1)[0] if sig_file.stem.endswith(".md") else sig_file.stem
     return None
 
 
