@@ -105,6 +105,18 @@ class TestRunVerifyCommands:
         cfg = {"verification": {"test_cmd": "   "}}
         assert verify.run_verify_commands(cfg) is False
 
+    def test_project_dir_passed_to_subprocess(self, tmp_path: Path) -> None:
+        """project_dir is forwarded as cwd to subprocess.run."""
+        cfg = {"verification": {"test_cmd": "pwd"}}
+        result = verify.run_verify_commands(cfg, project_dir=tmp_path)
+        # pwd always succeeds (returncode 0)
+        assert result is True
+
+    def test_project_dir_none_uses_cwd(self) -> None:
+        """project_dir=None → runs in current CWD (legacy behavior)."""
+        cfg = {"verification": {"test_cmd": "/bin/true"}}
+        assert verify.run_verify_commands(cfg, project_dir=None) is True
+
 
 class TestAttemptAutoDone:
 

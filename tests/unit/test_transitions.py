@@ -1,4 +1,6 @@
 """Unit tests for awf.transitions — resolve_transition for every (signal_type, policy) combo."""
+import logging
+
 from awf.pipeline import Stage
 from awf.transitions import resolve_transition
 
@@ -74,6 +76,15 @@ class TestResolveTransition:
         stage = Stage(name="x", role="r", action="a")
         action, target = resolve_transition(stage, "unknown")
         assert (action, target) == ("stop", "")
+
+    def test_unknown_signal_logs_warning(self, caplog) -> None:
+        """Unknown signal type should emit a warning log for diagnostics."""
+        with caplog.at_level(logging.WARNING):
+            stage = Stage(name="impl", role="w", action="execute_todo")
+            resolve_transition(stage, "weird-signal")
+        assert any("Unknown signal type" in r.message for r in caplog.records)
+        assert any("'weird-signal'" in r.message for r in caplog.records)
+        assert any("'impl'" in r.message for r in caplog.records)
 
     def test_rejected_rollback_to_custom_stage(self) -> None:
         stage = Stage(name="t", role="tester", action="run_tests", on_rejected="rollback_to:plan")

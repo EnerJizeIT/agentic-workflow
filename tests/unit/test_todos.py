@@ -1,7 +1,7 @@
 """Unit tests for awf.todos — is_closed, has_progress, list_active_todos."""
 from pathlib import Path
 
-from awf.todos import has_progress, is_closed, list_active_todos
+from awf.todos import has_progress, is_closed, list_active_todos, newest_active
 
 
 class TestIsClosed:
@@ -190,3 +190,57 @@ class TestListActiveTodos:
         (outbox / "DONE-TODO-0010.ready").write_text("")
         result = list_active_todos(inbox, outbox)
         assert result == ["TODO-0009"]
+
+
+class TestNewestActive:
+
+    def _setup(self, tmp_path: Path) -> Path:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic" / "inbox").mkdir(parents=True)
+        (project_dir / ".agentic" / "outbox").mkdir(parents=True)
+        return project_dir
+
+    def test_returns_highest_active(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        inbox = project_dir / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("task\n")
+        (inbox / "TODO-0001.ready").write_text("")
+        (inbox / "TODO-0003.md").write_text("task\n")
+        (inbox / "TODO-0003.ready").write_text("")
+        assert newest_active(project_dir) == "TODO-0003"
+
+    def test_empty_string_when_no_active(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        assert newest_active(project_dir) == ""
+
+    def test_empty_string_when_inbox_missing(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        assert newest_active(project_dir) == ""
+
+    def test_skips_closed_todos(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        inbox = project_dir / ".agentic" / "inbox"
+        outbox = project_dir / ".agentic" / "outbox"
+        (inbox / "TODO-0001.md").write_text("task\n")
+        (inbox / "TODO-0001.ready").write_text("")
+        (inbox / "TODO-0002.md").write_text("task\n")
+        (inbox / "TODO-0002.ready").write_text("")
+        (outbox / "DONE-TODO-0002.ready").write_text("")
+        assert newest_active(project_dir) == "TODO-0001"
+
+    def test_skips_empty_md(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        inbox = project_dir / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("")
+        (inbox / "TODO-0001.ready").write_text("")
+        assert newest_active(project_dir) == ""
+
+    def test_accepts_str_or_path(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        inbox = project_dir / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("task\n")
+        (inbox / "TODO-0001.ready").write_text("")
+        assert newest_active(str(project_dir)) == "TODO-0001"
+        assert newest_active(project_dir) == "TODO-0001"

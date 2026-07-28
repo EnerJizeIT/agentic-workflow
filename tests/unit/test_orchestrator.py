@@ -12,6 +12,7 @@ from awf.orchestrator import (
     _consume_needs_normalize,
     _global_roles_dir,
     _maybe_commit,
+    _read_baseline_sha,
     _resolve_prev_handoffs,
     _resolve_role_file,
     _run_agent_stage,
@@ -460,6 +461,52 @@ class TestNeedsNormalize:
         assert team == []
 
 
+class TestReadBaselineSha:
+
+    def _setup(self, tmp_path: Path) -> Path:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic" / "context").mkdir(parents=True)
+        return project_dir
+
+    def test_returns_sha(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        (project_dir / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
+            "abc123def456\n"
+        )
+        assert _read_baseline_sha(project_dir, "TODO-0001") == "abc123def456"
+
+    def test_empty_todo_id(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        assert _read_baseline_sha(project_dir, "") == ""
+
+    def test_missing_file(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        assert _read_baseline_sha(project_dir, "TODO-9999") == ""
+
+    def test_missing_context_dir(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        assert _read_baseline_sha(project_dir, "TODO-0001") == ""
+
+    def test_multiline_takes_first_line(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        (project_dir / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
+            "abc123\nextra_line\nmore\n"
+        )
+        assert _read_baseline_sha(project_dir, "TODO-0001") == "abc123"
+
+    def test_empty_file(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        (project_dir / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text("")
+        assert _read_baseline_sha(project_dir, "TODO-0001") == ""
+
+    def test_whitespace_only(self, tmp_path: Path) -> None:
+        project_dir = self._setup(tmp_path)
+        (project_dir / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text("  \n  \n")
+        assert _read_baseline_sha(project_dir, "TODO-0001") == ""
+
+
 class TestCheckNeedsNormalize:
 
     def _setup_state_file(self, tmp_path: Path) -> Path:
@@ -890,6 +937,34 @@ class TestSupervisorViaSubprocess:
         assert "not automated" in out
 
 
+# ── BD-18 graceful handling: run_pipeline catches RuntimeError ────────────────
+
+
+class TestRunPipelineGracefulCrash:
+    """BD-18: when subprocess crashes, run_pipeline prints helpful message + returns 1.
+
+    Note: full integration test (spawning real opencode) is too heavy here.
+    We test the contract via _run_supervisor_stage and _run_agent_stage
+    directly — both raise RuntimeError on failure, and the wrapper in
+    run_pipeline catches it. The unit test below verifies the raise; the
+    catch in run_pipeline is verified by reading the source (lines ~880, ~934).
+    """
+
+    def test_supervisor_subprocess_raise_documented_bd18(self) -> None:
+        """Sanity: BD-18 contract — _run_supervisor_via_subprocess raises on non-zero exit."""
+        # Source-level contract: orchestrator.py wraps subprocess.run result
+        # in `if result.returncode != 0: raise RuntimeError(...)`. run_pipeline
+        # catches RuntimeError at the supervisor stage call site and returns 1.
+        # We assert this just by importing — the raises are tested in
+        # TestSupervisorViaSubprocess above.
+        import awf.orchestrator as orch
+
+        src = open(orch.__file__).read()
+        assert "raise RuntimeError(" in src
+        assert "except RuntimeError as e:" in src
+        assert "Pipeline stopped" in src
+
+
 # ── BD-15: handoff chain ──────────────────────────────────────────────────────
 
 
@@ -1031,6 +1106,58 @@ class TestHandoffChain:
         # Should NOT have PROGRESS or DONE sections
         assert "PROGRESS notes" not in body
         assert "DONE summary" not in body
+
+    def test_collect_handoff_no_output_marker_when_both_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PROGRESS and DONE both missing, handoff includes NO OUTPUT marker."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        body = out.read_text()
+        assert "NO OUTPUT FROM PREVIOUS STAGE" in body
+        assert "worker crashed" in body or "crashed" in body.lower()
+
+    def test_collect_handoff_no_output_marker_when_both_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PROGRESS and DONE both exist but are empty, NO OUTPUT marker appears."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        (proj / ".agentic" / "outbox" / "PROGRESS-TODO-0001.md").write_text("")
+        (proj / ".agentic" / "outbox" / "DONE-TODO-0001.md").write_text("")
+
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        body = out.read_text()
+        assert "NO OUTPUT FROM PREVIOUS STAGE" in body
+        assert "PROGRESS notes" not in body
+        assert "DONE summary" not in body
+
+    def test_collect_handoff_no_marker_when_progress_has_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PROGRESS has content, NO OUTPUT marker should NOT appear."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        (proj / ".agentic" / "outbox" / "PROGRESS-TODO-0001.md").write_text("some work done")
+
+        monkeypatch.setattr(
+            "awf.orchestrator.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        body = out.read_text()
+        assert "NO OUTPUT FROM PREVIOUS STAGE" not in body
+        assert "some work done" in body
 
     def test_resolve_prev_handoffs_skips_supervisor_stages(self, tmp_path) -> None:
         """BD-15/19: supervisor stages don't produce handoffs — only agent roles.

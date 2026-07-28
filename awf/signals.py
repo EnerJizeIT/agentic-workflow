@@ -47,11 +47,11 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
     Accepts both canonical (DONE-TODO-0001) and legacy short (DONE-0001) forms.
     Returns basename without .ready, or None.
 
-    A signal is considered valid only when the corresponding ``.md`` file
-    exists AND is non-empty (workers must leave a meaningful report, not just
-    a sentinel .ready). If .ready exists but .md is missing/empty, returns
-    None — caller treats it as "no signal yet" and the auto-DONE / salvage
-    paths can still trigger.
+    A signal is considered valid when the companion ``.md`` file either
+    doesn't exist (``.ready``-only signals are accepted) OR exists and is
+    non-empty. If .ready exists but .md is present and empty (0 bytes),
+    returns None — caller treats it as "no signal yet" and the auto-DONE /
+    salvage paths can still trigger.
     """
     short = _short_id(todo_id)
     for prefix in prefixes:

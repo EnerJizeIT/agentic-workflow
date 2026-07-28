@@ -211,7 +211,11 @@ def render_pipeline_contract(
         lines.append(f"- {item}")
     lines.append("")
     lines.append(
-        "When done, write `.agentic/handoff/" + role + ".md` describing what "
-        "you did, what the next role should pick up, and any open questions."
+        "**How to report your work:** write your running notes to "
+        "`outbox/PROGRESS-{TODO-ID}.md` during the task and your final summary "
+        "to `outbox/DONE-{TODO-ID}.md` when finished (use the actual TODO ID, "
+        "e.g. `DONE-TODO-0042.md`). The orchestrator compiles these into a "
+        "handoff file for the next role automatically — do NOT write handoff "
+        "files yourself."
     )
     return "\n".join(lines)

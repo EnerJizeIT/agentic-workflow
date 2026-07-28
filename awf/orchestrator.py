@@ -877,7 +877,17 @@ def run_pipeline(args: Any) -> int:
 
         # --- Supervisor stage ---
         if s_role == "supervisor":
-            _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
+            try:
+                _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
+            except RuntimeError as e:
+                print(
+                    f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.",
+                    file=sys.stderr,
+                )
+                print(f"  Details: {e}", file=sys.stderr)
+                print(f"  See {logs_dir / 'orchestrator.log'} for full context.", file=sys.stderr)
+                _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+                return 1
 
             if s_action in ("create_todo", "replan"):
                 current_todo = _find_active_todo(project_dir)
@@ -921,7 +931,17 @@ def run_pipeline(args: Any) -> int:
 
         # BD-15/19: forward handoffs from previous agent stages (named with todo_id)
         prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
-        _run_agent_stage(stage, current_todo, project_dir, config, logs_dir, prev_handoffs=prev_handoffs)
+        try:
+            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir, prev_handoffs=prev_handoffs)
+        except RuntimeError as e:
+            print(
+                f"ERROR: agent stage '{s_name}' (role={s_role}) crashed. Pipeline stopped.",
+                file=sys.stderr,
+            )
+            print(f"  Details: {e}", file=sys.stderr)
+            print(f"  See {logs_dir / 'orchestrator.log'} for full context.", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+            return 1
 
         prefixes = expected_signal_prefixes(s_action)
 

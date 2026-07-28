@@ -63,9 +63,14 @@ class TestRenderPipelineContract:
         assert any("New features" in line for line in md.split("\n"))
 
     def test_handoff_instruction_for_role(self) -> None:
-        """The contract tells the role where to write its handoff."""
+        """The contract tells the role to write PROGRESS/DONE — orchestrator compiles handoff."""
         md = render_pipeline_contract("developer", 2, 4, prev_role="system-analysis", next_role="qa")
-        assert ".agentic/handoff/developer.md" in md
+        # Should mention PROGRESS/DONE pattern, NOT instruct agent to write handoff itself
+        assert "PROGRESS-{TODO-ID}.md" in md
+        assert "DONE-{TODO-ID}.md" in md
+        assert "do NOT write handoff files yourself" in md
+        # Stale instruction (write handoff to <role>.md) must be gone
+        assert ".agentic/handoff/developer.md" not in md
 
     def test_unknown_role_uses_generic_contract(self) -> None:
         md = render_pipeline_contract("custom-role", 2, 3, prev_role="worker", next_role="reviewer")

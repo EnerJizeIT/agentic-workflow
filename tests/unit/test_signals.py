@@ -126,6 +126,51 @@ class TestReadSignalForTodo:
         result = read_signal_for_todo(outbox, "TODO-0003", "BLOCKED")
         assert result == "BLOCKED-0003"
 
+    def test_ready_only_no_md_accepted(self, tmp_path: Path) -> None:
+        """.ready without .md → signal IS accepted (md_file.exists() is False, so skip check)."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
+        assert result == "DONE-TODO-0001"
+
+    def test_ready_with_empty_md_rejected(self, tmp_path: Path) -> None:
+        """.ready + empty .md → signal rejected (treat as not-ready)."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.md").write_text("")
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
+        assert result is None
+
+    def test_ready_with_content_md_accepted(self, tmp_path: Path) -> None:
+        """.ready + non-empty .md → signal accepted."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.md").write_text("completed task\n")
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
+        assert result == "DONE-TODO-0001"
+
+    def test_ready_with_whitespace_only_md_accepted(self, tmp_path: Path) -> None:
+        """.ready + .md with only whitespace → st_size > 0, so accepted."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.md").write_text("   \n  \n")
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
+        assert result == "DONE-TODO-0001"
+
+    def test_empty_md_falls_through_to_next_prefix(self, tmp_path: Path) -> None:
+        """When DONE has empty .md but BLOCKED has .ready, BLOCKED should be found."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.md").write_text("")
+        (outbox / "BLOCKED-TODO-0001.ready").write_text("")
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE", "BLOCKED")
+        assert result == "BLOCKED-TODO-0001"
+
 
 class TestCleanStageSignals:
 
@@ -195,3 +240,12 @@ class TestWaitForSignal:
         (outbox / "BLOCKED-TODO-0001.ready").write_text("")
         result = wait_for_signal(outbox, "TODO-0001", timeout=1, interval=0.1)
         assert result == "BLOCKED-TODO-0001"
+
+    def test_wait_ignores_ready_with_empty_md(self, tmp_path: Path) -> None:
+        """wait_for_signal should NOT return when .ready exists but .md is empty."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.md").write_text("")
+        with pytest.raises(TimeoutError):
+            wait_for_signal(outbox, "TODO-0001", "DONE", timeout=0.3, interval=0.1)
