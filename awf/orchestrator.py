@@ -848,16 +848,19 @@ def _run_normalize_stage(
     except ImportError:
         pass
 
-    if background:
-        # BD-13: don't exit, just defer.
-        print("WARNING: normalize_skills deferred in --background mode.")
+    if background or not sys.stdin.isatty():
+        # BD-13: don't exit, just defer. Also defer when stdin is not a tty
+        # (e.g. detached background process re-launched without --background
+        # flag — cmd_start strips --background before re-exec, so the child
+        # sees background=False but has stdin=DEVNULL).
+        print("WARNING: normalize_skills deferred (no interactive stdin).")
         print("Supervisor should run `awf normalize` interactively to update")
         print("local skills. Pipeline continues with whatever role .md files")
         print("currently exist in .agentic/roles/.")
         print()
         _log(
             logs_dir,
-            "normalize_skills deferred in --background mode (state preserved)",
+            "normalize_skills deferred (no interactive stdin, state preserved)",
         )
         return
 
