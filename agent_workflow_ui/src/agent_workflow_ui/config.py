@@ -49,6 +49,11 @@ def detect_project_dir() -> Path | None:
     """Detect active awf project directory.
 
     Returns Path.cwd() if it contains .agentic/ directory, None otherwise.
+
+    .. note::
+        When opencode supports setting env vars for MCP subprocess, switch to
+        ``AWF_PROJECT_DIR`` env var as primary source. Until then,
+        agent-passed ``project_dir`` in ``open_form(data)`` is canonical.
     """
     import logging
 

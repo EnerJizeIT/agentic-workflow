@@ -19,9 +19,19 @@ from .state import get_project_dir
 log = logging.getLogger(__name__)
 
 
-def _project_roles_dir() -> Path | None:
-    """Return <project_dir>/.agentic/roles/ if it exists, else None."""
-    project_dir = get_project_dir()
+def _project_roles_dir(project_dir: Path | None = None) -> Path | None:
+    """Return <project_dir>/.agentic/roles/ if it exists, else None.
+
+    When project_dir is None, falls back to cwd-based detection (back-compat
+    for non-HOME launches).
+
+    .. note::
+        When opencode supports setting env vars for MCP subprocess, switch to
+        ``AWF_PROJECT_DIR`` env var as primary source. Until then,
+        agent-passed ``project_dir`` is canonical.
+    """
+    if project_dir is None:
+        project_dir = get_project_dir()
     if project_dir is None:
         return None
     d = project_dir / ".agentic" / "roles"
@@ -30,9 +40,9 @@ def _project_roles_dir() -> Path | None:
     return None
 
 
-def _copy_to_project(global_path: Path, filename: str) -> None:
+def _copy_to_project(global_path: Path, filename: str, project_dir: Path | None = None) -> None:
     """Copy a role file from global store to project .agentic/roles/."""
-    proj = _project_roles_dir()
+    proj = _project_roles_dir(project_dir)
     if proj is None:
         return
     dest = proj / filename
@@ -40,9 +50,9 @@ def _copy_to_project(global_path: Path, filename: str) -> None:
     log.info("Copied role %s to project %s", filename, proj)
 
 
-def _delete_from_project(filename: str) -> None:
+def _delete_from_project(filename: str, project_dir: Path | None = None) -> None:
     """Delete a role file from project .agentic/roles/."""
-    proj = _project_roles_dir()
+    proj = _project_roles_dir(project_dir)
     if proj is None:
         return
     target = proj / filename
@@ -54,7 +64,7 @@ def _delete_from_project(filename: str) -> None:
 _DEFAULT_AGENT_IDS = {"worker", "reviewer", "tester"}
 
 
-def _copy_existing_role_to_project(role_id: str) -> bool:
+def _copy_existing_role_to_project(role_id: str, project_dir: Path | None = None) -> bool:
     """Copy an existing global role .md to project .agentic/roles/ if it exists.
 
     Returns True if copied, False otherwise (missing, default sentinel, or no project).
@@ -65,11 +75,11 @@ def _copy_existing_role_to_project(role_id: str) -> bool:
     if not src.exists():
         log.debug("Role %s not in global store, skip copy to project", role_id)
         return False
-    _copy_to_project(src, src.name)
+    _copy_to_project(src, src.name, project_dir=project_dir)
     return True
 
 
-def process_role_saves(data: dict[str, Any]) -> int:
+def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) -> int:
     """Save custom agent .md and supervisor .md files if user requested.
 
     Reads form fields:
@@ -105,7 +115,7 @@ def process_role_saves(data: dict[str, Any]) -> int:
                     slug = saved_path.stem
                     saved_agent_ids.add(slug)
                     log.info("Saved custom agent: %s", name)
-                    _copy_to_project(saved_path, saved_path.name)
+                    _copy_to_project(saved_path, saved_path.name, project_dir=project_dir)
                     saved += 1
                 except Exception as e:
                     log.error("Failed to save custom agent %s: %s", name, e)
@@ -119,7 +129,7 @@ def process_role_saves(data: dict[str, Any]) -> int:
         try:
             saved_path = save_custom_role(name, sv_content, role_type="supervisor")
             log.info("Saved custom supervisor: %s", name)
-            _copy_to_project(saved_path, saved_path.name)
+            _copy_to_project(saved_path, saved_path.name, project_dir=project_dir)
             saved += 1
         except Exception as e:
             log.error("Failed to save supervisor: %s", e)
@@ -127,7 +137,7 @@ def process_role_saves(data: dict[str, Any]) -> int:
     # BD-5-B: copy existing supervisor variant selected from dropdown
     if not sv_content:
         sv_role = str(data.get("supervisor_role", "")).strip()
-        if _copy_existing_role_to_project(sv_role):
+        if _copy_existing_role_to_project(sv_role, project_dir=project_dir):
             saved += 1
 
     # BD-5-C: copy existing custom agents selected from agent[]
@@ -142,13 +152,13 @@ def process_role_saves(data: dict[str, Any]) -> int:
             continue
         if agent_id in saved_agent_ids:
             continue
-        if _copy_existing_role_to_project(agent_id):
+        if _copy_existing_role_to_project(agent_id, project_dir=project_dir):
             saved += 1
 
     return saved
 
 
-def process_role_deletions(data: dict[str, Any]) -> int:
+def process_role_deletions(data: dict[str, Any], project_dir: Path | None = None) -> int:
     """Delete custom role .md files if user requested.
 
     Reads form field:
@@ -169,7 +179,7 @@ def process_role_deletions(data: dict[str, Any]) -> int:
         try:
             if delete_custom_role(name):
                 log.info("Deleted custom role: %s", name)
-                _delete_from_project(f"{name}.md")
+                _delete_from_project(f"{name}.md", project_dir=project_dir)
                 deleted += 1
         except Exception as e:
             log.error("Failed to delete %s: %s", name, e)

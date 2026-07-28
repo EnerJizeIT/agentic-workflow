@@ -265,3 +265,65 @@ def test_ack_page_already_submitted():
     assert 'lang="ru"' in page
     assert "FORM-abc-5678" in page
     assert "#f14c4c" in page
+
+
+# --- BD-6: submit uses project_dir from FormRecord ---
+
+
+def test_submit_with_project_dir_writes_to_project(http_setup, tmp_path):
+    """POST submit writes YAML to project/.agentic/inputs/ when FormRecord has project_dir."""
+    config, registry, port = http_setup
+
+    proj = tmp_path / "myproject"
+    proj.mkdir()
+    (proj / ".agentic" / "inputs").mkdir(parents=True)
+
+    registry.add(FormRecord(
+        form_id="FORM-001",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+        project_dir=proj,
+    ))
+
+    data = b"selected_roles=worker"
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-001",
+        data=data,
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    # YAML written to project's inputs_dir, NOT config.inputs_dir
+    proj_yaml = proj / ".agentic" / "inputs" / "FORM-001.yaml"
+    assert proj_yaml.exists(), f"YAML not in project: {proj_yaml}"
+    assert "worker" in proj_yaml.read_text()
+
+    # Should NOT be in default inputs_dir
+    default_yaml = config.inputs_dir / "FORM-001.yaml"
+    assert not default_yaml.exists(), f"YAML incorrectly in default dir: {default_yaml}"
+
+
+def test_submit_without_project_dir_uses_default(http_setup):
+    """POST submit without project_dir → writes to config.inputs_dir (back-compat)."""
+    config, registry, port = http_setup
+
+    registry.add(FormRecord(
+        form_id="FORM-002",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+        project_dir=None,
+    ))
+
+    data = b"selected_roles=reviewer"
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-002",
+        data=data,
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    default_yaml = config.inputs_dir / "FORM-002.yaml"
+    assert default_yaml.exists(), f"YAML not in default dir: {default_yaml}"
+    assert "reviewer" in default_yaml.read_text()

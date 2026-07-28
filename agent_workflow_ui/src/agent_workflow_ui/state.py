@@ -27,6 +27,7 @@ class FormRecord:
     cancelled_at: datetime | None = None
     expires_at: datetime | None = None
     data_keys: list = field(default_factory=list)
+    project_dir: Path | None = None  # absolute path to awf project, set by agent
 
 
 class FormRegistry:

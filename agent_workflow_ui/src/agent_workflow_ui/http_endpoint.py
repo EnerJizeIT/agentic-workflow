@@ -156,7 +156,9 @@ class SubmitHandler(BaseHTTPRequestHandler):
             "data": data,
         }
 
-        target = self.inputs_dir / f"{form_id}.yaml"
+        inputs_dir = (record.project_dir / ".agentic" / "inputs") if record.project_dir else self.inputs_dir
+        inputs_dir.mkdir(parents=True, exist_ok=True)
+        target = inputs_dir / f"{form_id}.yaml"
         _atomic_write_yaml(target, payload)
 
         self.registry.update_status(form_id, "submitted")
@@ -164,8 +166,8 @@ class SubmitHandler(BaseHTTPRequestHandler):
         # Persist custom roles if requested (delegates to roles_processor)
         from .roles_processor import process_role_deletions, process_role_saves
 
-        process_role_saves(data)
-        process_role_deletions(data)
+        process_role_saves(data, project_dir=record.project_dir)
+        process_role_deletions(data, project_dir=record.project_dir)
 
         log.info("Submit received for %s, written to %s", form_id, target)
 

@@ -474,3 +474,115 @@ def test_open_form_with_mixed_roles_project_setup(plugin_setup):
     ))
     assert result["form_id"].startswith("FORM-")
     assert "error" not in result
+
+
+# --- BD-6: project_dir in open_form data ---
+
+
+def test_open_form_project_dir_set(plugin_setup, tmp_path):
+    """open_form with project_dir in data → FormRecord.project_dir is set."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj = tmp_path / "myproject"
+    proj.mkdir()
+    (proj / ".agentic").mkdir()
+
+    result = asyncio.run(open_form(
+        template="role-assignment",
+        data={
+            "available_roles": ["worker"],
+            "project_dir": str(proj),
+        },
+    ))
+    assert result["form_id"].startswith("FORM-")
+    record = get_registry().get(result["form_id"])
+    assert record is not None
+    assert record.project_dir == proj.resolve()
+
+
+def test_open_form_project_dir_no_agentic(plugin_setup, tmp_path, caplog):
+    """open_form with project_dir that has no .agentic/ → project_dir=None, warning logged."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj = tmp_path / "noagentic"
+    proj.mkdir()
+    # No .agentic/ directory
+
+    result = asyncio.run(open_form(
+        template="role-assignment",
+        data={
+            "available_roles": ["worker"],
+            "project_dir": str(proj),
+        },
+    ))
+    assert result["form_id"].startswith("FORM-")
+    record = get_registry().get(result["form_id"])
+    assert record is not None
+    assert record.project_dir is None
+    assert "has no .agentic/" in caplog.text
+
+
+def test_open_form_no_project_dir_compat(plugin_setup):
+    """open_form without project_dir → FormRecord.project_dir is None (back-compat)."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    result = asyncio.run(open_form(
+        template="role-assignment",
+        data={"available_roles": ["worker"]},
+    ))
+    assert result["form_id"].startswith("FORM-")
+    record = get_registry().get(result["form_id"])
+    assert record is not None
+    assert record.project_dir is None
+
+
+def test_open_form_project_dir_not_leaked_to_template(plugin_setup, tmp_path):
+    """project_dir is popped from data so it doesn't leak into template context."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj = tmp_path / "myproject"
+    proj.mkdir()
+    (proj / ".agentic").mkdir()
+
+    result = asyncio.run(open_form(
+        template="role-assignment",
+        data={
+            "available_roles": ["worker"],
+            "project_dir": str(proj),
+        },
+    ))
+    record = get_registry().get(result["form_id"])
+    assert record is not None
+    assert "project_dir" not in record.data_keys
+
+
+def test_read_submit_with_project_dir(plugin_setup, tmp_path):
+    """read_submit reads from project/.agentic/inputs/ when FormRecord has project_dir."""
+    from agent_workflow_ui.tools.forms import open_form, read_submit
+
+    proj = tmp_path / "myproject"
+    proj.mkdir()
+    (proj / ".agentic" / "inputs").mkdir(parents=True)
+
+    open_result = asyncio.run(open_form(
+        template="role-assignment",
+        data={
+            "available_roles": ["worker"],
+            "project_dir": str(proj),
+        },
+    ))
+    form_id = open_result["form_id"]
+
+    submit_data = {
+        "form_id": form_id,
+        "template": "role-assignment",
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "data": {"selected_roles": ["worker"]},
+    }
+    submit_file = proj / ".agentic" / "inputs" / f"{form_id}.yaml"
+    submit_file.write_text(yaml.safe_dump(submit_data))
+    get_registry().update_status(form_id, "submitted")
+
+    r = asyncio.run(read_submit(form_id))
+    assert r["submitted"] is True
+    assert r["data"]["selected_roles"] == ["worker"]

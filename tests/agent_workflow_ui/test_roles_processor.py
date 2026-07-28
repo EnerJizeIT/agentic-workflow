@@ -465,3 +465,129 @@ def test_bd5c_missing_custom_agent_skipped(isolated_roles_dir, reset_project_dir
     saved = process_role_saves(data)
     assert saved == 0
     assert not list((proj / ".agentic" / "roles").iterdir())
+
+
+# ── BD-6: explicit project_dir parameter (overrides cwd-based state) ──────────
+
+
+def _make_project(tmp_path: Path) -> Path:
+    """Create a project dir with .agentic/roles/ structure."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    (proj / ".agentic" / "roles").mkdir(parents=True)
+    return proj
+
+
+def test_bd6_saves_with_explicit_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with project_dir= copies to that project, not cwd-based."""
+    proj = _make_project(tmp_path)
+    # Ensure global state says NO project — but we pass project_dir explicitly
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Auditor", "skill_content": "# Auditor\nCheck code.", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data, project_dir=proj)
+    assert saved == 1
+    assert (isolated_roles_dir / "auditor.md").exists()
+    assert (proj / ".agentic" / "roles" / "auditor.md").exists()
+    assert (proj / ".agentic" / "roles" / "auditor.md").read_text() == "# Auditor\nCheck code."
+
+
+def test_bd6_saves_supervisor_with_explicit_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with project_dir= copies supervisor to that project."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "supervisor_content": "# Strict Lead\nBe strict.",
+        "save_supervisor": "true",
+    }
+    saved = process_role_saves(data, project_dir=proj)
+    assert saved == 1
+    assert (isolated_roles_dir / "supervisor-strict-lead.md").exists()
+    assert (proj / ".agentic" / "roles" / "supervisor-strict-lead.md").exists()
+
+
+def test_bd6_saves_no_project_dir_fallback(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_saves with project_dir=None falls back to state._project_dir."""
+    proj = _make_project(tmp_path)
+    state._project_dir = proj
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Worker", "skill_content": "# W", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data, project_dir=None)
+    assert saved == 1
+    assert (isolated_roles_dir / "worker.md").exists()
+    assert (proj / ".agentic" / "roles" / "worker.md").exists()
+
+
+def test_bd6_deletions_with_explicit_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """process_role_deletions with project_dir= deletes from that project."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    content = "# Worker\nDo work."
+    (isolated_roles_dir / "worker.md").write_text(content)
+    (proj / ".agentic" / "roles" / "worker.md").write_text(content)
+
+    data = {"delete_agent": "worker"}
+    deleted = process_role_deletions(data, project_dir=proj)
+    assert deleted == 1
+    assert not (isolated_roles_dir / "worker.md").exists()
+    assert not (proj / ".agentic" / "roles" / "worker.md").exists()
+
+
+def test_bd6_saves_project_dir_no_agentic_roles(isolated_roles_dir, reset_project_dir, tmp_path):
+    """project_dir set but .agentic/roles/ missing → save globally, no copy."""
+    proj = tmp_path / "project"
+    proj.mkdir()
+    (proj / ".agentic").mkdir()
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "custom", "agent": "Tester", "skill_content": "# T", "save": True},
+        ]),
+    }
+    saved = process_role_saves(data, project_dir=proj)
+    assert saved == 1
+    assert (isolated_roles_dir / "tester.md").exists()
+    assert not (proj / ".agentic" / "roles").exists()
+
+
+def test_bd6_bd5b_explicit_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-5-B supervisor_role copy uses explicit project_dir, not state."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    (isolated_roles_dir / "supervisor-architect.md").write_text("# Architect\nBe smart.")
+
+    data = {
+        "supervisor_role": "supervisor-architect",
+        "supervisor_content": "",
+    }
+    saved = process_role_saves(data, project_dir=proj)
+    assert saved == 1
+    assert (proj / ".agentic" / "roles" / "supervisor-architect.md").exists()
+
+
+def test_bd6_bd5c_explicit_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-5-C agent[] copy uses explicit project_dir, not state."""
+    proj = _make_project(tmp_path)
+    state._project_dir = None
+
+    (isolated_roles_dir / "auditor.md").write_text("# Auditor")
+
+    data = {
+        "agent": ["auditor"],
+        "team_config": "[]",
+    }
+    saved = process_role_saves(data, project_dir=proj)
+    assert saved == 1
+    assert (proj / ".agentic" / "roles" / "auditor.md").exists()

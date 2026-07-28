@@ -219,6 +219,38 @@ A — правильное архитектурно, но feature-work. C — wo
 
 **Found during:** dogfood session 2026-07-28.
 
+### BD-6 · Plugin runs from HOME, not project — `.agentic/` polluted in HOME, project_dir wrong
+
+**Symptom:** After `awf start` and form submit, plugin wrote submit YAMLs to
+`/home/pklochkov/.agentic/inputs/` (HOME), NOT to project's `.agentic/inputs/`.
+`detect_project_dir()` returned HOME because `/home/pklochkov/.agentic/` exists
+(ironically, created by this very bug). Custom roles copied to
+`/home/pklochkov/.agentic/roles/` instead of project's `.agentic/roles/`.
+
+**Root cause:** `opencode` launches MCP subprocess with `cwd=$HOME`, not with
+the project directory the user invoked opencode from. Plugin uses `Path.cwd()`
+in `config.load()` and `detect_project_dir()` — both wrong in this context.
+
+**Fix options:**
+- A) **Plugin reads `AWF_PROJECT_DIR` env var** (set by opencode/agent before
+  spawning MCP). `detect_project_dir()` checks env first, then falls back to
+  cwd. Opencode may need a wrapper to set this from its project root.
+- B) **Agent passes `project_dir` in `open_form(data=...)`** — plugin stores it
+  on the FormRecord and uses it for `roles_processor` paths at submit time.
+  No env var needed; agent (supervisor) is responsible for providing it.
+  Cleanest — works without opencode changes.
+- C) **Plugin walks up from cwd looking for `.agentic/`** — but cwd=HOME means
+  it finds the polluted one. Useless until cleanup + extra guard against HOME.
+
+**Recommended: B + cleanup.** Add `project_dir` field to FormRecord, default
+to `detect_project_dir()` for back-compat; if agent provides it via form data,
+override. Cleanup: `rm -rf ~/.agentic/`.
+
+**Found during:** dogfood session 2026-07-28, restart verification — после
+restart port сменился (53921→54073), но кдw всё равно HOME.
+
+---
+
 ### BD-5 · Custom supervisor variant selected from dropdown not copied to project; empty content allowed
 
 **Symptoms (2 issues from dogfood):**

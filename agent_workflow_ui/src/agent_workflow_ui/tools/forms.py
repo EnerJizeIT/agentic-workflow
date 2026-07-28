@@ -1,7 +1,9 @@
 """MCP tool implementations — form lifecycle."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -11,6 +13,8 @@ from ..browser import open_path
 from ..opencode_config import scan_global_roles
 from ..render.engine import render_template
 from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_registry
+
+log = logging.getLogger(__name__)
 
 
 def _normalize_available_roles(value: str | list[str | dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -60,6 +64,17 @@ async def open_form(
         }
 
     data = data or {}
+    # BD-6: extract project_dir from data so submit paths resolve to the project,
+    # not cwd (which is $HOME when opencode launches MCP subprocess).
+    project_dir_raw = data.pop("project_dir", None)
+    project_dir: Path | None = None
+    if project_dir_raw:
+        p = Path(project_dir_raw).expanduser().resolve()
+        if (p / ".agentic").is_dir():
+            project_dir = p
+        else:
+            log.warning("project_dir %s has no .agentic/ — ignoring", p)
+
     if "available_roles" in data:
         data["available_roles"] = _normalize_available_roles(data["available_roles"])
     form_id = registry.next_form_id()
@@ -113,6 +128,7 @@ async def open_form(
         status="pending",
         expires_at=expires_at_dt,
         data_keys=list(data.keys()),
+        project_dir=project_dir,
     )
     registry.add(record)
 
@@ -154,7 +170,8 @@ async def read_submit(form_id: str) -> dict[str, Any]:
             registry.update_status(form_id, "expired")
             record = registry.get(form_id)
 
-    submit_file = config.inputs_dir / f"{form_id}.yaml"
+    inputs_dir = (record.project_dir / ".agentic" / "inputs") if record.project_dir else config.inputs_dir
+    submit_file = inputs_dir / f"{form_id}.yaml"
     if not submit_file.exists():
         return {
             "submitted": False,
