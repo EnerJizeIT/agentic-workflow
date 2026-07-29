@@ -119,8 +119,9 @@ def _run_subprocess_until_signal(
     ANY of these conditions fires, gives ``grace_seconds`` to exit, then
     SIGTERM (and SIGKILL after 5s if still alive):
 
-    - any path in ``watch_paths`` exists (concrete filenames — used when
-      we know the signal name ahead of time, e.g. ``ACK-TODO-0001.ready``)
+    - any path in ``watch_paths`` exists AFTER subprocess start (BD-22 fix:
+      snapshot-based — stale files that existed before subprocess launch
+      are ignored; only NEW appearances count as signal)
     - any NEW file matching ``watch_new_glob`` appears in the snapshot
       taken at start (used when the filename is picked by the subprocess
       itself, e.g. ``TODO-*.ready`` for supervisor create_todo)
@@ -128,7 +129,7 @@ def _run_subprocess_until_signal(
     Args:
         cmd: command list.
         cwd: working directory.
-        watch_paths: concrete paths whose existence means "work is done".
+        watch_paths: concrete paths whose NEW existence means "work is done".
         watch_new_glob: (directory, glob_pattern) — detect NEW files matching
             the pattern that didn't exist at subprocess start.
         logs_dir: optional, for logging.
@@ -138,6 +139,17 @@ def _run_subprocess_until_signal(
     import time
 
     watch_paths = watch_paths or []
+    # BD-22: snapshot which watch_paths already exist at start (stale signals
+    # from previous runs). Only paths that DON'T exist at start, or that
+    # appear AFTER start, count as a valid signal.
+    pre_existing: set[str] = {str(p) for p in watch_paths if p.exists()}
+    if pre_existing and logs_dir:
+        _log(
+            logs_dir,
+            f"BD-22: ignoring {len(pre_existing)} stale watch_paths "
+            f"(exist before subprocess start)",
+        )
+
     snapshot: set[str] = set()
     if watch_new_glob is not None:
         watch_dir, pattern = watch_new_glob
@@ -158,7 +170,11 @@ def _run_subprocess_until_signal(
         now = time.monotonic()
 
         if signal_seen_at is None:
-            triggered = any(p.exists() for p in watch_paths)
+            # BD-22: a path counts as signal only if it was NOT in pre_existing
+            # snapshot (i.e., appeared DURING subprocess execution).
+            triggered = any(
+                str(p) not in pre_existing and p.exists() for p in watch_paths
+            )
             if not triggered and watch_new_glob is not None:
                 watch_dir, pattern = watch_new_glob
                 if watch_dir.is_dir():
@@ -410,6 +426,14 @@ def _run_supervisor_via_subprocess(
         progress = outbox / f"PROGRESS-{todo_id}.md"
         if progress.is_file():
             extra_files.append(str(progress))
+        # BD-29 aggregate verify context: forward ALL role handoffs for this
+        # todo_id so supervisor sees the full picture, not just the last
+        # role's PROGRESS/DONE (which overwrite each other between roles).
+        handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+        if handoff_dir.is_dir():
+            for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
+                if hf.is_file():
+                    extra_files.append(str(hf))
         prompt = _build_prompt("verify", todo_id)
     elif kind == "replan":
         if not todo_id:

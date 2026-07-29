@@ -942,6 +942,36 @@ class TestSupervisorViaSubprocess:
         cmd = _FakePopen._last_cmds[0]
         assert any("DONE-TODO-0042.md" in c for c in cmd)
 
+    def test_verify_aggregate_forwards_all_role_handoffs(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """BD-29: supervisor verify sees aggregate of ALL role handoffs,
+        not just last role's PROGRESS/DONE. Each role writes its own
+        handoff/{role}-{todo_id}.md — supervisor verify gets all of them."""
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+        outbox = proj / ".agentic" / "outbox"
+        handoff_dir = proj / ".agentic" / "handoff"
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+
+        # Simulate 3 roles writing their own handoffs (BD-15)
+        (handoff_dir / "developer-TODO-0042.md").write_text("# dev\nimplemented X")
+        (handoff_dir / "tester-TODO-0042.md").write_text("# tester\nadded tests")
+        (handoff_dir / "qa-TODO-0042.md").write_text("# qa\napproved")
+        # Final PROGRESS/DONE (overwritten by last role)
+        (outbox / "DONE-TODO-0042.md").write_text("# qa only\nsee handoffs above")
+        (outbox / "PROGRESS-TODO-0042.md").write_text("# qa progress")
+
+        _patch_subprocess_for_awf(monkeypatch)
+        stage = Stage(name="verify", role="supervisor", description="d", kind="verify")
+        _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+
+        cmd = _FakePopen._last_cmds[-1]
+        # All 3 handoffs must be passed via --file
+        assert any("developer-TODO-0042.md" in c for c in cmd), "developer handoff missing"
+        assert any("tester-TODO-0042.md" in c for c in cmd), "tester handoff missing"
+        assert any("qa-TODO-0042.md" in c for c in cmd), "qa handoff missing"
+
     def test_auto_no_supervisor_md_falls_back_to_skip(
         self, tmp_path: Path, capsys
     ) -> None:
@@ -1048,14 +1078,24 @@ class TestRunSubprocessUntilSignal:
         _FailingPopen._exit_code = 42
 
     def test_signal_appears_then_terminate(self, tmp_path, monkeypatch) -> None:
-        """BD-20: when signal file appears, grace period elapses, terminate."""
+        """BD-20/22: when signal file appears AFTER subprocess start, terminate.
+
+        BD-22 fix: file must NOT exist at subprocess start (otherwise it's
+        treated as stale and ignored). File is created inside poll() to
+        simulate the subprocess writing the signal mid-execution.
+        """
         from awf.orchestrator import _run_subprocess_until_signal
 
         class _HangingPopen(_FakePopen):
             """Popen that never exits on its own — forces signal-watch path."""
             terminated = False
+            _call_count = 0
 
             def poll(self):
+                type(self)._call_count += 1
+                # On 2nd poll, simulate that subprocess created the signal
+                if type(self)._call_count >= 2:
+                    (tmp_path / "DONE-TODO-0001.ready").write_text("")
                 return None
 
             def terminate(self):
@@ -1068,8 +1108,9 @@ class TestRunSubprocessUntilSignal:
         monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
+        # NOTE: signal file does NOT exist at start — only appears mid-run.
         signal_file = tmp_path / "DONE-TODO-0001.ready"
-        signal_file.write_text("")  # already exists
+        assert not signal_file.exists()
 
         result = _run_subprocess_until_signal(
             cmd=["opencode", "run"],
@@ -1080,6 +1121,59 @@ class TestRunSubprocessUntilSignal:
         )
         assert result.returncode == 0
         assert _HangingPopen.terminated, "terminate() must have been called"
+
+    def test_bd22_stale_signal_ignored(self, tmp_path, monkeypatch) -> None:
+        """BD-22: signal file that existed BEFORE subprocess start is stale.
+
+        Such a file must NOT trigger BD-20 grace termination — only files
+        that appear DURING subprocess execution count as a fresh signal.
+        Without this snapshot, lingering ACK-{todo_id}.ready from a
+        previous run kills supervisor verify in 10s without reading DONE.
+        """
+        from awf.orchestrator import _run_subprocess_until_signal
+
+        class _HangingPopen(_FakePopen):
+            """Popen that never exits on its own."""
+            terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                type(self).terminated = True
+
+            def wait(self, timeout=None):
+                return 0
+
+        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        # Stale signal exists BEFORE subprocess start
+        stale_signal = tmp_path / "ACK-TODO-0042.ready"
+        stale_signal.write_text("")
+
+        # Use very short hard_timeout to fail fast (stale file would have
+        # triggered grace=0 immediately, terminating subprocess — BAD).
+        # With BD-22 fix, stale file is ignored → hard_timeout fires.
+        try:
+            _run_subprocess_until_signal(
+                cmd=["opencode", "run"],
+                cwd=tmp_path,
+                watch_paths=[stale_signal],
+                logs_dir=None,
+                grace_seconds=0,
+                hard_timeout=1,
+            )
+            assert False, "Should have raised TimeoutError (stale signal ignored)"
+        except TimeoutError:
+            pass  # expected — stale signal was ignored, hard timeout fired
+
+        # Critical: terminate was NOT called from BD-20 grace path (only
+        # from hard_timeout cleanup). The point is that stale_signal did
+        # not falsely "trigger" the signal detection.
+        # (terminate is called by hard_timeout cleanup too, so we can't
+        # assert terminate was never called — but TimeoutError proves
+        # snapshot worked.)
 
     def test_new_glob_signal_detected(self, tmp_path, monkeypatch) -> None:
         """BD-20: watch_new_glob detects new file appearing in directory."""

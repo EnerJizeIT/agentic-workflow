@@ -37,12 +37,11 @@ def test_three_members_five_stages():
     # BD-29: no action field — agent stages have only role+description
 
 
-def test_empty_team_two_stages():
-    """Empty team → plan + verify only."""
-    stages = build_pipeline_stages([])
-    assert len(stages) == 2
-    assert stages[0]["name"] == "plan"
-    assert stages[1]["name"] == "verify"
+def test_empty_team_raises():
+    """BD-29: empty team raises ValueError (useless plan→verify pipeline)."""
+    import pytest
+    with pytest.raises(ValueError, match="zero agent roles"):
+        build_pipeline_stages([])
 
 
 def test_stage_has_required_keys():
@@ -64,8 +63,8 @@ def test_team_stage_has_extra_keys():
 
 def test_verify_stage_has_extra_keys():
     """Verify stage has on_approved and on_rejected."""
-    stages = build_pipeline_stages([])
-    verify = stages[1]
+    stages = build_pipeline_stages([{"agent": "worker"}])
+    verify = stages[2]
     assert verify["on_approved"] == "commit_and_next"
     assert verify["on_rejected"] == "replan"
 
@@ -160,16 +159,12 @@ def test_write_pipeline_existing_backed_up(tmp_path):
     assert backup.read_text() == "name: old\n"
 
 
-def test_write_pipeline_empty_team(tmp_path):
-    """Empty team still writes valid pipeline with plan+verify."""
+def test_write_pipeline_empty_team_raises(tmp_path):
+    """BD-29: write_pipeline with empty team raises ValueError."""
+    import pytest
     proj = _make_project(tmp_path)
-    result = write_pipeline([], proj)
-
-    assert result is not None
-    data = yaml.safe_load(result.read_text())
-    assert len(data["stages"]) == 2
-    assert data["stages"][0]["name"] == "plan"
-    assert data["stages"][1]["name"] == "verify"
+    with pytest.raises(ValueError, match="zero agent roles"):
+        write_pipeline([], proj)
 
 
 def test_write_pipeline_preserves_order(tmp_path):

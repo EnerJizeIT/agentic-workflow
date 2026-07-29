@@ -40,7 +40,24 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
 
     Returns:
         List of stage dicts: [plan(supervisor)] + [team stages] + [verify(supervisor)].
+
+    Raises:
+        ValueError: if team_order is empty or has no valid role entries
+            (empty pipeline would be plan→verify with no work — useless).
     """
+    # BD-29 guard: validate team is non-empty BEFORE wrapping with supervisor.
+    # Belt-and-suspenders — UI form should also disable Submit on empty team.
+    valid_roles = [
+        str(m.get("agent") or m.get("role") or "").strip()
+        for m in team_order
+    ]
+    valid_roles = [r for r in valid_roles if r]
+    if not valid_roles:
+        raise ValueError(
+            "Cannot build pipeline with zero agent roles — at least one "
+            "role is required between supervisor plan and verify."
+        )
+
     stages: list[dict[str, Any]] = [
         _stage_yaml(
             "plan",
