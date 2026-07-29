@@ -71,8 +71,14 @@ retry:
 
 
 def run(args: Any) -> int:
-    """Execute ``awf init`` and return exit code."""
-    template = getattr(args, "template", "simple")
+    """Execute ``awf init`` and return exit code.
+
+    BD-28: simplified — UI form (project-setup) is now the only way to
+    configure pipeline + roles. ``awf init`` creates only the bare .agentic/
+    skeleton + minimal config.yaml + supervisor.md (used by current opencode
+    session). Pipeline.yaml and worker/reviewer/tester roles are populated
+    later by the form submit.
+    """
     force = getattr(args, "force", False)
     dry_run = getattr(args, "dry_run", False)
 
@@ -113,13 +119,8 @@ def run(args: Any) -> int:
         print("[DRY RUN] Would create:")
         print(f"  .agentic/config.yaml (worker model: {worker_model or '<blank>'})")
         print("  .agentic/roles/supervisor.md")
-        print("  .agentic/roles/worker.md")
-        if template == "full":
-            print("  .agentic/roles/reviewer.md")
-            print("  .agentic/roles/tester.md")
-        print("  .agentic/pipelines/default.yaml")
-        print("  .agentic/phases/")
-        print("  .agentic/inbox/, outbox/, context/, logs/, reports/")
+        print("  .agentic/phases/plan.md (stub)")
+        print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
         return 0
 
     # Create directories
@@ -137,23 +138,19 @@ def run(args: Any) -> int:
     )
     (agentic / "config.yaml").write_text(config_content, encoding="utf-8")
 
-    # Copy role templates
+    # Copy supervisor.md template (used by current opencode session — the
+    # form will add worker/reviewer/tester roles later based on user selection).
     framework_dir = _find_framework_dir()
     templates_dir = framework_dir / "templates"
-
     shutil.copy2(templates_dir / "roles" / "supervisor.md", agentic / "roles" / "supervisor.md")
-    shutil.copy2(templates_dir / "roles" / "worker.md", agentic / "roles" / "worker.md")
 
-    if template == "full":
-        shutil.copy2(templates_dir / "roles" / "reviewer.md", agentic / "roles" / "reviewer.md")
-        shutil.copy2(templates_dir / "roles" / "tester.md", agentic / "roles" / "tester.md")
-
-    # Copy pipeline template
-    pipeline_src = templates_dir / "pipelines" / (template + ".yaml")
-    shutil.copy2(pipeline_src, agentic / "pipelines" / "default.yaml")
-
-    # Copy TODO template
-    shutil.copy2(templates_dir / "todo-template.md", agentic / "todo-template.md")
+    # Stub plan.md — supervisor will fill it in during plan stage
+    (agentic / "phases" / "plan.md").write_text(
+        f"# {project_name} — Plan\n\n"
+        "Steps:\n"
+        "1. [ ] TODO\n",
+        encoding="utf-8",
+    )
 
     # Update .gitignore
     # inputs/ and dashboards/ — runtime state from agent-workflow-ui plugin (submits, rendered dashboards).
@@ -174,21 +171,19 @@ def run(args: Any) -> int:
         gitignore.write_text("# Agentic workflow runtime files\n" + gitignore_block + "\n", encoding="utf-8")
 
     print()
-    print(f"Created .agentic/ with {template} template")
+    print("Created .agentic/ skeleton (supervisor.md + minimal config.yaml)")
+    print("Pipeline + team roles will be configured via project-setup form on first run.")
 
-    # Offer to create opencode agents
-    offer_agents = ["worker"]
-    if template == "full":
-        offer_agents = ["worker", "reviewer", "tester"]
-
+    # Offer to create opencode agents — only `worker` (the universal agent
+    # that loads role .md as instruction). Other roles come from skills.
     oc_cfg = Path.home() / ".config" / "opencode" / "opencode.json"
     if oc_cfg.exists():
-        proposal = opencode_agents.propose(str(oc_cfg), offer_agents, worker_model)
+        proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
 
         if proposal.startswith("ERR:"):
             print()
             print(f"NOTE: cannot propose agent changes — {proposal}")
-            print(f"      Add {', '.join(offer_agents)} manually to {oc_cfg}.")
+            print(f"      Add 'worker' manually to {oc_cfg}.")
         elif proposal.startswith("NOTHING:"):
             print()
             print(proposal)
@@ -202,7 +197,7 @@ def run(args: Any) -> int:
             if ans and ans not in ("y", "yes"):
                 print("Skipping agent creation (create them manually if needed).")
             else:
-                result = opencode_agents.apply(str(oc_cfg), offer_agents, worker_model)
+                result = opencode_agents.apply(str(oc_cfg), ["worker"], worker_model)
                 print(result)
         else:
             print()
@@ -210,14 +205,14 @@ def run(args: Any) -> int:
     else:
         print()
         print(f"NOTE: no opencode config found at {oc_cfg}")
-        print(f"      Create the opencode agents ({', '.join(offer_agents)}) manually (see README → Requirements).")
+        print("      Create the 'worker' opencode agent manually (see README → Requirements).")
 
     _offer_plugin_install(project_name)
 
     print()
     print("Next steps:")
-    print("  1. Edit .agentic/config.yaml if needed")
-    print("  2. Create .agentic/phases/plan.md with your implementation plan")
+    print("  1. Edit .agentic/phases/plan.md with your project plan")
+    print("  2. Open project-setup form (via opencode agent) to pick skills + roles")
     print("  3. Run: awf start --auto --background   (or: awf start for interactive)")
     return 0
 

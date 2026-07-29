@@ -59,16 +59,45 @@ def empty_project(tmp_path) -> Path:
 
 @pytest.fixture
 def initialized_project(empty_project: Path, awf_bin: str, awf_env: dict) -> Path:
-    """empty_project after `awf init --template simple` (non-interactive input)."""
+    """empty_project after `awf init` (BD-28: no --template flag).
+
+    Also creates a minimal pipeline.yaml so e2e tests can run `awf start`
+    without needing the UI form. In real usage the form creates this file.
+    """
     init_input = b"test-project\npytest\nruff\nmypy\n\nclaude-test-model\nn\nn\n"
     subprocess.run(
-        [awf_bin, "init", "--template", "simple"],
+        [awf_bin, "init"],
         cwd=empty_project,
         env=awf_env,
         input=init_input,
         check=True,
         capture_output=True,
     )
+    # BD-28: write a minimal pipeline.yaml (UI form normally does this).
+    pipeline = empty_project / ".agentic" / "pipelines" / "default.yaml"
+    pipeline.write_text(
+        'name: "default"\n'
+        'description: "Test pipeline (supervisor → worker → supervisor)"\n\n'
+        'stages:\n'
+        '  - name: "plan"\n'
+        '    role: "supervisor"\n'
+        '    action: "create_todo"\n'
+        '  - name: "implement"\n'
+        '    role: "worker"\n'
+        '    action: "execute_todo"\n'
+        '    on_blocked: "escalate"\n'
+        '    max_retries: 3\n'
+        '  - name: "verify"\n'
+        '    role: "supervisor"\n'
+        '    action: "verify_result"\n'
+        '    on_approved: "commit_and_next"\n'
+        '    on_rejected: "replan"\n',
+        encoding="utf-8",
+    )
+    # Also need worker.md (UI form copies from skill content).
+    worker_role = empty_project / ".agentic" / "roles" / "worker.md"
+    if not worker_role.exists():
+        worker_role.write_text("# Worker\n\nExecute the TODO.\n", encoding="utf-8")
     return empty_project
 
 

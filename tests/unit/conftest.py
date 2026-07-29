@@ -66,17 +66,70 @@ def sample_full_config() -> dict:
 
 @pytest.fixture
 def tmp_pipeline_file(tmp_path: Path) -> tuple[Path, dict]:
-    """Write the simple pipeline YAML into tmp and return (Path, config_dict)."""
+    """Write inline pipeline YAMLs (simple + full) into tmp.
+
+    BD-28: templates/pipelines/{simple,full}.yaml were removed (UI form
+    generates pipeline now). Tests embed the YAML inline to stay independent
+    of templates/.
+    """
     agentic = tmp_path / ".agentic"
     pipelines = agentic / "pipelines"
     pipelines.mkdir(parents=True)
 
-    simple_yaml = REPO_ROOT / "templates" / "pipelines" / "simple.yaml"
-    full_yaml = REPO_ROOT / "templates" / "pipelines" / "full.yaml"
+    simple_yaml = (
+        'name: "default"\n'
+        'description: "Supervisor plans, Worker implements, Supervisor verifies"\n\n'
+        'stages:\n'
+        '  - name: "plan"\n'
+        '    role: "supervisor"\n'
+        '    action: "create_todo"\n'
+        '    description: "Supervisor studies the plan and creates a TODO"\n\n'
+        '  - name: "implement"\n'
+        '    role: "worker"\n'
+        '    action: "execute_todo"\n'
+        '    description: "Worker executes the TODO"\n'
+        '    on_blocked: "escalate"\n'
+        '    max_retries: 3\n\n'
+        '  - name: "verify"\n'
+        '    role: "supervisor"\n'
+        '    action: "verify_result"\n'
+        '    description: "Supervisor verifies the result"\n'
+        '    on_approved: "commit_and_next"\n'
+        '    on_rejected: "replan"\n'
+    )
 
-    (pipelines / "simple.yaml").write_text(simple_yaml.read_text())
-    (pipelines / "full.yaml").write_text(full_yaml.read_text())
-    (pipelines / "default.yaml").write_text(simple_yaml.read_text())
+    full_yaml = (
+        'name: "full"\n'
+        'description: "Plan → implement → review → test → finalize"\n\n'
+        'stages:\n'
+        '  - name: "plan"\n'
+        '    role: "supervisor"\n'
+        '    action: "create_todo"\n'
+        '  - name: "implement"\n'
+        '    role: "worker"\n'
+        '    action: "execute_todo"\n'
+        '    on_blocked: "escalate"\n'
+        '    max_retries: 3\n'
+        '  - name: "review"\n'
+        '    role: "reviewer"\n'
+        '    action: "review_code"\n'
+        '    on_rejected: "rollback_to:implement"\n'
+        '    max_retries: 2\n'
+        '  - name: "test"\n'
+        '    role: "tester"\n'
+        '    action: "run_tests"\n'
+        '    on_failed: "rollback_to:implement"\n'
+        '    max_retries: 2\n'
+        '  - name: "finalize"\n'
+        '    role: "supervisor"\n'
+        '    action: "final_verify"\n'
+        '    on_approved: "commit_and_report"\n'
+        '    on_rejected: "replan"\n'
+    )
+
+    (pipelines / "simple.yaml").write_text(simple_yaml)
+    (pipelines / "full.yaml").write_text(full_yaml)
+    (pipelines / "default.yaml").write_text(simple_yaml)
 
     config = {
         "project": {"name": "test-project"},

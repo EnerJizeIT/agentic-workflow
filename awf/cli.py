@@ -115,8 +115,8 @@ def _dispatch_subcommand(argv):
     _add_start_args(p_continue)
 
     # New commands (Wave 4c)
-    p_init = sub.add_parser("init", help="Initialize .agentic/ in current project")
-    p_init.add_argument("--template", choices=["simple", "full"], default="simple")
+    p_init = sub.add_parser("init", help="Initialize .agentic/ skeleton in current project")
+    # BD-28: --template removed — UI form (project-setup) configures pipeline + roles.
     p_init.add_argument("--force", action="store_true")
     p_init.add_argument("--dry-run", dest="dry_run", action="store_true")
 
