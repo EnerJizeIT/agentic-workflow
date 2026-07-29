@@ -1331,7 +1331,15 @@ def run_pipeline(args: Any) -> int:
                 print(f"BLOCKED — escalating to supervisor (attempt {retry_counts[stage_idx]}/{max_r})")
                 _log(logs_dir, "Escalating to supervisor for retry")
 
-                _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
+                # BD-29 fix: pass kind="replan" so supervisor gets the correct
+                # prompt and signal watch paths (was passing agent stage with
+                # kind="execute", causing supervisor to skip in auto mode).
+                replan_stage = Stage(
+                    name="replan",
+                    role="supervisor",
+                    kind="replan",
+                )
+                _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
 
                 new_todo = _find_active_todo(project_dir)
                 if new_todo:
@@ -1352,7 +1360,13 @@ def run_pipeline(args: Any) -> int:
                 _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
                 stage_idx = target_idx
 
-                _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
+                # BD-29 fix: same as escalation — use kind="replan" for supervisor.
+                replan_stage = Stage(
+                    name="replan",
+                    role="supervisor",
+                    kind="replan",
+                )
+                _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
                 new_todo = _find_active_todo(project_dir)
                 if new_todo:
                     current_todo = new_todo

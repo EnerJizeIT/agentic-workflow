@@ -1536,3 +1536,61 @@ class TestHandoffChain:
         prev = _resolve_prev_handoffs(stages, 1, proj, todo_id="")
         assert len(prev) == 1
         assert "analyst-TODO-0002.md" in prev[0].name
+
+
+class TestSupervisorReplan:
+    """BD-29 fix: escalation/rollback paths must use kind='replan' for supervisor."""
+
+    def _make_proj(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        agentic = proj / ".agentic"
+        (agentic / "roles").mkdir(parents=True)
+        (agentic / "roles" / "supervisor.md").write_text("# Supervisor")
+        (agentic / "phases").mkdir()
+        (agentic / "phases" / "plan.md").write_text("# Plan")
+        (agentic / "inbox").mkdir()
+        (agentic / "outbox").mkdir()
+        (agentic / "context").mkdir()
+        (agentic / "logs").mkdir()
+        (agentic / "config.yaml").write_text(
+            "project:\n  name: test\n  root: .\n"
+            "models:\n  supervisor:\n    description: current\n"
+            "phases:\n  current: .agentic/phases/plan.md\n"
+        )
+        return proj
+
+    def test_replan_spawns_subprocess_with_todo_id(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """When kind='replan' and todo_id is set, supervisor subprocess is spawned."""
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+        (proj / ".agentic" / "outbox" / "BLOCKED-TODO-0042.md").write_text("# BLOCKED\ncan't proceed")
+
+        _patch_subprocess_for_awf(monkeypatch)
+        stage = Stage(name="replan", role="supervisor", kind="replan")
+        _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+
+        assert len(_FakePopen._last_cmds) == 1, "Replan must spawn supervisor subprocess"
+        cmd = _FakePopen._last_cmds[0]
+        assert any("BLOCKED-TODO-0042.md" in c for c in cmd), "BLOCKED file must be passed"
+
+    def test_execute_kind_skips_in_supervisor_subprocess(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """If kind='execute' reaches _run_supervisor_via_subprocess, it should
+        skip gracefully (not crash). This was the BD-29 bug where escalation
+        passed agent stage with kind='execute' to supervisor."""
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+
+        _patch_subprocess_for_awf(monkeypatch)
+        # Simulating the old bug: passing kind="execute" to supervisor stage
+        stage = Stage(name="agent", role="supervisor", kind="execute")
+        _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
+
+        # Should NOT have spawned a subprocess (execute kind → skip in supervisor)
+        assert len(_FakePopen._last_cmds) == 0
+        out = capsys.readouterr().out
+        assert "Unknown kind" in out or "not automatable" in out or "skipping" in out.lower()

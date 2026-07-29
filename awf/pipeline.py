@@ -93,7 +93,8 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     result: list[Stage] = []
     total = len([s for s in raw_stages if isinstance(s, dict)])
 
-    for i, s in enumerate(raw_stages):
+    dict_index = 0  # position among dict-entries only (for _compute_kind)
+    for s in raw_stages:
         if not isinstance(s, dict):
             continue
         kwargs: dict[str, Any] = {}
@@ -108,8 +109,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             kwargs["max_retries"] = int(mr)
         except (ValueError, TypeError):
             kwargs["max_retries"] = _DEFAULTS["max_retries"]
-        kwargs["kind"] = _compute_kind(i, total)
+        kwargs["kind"] = _compute_kind(dict_index, total)
         result.append(Stage(**kwargs))
+        dict_index += 1
 
     return result
 

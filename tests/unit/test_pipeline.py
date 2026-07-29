@@ -1,8 +1,10 @@
 """Unit tests for awf.pipeline — Stage, load_stages, resolve_pipeline_file."""
 
+from pathlib import Path
+
 import pytest
 
-from awf.pipeline import Stage, load_stages, resolve_pipeline_file
+from awf.pipeline import Stage, _compute_kind, load_stages, resolve_pipeline_file
 
 
 class TestLoadStages:
@@ -134,3 +136,64 @@ class TestResolvePipelineFile:
         default_file.unlink()
         with pytest.raises(FileNotFoundError):
             resolve_pipeline_file(tmp_path, config=cfg)
+
+
+class TestComputeKind:
+    """BD-29: _compute_kind edge cases."""
+
+    def test_single_stage(self) -> None:
+        assert _compute_kind(0, 1) == "plan"
+
+    def test_two_stages_first(self) -> None:
+        assert _compute_kind(0, 2) == "plan"
+
+    def test_two_stages_last(self) -> None:
+        assert _compute_kind(1, 2) == "verify"
+
+    def test_three_stages(self) -> None:
+        assert _compute_kind(0, 3) == "plan"
+        assert _compute_kind(1, 3) == "execute"
+        assert _compute_kind(2, 3) == "verify"
+
+    def test_four_stages(self) -> None:
+        assert _compute_kind(0, 4) == "plan"
+        assert _compute_kind(1, 4) == "execute"
+        assert _compute_kind(2, 4) == "execute"
+        assert _compute_kind(3, 4) == "verify"
+
+    def test_total_zero(self) -> None:
+        """Degenerate: empty pipeline."""
+        assert _compute_kind(0, 0) == "plan"
+
+
+class TestLoadStagesWithNonDict:
+    """BD-29: load_stages handles non-dict entries in stages list."""
+
+    def test_non_dict_entries_skipped(self, tmp_path: Path) -> None:
+        """Non-dict entries in stages list are skipped; kind computed from
+        dict-only position."""
+        agentic = tmp_path / ".agentic" / "pipelines"
+        agentic.mkdir(parents=True)
+        pipeline = agentic / "test.yaml"
+        # YAML with a non-dict entry (string) mixed in
+        pipeline.write_text(
+            "stages:\n"
+            "  - \"invalid\"\n"
+            "  - name: plan\n    role: supervisor\n\n"
+            "  - name: execute\n    role: worker\n\n"
+            "  - name: verify\n    role: supervisor\n"
+        )
+        stages = load_stages(pipeline)
+        assert len(stages) == 3
+        assert stages[0].kind == "plan"
+        assert stages[1].kind == "execute"
+        assert stages[2].kind == "verify"
+
+    def test_all_non_dict(self, tmp_path: Path) -> None:
+        """Pipeline with only non-dict entries returns empty list."""
+        agentic = tmp_path / ".agentic" / "pipelines"
+        agentic.mkdir(parents=True)
+        pipeline = agentic / "test.yaml"
+        pipeline.write_text("stages:\n  - \"a\"\n  - 42\n  - null\n")
+        stages = load_stages(pipeline)
+        assert stages == []
