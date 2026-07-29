@@ -70,6 +70,54 @@ def _awf_subprocess_env() -> dict[str, str]:
     return env
 
 
+# BD-13/26: when normalize_skills runs in background (no human at the wheel),
+# awf auto-creates local skills from global skill files. This mapping resolves
+# awf role names to opencode skill directory names (they don't always match).
+_ROLE_TO_SKILL_NAME: dict[str, str] = {
+    "system-analysis": "system-analyst",
+    "developer": "developer",
+    "qa": "qa-review",
+    "reviewer": "code-reviewer",
+    "tester": "test-automator",
+    "project-auditor": "project-auditor",
+    "security-auditor": "security-auditor",
+    "worker": "weak-llm-implementer",
+}
+
+
+def _resolve_global_skill_path(role: str) -> Path | None:
+    """BD-13/26: find the global SKILL.md for an awf role.
+
+    Tries in order:
+    1. Direct mapping from ``_ROLE_TO_SKILL_NAME`` (e.g. system-analysis →
+       system-analyst).
+    2. Direct match ``~/.config/opencode/skills/<role>/SKILL.md``.
+    3. Glob ``~/.config/opencode/skills/*<role>*/SKILL.md``.
+
+    Returns the path to SKILL.md, or None if no match.
+    """
+    skills_root = Path.home() / ".config" / "opencode" / "skills"
+
+    # 1. Mapping table.
+    skill_name = _ROLE_TO_SKILL_NAME.get(role)
+    if skill_name:
+        candidate = skills_root / skill_name / "SKILL.md"
+        if candidate.is_file():
+            return candidate
+
+    # 2. Direct match.
+    candidate = skills_root / role / "SKILL.md"
+    if candidate.is_file():
+        return candidate
+
+    # 3. Glob — partial match.
+    matches = sorted(skills_root.glob(f"*{role}*/SKILL.md"))
+    if matches:
+        return matches[0]
+
+    return None
+
+
 def _run_subprocess_until_signal(
     cmd: list[str],
     cwd: str | Path,
@@ -845,6 +893,102 @@ def _consume_needs_normalize(state_file: Path | None) -> None:
         state_file.unlink()
 
 
+def auto_normalize_skills(
+    team: list[dict],
+    project_dir: Path,
+    logs_dir: Path,
+) -> list[Path]:
+    """BD-13/26: auto-create local skills for every team role.
+
+    For each role in team:
+    1. Find the global SKILL.md (via ``_resolve_global_skill_path``).
+    2. If found: copy body to ``.agentic/skills/<role>.md`` with frontmatter
+       (derived_from_global, global_path, global_sha, normalized_at,
+       pipeline_context) + Pipeline contract section (BD-16).
+    3. If not found: log warning, skip (don't crash the pipeline).
+
+    Returns the list of created/updated local skill paths.
+
+    This function is called automatically when normalize_skills runs in
+    background mode (no human at the wheel). It is safe to call multiple
+    times — idempotent on identical source.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    import yaml as yaml_module
+
+    try:
+        from .skills_contract import render_pipeline_contract
+    except ImportError:
+        render_pipeline_contract = None  # type: ignore[assignment]
+
+    skills_dir = paths.agentic_dir(project_dir) / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+
+    created: list[Path] = []
+    n = len(team)
+
+    for i, member in enumerate(team, 1):
+        if not isinstance(member, dict):
+            continue
+        role = str(member.get("role") or member.get("agent") or "").strip()
+        if not role:
+            continue
+
+        global_skill = _resolve_global_skill_path(role)
+        if global_skill is None:
+            msg = f"normalize: no global skill found for role '{role}' — skipping"
+            print(f"  WARNING: {msg}")
+            _log(logs_dir, msg)
+            continue
+
+        body = global_skill.read_text(encoding="utf-8")
+        sha = hashlib.sha256(global_skill.read_bytes()).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+
+        prev_role = team[i - 2].get("role", "") if i >= 2 and isinstance(team[i - 2], dict) else None
+        next_role = team[i].get("role", "") if i < n and isinstance(team[i], dict) else None
+        pipeline_context = (
+            f"Stage {i} of {n} (role: {role}); "
+            f"prev={prev_role or 'supervisor'}, next={next_role or 'supervisor verify'}"
+        )
+
+        fm = {
+            "derived_from_global": True,
+            "global_path": str(global_skill),
+            "global_sha": sha,
+            "normalized_at": now,
+            "pipeline_context": pipeline_context,
+        }
+        fm_yaml = yaml_module.safe_dump(fm, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        parts = [f"---\n{fm_yaml}---\n\n", body.strip(), "\n"]
+
+        # Append Pipeline contract (BD-16) so role knows its zone.
+        if render_pipeline_contract is not None:
+            contract_md = render_pipeline_contract(role, i, n, prev_role, next_role)
+            parts += [
+                "\n## Pipeline contract\n\n",
+                contract_md,
+                "\n",
+            ]
+
+        out = skills_dir / f"{role}.md"
+        out.write_text("".join(parts), encoding="utf-8")
+        created.append(out)
+        msg = f"normalize: created local skill {out.name} from {global_skill.name} (sha={sha[:8]})"
+        print(f"  {msg}")
+        _log(logs_dir, msg)
+
+    if created:
+        _log(logs_dir, f"auto_normalize_skills: created {len(created)} local skill(s)")
+    else:
+        _log(logs_dir, "auto_normalize_skills: no skills created (no global sources matched)")
+
+    return created
+
+
 def _run_normalize_stage(
     team: list[dict],
     project_dir: Path,
@@ -904,19 +1048,11 @@ def _run_normalize_stage(
         pass
 
     if background or not sys.stdin.isatty():
-        # BD-13: don't exit, just defer. Also defer when stdin is not a tty
-        # (e.g. detached background process re-launched without --background
-        # flag — cmd_start strips --background before re-exec, so the child
-        # sees background=False but has stdin=DEVNULL).
-        print("WARNING: normalize_skills deferred (no interactive stdin).")
-        print("Supervisor should run `awf normalize` interactively to update")
-        print("local skills. Pipeline continues with whatever role .md files")
-        print("currently exist in .agentic/roles/.")
-        print()
-        _log(
-            logs_dir,
-            "normalize_skills deferred (no interactive stdin, state preserved)",
-        )
+        # BD-13/26: auto-create local skills from global source files.
+        # In background mode there's no human to copy skills by hand, so
+        # awf does it automatically. Log warnings for any role without a
+        # matching global skill.
+        auto_normalize_skills(effective_team, project_dir, logs_dir)
         return
 
     print("Your job as supervisor:")

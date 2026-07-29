@@ -785,22 +785,24 @@ class TestCheckSkillDrift:
 
 class TestRunNormalizeStage:
 
-    def test_background_defers_without_exit(self, tmp_path: Path, capsys) -> None:
-        """BD-13: in --background mode normalize_skills defers and returns
-        (does NOT raise SystemExit). Pipeline can continue."""
+    def test_background_auto_normalizes_without_exit(self, tmp_path: Path, capsys) -> None:
+        """BD-13/26: in --background mode normalize_skills AUTO-CREATES local
+        skills (does NOT defer or raise SystemExit). Pipeline can continue.
+
+        With empty team there are no roles to normalize, so no skills are
+        created — but the function must still return without crashing.
+        """
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
         (project_dir / ".agentic").mkdir()
         logs_dir = project_dir / ".agentic" / "logs"
         logs_dir.mkdir()
 
-        # Must NOT raise
+        # Must NOT raise, even with empty team.
         _run_normalize_stage([], project_dir, logs_dir, background=True)
 
         out = capsys.readouterr().out
         assert "NORMALIZE_SKILLS STAGE" in out
-        assert "deferred" in out
-        assert "WARNING" in out
 
     def test_background_false_with_mocked_input(self, tmp_path: Path, capsys, monkeypatch) -> None:
         project_dir = tmp_path / "proj"
