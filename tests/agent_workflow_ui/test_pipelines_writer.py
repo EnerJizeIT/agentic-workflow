@@ -15,13 +15,13 @@ def test_single_member_three_stages():
     assert len(stages) == 3
     assert stages[0]["name"] == "plan"
     assert stages[0]["role"] == "supervisor"
-    assert stages[0]["action"] == "create_todo"
+    # BD-29: action removed — kind computed from position
     assert stages[1]["name"] == "worker"
     assert stages[1]["role"] == "worker"
-    assert stages[1]["action"] == "execute_todo"
+    # (was: execute_todo)
     assert stages[2]["name"] == "verify"
     assert stages[2]["role"] == "supervisor"
-    assert stages[2]["action"] == "verify_result"
+    # (was: verify_result)
 
 
 def test_three_members_five_stages():
@@ -34,7 +34,7 @@ def test_three_members_five_stages():
     stages = build_pipeline_stages(team)
     assert len(stages) == 5
     assert [s["name"] for s in stages] == ["plan", "worker", "tester", "auditor", "verify"]
-    assert [s["action"] for s in stages[1:-1]] == ["execute_todo"] * 3
+    # BD-29: no action field — agent stages have only role+description
 
 
 def test_empty_team_two_stages():
@@ -46,12 +46,12 @@ def test_empty_team_two_stages():
 
 
 def test_stage_has_required_keys():
-    """Each stage has name, role, action at minimum."""
+    """Each stage has name, role at minimum (BD-29: no action)."""
     stages = build_pipeline_stages([{"agent": "worker"}, {"agent": "tester"}])
     for stage in stages:
         assert "name" in stage
         assert "role" in stage
-        assert "action" in stage
+        # BD-29: action removed
 
 
 def test_team_stage_has_extra_keys():

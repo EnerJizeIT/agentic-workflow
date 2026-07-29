@@ -1,30 +1,24 @@
-"""BD-16: per-role pipeline contracts.
+"""BD-16/29: per-role pipeline contracts.
 
-Each role in a pipeline has a *contract*: what it receives from the previous
-stage, what it must produce for the next stage, and its zone of responsibility
-(what is in scope and what is explicitly out of scope).
+Generic contract only — no hardcoded role registry. User can pick any skill
+for any role, awf doesn't second-guess what the role should do. It only
+tells the role its position in the pipeline and that it should make a
+contribution.
 
-Without a contract, a role like ``system-analysis`` may execute the entire
-TODO itself because nothing tells it "your zone is requirements, not code".
-
-The contract is **printed by the normalize_skills stage** as guidance for the
-supervisor (or auto-writer) to copy into each role's local skill file at
-``.agentic/skills/<role>.md``. It is NOT automatically injected — the
-supervisor decides how to phrase the adaptation for the project.
+The contract is printed by the normalize_skills stage as guidance. The
+role decides how to interpret it based on its skill content.
 
 Usage:
 
-    from awf.skills_contract import render_pipeline_contract, DEFAULT_ROLE_CONTRACTS
+    from awf.skills_contract import render_pipeline_contract
 
     md = render_pipeline_contract(
-        role="developer",
+        role="data-scientist",  # any role name
         position=2,
         total=5,
-        prev_role="system-analysis",
+        prev_role="system-analyst",
         next_role="qa",
     )
-
-Unknown roles fall back to a generic contract ("do your part, hand off to next").
 """
 from __future__ import annotations
 
@@ -33,7 +27,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RoleContract:
-    """Static contract for a role archetype."""
+    """Generic contract — applies to every role."""
 
     zone: str
     receives_hint: str
@@ -41,133 +35,36 @@ class RoleContract:
     out_of_scope: tuple[str, ...]
 
 
-# Registry of well-known role archetypes. Keys are role slugs (matches
-# .agentic/roles/<slug>.md and the `role:` field in pipeline.yaml).
-DEFAULT_ROLE_CONTRACTS: dict[str, RoleContract] = {
-    "system-analysis": RoleContract(
-        zone=(
-            "Decompose the TODO goal into structured requirements. Identify "
-            "edge cases, ambiguities, missing context. Write a clear "
-            "specification the next role can implement against."
-        ),
-        receives_hint="TODO goal + handoff from supervisor (or none if first).",
-        produces_hint=(
-            "Requirements document in your handoff: explicit inputs/outputs, "
-            "edge cases, acceptance criteria. NO production code."
-        ),
-        out_of_scope=(
-            "Writing production code (that's the developer's job).",
-            "Writing tests (qa's job).",
-            "Final audit (project-auditor's job).",
-        ),
-    ),
-    "developer": RoleContract(
-        zone=(
-            "Implement the requirements from the previous role's handoff. "
-            "Write production code that satisfies the spec. Keep changes "
-            "minimal and focused."
-        ),
-        receives_hint="Requirements/spec from system-analysis handoff + TODO goal.",
-        produces_hint=(
-            "Working implementation in the project source files + handoff "
-            "describing what was built, files touched, known gaps."
-        ),
-        out_of_scope=(
-            "Writing comprehensive tests (qa's job — but you may write smoke tests).",
-            "Re-specifying requirements (system-analysis's job).",
-            "Audit / holistic review (project-auditor's job).",
-        ),
-    ),
-    "qa": RoleContract(
-        zone=(
-            "Review the developer's diff. Find bugs. Write regression tests "
-            "that lock in the behaviour. Fix obvious bugs directly; escalate "
-            "ambiguous ones in your handoff."
-        ),
-        receives_hint="Implementation from developer handoff + TODO goal.",
-        produces_hint=(
-            "Test files added to the project + bug fixes + handoff describing "
-            "test coverage added and any unresolved issues."
-        ),
-        out_of_scope=(
-            "New features beyond what's needed to test/fix (developer's job).",
-            "Re-specifying (system-analysis's job).",
-            "Strategic audit (project-auditor's job).",
-        ),
-    ),
-    "project-auditor": RoleContract(
-        zone=(
-            "Holistic audit of everything done so far in this TODO. Look for "
-            "design issues, security concerns, maintainability, integration "
-            "risks. Report findings; do not implement new features."
-        ),
-        receives_hint="All previous handoffs (system-analysis + developer + qa) + TODO goal.",
-        produces_hint=(
-            "Audit report in handoff: findings by severity (CRITICAL/HIGH/MEDIUM/LOW), "
-            "specific file:line references, recommendations."
-        ),
-        out_of_scope=(
-            "Implementing fixes for findings you report (escalate to supervisor).",
-            "Adding new features.",
-            "Re-running tests (qa's job).",
-        ),
-    ),
-    "reviewer": RoleContract(
-        zone=(
-            "Code review of the developer's diff. Focus on correctness, "
-            "readability, conventions. Approve / request changes."
-        ),
-        receives_hint="Implementation from developer handoff.",
-        produces_hint="Review verdict in handoff: APPROVED or CHANGES_REQUESTED with specifics.",
-        out_of_scope=(
-            "Writing tests (qa's job).",
-            "Implementation (developer's job).",
-        ),
-    ),
-    "tester": RoleContract(
-        zone="Write and run automated tests for the current TODO's deliverable.",
-        receives_hint="Implementation from developer handoff.",
-        produces_hint="Test files + test run report in handoff.",
-        out_of_scope=(
-            "Implementation (developer's job).",
-            "Strategic audit (project-auditor's job).",
-        ),
-    ),
-    "worker": RoleContract(
-        zone=(
-            "Generic executor. Use the TODO + previous handoffs to do your "
-            "part. If you are the first/only role in the pipeline, treat the "
-            "TODO as the full task."
-        ),
-        receives_hint="TODO + any previous handoffs.",
-        produces_hint="Implementation + handoff describing what was done.",
-        out_of_scope=(
-            "Anything outside what the TODO declares as the goal.",
-            "Refactoring unrelated code.",
-        ),
-    ),
-}
-
+# Generic contract — used for every role regardless of name.
 _GENERIC_CONTRACT = RoleContract(
     zone=(
         "Do your part of the TODO based on the previous role's handoff and "
-        "your role.md instructions."
+        "your role.md / skill instructions. You see the TODO goal and what "
+        "previous roles have already done (via handoff files). Add YOUR "
+        "contribution — don't redo prior work, don't do future work that "
+        "isn't in your skill's zone."
     ),
-    receives_hint="TODO + any previous handoffs.",
+    receives_hint="TODO goal + handoffs from previous roles (if any).",
     produces_hint=(
-        "Your contribution + a handoff at .agentic/handoff/<your-role>.md "
-        "describing what you did and what the next role should pick up."
+        "Your contribution + PROGRESS-{TODO-ID}.md (running notes) + "
+        "DONE-{TODO-ID}.md (final summary) + DONE-{TODO-ID}.ready sentinel. "
+        "Orchestrator compiles these into a handoff for the next role."
     ),
     out_of_scope=(
-        "Work that the next role is supposed to do (see pipeline contract).",
-        "Redoing work already visible in previous handoffs.",
+        "Redoing work visible in previous handoffs (waste).",
+        "Work outside the TODO goal's scope.",
+        "Refactoring unrelated code.",
     ),
 )
 
 
 def get_role_contract(role: str) -> RoleContract:
-    """Return the contract for a role, falling back to a generic one."""
-    return DEFAULT_ROLE_CONTRACTS.get(role, _GENERIC_CONTRACT)
+    """Return the contract for a role.
+
+    BD-29: every role gets the generic contract. There is no role-specific
+    registry — user can invent any role, it works the same way.
+    """
+    return _GENERIC_CONTRACT
 
 
 def render_pipeline_contract(
@@ -180,11 +77,11 @@ def render_pipeline_contract(
     """Render the ``## Pipeline contract`` markdown section for a role.
 
     Args:
-        role: this stage's role slug.
+        role: this stage's role slug (any string).
         position: 1-based position in the pipeline.
         total: total number of stages in the pipeline.
-        prev_role: previous stage's role (None if first or after supervisor plan).
-        next_role: next stage's role (None if last or before supervisor verify).
+        prev_role: previous stage's role (None if first agent stage).
+        next_role: next stage's role (None if last agent stage).
 
     Returns:
         Markdown text (without leading ``##`` — caller decides heading level).
@@ -196,7 +93,9 @@ def render_pipeline_contract(
     if prev_role:
         lines.append(f"**Receives from:** `{prev_role}` — {c.receives_hint}")
     else:
-        lines.append(f"**Receives from:** supervisor TODO (you are the first agent stage) — {c.receives_hint}")
+        lines.append(
+            f"**Receives from:** supervisor plan (you are the first agent stage) — {c.receives_hint}"
+        )
     if next_role:
         lines.append(f"**Produces for:** `{next_role}` — {c.produces_hint}")
     else:

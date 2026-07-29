@@ -837,7 +837,7 @@ had to delete needs_normalize.yaml by hand to start pipeline.
 
 ---
 
-### BD-14 · `supervisor plan` stage in `--auto`/`--background` auto-skips without creating TODO — FIXED
+### BD-14 · `supervisor plan` stage in `--auto`/`--background` auto-skips without creating TODO — CLOSED (BD-29)
 
 **Status:** Fixed in commit (pending).
 
@@ -945,7 +945,7 @@ collapsed into 1 effective stage.
 
 ---
 
-### BD-16 · Local skill has no pipeline contract — role doesn't know its position or neighbors — FIXED
+### BD-16 · Local skill has no pipeline contract — CLOSED (BD-29: generic only)
 
 **Status:** Fixed in commit (pending). Pairs with BD-15.
 

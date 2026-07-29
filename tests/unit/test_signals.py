@@ -35,26 +35,11 @@ class TestSignalType:
 
 
 class TestExpectedSignalPrefixes:
+    """BD-29: prefixes are now kind-based (plan/execute/verify), not action-based."""
 
-    def test_execute_todo(self) -> None:
-        result = expected_signal_prefixes("execute_todo")
-        assert "DONE" in result
-        assert "BLOCKED" in result
-
-    def test_review_code(self) -> None:
-        result = expected_signal_prefixes("review_code")
-        assert "REVIEW-APPROVED" in result
-        assert "REVIEW-REJECTED" in result
-        assert "BLOCKED" in result
-
-    def test_run_tests(self) -> None:
-        result = expected_signal_prefixes("run_tests")
-        assert "TEST-PASSED" in result
-        assert "TEST-FAILED" in result
-        assert "BLOCKED" in result
-
-    def test_unknown_action_returns_all(self) -> None:
-        result = expected_signal_prefixes("unknown_action")
+    def test_execute_returns_full_vocabulary(self) -> None:
+        """Execute-kind stages accept all signal types — role decides what to emit."""
+        result = expected_signal_prefixes("execute")
         assert "DONE" in result
         assert "BLOCKED" in result
         assert "REVIEW-APPROVED" in result
@@ -62,11 +47,20 @@ class TestExpectedSignalPrefixes:
         assert "TEST-PASSED" in result
         assert "TEST-FAILED" in result
 
-    def test_audit_code(self) -> None:
-        result = expected_signal_prefixes("audit_code")
-        assert "REVIEW-APPROVED" in result
-        assert "REVIEW-REJECTED" in result
-        assert "BLOCKED" in result
+    def test_plan_returns_empty(self) -> None:
+        """Plan stages emit no worker signals (supervisor creates TODO, doesn't signal)."""
+        result = expected_signal_prefixes("plan")
+        assert result == []
+
+    def test_verify_returns_empty(self) -> None:
+        """Verify stages emit ACK (handled separately via _maybe_commit)."""
+        result = expected_signal_prefixes("verify")
+        assert result == []
+
+    def test_unknown_kind_returns_empty(self) -> None:
+        """Unknown kinds return empty list (no false matches)."""
+        result = expected_signal_prefixes("salvage")
+        assert result == []
 
 
 class TestReadSignalForTodo:

@@ -219,36 +219,50 @@ def _get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
-def _build_prompt(action: str, todo_id: str) -> str:
-    """Build the prompt string for an agent stage, matching bash run_agent_stage."""
-    prompts = {
-        "execute_todo": (
-            f"Execute all Tasks in {todo_id} via edit tool. Run Verify after each task. "
-            f"Run regression verify before any commit. "
-            f"Write .agentic/outbox/DONE-{todo_id}.md or BLOCKED-{todo_id}.md and create "
-            f"matching .ready signal. Do not commit unless the TODO explicitly includes a "
-            f"final Git commit step."
-        ),
-        "review_code": (
-            f"Review the code changes for {todo_id}. Compare TODO with actual git diff. "
-            f"Check quality and correctness. Write .agentic/outbox/REVIEW-APPROVED-{todo_id}.md "
-            f"or REVIEW-REJECTED-{todo_id}.md with .ready signal."
-        ),
-        "run_tests": (
-            f"Run the full test suite and verification commands. Compare results with baseline. "
-            f"Write .agentic/outbox/TEST-PASSED-{todo_id}.md or TEST-FAILED-{todo_id}.md "
-            f"with .ready signal."
-        ),
-        "audit_code": (
-            f"Audit the code changes for {todo_id} for security issues. "
-            f"Write .agentic/outbox/REVIEW-APPROVED-{todo_id}.md or "
-            f"REVIEW-REJECTED-{todo_id}.md with .ready signal."
-        ),
-    }
-    return prompts.get(
-        action,
-        f"Execute action '{action}' for {todo_id} following role instructions. "
-        f"Write result to .agentic/outbox/ with .ready signal.",
+def _build_prompt(kind: str, todo_id: str) -> str:
+    """BD-29: build prompt for a stage kind.
+
+    Only 3 kinds:
+    - "plan"    — supervisor creates/refines TODO from phases/plan.md
+    - "execute" — agent does its part of the TODO (any role, any skill)
+    - "verify"  — supervisor verifies result, writes ACK or REVIEW
+
+    Args:
+        kind: stage.kind from pipeline.py
+        todo_id: e.g. "TODO-0001"
+
+    Returns:
+        Prompt string passed to opencode run as the final positional arg.
+    """
+    if kind == "plan":
+        return (
+            "You are the supervisor. Read the phases/plan file. Determine the next step "
+            "that is not yet completed. Create a TODO file at "
+            ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID), create baseline "
+            "via `awf baseline TODO-{NNNN}`, then create the .ready signal at "
+            ".agentic/inbox/TODO-{NNNN}.ready. If a TODO already exists in inbox, review "
+            "it — refine, accept, or replace as needed (do NOT blindly skip). Keep the TODO "
+            "at the goal level (what success looks like), do NOT micromanage individual "
+            "roles — each role's skill.md already defines its zone."
+        )
+    if kind == "verify":
+        return (
+            f"You are the supervisor. Verify TODO {todo_id}: read the DONE report and PROGRESS notes, "
+            "check `git diff --stat` against the baseline SHA in "
+            f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
+            "If yes, write ACK signal at "
+            f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
+            f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
+        )
+    # execute (default)
+    return (
+        f"Execute your part of {todo_id} according to your role/skill instructions. "
+        f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
+        f"don't redo prior work. When done, write .agentic/outbox/PROGRESS-{todo_id}.md (running notes), "
+        f".agentic/outbox/DONE-{todo_id}.md (summary), and create the sentinel "
+        f".agentic/outbox/DONE-{todo_id}.ready file (NOTE: .ready extension, NOT .md.ready). "
+        f"If blocked, write BLOCKED-{todo_id}.md + BLOCKED-{todo_id}.ready instead. "
+        f"Do not commit unless the TODO explicitly asks for it."
     )
 
 
@@ -292,96 +306,85 @@ def _run_supervisor_stage(
 ) -> None:
     """Handle a supervisor stage.
 
+    BD-29: supervisor stages are determined by position, not action.
+    kind="plan" → create/refine TODO (always runs, even if TODO exists).
+    kind="verify" → check result, write ACK or REVIEW.
+
     In interactive mode (auto=False): print instructions, wait for Enter.
     In auto mode (BD-14): spawn ``opencode run`` subprocess that loads
-    supervisor.md as instruction and does the work — writes TODO/.ready
-    for plan, ACK for verify, etc.
+    supervisor.md as instruction and does the work.
     """
-    action = stage.action
+    kind = stage.kind  # "plan" or "verify" (computed from position)
     config = cfg_mod.load(project_dir)
     phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
 
     print()
     print("=" * 41)
-    print(f"  SUPERVISOR STAGE: {action}")
+    print(f"  SUPERVISOR STAGE: {kind}")
     print("=" * 41)
     print()
     print("Instructions: .agentic/roles/supervisor.md")
     print(f"Phases file: {phases_file}")
     print()
 
-    if action == "create_todo":
-        print("What to do:")
+    # BD-29: kind-based messages (was action-based).
+    if kind == "plan":
+        print("What to do (plan):")
         print("  1. Study the project state and phases file")
-        print("  2. Determine the next step")
+        print("  2. Determine the next step (or review existing TODO if present)")
         print("  3. Create baseline: awf baseline TODO-{NNNN}")
         print("  4. Write task to .agentic/inbox/TODO-{NNNN}.md")
         print("  5. Create signal: .agentic/inbox/TODO-{NNNN}.ready")
-    elif action in ("verify_result", "final_verify"):
-        print("What to do:")
+    elif kind == "verify":
+        print("What to do (verify):")
         print("  1. Read report from .agentic/outbox/")
         print("  2. Run verification commands independently")
         print("  3. Check git diff — changes must be in source files")
         print("  4. Decide: continue / fix / rollback")
         print("  5. If approved: create .agentic/inbox/ACK-{NNNN}.ready")
-    elif action == "replan":
-        print("Worker returned BLOCKED. Resolve the issue:")
-        print("  1. Read .agentic/outbox/BLOCKED-*.md")
-        print("  2. Analyze the problem")
-        print("  3. Create a new TODO with refined instructions")
-        print("  4. Create .agentic/inbox/TODO-{NNNN}.ready")
-    elif action == "salvage":
-        context_dir = paths.context_dir(project_dir)
-        base_sha = ""
-        if todo_id:
-            sha_file = context_dir / f"BASELINE-{todo_id}.sha"
-            if sha_file.exists():
-                base_sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
-        outbox = paths.outbox(project_dir)
-        print("Worker finished but wrote NO signal (timeout/crash). Work may be complete.")
-        print()
-        print("Investigate the orphaned work:")
-        print(f"  1. See what changed:  git diff {base_sha} --stat" if base_sha else "  1. See what changed:  git diff --stat")
-        print(f"  2. Worker progress:   cat {outbox}/PROGRESS-{todo_id}.md")
-        print("  3. Verify changes independently (build, tests, review).")
-        print()
-        print("Decide and act:")
-        print(f"  - good  -> salvage: write {outbox}/DONE-{todo_id}.md + {outbox}/DONE-{todo_id}.ready")
-        print("  - bad   -> rollback to baseline, then create a new TODO (replan)")
-        print("  - stuck -> leave as-is and stop")
-        print()
-        print("After writing a signal (or a new TODO), press Enter to continue.")
+    else:
+        # Internal salvage/replan paths still call this with explicit kind
+        # via direct function call. Print generic message.
+        print(f"What to do ({kind}): see supervisor.md instructions")
 
     print()
     if not auto:
         print("When done, press Enter to continue...")
         input()
-        _log(logs_dir, f"Supervisor stage {action} completed by user")
+        _log(logs_dir, f"Supervisor stage {kind} completed by user")
         return
 
     # BD-14: auto mode — spawn opencode subprocess to do supervisor work.
-    _run_supervisor_via_subprocess(action, todo_id, project_dir, config, phases_file, logs_dir)
+    _run_supervisor_via_subprocess(kind, todo_id, project_dir, config, phases_file, logs_dir)
 
 
 def _run_supervisor_via_subprocess(
-    action: str,
+    kind: str,
     todo_id: str,
     project_dir: Path,
     config: dict,
     phases_file: str,
     logs_dir: Path,
 ) -> None:
-    """BD-14: spawn ``opencode run --auto --agent worker --file supervisor.md``
-    to do supervisor work (create TODO, verify, replan) without human.
+    """BD-14/29: spawn ``opencode run --auto --agent worker --file supervisor.md``
+    to do supervisor work without human.
 
-    Falls back to old "auto-skip" behavior if supervisor.md is missing or
-    if subprocess fails (logged).
+    kind is one of:
+    - "plan"    — create/refine TODO. ALWAYS runs (Q3 — even if TODO exists,
+                  supervisor reviews it).
+    - "verify"  — read DONE/PROGRESS, write ACK or REVIEW.
+    - "replan"  — internal: BLOCKED signal → new TODO (called from run_pipeline
+                  escalation path, not from a pipeline stage directly).
+    - "salvage" — internal: agent crashed without signal (called from
+                  run_pipeline salvage path).
+
+    Falls back to "auto-skip" if supervisor.md is missing or if subprocess fails.
     """
     try:
         role_file = _resolve_role_file("supervisor", project_dir)
     except RuntimeError as e:
         print(f"[auto mode] supervisor.md not found — skipping. ({e})")
-        _log(logs_dir, f"Supervisor stage {action} auto-skipped (no supervisor.md)")
+        _log(logs_dir, f"Supervisor stage {kind} auto-skipped (no supervisor.md)")
         return
 
     extra_files: list[str] = []
@@ -391,28 +394,15 @@ def _run_supervisor_via_subprocess(
     outbox = paths.outbox(project_dir)
     phases_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
 
-    if action == "create_todo":
-        # Skip if there is already an active TODO (supervisor would no-op).
-        active = todos.list_active_todos(inbox, outbox)
-        if active:
-            print(f"[auto mode] Active TODO already exists: {active[0]} — skip create.")
-            _log(logs_dir, f"Supervisor create_todo auto-skipped (active TODO {active[0]})")
-            return
+    if kind == "plan":
+        # BD-29 / Q3: do NOT skip if active TODO exists. Supervisor reviews it.
         if phases_path.is_file():
             extra_files.append(str(phases_path))
-        prompt = (
-            "You are the supervisor. Read the phases/plan file. Determine the next step "
-            "that is not yet completed. Create a TODO file at "
-            ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID), create baseline "
-            "via `awf baseline TODO-{NNNN}`, then create the .ready signal at "
-            ".agentic/inbox/TODO-{NNNN}.ready. Do NOT implement the TODO yourself — "
-            "later roles do that. Keep the TODO at the goal level (what success looks like), "
-            "do NOT micromanage individual roles — each role's skill.md already defines its zone."
-        )
-    elif action in ("verify_result", "final_verify"):
+        prompt = _build_prompt("plan", todo_id)
+    elif kind == "verify":
         if not todo_id:
             print("[auto mode] No todo_id for verify — skip.")
-            _log(logs_dir, f"Supervisor {action} auto-skipped (no todo_id)")
+            _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
             return
         done_md = outbox / f"DONE-{todo_id}.md"
         if done_md.is_file():
@@ -420,18 +410,11 @@ def _run_supervisor_via_subprocess(
         progress = outbox / f"PROGRESS-{todo_id}.md"
         if progress.is_file():
             extra_files.append(str(progress))
-        prompt = (
-            f"You are the supervisor. Verify TODO {todo_id}: read the DONE report and PROGRESS notes, "
-            "check `git diff --stat` against the baseline SHA in "
-            f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
-            "If yes, write ACK signal at "
-            f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
-            f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
-        )
-    elif action == "replan":
+        prompt = _build_prompt("verify", todo_id)
+    elif kind == "replan":
         if not todo_id:
             print("[auto mode] No todo_id for replan — skip.")
-            _log(logs_dir, f"Supervisor {action} auto-skipped (no todo_id)")
+            _log(logs_dir, "Supervisor replan auto-skipped (no todo_id)")
             return
         blocked = outbox / f"BLOCKED-{todo_id}.md"
         if blocked.is_file():
@@ -441,10 +424,14 @@ def _run_supervisor_via_subprocess(
             "create a refined TODO at .agentic/inbox/TODO-{NNNN}.md (next sequential ID), "
             "baseline it, and create the .ready signal."
         )
+    elif kind == "salvage":
+        # salvage is too risky to automate — needs human judgement.
+        print("[auto mode] salvage not automated — skipping.")
+        _log(logs_dir, "Supervisor salvage auto-skipped (not automatable)")
+        return
     else:
-        # salvage or unknown — skip in auto mode (too risky to automate).
-        print(f"[auto mode] Action {action!r} not automated — skipping.")
-        _log(logs_dir, f"Supervisor stage {action} auto-skipped (not automatable)")
+        print(f"[auto mode] Unknown kind {kind!r} — skipping.")
+        _log(logs_dir, f"Supervisor stage {kind} auto-skipped (unknown kind)")
         return
 
     agent_name = _get_agent_name(config, "supervisor")
@@ -453,7 +440,7 @@ def _run_supervisor_via_subprocess(
         "--agent", agent_name,
         # BD-24: pass model from config.yaml so role uses correct LLM
         # (without this, opencode uses default model which may differ).
-        "--title", f"awf-supervisor-{action}",
+        "--title", f"awf-supervisor-{kind}",
     ]
     # BD-24: --model only if explicitly set in config.yaml
     role_model = _get_role_model(config, "supervisor")
@@ -470,18 +457,17 @@ def _run_supervisor_via_subprocess(
         print(f"  ctx:  {f}")
     print()
 
-    _log(logs_dir, f"Supervisor {action} subprocess started (agent={agent_name})")
+    _log(logs_dir, f"Supervisor {kind} subprocess started (agent={agent_name})")
 
-    # BD-20: watch for the signal this supervisor action would produce.
-    # create_todo / replan → new TODO-*.ready in inbox (we don't know the
-    #   ID ahead of time — use snapshot-based glob watch)
-    # verify_result / final_verify → ACK-{todo_id}.ready in inbox (or
-    #   REVIEW-{todo_id}.md in outbox if supervisor chose not to ack)
+    # BD-20/29: watch for the signal this supervisor kind would produce.
+    # plan / replan → new TODO-*.ready in inbox (snapshot-based glob watch)
+    # verify       → ACK-{todo_id}.ready in inbox (or REVIEW-{todo_id}.md
+    #                in outbox if supervisor chose not to ack)
     watch_paths: list[Path] = []
     watch_new_glob: tuple[Path, str] | None = None
-    if action in ("create_todo", "replan"):
+    if kind in ("plan", "replan"):
         watch_new_glob = (inbox, "TODO-*.ready")
-    elif action in ("verify_result", "final_verify") and todo_id:
+    elif kind == "verify" and todo_id:
         watch_paths = [
             inbox / f"ACK-{todo_id}.ready",
             inbox / f"APPROVE-{todo_id}.ready",
@@ -496,10 +482,10 @@ def _run_supervisor_via_subprocess(
         logs_dir=logs_dir,
     )
 
-    _log(logs_dir, f"Supervisor {action} subprocess finished (exit={result.returncode})")
+    _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
     if result.returncode != 0:
         raise RuntimeError(
-            f"Supervisor {action} subprocess exited with code {result.returncode}. "
+            f"Supervisor {kind} subprocess exited with code {result.returncode}. "
             f"Cmd: {' '.join(cmd)}"
         )
 
@@ -520,12 +506,13 @@ def _run_agent_stage(
     expected of it.
     """
     role = stage.role
-    action = stage.action
+    # BD-29: agents always execute (kind computed from position).
+    kind = stage.kind
     agent_name = _get_agent_name(config, role)
 
     print()
     print("=" * 41)
-    print(f"  AGENT STAGE: {role} ({action})")
+    print(f"  AGENT STAGE: {role} ({kind})")
     print(f"  Task: {todo_id}")
     print("=" * 41)
     print()
@@ -534,19 +521,19 @@ def _run_agent_stage(
     inbox = paths.inbox(project_dir)
     todo_file = inbox / f"{todo_id}.md"
 
-    prompt = _build_prompt(action, todo_id)
+    prompt = _build_prompt(kind, todo_id)
 
     print(f"Running agent: {agent_name}")
     print(f"Role file: {role_file}")
     print(f"Task: {todo_file}")
     print()
 
-    # Clean stale signals this action could produce
-    prefixes = expected_signal_prefixes(action)
+    # Clean stale signals this kind could produce
+    prefixes = expected_signal_prefixes(kind)
     outbox = paths.outbox(project_dir)
     clean_stage_signals(outbox, todo_id, *prefixes)
 
-    _log(logs_dir, f"Agent stage started: {role} ({action}) for {todo_id}")
+    _log(logs_dir, f"Agent stage started: {role} ({kind}) for {todo_id}")
 
     cmd = [
         "opencode", "run", "--auto",
@@ -599,10 +586,10 @@ def _run_agent_stage(
     result = _run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
     )
-    _log(logs_dir, f"Agent stage finished: {role} ({action}) for {todo_id} (exit={result.returncode})")
+    _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:
         raise RuntimeError(
-            f"Agent stage {role} ({action}) subprocess exited with code {result.returncode}. "
+            f"Agent stage {role} ({kind}) subprocess exited with code {result.returncode}. "
             f"Cmd: {' '.join(cmd)}"
         )
 
@@ -1187,16 +1174,16 @@ def run_pipeline(args: Any) -> int:
         stage = stages[stage_idx]
         s_name = stage.name
         s_role = stage.role
-        s_action = stage.action
+        s_kind = stage.kind  # BD-29: kind computed from position
         s_desc = stage.description
 
         print()
         print("-" * 43)
-        print(f"  Stage {stage_idx + 1}/{total}: {s_name} ({s_role} :: {s_action})")
+        print(f"  Stage {stage_idx + 1}/{total}: {s_name} ({s_role} :: {s_kind})")
         if s_desc:
             print(f"  {s_desc}")
         print("-" * 43)
-        _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_action})")
+        _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_kind})")
 
         # --- Supervisor stage ---
         if s_role == "supervisor":
@@ -1212,7 +1199,8 @@ def run_pipeline(args: Any) -> int:
                 _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
                 return 1
 
-            if s_action in ("create_todo", "replan"):
+            # BD-29: kind-based flow (was action-based).
+            if s_kind == "plan":
                 current_todo = _find_active_todo(project_dir)
                 if not current_todo:
                     print("No active TODO found. Create one first, then continue.")
@@ -1220,7 +1208,7 @@ def run_pipeline(args: Any) -> int:
                     return 1
                 print(f"Active TODO: {current_todo}")
 
-            if s_action in ("verify_result", "final_verify"):
+            if s_kind == "verify":
                 print("Supervisor verification complete.")
                 _maybe_commit(s_name, current_todo, stage.on_approved, project_dir, logs_dir, auto=auto)
                 stage_idx += 1
@@ -1229,7 +1217,7 @@ def run_pipeline(args: Any) -> int:
             stage_idx += 1
 
             # BD-10-C: insert normalize_skills stage after plan
-            if s_name == "plan":
+            if s_kind == "plan":
                 needed, team, state_file = _check_needs_normalize(project_dir)
                 if needed:
                     try:
@@ -1266,7 +1254,7 @@ def run_pipeline(args: Any) -> int:
             _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
             return 1
 
-        prefixes = expected_signal_prefixes(s_action)
+        prefixes = expected_signal_prefixes(s_kind)
 
         # Read signal (opencode run is blocking; signal should already exist)
         signal = read_signal_for_todo(outbox, current_todo, *prefixes)

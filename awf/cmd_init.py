@@ -39,18 +39,9 @@ CONFIG_TEMPLATE = '''project:
 models:
   supervisor:
     description: "Current session model"
-  worker:
-    agent_name: "worker"
-    model: "{worker_model}"
-    temperature: 0.1
-  reviewer:
-    agent_name: "reviewer"
-    model: "{worker_model}"
-    temperature: 0.1
-  tester:
-    agent_name: "tester"
-    model: "{worker_model}"
-    temperature: 0.1
+# Agent roles (system-analyst, developer, qa, project-auditor, ...) are added
+# dynamically by the project-setup form on first submit (BD-12 auto-maps each
+# role to agent_name="worker"). Don't pre-populate here.
 
 verification:
   test_cmd: "{test_cmd}"

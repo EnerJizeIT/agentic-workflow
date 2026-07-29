@@ -1,4 +1,13 @@
-"""Write .agentic/pipelines/default.yaml from form team selection."""
+"""Write .agentic/pipelines/default.yaml from form team selection.
+
+BD-29: pipeline.yaml no longer has `action:` field — awf computes kind from
+position. Format is just role + policies.
+
+Stages:
+- First stage: supervisor (kind="plan" computed automatically)
+- Last stage: supervisor (kind="verify" computed automatically)
+- Middle stages: user-selected agent roles (kind="execute")
+"""
 from __future__ import annotations
 
 import logging
@@ -10,9 +19,12 @@ import yaml
 log = logging.getLogger(__name__)
 
 
-def _stage_yaml(name: str, role: str, action: str, **extra: Any) -> dict[str, Any]:
-    """Build a stage dict for YAML serialization."""
-    stage = {"name": name, "role": role, "action": action}
+def _stage_yaml(name: str, role: str, **extra: Any) -> dict[str, Any]:
+    """Build a stage dict for YAML serialization.
+
+    BD-29: no `action` field — kind is computed from position by awf.
+    """
+    stage: dict[str, Any] = {"name": name, "role": role}
     stage.update(extra)
     return stage
 
@@ -20,25 +32,26 @@ def _stage_yaml(name: str, role: str, action: str, **extra: Any) -> dict[str, An
 def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build ordered pipeline stages from team selection.
 
+    Wraps the user's team with supervisor at both ends (always plan→agents→verify).
+
     Args:
         team_order: list of team member dicts (from form's team_config JSON).
             Each dict has at least: {agent: <role_name>, type: 'default'|'custom', ...}.
 
     Returns:
-        List of stage dicts: plan + team stages + verify.
+        List of stage dicts: [plan(supervisor)] + [team stages] + [verify(supervisor)].
     """
     stages: list[dict[str, Any]] = [
         _stage_yaml(
             "plan",
             "supervisor",
-            "create_todo",
             description="Supervisor studies the plan and creates a TODO",
         ),
     ]
 
     seen_roles: set[str] = set()
     for member in team_order:
-        role = str(member.get("agent", "")).strip()
+        role = str(member.get("agent") or member.get("role") or "").strip()
         if not role:
             continue
         if role in seen_roles:
@@ -49,7 +62,6 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
             _stage_yaml(
                 name=role,
                 role=role,
-                action="execute_todo",
                 description=f"{role} executes the TODO",
                 on_blocked="escalate",
                 max_retries=3,
@@ -60,7 +72,6 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
         _stage_yaml(
             "verify",
             "supervisor",
-            "verify_result",
             description="Supervisor verifies the result",
             on_approved="commit_and_next",
             on_rejected="replan",
@@ -97,8 +108,11 @@ def write_pipeline(team_order: list[dict[str, Any]], project_dir: Path) -> Path 
     target = pipelines_dir / "default.yaml"
     if target.exists():
         backup = pipelines_dir / "default.yaml.bak"
-        target.rename(backup)
-        log.info("Backed up existing pipeline to %s", backup)
+        try:
+            target.rename(backup)
+            log.info("Backed up existing pipeline to %s", backup)
+        except OSError:
+            pass
 
     content = yaml.safe_dump(
         pipeline_dict, default_flow_style=False, allow_unicode=True, sort_keys=False

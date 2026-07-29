@@ -1,4 +1,15 @@
-"""Pipeline parsing — Stage dataclass, load_stages, resolve_pipeline_file."""
+"""Pipeline parsing — Stage dataclass, load_stages, resolve_pipeline_file.
+
+BD-29: pipeline stages no longer have an `action` field. Awf computes the
+kind (plan / execute / verify) from the stage's position:
+
+- Stage index 0           → kind="plan"   (supervisor creates TODO)
+- Stage index N-1         → kind="verify" (supervisor verifies + commits)
+- All stages between      → kind="execute" (agents do work)
+
+For backward compat, pipeline.yaml files written before BD-29 may still
+carry an `action:` field — it's read but ignored. kind always wins.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,9 +22,13 @@ from . import paths
 
 @dataclass
 class Stage:
+    """A single stage in a pipeline.
+
+    `kind` is computed at load time from position (see module docstring).
+    It is NOT in pipeline.yaml.
+    """
     name: str
     role: str
-    action: str
     description: str = ""
     on_blocked: str = "escalate"
     on_approved: str = "next"
@@ -21,6 +36,10 @@ class Stage:
     on_passed: str = "next"
     on_failed: str = "rollback_to:implement"
     max_retries: int = 1
+    # Computed at load time — not in YAML.
+    kind: str = "execute"  # "plan" | "execute" | "verify"
+    # Back-compat only — read from YAML if present, but kind wins.
+    action: str = ""
 
 
 _DEFAULTS: dict[str, Any] = {
@@ -37,8 +56,33 @@ _POLICY_KEYS = [
 ]
 
 
+def _compute_kind(position: int, total: int) -> str:
+    """BD-29: compute kind from position in the pipeline.
+
+    - First stage  → "plan"
+    - Last stage   → "verify"
+    - Middle       → "execute"
+    - Single stage → "plan" (degenerate — no agents, just supervisor creating+committing)
+
+    Special case: if the stage's role is "supervisor" AND it's not the first
+    or last, kind is still computed by position — but callers should validate
+    that supervisor only appears at endpoints.
+    """
+    if total <= 1:
+        return "plan"
+    if position == 0:
+        return "plan"
+    if position == total - 1:
+        return "verify"
+    return "execute"
+
+
 def load_stages(pipeline_file: str | Path) -> list[Stage]:
-    """Parse a pipeline YAML file and return a list of Stage objects."""
+    """Parse a pipeline YAML file and return a list of Stage objects.
+
+    BD-29: kind is computed from position; `action:` field in YAML is read
+    for back-compat but ignored.
+    """
     import yaml
 
     p = Path(pipeline_file)
@@ -47,13 +91,16 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
 
     raw_stages = (data or {}).get("stages") or []
     result: list[Stage] = []
+    total = len([s for s in raw_stages if isinstance(s, dict)])
 
-    for s in raw_stages:
+    for i, s in enumerate(raw_stages):
         if not isinstance(s, dict):
             continue
         kwargs: dict[str, Any] = {}
-        for key in ("name", "role", "action", "description"):
+        for key in ("name", "role", "description"):
             kwargs[key] = s.get(key, "")
+        # action: read for back-compat (logged as ignored)
+        kwargs["action"] = s.get("action", "")
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         mr = s.get("max_retries", _DEFAULTS["max_retries"])
@@ -61,6 +108,7 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             kwargs["max_retries"] = int(mr)
         except (ValueError, TypeError):
             kwargs["max_retries"] = _DEFAULTS["max_retries"]
+        kwargs["kind"] = _compute_kind(i, total)
         result.append(Stage(**kwargs))
 
     return result

@@ -32,10 +32,11 @@ class TestInit:
         for d in ("pipelines", "phases", "inbox", "outbox", "context", "logs", "reports"):
             assert (empty_project / ".agentic" / d).is_dir(), f"missing dir: {d}"
 
-        # Config content
+        # Config content — BD-29: only supervisor in models (agent roles added by form)
         cfg = (empty_project / ".agentic/config.yaml").read_text()
         assert 'name: "test-project"' in cfg
-        assert 'model: "claude-test-model"' in cfg
+        # Worker model no longer in init template — added dynamically by form
+        assert "supervisor" in cfg
 
     def test_init_gitignore_correct(self, empty_project: Path, awf_bin: str, awf_env: dict):
         """awf init creates .gitignore with correct entries and git respects them."""
@@ -62,21 +63,25 @@ class TestInit:
         assert ".agentic/inbox/" not in git_status.stdout
 
     def test_init_reuses_opencode_model(self, empty_project: Path, awf_bin: str, awf_env: dict, tmp_path: Path):
-        """When an existing opencode agent is present, init reuses its model."""
-        # Override the opencode.json to have an existing agent with a specific model
+        """When an existing opencode agent is present, init reuses its model.
+
+        BD-29: model no longer baked into CONFIG_TEMPLATE at init time —
+        but the worker_model prompt input still happens (used by opencode
+        agent proposal step). Verifying init completes successfully.
+        """
         oc_dir = tmp_path / "fake_home" / ".config" / "opencode"
         (oc_dir / "opencode.json").write_text(
             '{"agent": {"existing-bot": {"model": "claude-sonnet-4-20250514"}}}\n'
         )
 
-        # Answer model prompt with empty input to accept the default
         init_input = b"test-project\npytest\nruff\nmypy\n\n\nn\nn\n"
         result = run_awf(awf_bin, ["init"],
                          cwd=empty_project, env=awf_env, input_data=init_input)
         assert result.returncode == 0, f"awf init failed: {result.stderr.decode()}"
 
+        # BD-29: model not stored in init config.yaml anymore — just verify init ran
         cfg = (empty_project / ".agentic/config.yaml").read_text()
-        assert 'model: "claude-sonnet-4-20250514"' in cfg
+        assert 'name: "test-project"' in cfg
 
     def test_init_rejects_template_flag_bd28(self, empty_project: Path, awf_bin: str, awf_env: dict):
         """BD-28: --template flag is no longer accepted (was removed)."""

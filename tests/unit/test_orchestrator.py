@@ -390,7 +390,7 @@ class TestRunAgentStageLocalSkill:
         local_skill = project_dir / ".agentic" / "skills" / "worker.md"
         local_skill.write_text("skill content")
 
-        stage = Stage(name="execute", role="worker", action="execute_todo")
+        stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
@@ -406,7 +406,7 @@ class TestRunAgentStageLocalSkill:
     ) -> None:
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
-        stage = Stage(name="execute", role="worker", action="execute_todo")
+        stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
@@ -420,7 +420,7 @@ class TestRunAgentStageLocalSkill:
         """BD-24: --model added when config.yaml has models.<role>.model."""
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
-        stage = Stage(name="execute", role="worker", action="execute_todo")
+        stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         config = {"models": {"worker": {"agent_name": "worker", "model": "vllm/llm"}}}
         _run_agent_stage(stage, "TODO-0001", project_dir, config, project_dir / ".agentic" / "logs")
@@ -436,7 +436,7 @@ class TestRunAgentStageLocalSkill:
         """BD-24: no --model flag when config has no model for the role."""
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
-        stage = Stage(name="execute", role="worker", action="execute_todo")
+        stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
@@ -449,7 +449,7 @@ class TestRunAgentStageLocalSkill:
         """BD-23: --title isolates awf subprocess session from interactive opencode."""
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
-        stage = Stage(name="execute", role="worker", action="execute_todo")
+        stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
@@ -467,7 +467,7 @@ class TestRunAgentStageLocalSkill:
         project_dir = self._setup_project(tmp_path, monkeypatch)
         (project_dir / ".agentic" / "skills").mkdir(parents=True)
 
-        stage = Stage(name="execute", role="worker", action="execute_todo")
+        stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
 
@@ -894,7 +894,7 @@ class TestSupervisorViaSubprocess:
         logs = proj / ".agentic" / "logs"
 
         _patch_subprocess_for_awf(monkeypatch)
-        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
 
         assert len(_FakePopen._last_cmds) == 1
@@ -907,22 +907,25 @@ class TestSupervisorViaSubprocess:
         out = capsys.readouterr().out
         assert "Spawning supervisor subprocess" in out
 
-    def test_create_todo_skips_subprocess_when_active_todo_exists(
+    def test_plan_runs_even_when_active_todo_exists_bd29_q3(
         self, tmp_path: Path, monkeypatch, capsys
     ) -> None:
+        """BD-29 / Q3: supervisor plan ALWAYS runs (reviews existing TODO if any).
+
+        Was: skipped when active TODO exists. Now: supervisor always reviews
+        the inbox — may refine, accept, or replace the TODO.
+        """
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
         (proj / ".agentic" / "inbox" / "TODO-0042.md").write_text("# TODO\nbody")
         (proj / ".agentic" / "inbox" / "TODO-0042.ready").write_text("")
 
         _patch_subprocess_for_awf(monkeypatch)
-        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
 
-        assert _FakePopen._last_cmds == [], "Popen must NOT be called when active TODO exists"
-        out = capsys.readouterr().out
-        assert "Active TODO already exists" in out
-        assert "TODO-0042" in out
+        # Supervisor subprocess MUST be spawned (no skip).
+        assert len(_FakePopen._last_cmds) == 1, "Plan must run even with existing TODO (Q3)"
 
     def test_verify_spawns_subprocess_with_done_file(
         self, tmp_path: Path, monkeypatch
@@ -932,7 +935,7 @@ class TestSupervisorViaSubprocess:
         (proj / ".agentic" / "outbox" / "DONE-TODO-0042.md").write_text("# DONE\nall good")
 
         _patch_subprocess_for_awf(monkeypatch)
-        stage = Stage(name="verify", role="supervisor", action="verify_result", description="d")
+        stage = Stage(name="verify", role="supervisor", description="d", kind="verify")
         _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
 
         assert len(_FakePopen._last_cmds) == 1
@@ -949,7 +952,7 @@ class TestSupervisorViaSubprocess:
             "project:\n  name: t\nmodels:\n  supervisor:\n    description: x\n"
         )
 
-        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         # Should NOT raise even without supervisor.md
         _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=proj / ".agentic" / "logs")
         out = capsys.readouterr().out
@@ -965,7 +968,7 @@ class TestSupervisorViaSubprocess:
             return ""
         monkeypatch.setattr("builtins.input", fake_input)
 
-        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         _run_supervisor_stage(stage, todo_id="", auto=False, project_dir=proj, logs_dir=logs)
         assert pressed == [True], "interactive mode must call input()"
 
@@ -976,7 +979,7 @@ class TestSupervisorViaSubprocess:
 
         monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
 
-        stage = Stage(name="plan", role="supervisor", action="create_todo", description="d")
+        stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         with pytest.raises(RuntimeError) as exc_info:
             _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
         assert "42" in str(exc_info.value)
@@ -1000,7 +1003,7 @@ class TestSupervisorViaSubprocess:
         _FailingPopen._exit_code = 7
         monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
 
-        stage = Stage(name="impl", role="worker", action="execute_todo")
+        stage = Stage(name="impl", role="worker", kind="execute")
         with pytest.raises(RuntimeError) as exc_info:
             _run_agent_stage(stage, "TODO-0001", proj, {}, agentic / "logs")
         assert "7" in str(exc_info.value)
@@ -1206,7 +1209,7 @@ def test_replan_skips_when_no_todo_id_module(tmp_path: Path, capsys) -> None:
     proj = _make_supervisor_proj(tmp_path)
     logs = proj / ".agentic" / "logs"
 
-    stage = Stage(name="replan", role="supervisor", action="replan", description="d")
+    stage = Stage(name="replan", role="supervisor", description="d", kind="replan")
     _run_supervisor_stage(stage, todo_id="", auto=True, project_dir=proj, logs_dir=logs)
 
     out = capsys.readouterr().out
@@ -1221,7 +1224,7 @@ def test_salvage_skips_in_auto_mode_module(tmp_path: Path, capsys) -> None:
     proj = _make_supervisor_proj(tmp_path)
     logs = proj / ".agentic" / "logs"
 
-    stage = Stage(name="salvage", role="supervisor", action="salvage", description="d")
+    stage = Stage(name="salvage", role="supervisor", description="d", kind="salvage")
     _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
 
     out = capsys.readouterr().out
@@ -1311,7 +1314,7 @@ class TestHandoffChain:
         (handoff_dir / "system-analysis.md").write_text("# Handoff sys-analysis\n...")
         (handoff_dir / "developer.md").write_text("# Handoff developer\n...")
 
-        stage = Stage(name="qa", role="worker", action="execute_todo")
+        stage = Stage(name="qa", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
         _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
@@ -1331,7 +1334,7 @@ class TestHandoffChain:
         (handoff_dir / "system-analysis.md").write_text("# Handoff\n...")
         # developer.md intentionally NOT created
 
-        stage = Stage(name="qa", role="worker", action="execute_todo")
+        stage = Stage(name="qa", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
         _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
@@ -1465,11 +1468,11 @@ class TestHandoffChain:
         proj.mkdir()
         (proj / ".agentic").mkdir()
         stages = [
-            Stage(name="plan", role="supervisor", action="create_todo"),
-            Stage(name="r1", role="analyst", action="execute_todo"),
-            Stage(name="r2", role="dev", action="execute_todo"),
-            Stage(name="verify", role="supervisor", action="verify_result"),
-            Stage(name="r3", role="qa", action="execute_todo"),
+            Stage(name="plan", role="supervisor", kind="plan"),
+            Stage(name="r1", role="analyst", kind="execute"),
+            Stage(name="r2", role="dev", kind="execute"),
+            Stage(name="verify", role="supervisor", kind="verify"),
+            Stage(name="r3", role="qa", kind="execute"),
         ]
         # Current stage is index 4 (qa). Previous agent stages = analyst, dev.
         prev = _resolve_prev_handoffs(stages, 4, proj, todo_id="TODO-0042")
@@ -1482,8 +1485,8 @@ class TestHandoffChain:
         proj.mkdir()
         (proj / ".agentic").mkdir()
         stages = [
-            Stage(name="plan", role="supervisor", action="create_todo"),
-            Stage(name="impl", role="worker", action="execute_todo"),
+            Stage(name="plan", role="supervisor", kind="plan"),
+            Stage(name="impl", role="worker", kind="execute"),
         ]
         prev = _resolve_prev_handoffs(stages, 1, proj)
         assert prev == []
@@ -1526,8 +1529,8 @@ class TestHandoffChain:
         (handoff_dir / "analyst-TODO-0002.md").write_text("v2")  # newer
 
         stages = [
-            Stage(name="r1", role="analyst", action="execute_todo"),
-            Stage(name="r2", role="dev", action="execute_todo"),
+            Stage(name="r1", role="analyst", kind="execute"),
+            Stage(name="r2", role="dev", kind="execute"),
         ]
         # No todo_id provided — should pick newest analyst-*.md
         prev = _resolve_prev_handoffs(stages, 1, proj, todo_id="")

@@ -27,18 +27,28 @@ def _short_id(todo_id: str) -> str:
     return todo_id.split("-", 1)[1] if todo_id.startswith("TODO-") else todo_id
 
 
-def expected_signal_prefixes(action: str) -> list[str]:
-    """Return signal prefixes an action is allowed to emit."""
-    mapping = {
-        "execute_todo": ["DONE", "BLOCKED"],
-        "review_code": ["REVIEW-APPROVED", "REVIEW-REJECTED", "BLOCKED"],
-        "audit_code": ["REVIEW-APPROVED", "REVIEW-REJECTED", "BLOCKED"],
-        "run_tests": ["TEST-PASSED", "TEST-FAILED", "BLOCKED"],
-    }
-    return mapping.get(action, [
-        "DONE", "BLOCKED", "REVIEW-APPROVED", "REVIEW-REJECTED",
-        "TEST-PASSED", "TEST-FAILED",
-    ])
+def expected_signal_prefixes(kind: str) -> list[str]:
+    """BD-29: return signal prefixes a stage kind is allowed to emit.
+
+    kind is one of: "plan", "execute", "verify" (computed by pipeline.py
+    from stage position). All agent stages (execute) accept the same set
+    — role's skill decides what to emit.
+
+    Args:
+        kind: stage kind from Stage.kind.
+
+    Returns:
+        List of signal-name prefixes (without the trailing -TODO-NNNN.ready).
+    """
+    # All execute-kind stages produce the same vocabulary. The skill/role
+    # decides which to actually use — awf accepts any of them.
+    if kind == "execute":
+        return ["DONE", "BLOCKED", "REVIEW-APPROVED", "REVIEW-REJECTED",
+                "TEST-PASSED", "TEST-FAILED"]
+    # plan and verify stages don't emit worker signals (they create TODO /
+    # ACK respectively). Return empty list — caller treats as "no expected
+    # signal from this stage".
+    return []
 
 
 def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | None:
