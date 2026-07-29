@@ -71,46 +71,32 @@ def _awf_subprocess_env() -> dict[str, str]:
 
 
 # BD-13/26: when normalize_skills runs in background (no human at the wheel),
-# awf auto-creates local skills from global skill files. This mapping resolves
-# awf role names to opencode skill directory names (they don't always match).
-_ROLE_TO_SKILL_NAME: dict[str, str] = {
-    "system-analysis": "system-analyst",
-    "developer": "developer",
-    "qa": "qa-review",
-    "reviewer": "code-reviewer",
-    "tester": "test-automator",
-    "project-auditor": "project-auditor",
-    "security-auditor": "security-auditor",
-    "worker": "weak-llm-implementer",
-}
+# awf checks if local skills already exist (created by user via form).
+# No mapping/guessing — the form is responsible for putting the right
+# content into .agentic/roles/<role>.md. This module just checks completeness.
 
 
 def _resolve_global_skill_path(role: str) -> Path | None:
-    """BD-13/26: find the global SKILL.md for an awf role.
+    """BD-13/26 (legacy): find the global SKILL.md for an awf role.
 
-    Tries in order:
-    1. Direct mapping from ``_ROLE_TO_SKILL_NAME`` (e.g. system-analysis →
-       system-analyst).
-    2. Direct match ``~/.config/opencode/skills/<role>/SKILL.md``.
-    3. Glob ``~/.config/opencode/skills/*<role>*/SKILL.md``.
+    DEPRECATED after BD-27: form should put skill content directly into
+    .agentic/roles/<role>.md, so this fallback shouldn't be needed.
 
-    Returns the path to SKILL.md, or None if no match.
+    Kept for backward compat — looks for:
+    1. ~/.config/opencode/skills/<role>/SKILL.md
+    2. ~/.config/opencode/skills/agent-<role>/SKILL.md
+    3. Glob ~/.config/opencode/skills/*<role>*/SKILL.md
     """
     skills_root = Path.home() / ".config" / "opencode" / "skills"
 
-    # 1. Mapping table.
-    skill_name = _ROLE_TO_SKILL_NAME.get(role)
-    if skill_name:
-        candidate = skills_root / skill_name / "SKILL.md"
-        if candidate.is_file():
-            return candidate
+    candidates = [
+        skills_root / role / "SKILL.md",
+        skills_root / f"agent-{role}" / "SKILL.md",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
 
-    # 2. Direct match.
-    candidate = skills_root / role / "SKILL.md"
-    if candidate.is_file():
-        return candidate
-
-    # 3. Glob — partial match.
     matches = sorted(skills_root.glob(f"*{role}*/SKILL.md"))
     if matches:
         return matches[0]

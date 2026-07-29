@@ -445,6 +445,13 @@ optional_data_keys: []
         {% endfor %}
       ];
 
+      // BD-27: global skills with full content — primary source for team roles.
+      var globalSkills = [
+        {% for s in (global_skills or []) %}
+        {id: {{ s.id | tojson }}, title: {{ s.title | tojson }}, desc: {{ s.get('description', '') | tojson }}, content: {{ s.content | tojson }}}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
       var existingSupervisorSlugs = [
         {% for s in (existing_supervisor_slugs or []) %}
         "{{ s }}"{% if not loop.last %},{% endif %}
@@ -489,17 +496,33 @@ optional_data_keys: []
 
       function agentOptions() {
         var h = '';
-        roles.forEach(function (r) {
-          h += '<option value="' + r.id + '">' + r.title + (r.desc ? ' — ' + r.desc : '') + '</option>';
-        });
-        if (customAgents.length > 0) {
-          h += '<optgroup label="Мои агенты">';
-          customAgents.forEach(function (c) {
-            h += '<option value="' + c.id + '" data-custom="true">' + c.title + '</option>';
+        // BD-27: skills are the primary choice — full content goes into role.md
+        if (globalSkills.length > 0) {
+          h += '<optgroup label="Skills (рекомендуется)">';
+          globalSkills.forEach(function (s) {
+            var label = s.title + (s.desc ? ' — ' + s.desc.substring(0, 80) : '');
+            // Truncate to avoid giant option text
+            if (label.length > 100) label = label.substring(0, 97) + '...';
+            h += '<option value="' + s.id + '" data-kind="skill">' + label + '</option>';
           });
           h += '</optgroup>';
         }
-        h += '<option value="__custom__">+ Свой агент...</option>';
+        // available_roles (caller-supplied, e.g. [supervisor, worker])
+        if (roles.length > 0) {
+          if (globalSkills.length > 0) h += '<optgroup label="Базовые роли">';
+          roles.forEach(function (r) {
+            h += '<option value="' + r.id + '" data-kind="default">' + r.title + (r.desc ? ' — ' + r.desc : '') + '</option>';
+          });
+          if (globalSkills.length > 0) h += '</optgroup>';
+        }
+        if (customAgents.length > 0) {
+          h += '<optgroup label="Мои агенты (сохранённые роли)">';
+          customAgents.forEach(function (c) {
+            h += '<option value="' + c.id + '" data-custom="true" data-kind="custom">' + c.title + '</option>';
+          });
+          h += '</optgroup>';
+        }
+        h += '<option value="__custom__" data-kind="custom">+ Свой .md файл...</option>';
         return h;
       }
 
@@ -573,36 +596,43 @@ optional_data_keys: []
         var row = sel.closest('tr');
         var cell = row.cells[0];
 
-        // Remove existing delete icons
-        cell.querySelectorAll('.btn-icon').forEach(function (b) { b.remove(); });
+        // BD-26-C: clean up any leftover inline editors
+        cell.querySelectorAll('.skill-inline').forEach(function (b) { b.remove(); });
 
         var opt = sel.options[sel.selectedIndex];
+        var kind = opt.dataset.kind || 'default';
 
-        // Saved custom agent → show delete
-        if (opt.dataset.custom === 'true' && sel.value !== '__custom__') {
-          var del = document.createElement('button');
-          del.type = 'button';
-          del.className = 'btn-icon';
-          del.innerHTML = '\uD83D\uDDD1';
-          del.title = 'Удалить из сохранённых';
-          del.onclick = function () {
-            if (confirm('Удалить агента "' + opt.textContent + '"?')) {
-              var hidden = document.getElementById('delete-agent-names');
-              var list = hidden.value ? hidden.value.split(',') : [];
-              list.push(sel.value);
-              hidden.value = list.join(',');
-              opt.remove();
-              sel.selectedIndex = 0;
-              del.remove();
-            }
-          };
-          cell.appendChild(del);
+        // BD-26-A: saved custom agents — no inline delete button (was causing
+        // layout shift). User removes role via team-remove (× button in last
+        // cell). To delete the persisted role entirely, use the dedicated
+        // role-management form (not the project-setup form).
+
+        // BD-27: selected a global skill → convert row to custom-agent-row
+        // with skill content pre-filled (role name = skill title, editable)
+        if (kind === 'skill') {
+          var skill = null;
+          for (var i = 0; i < globalSkills.length; i++) {
+            if (globalSkills[i].id === sel.value) { skill = globalSkills[i]; break; }
+          }
+          if (!skill) return;
+          row.classList.add('custom-agent-row', 'skill-row');
+          // Replace cell with editable role-name input + skill chip
+          cell.innerHTML =
+            '<div class="custom-agent-cell">' +
+              '<input type="text" class="agent-name" name="custom_agent_name" value="' + skill.title.replace(/"/g, '&quot;') + '" placeholder="Имя роли в pipeline">' +
+              '<div class="skill-zone">' +
+                '<span class="chip skill-inline"><span class="chip-name">\uD83E\uDDE9 ' + skill.title + '</span></span>' +
+                '<input type="hidden" class="skill-hidden" name="custom_agent_content" value="' + skill.content.replace(/"/g, '&quot;') + '">' +
+              '</div>' +
+              '<label class="save-cb"><input type="checkbox" class="save-agent-cb" checked> \uD83D\uDCBE</label>' +
+            '</div>';
+          validate();
           return;
         }
 
         if (sel.value !== '__custom__') return;
 
-        // Convert to custom agent row
+        // Convert to custom agent row (user uploads .md file)
         row.classList.add('custom-agent-row');
         var idx = rowIdxCounter++;
         cell.innerHTML =
@@ -673,33 +703,10 @@ optional_data_keys: []
 
       window.handleSupervisorSelect = function (sel) {
         var area = document.getElementById('sv-custom');
-        var wrapper = sel.parentElement;
-
-        // Remove existing delete icon
-        wrapper.querySelectorAll('.btn-icon').forEach(function (b) { b.remove(); });
+        // BD-26-C: no inline delete button (caused layout shift). Persisted
+        // supervisor variants are managed elsewhere.
 
         var opt = sel.options[sel.selectedIndex];
-
-        // Saved custom supervisor → show delete
-        if (opt.dataset.custom === 'true' && sel.value !== '__custom__') {
-          var del = document.createElement('button');
-          del.type = 'button';
-          del.className = 'btn-icon';
-          del.innerHTML = '\uD83D\uDDD1';
-          del.title = 'Удалить из сохранённых';
-          del.onclick = function () {
-            if (confirm('Удалить supervisor роль "' + opt.textContent + '"?')) {
-              var hidden = document.getElementById('delete-agent-names');
-              var list = hidden.value ? hidden.value.split(',') : [];
-              list.push(sel.value);
-              hidden.value = list.join(',');
-              opt.remove();
-              sel.selectedIndex = 0;
-              del.remove();
-            }
-          };
-          wrapper.appendChild(del);
-        }
 
         if (sel.value === '__custom__') {
           area.classList.add('visible');

@@ -587,6 +587,48 @@ after dogfood v8 if the issue persists.
 
 ---
 
+---
+
+### BD-26 · UI bugs in project-setup form (dropdown, empty rows, layout) — OPEN
+
+**Status:** OPEN. **Priority:** MEDIUM — UX papercuts, not blockers.
+
+Three issues reported by user during dogfood v9 (2026-07-29):
+
+**26-A. Dropdown не даёт удалить роли из списка.**
+После удаления роли из `team` она снова появляется в dropdown при следующем
+открытии. Пользователь не может полностью очистить список и начать заново —
+роли «тянутся откуда-то». Похоже на кэширование в JS или регенерацию из
+`available_roles` на каждое открытие dropdown.
+
+**Где искать:** `agent_workflow_ui/render/default_templates/project-setup.html.j2`
+— JS handler для dropdown open, фильтр уже-выбранных ролей.
+
+**26-B. В dropdown отображаются пустые строки.**
+В списке выбора ролей есть пустые элементы — непонятно для чего. Возможно
+это роли с пустым `title` после BD-11 fallback'а на filename stem, или
+пустые записи в `available_roles`.
+
+**Где искать:** `opencode_config.scan_global_roles()` может возвращать
+пустые title для некоторых файлов. Также JS template может рендерить
+пустые `<option>` для разделителей.
+
+**26-C. Кривая вёрстка при выборе роли.**
+Когда роль выбрана и появляется в списке team:
+- Корзина удаления находится **под** строкой, смещая её вверх
+- Должна быть **справа** как иконка сохранения (как в других UI элементах)
+
+**Где искать:** `project-setup.html.j2` — CSS flex/grid layout для
+team-member row. `align-items: center` и `justify-content: space-between`
+вероятно не применены к контейнеру.
+
+**Fix approach.** Все три бага в одном шаблоне. Переписать JS handler
+dropdown'а + CSS layout team-row + фильтр пустых titles в scan_global_roles.
+
+**Found during:** dogfood v9 — user observed while filling 4-role form.
+
+---
+
 ### BD-22 · BD-20 false positive — terminates subprocess on stale signals from previous runs
 
 **Status:** OPEN. **Priority:** CRITICAL — blocks reliable dogfooding.

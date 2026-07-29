@@ -196,6 +196,84 @@ def scan_global_roles() -> tuple[list[dict], list[dict]]:
     return supervisor_variants, custom_agents
 
 
+def scan_global_skills() -> list[dict]:
+    """BD-27: scan ~/.config/opencode/skills/*/SKILL.md for the skills dropdown.
+
+    Returns a list of dicts with: id, title, description, content (full body
+    for preview / to embed in role.md), path.
+
+    Unlike scan_global_roles (which returns short stubs from
+    ~/.config/awf/roles/), this returns the FULL skill content — that's
+    what gets copied into .agentic/roles/<role>.md when the user picks a
+    skill.
+
+    Skills are sorted alphabetically by title.
+    """
+    skills_root = Path.home() / ".config" / "opencode" / "skills"
+    if not skills_root.is_dir():
+        return []
+
+    result: list[dict] = []
+    for skill_dir in sorted(skills_root.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_file.is_file():
+            continue
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        title = _extract_role_title(content, fallback=skill_dir.name)
+        # Description: try to extract first non-empty line after title.
+        description = ""
+        body = content
+        # Strip frontmatter for description search.
+        if body.lstrip().startswith("---"):
+            lines = body.lstrip().split("\n")
+            end = None
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    end = i
+                    break
+            if end is not None:
+                body = "\n".join(lines[end + 1 :])
+
+        for line in body.split("\n"):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                description = stripped[:140]
+                break
+
+        # Use frontmatter description if present.
+        if content.lstrip().startswith("---"):
+            lines = content.lstrip().split("\n")
+            end = None
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    end = i
+                    break
+            if end is not None:
+                import re
+
+                for line in lines[1:end]:
+                    m = re.match(r'^\s*description\s*:\s*["\']?(.+?)["\']?\s*$', line)
+                    if m:
+                        description = m.group(1).strip()[:140]
+                        break
+
+        result.append({
+            "id": skill_dir.name,
+            "title": title,
+            "description": description,
+            "content": content,
+            "path": str(skill_file),
+        })
+
+    return result
+
+
 def save_custom_role(name: str, content: str, role_type: str = "agent") -> Path:
     """Save a custom role .md to ~/.config/awf/roles/.
 

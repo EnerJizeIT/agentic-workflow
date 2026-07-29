@@ -32,8 +32,10 @@ def fake_home_with_skills(tmp_path: Path, monkeypatch) -> Path:
     skills_root.mkdir(parents=True)
 
     # Seed 4 skills matching common awf roles.
+    # BD-27: skills directory names match role names (no mapping needed).
+    # Form puts skill content directly into .agentic/roles/<role>.md.
     skills = {
-        "system-analyst": (
+        "system-analysis": (
             "# System Analyst\n\n"
             "Analyze requirements. Decompose TODO into clear specifications.\n"
             "Output: requirements document. Do NOT write production code.\n"
@@ -43,7 +45,7 @@ def fake_home_with_skills(tmp_path: Path, monkeypatch) -> Path:
             "Implement features per specification. Write production code.\n"
             "Output: implementation + tests. Do NOT audit.\n"
         ),
-        "qa-review": (
+        "qa": (
             "# QA\n\n"
             "Review code. Find bugs. Write regression tests.\n"
             "Output: test report + bug fixes.\n"
@@ -146,7 +148,7 @@ class TestNormalizeBackgroundAutoCreates:
         assert len(fm["global_sha"]) == 64  # SHA-256 hex
 
         # Verify the SHA matches the source.
-        source = fake_home_with_skills / ".config" / "opencode" / "skills" / "system-analyst" / "SKILL.md"
+        source = fake_home_with_skills / ".config" / "opencode" / "skills" / "system-analysis" / "SKILL.md"
         expected_sha = hashlib.sha256(source.read_bytes()).hexdigest()
         assert fm["global_sha"] == expected_sha
 

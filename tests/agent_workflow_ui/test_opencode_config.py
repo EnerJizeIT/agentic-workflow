@@ -10,6 +10,7 @@ from agent_workflow_ui.opencode_config import (
     delete_custom_role,
     save_custom_role,
     scan_global_roles,
+    scan_global_skills,
 )
 
 from agent_workflow_ui import opencode_config
@@ -25,6 +26,20 @@ def isolated_roles_dir(tmp_path, monkeypatch):
     roles.mkdir(parents=True)
     monkeypatch.setattr(opencode_config, "GLOBAL_ROLES_DIR", roles)
     return roles
+
+
+@pytest.fixture
+def isolated_skills_dir(tmp_path, monkeypatch):
+    """BD-27: redirect Path.home() so scan_global_skills finds test fixtures.
+
+    Returns the skills/ directory — tests write SKILL.md files into
+    subdirectories (e.g. skills/system-analyst/SKILL.md).
+    """
+    fake_home = tmp_path / "home"
+    skills_root = fake_home / ".config" / "opencode" / "skills"
+    skills_root.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    return skills_root
 
 
 # ── _slugify ──────────────────────────────────────────────────────────────────
@@ -373,3 +388,75 @@ def test_read_recent_models_respects_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     recent = opencode_config.read_recent_models(limit=2)
     assert len(recent) == 2
+
+
+# ── BD-27: scan_global_skills ────────────────────────────────────────────────
+
+
+def test_scan_global_skills_empty(isolated_skills_dir):
+    """No skills → empty list."""
+    assert scan_global_skills() == []
+
+
+def test_scan_global_skills_finds_skill_md(isolated_skills_dir):
+    """Skill with SKILL.md is discovered with full content."""
+    skill_dir = isolated_skills_dir / "developer"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Developer\n\nImplement features.\n")
+
+    skills = scan_global_skills()
+    assert len(skills) == 1
+    s = skills[0]
+    assert s["id"] == "developer"
+    assert s["title"] == "Developer"
+    assert "Implement features" in s["content"]
+    assert s["path"].endswith("SKILL.md")
+
+
+def test_scan_global_skills_extracts_description_from_frontmatter(isolated_skills_dir):
+    """Description from YAML frontmatter takes precedence over body text."""
+    skill_dir = isolated_skills_dir / "qa-review"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: QA Review\ndescription: \"Find bugs and write tests\"\n---\n# QA\nbody"
+    )
+
+    skills = scan_global_skills()
+    assert len(skills) == 1
+    assert "Find bugs" in skills[0]["description"]
+
+
+def test_scan_global_skills_fallback_to_body_first_line(isolated_skills_dir):
+    """Without frontmatter description, first non-empty body line is used."""
+    skill_dir = isolated_skills_dir / "minimal"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Minimal\nThis is the description.\nMore body.")
+
+    skills = scan_global_skills()
+    assert skills[0]["description"] == "This is the description."
+
+
+def test_scan_global_skills_skips_dirs_without_skill_md(isolated_skills_dir):
+    """Directories without SKILL.md are skipped silently."""
+    (isolated_skills_dir / "no-skill").mkdir()
+    (isolated_skills_dir / "no-skill" / "README.md").write_text("not a skill")
+
+    skill_dir = isolated_skills_dir / "has-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Has Skill\n")
+
+    skills = scan_global_skills()
+    assert len(skills) == 1
+    assert skills[0]["id"] == "has-skill"
+
+
+def test_scan_global_skills_returns_sorted_by_id(isolated_skills_dir):
+    """Skills are returned alphabetically by directory name."""
+    for name in ["zebra", "alpha", "monkey"]:
+        d = isolated_skills_dir / name
+        d.mkdir()
+        (d / "SKILL.md").write_text(f"# {name}\n")
+
+    skills = scan_global_skills()
+    ids = [s["id"] for s in skills]
+    assert ids == ["alpha", "monkey", "zebra"]

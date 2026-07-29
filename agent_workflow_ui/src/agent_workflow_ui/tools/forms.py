@@ -10,7 +10,7 @@ import yaml
 from jinja2 import TemplateNotFound
 
 from ..browser import open_path
-from ..opencode_config import scan_global_roles
+from ..opencode_config import scan_global_roles, scan_global_skills
 from ..render.engine import render_template
 from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_registry
 
@@ -93,6 +93,10 @@ async def open_form(
 
     # Scan global custom roles for supervisor variants + custom agents
     supervisor_variants, custom_agents = scan_global_roles()
+    # BD-27: scan global skills (full content) — these are the primary source
+    # for team roles. User picks a skill, content goes straight into
+    # .agentic/roles/<role>.md — no mapping/guessing needed.
+    global_skills = scan_global_skills()
 
     # Existing slugs for client-side conflict detection (JS confirm before overwrite)
     existing_supervisor_slugs = [sv["id"] for sv in supervisor_variants]
@@ -105,6 +109,7 @@ async def open_form(
             "submit_url": submit_url,
             "custom_supervisor_roles": supervisor_variants,
             "custom_agents": custom_agents,
+            "global_skills": global_skills,
             "existing_supervisor_slugs": existing_supervisor_slugs,
             "existing_agent_slugs": existing_agent_slugs,
         })

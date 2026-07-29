@@ -200,14 +200,14 @@ def test_project_setup_uses_available_models_global(env):
 
 
 def test_project_setup_has_custom_agent_option(env):
-    """Template has 'Свой агент' as a dropdown option (not a separate button)."""
+    """Template has 'Свой .md файл' as a dropdown option (custom upload)."""
     html = render_template(env, "project-setup", {
         "form_id": "FORM-001",
         "submit_url": "http://127.0.0.1:13747/submit/FORM-001",
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
     assert "__custom__" in html
-    assert "Свой агент" in html
+    assert "Свой .md файл" in html
 
 
 def test_project_setup_has_file_picker(env):
