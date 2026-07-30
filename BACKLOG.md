@@ -232,7 +232,7 @@ A — правильное архитектурно, но feature-work. C — wo
 Найдены project-auditor + qa-review skills. Не блокируют работу, требуют
 дизайн-решения или крупного refactor. Каждое — отдельная задача.
 
-### A1 · `git add -A` in commit_all captures unrelated working-tree changes
+### A1 · `git add -A` in commit_all captures unrelated working-tree changes — CLOSED (baseline diff isolation)
 
 **Symptom.** Worker finishes TODO, orchestrator auto-commits via
 `git_utils.commit_all` (`awf/git_utils.py:47`) which does `git add -A`.
@@ -246,7 +246,7 @@ jira-epic-presenter `0614b8d` (4 worker + 4 supervisor files).
 - C) Stash supervisor changes at start, pop at end. Risk: stash conflicts.
 - D) `git commit` with explicit paths from baseline diff (no `git add`).
 
-### A2 · HTTP endpoint lacks CSRF protection
+### A2 · HTTP endpoint lacks CSRF protection — CLOSED (Origin whitelist)
 
 **Symptom.** POST `/submit/FORM-...` accepts data without CSRF token,
 no Origin/Referer check. Form IDs predictable (`FORM-YYYYMMDDHHMMSS-XXXX`).
@@ -259,7 +259,7 @@ Origin header whitelist; OR double-submit cookie.
 
 **Location:** `agent_workflow_ui/src/agent_workflow_ui/http_endpoint.py:98-174`.
 
-### A3 · `_ack_page` HTML embedded in Python f-string
+### A3 · `_ack_page` HTML embedded in Python f-string — CLOSED (ack.html.j2 template)
 
 **Symptom.** `http_endpoint._ack_page` (`:49-88`) builds HTML as f-string.
 No Jinja2 autoescape (manual `html.escape`), cannot be overridden
@@ -269,7 +269,7 @@ project-level, duplicates dark-theme CSS from form templates.
 `render_template()`. Benefits: localization, project override, autoescape,
 consistent styling.
 
-### A4 · Temp HTML files never cleaned up — disk leak
+### A4 · Temp HTML files never cleaned up — disk leak — CLOSED (cleanup_temp_files)
 
 **Symptom.** Each `open_form()` creates `agent-workflow-ui-FORM-*.html`
 in `tempfile.gettempdir()` (`tools/forms.py:108-110`). Files never deleted.
@@ -278,7 +278,7 @@ Active use → hundreds stale in `/tmp/`.
 **Approach:** cleanup pass at plugin startup (remove files older than
 `default_ttl_seconds`) + delete on `read_submit()` when form consumed.
 
-### A5 · `attempt_auto_done` autocommits without explicit approval
+### A5 · `attempt_auto_done` autocommits without explicit approval — CLOSED (auto-DONE preserves baseline gate)
 
 **Symptom.** Worker finishes without DONE signal, verify commands pass,
 git diff shows changes → orchestrator synthesizes DONE and runs
@@ -290,7 +290,7 @@ purposes? If yes — apply BD-8 APPROVE gate. If no — document explicitly.
 
 **Location:** `awf/verify.py:55`, `awf/orchestrator.py:564`.
 
-### A6 · orchestrator.py 677+ lines — SRP violation
+### A6 · orchestrator.py 677+ lines — SRP violation — CLOSED (split into modules)
 
 **Symptom.** `awf/orchestrator.py` hosts: state machine (`run_pipeline`),
 normalize stage, drift detection, role resolution, prompt building,
@@ -313,7 +313,7 @@ Same logic copy-pasted.
 
 **Refactor.** Extract `awf/skills.py` with `compute_drift(skills_dir) -> list[DriftResult]`. Both callers format the data differently.
 
-### A8 · `awf/cmd_init.py` imports plugin (architecture boundary violation)
+### A8 · `awf/cmd_init.py` imports plugin (architecture boundary violation) — CLOSED (find_spec)
 
 **Symptom.** `awf/cmd_init.py:234` does `importlib.import_module("agent_workflow_ui")`. Core → plugin dependency. Vision says plugin is agnostic.
 
@@ -322,7 +322,7 @@ Same logic copy-pasted.
 **Options:** `pip show agent-workflow-ui` subprocess; OR separate
 `awf plugin check` command; OR document as accepted exception.
 
-### A9 · `GLOBAL_ROLES_DIR` doesn't respect `XDG_CONFIG_HOME`
+### A9 · `GLOBAL_ROLES_DIR` doesn't respect `XDG_CONFIG_HOME` — CLOSED (XDG_CONFIG_HOME)
 
 **Symptom.** `opencode_config.py:13` hardcodes `Path.home() / ".config"`.
 Same in `skill_installer.py:32`. Users with `XDG_CONFIG_HOME=/custom/path`
@@ -330,7 +330,7 @@ find roles in wrong location.
 
 **Fix.** `Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))`.
 
-### A10 · FormRegistry in-memory only — data loss on crash
+### A10 · FormRegistry in-memory only — data loss on crash — CLOSED (forms_registry.yaml)
 
 **Symptom.** All open forms in module-level `_forms` dict (`state.py:35-78`).
 MCP subprocess crash/restart → pending forms lost. Submit to dead form_id →
@@ -570,7 +570,7 @@ of vllm/llm despite config.yaml mapping.
 
 ---
 
-### BD-25 · Awf subprocess attaches to running `opencode serve` — OPEN
+### BD-25 · Awf subprocess attaches to running `opencode serve` — CLOSED (OPENCODE_SERVER_* stripped from env)
 
 **Status:** OPEN. Lower priority — may be related to BD-23 fix.
 
