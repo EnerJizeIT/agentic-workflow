@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+# A10: disable FormRegistry persistence globally for all tests — keeps
+# test isolation (no ~/.config/awf/state/forms_registry.yaml reads/writes).
+os.environ.setdefault("AWF_DISABLE_FORM_PERSIST", "1")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"

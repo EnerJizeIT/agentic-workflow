@@ -35,15 +35,81 @@ class FormRecord:
 
 
 class FormRegistry:
-    """Thread-safe registry of forms opened in current plugin session."""
+    """Thread-safe registry of forms opened in current plugin session.
+
+    A10: persists to .agentic/state/forms_registry.yaml so MCP subprocess
+    crash/restart doesn't lose pending forms.
+    """
+
+    PERSIST_FILE = Path.home() / ".config" / "awf" / "state" / "forms_registry.yaml"
+    PERSIST_ENABLED = True  # set False in tests via env AWF_DISABLE_FORM_PERSIST=1
 
     def __init__(self) -> None:
         self._forms: dict[str, FormRecord] = {}
         self._lock = threading.Lock()
+        # A10: tests disable persistence via env var to keep isolation
+        import os
+        if os.environ.get("AWF_DISABLE_FORM_PERSIST", ""):
+            FormRegistry.PERSIST_ENABLED = False
+        if FormRegistry.PERSIST_ENABLED:
+            self._load_persisted()
+
+    def _load_persisted(self) -> None:
+        """A10: load registry from disk on startup (if exists)."""
+        if not FormRegistry.PERSIST_ENABLED:
+            return
+        if not self.PERSIST_FILE.is_file():
+            return
+        try:
+            import yaml
+            data = yaml.safe_load(self.PERSIST_FILE.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            for form_id, rec_dict in data.items():
+                if not isinstance(rec_dict, dict):
+                    continue
+                try:
+                    record = FormRecord(
+                        form_id=form_id,
+                        template=rec_dict.get("template", ""),
+                        opened_at=datetime.fromisoformat(rec_dict["opened_at"]) if rec_dict.get("opened_at") else datetime.now(timezone.utc),
+                        status=rec_dict.get("status", "pending"),
+                        expires_at=datetime.fromisoformat(rec_dict["expires_at"]) if rec_dict.get("expires_at") else None,
+                        project_dir=Path(rec_dict["project_dir"]) if rec_dict.get("project_dir") else None,
+                    )
+                    self._forms[form_id] = record
+                except (KeyError, ValueError, TypeError):
+                    continue
+        except (OSError, yaml.YAMLError):
+            pass
+
+    def _persist(self) -> None:
+        """A10: write registry to disk."""
+        if not FormRegistry.PERSIST_ENABLED:
+            return
+        try:
+            import yaml
+            self.PERSIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            for form_id, record in self._forms.items():
+                data[form_id] = {
+                    "template": record.template,
+                    "opened_at": record.opened_at.isoformat() if record.opened_at else None,
+                    "status": record.status,
+                    "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+                    "project_dir": str(record.project_dir) if record.project_dir else None,
+                }
+            self.PERSIST_FILE.write_text(
+                yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     def add(self, record: FormRecord) -> None:
         with self._lock:
             self._forms[record.form_id] = record
+            self._persist()
 
     def get(self, form_id: str) -> FormRecord | None:
         with self._lock:
@@ -60,6 +126,7 @@ class FormRegistry:
                 record.submitted_at = now
             elif status == "cancelled":
                 record.cancelled_at = now
+            self._persist()
             return record
 
     def list_pending(self) -> list[FormRecord]:

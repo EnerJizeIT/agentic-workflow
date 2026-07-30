@@ -104,6 +104,21 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(410, f"Form {form_id} was cancelled.")
             return
 
+        # A2: CSRF protection — verify Origin header is localhost or absent
+        origin = self.headers.get("Origin", "") or self.headers.get("Referer", "")
+        if origin:
+            # Allow only localhost origins (127.0.0.1, localhost, or file://)
+            allowed_prefixes = (
+                "http://127.0.0.1",
+                "http://localhost",
+                "https://127.0.0.1",
+                "https://localhost",
+                "file://",
+            )
+            if not origin.startswith(allowed_prefixes):
+                self._send_text(403, f"Forbidden: Origin '{origin}' not allowed")
+                return
+
         try:
             content_length = int(self.headers.get("Content-Length", 0))
         except (ValueError, TypeError):

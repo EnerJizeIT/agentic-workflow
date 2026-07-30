@@ -217,10 +217,13 @@ def _offer_plugin_install(project_name):
     print("  See: vision/agent-ui-plugin.md")
 
     try:
-        import importlib
-        importlib.import_module("agent_workflow_ui")
-        plugin_installed = True
-    except ImportError:
+        # A8: use importlib.util.find_spec instead of import_module to avoid
+        # actually loading the plugin (which has side effects: skill_installer
+        # auto-runs on import). find_spec only checks if the package is
+        # importable without executing it.
+        import importlib.util
+        plugin_installed = importlib.util.find_spec("agent_workflow_ui") is not None
+    except (ImportError, ValueError):
         plugin_installed = False
 
     if plugin_installed:
