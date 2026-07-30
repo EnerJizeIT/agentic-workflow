@@ -28,7 +28,18 @@ def awf_subprocess_env() -> dict[str, str]:
             "webfetch": "allow",
         }
     })
+    # BD-25: explicit whitelist of env vars to strip (was wide prefix match
+    # which could nuke legit vars like OPENCODE_SERVER_STATUS).
+    # These are the ones that cause opencode run to attach to a running
+    # 'opencode serve' instance.
+    strip_keys = (
+        "OPENCODE_SERVER",
+        "OPENCODE_SERVER_URL",
+        "OPENCODE_SERVER_TOKEN",
+        "OPENCODE_HOST",
+        "OPENCODE_HOST_TOKEN",
+    )
     for key in list(env.keys()):
-        if key.startswith("OPENCODE_SERVER") or key.startswith("OPENCODE_HOST"):
+        if key in strip_keys:
             env.pop(key, None)
     return env

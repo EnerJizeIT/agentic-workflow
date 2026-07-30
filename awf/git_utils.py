@@ -16,6 +16,11 @@ def _git(cwd: Path, *args: str, check: bool = True) -> str:
     return result.stdout
 
 
+def git_stdout(cwd: Path | str, *args: str, check: bool = True) -> str:
+    """Public alias for _git — for callers outside this module."""
+    return _git(Path(cwd), *args, check=check)
+
+
 def current_sha(project_dir: str | Path) -> str:
     """Return the full SHA of HEAD."""
     return _git(Path(project_dir), "rev-parse", "HEAD").strip()

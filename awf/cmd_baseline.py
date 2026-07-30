@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
-from . import paths
+from . import git_utils, paths
 
 
 def run(args: Any) -> int:
@@ -26,11 +26,11 @@ def run(args: Any) -> int:
     print(f"Creating baseline for {todo_id}...")
 
     # 1. Git SHA
-    is_git = _is_git_repo(".")
+    is_git = git_utils.is_git_repo(Path("."))
     if is_git:
-        sha = _git_stdout(".", "rev-parse", "HEAD").strip()
+        sha = git_utils.git_stdout(Path("."), "rev-parse", "HEAD").strip()
         (context_dir / f"BASELINE-{todo_id}.sha").write_text(sha + "\n", encoding="utf-8")
-        status = _git_stdout(".", "status", "--short", check=False)
+        status = git_utils.git_stdout(Path("."), "status", "--short", check=False)
         (context_dir / f"BASELINE-{todo_id}.status").write_text(status, encoding="utf-8")
     else:
         (context_dir / f"BASELINE-{todo_id}.sha").write_text("(not a git repo)\n", encoding="utf-8")
@@ -83,21 +83,3 @@ def run(args: Any) -> int:
             print(f"  {f.name}")
 
     return 0
-
-
-def _is_git_repo(project_dir: str) -> bool:
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        cwd=project_dir, capture_output=True, check=False,
-    )
-    return result.returncode == 0
-
-
-def _git_stdout(cwd: str, *args: str, check: bool = True) -> str:
-    result = subprocess.run(
-        ["git"] + list(args),
-        cwd=cwd, capture_output=True, text=True, check=False,
-    )
-    if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result.stdout

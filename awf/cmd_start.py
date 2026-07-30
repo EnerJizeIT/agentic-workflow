@@ -29,11 +29,29 @@ def _run_in_background(args: Any) -> int:
 
     # Rebuild the argv WITHOUT --background so the detached child runs normally.
     # We keep all other args (including --auto, --pipeline, --from-stage, --timeout).
+    # Auditor finding: was `if arg in ("start", "--background")` — fragile string
+    # match skipped args whose VALUE happened to be "start" (e.g. project named
+    # "start"). Now skip ONLY positional "start" (first argv element after the
+    # bin name) and the --background flag.
+    raw_argv = sys.argv[1:]
     child_argv = [sys.executable, "-m", "awf", "start"]
-    for arg in sys.argv[1:]:
-        # Skip the literal program name (bin/awf or ./bin/awf) and --background.
-        if arg in ("start", "--background"):
+    skip_next_value = False
+    for i, arg in enumerate(raw_argv):
+        if skip_next_value:
+            # This is the value of --project-dir (or similar) — keep it.
+            skip_next_value = False
+            child_argv.append(arg)
             continue
+        if i == 0 and arg == "start":
+            # First positional is the subcommand "start" — drop it.
+            continue
+        if arg == "--background":
+            # The flag we're stripping.
+            continue
+        if arg.startswith("--project-dir"):
+            # Could be "--project-dir=/path" or "--project-dir /path"
+            if "=" not in arg:
+                skip_next_value = True
         child_argv.append(arg)
 
     # BD-30: --background does NOT force --auto anymore. Background just

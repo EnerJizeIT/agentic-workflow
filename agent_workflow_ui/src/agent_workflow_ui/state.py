@@ -5,6 +5,7 @@ is a cache for fast `list_pending_forms` queries and form_id assignment.
 """
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +14,18 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import yaml
+
+
+def _xdg_config_home() -> Path:
+    """A9: respect XDG_CONFIG_HOME env var (was hardcoded ~/.config).
+
+    Local copy to avoid circular import with opencode_config.py.
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser()
+    return Path.home() / ".config"
+
 
 if TYPE_CHECKING:
     # Avoid circular import: config.py imports nothing from state.py at module level,
@@ -41,7 +54,9 @@ class FormRegistry:
     crash/restart doesn't lose pending forms.
     """
 
-    PERSIST_FILE = Path.home() / ".config" / "awf" / "state" / "forms_registry.yaml"
+    # A9/A10: respect XDG_CONFIG_HOME (was hardcoded ~/.config).
+    # Uses local _xdg_config_home (no cross-package import to awf.xdg).
+    PERSIST_FILE = _xdg_config_home() / "awf" / "state" / "forms_registry.yaml"
     PERSIST_ENABLED = True  # set False in tests via env AWF_DISABLE_FORM_PERSIST=1
 
     def __init__(self) -> None:
@@ -84,12 +99,11 @@ class FormRegistry:
             pass
 
     def _persist(self) -> None:
-        """A10: write registry to disk."""
+        """A10: write registry to disk atomically."""
         if not FormRegistry.PERSIST_ENABLED:
             return
         try:
             import yaml
-            self.PERSIST_FILE.parent.mkdir(parents=True, exist_ok=True)
             data = {}
             for form_id, record in self._forms.items():
                 data[form_id] = {
@@ -99,10 +113,7 @@ class FormRegistry:
                     "expires_at": record.expires_at.isoformat() if record.expires_at else None,
                     "project_dir": str(record.project_dir) if record.project_dir else None,
                 }
-            self.PERSIST_FILE.write_text(
-                yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-                encoding="utf-8",
-            )
+            _atomic_write_text(self.PERSIST_FILE, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
         except OSError:
             pass
 

@@ -118,6 +118,88 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
 
 
+def _handle_next(
+    project_dir: Path,
+    logs_dir: Path,
+    s_name: str,
+    current_todo: str,
+    action: str,
+    auto: bool,
+    retry_counts: list[int],
+    stage_idx: int,
+) -> int:
+    """Transition: next / commit_and_next / commit_and_report."""
+    baseline_sha = _read_baseline_sha(project_dir, current_todo)
+    _maybe_commit(s_name, current_todo, action, project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha)
+    print("Moving to next stage.")
+    retry_counts[stage_idx] = 0
+    return stage_idx + 1
+
+
+def _handle_escalate(
+    project_dir: Path,
+    logs_dir: Path,
+    s_name: str,
+    current_todo: str,
+    auto: bool,
+    stage: Stage,
+    retry_counts: list[int],
+    stage_idx: int,
+) -> tuple[int, str, int]:
+    """Transition: BLOCKED → supervisor replan + retry same stage.
+
+    Returns (new_stage_idx, new_current_todo, exit_code).
+    exit_code != 0 means pipeline should stop.
+    """
+    max_r = stage.max_retries
+    if retry_counts[stage_idx] >= max_r:
+        print(f"BLOCKED — max retries reached ({max_r}). Pipeline stopped.")
+        _log(logs_dir, f"Max retries reached for stage {s_name}")
+        return stage_idx, current_todo, 1
+
+    retry_counts[stage_idx] += 1
+    print(f"BLOCKED — escalating to supervisor (attempt {retry_counts[stage_idx]}/{max_r})")
+    _log(logs_dir, "Escalating to supervisor for retry")
+
+    replan_stage = Stage(name="replan", role="supervisor", kind="replan")
+    _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
+
+    new_todo = _find_active_todo(project_dir)
+    if not new_todo:
+        print("Supervisor did not create a new TODO. Stopping.")
+        return stage_idx, current_todo, 1
+    print(f"New TODO: {new_todo} — retrying stage '{s_name}'")
+    return stage_idx, new_todo, 0  # stay on same stage_idx
+
+
+def _handle_rollback(
+    project_dir: Path,
+    logs_dir: Path,
+    stages: list[Stage],
+    current_todo: str,
+    auto: bool,
+    target: str,
+) -> tuple[int, str, int]:
+    """Transition: rollback to a target stage + supervisor replan.
+
+    Returns (new_stage_idx, new_current_todo, exit_code).
+    """
+    target_idx = _find_stage_index(stages, target)
+    if target_idx < 0:
+        print(f"ERROR: Rollback target '{target}' not found in pipeline")
+        return -1, current_todo, 1
+
+    print(f"Rolling back to stage: {stages[target_idx].name}")
+    _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
+
+    replan_stage = Stage(name="replan", role="supervisor", kind="replan")
+    _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
+    new_todo = _find_active_todo(project_dir)
+    if new_todo:
+        new_todo = new_todo
+    return target_idx, new_todo, 0
+
+
 def run_pipeline(args: Any) -> int:
     """Execute the pipeline and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
@@ -296,50 +378,25 @@ def run_pipeline(args: Any) -> int:
         action, target = resolve_transition(stage, sig_type)
         _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
 
+        # A6 refactor: dispatch to handler functions (was 50-line if/elif chain).
         if action in ("next", "commit_and_next", "commit_and_report"):
-            baseline_sha = _read_baseline_sha(project_dir, current_todo)
-            _maybe_commit(s_name, current_todo, action, project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha)
-            print("Moving to next stage.")
-            retry_counts[stage_idx] = 0
-            stage_idx += 1
+            stage_idx = _handle_next(
+                project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
+            )
 
         elif action == "escalate":
-            max_r = stage.max_retries
-            if retry_counts[stage_idx] < max_r:
-                retry_counts[stage_idx] += 1
-                print(f"BLOCKED — escalating to supervisor (attempt {retry_counts[stage_idx]}/{max_r})")
-                _log(logs_dir, "Escalating to supervisor for retry")
-
-                replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-                _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
-
-                new_todo = _find_active_todo(project_dir)
-                if new_todo:
-                    current_todo = new_todo
-                    print(f"New TODO: {current_todo} — retrying stage '{s_name}'")
-                else:
-                    print("Supervisor did not create a new TODO. Stopping.")
-                    return 1
-            else:
-                print(f"BLOCKED — max retries reached ({max_r}). Pipeline stopped.")
-                _log(logs_dir, f"Max retries reached for stage {s_name}")
-                return 1
+            stage_idx, current_todo, exit_code = _handle_escalate(
+                project_dir, logs_dir, s_name, current_todo, auto, stage, retry_counts, stage_idx,
+            )
+            if exit_code != 0:
+                return exit_code
 
         elif action == "rollback":
-            target_idx = _find_stage_index(stages, target)
-            if target_idx >= 0:
-                print(f"Rolling back to stage: {stages[target_idx].name}")
-                _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
-                stage_idx = target_idx
-
-                replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-                _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
-                new_todo = _find_active_todo(project_dir)
-                if new_todo:
-                    current_todo = new_todo
-            else:
-                print(f"ERROR: Rollback target '{target}' not found in pipeline")
-                return 1
+            stage_idx, current_todo, exit_code = _handle_rollback(
+                project_dir, logs_dir, stages, current_todo, auto, target,
+            )
+            if exit_code != 0:
+                return exit_code
 
         elif action == "stop":
             print("Pipeline stopped by policy.")
