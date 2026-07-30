@@ -341,7 +341,7 @@ mutation. Restore on startup.
 
 ---
 
-### BD-10 · Skills normalization layer (global reference + local adaptation) — FIXED
+### BD-10 · Skills normalization layer — CLOSED (BD-27 + legacy cleanup)
 
 **Status:** Fixed in commit `8a8557f`.
 

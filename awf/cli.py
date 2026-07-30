@@ -25,7 +25,6 @@ def _print_top_level_help() -> int:
         "  baseline <id>     Create a baseline snapshot\n"
         "  rollback <id>     Rollback to baseline\n"
         "  reset             Clean runtime data (inbox/outbox/logs)\n"
-        "  normalize         Mark normalize needed or check skill drift\n"
         "  help              Show this message\n"
         "\n"
         "Run 'awf <command> --help' for command-specific options.\n"
@@ -150,19 +149,6 @@ def _dispatch_subcommand(argv):
 
     sub.add_parser("report", help="Show summary report")
 
-    p_normalize = sub.add_parser("normalize", help="Mark normalize needed or check skill drift")
-    p_normalize.add_argument(
-        "--check-drift",
-        dest="check_drift",
-        action="store_true",
-        help="Check if local skills have drifted from their global sources",
-    )
-    p_normalize.add_argument(
-        "--project-dir",
-        default=".",
-        help="Path to project root (default: current directory)",
-    )
-
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -190,9 +176,6 @@ def _dispatch_subcommand(argv):
     if args.command == "report":
         from . import cmd_report
         return cmd_report.run(args)
-    if args.command == "normalize":
-        from . import cmd_normalize
-        return cmd_normalize.run(args)
 
     print(
         f"awf: '{args.command}' not implemented in Python yet",

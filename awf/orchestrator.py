@@ -76,34 +76,6 @@ def _awf_subprocess_env() -> dict[str, str]:
 # content into .agentic/roles/<role>.md. This module just checks completeness.
 
 
-def _resolve_global_skill_path(role: str) -> Path | None:
-    """BD-13/26 (legacy): find the global SKILL.md for an awf role.
-
-    DEPRECATED after BD-27: form should put skill content directly into
-    .agentic/roles/<role>.md, so this fallback shouldn't be needed.
-
-    Kept for backward compat — looks for:
-    1. ~/.config/opencode/skills/<role>/SKILL.md
-    2. ~/.config/opencode/skills/agent-<role>/SKILL.md
-    3. Glob ~/.config/opencode/skills/*<role>*/SKILL.md
-    """
-    skills_root = Path.home() / ".config" / "opencode" / "skills"
-
-    candidates = [
-        skills_root / role / "SKILL.md",
-        skills_root / f"agent-{role}" / "SKILL.md",
-    ]
-    for c in candidates:
-        if c.is_file():
-            return c
-
-    matches = sorted(skills_root.glob(f"*{role}*/SKILL.md"))
-    if matches:
-        return matches[0]
-
-    return None
-
-
 def _run_subprocess_until_signal(
     cmd: list[str],
     cwd: str | Path,
@@ -582,15 +554,9 @@ def _run_agent_stage(
 
     cmd += ["--", prompt]
 
-    skills_dir = paths.agentic_dir(project_dir) / "skills"
-    local_skill = skills_dir / f"{role}.md"
-    if local_skill.exists():
-        cmd.insert(cmd.index("--"), "--file")
-        cmd.insert(cmd.index("--"), str(local_skill))
-        print(f"Local skill: {local_skill}")
-        _log(logs_dir, f"Using local skill: {local_skill}")
-    else:
-        _log(logs_dir, f"No local skill for {role} (using role .md only)")
+    # BD-27: role.md already contains skill content (form writes it there
+    # directly). No separate .agentic/skills/ lookup needed — that was
+    # BD-13 legacy removed when form started embedding skill into role.md.
 
     # BD-20: watch for DONE / BLOCKED signal in outbox for this todo_id.
     # If subprocess finishes the task but doesn't exit (known opencode hang),
@@ -864,261 +830,6 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
 
 
-def _check_needs_normalize(project_dir: Path) -> tuple[bool, list[dict], Path | None]:
-    """Check .agentic/state/needs_normalize.yaml.
-
-    Returns (needed, team_list, state_file_path). Does NOT delete the file.
-    """
-    import yaml
-
-    state_file = paths.agentic_dir(project_dir) / "state" / "needs_normalize.yaml"
-    if not state_file.exists():
-        return False, [], None
-    try:
-        data = yaml.safe_load(state_file.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError):
-        return False, [], None
-    if not isinstance(data, dict) or not data.get("needed"):
-        return False, [], None
-    team = data.get("team", [])
-    return True, team if isinstance(team, list) else [], state_file
-
-
-def _consume_needs_normalize(state_file: Path | None) -> None:
-    """Delete the needs_normalize state file after successful normalize."""
-    if state_file and state_file.exists():
-        state_file.unlink()
-
-
-def auto_normalize_skills(
-    team: list[dict],
-    project_dir: Path,
-    logs_dir: Path,
-) -> list[Path]:
-    """BD-13/26: auto-create local skills for every team role.
-
-    For each role in team:
-    1. Find the global SKILL.md (via ``_resolve_global_skill_path``).
-    2. If found: copy body to ``.agentic/skills/<role>.md`` with frontmatter
-       (derived_from_global, global_path, global_sha, normalized_at,
-       pipeline_context) + Pipeline contract section (BD-16).
-    3. If not found: log warning, skip (don't crash the pipeline).
-
-    Returns the list of created/updated local skill paths.
-
-    This function is called automatically when normalize_skills runs in
-    background mode (no human at the wheel). It is safe to call multiple
-    times — idempotent on identical source.
-    """
-    import hashlib
-    from datetime import datetime, timezone
-
-    import yaml as yaml_module
-
-    try:
-        from .skills_contract import render_pipeline_contract
-    except ImportError:
-        render_pipeline_contract = None  # type: ignore[assignment]
-
-    skills_dir = paths.agentic_dir(project_dir) / "skills"
-    skills_dir.mkdir(parents=True, exist_ok=True)
-
-    created: list[Path] = []
-    n = len(team)
-
-    for i, member in enumerate(team, 1):
-        if not isinstance(member, dict):
-            continue
-        role = str(member.get("role") or member.get("agent") or "").strip()
-        if not role:
-            continue
-
-        global_skill = _resolve_global_skill_path(role)
-        if global_skill is None:
-            msg = f"normalize: no global skill found for role '{role}' — skipping"
-            print(f"  WARNING: {msg}")
-            _log(logs_dir, msg)
-            continue
-
-        body = global_skill.read_text(encoding="utf-8")
-        sha = hashlib.sha256(global_skill.read_bytes()).hexdigest()
-        now = datetime.now(timezone.utc).isoformat()
-
-        prev_role = team[i - 2].get("role", "") if i >= 2 and isinstance(team[i - 2], dict) else None
-        next_role = team[i].get("role", "") if i < n and isinstance(team[i], dict) else None
-        pipeline_context = (
-            f"Stage {i} of {n} (role: {role}); "
-            f"prev={prev_role or 'supervisor'}, next={next_role or 'supervisor verify'}"
-        )
-
-        fm = {
-            "derived_from_global": True,
-            "global_path": str(global_skill),
-            "global_sha": sha,
-            "normalized_at": now,
-            "pipeline_context": pipeline_context,
-        }
-        fm_yaml = yaml_module.safe_dump(fm, default_flow_style=False, sort_keys=False, allow_unicode=True)
-
-        parts = [f"---\n{fm_yaml}---\n\n", body.strip(), "\n"]
-
-        # Append Pipeline contract (BD-16) so role knows its zone.
-        if render_pipeline_contract is not None:
-            contract_md = render_pipeline_contract(role, i, n, prev_role, next_role)
-            parts += [
-                "\n## Pipeline contract\n\n",
-                contract_md,
-                "\n",
-            ]
-
-        out = skills_dir / f"{role}.md"
-        out.write_text("".join(parts), encoding="utf-8")
-        created.append(out)
-        msg = f"normalize: created local skill {out.name} from {global_skill.name} (sha={sha[:8]})"
-        print(f"  {msg}")
-        _log(logs_dir, msg)
-
-    if created:
-        _log(logs_dir, f"auto_normalize_skills: created {len(created)} local skill(s)")
-    else:
-        _log(logs_dir, "auto_normalize_skills: no skills created (no global sources matched)")
-
-    return created
-
-
-def _run_normalize_stage(
-    team: list[dict],
-    project_dir: Path,
-    logs_dir: Path,
-    *,
-    background: bool = False,
-) -> None:
-    """Run normalize_skills stage — supervisor (current session) does the work.
-
-    BD-13: in background mode this stage cannot run interactively (no human
-    at the wheel). Instead of SystemExit, log a warning, preserve the
-    needs_normalize state file, and let the pipeline continue. The supervisor
-    can run `awf normalize` interactively later.
-    """
-    effective_team = team
-    if not effective_team:
-        roles_dir = paths.agentic_dir(project_dir) / "roles"
-        if roles_dir.is_dir():
-            for rf in sorted(roles_dir.glob("*.md")):
-                effective_team.append({"role": rf.stem, "type": "local"})
-        else:
-            skills_dir = paths.agentic_dir(project_dir) / "skills"
-            if skills_dir.is_dir():
-                for sf in sorted(skills_dir.glob("*.md")):
-                    effective_team.append({"role": sf.stem, "type": "skill-derived"})
-
-    print()
-    print("=" * 51)
-    print("  NORMALIZE_SKILLS STAGE")
-    print("=" * 51)
-    print()
-    print("Pipeline detected team selection from form submit.")
-    print("Team roles (in pipeline order):")
-    for i, member in enumerate(effective_team, 1):
-        role = member.get("role", "")
-        role_type = member.get("type", "")
-        print(f"  {i}. {role} ({role_type})")
-    print()
-
-    # BD-16: print per-role pipeline contracts so supervisor knows what to write.
-    try:
-        from .skills_contract import render_pipeline_contract
-
-        n = len(effective_team)
-        if n > 0:
-            print("Per-role pipeline contracts (BD-16):")
-            print("-" * 51)
-            for i, member in enumerate(effective_team, 1):
-                role = str(member.get("role", ""))
-                prev_role = effective_team[i - 2].get("role", "") if i >= 2 else None
-                next_role = effective_team[i].get("role", "") if i < n else None
-                print(f"\n[{i}/{n}] {role}:")
-                print(render_pipeline_contract(role, i, n, prev_role, next_role))
-            print("-" * 51)
-            print()
-    except ImportError:
-        pass
-
-    if background or not sys.stdin.isatty():
-        # BD-13/26: auto-create local skills from global source files.
-        # In background mode there's no human to copy skills by hand, so
-        # awf does it automatically. Log warnings for any role without a
-        # matching global skill.
-        auto_normalize_skills(effective_team, project_dir, logs_dir)
-        return
-
-    print("Your job as supervisor:")
-    print("  1. Read global skills for each role:")
-    print("     ~/.config/opencode/skills/<role-slug>/SKILL.md")
-    print("     (use Read tool)")
-    print("  2. Build conflict matrix: identify overlaps, contradictions")
-    print("     in zones of responsibility across roles.")
-    print("  3. For each role, write local skill:")
-    print(f"     {paths.agentic_dir(project_dir) / 'skills' / '<role>.md'}")
-    print("     Format: frontmatter (derived_from_global: true, global_path,")
-    print("     global_sha, normalized_at, pipeline_context) + full copy of")
-    print("     global skill + 'Project-specific adaptation' section.")
-    print("  4. Heuristics for conflicts:")
-    print("    - Priority = pipeline order (first wins).")
-    print("    - Output contracts per role type (see supervisor.md).")
-    print("    - Unresolved conflicts -> plan.md 'Open questions' section.")
-    print("  5. When done, press Enter to continue pipeline.")
-    print()
-    _log(logs_dir, f"Normalize stage started for team of {len(effective_team)}")
-    input()
-    _log(logs_dir, "Normalize stage completed (supervisor released)")
-
-
-def _check_skill_drift(project_dir: Path) -> bool:
-    """Check if any local skill has stale global_sha.
-
-    Returns True if any drift detected.
-    """
-    import hashlib
-
-    import yaml
-
-    skills_dir = paths.agentic_dir(project_dir) / "skills"
-    if not skills_dir.is_dir():
-        return False
-
-    drifted = []
-    for local in sorted(skills_dir.glob("*.md")):
-        content = local.read_text(encoding="utf-8")
-        if not content.startswith("---\n"):
-            continue
-        end = content.find("\n---\n", 4)
-        if end == -1:
-            continue
-        try:
-            fm = yaml.safe_load(content[4:end]) or {}
-        except yaml.YAMLError:
-            continue
-        if not isinstance(fm, dict) or not fm.get("derived_from_global"):
-            continue
-        global_path = Path(str(fm.get("global_path", ""))).expanduser()
-        stored_sha = str(fm.get("global_sha", ""))
-        if not global_path.exists():
-            continue
-        current = hashlib.sha256(global_path.read_bytes()).hexdigest()
-        if current != stored_sha:
-            drifted.append((local.name, global_path.name))
-
-    if drifted:
-        print("WARNING: Skill drift detected:", file=sys.stderr)
-        for local_name, global_name in drifted:
-            print(f"  {local_name} <- {global_name}", file=sys.stderr)
-        print("Run 'awf normalize --check-drift' for details, then 'awf normalize'.",
-              file=sys.stderr)
-        return True
-    return False
-
-
 def run_pipeline(args: Any) -> int:
     """Execute the pipeline and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
@@ -1145,7 +856,6 @@ def run_pipeline(args: Any) -> int:
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
-    background = getattr(args, "background", False)
     # NOTE: --timeout (default 3600s) is accepted for backward compat but is
     # intended for the agent subprocess execution limit, which is not yet
     # implemented (subprocess.run is blocking). The 30s fallback poll below
@@ -1169,16 +879,6 @@ def run_pipeline(args: Any) -> int:
     print(f"Stages: {' '.join(s.name for s in stages)}")
     print()
     _log(logs_dir, f"Pipeline started with {total} stages: {' '.join(s.name for s in stages)}")
-
-    # BD-10-D: drift detection at start
-    if _check_skill_drift(project_dir):
-        print("Pipeline will run normalize_skills stage due to drift.", file=sys.stderr)
-        state_dir = paths.agentic_dir(project_dir) / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        from datetime import datetime, timezone
-        (state_dir / "needs_normalize.yaml").write_text(
-            f"needed: true\ntrigger: drift\nmarked_at: {datetime.now(timezone.utc).isoformat()}\n"
-        )
 
     # Retry counts — one per stage
     retry_counts = [0] * total
@@ -1239,22 +939,6 @@ def run_pipeline(args: Any) -> int:
                 continue
 
             stage_idx += 1
-
-            # BD-10-C: insert normalize_skills stage after plan
-            if s_kind == "plan":
-                needed, team, state_file = _check_needs_normalize(project_dir)
-                if needed:
-                    try:
-                        _run_normalize_stage(team, project_dir, logs_dir, background=background)
-                        # BD-13: only consume state file when normalize actually ran
-                        # (i.e., not in background mode). In background, _run_normalize_stage
-                        # returns immediately with a warning — state preserved for later.
-                        if not background:
-                            _consume_needs_normalize(state_file)
-                    except Exception:
-                        _log(logs_dir, "normalize_skills failed — state file preserved for retry")
-                        raise
-
             continue
 
         # --- Agent stage ---
