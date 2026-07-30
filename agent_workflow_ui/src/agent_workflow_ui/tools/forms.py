@@ -45,6 +45,60 @@ def _normalize_available_roles(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _collect_opencode_models() -> list[str]:
+    """BD-32: collect unique model IDs from opencode.json for form dropdown.
+
+    Scans ~/.config/opencode/opencode.json and extracts model strings
+    from: agent.<name>.model and provider.<name>.models.<id>.
+
+    Returns a sorted unique list. Falls back to [] on any error
+    (form will show '(нет моделей)' placeholder — non-fatal).
+    """
+    import json
+
+    oc_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    if not oc_path.is_file():
+        return []
+
+    try:
+        cfg = json.loads(oc_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("BD-32: failed to parse %s: %s", oc_path, e)
+        return []
+
+    if not isinstance(cfg, dict):
+        return []
+
+    models: set[str] = set()
+
+    # From agents: agent.<name>.model (e.g. "vllm/llm")
+    agents = cfg.get("agent") or {}
+    if isinstance(agents, dict):
+        for agent_cfg in agents.values():
+            if isinstance(agent_cfg, dict):
+                m = agent_cfg.get("model")
+                if isinstance(m, str) and m.strip():
+                    models.add(m.strip())
+
+    # From providers: provider.<name>.models.<id> → "<name>/<id>"
+    providers = cfg.get("provider") or {}
+    if isinstance(providers, dict):
+        for pname, pcfg in providers.items():
+            if not isinstance(pcfg, dict):
+                continue
+            pmodels = pcfg.get("models")
+            if isinstance(pmodels, dict):
+                for mid in pmodels.keys():
+                    if isinstance(mid, str) and mid.strip():
+                        models.add(f"{pname}/{mid.strip()}")
+            elif isinstance(pmodels, list):
+                for mid in pmodels:
+                    if isinstance(mid, str) and mid.strip():
+                        models.add(f"{pname}/{mid.strip()}")
+
+    return sorted(models)
+
+
 async def open_form(
     template: str,
     data: dict[str, Any] | None = None,
@@ -97,6 +151,11 @@ async def open_form(
     # for team roles. User picks a skill, content goes straight into
     # .agentic/roles/<role>.md — no mapping/guessing needed.
     global_skills = scan_global_skills()
+    # BD-32: collect available models from opencode.json so the form can
+    # offer per-role model selection. Without this, dropdown was empty and
+    # chosen model was silently dropped (project-auditor got vllm/llm
+    # regardless of what user picked).
+    available_models = _collect_opencode_models()
 
     # Existing slugs for client-side conflict detection (JS confirm before overwrite)
     existing_supervisor_slugs = [sv["id"] for sv in supervisor_variants]
@@ -110,6 +169,7 @@ async def open_form(
             "custom_supervisor_roles": supervisor_variants,
             "custom_agents": custom_agents,
             "global_skills": global_skills,
+            "available_models": available_models,
             "existing_supervisor_slugs": existing_supervisor_slugs,
             "existing_agent_slugs": existing_agent_slugs,
         })

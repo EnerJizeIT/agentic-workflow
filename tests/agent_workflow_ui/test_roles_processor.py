@@ -923,3 +923,174 @@ def test_delete_from_project_normal_missing(isolated_roles_dir, tmp_path):
     """_delete_from_project with a normal filename that doesn't exist — no error."""
     proj = _make_project(tmp_path)
     _delete_from_project("nonexistent.md", project_dir=proj)
+
+
+# ── BD-32: per-role model assignment from form ────────────────────────────────
+
+
+def test_bd32_model_from_form_saved_to_config(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-32: model selection from form is persisted to config.yaml.
+
+    Before fix: form sent {agent: 'project-auditor', model: 'anthropic/claude'}
+    but update_config_role_mapping only saved agent_name. Model was dropped
+    silently → orchestrator's _get_role_model returned None → role used
+    worker's default model regardless of user choice.
+    """
+    import yaml as _yaml
+
+    proj = _make_project_with_config(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "project-auditor", "model": "anthropic/claude-sonnet-4"},
+            {"type": "default", "agent": "developer", "model": "vllm/llm"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    cfg = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+    assert cfg["models"]["project-auditor"]["model"] == "anthropic/claude-sonnet-4", (
+        "BD-32: chosen model must reach config.yaml"
+    )
+    assert cfg["models"]["developer"]["model"] == "vllm/llm"
+    # agent_name still set (BD-12)
+    assert cfg["models"]["project-auditor"]["agent_name"] == "worker"
+
+
+def test_bd32_no_model_in_form_does_not_add(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-32: if form doesn't include model, config.yaml stays unchanged
+    (no empty model field added)."""
+    import yaml as _yaml
+
+    proj = _make_project_with_config(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "developer"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    cfg = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+    # developer was just added — should have agent_name but NO model field
+    assert cfg["models"]["developer"]["agent_name"] == "worker"
+    assert "model" not in cfg["models"]["developer"], (
+        "BD-32: empty model must not produce empty model field"
+    )
+
+
+def test_bd32_empty_model_in_form_clears_existing(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-32: if form sends model='' explicitly, existing model is removed
+    (user cleared the dropdown)."""
+    import yaml as _yaml
+
+    initial = {
+        "models": {
+            "supervisor": {"description": "x"},
+            "qa": {"agent_name": "worker", "model": "vllm/llm"},
+        },
+    }
+    proj = _make_project_with_config(tmp_path, _yaml.safe_dump(initial, sort_keys=False))
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "qa", "model": ""},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+
+    cfg = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+    assert "model" not in cfg["models"]["qa"], (
+        "BD-32: empty model from form must clear existing model field"
+    )
+
+
+def test_bd32_idempotent_same_model_no_churn(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-32: re-submitting same model doesn't rewrite config (no backup churn)."""
+    proj = _make_project_with_config(tmp_path)
+    state._project_dir = None
+
+    data = {
+        "team_config": json.dumps([
+            {"type": "default", "agent": "developer", "model": "vllm/llm"},
+        ]),
+    }
+    process_role_saves(data, project_dir=proj)
+    first = (proj / ".agentic" / "config.yaml").read_text()
+
+    process_role_saves(data, project_dir=proj)
+    second = (proj / ".agentic" / "config.yaml").read_text()
+
+    assert first == second, "BD-32: same model should not produce different config"
+
+
+# ── BD-32: _collect_opencode_models (form dropdown source) ────────────────────
+
+
+def test_bd32_collect_opencode_models_from_agents(tmp_path, monkeypatch):
+    """BD-32: models collected from agent.<name>.model in opencode.json."""
+    import json as _json
+
+    from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+    fake_home = tmp_path / "home"
+    oc_dir = fake_home / ".config" / "opencode"
+    oc_dir.mkdir(parents=True)
+    (oc_dir / "opencode.json").write_text(_json.dumps({
+        "agent": {
+            "worker": {"model": "vllm/llm"},
+            "build": {"model": "anthropic/claude-sonnet-4"},
+            "explore": {"model": "vllm/llm"},  # duplicate
+        }
+    }))
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    models = _collect_opencode_models()
+    assert sorted(models) == ["anthropic/claude-sonnet-4", "vllm/llm"]
+
+
+def test_bd32_collect_opencode_models_from_providers(tmp_path, monkeypatch):
+    """BD-32: models collected from provider.<name>.models as <name>/<id>."""
+    import json as _json
+
+    from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+    fake_home = tmp_path / "home"
+    oc_dir = fake_home / ".config" / "opencode"
+    oc_dir.mkdir(parents=True)
+    (oc_dir / "opencode.json").write_text(_json.dumps({
+        "provider": {
+            "vllm": {"models": {"llm": {}}},
+            "anthropic": {"models": ["claude-sonnet-4", "claude-haiku"]},
+        }
+    }))
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    models = _collect_opencode_models()
+    assert "vllm/llm" in models
+    assert "anthropic/claude-sonnet-4" in models
+    assert "anthropic/claude-haiku" in models
+
+
+def test_bd32_collect_opencode_models_missing_file(tmp_path, monkeypatch):
+    """BD-32: no opencode.json → empty list (no crash)."""
+    from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nonexistent")
+    assert _collect_opencode_models() == []
+
+
+def test_bd32_collect_opencode_models_invalid_json(tmp_path, monkeypatch):
+    """BD-32: malformed opencode.json → empty list (no crash)."""
+    from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+    fake_home = tmp_path / "home"
+    oc_dir = fake_home / ".config" / "opencode"
+    oc_dir.mkdir(parents=True)
+    (oc_dir / "opencode.json").write_text(":::not valid json:::")
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    assert _collect_opencode_models() == []

@@ -247,6 +247,25 @@ def update_config_role_mapping(team: list[dict[str, Any]], project_dir: Path) ->
             entry["agent_name"] = _DEFAULT_AGENT_FOR_ROLE
             changed = True
             log.info("BD-12: mapped role %r -> agent_name=%s", role, _DEFAULT_AGENT_FOR_ROLE)
+        # BD-32: preserve model selection from form (was being dropped).
+        # Without this, project-auditor's chosen model never reached
+        # config.yaml, and orchestrator's _get_role_model() returned None.
+        # Three cases:
+        # - member["model"] missing (key absent)  → leave existing model
+        # - member["model"] = "" (user cleared)   → delete existing model
+        # - member["model"] = "x" (user picked)   → set/replace model
+        if "model" in member:
+            member_model = str(member.get("model") or "").strip()
+            if member_model:
+                if entry.get("model") != member_model:
+                    entry["model"] = member_model
+                    changed = True
+                    log.info("BD-32: role %r -> model=%s", role, member_model)
+            elif "model" in entry:
+                # Form explicitly cleared model — drop from config too
+                del entry["model"]
+                changed = True
+                log.info("BD-32: role %r -> model cleared", role)
 
     if not changed:
         return None
