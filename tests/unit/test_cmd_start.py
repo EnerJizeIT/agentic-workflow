@@ -1,4 +1,4 @@
-"""Unit tests for awf.cmd_start — specifically background-mode argv handling."""
+"""Unit tests for awf.cmd_start — background-mode argv handling (BD-30)."""
 from __future__ import annotations
 
 import subprocess
@@ -23,8 +23,11 @@ def _make_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def test_background_implies_auto(tmp_path: Path) -> None:
-    """--background must add --auto to child argv (stdin=DEVNULL, no input())."""
+def test_background_does_NOT_force_auto_bd30(tmp_path: Path) -> None:
+    """BD-30: --background does NOT add --auto. Interactive mode (auto=False)
+    waits for signal file instead of input(), so it works with stdin=DEVNULL.
+    Only --auto explicitly opts into subprocess supervisor mode.
+    """
     args = _make_args(project_dir=str(tmp_path))
     captured: dict = {}
 
@@ -38,7 +41,9 @@ def test_background_implies_auto(tmp_path: Path) -> None:
         cmd_start._run_in_background(args)
 
     child_argv = captured["argv"]
-    assert "--auto" in child_argv, f"--auto missing from {child_argv}"
+    assert "--auto" not in child_argv, (
+        f"BD-30: --background must NOT force --auto. Got: {child_argv}"
+    )
     assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
     assert captured["kwargs"].get("start_new_session") is True
 
@@ -63,7 +68,7 @@ def test_background_preserves_explicit_auto(tmp_path: Path) -> None:
 
 
 def test_background_short_auto_flag_respected(tmp_path: Path) -> None:
-    """If user used -a (short form), no extra --auto added."""
+    """If user used -a (short form), child keeps it (no --auto added)."""
     args = _make_args(project_dir=str(tmp_path))
     captured: dict = {}
 
@@ -77,5 +82,23 @@ def test_background_short_auto_flag_respected(tmp_path: Path) -> None:
             cmd_start._run_in_background(args)
 
     child_argv = captured["argv"]
-    assert "--auto" not in child_argv, f"--auto should not be added when -a present: {child_argv}"
     assert "-a" in child_argv
+    assert "--auto" not in child_argv
+
+
+def test_background_strips_background_flag_from_child(tmp_path: Path) -> None:
+    """BD-30: child awf start must not re-recurse with --background."""
+    args = _make_args(project_dir=str(tmp_path))
+    captured: dict = {}
+
+    class _FakeProc:
+        def __init__(self, args_list, **kwargs):
+            captured["argv"] = args_list
+            self.pid = 1
+
+    with patch.object(cmd_start.sys, "argv", ["awf", "start", "--background"]):
+        with patch.object(cmd_start.subprocess, "Popen", _FakeProc):
+            cmd_start._run_in_background(args)
+
+    child_argv = captured["argv"]
+    assert "--background" not in child_argv

@@ -285,6 +285,76 @@ def _resolve_role_file(role: str, project_dir: Path) -> Path:
     )
 
 
+def _wait_for_supervisor_signal(
+    kind: str,
+    todo_id: str,
+    project_dir: Path,
+    logs_dir: Path,
+    poll_interval: int = 3,
+) -> str:
+    """BD-30: wait for the signal file the interactive supervisor should produce.
+
+    In interactive mode (auto=False), the current opencode (the one in the
+    user's chat) IS the supervisor — it reads the instructions printed by
+    awf, does the work, and creates a signal file. This function polls
+    for that file and returns the signal name when it appears.
+
+    kind="plan"   → waits for new TODO-*.ready in inbox (snapshot-based)
+    kind="verify" → waits for ACK-{todo_id}.ready or APPROVE-{todo_id}.ready
+                    in inbox, OR REVIEW-{todo_id}.md in outbox
+    """
+    import time
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+
+    # Snapshot what already exists so stale files don't trigger immediately.
+    existing_todo_signals: set[str] = set()
+    if kind in ("plan", "replan") and inbox.is_dir():
+        existing_todo_signals = {p.name for p in inbox.glob("TODO-*.ready")}
+
+    deadline_log_interval = 60  # log "still waiting" every minute
+    last_log = time.monotonic()
+    waited_total = 0
+
+    while True:
+        # plan/replan: new TODO-*.ready that didn't exist at start
+        if kind in ("plan", "replan"):
+            if inbox.is_dir():
+                current = {p.name for p in inbox.glob("TODO-*.ready")}
+                new_ones = current - existing_todo_signals
+                if new_ones:
+                    sig = sorted(new_ones)[0].replace(".ready", "")
+                    _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig}")
+                    return sig
+
+        # verify: ACK or APPROVE in inbox, or REVIEW in outbox
+        if kind == "verify" and todo_id:
+            for sig_path in (
+                inbox / f"ACK-{todo_id}.ready",
+                inbox / f"APPROVE-{todo_id}.ready",
+            ):
+                if sig_path.exists():
+                    _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
+                    return sig_path.stem
+            review = outbox / f"REVIEW-{todo_id}.md"
+            if review.exists():
+                _log(logs_dir, f"BD-30: interactive supervisor signal detected: REVIEW-{todo_id}.md")
+                return f"REVIEW-{todo_id}"
+
+        now = time.monotonic()
+        if now - last_log >= deadline_log_interval:
+            waited_total += int(now - last_log)
+            _log(
+                logs_dir,
+                f"BD-30: interactive supervisor still waiting for {kind} signal "
+                f"({waited_total}s elapsed)",
+            )
+            last_log = now
+
+        time.sleep(poll_interval)
+
+
 def _run_supervisor_stage(
     stage: Stage,
     todo_id: str,
@@ -298,9 +368,13 @@ def _run_supervisor_stage(
     kind="plan" → create/refine TODO (always runs, even if TODO exists).
     kind="verify" → check result, write ACK or REVIEW.
 
-    In interactive mode (auto=False): print instructions, wait for Enter.
-    In auto mode (BD-14): spawn ``opencode run`` subprocess that loads
-    supervisor.md as instruction and does the work.
+    BD-30: in interactive mode (auto=False), the CURRENT opencode (in user's
+    chat) is the supervisor. awf prints explicit instructions to the log
+    file, then polls for a signal file. The user's opencode reads the log,
+    does the work, creates the signal — awf continues.
+
+    In auto mode (BD-14, --auto flag or CI): spawn ``opencode run`` subprocess
+    that loads supervisor.md as instruction and does the work autonomously.
     """
     kind = stage.kind  # "plan" or "verify" (computed from position)
     config = cfg_mod.load(project_dir)
@@ -311,11 +385,22 @@ def _run_supervisor_stage(
     print(f"  SUPERVISOR STAGE: {kind}")
     print("=" * 41)
     print()
+
+    if not auto:
+        # BD-30: interactive mode — current opencode (in chat) IS supervisor.
+        # Print explicit instructions it can follow from the log file.
+        _print_interactive_supervisor_instructions(
+            kind, todo_id, project_dir, phases_file
+        )
+        _log(logs_dir, f"BD-30: interactive supervisor {kind} — waiting for signal")
+        _wait_for_supervisor_signal(kind, todo_id, project_dir, logs_dir)
+        _log(logs_dir, f"BD-30: interactive supervisor {kind} completed by user (opencode)")
+        return
+
+    # Auto mode: spawn opencode subprocess to do supervisor work.
     print("Instructions: .agentic/roles/supervisor.md")
     print(f"Phases file: {phases_file}")
     print()
-
-    # BD-29: kind-based messages (was action-based).
     if kind == "plan":
         print("What to do (plan):")
         print("  1. Study the project state and phases file")
@@ -331,19 +416,94 @@ def _run_supervisor_stage(
         print("  4. Decide: continue / fix / rollback")
         print("  5. If approved: create .agentic/inbox/ACK-{NNNN}.ready")
     else:
-        # Internal salvage/replan paths still call this with explicit kind
-        # via direct function call. Print generic message.
         print(f"What to do ({kind}): see supervisor.md instructions")
 
     print()
-    if not auto:
-        print("When done, press Enter to continue...")
-        input()
-        _log(logs_dir, f"Supervisor stage {kind} completed by user")
-        return
-
-    # BD-14: auto mode — spawn opencode subprocess to do supervisor work.
     _run_supervisor_via_subprocess(kind, todo_id, project_dir, config, phases_file, logs_dir)
+
+
+def _print_interactive_supervisor_instructions(
+    kind: str,
+    todo_id: str,
+    project_dir: Path,
+    phases_file: str,
+) -> None:
+    """BD-30: print explicit instructions for the current opencode (supervisor).
+
+    Output goes to awf-start.out log file. The user's opencode reads it via
+    `tail -f` or `Read` tool, follows the instructions, and creates the
+    expected signal file. awf detects the signal and continues the pipeline.
+    """
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    phases_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
+
+    print("BD-30: INTERACTIVE SUPERVISOR MODE")
+    print("=" * 60)
+    print("You (the current opencode in user's chat) are the supervisor.")
+    print("Follow the instructions below, then create the signal file.")
+    print("awf is waiting — it will continue automatically when the signal appears.")
+    print("=" * 60)
+    print()
+
+    if kind == "plan":
+        print("STAGE: plan (create/refine TODO for the next pipeline step)")
+        print()
+        print("STEPS:")
+        print(f"  1. Read {phases_path} — find next unfinished step ([ ] checkbox)")
+        print(f"  2. Read existing TODO-*.md in {inbox}/ (if any) — review/refine")
+        print("  3. Create .agentic/inbox/TODO-NNNN.md with detailed task:")
+        print("     - Goal (what success looks like)")
+        print("     - Prohibitions (what NOT to do)")
+        print("     - Context (links, references, prior work)")
+        print("     - Tasks with Files / Description / Verify / Done-when")
+        print("  4. Run: awf baseline TODO-NNNN  (records current git SHA)")
+        print("  5. Create empty signal file: .agentic/inbox/TODO-NNNN.ready")
+        print()
+        print(f"SIGNAL TO CREATE: {inbox}/TODO-NNNN.ready")
+        print("(Use next sequential TODO number — check existing files in inbox/)")
+    elif kind == "verify":
+        print(f"STAGE: verify (review work done by agents on {todo_id})")
+        print()
+        print("INPUTS TO READ:")
+        print(f"  - {outbox}/DONE-{todo_id}.md  (last role's summary)")
+        print(f"  - {outbox}/PROGRESS-{todo_id}.md  (last role's running notes)")
+        if handoff_dir.is_dir():
+            handoffs = sorted(handoff_dir.glob(f"*-{todo_id}.md"))
+            if handoffs:
+                print(f"  - {handoff_dir}/  (per-role handoffs: {len(handoffs)} files)")
+                for hf in handoffs:
+                    print(f"      {hf.name}")
+        print(f"  - .agentic/context/BASELINE-{todo_id}.sha  (git baseline)")
+        print()
+        print("STEPS:")
+        print("  1. Read all handoffs + DONE + PROGRESS")
+        print(f"  2. Run: git diff --stat $(cat .agentic/context/BASELINE-{todo_id}.sha)")
+        print("  3. Verify each Task in TODO against actual changes")
+        print("  4. Decide:")
+        print("     - APPROVED → create signal file below")
+        print(f"     - REJECTED → write REVIEW-{todo_id}.md in outbox explaining what's wrong")
+        print()
+        print(f"SIGNAL TO CREATE: {inbox}/ACK-{todo_id}.ready")
+        print(f"  (or write REVIEW to: {outbox}/REVIEW-{todo_id}.md)")
+    else:
+        # replan / salvage — interactive paths from escalation/rollback
+        print(f"STAGE: {kind}")
+        print()
+        print("This is an internal supervisor path (replan/salvage).")
+        print("Read supervisor.md for guidance, then decide:")
+        print("  - replan: create a new refined TODO-NNNN.md + .ready signal")
+        print("  - salvage: review the current state and either ACK or REVIEW")
+        print()
+        print(f"SIGNAL TO CREATE: {inbox}/TODO-NNNN.ready (for replan)")
+        print(f"  or: {inbox}/ACK-{todo_id}.ready (for salvage ACK)")
+
+    print()
+    print("=" * 60)
+    print("awf is waiting for the signal. Take your time.")
+    print("=" * 60)
+    print()
 
 
 def _run_supervisor_via_subprocess(
@@ -1010,8 +1170,14 @@ def run_pipeline(args: Any) -> int:
                     _log(logs_dir, f"Auto: no work + no signal — stop at {s_name}")
                 return 1
 
-            # Interactive salvage
-            _run_supervisor_stage(stage, current_todo, auto=False, project_dir=project_dir, logs_dir=logs_dir)
+            # Interactive salvage — treat as verify semantics (BD-30):
+            # current opencode reviews the situation and decides ACK/REVIEW.
+            salvage_stage = Stage(
+                name="salvage",
+                role="supervisor",
+                kind="verify",  # BD-30: salvage waits for ACK/REVIEW like verify
+            )
+            _run_supervisor_stage(salvage_stage, current_todo, auto=False, project_dir=project_dir, logs_dir=logs_dir)
             signal = read_signal_for_todo(outbox, current_todo, *prefixes)
             if not signal:
                 print("No signal after supervisor salvage. Stopping.", file=sys.stderr)

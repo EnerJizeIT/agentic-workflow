@@ -36,16 +36,16 @@ def _run_in_background(args: Any) -> int:
             continue
         child_argv.append(arg)
 
-    # Make sure --project-dir points to the resolved path (so the child runs in
-    # the right place even if the caller later cd's elsewhere).
+    # BD-30: --background does NOT force --auto anymore. Background just
+    # means "don't block the calling shell". The interactive (auto=False)
+    # supervisor path now waits for a signal file instead of input(), so
+    # it works fine with stdin=DEVNULL — current opencode (in user's chat)
+    # sees instructions in the log file and creates the signal when done.
+    #
+    # --auto is still available for CI/tests where no human is at the
+    # wheel — in that mode supervisor spawns its own subprocess.
     if "--project-dir" not in child_argv:
         child_argv += ["--project-dir", str(project_dir)]
-
-    # --background implies --auto: detached process has stdin=DEVNULL, so any
-    # supervisor interactive pause (input()) would EOFError. There's no human
-    # at the wheel in background mode by definition.
-    if "--auto" not in child_argv and "-a" not in child_argv:
-        child_argv.append("--auto")
 
     with open(log_file, "wb") as out:
         proc = subprocess.Popen(
