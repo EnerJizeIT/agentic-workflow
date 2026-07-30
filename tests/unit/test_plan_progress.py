@@ -3,10 +3,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from awf.orchestrator import (
-    _extract_step_id_from_todo,
-    _mark_plan_step_done,
-    _print_progress_report,
+from awf.plan_progress import (
+    extract_step_id_from_todo as _extract_step_id_from_todo,
+)
+from awf.plan_progress import (
+    mark_plan_step_done as _mark_plan_step_done,
+)
+from awf.plan_progress import (
+    print_progress_report as _print_progress_report,
 )
 
 

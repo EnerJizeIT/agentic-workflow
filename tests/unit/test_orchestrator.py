@@ -1,19 +1,30 @@
-"""Unit tests for awf.orchestrator — role file resolution."""
+"""Unit tests for awf — role file resolution + state machine.
+A6 refactor: imports now come from focused modules (supervisor, agent_stage,
+commit_gate) — orchestrator re-exports kept for back-compat where possible.
+"""
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from awf.orchestrator import (
-    _collect_handoff,
-    _global_roles_dir,
-    _maybe_commit,
-    _resolve_prev_handoffs,
-    _resolve_role_file,
-    _run_agent_stage,
-    _run_supervisor_stage,
+from awf.agent_stage import (
+    collect_handoff as _collect_handoff,
 )
+from awf.agent_stage import (
+    resolve_prev_handoffs as _resolve_prev_handoffs,
+)
+from awf.agent_stage import (
+    run_agent_stage as _run_agent_stage,
+)
+from awf.commit_gate import maybe_commit as _maybe_commit
+from awf.orchestrator import _run_supervisor_stage
 from awf.pipeline import Stage
+from awf.supervisor import (
+    global_roles_dir as _global_roles_dir,
+)
+from awf.supervisor import (
+    resolve_role_file as _resolve_role_file,
+)
 
 # BD-18: subprocess.run return value for "success" mocks (legacy — kept for
 # any tests still using subprocess.run-style asserts).
@@ -97,12 +108,12 @@ def _patch_subprocess_for_awf(monkeypatch):
     the rest of the test (git init in _init_git, git status assertions, etc.)
     can use the real subprocess module.
 
-    NOTE: monkeypatch.setattr("awf.orchestrator.subprocess.run", ...) does
+    NOTE: monkeypatch.setattr("awf.signal_watch.subprocess.run", ...) does
     mutate the shared subprocess module — pytest undoes it on teardown.
     """
     _FakePopen.reset()
-    monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FakePopen)
-    monkeypatch.setattr("awf.orchestrator.subprocess.run", _fake_run)
+    monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("awf.signal_watch.subprocess.run", _fake_run)
     monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
 
@@ -241,7 +252,7 @@ class TestMaybeCommitBD8:
         monkeypatch.setattr("time.time", fake_time)
         monkeypatch.setattr("time.sleep", fake_sleep)
         monkeypatch.setattr(
-            "awf.orchestrator.APPROVE_TIMEOUT_SECONDS", 0
+            "awf.commit_gate.APPROVE_TIMEOUT_SECONDS", 0
         )
 
         with pytest.raises(TimeoutError) as exc_info:
@@ -271,10 +282,10 @@ class TestMaybeCommitBD8:
 
         # Set 1-second timeout via module constant
         monkeypatch.setattr(
-            "awf.orchestrator.APPROVE_TIMEOUT_SECONDS", 1
+            "awf.commit_gate.APPROVE_TIMEOUT_SECONDS", 1
         )
         monkeypatch.setattr(
-            "awf.orchestrator.APPROVE_POLL_INTERVAL", 1
+            "awf.commit_gate.APPROVE_POLL_INTERVAL", 1
         )
 
         with pytest.raises(TimeoutError):
@@ -350,7 +361,7 @@ class TestMaybeCommitBD8:
         _t = [0.0]
         monkeypatch.setattr("time.time", lambda: _t[0])
         monkeypatch.setattr("time.sleep", lambda d: _t.__setitem__(0, _t[0] + d))
-        monkeypatch.setattr("awf.orchestrator.APPROVE_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr("awf.commit_gate.APPROVE_TIMEOUT_SECONDS", 0)
 
         with pytest.raises(TimeoutError) as exc_info:
             _maybe_commit(
@@ -476,7 +487,7 @@ class TestInteractiveSupervisorBD30:
             return "TODO-0042"
 
         monkeypatch.setattr(
-            "awf.orchestrator._wait_for_supervisor_signal", fake_wait
+            "awf.supervisor.wait_for_supervisor_signal", fake_wait
         )
 
         _run_supervisor_stage(stage, todo_id="", auto=False, project_dir=proj, logs_dir=logs)
@@ -499,7 +510,7 @@ class TestInteractiveSupervisorBD30:
 
         monkeypatch.setattr("builtins.input", fake_input)
         monkeypatch.setattr(
-            "awf.orchestrator._wait_for_supervisor_signal",
+            "awf.supervisor.wait_for_supervisor_signal",
             lambda *a, **kw: "TODO-0042",
         )
 
@@ -525,7 +536,7 @@ class TestInteractiveSupervisorBD30:
             return f"ACK-{todo_id}"
 
         monkeypatch.setattr(
-            "awf.orchestrator._wait_for_supervisor_signal", fake_wait
+            "awf.supervisor.wait_for_supervisor_signal", fake_wait
         )
 
         stage = Stage(name="verify", role="supervisor", kind="verify")
@@ -548,7 +559,7 @@ class TestInteractiveSupervisorBD30:
         logs = proj / ".agentic" / "logs"
 
         monkeypatch.setattr(
-            "awf.orchestrator._wait_for_supervisor_signal",
+            "awf.supervisor.wait_for_supervisor_signal",
             lambda *a, **kw: "TODO-0042",
         )
 
@@ -696,7 +707,7 @@ class TestSalvagePathBD30:
         def fake_supervisor_stage(stage, *args, **kwargs):
             captured_stages.append(stage)
 
-        monkeypatch.setattr("awf.orchestrator._run_supervisor_stage", fake_supervisor_stage)
+        monkeypatch.setattr("awf.supervisor.run_supervisor_stage", fake_supervisor_stage)
 
         # Run salvage path indirectly: import run_pipeline and trigger
         # the no-signal salvage branch by mocking everything before it.
@@ -851,7 +862,7 @@ class TestSupervisorViaSubprocess:
             signal_wait_called["called"] = True
             return "TODO-0042"
 
-        monkeypatch.setattr("awf.orchestrator._wait_for_supervisor_signal", fake_wait)
+        monkeypatch.setattr("awf.supervisor.wait_for_supervisor_signal", fake_wait)
 
         stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         _run_supervisor_stage(stage, todo_id="", auto=False, project_dir=proj, logs_dir=logs)
@@ -862,7 +873,7 @@ class TestSupervisorViaSubprocess:
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FailingPopen)
 
         stage = Stage(name="plan", role="supervisor", description="d", kind="plan")
         with pytest.raises(RuntimeError) as exc_info:
@@ -886,7 +897,7 @@ class TestSupervisorViaSubprocess:
 
         # Use _FailingPopen with exit code 7
         _FailingPopen._exit_code = 7
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FailingPopen)
 
         stage = Stage(name="impl", role="worker", kind="execute")
         with pytest.raises(RuntimeError) as exc_info:
@@ -920,7 +931,7 @@ class TestRunSubprocessUntilSignal:
         """Natural non-zero exit propagates (no signal-watch interference)."""
         from awf.orchestrator import _run_subprocess_until_signal
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _FailingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FailingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
         _FailingPopen._exit_code = 99
         result = _run_subprocess_until_signal(
@@ -960,7 +971,7 @@ class TestRunSubprocessUntilSignal:
                 # Simulate that terminate() worked
                 return 0
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _HangingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         # NOTE: signal file does NOT exist at start — only appears mid-run.
@@ -1000,7 +1011,7 @@ class TestRunSubprocessUntilSignal:
             def wait(self, timeout=None):
                 return 0
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _HangingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         # Stale signal exists BEFORE subprocess start
@@ -1051,7 +1062,7 @@ class TestRunSubprocessUntilSignal:
             def wait(self, timeout=None):
                 return 0
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _HangingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         result = _run_subprocess_until_signal(
@@ -1080,7 +1091,7 @@ class TestRunSubprocessUntilSignal:
             def wait(self, timeout=None):
                 return 0
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _HangingPopen)
         # Simulate time advancing past the deadline.
         t = [0.0]
         monkeypatch.setattr("time.monotonic", lambda: t[0])
@@ -1119,7 +1130,7 @@ class TestRunSubprocessUntilSignal:
                 super().__init__(cmd, **kw)
                 captured_env.update(env or {})
 
-        monkeypatch.setattr("awf.orchestrator.subprocess.Popen", _EnvCheckingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _EnvCheckingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         _run_subprocess_until_signal(
@@ -1215,18 +1226,23 @@ class TestRunPipelineGracefulCrash:
     """
 
     def test_supervisor_subprocess_raise_documented_bd18(self) -> None:
-        """Sanity: BD-18 contract — _run_supervisor_via_subprocess raises on non-zero exit."""
-        # Source-level contract: orchestrator.py wraps subprocess.run result
-        # in `if result.returncode != 0: raise RuntimeError(...)`. run_pipeline
-        # catches RuntimeError at the supervisor stage call site and returns 1.
-        # We assert this just by importing — the raises are tested in
-        # TestSupervisorViaSubprocess above.
-        import awf.orchestrator as orch
+        """Sanity: BD-18 contract — supervisor/agent subprocess raises on non-zero exit.
 
-        src = open(orch.__file__).read()
-        assert "raise RuntimeError(" in src
-        assert "except RuntimeError as e:" in src
-        assert "Pipeline stopped" in src
+        A6 refactor: raise moved to supervisor.py and agent_stage.py (out of
+        orchestrator.py). Both checked.
+        """
+        import awf.agent_stage as ag
+        import awf.supervisor as sup
+
+        sup_src = open(sup.__file__).read()
+        ag_src = open(ag.__file__).read()
+        assert "raise RuntimeError(" in sup_src, "supervisor.run_supervisor_via_subprocess must raise on non-zero exit"
+        assert "raise RuntimeError(" in ag_src, "agent_stage.run_agent_stage must raise on non-zero exit"
+        # run_pipeline catches RuntimeError and stops pipeline
+        import awf.orchestrator as orch
+        orch_src = open(orch.__file__).read()
+        assert "except RuntimeError as e:" in orch_src
+        assert "Pipeline stopped" in orch_src
 
 
 # ── BD-15: handoff chain ──────────────────────────────────────────────────────
@@ -1303,7 +1319,7 @@ class TestHandoffChain:
 
         # Stub git calls
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda *a, **kw: None,
         )
 
@@ -1322,7 +1338,7 @@ class TestHandoffChain:
         proj = self._setup_project(tmp_path, monkeypatch)
         runs: list = []
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda cmd, *a, **kw: runs.append(cmd) or None,
         )
 
@@ -1344,7 +1360,7 @@ class TestHandoffChain:
         # Do NOT create PROGRESS or DONE files
 
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda *a, **kw: None,
         )
 
@@ -1365,7 +1381,7 @@ class TestHandoffChain:
         proj = self._setup_project(tmp_path, monkeypatch)
 
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda *a, **kw: None,
         )
 
@@ -1383,7 +1399,7 @@ class TestHandoffChain:
         (proj / ".agentic" / "outbox" / "DONE-TODO-0001.md").write_text("")
 
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda *a, **kw: None,
         )
 
@@ -1401,7 +1417,7 @@ class TestHandoffChain:
         (proj / ".agentic" / "outbox" / "PROGRESS-TODO-0001.md").write_text("some work done")
 
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda *a, **kw: None,
         )
 
@@ -1450,7 +1466,7 @@ class TestHandoffChain:
         (agentic / "context").mkdir(parents=True)
 
         monkeypatch.setattr(
-            "awf.orchestrator.subprocess.run",
+            "awf.signal_watch.subprocess.run",
             lambda *a, **kw: None,
         )
 

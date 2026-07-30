@@ -303,7 +303,7 @@ commit gate, signal helpers. Mixed concerns.
 
 Risk: import changes, possible test breakage.
 
-### A7 · `_check_skill_drift` duplicates `cmd_normalize._check_drift`
+### A7 · `_check_skill_drift` duplicates `cmd_normalize._check_drift` — CLOSED (legacy removed)
 
 **Symptom.** Two implementations of skill SHA256 comparison:
 - `awf/orchestrator.py:_check_skill_drift` — returns bool, prints warnings.
@@ -589,7 +589,7 @@ after dogfood v8 if the issue persists.
 
 ---
 
-### BD-26 · UI bugs in project-setup form (dropdown, empty rows, layout) — OPEN
+### BD-26 · UI bugs in project-setup form — CLOSED (BD-27 fixed all 3)
 
 **Status:** OPEN. **Priority:** MEDIUM — UX papercuts, not blockers.
 
@@ -664,7 +664,7 @@ subprocess prematurely; only newly-created signals count.
 
 ---
 
-### BD-23 · Pipeline stages don't produce verifiable contribution — branch chain + diff-monitoring
+### BD-35 · Pipeline stages don't produce verifiable contribution — branch chain + diff-monitoring (was duplicate BD-23)
 
 **Status:** OPEN. **Priority:** HIGH — fundamental to "pipeline as conveyor".
 
