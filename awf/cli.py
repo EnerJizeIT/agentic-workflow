@@ -25,6 +25,7 @@ def _print_top_level_help() -> int:
         "  baseline <id>     Create a baseline snapshot\n"
         "  rollback <id>     Rollback to baseline\n"
         "  reset             Clean runtime data (inbox/outbox/logs)\n"
+        "  analyze-roles     BD-31: analyze team roles, add disambiguation patches\n"
         "  help              Show this message\n"
         "\n"
         "Run 'awf <command> --help' for command-specific options.\n"
@@ -149,6 +150,21 @@ def _dispatch_subcommand(argv):
 
     sub.add_parser("report", help="Show summary report")
 
+    p_analyze = sub.add_parser(
+        "analyze-roles",
+        help="BD-31: analyze team roles for overlaps, add pipeline-specific disambiguation",
+    )
+    p_analyze.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    p_analyze.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show proposed patches without writing to role files",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -176,6 +192,9 @@ def _dispatch_subcommand(argv):
     if args.command == "report":
         from . import cmd_report
         return cmd_report.run(args)
+    if args.command == "analyze-roles":
+        from . import cmd_analyze_roles
+        return cmd_analyze_roles.run(args)
 
     print(
         f"awf: '{args.command}' not implemented in Python yet",
