@@ -134,13 +134,16 @@ def test_get_config_raises_when_not_set():
         get_config()
 
 
-def test_get_jinja_env_raises_when_not_set():
-    """get_jinja_env raises RuntimeError when env not initialized."""
+def test_get_jinja_env_lazy_init_a3():
+    """A3: get_jinja_env lazily initializes a default env (no RuntimeError)."""
     import agent_workflow_ui.state as state_mod
     state_mod._jinja_env = None
     from agent_workflow_ui.state import get_jinja_env
-    with pytest.raises(RuntimeError, match="Jinja env not initialized"):
-        get_jinja_env()
+    env = get_jinja_env()
+    assert env is not None
+    # Second call returns the same instance
+    env2 = get_jinja_env()
+    assert env is env2
 
 
 # ── Thread-safety (F4) ──────────────────────────────────────────────────────

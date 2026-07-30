@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from . import git_utils, opencode_agents
+from .xdg import opencode_config_file
 
 
 def _find_framework_dir() -> Path:
@@ -15,7 +16,7 @@ def _find_framework_dir() -> Path:
 
 def _find_reused_model() -> str | None:
     """Try to find an existing opencode agent's model to reuse as default."""
-    oc_cfg = Path.home() / ".config" / "opencode" / "opencode.json"
+    oc_cfg = opencode_config_file()
     if not oc_cfg.exists():
         return None
     try:
@@ -167,7 +168,7 @@ def run(args: Any) -> int:
 
     # Offer to create opencode agents — only `worker` (the universal agent
     # that loads role .md as instruction). Other roles come from skills.
-    oc_cfg = Path.home() / ".config" / "opencode" / "opencode.json"
+    oc_cfg = opencode_config_file()
     if oc_cfg.exists():
         proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
 
@@ -239,7 +240,7 @@ def _add_mcp_config_to_opencode():
     import json
     from datetime import datetime
 
-    cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    cfg_path = opencode_config_file()
     if not cfg_path.exists():
         print(f"  NOTE: {cfg_path} not found. Skipping.")
         return

@@ -147,9 +147,16 @@ def set_jinja_env(env: Any) -> None:
 
 
 def get_jinja_env() -> Any:
-    """Get the Jinja2 Environment. Raises RuntimeError if not set."""
+    """Get the Jinja2 Environment.
+
+    A3: lazily initialize a default Environment if none was set, so
+    one-off renders (like _ack_page from http_endpoint) work without
+    explicit set_jinja_env() at startup.
+    """
+    global _jinja_env
     if _jinja_env is None:
-        raise RuntimeError("Jinja env not initialized. Call set_jinja_env() at startup.")
+        from .render.engine import create_default_env
+        _jinja_env = create_default_env()
     return _jinja_env
 
 

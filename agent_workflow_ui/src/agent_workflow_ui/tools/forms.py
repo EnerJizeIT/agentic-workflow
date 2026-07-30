@@ -10,7 +10,7 @@ import yaml
 from jinja2 import TemplateNotFound
 
 from ..browser import open_path
-from ..opencode_config import scan_global_roles, scan_global_skills
+from ..opencode_config import _xdg_config_home, scan_global_roles, scan_global_skills
 from ..render.engine import render_template
 from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_registry
 
@@ -56,7 +56,7 @@ def _collect_opencode_models() -> list[str]:
     """
     import json
 
-    oc_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    oc_path = _xdg_config_home() / "opencode" / "opencode.json"
     if not oc_path.is_file():
         return []
 
@@ -181,6 +181,9 @@ async def open_form(
             "error": f"Template '{template}' not found.",
         }
 
+    # A4: cleanup stale temp files before creating a new one
+    cleanup_temp_files()
+
     temp_file = config.temp_dir / f"agent-workflow-ui-{form_id}.html"
     temp_file.parent.mkdir(parents=True, exist_ok=True)
     temp_file.write_text(rendered, encoding="utf-8")
@@ -218,6 +221,43 @@ async def open_form(
     if not success:
         result["error"] = msg
     return result
+
+
+def cleanup_temp_files(max_age_hours: int = 24) -> int:
+    """A4: remove stale agent-workflow-ui-*.html files from temp dir.
+
+    Called lazily from open_form (one cleanup pass per new form opened).
+    Removes files older than ``max_age_hours`` (default 24h). Active
+    forms in registry are skipped (file might still be open in browser).
+
+    Returns count of files removed.
+    """
+    config = get_config()
+    if not config.temp_dir.is_dir():
+        return 0
+
+    registry = get_registry()
+    active_form_ids = {r.form_id for r in registry.list_pending()}
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=max_age_hours)
+    removed = 0
+
+    for f in config.temp_dir.glob("agent-workflow-ui-*.html"):
+        try:
+            # Skip if form is still active in registry
+            form_id = f.stem.replace("agent-workflow-ui-", "")
+            if form_id in active_form_ids:
+                continue
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+            if mtime < cutoff:
+                f.unlink()
+                removed += 1
+        except OSError:
+            pass
+    if removed:
+        log.info("A4: cleaned up %d stale temp HTML files", removed)
+    return removed
 
 
 async def read_submit(form_id: str) -> dict[str, Any]:
@@ -274,6 +314,14 @@ async def read_submit(form_id: str) -> dict[str, Any]:
             "status": "error",
             "error": "Submit file is not a dict.",
         }
+
+    # A4: clean up the temp HTML file (form is consumed)
+    try:
+        temp_html = config.temp_dir / f"agent-workflow-ui-{form_id}.html"
+        if temp_html.exists():
+            temp_html.unlink()
+    except OSError:
+        pass
 
     return {
         "submitted": True,

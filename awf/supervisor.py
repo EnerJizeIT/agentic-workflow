@@ -16,6 +16,7 @@ from . import config as cfg_mod
 from . import paths
 from ._log import log as _log
 from .pipeline import Stage
+from .xdg import awf_roles_dir
 
 log = logging.getLogger(__name__)
 
@@ -72,8 +73,8 @@ def build_prompt(kind: str, todo_id: str) -> str:
 
 
 def global_roles_dir() -> Path:
-    """Return the global roles directory: ~/.config/awf/roles/."""
-    return Path.home() / ".config" / "awf" / "roles"
+    """Return the global roles directory: $XDG_CONFIG_HOME/awf/roles/."""
+    return awf_roles_dir()
 
 
 def resolve_role_file(role: str, project_dir: Path) -> Path:

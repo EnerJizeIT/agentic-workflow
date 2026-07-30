@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from .opencode_config import _xdg_config_home
+
 log = logging.getLogger(__name__)
 
 SKILL_FILENAME = "SKILL.md"
@@ -29,7 +31,7 @@ def _bundled_skill_path() -> Path:
 
 def _target_skill_path() -> Path:
     """Path where opencode expects the skill: ~/.config/opencode/skills/<name>/SKILL.md."""
-    return Path.home() / ".config" / "opencode" / "skills" / SKILLS_DIR_NAME / SKILL_FILENAME
+    return _xdg_config_home() / "opencode" / "skills" / SKILLS_DIR_NAME / SKILL_FILENAME
 
 
 def ensure_skill_installed() -> bool:

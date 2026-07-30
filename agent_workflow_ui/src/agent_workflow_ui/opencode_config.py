@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -10,7 +11,16 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-GLOBAL_ROLES_DIR = Path.home() / ".config" / "awf" / "roles"
+
+def _xdg_config_home() -> Path:
+    """A9: respect XDG_CONFIG_HOME env var (was hardcoded ~/.config)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg:
+        return Path(xdg).expanduser()
+    return Path.home() / ".config"
+
+
+GLOBAL_ROLES_DIR = _xdg_config_home() / "awf" / "roles"
 
 
 def read_opencode_models() -> list[str]:
@@ -93,7 +103,7 @@ def read_recent_models(limit: int = 8) -> list[str]:
 
 def _read_models_from_config() -> list[str]:
     """Parse ~/.config/opencode/opencode.json for model IDs."""
-    cfg_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    cfg_path = _xdg_config_home() / "opencode" / "opencode.json"
     if not cfg_path.exists():
         return []
 
@@ -209,7 +219,7 @@ def scan_global_skills() -> list[dict]:
 
     Skills are sorted alphabetically by title.
     """
-    skills_root = Path.home() / ".config" / "opencode" / "skills"
+    skills_root = _xdg_config_home() / "opencode" / "skills"
     if not skills_root.is_dir():
         return []
 

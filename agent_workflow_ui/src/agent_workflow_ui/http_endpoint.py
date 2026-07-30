@@ -47,45 +47,29 @@ def _is_valid_form_id(form_id: str) -> bool:
 
 
 def _ack_page(form_id: str, already_submitted: bool) -> str:
-    """Generate HTML acknowledgement page shown after submit."""
-    message = "Эта форма уже была отправлена ранее." if already_submitted else "Форма отправлена!"
-    return f"""<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <title>Подтверждение отправки</title>
-  <style>
-    body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 500px; margin: 80px auto; padding: 0 20px; text-align: center; color: #d4d4d4; background: #1e1e1e; }}
-    h1 {{ color: #4ec9b0; margin-bottom: 8px; }}
-    .form-id {{ font-family: monospace; background: #252526; padding: 8px 16px; border-radius: 4px; display: inline-block; margin: 16px 0; border: 1px solid #464647; }}
-    .next-steps {{ margin-top: 32px; padding: 20px; background: #3d1a1a; border-radius: 8px; text-align: left; border: 1px solid #5a2a2a; }}
-    .next-steps h2 {{ font-size: 16px; margin: 0 0 12px 0; color: #f14c4c; }}
-    .next-steps ol {{ margin: 0; padding-left: 20px; }}
-    .next-steps li {{ margin-bottom: 8px; }}
-    .next-steps code {{ background: #4a2020; padding: 2px 6px; border-radius: 3px; font-family: monospace; }}
-    .hint {{ margin: 12px 0 0 0; font-size: 13px; color: #858585; }}
-  </style>
-</head>
-<body>
-  <h1>{html.escape(message)}</h1>
-  <p>ID формы:</p>
-  <div class="form-id">{html.escape(form_id)}</div>
+    """Generate HTML acknowledgement page shown after submit.
 
-  <div class="next-steps">
-    <h2>⚠️ Что дальше — вернись в CLI</h2>
-    <ol>
-      <li>Переключись на терминал с <strong>opencode CLI</strong>.</li>
-      <li>Напиши агенту, например: <code>done</code> или <code>я отправил форму</code>.</li>
-      <li>Агент прочитает твои ответы и продолжит работу.</li>
-    </ol>
-    <p class="hint">
-      Агент не блокируется в ожидании — он продолжает работать.
-      Когда сообщишь, что готово, он заберёт данные формы.
-    </p>
-  </div>
-</body>
-</html>
-"""
+    A3: rendered from render/default_templates/ack.html.j2 (was inline f-string).
+    """
+    from .render.engine import render_template
+    from .state import get_jinja_env
+
+    message = "Эта форма уже была отправлена ранее." if already_submitted else "Форма отправлена!"
+    try:
+        env = get_jinja_env()
+        return render_template(env, "ack", {
+            "form_id": form_id,
+            "message": message,
+        })
+    except Exception as e:
+        # Fallback: minimal HTML if template engine fails
+        return (
+            f"<!DOCTYPE html><html><body>"
+            f"<h1>{html.escape(message)}</h1>"
+            f"<p>ID: {html.escape(form_id)}</p>"
+            f"<!-- template render failed: {html.escape(str(e))} -->"
+            f"</body></html>"
+        )
 
 
 class SubmitHandler(BaseHTTPRequestHandler):

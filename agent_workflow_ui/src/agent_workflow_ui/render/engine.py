@@ -31,6 +31,17 @@ def create_env(templates_dirs: list[Path]) -> Environment:
     return env
 
 
+def create_default_env() -> Environment:
+    """A3: create a default Jinja2 env loading only plugin's default_templates.
+
+    Used by lazy initialization in state.get_jinja_env() so one-off
+    renders (like _ack_page from http_endpoint) work without explicit
+    set_jinja_env() at startup.
+    """
+    default_templates = Path(__file__).parent / "default_templates"
+    return create_env([default_templates])
+
+
 def render_template(
     env: Environment,
     template_name: str,
