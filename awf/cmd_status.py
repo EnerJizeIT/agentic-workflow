@@ -9,11 +9,15 @@ from . import paths, todos
 
 
 def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]:
-    """Scan TODO-*.ready files and count DONE / BLOCKED (canonical form only).
+    """Scan TODO-*.ready files and count DONE / BLOCKED (canonical + legacy).
+
+    H3 fix: was canonical-only. Now uses signals.find_signal_file to also
+    accept legacy short form (DONE-NNNN.ready vs canonical DONE-TODO-NNNN.ready).
 
     Returns (done_count, blocked_count, blocked_ids).
-    Mirrors the bash loop in status.sh which only checks canonical form.
     """
+    from .signals import find_signal_file
+
     done_count = 0
     blocked_count = 0
     blocked_ids: list[str] = []
@@ -25,9 +29,11 @@ def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]
         if not ready_file.is_file():
             continue
         todo_id = ready_file.stem
-        if (outbox / f"DONE-{todo_id}.ready").exists():
+        done = find_signal_file(outbox, "DONE", todo_id, ".ready")
+        blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
+        if done:
             done_count += 1
-        elif (outbox / f"BLOCKED-{todo_id}.ready").exists():
+        elif blocked:
             blocked_count += 1
             blocked_ids.append(todo_id)
 

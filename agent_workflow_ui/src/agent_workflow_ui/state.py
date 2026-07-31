@@ -140,6 +140,37 @@ class FormRegistry:
             self._persist()
             return record
 
+    def claim_for_submit(self, form_id: str) -> bool:
+        """H4 fix: atomic check-and-set for TOCTOU race protection.
+
+        Returns True if the form was pending and this call successfully
+        claimed it (caller may proceed to write submit file). Returns
+        False if form was already submitted/cancelled/missing — caller
+        must abort.
+
+        Without this, two parallel POSTs in ThreadingHTTPServer could
+        both pass the `status == 'pending'` check and both write to
+        the same submit file (last wins, first lost silently).
+        """
+        with self._lock:
+            record = self._forms.get(form_id)
+            if record is None or record.status != "pending":
+                return False
+            record.status = "submitting"  # intermediate state
+            self._persist()
+            return True
+
+    def finalize_submit(self, form_id: str) -> FormRecord | None:
+        """H4 fix: mark form as submitted after caller wrote the file."""
+        with self._lock:
+            record = self._forms.get(form_id)
+            if record is None:
+                return None
+            record.status = "submitted"
+            record.submitted_at = datetime.now(timezone.utc)
+            self._persist()
+            return record
+
     def list_pending(self) -> list[FormRecord]:
         with self._lock:
             return [r for r in self._forms.values() if r.status == "pending"]

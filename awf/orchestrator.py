@@ -195,8 +195,10 @@ def _handle_rollback(
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
     _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
     new_todo = _find_active_todo(project_dir)
-    if new_todo:
-        new_todo = new_todo
+    if not new_todo:
+        print("Rollback: supervisor did not create a new TODO. Stopping.", file=sys.stderr)
+        _log(logs_dir, "Rollback: no new TODO after replan — stopping")
+        return -1, current_todo, 1
     return target_idx, new_todo, 0
 
 
@@ -275,7 +277,7 @@ def run_pipeline(args: Any) -> int:
         # --- Supervisor stage ---
         if s_role == "supervisor":
             try:
-                _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
+                sup_signal = _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
             except RuntimeError as e:
                 print(f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
                 print(f"  Details: {e}", file=sys.stderr)
@@ -292,7 +294,32 @@ def run_pipeline(args: Any) -> int:
                 print(f"Active TODO: {current_todo}")
 
             if s_kind == "verify":
-                print("Supervisor verification complete.")
+                # C1 fix: check what supervisor actually decided.
+                # REVIEW-{todo_id} = rejection → don't commit, don't close Step,
+                # escalate to replan (gives supervisor a chance to refine TODO).
+                if sup_signal.startswith("REVIEW-"):
+                    print(f"Supervisor REJECTED work on {current_todo} (REVIEW signal).", file=sys.stderr)
+                    print(f"  See .agentic/outbox/REVIEW-{current_todo}.md for details.", file=sys.stderr)
+                    _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
+                    # Trigger replan: supervisor creates new refined TODO
+                    replan_stage = Stage(name="replan", role="supervisor", kind="replan")
+                    try:
+                        _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
+                    except RuntimeError as e:
+                        print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
+                        return 1
+                    new_todo = _find_active_todo(project_dir)
+                    if new_todo and new_todo != current_todo:
+                        current_todo = new_todo
+                        print(f"New TODO after replan: {current_todo}")
+                    # Stay at verify stage idx — caller will advance to next pipeline iteration
+                    # which restarts from current_todo. For now, treat as stop (user must
+                    # manually `awf start` after reading REVIEW).
+                    print("Pipeline stopped: supervisor rejected. Read REVIEW, fix, then 'awf start'.", file=sys.stderr)
+                    return 1
+
+                # Approved path: ACK or APPROVE signal
+                print(f"Supervisor approved {current_todo} ({sup_signal or 'implicit'}).")
                 # A1: pass baseline_sha so _maybe_commit isolates changes
                 baseline_sha = _read_baseline_sha(project_dir, current_todo)
                 _maybe_commit(

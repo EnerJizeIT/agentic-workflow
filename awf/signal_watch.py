@@ -113,8 +113,6 @@ def run_subprocess_until_signal(
         if signal_seen_at is not None:
             if now - signal_seen_at >= grace_seconds:
                 if logs_dir:
-
-
                     _log(
                         logs_dir,
                         f"BD-20: grace expired, terminating subprocess (pid={proc.pid})",
@@ -125,12 +123,14 @@ def run_subprocess_until_signal(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait()
-                return subprocess.CompletedProcess(cmd, 0)
+                # H7 fix: was CompletedProcess(cmd, 0) — masked killed process
+                # as success. Use real returncode (-15 for SIGTERM, -9 for SIGKILL).
+                # Callers check returncode != 0 to detect abnormal termination.
+                real_rc = proc.returncode if proc.returncode is not None else -15
+                return subprocess.CompletedProcess(cmd, real_rc)
 
         if now >= deadline:
             if logs_dir:
-
-
                 _log(logs_dir, f"BD-20: hard timeout reached, killing (pid={proc.pid})")
             proc.kill()
             proc.wait()

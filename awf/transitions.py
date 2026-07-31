@@ -35,16 +35,19 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
         policy = stage.on_rejected if sig_type == "rejected" else stage.on_failed
         if policy.startswith("rollback_to:"):
             return ("rollback", policy.split(":", 1)[1])
-        if policy == "replan":
-            return ("escalate", "")
+        # Both 'replan' and 'escalate' (default) escalate to supervisor
+        # for a refined TODO. 'replan' is kept as distinct policy name
+        # for forward-compat (future: replan might mean "redo same TODO"
+        # vs escalate = "create new TODO").
         return ("escalate", "")
 
-    # Unknown signal — log loudly so user can diagnose (filename typo,
-    # worker wrote unexpected signal name, etc.).
-    log.warning(
-        "Unknown signal type %r at stage %r — falling back to 'stop'. "
-        "Expected one of: done, blocked, approved, rejected, passed, failed.",
-        sig_type,
-        stage.name,
+    # Unknown signal — print loudly (M8 fix: log.warning may not be visible
+    # without basicConfig; also print to stderr).
+    msg = (
+        f"Unknown signal type {sig_type!r} at stage {stage.name!r} — stopping. "
+        f"Expected one of: done, blocked, approved, rejected, passed, failed."
     )
+    import sys
+    print(f"WARNING: {msg}", file=sys.stderr)
+    log.warning("%s", msg)
     return ("stop", "")

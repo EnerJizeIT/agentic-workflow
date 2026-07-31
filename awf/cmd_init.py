@@ -95,21 +95,15 @@ def run(args: Any) -> int:
     typecheck_cmd = input("Typecheck command (e.g. mypy src/, tsc --noEmit): ").strip()
     build_cmd = input("Build command (optional, e.g. docker compose config): ").strip()
 
-    # Pick worker model
-    reused_model = _find_reused_model()
-    print()
-    if reused_model:
-        ans = input(f"Model for worker/reviewer/tester agents [default: {reused_model}]: ").strip()
-        worker_model = ans or reused_model
-    else:
-        worker_model = input("Model id for worker/reviewer/tester agents (e.g. claude-sonnet-4-20250514, gpt-4.1): ").strip()
-        if not worker_model:
-            print("  (left blank — edit .agentic/config.yaml before `awf start`)")
+    # M5 fix: worker_model prompt was asked but never saved (no placeholder
+    # in CONFIG_TEMPLATE). Project-setup form handles per-role models now
+    # (BD-32). Removed the dead prompt — was misleading users.
+    worker_model = ""  # kept for opencode_agents.propose() below (legacy compat)
 
     # Dry run
     if dry_run:
         print("[DRY RUN] Would create:")
-        print(f"  .agentic/config.yaml (worker model: {worker_model or '<blank>'})")
+        print("  .agentic/config.yaml (models added by project-setup form)")
         print("  .agentic/roles/supervisor.md")
         print("  .agentic/phases/plan.md (stub)")
         print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")

@@ -134,6 +134,8 @@ def write_pipeline(team_order: list[dict[str, Any]], project_dir: Path) -> Path 
     content = yaml.safe_dump(
         pipeline_dict, default_flow_style=False, allow_unicode=True, sort_keys=False
     )
-    target.write_text(content, encoding="utf-8")
+    # M3 fix: atomic write (was direct write_text — crash corrupts pipeline.yaml).
+    from .state import _atomic_write_text
+    _atomic_write_text(target, content)
     log.info("Wrote pipeline with %d team stages to %s", len(stages) - 2, target)
     return target

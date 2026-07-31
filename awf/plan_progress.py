@@ -103,8 +103,10 @@ def mark_plan_step_done(
         updated_line = updated_line.rstrip() + f"  — {todo_id}"
 
     new_content = content[:line_start] + updated_line + content[line_end:]
+    # H5 fix: atomic write (was direct write_text — crash mid-write corrupts plan.md).
     try:
-        plan_path.write_text(new_content, encoding="utf-8")
+        from ._atomic import atomic_write_text
+        atomic_write_text(plan_path, new_content)
         _log(logs_dir, f"BD-33: marked Step {step_id} done in plan.md (TODO {todo_id})")
         return True
     except OSError as e:

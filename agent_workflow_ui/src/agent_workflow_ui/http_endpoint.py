@@ -158,9 +158,16 @@ class SubmitHandler(BaseHTTPRequestHandler):
         inputs_dir = (record.project_dir / ".agentic" / "inputs") if record.project_dir else self.inputs_dir
         inputs_dir.mkdir(parents=True, exist_ok=True)
         target = inputs_dir / f"{form_id}.yaml"
+        # H4 fix: atomic check-and-set — claim the form before writing.
+        # Without this, two parallel POSTs could both pass the status check.
+        if not self.registry.claim_for_submit(form_id):
+            self._send_text(409, f"Form {form_id} is being submitted by another request or already processed.")
+            return
+
         _atomic_write_yaml(target, payload)
 
-        self.registry.update_status(form_id, "submitted")
+        # H4 fix: finalize submit status
+        self.registry.finalize_submit(form_id)
 
         # Persist custom roles if requested (delegates to roles_processor)
         from .roles_processor import process_role_deletions, process_role_saves

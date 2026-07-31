@@ -238,6 +238,19 @@ Worker пишет сигналы в `.agentic/outbox/`. Каноничный ф�
 
 Отключается через `automation.auto_done: false` в `config.yaml`.
 
+### ⚠️ Security note (H8)
+
+awf subprocesses (`opencode run` spawned by agent/supervisor stages) run with
+**blanket permissions** (`edit: allow`, `bash: allow`, `write: allow`,
+`webfetch: allow`) — see `awf/_env.py`. This is required for autonomous
+pipeline operation, but means **any role.md can execute arbitrary commands**.
+
+**For pet projects** (single user, trusted role sources): acceptable.
+
+**For team / PyPI publish**: this is a known limitation. Before sharing
+roles externally, audit their `.md` content. Future work: scoped permissions
+per role (e.g. reviewer → only `edit: ask`).
+
 ---
 
 ## Файлы `.agentic/`

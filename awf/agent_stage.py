@@ -127,7 +127,9 @@ def collect_handoff(
     outbox = paths.outbox(project_dir)
 
     progress = outbox / f"PROGRESS-{todo_id}.md"
-    done = outbox / f"DONE-{todo_id}.md"
+    # H2 fix: support legacy short form DONE-{short_id}.md
+    from .signals import find_signal_file
+    done_path = find_signal_file(outbox, "DONE", todo_id, ".md") or (outbox / f"DONE-{todo_id}.md")
 
     parts: list[str] = [
         f"# Handoff from `{role}` (TODO {todo_id})",
@@ -145,8 +147,8 @@ def collect_handoff(
             parts += ["## PROGRESS notes (from worker)", "", body, ""]
             has_output = True
 
-    if done.is_file():
-        body = done.read_text(encoding="utf-8").strip()
+    if done_path.is_file():
+        body = done_path.read_text(encoding="utf-8").strip()
         if body:
             parts += ["## DONE summary (from worker)", "", body, ""]
             has_output = True

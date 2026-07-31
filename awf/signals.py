@@ -27,6 +27,23 @@ def _short_id(todo_id: str) -> str:
     return todo_id.split("-", 1)[1] if todo_id.startswith("TODO-") else todo_id
 
 
+def find_signal_file(directory: Path, prefix: str, todo_id: str, suffix: str = "") -> Path | None:
+    """H2/H3 fix: find a signal file in canonical OR legacy short form.
+
+    Tries:
+      - canonical:   {prefix}-{todo_id}{suffix}     (e.g. DONE-TODO-0001.md)
+      - legacy short: {prefix}-{short_id}{suffix}    (e.g. DONE-0001.md)
+
+    Returns the Path if found, None otherwise.
+    """
+    short = _short_id(todo_id)
+    for candidate_id in (todo_id, short):
+        path = directory / f"{prefix}-{candidate_id}{suffix}"
+        if path.exists():
+            return path
+    return None
+
+
 def expected_signal_prefixes(kind: str) -> list[str]:
     """BD-29: return signal prefixes a stage kind is allowed to emit.
 

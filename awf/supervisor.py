@@ -242,11 +242,17 @@ def run_supervisor_stage(
     auto: bool,
     project_dir: Path,
     logs_dir: Path,
-) -> None:
+) -> str:
     """Dispatch a supervisor stage.
 
     Interactive (auto=False): print instructions + wait for signal file (BD-30).
     Auto (auto=True): spawn opencode subprocess (BD-14).
+
+    Returns the signal name produced by supervisor:
+    - For plan/replan: "TODO-NNNN" (the new TODO id)
+    - For verify: "ACK-TODO-NNNN" or "APPROVE-TODO-NNNN" (approved)
+                    or "REVIEW-TODO-NNNN" (rejected — C1: caller must check)
+    - Empty string if signal detection failed or stage skipped.
     """
     kind = stage.kind
     config = cfg_mod.load(project_dir)
@@ -261,9 +267,9 @@ def run_supervisor_stage(
     if not auto:
         print_interactive_supervisor_instructions(kind, todo_id, project_dir, phases_file)
         _log(logs_dir, f"BD-30: interactive supervisor {kind} — waiting for signal")
-        wait_for_supervisor_signal(kind, todo_id, project_dir, logs_dir)
-        _log(logs_dir, f"BD-30: interactive supervisor {kind} completed by user (opencode)")
-        return
+        signal = wait_for_supervisor_signal(kind, todo_id, project_dir, logs_dir)
+        _log(logs_dir, f"BD-30: interactive supervisor {kind} completed by user (opencode): {signal}")
+        return signal
 
     print("Instructions: .agentic/roles/supervisor.md")
     print(f"Phases file: {phases_file}")
@@ -286,7 +292,7 @@ def run_supervisor_stage(
         print(f"What to do ({kind}): see supervisor.md instructions")
 
     print()
-    run_supervisor_via_subprocess(kind, todo_id, project_dir, config, phases_file, logs_dir)
+    return run_supervisor_via_subprocess(kind, todo_id, project_dir, config, phases_file, logs_dir)
 
 
 def run_supervisor_via_subprocess(
@@ -296,18 +302,23 @@ def run_supervisor_via_subprocess(
     config: dict,
     phases_file: str,
     logs_dir: Path,
-) -> None:
+) -> str:
     """BD-14/29: spawn ``opencode run --auto --agent ... --file supervisor.md``.
 
     kind is one of: plan / verify / replan / salvage.
     salvage is NOT automatable — needs human judgement.
+
+    Returns the signal name produced by supervisor subprocess (C1 fix):
+    - plan/replan: new TODO-NNNN
+    - verify: ACK-TODO-NNNN, APPROVE-TODO-NNNN, or REVIEW-TODO-NNNN
+    - empty string if skipped.
     """
     try:
         role_file = resolve_role_file("supervisor", project_dir)
     except RuntimeError as e:
         print(f"[auto mode] supervisor.md not found — skipping. ({e})")
         _log(logs_dir, f"Supervisor stage {kind} auto-skipped (no supervisor.md)")
-        return
+        return ""
 
     extra_files: list[str] = []
     prompt = ""
@@ -326,7 +337,7 @@ def run_supervisor_via_subprocess(
         if not todo_id:
             print("[auto mode] No todo_id for verify — skip.")
             _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
-            return
+            return ""
         done_md = outbox / f"DONE-{todo_id}.md"
         if done_md.is_file():
             extra_files.append(str(done_md))
@@ -344,7 +355,7 @@ def run_supervisor_via_subprocess(
         if not todo_id:
             print("[auto mode] No todo_id for replan — skip.")
             _log(logs_dir, "Supervisor replan auto-skipped (no todo_id)")
-            return
+            return ""
         blocked = outbox / f"BLOCKED-{todo_id}.md"
         if blocked.is_file():
             extra_files.append(str(blocked))
@@ -356,11 +367,11 @@ def run_supervisor_via_subprocess(
     elif kind == "salvage":
         print("[auto mode] salvage not automated — skipping.")
         _log(logs_dir, "Supervisor salvage auto-skipped (not automatable)")
-        return
+        return ""
     else:
         print(f"[auto mode] Unknown kind {kind!r} — skipping.")
         _log(logs_dir, f"Supervisor stage {kind} auto-skipped (unknown kind)")
-        return
+        return ""
 
     agent_name = get_agent_name(config, "supervisor")
     cmd = [
@@ -413,3 +424,41 @@ def run_supervisor_via_subprocess(
             f"Supervisor {kind} subprocess exited with code {result.returncode}. "
             f"Cmd: {' '.join(cmd)}"
         )
+
+    # C1 fix: determine which signal actually fired.
+    signal_name = _detect_supervisor_signal(kind, todo_id, inbox, outbox)
+    _log(logs_dir, f"Supervisor {kind} produced signal: {signal_name!r}")
+    return signal_name
+
+
+def _detect_supervisor_signal(
+    kind: str,
+    todo_id: str,
+    inbox: Path,
+    outbox: Path,
+) -> str:
+    """C1 fix: detect which signal the supervisor actually produced.
+
+    For verify: prefers REVIEW (rejection) over ACK/APPROVE — if supervisor
+    wrote REVIEW-{todo_id}.md, that's the most recent decision and should
+    override any stale ACK.
+    """
+    if kind == "verify" and todo_id:
+        # Check REVIEW first (most recent decision wins)
+        review = outbox / f"REVIEW-{todo_id}.md"
+        if review.exists():
+            return f"REVIEW-{todo_id}"
+        # Then ACK and APPROVE
+        ack = inbox / f"ACK-{todo_id}.ready"
+        if ack.exists():
+            return f"ACK-{todo_id}"
+        approve = inbox / f"APPROVE-{todo_id}.ready"
+        if approve.exists():
+            return f"APPROVE-{todo_id}"
+    elif kind in ("plan", "replan"):
+        # Newest TODO-*.ready that didn't exist at start (already filtered
+        # by signal_watch snapshot). Return first found by mtime.
+        todos = sorted(inbox.glob("TODO-*.ready"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if todos:
+            return todos[0].stem  # "TODO-NNNN.ready" → "TODO-NNNN"
+    return ""

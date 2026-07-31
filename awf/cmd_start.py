@@ -29,40 +29,31 @@ def _run_in_background(args: Any) -> int:
 
     # Rebuild the argv WITHOUT --background so the detached child runs normally.
     # We keep all other args (including --auto, --pipeline, --from-stage, --timeout).
-    # Auditor finding: was `if arg in ("start", "--background")` — fragile string
-    # match skipped args whose VALUE happened to be "start" (e.g. project named
-    # "start"). Now skip ONLY positional "start" (first argv element after the
-    # bin name) and the --background flag.
+    # H6 fix: also handle --project-dir=/path form (was missing — only space-separated
+    # form worked). Without this, 'awf start --background --project-dir=/x' launched
+    # the child in CWD because the post-loop check added a second --project-dir.
     raw_argv = sys.argv[1:]
     child_argv = [sys.executable, "-m", "awf", "start"]
     skip_next_value = False
+    has_project_dir = False
     for i, arg in enumerate(raw_argv):
         if skip_next_value:
-            # This is the value of --project-dir (or similar) — keep it.
             skip_next_value = False
             child_argv.append(arg)
             continue
         if i == 0 and arg == "start":
-            # First positional is the subcommand "start" — drop it.
             continue
         if arg == "--background":
-            # The flag we're stripping.
             continue
-        if arg.startswith("--project-dir"):
-            # Could be "--project-dir=/path" or "--project-dir /path"
-            if "=" not in arg:
-                skip_next_value = True
+        if arg == "--project-dir":
+            has_project_dir = True
+            skip_next_value = True
+        elif arg.startswith("--project-dir="):
+            has_project_dir = True
         child_argv.append(arg)
 
-    # BD-30: --background does NOT force --auto anymore. Background just
-    # means "don't block the calling shell". The interactive (auto=False)
-    # supervisor path now waits for a signal file instead of input(), so
-    # it works fine with stdin=DEVNULL — current opencode (in user's chat)
-    # sees instructions in the log file and creates the signal when done.
-    #
-    # --auto is still available for CI/tests where no human is at the
-    # wheel — in that mode supervisor spawns its own subprocess.
-    if "--project-dir" not in child_argv:
+    # Only add --project-dir if not already present in any form
+    if not has_project_dir:
         child_argv += ["--project-dir", str(project_dir)]
 
     with open(log_file, "wb") as out:
