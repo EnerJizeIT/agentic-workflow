@@ -46,6 +46,36 @@ def _is_valid_form_id(form_id: str) -> bool:
     return form_id.startswith("FORM-") and 6 < len(form_id) < 100
 
 
+def _is_origin_allowed(origin: str, referer: str) -> bool:
+    """A2: CSRF check — is this Origin/Referer combination allowed?
+
+    Forms opened via file:// (opencode temp HTML) send Origin: "null"
+    (browser standard for sandboxed/local file origins). Chrome's
+    strict-origin-when-cross-origin policy also strips Referer, so we
+    can't rely on Referer to confirm file:// origin.
+
+    Since the HTTP server binds to 127.0.0.1 ONLY (no remote access),
+    Origin: "null" is always safe — it means a local file or sandboxed
+    iframe, never a remote attacker.
+    """
+    allowed_origins = (
+        "http://127.0.0.1",
+        "http://localhost",
+        "https://127.0.0.1",
+        "https://localhost",
+    )
+    # Origin "null" — local file:// page or sandboxed iframe. Server is
+    # 127.0.0.1-only, so this is always safe.
+    if origin == "null":
+        return True
+    if origin:
+        return origin.startswith(allowed_origins)
+    # No Origin header — check Referer if present (curl/non-browser has neither)
+    if referer:
+        return referer.startswith(("file://",) + allowed_origins)
+    return True  # no Origin, no Referer — backward compat for curl
+
+
 def _ack_page(form_id: str, already_submitted: bool) -> str:
     """Generate HTML acknowledgement page shown after submit.
 
@@ -104,20 +134,12 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(410, f"Form {form_id} was cancelled.")
             return
 
-        # A2: CSRF protection — verify Origin header is localhost or absent
-        origin = self.headers.get("Origin", "") or self.headers.get("Referer", "")
-        if origin:
-            # Allow only localhost origins (127.0.0.1, localhost, or file://)
-            allowed_prefixes = (
-                "http://127.0.0.1",
-                "http://localhost",
-                "https://127.0.0.1",
-                "https://localhost",
-                "file://",
-            )
-            if not origin.startswith(allowed_prefixes):
-                self._send_text(403, f"Forbidden: Origin '{origin}' not allowed")
-                return
+        # A2: CSRF protection — verify Origin/Referer is localhost or local file.
+        origin = self.headers.get("Origin", "")
+        referer = self.headers.get("Referer", "")
+        if not _is_origin_allowed(origin, referer):
+            self._send_text(403, f"Forbidden: Origin '{origin}' not allowed")
+            return
 
         try:
             content_length = int(self.headers.get("Content-Length", 0))

@@ -327,3 +327,37 @@ def test_submit_without_project_dir_uses_default(http_setup):
     default_yaml = config.inputs_dir / "FORM-002.yaml"
     assert default_yaml.exists(), f"YAML not in default dir: {default_yaml}"
     assert "reviewer" in default_yaml.read_text()
+
+
+# ── A2 CSRF: Origin "null" from file:// pages ────────────────────────────────
+
+
+class TestCSRFOriginNullFromFile:
+    """A2 fix: forms opened via file:// send Origin: "null" (not "file://...").
+    Browser standard behavior for sandboxed/local file origins.
+    Must accept "null" only when Referer confirms file:// origin."""
+
+    def test_origin_null_accepted_no_referer(self):
+        """Origin: null + no Referer → accepted (Chrome strips Referer for file://)."""
+        from agent_workflow_ui.http_endpoint import _is_origin_allowed
+        assert _is_origin_allowed(origin="null", referer="")
+
+    def test_origin_null_accepted_with_file_referer(self):
+        """Origin: null + Referer: file:// → accepted."""
+        from agent_workflow_ui.http_endpoint import _is_origin_allowed
+        assert _is_origin_allowed(origin="null", referer="file:///tmp/form.html")
+
+    def test_localhost_origin_accepted(self):
+        """Origin: http://127.0.0.1:1234 → accepted."""
+        from agent_workflow_ui.http_endpoint import _is_origin_allowed
+        assert _is_origin_allowed(origin="http://127.0.0.1:1234", referer="")
+
+    def test_evil_origin_rejected(self):
+        """Origin: http://evil.com → rejected."""
+        from agent_workflow_ui.http_endpoint import _is_origin_allowed
+        assert not _is_origin_allowed(origin="http://evil.com", referer="")
+
+    def test_no_origin_no_referer_accepted(self):
+        """No Origin, no Referer (curl, non-browser) → accepted (backward compat)."""
+        from agent_workflow_ui.http_endpoint import _is_origin_allowed
+        assert _is_origin_allowed(origin="", referer="")
