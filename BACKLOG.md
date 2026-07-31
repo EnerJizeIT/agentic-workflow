@@ -477,7 +477,7 @@ form after restart and saw `---` in dropdown.
 
 ---
 
-### BD-17 · BD-8 + BD-14 signal mismatch — supervisor verify subprocess writes ACK but `_maybe_commit` waits for APPROVE
+### BD-17 · BD-8 + BD-14 signal mismatch — FIXED (_maybe_commit accepts both APPROVE + ACK)
 
 **Status:** Fixed in commit (pending).
 
@@ -501,7 +501,7 @@ applied to awf-core) 2026-07-28 — signal flow analysis revealed mismatch.
 
 ---
 
-### BD-18 · Subprocess exit codes silently ignored — pipeline advances after agent/supervisor crash
+### BD-18 · Subprocess exit codes silently ignored — FIXED (raise RuntimeError on non-zero exit)
 
 **Status:** Fixed in commit (pending).
 
@@ -572,7 +572,7 @@ of vllm/llm despite config.yaml mapping.
 
 ### BD-25 · Awf subprocess attaches to running `opencode serve` — CLOSED (OPENCODE_SERVER_* stripped from env)
 
-**Status:** OPEN. Lower priority — may be related to BD-23 fix.
+**Status:** CLOSED. Fix: awf/_env.py strips OPENCODE_SERVER/OPENCODE_HOST env vars.
 
 **Problem.** When `opencode serve` is already running (port 8080 in
 user's setup), `opencode run` subprocess may attach to it instead of
@@ -591,7 +591,7 @@ after dogfood v8 if the issue persists.
 
 ### BD-26 · UI bugs in project-setup form — CLOSED (BD-27 fixed all 3)
 
-**Status:** OPEN. **Priority:** MEDIUM — UX papercuts, not blockers.
+**Status:** CLOSED. All 3 bugs fixed in BD-27 commit (skills dropdown refactor).
 
 Three issues reported by user during dogfood v9 (2026-07-29):
 
@@ -629,9 +629,9 @@ dropdown'а + CSS layout team-row + фильтр пустых titles в scan_glo
 
 ---
 
-### BD-22 · BD-20 false positive — terminates subprocess on stale signals from previous runs
+### BD-22 · BD-20 false positive — terminates subprocess on stale signals — CLOSED (BD-22 snapshot in signal_watch.py)
 
-**Status:** OPEN. **Priority:** CRITICAL — blocks reliable dogfooding.
+**Status:** CLOSED. Fix: signal_watch.py pre_existing snapshot — stale files ignored.
 
 **Problem.** BD-20 (`_run_subprocess_until_signal`) watches for signal
 files like `DONE-{todo_id}.ready`. When awf is re-run after a previous
@@ -747,7 +747,7 @@ pipeline produced no real contribution tracking.
 
 ---
 
-### BD-19 · Handoff filename `<role>.md` overwrites on retry — audit trail lost
+### BD-19 · Handoff filename `<role>.md` overwrites on retry — FIXED (<role>-<todo_id>.md naming)
 
 **Status:** Fixed in commit (pending).
 
