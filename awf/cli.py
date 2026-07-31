@@ -168,7 +168,12 @@ def _dispatch_subcommand(argv):
         help="Path to project root (default: current directory)",
     )
 
-    sub.add_parser("report", help="Show summary report")
+    p_report = sub.add_parser("report", help="Show summary report")
+    p_report.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
 
     p_analyze = sub.add_parser(
         "analyze-roles",

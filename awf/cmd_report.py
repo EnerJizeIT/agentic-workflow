@@ -12,18 +12,19 @@ from . import paths
 
 def run(args: Any) -> int:
     """Execute ``awf report`` and return exit code."""
-    agentic = Path(".agentic")
+    project_dir = Path(getattr(args, "project_dir", "."))
+    agentic = project_dir / ".agentic"
     if not agentic.is_dir():
-        print("No .agentic/ found. Run 'awf init' first.")
+        print(f"No .agentic/ found at {project_dir}. Run 'awf init' first.")
         return 1
 
-    inbox = paths.inbox(".")
-    outbox = paths.outbox(".")
-    config_file = paths.config_file(".")
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    config_file = paths.config_file(project_dir)
 
     project_name = "Project"
     if config_file.exists():
-        config_data = cfg_mod.load(".")
+        config_data = cfg_mod.load(project_dir)
         name = cfg_mod.get(config_data, "project.name", "Project") or "Project"
         project_name = name
 
