@@ -111,6 +111,60 @@ class TestBD22SnapshotWatchNewGlob:
         assert result.returncode == 0
         assert (inbox_dir / "TODO-0099.ready").exists()
 
+    def test_signal_holder_captures_fired_filename(self, tmp_path, monkeypatch):
+        """Auditor Idea 1: signal_watch populates signal_holder with the
+        exact filename that fired (e.g. 'TODO-0042.ready'). Lets callers
+        avoid re-globbing inbox and picking a stale TODO by mtime.
+        """
+        from awf.signal_watch import run_subprocess_until_signal
+
+        class _TriggeringPopen(_FakePopen):
+            def poll(self):
+                if type(self)._poll_count == 1:
+                    (inbox_dir / "TODO-0042.ready").write_text("")
+                type(self)._poll_count += 1
+                if type(self)._poll_count >= 3:
+                    return 0
+                return None
+
+        inbox_dir = tmp_path / "inbox"
+        inbox_dir.mkdir()
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _TriggeringPopen)
+        monkeypatch.setattr("awf.signal_watch.time.sleep", lambda *_a, **_kw: None)
+
+        holder: dict[str, str] = {}
+        result = run_subprocess_until_signal(
+            cmd=["opencode", "run"],
+            cwd=tmp_path,
+            watch_new_glob=(inbox_dir, "TODO-*.ready"),
+            logs_dir=None,
+            hard_timeout=10,
+            signal_holder=holder,
+        )
+        assert result.returncode == 0
+        assert holder.get("signal") == "TODO-0042.ready", (
+            "signal_holder must contain exact filename that fired"
+        )
+
+    def test_signal_holder_empty_when_no_signal(self, tmp_path, monkeypatch):
+        """signal_holder stays empty when hard_timeout fires (no signal arrived)."""
+        from awf.signal_watch import run_subprocess_until_signal
+
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FakePopen)
+        monkeypatch.setattr("awf.signal_watch.time.sleep", lambda *_a, **_kw: None)
+
+        holder: dict[str, str] = {}
+        with pytest.raises(TimeoutError):
+            run_subprocess_until_signal(
+                cmd=["opencode", "run"],
+                cwd=tmp_path,
+                watch_paths=[tmp_path / "never_exists.ready"],
+                logs_dir=None,
+                hard_timeout=1,
+                signal_holder=holder,
+            )
+        assert holder == {}
+
 
 # ── APPROVE timeout path ─────────────────────────────────────────────────────
 

@@ -362,6 +362,226 @@ class TestRunPlanCheckpoint:
         new_leftovers = after - before
         assert not new_leftovers, f"Leftover temp files: {new_leftovers}"
 
+    def test_empty_edit_does_not_overwrite_todo(self, tmp_path, monkeypatch):
+        """BUG-3 fix: edit with empty textarea must NOT wipe the TODO file.
+
+        User clicks Изменить → Подтвердить правки without typing anything.
+        edited_content is "" — gate treats as approve (no-op), TODO is preserved.
+        """
+        project = self._make_project(tmp_path, todo_content="# Important task\ndo work")
+        todo_md = project / ".agentic" / "inbox" / "TODO-0001.md"
+        original = todo_md.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+        real_start = plan_checkpoint._start_checkpoint_server
+
+        def capturing_start(port, decision_holder, edited_holder):
+            server = real_start(port, decision_holder, edited_holder)
+
+            def _empty_edit():
+                time.sleep(0.2)
+                # Empty content submitted
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
+                    data=b"decision=edit&edited_content=",
+                    timeout=2,
+                ).read()
+
+            import threading
+            threading.Thread(target=_empty_edit, daemon=True).start()
+            return server
+
+        monkeypatch.setattr(plan_checkpoint, "_start_checkpoint_server", capturing_start)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs",
+            timeout=5,
+        )
+        # Empty edit → returned as approve (no-op)
+        assert result == "approve"
+        # TODO file is UNCHANGED
+        assert todo_md.read_text(encoding="utf-8") == original
+
+    def test_webbrowser_open_failure_is_logged(self, tmp_path, monkeypatch):
+        """BUG-4 fix: webbrowser.open raising must log a warning (not silent)."""
+        project = self._make_project(tmp_path)
+        logs_dir = project / ".agentic" / "logs"
+
+        def _raise(*_a, **_kw):
+            raise OSError("no browser available")
+
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", _raise)
+
+        plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=logs_dir, timeout=1,
+        )
+
+        # Verify the warning was written to orchestrator.log
+        log_file = logs_dir / "orchestrator.log"
+        log_content = log_file.read_text(encoding="utf-8")
+        assert "webbrowser.open failed" in log_content
+        assert "no browser available" in log_content
+
+
+# ── TestCheckpointGateDispatch (orchestrator integration — T1) ───────────────
+
+
+class TestCheckpointGateDispatch:
+    """T1 fix: exercise orchestrator._run_plan_checkpoint_gate directly.
+
+    The 31 tests above cover plan_checkpoint.py in isolation. These tests
+    verify the dispatcher in orchestrator.py — the integration point
+    where a wrong constant (e.g. 'reject' vs 'REJECT') would slip through.
+    """
+
+    def _make_project(self, tmp_path: Path) -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        phases = tmp_path / ".agentic" / "phases"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        phases.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text("# TODO-0001\nstub", encoding="utf-8")
+        (phases / "plan.md").write_text("- [ ] Step 1", encoding="utf-8")
+        return tmp_path
+
+    def test_disabled_returns_zero(self, tmp_path, monkeypatch):
+        """When checkpoint disabled (auto=True), gate returns 0 immediately."""
+        from awf.orchestrator import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+
+        # Ensure run_plan_checkpoint is NEVER called
+        def _fail_if_called(*_a, **_kw):
+            raise AssertionError("run_plan_checkpoint must not be called when disabled")
+
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint", _fail_if_called,
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=True,  # disables checkpoint
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
+    def test_reject_returns_one(self, tmp_path, monkeypatch):
+        """User rejects → gate returns 1 (pipeline must stop)."""
+        from awf.orchestrator import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.is_checkpoint_enabled", lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint",
+            lambda *_a, **_kw: "reject",
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 1
+
+    def test_approve_returns_zero(self, tmp_path, monkeypatch):
+        """User approves → gate returns 0 (pipeline continues)."""
+        from awf.orchestrator import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.is_checkpoint_enabled", lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint",
+            lambda *_a, **_kw: "approve",
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
+    def test_edit_returns_zero(self, tmp_path, monkeypatch):
+        """User edits → gate returns 0 (pipeline continues with rewritten TODO)."""
+        from awf.orchestrator import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.is_checkpoint_enabled", lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint",
+            lambda *_a, **_kw: "edit",
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
+    def test_timeout_returns_zero(self, tmp_path, monkeypatch):
+        """Timeout → gate returns 0 (auto-approve)."""
+        from awf.orchestrator import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.is_checkpoint_enabled", lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint",
+            lambda *_a, **_kw: "timeout",
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
+    def test_env_override_disables_gate(self, tmp_path, monkeypatch):
+        """AWF_PLAN_CHECKPOINT=false disables gate even when auto=False."""
+        from awf.orchestrator import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        monkeypatch.setenv("AWF_PLAN_CHECKPOINT", "false")
+
+        # If gate tries to run, this would hang on real_form — make sure it doesn't.
+        def _fail_if_called(*_a, **_kw):
+            raise AssertionError("gate must short-circuit when env disables")
+
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint", _fail_if_called,
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

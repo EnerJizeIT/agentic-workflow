@@ -31,6 +31,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from . import config as cfg_mod
+from ._atomic import atomic_write_text
 from ._log import log as _log
 
 DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
@@ -119,8 +120,10 @@ def run_plan_checkpoint(
         print("=" * 60)
         try:
             webbrowser.open(f"file://{html_path}")
-        except Exception:
-            pass  # non-fatal — user can open URL manually
+        except Exception as e:
+            # BUG-4 fix: log the failure so debugging is possible if the
+            # URL print above is missed. Non-fatal — user can open manually.
+            _log(logs_dir, f"BD-36: webbrowser.open failed: {e} — open URL manually")
 
         _log(logs_dir, f"BD-36: checkpoint opened for {todo_id} on port {port}")
 
@@ -130,6 +133,13 @@ def run_plan_checkpoint(
                 break
             time.sleep(1)
 
+        # BUG-1 fix: grace period after loop exit. The POST handler runs in
+        # a separate thread — between loop exit and this check, an in-flight
+        # POST could still populate decision_holder. 200ms covers typical
+        # thread scheduling latency without measurable UX impact.
+        if not decision_holder:
+            time.sleep(0.2)
+
         if not decision_holder:
             _log(logs_dir, f"BD-36: checkpoint timeout for {todo_id} — auto-approve")
             return "timeout"
@@ -137,8 +147,19 @@ def run_plan_checkpoint(
         decision = decision_holder["decision"]
         _log(logs_dir, f"BD-36: checkpoint decision for {todo_id}: {decision}")
 
-        if decision == "edit" and edited_holder:
-            todo_md.write_text(edited_holder["content"], encoding="utf-8")
+        # BUG-3 fix: empty edited_content would silently wipe the TODO.
+        # Treat as no-op (approve path) and log the rejection.
+        if decision == "edit":
+            content = edited_holder.get("content", "")
+            if not content.strip():
+                _log(
+                    logs_dir,
+                    f"BD-36: edit ignored — empty content submitted for {todo_id}",
+                )
+                return "approve"
+            # BUG-2 fix: atomic_write_text (temp + rename) instead of write_text
+            # (truncate-then-write). Survives crash mid-write.
+            atomic_write_text(todo_md, content)
             _log(logs_dir, f"BD-36: {todo_id}.md rewritten via edit")
 
         return decision
@@ -175,6 +196,13 @@ def _start_checkpoint_server(
     """
 
     class _CheckpointHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 — http.server API
+            # Browser may request /favicon.ico after form submit. Without a
+            # GET handler, BaseHTTPRequestHandler returns 501 and pollutes
+            # the browser console. Return 204 No Content for any GET.
+            self.send_response(204)
+            self.end_headers()
+
         def do_POST(self) -> None:  # noqa: N802 — http.server API
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8", errors="replace")

@@ -30,6 +30,7 @@ def run_subprocess_until_signal(
     logs_dir: Path | None = None,
     hard_timeout: int = BD20_HARD_TIMEOUT,
     env: dict[str, str] | None = None,
+    signal_holder: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """BD-20: run subprocess, watch for signal files, wait for natural exit.
 
@@ -56,6 +57,11 @@ def run_subprocess_until_signal(
         logs_dir: optional, for logging.
         hard_timeout: absolute cap before SIGKILL (default 3600s).
         env: subprocess environment (defaults to os.environ).
+        signal_holder: optional dict populated with the EXACT signal file
+            name (e.g. ``"TODO-0042.ready"``) that fired. Lets callers
+            avoid re-globbing the inbox and picking a stale TODO by mtime
+            (auditor HIGH finding on supervisor.py:496). Backward-compatible:
+            callers that don't pass it get the original behavior.
     """
     watch_paths = watch_paths or []
     # BD-22: snapshot which watch_paths already exist at start (stale signals
@@ -91,22 +97,33 @@ def run_subprocess_until_signal(
         if signal_seen_at is None:
             # BD-22: a path counts as signal only if it was NOT in pre_existing
             # snapshot (i.e., appeared DURING subprocess execution).
-            triggered = any(
-                str(p) not in pre_existing and p.exists() for p in watch_paths
-            )
-            if not triggered and watch_new_glob is not None:
-                watch_dir, pattern = watch_new_glob
-                if watch_dir.is_dir():
-                    current = {p.name for p in watch_dir.glob(pattern)}
-                    if current - snapshot:
-                        triggered = True
+            fired_name: str | None = None
+            for p in watch_paths:
+                if str(p) not in pre_existing and p.exists():
+                    triggered = True
+                    fired_name = p.name
+                    break
+            else:
+                triggered = False
+                if watch_new_glob is not None:
+                    watch_dir, pattern = watch_new_glob
+                    if watch_dir.is_dir():
+                        current = {p.name for p in watch_dir.glob(pattern)}
+                        new_files = current - snapshot
+                        if new_files:
+                            triggered = True
+                            # Pick lexicographically smallest for determinism
+                            # when multiple TODO-*.ready arrive in same poll.
+                            fired_name = sorted(new_files)[0]
             if triggered:
                 signal_seen_at = now
+                if signal_holder is not None and fired_name:
+                    signal_holder["signal"] = fired_name
                 if logs_dir:
                     _log(
                         logs_dir,
-                        f"BD-20: signal detected, waiting for natural exit "
-                        f"(pid={proc.pid})",
+                        f"BD-20: signal detected ({fired_name}), waiting for "
+                        f"natural exit (pid={proc.pid})",
                     )
 
         if now >= deadline:

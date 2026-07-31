@@ -202,6 +202,52 @@ def _handle_rollback(
     return target_idx, new_todo, 0
 
 
+def _run_plan_checkpoint_gate(
+    current_todo: str,
+    project_dir: Path,
+    config: dict,
+    auto: bool,
+    logs_dir: Path,
+) -> int:
+    """BD-36: Plan checkpoint dispatch.
+
+    Runs after supervisor's plan stage. If checkpoint is enabled, opens
+    the HTML form and waits for user decision. Returns:
+
+      - ``0`` — checkpoint passed (approve / edit / timeout / disabled),
+                 pipeline should continue.
+      - ``1`` — checkpoint rejected (or other failure), pipeline must stop.
+
+    Extracted from run_pipeline for testability (QA-report T1) and to
+    reduce run_pipeline's cognitive complexity (auditor finding).
+    """
+    from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
+
+    if not is_checkpoint_enabled(config, auto):
+        return 0
+
+    decision = run_plan_checkpoint(current_todo, project_dir, config, logs_dir)
+
+    if decision == "reject":
+        print(
+            f"BD-36: Plan checkpoint rejected for {current_todo}. "
+            f"Pipeline stopped — supervisor will replan on next 'awf start'.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"BD-36: checkpoint rejected for {current_todo}")
+        return 1
+
+    if decision == "timeout":
+        print(
+            "BD-36: Plan checkpoint timed out — auto-approving.",
+            file=sys.stderr,
+        )
+
+    # "approve" or "edit" → continue normally
+    _log(logs_dir, f"BD-36: checkpoint decision={decision}")
+    return 0
+
+
 def run_pipeline(args: Any) -> int:
     """Execute the pipeline and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
@@ -294,28 +340,11 @@ def run_pipeline(args: Any) -> int:
                 print(f"Active TODO: {current_todo}")
 
                 # BD-36: Plan checkpoint — preview TODO before agents start.
-                # Bypassed by --auto, config automation.plan_checkpoint: false,
-                # or env AWF_PLAN_CHECKPOINT=false.
-                from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
-                if is_checkpoint_enabled(config, auto):
-                    decision = run_plan_checkpoint(
-                        current_todo, project_dir, config, logs_dir,
-                    )
-                    if decision == "reject":
-                        print(
-                            f"BD-36: Plan checkpoint rejected for {current_todo}. "
-                            f"Pipeline stopped — supervisor will replan on next 'awf start'.",
-                            file=sys.stderr,
-                        )
-                        _log(logs_dir, f"BD-36: checkpoint rejected for {current_todo}")
-                        return 1
-                    if decision == "timeout":
-                        print(
-                            "BD-36: Plan checkpoint timed out — auto-approving.",
-                            file=sys.stderr,
-                        )
-                    # "approve" or "edit" → continue normally
-                    _log(logs_dir, f"BD-36: checkpoint decision={decision}")
+                rc = _run_plan_checkpoint_gate(
+                    current_todo, project_dir, config, auto, logs_dir,
+                )
+                if rc != 0:
+                    return rc
 
             if s_kind == "verify":
                 # C1 fix: check what supervisor actually decided.

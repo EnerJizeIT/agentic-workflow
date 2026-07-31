@@ -94,12 +94,12 @@ def run_agent_stage(
             outbox / f"BLOCKED-{todo_id}.md.ready",
         ]
 
-    from .orchestrator import _awf_subprocess_env
+    from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
 
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
-        env=_awf_subprocess_env(),
+        env=awf_subprocess_env(),
     )
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:

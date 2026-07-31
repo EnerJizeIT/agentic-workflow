@@ -439,8 +439,13 @@ def run_supervisor_via_subprocess(
             outbox / f"REVIEW-{todo_id}.md",
         ]
 
-    from .orchestrator import _awf_subprocess_env
+    from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
+
+    # Idea 1 fix: capture the exact signal file name from signal_watch so
+    # we don't have to re-glob the inbox (which can return a stale TODO
+    # if old/new TODO-*.ready share an mtime — auditor HIGH finding).
+    signal_holder: dict[str, str] = {}
 
     result = run_subprocess_until_signal(
         cmd,
@@ -448,7 +453,8 @@ def run_supervisor_via_subprocess(
         watch_paths=watch_paths,
         watch_new_glob=watch_new_glob,
         logs_dir=logs_dir,
-        env=_awf_subprocess_env(),
+        env=awf_subprocess_env(),
+        signal_holder=signal_holder,
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
@@ -458,9 +464,22 @@ def run_supervisor_via_subprocess(
             f"Cmd: {' '.join(cmd)}"
         )
 
-    # C1 fix: determine which signal actually fired.
+    # Prefer the exact signal name captured by signal_watch (BD-22 snapshot
+    # confirms it's NEW, not stale). Fall back to mtime-based detection
+    # only if signal_watch didn't populate the holder (defensive).
+    fired = signal_holder.get("signal", "")
+    if fired:
+        # Strip suffix to get the signal ID:
+        #   "TODO-0042.ready" → "TODO-0042"
+        #   "ACK-TODO-0001.ready" → "ACK-TODO-0001"
+        signal_name = fired.rsplit(".", 1)[0] if "." in fired else fired
+        _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
+        return signal_name
+
+    # Fallback: legacy mtime-based detection (still needed if caller didn't
+    # pass signal_holder or for non-watch_paths triggers).
     signal_name = _detect_supervisor_signal(kind, todo_id, inbox, outbox)
-    _log(logs_dir, f"Supervisor {kind} produced signal: {signal_name!r}")
+    _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
     return signal_name
 
 
