@@ -38,19 +38,36 @@ DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
 
 
 def _cleanup_stale_temp_html() -> int:
-    """П7: remove leftover /tmp/awf-checkpoint-*.html from crashed runs.
+    """П7: remove leftover awf-checkpoint-*.html from crashed runs.
 
     Without this, every crash leaves a temp HTML file. On next awf start,
     webbrowser.open may fire for the new file, but stale ones from
-    previous runs are still in /tmp/ — confusing if user opens them
+    previous runs are still in temp dir — confusing if user opens them
     manually (they show old TODO content / outdated submit URL).
+
+    Safety: only removes files older than 10 minutes. This avoids
+    deleting a temp HTML that a concurrently-running awf instance just
+    created (rare, but possible if user runs `awf start` in two
+    terminals simultaneously).
 
     Returns count of files removed. Best-effort: ignores permission errors.
     """
     import glob
+    import tempfile
+    tmp_dir = tempfile.gettempdir()
+    pattern = f"{tmp_dir}/awf-checkpoint-*.html"
+
+    # Note: st_mtime is wall-clock (epoch). Must compare with time.time(),
+    # NOT time.monotonic() (which has arbitrary zero point).
+    now = time.time()
     removed = 0
-    for stale in glob.glob("/tmp/awf-checkpoint-*.html"):
+    for stale in glob.glob(pattern):
         try:
+            # Only remove files older than 10 minutes — protects a
+            # concurrently-running awf instance that just created its form.
+            mtime = Path(stale).stat().st_mtime
+            if (now - mtime) < 600:
+                continue
             Path(stale).unlink()
             removed += 1
         except OSError:
@@ -106,7 +123,7 @@ def run_plan_checkpoint(
     # П7: clean up stale temp HTML from previous (crashed) runs before
     # creating our own. Without this, user may see old forms from /tmp/.
     stale_count = _cleanup_stale_temp_html()
-    if stale_count and logs_dir:
+    if stale_count:
         _log(logs_dir, f"П7: removed {stale_count} stale checkpoint HTML file(s)")
 
     todo_content = todo_md.read_text(encoding="utf-8")

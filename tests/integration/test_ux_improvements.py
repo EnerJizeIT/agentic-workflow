@@ -117,6 +117,26 @@ class TestEnsureBaselineSha:
         _ensure_baseline_sha(tmp_path, "", logs)
         assert not list(context.glob("BASELINE-*.sha"))
 
+    def test_handles_empty_git_repo(self, tmp_path):
+        """T1 (QA gap): git init but no commits yet — current_sha fails.
+        _ensure_baseline_sha must catch and log, not crash."""
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        # NO commit — HEAD doesn't exist
+        context = tmp_path / ".agentic" / "context"
+        logs = tmp_path / ".agentic" / "logs"
+        context.mkdir(parents=True)
+        logs.mkdir(parents=True)
+
+        # Must NOT raise — exception caught internally
+        _ensure_baseline_sha(tmp_path, "TODO-0001", logs)
+
+        # No SHA file created (git command failed)
+        assert not (context / "BASELINE-TODO-0001.sha").exists()
+
+        # Error logged
+        log_content = (logs / "orchestrator.log").read_text(encoding="utf-8")
+        assert "baseline creation failed" in log_content
+
 
 # ── build_prompt vision injection (П6) ───────────────────────────────────────
 
@@ -167,17 +187,94 @@ class TestBuildPromptVisionInjection:
 # ── _cleanup_stale_temp_html (П7) ────────────────────────────────────────────
 
 
+class TestCheckpointHtmlStructure:
+    """T5 (QA gap): structural integrity of dark-theme HTML form.
+
+    The f-string template has many `{{` / `}}` for CSS braces — easy to
+    break silently (e.g. unbalanced braces, missing closing tags, escaped
+    variable by mistake). This test catches regressions before user sees
+    a broken form.
+    """
+
+    def test_html_well_formed(self):
+        """Render form, validate basic HTML structure."""
+        from awf.plan_checkpoint import _render_html
+
+        html = _render_html(
+            todo_id="TODO-0042",
+            todo_content="# Sample task\nDo work",
+            plan_content="- [ ] Step 1",
+            port=12345,
+        )
+
+        # Structural checks
+        assert html.count("<html") == 1, "Exactly one <html>"
+        assert html.count("</html>") == 1, "Exactly one </html>"
+        assert html.count("<head>") == 1
+        assert html.count("</head>") == 1
+        assert html.count("<body>") == 1
+        assert html.count("</body>") == 1
+        assert html.count("<script>") == 1
+        assert html.count("</script>") == 1
+
+        # CSS braces balanced (every { has matching })
+        # f-string doubles braces, so source has {{ }} — but after f-string
+        # evaluation, output should have balanced single { }.
+        open_braces = html.count("{")
+        close_braces = html.count("}")
+        assert open_braces == close_braces, (
+            f"CSS/JS braces unbalanced: {open_braces} open vs {close_braces} close"
+        )
+
+    def test_dark_theme_variables_present(self):
+        """T5: dark theme CSS variables must be defined."""
+        from awf.plan_checkpoint import _render_html
+        html = _render_html("T1", "x", "", 1)
+        # Critical palette variables (must mirror project-setup.html.j2)
+        for var in ("--bg", "--accent", "--accent-green", "--text", "--danger"):
+            assert var in html, f"Missing CSS variable {var}"
+
+    def test_all_three_decision_buttons_present(self):
+        """T5: form must have approve/edit/reject buttons."""
+        from awf.plan_checkpoint import _render_html
+        html = _render_html("T1", "x", "", 1)
+        assert "submitDecision('approve')" in html
+        assert "submitDecision('edit')" in html
+        assert "submitDecision('reject')" in html
+
+    def test_no_double_escaped_braces(self):
+        """T5: regression check — no leftover {{ or }} in output
+        (would mean an f-string brace was meant as literal but escaped)."""
+        from awf.plan_checkpoint import _render_html
+        html = _render_html("T1", "x", "", 1)
+        # In CSS/JS we expect single { and }. Doubled {{ would be a bug.
+        # Allow them only inside <style> or <script> tag literals if needed,
+        # but in our template all braces are CSS/JS syntax, not f-string literals.
+        assert "{{" not in html, "Found {{ in output — f-string brace escaped by mistake"
+        assert "}}" not in html, "Found }} in output — f-string brace escaped by mistake"
+
+
+# ── _cleanup_stale_temp_html (П7) ────────────────────────────────────────────
+
+
 class TestCleanupStaleTempHtml:
     def test_removes_existing_stale_files(self, tmp_path, monkeypatch):
-        """П7: stale /tmp/awf-checkpoint-*.html from crashed runs are removed."""
+        """П7: stale awf-checkpoint-*.html from crashed runs are removed
+        (only if older than 10 min — protects concurrent awf instances)."""
+        import os
         import tempfile
+        import time
 
         tmp_dir = Path(tempfile.gettempdir())
-        # Create fake stale files
+        # Create fake stale files + age them past the 10-minute window
         stale1 = tmp_dir / "awf-checkpoint-TODO-0001-aaa.html"
         stale2 = tmp_dir / "awf-checkpoint-TODO-0002-bbb.html"
         stale1.write_text("old")
         stale2.write_text("older")
+        # Set mtime to 1 hour ago (well past the 10-min safety window)
+        old_time = time.time() - 3600
+        os.utime(stale1, (old_time, old_time))
+        os.utime(stale2, (old_time, old_time))
 
         try:
             removed = _cleanup_stale_temp_html()
@@ -189,6 +286,25 @@ class TestCleanupStaleTempHtml:
             for f in (stale1, stale2):
                 if f.exists():
                     f.unlink()
+
+    def test_preserves_recent_files_from_concurrent_run(self, tmp_path, monkeypatch):
+        """П7: files younger than 10 minutes are NOT removed — protects
+        a concurrently-running awf instance that just opened its form."""
+        import tempfile
+
+        tmp_dir = Path(tempfile.gettempdir())
+        recent = tmp_dir / "awf-checkpoint-TODO-0099-fresh.html"
+        recent.write_text("just created by another awf instance")
+
+        try:
+            removed = _cleanup_stale_temp_html()
+            # Recent file must survive
+            assert recent.exists(), "Recent file (<10min) must NOT be removed"
+            # removed count may be 0 or include other stale files from
+            # earlier tests, but NOT our recent one.
+        finally:
+            if recent.exists():
+                recent.unlink()
 
     def test_returns_zero_when_nothing_to_clean(self):
         """No stale files — returns 0, no error."""

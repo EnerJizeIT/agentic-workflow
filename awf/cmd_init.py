@@ -136,8 +136,9 @@ def run(args: Any) -> int:
     from .paths import find_vision_file
     vision_path = find_vision_file(".")
     if vision_path is not None:
-        # Relative path from .agentic/phases/ to project root vision file
-        rel = "../.." / vision_path.relative_to(Path(".").resolve())
+        # plan.md lives in .agentic/phases/, vision in project root.
+        # Relative path: ../../<vision_filename>
+        rel = Path("..") / ".." / vision_path.name
         plan_body = (
             f"# {project_name} — Plan\n\n"
             f"> Контекст проекта: прочитай `{rel}` перед планированием.\n\n"

@@ -189,6 +189,32 @@ class TestAttemptAutoDone:
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0005", cfg, sha)
         assert result is False
 
+    def test_auto_done_bool_true_works_regression(self, tmp_git_repo: Path) -> None:
+        """Auditor HIGH bug: YAML `auto_done: true` parses to Python bool True
+        (not string 'true'). Old code: `True not in ('true', '1')` → returned
+        False → auto-DONE silently disabled even though user enabled it.
+        Must work after fix."""
+        outbox, sha = self._setup_repo(tmp_git_repo)
+        (tmp_git_repo / "README.md").write_text("changed\n")
+        cfg = {
+            "verification": {"typecheck_cmd": "/bin/true"},
+            "automation": {"auto_done": True},  # YAML `true` → Python bool
+        }
+        result = verify.attempt_auto_done(tmp_git_repo, "TODO-0006", cfg, sha)
+        assert result is True, "Bool True must enable auto-DONE (was HIGH bug)"
+        assert (outbox / "DONE-TODO-0006.ready").exists()
+
+    def test_auto_done_int_one_works(self, tmp_git_repo: Path) -> None:
+        """YAML `auto_done: 1` parses to int 1. Must enable."""
+        outbox, sha = self._setup_repo(tmp_git_repo)
+        (tmp_git_repo / "README.md").write_text("changed\n")
+        cfg = {
+            "verification": {"typecheck_cmd": "/bin/true"},
+            "automation": {"auto_done": 1},  # YAML `1` → Python int
+        }
+        result = verify.attempt_auto_done(tmp_git_repo, "TODO-0007", cfg, sha)
+        assert result is True
+
     def test_no_verify_cmds_no_done(self, tmp_git_repo: Path) -> None:
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")

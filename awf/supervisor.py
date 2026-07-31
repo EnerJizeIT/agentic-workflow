@@ -359,9 +359,9 @@ def run_supervisor_stage(
         print("What to do (plan):")
         print("  1. Study the project state and phases file")
         print("  2. Determine the next step (or review existing TODO if present)")
-        print("  3. Create baseline: awf baseline TODO-{NNNN}")
-        print("  4. Write task to .agentic/inbox/TODO-{NNNN}.md")
-        print("  5. Create signal: .agentic/inbox/TODO-{NNNN}.ready")
+        print("  3. Write task to .agentic/inbox/TODO-{NNNN}.md")
+        print("  4. Create signal: .agentic/inbox/TODO-{NNNN}.ready")
+        print("     (baseline is created automatically by awf on next stage)")
     elif kind == "verify":
         print("What to do (verify):")
         print("  1. Read report from .agentic/outbox/")

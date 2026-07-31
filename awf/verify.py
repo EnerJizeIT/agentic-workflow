@@ -69,11 +69,18 @@ def attempt_auto_done(
     outbox = cwd / ".agentic" / "outbox"
 
     # Check automation.auto_done opt-out
+    # Auditor HIGH: YAML parses `true` as Python bool True, not string "true".
+    # Was: `if auto_done_enabled not in ("true", "1")` — failed for bool.
     auto_done_enabled = cfg_mod.get(config, "automation.auto_done", "true")
-    if isinstance(auto_done_enabled, str):
-        auto_done_enabled = auto_done_enabled.lower()
-    if auto_done_enabled not in ("true", "1"):
-        return False
+    if isinstance(auto_done_enabled, bool):
+        if not auto_done_enabled:
+            return False
+    elif isinstance(auto_done_enabled, str):
+        if auto_done_enabled.lower() not in ("true", "1"):
+            return False
+    elif isinstance(auto_done_enabled, int):
+        if auto_done_enabled == 0:
+            return False
 
     # Must have work evidence
     if not detect_work_evidence(cwd, baseline_sha):
