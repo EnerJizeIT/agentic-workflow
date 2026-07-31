@@ -304,57 +304,28 @@ See [`vision/architecture.md`](../vision/architecture.md) §7.3 for details.
 
 ---
 
-## 8. Skill normalization layer (BD-10)
+## 8. Role skills (BD-27 + BD-31)
 
-### Two-layer skill model
+### Single-layer model (BD-27)
 
-| Layer | Path | Owner | Mutable |
-|---|---|---|---|
-| Global | `~/.config/opencode/skills/<name>/SKILL.md` | opencode-skill-creator / user | no (reference) |
-| Local | `.agentic/skills/<role>.md` | supervisor (per-project) | yes (adaptation) |
+Form writes skill content **directly into** `.agentic/roles/<role>.md`.
+No separate `.agentic/skills/` layer (was BD-10/13 legacy, removed).
+Agent receives role.md via `--file` arg.
 
-Local skills are overlays on global. Awf passes both files to agent via
-`--file <role.md> --file <skill.md>` (orchestrator, BD-10-A).
+### Optional: skill-aware analysis (BD-31)
 
-### Link local → global
+`awf analyze-roles` reads all role.md files, detects zone overlaps
+(e.g. qa-review + project-auditor both "verify"), and appends a
+"BD-31: Pipeline-specific disambiguation" section to each role.md
+clarifying the unique contribution. Idempotent — re-running replaces
+existing patches.
 
-Frontmatter in local skill records origin:
-
-```yaml
----
-derived_from_global: true
-global_path: ~/.config/opencode/skills/<role>/SKILL.md
-global_sha: <sha256 at normalization>
-normalized_at: <ISO 8601>
-pipeline_context:
-  team: [...]
-  priority: <N>
----
+```bash
+awf analyze-roles              # apply patches
+awf analyze-roles --dry-run    # preview only
 ```
 
-### Triggers
-
-| Trigger | Effect |
-|---|---|
-| `project-setup` form submit | Plugin writes `.agentic/state/needs_normalize.yaml` (BD-10-B). |
-| Next `awf start` after submit | Runs `normalize_skills` stage after plan (BD-10-C). |
-| `awf normalize` | Manual re-normalization. |
-| `awf normalize --check-drift` | Reports stale locals (SHA mismatch). |
-| SHA mismatch at `awf start` | Auto-triggers normalize (BD-10-D). |
-
-### Conflict resolution heuristics
-
-1. **Priority = pipeline order.** First role wins.
-2. **Output contracts** per role type (see supervisor.md §8).
-3. Unresolved → plan.md "Open questions" section.
-
-### normalize_skills stage
-
-Interactive (requires TTY). Supervisor (current session agent) reads
-global skills, builds conflict matrix, writes local skills, presses
-Enter. NOT background-friendly — exit with error if no TTY.
-
-Manual workaround: run `awf normalize` first, then `awf start`.
+Not mandatory — pipeline works without it.
 
 ---
 

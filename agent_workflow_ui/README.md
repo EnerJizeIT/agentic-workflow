@@ -6,7 +6,7 @@ for monitoring.
 
 ## Status
 
-**v0.1.0** — MVP development. See [vision/](../vision/) for product docs.
+**Stable.** MVP complete, used in production dogfooding. See [vision/](../vision/) for product docs and [CHANGELOG.md](../CHANGELOG.md) for history.
 
 ## Install (dev)
 
@@ -64,7 +64,7 @@ pip install -e "./agent_workflow_ui[dev]"
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-Target: ≥80% на plugin code (исключая `__main__.py` и `__init__.py`). Текущее: **86%**.
+Target: ≥80% на plugin code (исключая `__main__.py` и `__init__.py`). Текущее: **90%**.
 
 ## Development
 

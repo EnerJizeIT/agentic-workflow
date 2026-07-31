@@ -325,124 +325,7 @@ Track how many iterations a task has taken:
 
 ---
 
-## 8. Skill normalization (when pipeline has multi-role team)
-
-When the team selected in `project-setup` form has 2+ roles, `awf start`
-runs a `normalize_skills` stage after plan and before first agent stage.
-This is your chance to prevent skill conflicts BEFORE agents run.
-
-### Why
-
-Global skills (`~/.config/opencode/skills/<role>/SKILL.md`) are written
-generically — they don't know about each other. Two roles may both claim
-"use MCP graph tools for X" or "write findings to docs/". In a pipeline,
-this causes overlapping work and contradictions.
-
-### What you do
-
-1. **Read global skills** for each team role:
-   ```
-   ~/.config/opencode/skills/<role-slug>/SKILL.md
-   ```
-   Use the Read tool. Skip if file doesn't exist (some roles have no
-   global skill — that's OK).
-
-2. **Build conflict matrix** — for each pair of roles, note:
-   - Overlapping zones of responsibility.
-   - Contradictory instructions.
-   - Duplicate output paths.
-
-3. **Write local skill** for each role:
-   ```
-   .agentic/skills/<role>.md
-   ```
-   Format (REQUIRED frontmatter):
-   ```yaml
-   ---
-   derived_from_global: true
-   global_path: ~/.config/opencode/skills/<role>/SKILL.md
-   global_sha: <sha256 of global at this moment>
-   normalized_at: <ISO 8601 timestamp>
-   pipeline_context:
-     team: [<role1>, <role2>, ...]
-     priority: <your position in pipeline, 1-indexed>
-   ---
-
-   # <Role> — Local adaptation for <project name>
-
-   ## Global reference (full copy)
-   <paste full content of global skill>
-
-   ---
-
-   ## Project-specific adaptation
-
-   ### Зона ответственности в этом pipeline
-   <what ONLY this agent does, in this project>
-
-   ### Что НЕ делает (делегирует другим)
-   - <task X> → <role Y>
-   - <task Z> → <role W>
-
-   ### Контракты с другими агентами
-   - Reads: <files this agent reads>
-   - Writes: <files this agent writes>
-   - Coordinates with: <role> via <file>
-
-   ### Адаптации под стек проекта
-   <project-specific overrides: stack, conventions, paths>
-   ```
-
-4. **Resolve conflicts via heuristics:**
-
-   **Priority = pipeline order.** First role in pipeline wins conflicts.
-   Loser gets explicit prohibition in their local skill ("Не делай X —
-   это зона <winner-role>").
-
-   **Output contracts per role type:**
-
-   | Role type | Output path |
-   |---|---|
-   | supervisor | (none — communicates via inbox) |
-   | system-analyst | `docs/requirements/<slug>.md` |
-   | architect | `docs/architecture/<feature>.md` |
-   | worker | source files + `.agentic/outbox/DONE-TODO-{NNNN}.md` |
-   | reviewer | `.agentic/outbox/REVIEW-{APPROVED\|REJECTED}-TODO-{NNNN}.md` |
-   | tester | `.agentic/outbox/TEST-{PASSED\|FAILED}-TODO-{NNNN}.md` + logs |
-   | project-auditor | `docs/audits/<YYYY-MM-DD>.md` |
-   | custom | `outputs/<role-slug>/` |
-
-5. **Unresolved conflicts:** if heuristics don't resolve, write to
-   `.agentic/phases/plan.md` under new "## Open questions" section:
-   ```markdown
-   ## Open questions (skill normalization)
-
-   - **Q1:** <description of conflict>
-     - Role A wants: <X>
-     - Role B wants: <Y>
-     - Default decision: <chose A because priority>
-     - User: please confirm or override.
-   ```
-   Pipeline continues — user can override later via chat.
-
-6. **Press Enter** to release the pipeline. Agents will now read both
-   role .md AND local skill .md (awf passes both via --file).
-
-### How to compute SHA256
-
-```bash
-sha256sum ~/.config/opencode/skills/<role>/SKILL.md
-```
-
-Or use Python:
-```python
-import hashlib
-hashlib.sha256(open(path, 'rb').read()).hexdigest()
-```
-
----
-
-## 9. Final notes
+## 8. Final notes
 
 - **Trust the worker.** It's a capable developer. Give it "what" and "why", let it figure out "how".
 - **Escalate gradually.** Start high-level, add detail only when needed.
@@ -452,3 +335,20 @@ hashlib.sha256(open(path, 'rb').read()).hexdigest()
 - **Don't rush.** One small working increment beats one big broken one.
 - **Review the code, not just the tests.** Tests passing ≠ correct implementation.
 - **Be ready to rollback.** Worker can break code; baseline lets you recover quickly.
+
+---
+
+## 9. Skill analysis (BD-31, optional)
+
+If roles in your pipeline overlap (e.g. qa-review + project-auditor both
+"verify"), run `awf analyze-roles` before `awf start`. It detects zone
+overlaps and writes a "BD-31: Pipeline-specific disambiguation" section
+into each role.md, clarifying each role's unique contribution.
+
+```bash
+awf analyze-roles              # apply patches
+awf analyze-roles --dry-run    # preview only
+```
+
+This is NOT mandatory — pipeline works without it. But for 3+ roles with
+similar zones, disambiguation prevents wasted duplicate work.

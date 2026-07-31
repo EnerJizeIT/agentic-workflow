@@ -217,11 +217,14 @@ User (in CLI): "Done!"
 After submit, plugin writes:
 - Custom roles to global + project (BD-3-B, BD-5).
 - Pipeline stages to .agentic/pipelines/default.yaml (BD-9).
-- Skill normalize trigger to .agentic/state/needs_normalize.yaml (BD-10-B).
+- Per-role models to .agentic/config.yaml (BD-32).
 
-Next `awf start` will run `normalize_skills` stage before agent stages.
-Supervisor (interactive session) does the actual normalization work —
-reads global skills, writes local adaptations to .agentic/skills/.
+Next `awf start` runs the pipeline. Supervisor (interactive session or
+subprocess in --auto mode) creates TODO from phases/plan.md, agents
+execute, supervisor verifies.
+
+Optional: run `awf analyze-roles` (BD-31) before `awf start` if roles
+have overlapping zones — adds disambiguation patches to role files.
 
 Agent (to user): "Got it. Generating .agentic/config.yaml and roles/..."
 [Agent writes project files using its own tools — plugin does NOT generate them]
