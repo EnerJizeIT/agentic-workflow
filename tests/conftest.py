@@ -14,6 +14,22 @@ AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_xdg_env(monkeypatch):
+    """A9: clear XDG_CONFIG_HOME so tests that patch Path.home() work.
+
+    On GitHub Actions runners, XDG_CONFIG_HOME is often set to /home/runner/.config.
+    After A9, awf uses XDG_CONFIG_HOME (not Path.home()) for path resolution.
+    Without this fixture, tests that monkeypatch Path.home() still see the
+    real XDG path → 12 test failures on CI (all pass locally).
+
+    Tests that want to verify XDG behavior explicitly can call
+    monkeypatch.setenv('XDG_CONFIG_HOME', ...) AFTER this fixture runs
+    (later setenv wins).
+    """
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
 @pytest.fixture
 def awf_bin() -> str:
     """Absolute path to the awf binary in this repo."""
