@@ -510,12 +510,16 @@ optional_data_keys: []
 
       function agentOptions() {
         var h = '';
-        // UI-1: 3 clean sections instead of 4 messy ones.
-        // Section 1: previously used in this project (.agentic/roles/*.md)
-        if (projectRoles.length > 0) {
-          h += '<optgroup label="Ранее использовавшиеся в проекте">';
+        // UI-1: 3 clean sections (user spec).
+        // Section 1: previously used — merge project-local + global saved
+        var seen = {};
+        if (projectRoles.length > 0 || customAgents.length > 0) {
+          h += '<optgroup label="Ранее использовавшиеся">';
           projectRoles.forEach(function (r) {
-            h += '<option value="' + r.id + '" data-kind="project">' + r.title + '</option>';
+            if (!seen[r.id]) { seen[r.id] = true; h += '<option value="' + r.id + '" data-kind="project">' + r.title + '</option>'; }
+          });
+          customAgents.forEach(function (c) {
+            if (!seen[c.id]) { seen[c.id] = true; h += '<option value="' + c.id + '" data-custom="true" data-kind="custom">' + c.title + '</option>'; }
           });
           h += '</optgroup>';
         }
@@ -529,15 +533,7 @@ optional_data_keys: []
           });
           h += '</optgroup>';
         }
-        // Section 3: saved custom agents (global ~/.config/awf/roles/)
-        if (customAgents.length > 0) {
-          h += '<optgroup label="Мои агенты (сохранённые ранее)">';
-          customAgents.forEach(function (c) {
-            h += '<option value="' + c.id + '" data-custom="true" data-kind="custom">' + c.title + '</option>';
-          });
-          h += '</optgroup>';
-        }
-        // Section 4: upload your own .md
+        // Section 3: choose file
         h += '<option value="__custom__" data-kind="custom">+ Выбрать файл (.md)...</option>';
         return h;
       }
