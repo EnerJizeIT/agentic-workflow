@@ -87,3 +87,54 @@ collapses to "1 effective agent + N rubber-stamps".
 ## 📋 Декомпозиция и запуск
 
 Каждый epic перед стартом работы **декомпозируется в awf TODO** через supervisor↔worker pattern. Порядок выполнения epics — последовательный, но внутри epics задачи могут параллелиться.
+
+---
+
+## 🐛 UI/UX наблюдения (после Dogfood v3, 2026-07-31)
+
+### UI-1 · Команда агентов — 3 раздела вместо текущих 4
+
+**Priority:** HIGH
+
+Текущий dropdown (agentOptions) имеет 4 группы:
+- Skills (рекомендуется)
+- Базовые роли (available_roles)
+- Мои агенты (сохранённые роли)
+- + Свой .md файл
+
+Переделать на 3 чистых раздела:
+1. **Ранее использовавшиеся в проекте** — роли уже в `.agentic/roles/` (existing project roles)
+2. **Все скиллы** — globalSkills из `~/.config/opencode/skills/`
+3. **Выбери файл** — custom .md upload
+
+Убрать "Базовые роли" (available_roles) — не используются после BD-27.
+"Мои агенты (сохранённые)" переименовать/слить с "Ранее в проекте".
+
+### UI-2 · Контекст → переименовать + проверить обработку
+
+**Priority:** HIGH
+
+Переименовать section title "Контекст" → **"Важный контекст о проекте"**.
+
+Проверить backend обработку `context_message`:
+- Как сохраняется (roles_processor.py)?
+- Доходит ли до supervisor.md / TODO?
+- Используется ли в build_prompt / supervisor instructions?
+
+### UI-3 · Поле "Дополнительная инструкция для supervisor"
+
+**Priority:** HIGH
+
+Добавить textarea (аналогичного размера как context_message) **над** dropdown выбора скилла для supervisor. Название: **"Дополнительная инструкция для supervisor"**.
+
+Назначение: пользователь пишет текстовые инструкции которые ДОБАВЛЯЮТСЯ к supervisor.md (не заменяют). Например: "фокус на безопасности", "предпочитай Strategy pattern", "commit message на русском".
+
+Проверить backend: как сохраняется, доходит ли до supervisor.md, используется ли в run_supervisor_via_subprocess / print_interactive_supervisor_instructions.
+
+### UI-4 · Проверить per-role LLM + "сохранить агента"
+
+**Priority:** MEDIUM
+
+Проверить:
+1. **Per-role model** (BD-32) — действительно ли `--model` передаётся в opencode run для каждой роли? Dogfood показал что работает (project-auditor → GLM-5.2), но нужен системный тест.
+2. **Флаг "Сохранить для будущих сессий"** (save_supervisor checkbox + custom agent save) — действительно ли роль сохраняется в `~/.config/awf/roles/`? Перезагружается ли при следующем open_form?
