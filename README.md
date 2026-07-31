@@ -22,6 +22,7 @@
 - **Auto-commit с isolation (A1).** Коммиты содержат только diff vs baseline — supervisor's mid-flight edits не попадают в agent commit.
 - **Plan progress auto-tracking (BD-33/34).** После verify автоматически отмечается `[x]` в `phases/plan.md` и печатается progress report.
 - **Skill-aware role analysis (BD-31).** `awf analyze-roles` находит дублирования зон ответственности между ролями и добавляет disambiguation patches.
+- **Plan checkpoint (BD-36).** После plan stage открывается HTML форма с TODO контентом и кнопками ✓ Утвердить / ✏ Изменить / ✗ Отклонить. Пользователь контролирует scope до запуска агентов. Bypass: `--auto`, `automation.plan_checkpoint: false`, или env `AWF_PLAN_CHECKPOINT=false`.
 
 ### agent-workflow-ui (MCP plugin)
 
@@ -149,6 +150,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 │   ├── agent_stage.py             # agent stages + handoff collection
 │   ├── signal_watch.py            # BD-20/22 signal-watch + grace termination
 │   ├── commit_gate.py             # auto-commit + A1 baseline isolation
+│   ├── plan_checkpoint.py         # BD-36 plan checkpoint (HTML preview + HTTP)
 │   ├── plan_progress.py           # BD-33/34 plan-step tracking + report
 │   ├── pipeline.py                # Stage dataclass, kind by position
 │   ├── signals.py                 # signal prefix filtering
@@ -177,7 +179,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 701 tests (e2e + unit + integration + plugin)
+├── tests/                         # 732 tests (e2e + unit + integration + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -297,7 +299,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**701 тест:** e2e + unit (awf) + integration (awf) + integration/unit (plugin).
+**732 теста:** e2e + unit (awf) + integration (awf) + integration/unit (plugin).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).

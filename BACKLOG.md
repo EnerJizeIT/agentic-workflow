@@ -2,7 +2,7 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 692 теста, CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги и A-* архитектурные долги закрыты.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 732 теста (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), и BD-36 plan checkpoint закрыты.
 
 История фиксов — в `git log --oneline`.
 
@@ -143,34 +143,32 @@ collapses to "1 effective agent + N rubber-stamps".
 
 ## 🔮 BD-36 · Plan checkpoint — обязательный preview TODO перед запуском агентов
 
-**Status:** PROPOSED. **Priority:** HIGH — детерминизм pipeline.
+**Status:** DONE (2026-07-31). **Priority:** HIGH — детерминизм pipeline.
 
-**Проблема:** supervisor решает размер инкремента сам, без подтверждения
-пользователя. Может выбрать 1 шаг (хорошо) или 5 (плохо). Пользователь
-не видит TODO до запуска агентов.
-
-**Решение — checkpoint между plan и execute:**
+**Реализовано:**
 
 ```
-plan stage → TODO-NNNN.md (БЕЗ .ready) → [FORM: preview] → confirm → .ready → [agents]
+[plan stage: создаёт TODO-NNNN.md + .ready]
+        ↓
+[CHECKPOINT (если NOT --auto и plan_checkpoint: true)]
+  awf запускает одноразовый HTTP server на случайном порту,
+  рендерит HTML форму с TODO контентом и тремя кнопками:
+    ✓ Утвердить → продолжить pipeline
+    ✏ Изменить → переписать TODO .md, продолжить
+    ✗ Отклонить → pipeline остановлен, supervisor перепланирует
+        ↓
+[agent stages]
 ```
 
-1. Supervisor создаёт TODO-NNNN.md (как сейчас), но НЕ .ready
-2. awf детектит TODO без .ready → открывает HTML form
-3. Form показывает: Goal, Tasks, роли, размер
-4. Кнопки: `[✓ Утвердить]` / `[✏ Изменить scope]` / `[✗ Отклонить]`
-5. Confirm → awf создаёт .ready → agents запускаются
-6. Edit → пользователь редактирует TODO text → .ready
-7. Reject → TODO удаляется → supervisor перепланирует
+**Bypass (любой из):**
+- `--auto` (CI/tests)
+- `automation.plan_checkpoint: false` в config.yaml
+- `AWF_PLAN_CHECKPOINT=false` env var
 
-**Components:**
-- `todo-preview.html.j2` template (~150 lines)
-- `todo_review.py` backend (~100 lines)
-- `supervisor.py` — detect TODO-without-ready → open form
-- `orchestrator.py` — checkpoint gate
-- `--auto` bypass: `AWF_AUTO_CONFIRM_PLAN=true` env var
-
-**Объём:** ~350 строк + 15 тестов. Новая фича, не фикс.
+**Архитектура:** self-contained модуль `awf/plan_checkpoint.py` (~280 строк),
+не зависит от plugin'а. 31 тест в `tests/integration/test_plan_checkpoint.py`
+(включая XSS escaping, HTTP server POST handling, end-to-end flow с edit
+decision).
 
 ---
 

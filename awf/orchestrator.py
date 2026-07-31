@@ -293,6 +293,30 @@ def run_pipeline(args: Any) -> int:
                     return 1
                 print(f"Active TODO: {current_todo}")
 
+                # BD-36: Plan checkpoint — preview TODO before agents start.
+                # Bypassed by --auto, config automation.plan_checkpoint: false,
+                # or env AWF_PLAN_CHECKPOINT=false.
+                from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
+                if is_checkpoint_enabled(config, auto):
+                    decision = run_plan_checkpoint(
+                        current_todo, project_dir, config, logs_dir,
+                    )
+                    if decision == "reject":
+                        print(
+                            f"BD-36: Plan checkpoint rejected for {current_todo}. "
+                            f"Pipeline stopped — supervisor will replan on next 'awf start'.",
+                            file=sys.stderr,
+                        )
+                        _log(logs_dir, f"BD-36: checkpoint rejected for {current_todo}")
+                        return 1
+                    if decision == "timeout":
+                        print(
+                            "BD-36: Plan checkpoint timed out — auto-approving.",
+                            file=sys.stderr,
+                        )
+                    # "approve" or "edit" → continue normally
+                    _log(logs_dir, f"BD-36: checkpoint decision={decision}")
+
             if s_kind == "verify":
                 # C1 fix: check what supervisor actually decided.
                 # REVIEW-{todo_id} = rejection → don't commit, don't close Step,

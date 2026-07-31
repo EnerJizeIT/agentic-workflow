@@ -9,6 +9,11 @@ import pytest
 # test isolation (no ~/.config/awf/state/forms_registry.yaml reads/writes).
 os.environ.setdefault("AWF_DISABLE_FORM_PERSIST", "1")
 
+# BD-36: disable plan checkpoint by default — tests that don't explicitly
+# test the checkpoint would otherwise hang on browser.open / HTTP wait.
+# test_plan_checkpoint.py re-enables per-test via monkeypatch.
+os.environ.setdefault("AWF_PLAN_CHECKPOINT", "false")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"
