@@ -125,20 +125,40 @@ def _dispatch_subcommand(argv):
     p_reset.add_argument("--full", action="store_true")
     p_reset.add_argument("--orphans", action="store_true")
     p_reset.add_argument("--force", action="store_true")
+    p_reset.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
 
     p_add_role = sub.add_parser("add-role", help="Generate a new role template")
     p_add_role.add_argument("name")
     p_add_role.add_argument("--description", default="")
     p_add_role.add_argument("--model", default="")
+    p_add_role.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
 
     p_baseline = sub.add_parser("baseline", help="Create a baseline snapshot")
     p_baseline.add_argument("todo_id")
+    p_baseline.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
 
     p_rollback = sub.add_parser("rollback", help="Rollback to baseline")
     p_rollback.add_argument("todo_id")
     p_rollback.add_argument("--hard", action="store_true")
     p_rollback.add_argument("--soft", action="store_true")
     p_rollback.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p_rollback.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
 
     p_approve = sub.add_parser("approve", help="Approve auto-commit for a TODO in --auto mode")
     p_approve.add_argument("todo_id")

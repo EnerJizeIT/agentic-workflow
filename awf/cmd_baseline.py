@@ -9,45 +9,48 @@ from typing import Any
 
 from . import config as cfg_mod
 from . import git_utils, paths
+from ._atomic import atomic_write_text
 
 
 def run(args: Any) -> int:
     """Execute ``awf baseline`` and return exit code."""
     todo_id = args.todo_id
+    project_dir = Path(getattr(args, "project_dir", "."))
 
-    agentic = Path(".agentic")
+    agentic = project_dir / ".agentic"
     if not agentic.is_dir():
-        print("No .agentic/ found. Run 'awf init' first.")
+        print(f"No .agentic/ found at {project_dir}. Run 'awf init' first.")
         return 1
 
-    context_dir = paths.context_dir(".")
+    context_dir = paths.context_dir(project_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Creating baseline for {todo_id}...")
 
     # 1. Git SHA
-    is_git = git_utils.is_git_repo(Path("."))
+    is_git = git_utils.is_git_repo(project_dir)
     if is_git:
-        sha = git_utils.git_stdout(Path("."), "rev-parse", "HEAD").strip()
-        (context_dir / f"BASELINE-{todo_id}.sha").write_text(sha + "\n", encoding="utf-8")
-        status = git_utils.git_stdout(Path("."), "status", "--short", check=False)
-        (context_dir / f"BASELINE-{todo_id}.status").write_text(status, encoding="utf-8")
+        sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
+        atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
+        status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
+        atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", status)
     else:
-        (context_dir / f"BASELINE-{todo_id}.sha").write_text("(not a git repo)\n", encoding="utf-8")
-        (context_dir / f"BASELINE-{todo_id}.status").write_text("", encoding="utf-8")
+        atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", "(not a git repo)\n")
+        atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", "")
 
     # 2. Test baseline
-    config_file = paths.config_file(".")
+    config_file = paths.config_file(project_dir)
     tests_log = context_dir / f"BASELINE-{todo_id}.tests.log"
 
     if config_file.exists():
-        config_data = cfg_mod.load(".")
+        config_data = cfg_mod.load(project_dir)
         test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
         if test_cmd:
             parts = shlex.split(test_cmd)
             if parts:
                 result = subprocess.run(
                     parts,
+                    cwd=str(project_dir),
                     capture_output=True, text=True,
                 )
                 tests_log.write_text(result.stdout + result.stderr, encoding="utf-8")
@@ -78,7 +81,9 @@ def run(args: Any) -> int:
 
     print()
     print("Baseline files created:")
-    for f in sorted((context_dir / f"BASELINE-{todo_id}.*").glob("*")):
+    # L1 fix: was (context_dir / "BASELINE-{id}.*").glob("*") — glob on
+    # a non-existent file path returns empty iterator. Use context_dir.glob().
+    for f in sorted(context_dir.glob(f"BASELINE-{todo_id}.*")):
         if f.is_file():
             print(f"  {f.name}")
 

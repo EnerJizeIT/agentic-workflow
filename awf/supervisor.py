@@ -100,12 +100,17 @@ def wait_for_supervisor_signal(
     project_dir: Path,
     logs_dir: Path,
     poll_interval: int = 3,
+    timeout: int = 3600,
 ) -> str:
     """BD-30: poll for the signal file the interactive supervisor produces.
 
     kind="plan"   → waits for new TODO-*.ready in inbox (snapshot-based)
     kind="verify" → waits for ACK-{todo_id}.ready or APPROVE-{todo_id}.ready
                     in inbox, OR REVIEW-{todo_id}.md in outbox
+
+    C1 v2 fix: timeout (default 3600s = 1 hour). Without this, in --background
+    mode a forgotten interactive supervisor would hang forever (zombie process).
+    Raises TimeoutError on expiry.
     """
     import time
 
@@ -117,8 +122,9 @@ def wait_for_supervisor_signal(
         existing_todo_signals = {p.name for p in inbox.glob("TODO-*.ready")}
 
     deadline_log_interval = 60
-    last_log = time.monotonic()
-    waited_total = 0
+    start = time.monotonic()
+    deadline = start + timeout
+    last_log = start
 
     while True:
         if kind in ("plan", "replan"):
@@ -145,13 +151,22 @@ def wait_for_supervisor_signal(
 
         now = time.monotonic()
         if now - last_log >= deadline_log_interval:
-            waited_total += int(now - last_log)
+            waited = int(now - start)
             _log(
                 logs_dir,
                 f"BD-30: interactive supervisor still waiting for {kind} signal "
-                f"({waited_total}s elapsed)",
+                f"({waited}s elapsed, deadline in {int(deadline - now)}s)",
             )
             last_log = now
+
+        if now >= deadline:
+            waited = int(now - start)
+            _log(logs_dir, f"BD-30: supervisor signal timeout after {waited}s (kind={kind})")
+            raise TimeoutError(
+                f"Supervisor {kind} signal not received within {timeout}s. "
+                f"In --background mode this prevents zombie processes. "
+                f"To extend: set AWF_SUPERVISOR_TIMEOUT env var or kill the awf process."
+            )
 
         time.sleep(poll_interval)
 
@@ -267,7 +282,10 @@ def run_supervisor_stage(
     if not auto:
         print_interactive_supervisor_instructions(kind, todo_id, project_dir, phases_file)
         _log(logs_dir, f"BD-30: interactive supervisor {kind} — waiting for signal")
-        signal = wait_for_supervisor_signal(kind, todo_id, project_dir, logs_dir)
+        # C1 v2: configurable timeout via env (default 3600s = 1 hour)
+        import os
+        timeout = int(os.environ.get("AWF_SUPERVISOR_TIMEOUT", "3600"))
+        signal = wait_for_supervisor_signal(kind, todo_id, project_dir, logs_dir, timeout=timeout)
         _log(logs_dir, f"BD-30: interactive supervisor {kind} completed by user (opencode): {signal}")
         return signal
 

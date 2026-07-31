@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ._atomic import atomic_write_text
+
 ROLE_TEMPLATE = '''# ROLE: {role_name}
 
 **Role:** {description}
@@ -41,15 +43,16 @@ def run(args: Any) -> int:
     role_name = args.name
     description = getattr(args, "description", "") or ""
     model = getattr(args, "model", "") or ""
+    project_dir = Path(getattr(args, "project_dir", "."))
 
     if not model:
         model = input(f"Model id for role '{role_name}' (e.g. claude-sonnet-4-20250514, gpt-4.1): ").strip()
         if not model:
             model = "<set-me-in-.agentic/config.yaml>"
 
-    agentic = Path(".agentic")
+    agentic = project_dir / ".agentic"
     if not agentic.is_dir():
-        print("No .agentic/ found. Run 'awf init' first.")
+        print(f"No .agentic/ found at {project_dir}. Run 'awf init' first.")
         return 1
 
     roles_dir = agentic / "roles"
@@ -60,7 +63,7 @@ def run(args: Any) -> int:
         description=description or "new role",
         model=model,
     )
-    (roles_dir / f"{role_name}.md").write_text(content, encoding="utf-8")
+    atomic_write_text(roles_dir / f"{role_name}.md", content)
 
     print(f"Created: {roles_dir}/{role_name}.md")
     print()

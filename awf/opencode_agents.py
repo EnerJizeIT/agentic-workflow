@@ -70,8 +70,14 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
     updated: list[str] = []
     for r in roles:
         cur = agents.get(r)
+        # M5 fix: only include "model" key if model is non-empty.
+        # Empty string in opencode.json could be interpreted as 'use model
+        # with empty name' rather than 'no model specified'.
+        agent_def: dict = {"description": f"awf {r} agent"}
+        if model:
+            agent_def["model"] = model
         if cur is None:
-            agents[r] = {"description": f"awf {r} agent", "model": model}
+            agents[r] = agent_def
             added.append(r)
         elif isinstance(cur, dict) and model and cur.get("model") != model:
             cur["model"] = model

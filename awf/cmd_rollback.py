@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from . import paths
+from ._atomic import atomic_write_text
 
 
 def run(args: Any) -> int:
@@ -15,9 +17,10 @@ def run(args: Any) -> int:
         mode = "soft"
     if getattr(args, "dry_run", False):
         mode = "dry-run"
+    project_dir = Path(getattr(args, "project_dir", "."))
 
-    context_dir = paths.context_dir(".")
-    inbox = paths.inbox(".")
+    context_dir = paths.context_dir(project_dir)
+    inbox = paths.inbox(project_dir)
 
     baseline_sha_file = context_dir / f"BASELINE-{todo_id}.sha"
     if not baseline_sha_file.exists():
@@ -37,6 +40,7 @@ def run(args: Any) -> int:
         import subprocess
         result = subprocess.run(
             ["git", "diff", baseline_sha, "--stat"],
+            cwd=str(project_dir),
             capture_output=True, text=True, check=False,
         )
         print(result.stdout)
@@ -44,9 +48,10 @@ def run(args: Any) -> int:
 
     import subprocess
     if mode == "hard":
-        subprocess.run(["git", "reset", "--hard", baseline_sha], check=True)
+        subprocess.run(["git", "reset", "--hard", baseline_sha],
+                       cwd=str(project_dir), check=True)
     else:
-        subprocess.run(["git", "reset", baseline_sha], check=True)
+        subprocess.run(["git", "reset", baseline_sha], cwd=str(project_dir), check=True)
 
     # Create ACK file
     inbox.mkdir(parents=True, exist_ok=True)
@@ -59,7 +64,7 @@ baseline_sha: {baseline_sha}
 created_by: supervisor
 created_at: {ts}
 """
-    (inbox / f"ACK-{todo_id}.ready").write_text(ack_content, encoding="utf-8")
+    atomic_write_text(inbox / f"ACK-{todo_id}.ready", ack_content)
 
     print(f"Rolled back to {baseline_sha}")
     print(f"ACK file: {inbox}/ACK-{todo_id}.ready")

@@ -114,9 +114,10 @@ def maybe_commit(
         print("  Or ACK from supervisor verify subprocess.", file=sys.stderr)
         _log(logs_dir, f"Auto-mode: waiting for APPROVE or ACK signal for {todo_id}")
 
-        deadline = time.time() + APPROVE_TIMEOUT_SECONDS
+        # H1 fix: time.monotonic() not time.time() — NTP-immune.
+        deadline = time.monotonic() + APPROVE_TIMEOUT_SECONDS
         while not approve_signal.exists() and not ack_signal.exists():
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 print(
                     f"ERROR: APPROVE/ACK signal not received within {APPROVE_TIMEOUT_SECONDS}s. "
                     f"Pipeline aborting.",

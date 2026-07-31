@@ -22,9 +22,16 @@ def signal_type(signal_filename: str) -> str:
     return "unknown"
 
 
-def _short_id(todo_id: str) -> str:
-    """Strip the 'TODO-' prefix to get the numeric part."""
+def short_id(todo_id: str) -> str:
+    """Strip the 'TODO-' prefix to get the numeric part.
+
+    Public (was _short_id). Used by both signals.py and todos.py (M2 fix —
+    deduplicated, single source of truth).
+    """
     return todo_id.split("-", 1)[1] if todo_id.startswith("TODO-") else todo_id
+
+
+_short_id = short_id  # backward-compat alias
 
 
 def find_signal_file(directory: Path, prefix: str, todo_id: str, suffix: str = "") -> Path | None:

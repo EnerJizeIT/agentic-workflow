@@ -3,10 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
-def _short_id(todo_id: str) -> str:
-    """Strip the 'TODO-' prefix to get the numeric part."""
-    return todo_id.split("-", 1)[1] if todo_id.startswith("TODO-") else todo_id
+from .signals import short_id as _short_id
 
 
 def is_closed(inbox: Path, outbox: Path, todo_id: str) -> bool:

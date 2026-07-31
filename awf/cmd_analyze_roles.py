@@ -20,6 +20,7 @@ from typing import Any
 
 from . import config as cfg_mod
 from . import paths
+from ._atomic import atomic_write_text
 
 
 def _read_role_files(project_dir: Path) -> dict[str, str]:
@@ -251,7 +252,7 @@ def run(args: Any) -> int:
                 )
                 current = pattern.sub("", current).rstrip()
             new_content = current.rstrip() + "\n" + addendum
-            path.write_text(new_content, encoding="utf-8")
+            atomic_write_text(path, new_content)
             print(f"  ✓ patched {role}.md")
         except OSError as e:
             print(f"  ✗ failed {role}.md: {e}")

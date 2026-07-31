@@ -54,10 +54,14 @@ def run(args: Any) -> int:
             except OSError:
                 pass
 
-            if (outbox / f"DONE-{todo_id}.ready").exists():
+            # H2 fix: support legacy short form (was canonical-only).
+            from .signals import find_signal_file
+            done = find_signal_file(outbox, "DONE", todo_id, ".ready")
+            blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
+            if done:
                 print(f"  OK   {todo_id}  {step}")
                 done_count += 1
-            elif (outbox / f"BLOCKED-{todo_id}.ready").exists():
+            elif blocked:
                 print(f"  BLK  {todo_id}  {step}")
                 blocked_count += 1
             else:

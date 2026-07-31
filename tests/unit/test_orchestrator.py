@@ -482,7 +482,7 @@ class TestInteractiveSupervisorBD30:
         stage = Stage(name="plan", role="supervisor", kind="plan")
 
         # Simulate signal file appearing after a brief wait
-        def fake_wait(kind, todo_id, project_dir, logs_dir, poll_interval=3):
+        def fake_wait(kind, todo_id, project_dir, logs_dir, poll_interval=3, timeout=3600):
             (proj / ".agentic" / "inbox" / "TODO-0042.ready").write_text("")
             return "TODO-0042"
 
@@ -530,7 +530,7 @@ class TestInteractiveSupervisorBD30:
 
         captured_kind = {"kind": None, "todo_id": None}
 
-        def fake_wait(kind, todo_id, project_dir, logs_dir, poll_interval=3):
+        def fake_wait(kind, todo_id, project_dir, logs_dir, poll_interval=3, timeout=3600):
             captured_kind["kind"] = kind
             captured_kind["todo_id"] = todo_id
             return f"ACK-{todo_id}"

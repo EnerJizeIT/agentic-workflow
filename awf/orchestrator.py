@@ -311,10 +311,8 @@ def run_pipeline(args: Any) -> int:
                     new_todo = _find_active_todo(project_dir)
                     if new_todo and new_todo != current_todo:
                         current_todo = new_todo
-                        print(f"New TODO after replan: {current_todo}")
-                    # Stay at verify stage idx — caller will advance to next pipeline iteration
-                    # which restarts from current_todo. For now, treat as stop (user must
-                    # manually `awf start` after reading REVIEW).
+                    # Pipeline stops — user must read REVIEW, fix issues,
+                    # then `awf start` to retry from the new TODO.
                     print("Pipeline stopped: supervisor rejected. Read REVIEW, fix, then 'awf start'.", file=sys.stderr)
                     return 1
 

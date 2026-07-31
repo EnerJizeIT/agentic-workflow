@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from . import git_utils, opencode_agents
+from ._atomic import atomic_write_text
 from .xdg import opencode_config_file
 
 
@@ -116,13 +117,12 @@ def run(args: Any) -> int:
     # Generate config.yaml
     config_content = CONFIG_TEMPLATE.format(
         project_name=project_name,
-        worker_model=worker_model,
         test_cmd=test_cmd,
         lint_cmd=lint_cmd,
         typecheck_cmd=typecheck_cmd,
         build_cmd=build_cmd,
     )
-    (agentic / "config.yaml").write_text(config_content, encoding="utf-8")
+    atomic_write_text(agentic / "config.yaml", config_content)
 
     # Copy supervisor.md template (used by current opencode session — the
     # form will add worker/reviewer/tester roles later based on user selection).

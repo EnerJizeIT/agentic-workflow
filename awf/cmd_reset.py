@@ -14,14 +14,15 @@ def run(args: Any) -> int:
     full = getattr(args, "full", False)
     orphans = getattr(args, "orphans", False)
     force = getattr(args, "force", False)
+    project_dir = Path(getattr(args, "project_dir", "."))
 
-    agentic = Path(".agentic")
+    agentic = project_dir / ".agentic"
     if not agentic.is_dir():
-        print("No .agentic/ found.")
+        print(f"No .agentic/ found at {project_dir}.")
         return 0
 
-    inbox = paths.inbox(".")
-    outbox = paths.outbox(".")
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
 
     if orphans:
         return _reset_orphans(inbox, outbox, force)
