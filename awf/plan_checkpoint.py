@@ -37,6 +37,27 @@ from ._log import log as _log
 DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
 
 
+def _cleanup_stale_temp_html() -> int:
+    """П7: remove leftover /tmp/awf-checkpoint-*.html from crashed runs.
+
+    Without this, every crash leaves a temp HTML file. On next awf start,
+    webbrowser.open may fire for the new file, but stale ones from
+    previous runs are still in /tmp/ — confusing if user opens them
+    manually (they show old TODO content / outdated submit URL).
+
+    Returns count of files removed. Best-effort: ignores permission errors.
+    """
+    import glob
+    removed = 0
+    for stale in glob.glob("/tmp/awf-checkpoint-*.html"):
+        try:
+            Path(stale).unlink()
+            removed += 1
+        except OSError:
+            pass  # permission/locked — skip silently
+    return removed
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
@@ -81,6 +102,12 @@ def run_plan_checkpoint(
     if not todo_md.is_file():
         _log(logs_dir, f"BD-36: no {todo_id}.md to preview — auto-approve")
         return "approve"
+
+    # П7: clean up stale temp HTML from previous (crashed) runs before
+    # creating our own. Without this, user may see old forms from /tmp/.
+    stale_count = _cleanup_stale_temp_html()
+    if stale_count and logs_dir:
+        _log(logs_dir, f"П7: removed {stale_count} stale checkpoint HTML file(s)")
 
     todo_content = todo_md.read_text(encoding="utf-8")
 
@@ -225,8 +252,15 @@ def _start_checkpoint_server(
             self.end_headers()
             ack = (
                 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                "<title>awf</title></head>"
-                "<body style='font-family:sans-serif;padding:40px;text-align:center'>"
+                "<title>awf</title>"
+                "<style>"
+                "body{background:#1e1e1e;color:#d4d4d4;font-family:system-ui,sans-serif;"
+                "padding:40px;text-align:center;margin:0;}"
+                "h2{color:#4ec9b0;font-weight:600;margin-bottom:12px;}"
+                "p{color:#858585;}"
+                "</style>"
+                "</head>"
+                "<body>"
                 f"<h2>Решение: {html_lib.escape(decision)}</h2>"
                 "<p>Можно закрыть вкладку. awf продолжит работу.</p>"
                 "</body></html>"
@@ -260,38 +294,148 @@ def _render_html(
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>awf Plan Checkpoint — {todo_id_esc}</title>
   <style>
-    body {{ font-family: -apple-system, system-ui, sans-serif; max-width: 920px;
-           margin: 30px auto; padding: 0 20px; color: #222; }}
-    h1 {{ font-size: 22px; border-bottom: 2px solid #4a90d9; padding-bottom: 8px; }}
-    h2 {{ font-size: 15px; margin-top: 24px; color: #555;
-          text-transform: uppercase; letter-spacing: 0.5px; }}
-    .preview {{ background: #f7f7f7; border-left: 4px solid #4a90d9; padding: 12px 16px;
-               white-space: pre-wrap; font-family: ui-monospace, monospace;
-               font-size: 13px; line-height: 1.5; max-height: 400px; overflow-y: auto;
-               border-radius: 0 4px 4px 0; }}
-    .plan {{ background: #fafafa; padding: 8px 12px; white-space: pre-wrap;
-            font-family: ui-monospace, monospace; font-size: 12px; color: #666;
-            max-height: 200px; overflow-y: auto; border-radius: 4px; }}
-    textarea {{ width: 100%; min-height: 320px; font-family: ui-monospace, monospace;
-               font-size: 13px; padding: 12px; box-sizing: border-box;
-               border: 1px solid #ccc; border-radius: 4px; display: none; }}
-    .actions {{ margin-top: 24px; display: flex; gap: 12px; flex-wrap: wrap; }}
-    button {{ padding: 12px 24px; font-size: 15px; border: none; border-radius: 6px;
-             cursor: pointer; font-weight: 600; }}
-    .approve {{ background: #28a745; color: white; }}
-    .edit {{ background: #ffc107; color: #222; }}
-    .reject {{ background: #dc3545; color: white; }}
-    .approve:hover {{ background: #218838; }}
-    .edit:hover {{ background: #e0a800; }}
-    .reject:hover {{ background: #c82333; }}
-    .note {{ font-size: 12px; color: #888; margin-top: 16px; line-height: 1.5; }}
+    /* Палитра синхронизирована с project-setup.html.j2 (plugin) — единый
+       тёмный стиль для всех форм awf. */
+    :root {{
+      --bg: #1e1e1e;
+      --bg-card: #252526;
+      --bg-input: #3c3c3c;
+      --bg-hover: #094771;
+      --text: #d4d4d4;
+      --text-muted: #858585;
+      --accent: #569cd6;
+      --accent-green: #4ec9b0;
+      --border: #464647;
+      --danger: #f14c4c;
+      --warn: #dcdcaa;
+      --radius: 6px;
+    }}
+
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+    body {{
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      max-width: 920px;
+      margin: 30px auto;
+      padding: 0 20px;
+      line-height: 1.5;
+    }}
+
+    h1 {{
+      font-size: 22px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }}
+
+    h2 {{
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 24px;
+      margin-bottom: 6px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }}
+
+    .intro {{ color: var(--text-muted); margin-bottom: 8px; }}
+
+    .preview {{
+      background: var(--bg-card);
+      border-left: 3px solid var(--accent);
+      padding: 12px 16px;
+      white-space: pre-wrap;
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      max-height: 400px;
+      overflow-y: auto;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      color: var(--text);
+    }}
+
+    .plan {{
+      background: var(--bg-card);
+      padding: 10px 14px;
+      white-space: pre-wrap;
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      max-height: 180px;
+      overflow-y: auto;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }}
+
+    textarea {{
+      width: 100%;
+      min-height: 320px;
+      font-family: ui-monospace, "SF Mono", Consolas, monospace;
+      font-size: 13px;
+      padding: 12px;
+      box-sizing: border-box;
+      background: var(--bg-input);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      display: none;
+      line-height: 1.5;
+    }}
+    textarea:focus {{ outline: none; border-color: var(--accent); }}
+
+    .actions {{
+      margin-top: 28px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+
+    button {{
+      padding: 10px 22px;
+      font-size: 14px;
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      font-weight: 600;
+      font-family: inherit;
+      transition: filter 0.15s, opacity 0.15s;
+    }}
+    .approve {{ background: var(--accent-green); color: var(--bg); }}
+    .edit    {{ background: var(--warn);         color: var(--bg); }}
+    .reject  {{ background: var(--danger);       color: white; }}
+
+    button:hover {{ filter: brightness(1.15); }}
+    button:active {{ filter: brightness(0.9); }}
+
+    .note {{
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 20px;
+      line-height: 1.7;
+      padding: 12px 14px;
+      background: var(--bg-card);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }}
+    .note code {{
+      background: var(--bg-input);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 11px;
+      color: var(--accent);
+    }}
   </style>
 </head>
 <body>
   <h1>Plan Checkpoint — {todo_id_esc}</h1>
-  <p>Supervisor создал TODO. Проверь содержимое перед запуском агентов.</p>
+  <p class="intro">Supervisor создал TODO. Проверь содержимое перед запуском агентов.</p>
 
   <h2>Контекст — phases/plan.md</h2>
   <div class="plan">{plan_esc}</div>

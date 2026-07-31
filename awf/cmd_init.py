@@ -130,13 +130,29 @@ def run(args: Any) -> int:
     templates_dir = framework_dir / "templates"
     shutil.copy2(templates_dir / "roles" / "supervisor.md", agentic / "roles" / "supervisor.md")
 
-    # Stub plan.md — supervisor will fill it in during plan stage
-    (agentic / "phases" / "plan.md").write_text(
-        f"# {project_name} — Plan\n\n"
-        "Steps:\n"
-        "1. [ ] TODO\n",
-        encoding="utf-8",
-    )
+    # П2: plan.md stub — find vision/README in project root and point
+    # supervisor to it. Without this, supervisor (LLM) sees an empty plan
+    # and has to guess where the project context lives.
+    from .paths import find_vision_file
+    vision_path = find_vision_file(".")
+    if vision_path is not None:
+        # Relative path from .agentic/phases/ to project root vision file
+        rel = "../.." / vision_path.relative_to(Path(".").resolve())
+        plan_body = (
+            f"# {project_name} — Plan\n\n"
+            f"> Контекст проекта: прочитай `{rel}` перед планированием.\n\n"
+            f"Steps:\n"
+            f"- [ ] (supervisor заполнит после изучения vision)\n"
+        )
+    else:
+        plan_body = (
+            f"# {project_name} — Plan\n\n"
+            f"> Vision/README не найден в корне проекта. Спроси пользователя "
+            f"о контексте перед планированием.\n\n"
+            f"Steps:\n"
+            f"- [ ] (supervisor заполнит)\n"
+        )
+    (agentic / "phases" / "plan.md").write_text(plan_body, encoding="utf-8")
 
     # Update .gitignore
     # inputs/ and dashboards/ — runtime state from agent-workflow-ui plugin (submits, rendered dashboards).

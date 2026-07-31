@@ -35,20 +35,30 @@ def get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
-def build_prompt(kind: str, todo_id: str, config: dict | None = None) -> str:
+def build_prompt(
+    kind: str,
+    todo_id: str,
+    config: dict | None = None,
+    project_dir: Path | None = None,
+) -> str:
     """BD-29: build prompt for a stage kind.
 
     Three kinds: plan / execute / verify.
     UI-2/UI-3: if config has context.message or supervisor.instructions,
     they are appended to the prompt so supervisor sees user's input.
+
+    П6: if project_dir is provided AND kind is "plan", auto-inject the
+    project's vision/README excerpt so supervisor (LLM) has concrete
+    context instead of guessing where to look.
     """
     # Base prompt per kind
     if kind == "plan":
         base = (
             "You are the supervisor. Read the phases/plan file. Determine the next step "
             "that is not yet completed. Create a TODO file at "
-            ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID), create baseline "
-            "via `awf baseline TODO-{NNNN}`, then create the .ready signal at "
+            ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID). "
+            "Baseline is created automatically by awf (П3) — no need to run "
+            "`awf baseline` manually. Then create the .ready signal at "
             ".agentic/inbox/TODO-{NNNN}.ready. If a TODO already exists in inbox, review "
             "it — refine, accept, or replace as needed (do NOT blindly skip). Keep the TODO "
             "at the goal level (what success looks like), do NOT micromanage individual "
@@ -74,6 +84,29 @@ def build_prompt(kind: str, todo_id: str, config: dict | None = None) -> str:
             f"If blocked, write BLOCKED-{todo_id}.md + BLOCKED-{todo_id}.ready instead. "
             f"Do not commit unless the TODO explicitly asks for it."
         )
+
+    # П6: auto-inject project vision/README excerpt for plan stage.
+    # Without this, supervisor (LLM) sees only generic instructions and
+    # has to guess where project context lives.
+    if kind == "plan" and project_dir is not None:
+        from .paths import find_vision_file
+        vision = find_vision_file(project_dir)
+        if vision is not None:
+            try:
+                content = vision.read_text(encoding="utf-8")
+                # Truncate to keep prompt manageable (LLM context budget).
+                # 4000 chars ~ 1000 tokens — enough for vision summary.
+                if len(content) > 4000:
+                    excerpt = content[:4000] + "\n\n[... truncated ...]"
+                else:
+                    excerpt = content
+                try:
+                    rel = vision.relative_to(project_dir)
+                except ValueError:
+                    rel = vision
+                base += f"\n\n## Project vision (auto-injected from {rel})\n{excerpt}"
+            except OSError:
+                pass  # non-fatal — supervisor falls back to generic prompt
 
     # UI-2/UI-3: append user's context + instructions for supervisor stages
     if config and kind in ("plan", "verify"):
@@ -211,6 +244,21 @@ def print_interactive_supervisor_instructions(
     if kind == "plan":
         print("STAGE: plan (create/refine TODO for the next pipeline step)")
         print()
+        # П6: point supervisor to project vision/README if found
+        from .paths import find_vision_file
+        vision = find_vision_file(project_dir)
+        if vision is not None:
+            try:
+                rel = vision.relative_to(project_dir)
+            except ValueError:
+                rel = vision
+            print(f"PROJECT CONTEXT: read {rel} for vision/architecture.")
+            print("  Extract relevant steps for the current iteration.")
+            print()
+        else:
+            print("PROJECT CONTEXT: no vision/README found in project root.")
+            print("  Ask the user about project goals before planning.")
+            print()
         print("STEPS:")
         print(f"  1. Read {phases_path} — find next unfinished step ([ ] checkbox)")
         print(f"  2. Read existing TODO-*.md in {inbox}/ (if any) — review/refine")
@@ -219,8 +267,8 @@ def print_interactive_supervisor_instructions(
         print("     - Prohibitions (what NOT to do)")
         print("     - Context (links, references, prior work)")
         print("     - Tasks with Files / Description / Verify / Done-when")
-        print("  4. Run: awf baseline TODO-NNNN  (records current git SHA)")
-        print("  5. Create empty signal file: .agentic/inbox/TODO-NNNN.ready")
+        print("  4. Create empty signal file: .agentic/inbox/TODO-NNNN.ready")
+        print("     (awf auto-creates git baseline on next stage — no manual `awf baseline`)")
         print()
         print(f"SIGNAL TO CREATE: {inbox}/TODO-NNNN.ready")
         print("(Use next sequential TODO number — check existing files in inbox/)")
@@ -365,7 +413,7 @@ def run_supervisor_via_subprocess(
     if kind == "plan":
         if phases_path.is_file():
             extra_files.append(str(phases_path))
-        prompt = build_prompt("plan", todo_id, config=config)
+        prompt = build_prompt("plan", todo_id, config=config, project_dir=project_dir)
     elif kind == "verify":
         if not todo_id:
             print("[auto mode] No todo_id for verify — skip.")

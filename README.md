@@ -92,27 +92,41 @@ git pull && pip install -e . && pip install -e ./agent_workflow_ui
 
 ## Быстрый старт
 
+> **Важно:** `awf start` и `awf continue` работают **только внутри opencode**.
+> Эти команды запускают supervisor и agent stages через `opencode run`. Другие
+> команды (`init`, `status`, `baseline`, `report`, `analyze-roles`, `rollback`,
+> `approve`, `add-role`) — standalone CLI, работают без opencode.
+
 ```bash
 # 1. Установить awf (один раз)
 git clone git@github.com:EnerJizeIT/agentic-workflow.git
 cd agentic-workflow && pip install -e .
 ln -s "$PWD/bin/awf" ~/.local/bin/awf
 
-# 2. В любом git-проекте:
+# 2. В любом git-проекте (внутри opencode):
 cd /path/to/your-project
-awf init                            # отвечай на вопросы (без --template)
-vim .agentic/phases/plan.md         # напиши план
-awf start                           # запусти пайплайн
+awf init                            # отвечай на вопросы
+# plan.md автоматически укажет на PRODUCT-VISION.md / README.md (П2)
+awf start                           # запусти пайплайн (нужен opencode)
 ```
 
 ### Что произойдёт
 
-1. **`awf init`** создаст `.agentic/` с supervisor.md, config.yaml и пустым plan.md.
-2. **План** (`.agentic/phases/plan.md`) — чеклист шагов, который читает Supervisor.
+1. **`awf init`** создаст `.agentic/` с supervisor.md, config.yaml. Plan.md
+   stub автоматически найдёт vision/README в корне и укажет supervisor'у на него.
+2. **Pipeline configuration** — если `.agentic/pipelines/default.yaml` ещё нет,
+   `awf start` подскажет открыть UI форму (MCP tool `agent-workflow-ui_open_form`)
+   для выбора ролей и моделей.
 3. **`awf start`** запустит оркестратор:
-   - **Supervisor plan stage:** awf печатает инструкции в лог, ждёт signal file. Ты (в opencode CLI) читаешь инструкции, создаёшь TODO, пишешь baseline, создаёшь `.ready` signal.
-   - **Agent stages:** `opencode run --auto` запускается для каждой роли, читает TODO + handoffs от предыдущих ролей, пишет DONE/BLOCKED.
-   - **Supervisor verify stage:** awf печатает инструкции — ты проверяешь aggregate handoffs, делаешь `git diff`, создаёшь ACK signal или REVIEW.
+   - **Supervisor plan stage:** awf печатает инструкции + подсказывает vision файл (П6).
+     Ты (в opencode) читаешь, создаёшь TODO.md и `.ready` signal.
+     **Baseline создаётся автоматически** (П3) — больше не нужно `awf baseline`.
+   - **Plan checkpoint (BD-36):** открывается HTML форма с TODO контентом.
+     Жми ✓ Утвердить / ✏ Изменить / ✗ Отклонить. Awf ждёт решения.
+   - **Agent stages:** `opencode run --auto` запускается для каждой роли, читает TODO
+     + handoffs от предыдущих ролей, пишет DONE/BLOCKED.
+   - **Supervisor verify stage:** awf печатает инструкции — ты проверяешь aggregate
+     handoffs, делаешь `git diff`, создаёшь ACK signal или REVIEW.
 
 ---
 

@@ -118,6 +118,38 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
 
 
+def _ensure_baseline_sha(
+    project_dir: Path, todo_id: str, logs_dir: Path,
+) -> None:
+    """П3: auto-create baseline SHA file if missing.
+
+    Was: supervisor had to run `awf baseline TODO-NNNN` manually after
+    creating TODO.md (boilerplate). Now orchestrator ensures baseline
+    exists right before agent stage starts. If user/supervisor already
+    created one via `awf baseline` (richer status, tests log, etc.) —
+    we leave it alone.
+    """
+    from . import git_utils
+    from ._atomic import atomic_write_text
+
+    if not todo_id:
+        return
+    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+    if sha_file.exists():
+        return  # already created by `awf baseline` or previous run
+
+    if not git_utils.is_git_repo(project_dir):
+        _log(logs_dir, f"П3: skip baseline for {todo_id} — not a git repo")
+        return
+
+    try:
+        sha = git_utils.current_sha(project_dir)
+        atomic_write_text(sha_file, sha + "\n")
+        _log(logs_dir, f"П3: auto-created baseline {sha[:8]} for {todo_id}")
+    except Exception as e:
+        _log(logs_dir, f"П3: baseline creation failed for {todo_id}: {e}")
+
+
 def _handle_next(
     project_dir: Path,
     logs_dir: Path,
@@ -278,7 +310,19 @@ def run_pipeline(args: Any) -> int:
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
     except FileNotFoundError as e:
+        # П5: was a bare error message. Now gives the user a clear next step.
+        # Pipeline configuration is created by the project-setup form
+        # (agent-workflow-ui plugin). Without it, no pipeline can run.
         print(f"ERROR: {e}", file=sys.stderr)
+        print(file=sys.stderr)
+        print("Pipeline configuration not found.", file=sys.stderr)
+        print(file=sys.stderr)
+        print("To set up the pipeline + roles, open the project-setup form.", file=sys.stderr)
+        print("In opencode, ask your agent to call MCP tool:", file=sys.stderr)
+        print('  agent-workflow-ui_open_form(template="project-setup")', file=sys.stderr)
+        print(file=sys.stderr)
+        print(f"Or create {paths.agentic_dir(project_dir) / 'pipelines' / 'default.yaml'} manually.", file=sys.stderr)
+        _log(logs_dir, "Pipeline file not found — printed setup instructions")
         return 1
 
     stages = load_stages(pipeline_file)
@@ -390,6 +434,10 @@ def run_pipeline(args: Any) -> int:
             if not current_todo:
                 print(f"No active TODO for agent stage '{s_name}'. Run supervisor stage first.")
                 return 1
+
+        # П3: auto-create baseline SHA if missing (was manual `awf baseline`).
+        # Idempotent — if supervisor or previous run created it, leave alone.
+        _ensure_baseline_sha(project_dir, current_todo, logs_dir)
 
         prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
         try:
