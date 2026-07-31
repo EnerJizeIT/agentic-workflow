@@ -182,12 +182,15 @@ class FormRegistry:
         This is globally unique — no collision with stale files from previous
         sessions in .agentic/inputs/.
         """
-        import random
+        import secrets
         import string
         import time
 
         timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        # QA #9: secrets.choice instead of random.choices — form IDs are
+        # security-relevant (predictable IDs could allow form hijacking).
+        alphabet = string.ascii_lowercase + string.digits
+        suffix = "".join(secrets.choice(alphabet) for _ in range(4))
         return f"FORM-{timestamp}-{suffix}"
 
 
