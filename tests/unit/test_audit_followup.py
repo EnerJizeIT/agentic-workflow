@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from awf.pipeline import Stage
 from awf.signals import find_signal_file
 
@@ -179,25 +181,21 @@ class TestH6ProjectDirEqualsForm:
 # ── H7: SIGTERM returns real returncode ───────────────────────────────────────
 
 
-class TestH7SigtermReturnCode:
+class TestH7HardTimeoutKill:
+    """BD-20 redesign: grace kill removed. Only hard_timeout kills."""
 
-    def test_grace_terminate_returns_nonzero(self, tmp_path, monkeypatch):
-        """H7 fix: signal_watch returns real returncode after SIGTERM (was 0)."""
+    def test_hard_timeout_kills_hung_process(self, tmp_path, monkeypatch):
+        """BD-20: hung process (no signal, no exit) → hard_timeout → SIGKILL."""
         from awf.signal_watch import run_subprocess_until_signal
 
         class _HangingPopen:
             def __init__(self, cmd, cwd=None, env=None):
                 self.cmd = cmd
                 self.pid = 999
-                self.returncode = None  # hangs forever
+                self.returncode = None
 
             def poll(self):
-                # First poll: trigger signal detection
-                (tmp_path / "DONE-TODO-0001.ready").write_text("")
-                return None  # still running
-
-            def terminate(self):
-                self.returncode = -15  # SIGTERM
+                return None  # never exits
 
             def kill(self):
                 self.returncode = -9
@@ -208,16 +206,14 @@ class TestH7SigtermReturnCode:
         monkeypatch.setattr("subprocess.Popen", _HangingPopen)
         monkeypatch.setattr("time.sleep", lambda *_: None)
 
-        result = run_subprocess_until_signal(
-            cmd=["opencode", "run"],
-            cwd=tmp_path,
-            watch_paths=[tmp_path / "DONE-TODO-0001.ready"],
-            logs_dir=None,
-            grace_seconds=0,  # immediate terminate
-        )
-        assert result.returncode != 0, (
-            f"H7: SIGTERM'd process must return non-zero, got {result.returncode}"
-        )
+        with pytest.raises(TimeoutError, match="did not produce signal"):
+            run_subprocess_until_signal(
+                cmd=["opencode", "run"],
+                cwd=tmp_path,
+                watch_paths=[],
+                logs_dir=None,
+                hard_timeout=0,  # immediate timeout
+            )
 
 
 # ── H4: TOCTOU atomic claim ──────────────────────────────────────────────────

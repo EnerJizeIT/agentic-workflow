@@ -943,38 +943,35 @@ class TestRunSubprocessUntilSignal:
         assert result.returncode == 99
         _FailingPopen._exit_code = 42
 
-    def test_signal_appears_then_terminate(self, tmp_path, monkeypatch) -> None:
-        """BD-20/22: when signal file appears AFTER subprocess start, terminate.
+    def test_signal_appears_then_natural_exit(self, tmp_path, monkeypatch) -> None:
+        """BD-20 redesign: signal detected → wait for natural exit (no grace kill).
 
-        BD-22 fix: file must NOT exist at subprocess start (otherwise it's
-        treated as stale and ignored). File is created inside poll() to
-        simulate the subprocess writing the signal mid-execution.
+        Subprocess writes DONE.ready mid-run, then exits naturally on next poll.
+        No terminate() should be called — grace kill was removed.
         """
         from awf.orchestrator import _run_subprocess_until_signal
 
-        class _HangingPopen(_FakePopen):
-            """Popen that never exits on its own — forces signal-watch path."""
+        class _NaturalExitPopen(_FakePopen):
+            """Popen that creates signal then exits naturally."""
             terminated = False
             _call_count = 0
 
             def poll(self):
                 type(self)._call_count += 1
-                # On 2nd poll, simulate that subprocess created the signal
                 if type(self)._call_count >= 2:
+                    # Signal appeared
                     (tmp_path / "DONE-TODO-0001.ready").write_text("")
+                if type(self)._call_count >= 3:
+                    # Subprocess finished naturally
+                    return 0
                 return None
 
             def terminate(self):
                 type(self).terminated = True
 
-            def wait(self, timeout=None):
-                # Simulate that terminate() worked
-                return 0
-
-        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _NaturalExitPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
-        # NOTE: signal file does NOT exist at start — only appears mid-run.
         signal_file = tmp_path / "DONE-TODO-0001.ready"
         assert not signal_file.exists()
 
@@ -983,10 +980,11 @@ class TestRunSubprocessUntilSignal:
             cwd=tmp_path,
             watch_paths=[signal_file],
             logs_dir=None,
-            grace_seconds=0,  # don't wait
         )
         assert result.returncode == 0
-        assert _HangingPopen.terminated, "terminate() must have been called"
+        assert not _NaturalExitPopen.terminated, (
+            "BD-20 redesign: terminate() must NOT be called — wait for natural exit"
+        )
 
     def test_bd22_stale_signal_ignored(self, tmp_path, monkeypatch) -> None:
         """BD-22: signal file that existed BEFORE subprocess start is stale.
@@ -1045,24 +1043,22 @@ class TestRunSubprocessUntilSignal:
         """BD-20: watch_new_glob detects new file appearing in directory."""
         from awf.orchestrator import _run_subprocess_until_signal
 
-        class _HangingPopen(_FakePopen):
+        class _NaturalExitPopen(_FakePopen):
             terminated = False
             _call_count = 0
 
             def poll(self):
-                # On second poll, simulate that supervisor created TODO-0099.ready
                 type(self)._call_count += 1
                 if type(self)._call_count >= 2:
                     (tmp_path / "TODO-0099.ready").write_text("")
+                if type(self)._call_count >= 3:
+                    return 0  # natural exit
                 return None
 
             def terminate(self):
                 type(self).terminated = True
 
-            def wait(self, timeout=None):
-                return 0
-
-        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _HangingPopen)
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _NaturalExitPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         result = _run_subprocess_until_signal(
@@ -1071,10 +1067,9 @@ class TestRunSubprocessUntilSignal:
             watch_paths=[],
             watch_new_glob=(tmp_path, "TODO-*.ready"),
             logs_dir=None,
-            grace_seconds=0,
         )
         assert result.returncode == 0
-        assert _HangingPopen.terminated
+        assert not _NaturalExitPopen.terminated, "BD-20 redesign: no grace kill"
 
     def test_hard_timeout_raises(self, tmp_path, monkeypatch) -> None:
         """BD-20: hard timeout raises TimeoutError if no signal ever appears."""
