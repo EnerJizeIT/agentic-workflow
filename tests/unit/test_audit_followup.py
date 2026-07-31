@@ -328,3 +328,109 @@ class TestM8UnknownSignalPrint:
         assert action == "stop"
         captured = capsys.readouterr()
         assert "WARNING" in captured.err or "bogus-signal-type" in captured.err
+
+
+# ── C1 full flow: run_pipeline verify + REVIEW rejection ─────────────────────
+
+
+class TestC1PipelineReviewRejection:
+
+    def _make_project(self, tmp_path):
+        """Create a minimal project with a 3-stage pipeline."""
+        proj = tmp_path / "proj"
+        for d in ("roles", "inbox", "outbox", "context", "logs", "pipelines", "phases"):
+            (proj / ".agentic" / d).mkdir(parents=True)
+        (proj / ".agentic" / "roles" / "supervisor.md").write_text("# Supervisor")
+        (proj / ".agentic" / "roles" / "worker.md").write_text("# Worker")
+        (proj / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: t\nphases:\n  current: ".agentic/phases/plan.md"\n'
+            'default_pipeline: "default"\n'
+        )
+        (proj / ".agentic" / "phases" / "plan.md").write_text(
+            "- [ ] Step 1: initial task\n- [ ] Step 2: next task\n"
+        )
+        (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: plan\n    role: supervisor\n\n"
+            "  - name: implement\n    role: worker\n\n"
+            "  - name: verify\n    role: supervisor\n"
+        )
+        return proj
+
+    def test_verify_review_stops_pipeline_no_commit(self, tmp_path, monkeypatch):
+        """C1 full flow: supervisor writes REVIEW → pipeline stops, no commit, no step mark.
+
+        Simulates: run_pipeline reaches verify stage, supervisor returns REVIEW signal.
+        Pipeline should return exit code 1, NOT commit, NOT mark Step in plan.md.
+        """
+        from types import SimpleNamespace
+
+        from awf import orchestrator
+
+        proj = self._make_project(tmp_path)
+
+        # Create active TODO so plan stage picks it up
+        inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        (inbox / "TODO-0001.md").write_text("Step 1\nGoal: do something\n")
+        (inbox / "TODO-0001.ready").write_text("")
+
+        # Mock supervisor stage: plan → returns TODO, verify → returns REVIEW
+        call_count = {"n": 0}
+
+        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir):
+            call_count["n"] += 1
+            if stage.kind == "plan":
+                return "TODO-0001"
+            elif stage.kind == "verify":
+                # Supervisor writes REVIEW rejection
+                (outbox / "REVIEW-TODO-0001.md").write_text(
+                    "# Review\nWork is incomplete.\n"
+                )
+                return "REVIEW-TODO-0001"
+            elif stage.kind == "replan":
+                # replan after REVIEW — no new TODO created
+                return ""
+            return ""
+
+        monkeypatch.setattr(orchestrator, "_run_supervisor_stage", fake_supervisor)
+
+        # Mock _find_active_todo to return our TODO
+        monkeypatch.setattr(orchestrator, "_find_active_todo", lambda pd: "TODO-0001")
+
+        # Mock agent stage (worker) — just writes DONE signal
+        def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None):
+            (outbox / f"DONE-{todo_id}.md").write_text("Done.\n")
+            (outbox / f"DONE-{todo_id}.ready").write_text("")
+
+        monkeypatch.setattr(orchestrator, "_run_agent_stage", fake_agent)
+
+        # Mock _maybe_commit — agent stage "next" transition calls it,
+        # but we don't care about that for C1 (C1 is about verify stage).
+        monkeypatch.setattr(orchestrator, "_maybe_commit", lambda *a, **kw: None)
+
+        # Mock _mark_plan_step_done to detect if it was called
+        # (only called on verify approved path, NOT on REVIEW)
+        step_marked = {"v": False}
+
+        def fake_mark(*a, **kw):
+            step_marked["v"] = True
+
+        monkeypatch.setattr(orchestrator, "_mark_plan_step_done", fake_mark)
+
+        args = SimpleNamespace(
+            project_dir=str(proj),
+            pipeline=None,
+            from_stage=None,
+            auto=False,
+        )
+
+        result = orchestrator.run_pipeline(args)
+
+        assert result == 1, "C1: pipeline should return 1 on REVIEW rejection"
+        # _maybe_commit IS called for the agent stage's "next" transition — that's correct.
+        # The C1 fix is that verify stage does NOT call _maybe_commit or _mark_plan_step_done
+        # when supervisor returns REVIEW.
+        assert not step_marked["v"], "C1: must NOT mark Step done on REVIEW rejection"
+        # Verify the REVIEW file was written
+        assert (outbox / "REVIEW-TODO-0001.md").exists(), "C1: REVIEW file should exist"

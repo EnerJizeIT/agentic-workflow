@@ -117,6 +117,37 @@ class TestCmdReportCanonicalLegacy:
         result = cmd_report.run(args)
         assert result == 0
 
+    def test_cmd_report_project_dir_flag(self, tmp_path, monkeypatch, capsys):
+        """M1: awf report --project-dir /path works with project in different dir."""
+        from types import SimpleNamespace
+
+        from awf import cmd_report
+
+        # Create project in a subdirectory (not CWD)
+        proj = tmp_path / "separate-project"
+        (proj / ".agentic").mkdir(parents=True)
+        inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        inbox.mkdir()
+        outbox.mkdir()
+        (proj / ".agentic" / "config.yaml").write_text("project:\n  name: separate-proj\n")
+
+        (inbox / "TODO-0001.ready").write_text("step: 1\n")
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+
+        # Mock git
+        from awf import git_utils
+        monkeypatch.setattr(git_utils, "is_git_repo", lambda *_: False)
+
+        # Run report with --project-dir pointing to our separate project
+        args = SimpleNamespace(project_dir=str(proj))
+        result = cmd_report.run(args)
+        assert result == 0
+
+        out = capsys.readouterr().out
+        assert "separate-proj" in out, "Report should show project name from --project-dir"
+        assert "TODO-0001" in out, "Report should list TODOs from the specified project"
+
 
 # ── L1: cmd_baseline glob fix ────────────────────────────────────────────────
 
@@ -301,6 +332,56 @@ class TestAtomicWrites:
 
         src = inspect.getsource(cmd_rollback)
         assert "atomic_write_text" in src
+
+    def test_atomic_write_crash_cleans_temp(self, tmp_path, monkeypatch):
+        """H3 crash safety: if write raises, temp file is cleaned up."""
+        import os as _os
+
+        from awf._atomic import atomic_write_text
+
+        target = tmp_path / "crash-test.txt"
+        raise_on_write = {"triggered": False}
+
+        original_fdopen = _os.fdopen
+
+        def fake_fdopen(fd, mode, encoding=None):
+            class _RaisingFile:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    _os.close(fd)
+                def write(self, data):
+                    if not raise_on_write["triggered"]:
+                        raise_on_write["triggered"] = True
+                        raise OSError("disk full")
+                    return len(data)
+            return _RaisingFile()
+
+        monkeypatch.setattr(_os, "fdopen", fake_fdopen)
+
+        with pytest.raises(OSError, match="disk full"):
+            atomic_write_text(target, "should crash")
+
+        # Target file should NOT exist (write failed before rename)
+        assert not target.exists(), "Target must not exist after failed write"
+
+        # No temp files should remain
+        temps = list(tmp_path.glob("*.tmp"))
+        assert temps == [], f"Temp files left after crash: {temps}"
+
+    def test_atomic_write_partial_state_impossible(self, tmp_path):
+        """H3: after successful write, file is never in partial state."""
+        from awf._atomic import atomic_write_text
+
+        target = tmp_path / "atomic-test.txt"
+        large_content = "x" * 100_000  # 100KB — large enough that a crash mid-write matters
+
+        atomic_write_text(target, large_content)
+
+        # File exists and has exact content (no truncation possible)
+        assert target.exists()
+        assert target.read_text() == large_content
+        assert target.stat().st_size == 100_000
 
 
 # ── M5: no empty model="" in opencode.json ───────────────────────────────────

@@ -244,3 +244,59 @@ class TestAnalyzeRolesRun:
 
         # No overlap → either nothing to patch OR clean message
         assert result == 0
+
+    def test_four_roles_all_get_bd31_and_overlap_detected(self, tmp_path: Path, capsys) -> None:
+        """BD-31 full flow: 4 roles → all get BD-31 section, qa-review+auditor overlap."""
+        proj = _make_project(tmp_path, roles={
+            "system-analyst": "# System Analyst\nWrites requirements and vision.",
+            "dev": "# Developer\nImplements features.",
+            "qa-review": "# QA Review\nVerifies implementation against requirements.",
+            "project-auditor": "# Project Auditor\nAudits code health and project quality.",
+        })
+        # Pipeline with all 4 roles
+        (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: plan\n    role: supervisor\n\n"
+            "  - name: analyze\n    role: system-analyst\n\n"
+            "  - name: implement\n    role: dev\n\n"
+            "  - name: qa\n    role: qa-review\n\n"
+            "  - name: audit\n    role: project-auditor\n\n"
+            "  - name: verify\n    role: supervisor\n"
+        )
+
+        args = SimpleNamespace(project_dir=str(proj), dry_run=False)
+        result = cmd_analyze_roles.run(args)
+        assert result == 0
+
+        # All 4 role files should have BD-31 section
+        for slug in ("system-analyst", "dev", "qa-review", "project-auditor"):
+            content = (proj / ".agentic" / "roles" / f"{slug}.md").read_text()
+            assert "BD-31: Pipeline-specific disambiguation" in content, (
+                f"{slug}.md missing BD-31 section"
+            )
+
+        # qa-review + project-auditor overlap should be detected
+        out = capsys.readouterr().out
+        assert "qa-review" in out and "project-auditor" in out
+        assert "overlap" in out.lower() or "Overlap" in out
+
+    def test_idempotent_re_run_replaces_not_duplicates(self, tmp_path: Path) -> None:
+        """BD-31: running twice replaces BD-31 section, doesn't duplicate."""
+        proj = _make_project(tmp_path, roles={
+            "qa-review": "# QA Review\nVerifies implementation.",
+            "project-auditor": "# Auditor\nAudits quality.",
+        })
+
+        # First run
+        args = SimpleNamespace(project_dir=str(proj), dry_run=False)
+        cmd_analyze_roles.run(args)
+
+        # Second run
+        cmd_analyze_roles.run(args)
+
+        for slug in ("qa-review", "project-auditor"):
+            content = (proj / ".agentic" / "roles" / f"{slug}.md").read_text()
+            count = content.count("BD-31: Pipeline-specific disambiguation")
+            assert count == 1, (
+                f"{slug}.md has {count} BD-31 sections after 2 runs (should be 1)"
+            )

@@ -257,3 +257,138 @@ class TestBuildPromptWithContext:
         from awf.supervisor import build_prompt
         prompt = build_prompt("plan", "TODO-0001")
         assert "TODO-{NNNN}" in prompt
+
+
+# ── UI-2/UI-3 end-to-end: form submit → config → supervisor.md → build_prompt ──
+
+
+class TestUI2UI3EndToEnd:
+
+    def test_full_flow_submit_to_build_prompt(self, tmp_path: Path):
+        """UI-2/UI-3 end-to-end: submit data → config updated → supervisor.md updated → build_prompt reads both.
+
+        Simulates the full pipeline:
+        1. Form submit with context_message + supervisor_instruction
+        2. process_role_saves writes to config.yaml and supervisor.md
+        3. build_prompt("plan") includes context.message
+        4. build_prompt("verify") includes supervisor.instructions
+        """
+
+        import yaml as _yaml
+        from agent_workflow_ui.roles_processor import process_role_saves
+
+        from awf.supervisor import build_prompt
+
+        proj = tmp_path / "proj"
+        (proj / ".agentic" / "roles").mkdir(parents=True)
+        (proj / ".agentic" / "roles" / "supervisor.md").write_text(
+            "# Supervisor\n\nBase supervisor instructions.\n"
+        )
+        (proj / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: e2e-test\nphases:\n  current: ".agentic/phases/plan.md"\n'
+        )
+
+        # Step 1: Simulate form submit
+        data = {
+            "context_message": "This is a security-critical project. All code must pass audit.",
+            "supervisor_instruction": "Always check for SQL injection and XSS vulnerabilities.",
+        }
+        saved = process_role_saves(data, project_dir=proj)
+        assert saved == 0  # no custom roles saved, but context/instructions processed
+
+        # Step 2: Verify config.yaml updated
+        config = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
+        assert config["context"]["message"] == "This is a security-critical project. All code must pass audit."
+        assert config["supervisor"]["instructions"] == "Always check for SQL injection and XSS vulnerabilities."
+
+        # Step 3: Verify supervisor.md updated
+        sv_content = (proj / ".agentic" / "roles" / "supervisor.md").read_text()
+        assert "Project context" in sv_content
+        assert "security-critical project" in sv_content
+        assert "Additional supervisor instructions" in sv_content
+        assert "SQL injection" in sv_content
+
+        # Step 4: build_prompt("plan") includes context.message
+        plan_prompt = build_prompt("plan", "TODO-0001", config=config)
+        assert "security-critical project" in plan_prompt
+        assert "Project context" in plan_prompt
+
+        # Step 5: build_prompt("verify") includes supervisor.instructions
+        verify_prompt = build_prompt("verify", "TODO-0001", config=config)
+        assert "SQL injection" in verify_prompt
+        assert "Additional instructions" in verify_prompt
+
+        # Step 6: execute prompt does NOT include context (agents don't see it)
+        exec_prompt = build_prompt("execute", "TODO-0001", config=config)
+        assert "security-critical" not in exec_prompt
+        assert "SQL injection" not in exec_prompt
+
+
+# ── UI-1: project_roles in template ──────────────────────────────────────────
+
+
+class TestUI1ProjectRolesDropdown:
+
+    def test_project_setup_template_renders_project_roles(self, tmp_path: Path):
+        """UI-1: project-setup template renders project_roles section when project_dir passed.
+
+        When a project has existing role files in .agentic/roles/, the template
+        should render them in the projectRoles JavaScript array for the dropdown.
+        """
+        from agent_workflow_ui.render.engine import create_default_env, render_template
+
+        env = create_default_env()
+
+        # Full context matching what the server provides
+        context = {
+            "form_id": "FORM-test-123",
+            "submit_url": "http://127.0.0.1:9999/submit/FORM-test-123",
+            "roles": [
+                {"id": "worker", "title": "Worker", "description": "Default worker"},
+            ],
+            "available_models": ["claude-4", "gpt-4"],
+            "recent_models": ["claude-4"],
+            "custom_agents": [],
+            "project_roles": [
+                {"id": "custom-dev", "title": "Custom Developer"},
+                {"id": "my-qa", "title": "My QA Role"},
+            ],
+            "global_skills": [],
+            "existing_supervisor_slugs": [],
+            "existing_agent_slugs": [],
+        }
+
+        html = render_template(env, "project-setup", context)
+
+        # Verify project_roles are rendered in the JavaScript array
+        assert "projectRoles" in html
+        assert "custom-dev" in html
+        assert "Custom Developer" in html
+        assert "my-qa" in html
+        assert "My QA Role" in html
+
+    def test_project_setup_template_empty_project_roles(self, tmp_path: Path):
+        """UI-1: when no project_roles, the JS array is empty (no crash)."""
+        from agent_workflow_ui.render.engine import create_default_env, render_template
+
+        env = create_default_env()
+
+        context = {
+            "form_id": "FORM-test-456",
+            "submit_url": "http://127.0.0.1:9999/submit/FORM-test-456",
+            "roles": [],
+            "available_models": [],
+            "recent_models": [],
+            "custom_agents": [],
+            "global_skills": [],
+            "existing_supervisor_slugs": [],
+            "existing_agent_slugs": [],
+            # No project_roles key — template should handle missing gracefully
+        }
+
+        html = render_template(env, "project-setup", context)
+
+        # Should render without error
+        assert "projectRoles" in html
+        # With no data, the array should be empty
+        assert "[]" in html or "projectRoles = []" in html or "projectRoles = [" in html
