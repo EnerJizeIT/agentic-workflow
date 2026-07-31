@@ -177,7 +177,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 634 tests (e2e + unit + plugin)
+├── tests/                         # 657 tests (e2e + unit + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -294,7 +294,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**634 тестов:** e2e + unit (awf) + integration/unit (plugin).
+**657 тестов:** e2e + unit (awf) + integration/unit (plugin).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).
