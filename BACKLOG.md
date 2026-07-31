@@ -171,3 +171,41 @@ plan stage → TODO-NNNN.md (БЕЗ .ready) → [FORM: preview] → confirm → 
 - `--auto` bypass: `AWF_AUTO_CONFIRM_PLAN=true` env var
 
 **Объём:** ~350 строк + 15 тестов. Новая фича, не фикс.
+
+---
+
+## 🐛 Найдено в dogfood v4 (2026-07-31)
+
+### AD-1 · Нет проектной адаптации skills
+
+**Priority:** HIGH
+
+Skill копируется из global как generic копия (200 строк). LLM не знает
+что **этот** проект = Chrome extension для Jira (а не банковский API).
+Контекст проекта есть только в TODO, не в role.md.
+
+**Решение:** при `awf analyze-roles` (или отдельно) — инжектить project
+context в role.md. Например: секция "## Project context" с описанием
+стека, домена, ключевых файлов. Не заменять skill, а дополнять.
+
+### AD-2 · Нет traceability (SHA + path)
+
+**Priority:** HIGH
+
+BD-13 frontmatter (`derived_from_global`, `global_path`, `global_sha`)
+был удалён в BD-27 упрощении. Теперь неизвестно какая версия skill
+скопирована. Global skill обновился — локальная копия устарела, никто
+не знает.
+
+**Решение:** вернуть frontmatter в role.md при копировании через форму.
+~50 строк. drift detection — `awf analyze-roles --check-drift`.
+
+### AD-3 · Нет integration тестов на полный pipeline
+
+**Priority:** MEDIUM
+
+692 unit теста, но ни одного end-to-end: `awf start` → mock opencode →
+plan → 2 agents → verify → commit. Всё mock'ается по частям.
+
+**Решение:** `tests/integration/test_pipeline_e2e.py` — mock `opencode run`
+subprocess, проверить весь flow. ~200 строк.
