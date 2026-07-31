@@ -14,7 +14,7 @@ from typing import Any
 
 from . import opencode_config as _oc
 from .opencode_config import delete_custom_role, save_custom_role
-from .state import get_project_dir, mark_needs_normalize
+from .state import get_project_dir
 
 log = logging.getLogger(__name__)
 
@@ -179,11 +179,110 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
         # skill.md instructions, not real agents).
         update_config_role_mapping(team, project_dir)
 
-    # BD-10-B: mark normalize needed so awf start picks it up
-    if team and project_dir:
-        mark_needs_normalize(project_dir, team)
+    # UI-2/UI-3: save context_message and supervisor_instruction to
+    # config.yaml + append to supervisor.md. Without this, user's context
+    # and instructions from the form were silently dropped.
+    if project_dir:
+        _save_context_and_instructions(data, project_dir)
 
     return saved
+
+
+def _save_context_and_instructions(data: dict[str, Any], project_dir: Path) -> None:
+    """UI-2/UI-3: save context_message + supervisor_instruction.
+
+    Persists to:
+    1. config.yaml — machine-readable (context.message, supervisor.instructions)
+    2. supervisor.md — appended as sections (supervisor LLM sees them via --file)
+
+    Both fields are OPTIONAL — if empty, no changes made.
+    """
+    import yaml as _yaml
+
+    context_msg = str(data.get("context_message", "")).strip()
+    sup_instr = str(data.get("supervisor_instruction", "")).strip()
+
+    if not context_msg and not sup_instr:
+        return
+
+    # 1. Update config.yaml
+    config_path = project_dir / ".agentic" / "config.yaml"
+    if config_path.exists():
+        try:
+            config = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (_yaml.YAMLError, OSError):
+            config = {}
+    else:
+        config = {}
+
+    if not isinstance(config, dict):
+        config = {}
+
+    changed = False
+    if context_msg:
+        ctx_section = config.setdefault("context", {})
+        if not isinstance(ctx_section, dict):
+            ctx_section = {}
+            config["context"] = ctx_section
+        ctx_section["message"] = context_msg
+        changed = True
+        log.info("UI-2: saved context.message to config.yaml (%d chars)", len(context_msg))
+
+    if sup_instr:
+        sup_section = config.setdefault("supervisor", {})
+        if not isinstance(sup_section, dict):
+            sup_section = {}
+            config["supervisor"] = sup_section
+        sup_section["instructions"] = sup_instr
+        changed = True
+        log.info("UI-3: saved supervisor.instructions to config.yaml (%d chars)", len(sup_instr))
+
+    if changed:
+        from .state import _atomic_write_text
+        _atomic_write_text(config_path, _yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
+
+    # 2. Append to supervisor.md
+    supervisor_md = project_dir / ".agentic" / "roles" / "supervisor.md"
+    if not supervisor_md.exists():
+        log.warning("UI-2/UI-3: supervisor.md not found at %s — skipping append", supervisor_md)
+        return
+
+    try:
+        current = supervisor_md.read_text(encoding="utf-8")
+    except OSError as e:
+        log.error("UI-2/UI-3: failed to read supervisor.md: %s", e)
+        return
+
+    # Remove existing UI-2/UI-3 sections (idempotent — re-submit replaces)
+    import re
+    current = re.sub(
+        r"\n*## Project context \(from user, UI-2\).*?(?=\n## |\Z)",
+        "",
+        current,
+        flags=re.DOTALL,
+    ).rstrip()
+    current = re.sub(
+        r"\n*## Additional supervisor instructions \(from user, UI-3\).*?(?=\n## |\Z)",
+        "",
+        current,
+        flags=re.DOTALL,
+    ).rstrip()
+
+    sections_to_add: list[str] = []
+    if context_msg:
+        sections_to_add.append(
+            f"\n\n## Project context (from user, UI-2)\n\n{context_msg}\n"
+        )
+    if sup_instr:
+        sections_to_add.append(
+            f"\n\n## Additional supervisor instructions (from user, UI-3)\n\n{sup_instr}\n"
+        )
+
+    if sections_to_add:
+        new_content = current + "".join(sections_to_add) + "\n"
+        from .state import _atomic_write_text
+        _atomic_write_text(supervisor_md, new_content)
+        log.info("UI-2/UI-3: appended %d section(s) to supervisor.md", len(sections_to_add))
 
 
 # Default agent that loads role .md as instruction. All non-supervisor

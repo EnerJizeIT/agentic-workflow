@@ -157,6 +157,17 @@ async def open_form(
     # regardless of what user picked).
     available_models = _collect_opencode_models()
 
+    # UI-1: scan project-local roles (.agentic/roles/*.md) for "previously
+    # used in this project" dropdown section.
+    project_roles: list[dict] = []
+    if project_dir:
+        roles_dir = project_dir / ".agentic" / "roles"
+        if roles_dir.is_dir():
+            for rf in sorted(roles_dir.glob("*.md")):
+                if rf.stem == "supervisor":
+                    continue  # supervisor is built-in, not a team role
+                project_roles.append({"id": rf.stem, "title": rf.stem})
+
     # Existing slugs for client-side conflict detection (JS confirm before overwrite)
     existing_supervisor_slugs = [sv["id"] for sv in supervisor_variants]
     existing_agent_slugs = [ca["id"] for ca in custom_agents]
@@ -170,6 +181,7 @@ async def open_form(
             "custom_agents": custom_agents,
             "global_skills": global_skills,
             "available_models": available_models,
+            "project_roles": project_roles,
             "existing_supervisor_slugs": existing_supervisor_slugs,
             "existing_agent_slugs": existing_agent_slugs,
         })

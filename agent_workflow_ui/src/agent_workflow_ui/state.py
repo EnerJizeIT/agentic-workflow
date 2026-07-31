@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-import yaml
-
 
 def _xdg_config_home() -> Path:
     """A9: respect XDG_CONFIG_HOME env var (was hardcoded ~/.config).
@@ -275,19 +273,3 @@ def _atomic_write_text(path: Path, content: str) -> None:
     tmp = path.with_suffix(f".{uuid4().hex}.tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
-
-
-def mark_needs_normalize(project_dir: Path | None, team: list[dict]) -> None:
-    """Write .agentic/state/needs_normalize.yaml so awf start triggers normalize stage."""
-    if project_dir is None or not (project_dir / ".agentic").is_dir():
-        return
-    state_dir = project_dir / ".agentic" / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    target = state_dir / "needs_normalize.yaml"
-    payload = {
-        "needed": True,
-        "marked_at": datetime.now(timezone.utc).isoformat(),
-        "team": [{"role": m.get("agent", ""), "type": m.get("type", "default")}
-                  for m in team if m.get("agent")],
-    }
-    _atomic_write_text(target, yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))

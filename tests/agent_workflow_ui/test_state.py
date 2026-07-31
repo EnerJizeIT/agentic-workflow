@@ -10,7 +10,6 @@ from agent_workflow_ui.state import (
     FormRecord,
     FormRegistry,
     _atomic_write_text,
-    mark_needs_normalize,
 )
 
 
@@ -216,37 +215,3 @@ def test_atomic_write_text_creates_parent_dirs(tmp_path: Path) -> None:
     target = tmp_path / "a" / "b" / "c" / "file.txt"
     _atomic_write_text(target, "content")
     assert target.read_text() == "content"
-
-
-def test_mark_needs_normalize_writes_valid_yaml(tmp_path: Path) -> None:
-    """mark_needs_normalize produces valid YAML, no .tmp left behind."""
-    import yaml
-
-    (tmp_path / ".agentic").mkdir()
-    team = [
-        {"agent": "worker", "type": "default"},
-        {"agent": "reviewer", "type": "custom"},
-    ]
-    mark_needs_normalize(tmp_path, team)
-
-    target = tmp_path / ".agentic" / "state" / "needs_normalize.yaml"
-    assert target.exists()
-
-    data = yaml.safe_load(target.read_text())
-    assert data["needed"] is True
-    assert "marked_at" in data
-    assert len(data["team"]) == 2
-
-    state_dir = tmp_path / ".agentic" / "state"
-    assert list(state_dir.glob("*.tmp")) == []
-
-
-def test_mark_needs_normalize_skips_without_agentic(tmp_path: Path) -> None:
-    """mark_needs_normalize is a no-op when .agentic/ doesn't exist."""
-    mark_needs_normalize(tmp_path, [{"agent": "worker", "type": "default"}])
-    assert not (tmp_path / ".agentic").exists()
-
-
-def test_mark_needs_normalize_skips_none_project(tmp_path: Path) -> None:
-    """mark_needs_normalize is a no-op when project_dir is None."""
-    mark_needs_normalize(None, [{"agent": "worker", "type": "default"}])

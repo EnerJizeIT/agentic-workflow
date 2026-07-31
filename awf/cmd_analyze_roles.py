@@ -50,49 +50,97 @@ def _read_pipeline_roles(project_dir: Path, config: dict) -> list[str]:
 
 
 _ZONES_OF_RESPONSIBILITY = {
-    # role-substring → zone label
-    "разработчик": "writes code",
-    "developer": "writes code",
-    "implement": "writes code",
-    "тест": "writes/runs tests",
-    "tester": "writes/runs tests",
-    "test-automator": "writes/runs tests",
-    "qa": "verifies implementation against requirements",
-    "review": "verifies implementation against requirements",
-    "audit": "verifies code health / project quality",
+    # role-substring → zone label.
+    # BD-31a fix: ordered by SPECIFICITY — most specific first.
+    # _infer_zone checks slug BEFORE content head to avoid false matches
+    # (e.g. system-analyst skill.md contains "implement features" in body,
+    # but slug "system-analyst" must win → "writes requirements").
+    "system-analyst": "writes requirements / vision",
+    "system analyst": "writes requirements / vision",
     "analyst": "writes requirements / vision",
     "аналитик": "writes requirements / vision",
-    "system-analyst": "writes requirements / vision",
-    "system-analyst".replace("-", " "): "writes requirements / vision",
     "architect": "designs system structure",
     "refactor": "improves structure without behavior change",
     "debug": "isolates bugs",
     "security": "security review",
     "performance": "performance investigation",
+    "test-automator": "writes/runs tests",
+    "tester": "writes/runs tests",
+    "тест": "writes/runs tests",
+    "project-auditor": "verifies code health / project quality",
+    "audit": "verifies code health / project quality",
+    "qa-review": "verifies implementation against requirements",
+    "qa": "verifies implementation against requirements",
+    "review": "verifies implementation against requirements",
+    "developer": "writes code",
+    "разработчик": "writes code",
+    "implement": "writes code",
 }
 
 
 def _infer_zone(role_slug: str, content: str) -> str:
-    """Best-effort guess of a role's zone from its slug + content head."""
-    head = content[:600].lower()
+    """Best-effort guess of a role's zone from its slug + content head.
+
+    BD-31a fix: slug match takes PRIORITY over content match. Previously,
+    system-analyst matched 'implement' from skill body text before reaching
+    'analyst' key, classifying it as 'writes code' instead of requirements.
+    """
     slug_lower = role_slug.lower()
+    # Pass 1: slug-only (highest confidence)
     for needle, zone in _ZONES_OF_RESPONSIBILITY.items():
-        if needle in slug_lower or needle in head:
+        if needle in slug_lower:
+            return zone
+    # Pass 2: content head (fallback for roles with generic slug)
+    head = content[:600].lower()
+    for needle, zone in _ZONES_OF_RESPONSIBILITY.items():
+        if needle in head:
             return zone
     return "generalist (undefined zone)"
 
 
+def _zone_family(zone: str) -> str:
+    """BD-31c fix: group zones into families for broader overlap detection.
+
+    'verifies implementation against requirements' and
+    'verifies code health / project quality' are different zones, but both
+    are 'verify' family → potential overlap in pipeline.
+    """
+    if zone.startswith("verifies"):
+        return "verify"
+    if zone.startswith("writes code"):
+        return "code"
+    if zone.startswith("writes/runs tests"):
+        return "test"
+    if zone.startswith("writes requirements"):
+        return "requirements"
+    return zone  # unique zones are their own family
+
+
 def _detect_overlaps(roles_with_zones: dict[str, str]) -> list[tuple[str, str, str]]:
     """Find pairs of roles whose zones overlap.
+
+    BD-31c fix: uses _zone_family for broader matching. Two roles with
+    different verify zones (qa-review + project-auditor) still overlap
+    because both do verification work — pipeline risks duplicate effort.
 
     Returns list of (role_a, role_b, shared_zone) tuples.
     """
     overlaps: list[tuple[str, str, str]] = []
     items = list(roles_with_zones.items())
     for i, (a, za) in enumerate(items):
+        fa = _zone_family(za)
+        if fa == za and za == "generalist (undefined zone)":
+            continue
         for b, zb in items[i + 1:]:
-            if za == zb and za != "generalist (undefined zone)":
+            fb = _zone_family(zb)
+            if fb == zb and zb == "generalist (undefined zone)":
+                continue
+            # Exact zone match OR same family (broader)
+            if za == zb:
                 overlaps.append((a, b, za))
+            elif fa == fb and fa not in (za, zb):
+                # Same family but different specific zones — still overlap
+                overlaps.append((a, b, f"{fa} (different focus: {za} vs {zb})"))
     return overlaps
 
 
@@ -140,23 +188,34 @@ def _build_disambiguation_addendum(
         parts.append(f"**Other role(s) with similar zone:** {', '.join(f'`{r}`' for r in same_zone)}")
         parts.append("")
         parts.append("**To avoid wasted duplicate work, your unique contribution is:**")
-        # Heuristic disambiguation rules
-        if zone == "verifies implementation against requirements":
+        # Heuristic disambiguation rules — role-specific
+        disambiguation_added = False
+        if zone.startswith("verif"):  # covers "verifies..." and "verify..."
             if "qa" in role.lower():
                 parts.append("- Check TODO requirements are met + write/run tests.")
                 parts.append(f"- Do NOT do full project audit (that's `{'project-auditor' if 'project-auditor' in same_zone else same_zone[0]}`).")
-            elif "review" in role.lower() or "audit" in role.lower():
+                disambiguation_added = True
+            elif "review" in role.lower() or "audit" in role.lower() or "project-auditor" in role.lower():
                 parts.append("- Focus on code health: maintainability, design, risky patterns.")
                 parts.append("- Do NOT re-verify TODO requirements line-by-line (qa did that).")
-        elif zone == "writes code":
-            if "implement" in role.lower():
-                parts.append("- You are the primary code writer. Other 'code' roles refactor/review, not write.")
+                disambiguation_added = True
+        elif zone == "writes code" or zone == "code":
+            if "implement" in role.lower() or role.lower() in ("dev", "developer", "worker"):
+                parts.append("- You are the primary code writer. Other 'code' roles (system-analyst, architect) write requirements/design, not code.")
+                disambiguation_added = True
             elif "refactor" in role.lower():
                 parts.append("- You improve existing structure. Do NOT add new features.")
-        elif zone == "writes/runs tests":
+                disambiguation_added = True
+        elif zone == "writes/runs tests" or zone == "test":
             parts.append("- You write and run tests. Do NOT fix bugs you find — report them via BLOCKED signal.")
-        elif zone == "writes requirements / vision":
-            parts.append("- You write the vision/requirements file. Do NOT write code or tests.")
+            disambiguation_added = True
+        elif zone == "writes requirements / vision" or zone == "requirements":
+            parts.append("- You write the vision/requirements file. Do NOT write code or tests — `dev` does that.")
+            disambiguation_added = True
+        # BD-31b fix: fallback if no role-specific rule matched
+        if not disambiguation_added:
+            parts.append(f"- Focus on YOUR specific zone: {zone}.")
+            parts.append(f"- Do NOT duplicate work that {', '.join(f'`{r}`' for r in same_zone)} already did.")
         parts.append("")
 
     parts.append("**Pipeline contract:** read the handoff from the previous role before starting. Do NOT redo prior work.")

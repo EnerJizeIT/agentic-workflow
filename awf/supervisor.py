@@ -35,13 +35,16 @@ def get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
-def build_prompt(kind: str, todo_id: str) -> str:
+def build_prompt(kind: str, todo_id: str, config: dict | None = None) -> str:
     """BD-29: build prompt for a stage kind.
 
     Three kinds: plan / execute / verify.
+    UI-2/UI-3: if config has context.message or supervisor.instructions,
+    they are appended to the prompt so supervisor sees user's input.
     """
+    # Base prompt per kind
     if kind == "plan":
-        return (
+        base = (
             "You are the supervisor. Read the phases/plan file. Determine the next step "
             "that is not yet completed. Create a TODO file at "
             ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID), create baseline "
@@ -51,8 +54,8 @@ def build_prompt(kind: str, todo_id: str) -> str:
             "at the goal level (what success looks like), do NOT micromanage individual "
             "roles — each role's skill.md already defines its zone."
         )
-    if kind == "verify":
-        return (
+    elif kind == "verify":
+        base = (
             f"You are the supervisor. Verify TODO {todo_id}: read the DONE report and PROGRESS notes, "
             "check `git diff --stat` against the baseline SHA in "
             f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
@@ -60,16 +63,28 @@ def build_prompt(kind: str, todo_id: str) -> str:
             f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
             f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
         )
-    # execute (default)
-    return (
-        f"Execute your part of {todo_id} according to your role/skill instructions. "
-        f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
-        f"don't redo prior work. When done, write .agentic/outbox/PROGRESS-{todo_id}.md (running notes), "
-        f".agentic/outbox/DONE-{todo_id}.md (summary), and create the sentinel "
-        f".agentic/outbox/DONE-{todo_id}.ready file (NOTE: .ready extension, NOT .md.ready). "
-        f"If blocked, write BLOCKED-{todo_id}.md + BLOCKED-{todo_id}.ready instead. "
-        f"Do not commit unless the TODO explicitly asks for it."
-    )
+    else:
+        # execute (default) — no context/instructions for agent stages
+        return (
+            f"Execute your part of {todo_id} according to your role/skill instructions. "
+            f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
+            f"don't redo prior work. When done, write .agentic/outbox/PROGRESS-{todo_id}.md (running notes), "
+            f".agentic/outbox/DONE-{todo_id}.md (summary), and create the sentinel "
+            f".agentic/outbox/DONE-{todo_id}.ready file (NOTE: .ready extension, NOT .md.ready). "
+            f"If blocked, write BLOCKED-{todo_id}.md + BLOCKED-{todo_id}.ready instead. "
+            f"Do not commit unless the TODO explicitly asks for it."
+        )
+
+    # UI-2/UI-3: append user's context + instructions for supervisor stages
+    if config and kind in ("plan", "verify"):
+        ctx_msg = cfg_mod.get(config, "context.message", "") or ""
+        sup_instr = cfg_mod.get(config, "supervisor.instructions", "") or ""
+        if ctx_msg:
+            base += f"\n\n## Project context (from user)\n{ctx_msg}"
+        if sup_instr:
+            base += f"\n\n## Additional instructions (from user)\n{sup_instr}"
+
+    return base
 
 
 def global_roles_dir() -> Path:
@@ -350,7 +365,7 @@ def run_supervisor_via_subprocess(
     if kind == "plan":
         if phases_path.is_file():
             extra_files.append(str(phases_path))
-        prompt = build_prompt("plan", todo_id)
+        prompt = build_prompt("plan", todo_id, config=config)
     elif kind == "verify":
         if not todo_id:
             print("[auto mode] No todo_id for verify — skip.")
@@ -368,7 +383,7 @@ def run_supervisor_via_subprocess(
             for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
                 if hf.is_file():
                     extra_files.append(str(hf))
-        prompt = build_prompt("verify", todo_id)
+        prompt = build_prompt("verify", todo_id, config=config)
     elif kind == "replan":
         if not todo_id:
             print("[auto mode] No todo_id for replan — skip.")

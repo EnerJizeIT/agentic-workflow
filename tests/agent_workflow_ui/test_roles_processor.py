@@ -653,8 +653,12 @@ def test_bd9_pipeline_skipped_malformed_json(isolated_roles_dir, reset_project_d
 # ── BD-10-B: process_role_saves triggers normalize state ──────────────────────
 
 
-def test_bd10b_normalize_state_written(isolated_roles_dir, reset_project_dir, tmp_path):
-    """process_role_saves with team_config + project_dir → writes needs_normalize.yaml."""
+def test_bd10b_normalize_state_removed_legacy(isolated_roles_dir, reset_project_dir, tmp_path):
+    """BD-13 legacy removed: process_role_saves no longer writes needs_normalize.yaml.
+
+    mark_needs_normalize was deleted (BD-13 normalize stage removed).
+    This test verifies the file is NOT created — protects against regression.
+    """
     proj = _make_project(tmp_path)
     state._project_dir = None
 
@@ -667,18 +671,14 @@ def test_bd10b_normalize_state_written(isolated_roles_dir, reset_project_dir, tm
     process_role_saves(data, project_dir=proj)
 
     target = proj / ".agentic" / "state" / "needs_normalize.yaml"
-    assert target.exists()
-    import yaml as _yaml
-    parsed = _yaml.safe_load(target.read_text())
-    assert parsed["needed"] is True
-    assert "marked_at" in parsed
-    assert len(parsed["team"]) == 2
-    assert parsed["team"][0] == {"role": "worker", "type": "default"}
-    assert parsed["team"][1] == {"role": "auditor", "type": "custom"}
+    assert not target.exists(), (
+        "BD-13 legacy: needs_normalize.yaml should NOT be written "
+        "(normalize stage was removed)"
+    )
 
 
 def test_bd10b_normalize_state_no_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):
-    """process_role_saves with project_dir=None → no state file written."""
+    """process_role_saves with project_dir=None → no error."""
     state._project_dir = None
 
     data = {
@@ -690,7 +690,7 @@ def test_bd10b_normalize_state_no_project_dir(isolated_roles_dir, reset_project_
 
 
 def test_bd10b_normalize_state_no_team_config(isolated_roles_dir, reset_project_dir, tmp_path):
-    """process_role_saves without team_config → no state file written."""
+    """process_role_saves without team_config → no error."""
     proj = _make_project(tmp_path)
     state._project_dir = None
 

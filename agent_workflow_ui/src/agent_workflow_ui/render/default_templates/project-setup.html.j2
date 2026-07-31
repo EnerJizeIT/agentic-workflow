@@ -347,7 +347,7 @@ optional_data_keys: []
 
     <!-- === Section 1: Контекст === -->
     <div class="section">
-      <div class="section-title">Контекст</div>
+      <div class="section-title">Важный контекст о проекте</div>
 
       <div class="field">
         <textarea name="context_message" id="context_message" rows="4"
@@ -366,6 +366,13 @@ optional_data_keys: []
     <!-- === Section 2: Supervisor === -->
     <div class="section">
       <div class="section-title">Supervisor</div>
+
+      <div class="field">
+        <label for="supervisor_instruction">Дополнительная инструкция для supervisor</label>
+        <textarea name="supervisor_instruction" id="supervisor_instruction" rows="4"
+          placeholder="Например: фокус на безопасности, предпочитай Strategy pattern, commit message на русском..."></textarea>
+        <p class="hint">Текст добавляется к supervisor.md как отдельная секция.</p>
+      </div>
 
       <div class="field">
         <select name="supervisor_role" id="supervisor-select" onchange="handleSupervisorSelect(this)">
@@ -445,6 +452,13 @@ optional_data_keys: []
         {% endfor %}
       ];
 
+      // UI-1: project-local roles (.agentic/roles/*.md, excluding supervisor)
+      var projectRoles = [
+        {% for pr in (project_roles or []) %}
+        {id: "{{ pr.id }}", title: "{{ pr.title }}"}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      ];
+
       // BD-27: global skills with full content — primary source for team roles.
       var globalSkills = [
         {% for s in (global_skills or []) %}
@@ -496,33 +510,35 @@ optional_data_keys: []
 
       function agentOptions() {
         var h = '';
-        // BD-27: skills are the primary choice — full content goes into role.md
+        // UI-1: 3 clean sections instead of 4 messy ones.
+        // Section 1: previously used in this project (.agentic/roles/*.md)
+        if (projectRoles.length > 0) {
+          h += '<optgroup label="Ранее использовавшиеся в проекте">';
+          projectRoles.forEach(function (r) {
+            h += '<option value="' + r.id + '" data-kind="project">' + r.title + '</option>';
+          });
+          h += '</optgroup>';
+        }
+        // Section 2: all skills (global ~/.config/opencode/skills/)
         if (globalSkills.length > 0) {
-          h += '<optgroup label="Skills (рекомендуется)">';
+          h += '<optgroup label="Все скиллы">';
           globalSkills.forEach(function (s) {
             var label = s.title + (s.desc ? ' — ' + s.desc.substring(0, 80) : '');
-            // Truncate to avoid giant option text
             if (label.length > 100) label = label.substring(0, 97) + '...';
             h += '<option value="' + s.id + '" data-kind="skill">' + label + '</option>';
           });
           h += '</optgroup>';
         }
-        // available_roles (caller-supplied, e.g. [supervisor, worker])
-        if (roles.length > 0) {
-          if (globalSkills.length > 0) h += '<optgroup label="Базовые роли">';
-          roles.forEach(function (r) {
-            h += '<option value="' + r.id + '" data-kind="default">' + r.title + (r.desc ? ' — ' + r.desc : '') + '</option>';
-          });
-          if (globalSkills.length > 0) h += '</optgroup>';
-        }
+        // Section 3: saved custom agents (global ~/.config/awf/roles/)
         if (customAgents.length > 0) {
-          h += '<optgroup label="Мои агенты (сохранённые роли)">';
+          h += '<optgroup label="Мои агенты (сохранённые ранее)">';
           customAgents.forEach(function (c) {
             h += '<option value="' + c.id + '" data-custom="true" data-kind="custom">' + c.title + '</option>';
           });
           h += '</optgroup>';
         }
-        h += '<option value="__custom__" data-kind="custom">+ Свой .md файл...</option>';
+        // Section 4: upload your own .md
+        h += '<option value="__custom__" data-kind="custom">+ Выбрать файл (.md)...</option>';
         return h;
       }
 

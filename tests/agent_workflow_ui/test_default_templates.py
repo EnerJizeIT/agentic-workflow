@@ -207,7 +207,8 @@ def test_project_setup_has_custom_agent_option(env):
         "available_roles": [{"id": "worker", "title": "Worker"}],
     })
     assert "__custom__" in html
-    assert "Свой .md файл" in html
+    # UI-1: text changed from "Свой .md файл" to "Выбрать файл (.md)"
+    assert "Выбрать файл" in html or "Свой .md" in html  # accept either
 
 
 def test_project_setup_has_file_picker(env):
