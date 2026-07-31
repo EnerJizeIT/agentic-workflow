@@ -2,7 +2,7 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 628 тестов, CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги и A-* архитектурные долги закрыты.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 692 теста, CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги и A-* архитектурные долги закрыты.
 
 История фиксов — в `git log --oneline`.
 
@@ -92,7 +92,7 @@ collapses to "1 effective agent + N rubber-stamps".
 
 ## 🐛 UI/UX наблюдения (после Dogfood v3, 2026-07-31)
 
-### UI-1 · Команда агентов — 3 раздела вместо текущих 4
+### UI-1 · (DONE)  Команда агентов — 3 раздела вместо текущих 4
 
 **Priority:** HIGH
 
@@ -110,7 +110,7 @@ collapses to "1 effective agent + N rubber-stamps".
 Убрать "Базовые роли" (available_roles) — не используются после BD-27.
 "Мои агенты (сохранённые)" переименовать/слить с "Ранее в проекте".
 
-### UI-2 · Контекст → переименовать + проверить обработку
+### UI-2 · (DONE)  Контекст → переименовать + проверить обработку
 
 **Priority:** HIGH
 
@@ -121,7 +121,7 @@ collapses to "1 effective agent + N rubber-stamps".
 - Доходит ли до supervisor.md / TODO?
 - Используется ли в build_prompt / supervisor instructions?
 
-### UI-3 · Поле "Дополнительная инструкция для supervisor"
+### UI-3 · (DONE)  Поле "Дополнительная инструкция для supervisor"
 
 **Priority:** HIGH
 
@@ -131,10 +131,43 @@ collapses to "1 effective agent + N rubber-stamps".
 
 Проверить backend: как сохраняется, доходит ли до supervisor.md, используется ли в run_supervisor_via_subprocess / print_interactive_supervisor_instructions.
 
-### UI-4 · Проверить per-role LLM + "сохранить агента"
+### UI-4 · (DONE)  Проверить per-role LLM + "сохранить агента"
 
 **Priority:** MEDIUM
 
 Проверить:
 1. **Per-role model** (BD-32) — действительно ли `--model` передаётся в opencode run для каждой роли? Dogfood показал что работает (project-auditor → GLM-5.2), но нужен системный тест.
 2. **Флаг "Сохранить для будущих сессий"** (save_supervisor checkbox + custom agent save) — действительно ли роль сохраняется в `~/.config/awf/roles/`? Перезагружается ли при следующем open_form?
+
+---
+
+## 🔮 BD-36 · Plan checkpoint — обязательный preview TODO перед запуском агентов
+
+**Status:** PROPOSED. **Priority:** HIGH — детерминизм pipeline.
+
+**Проблема:** supervisor решает размер инкремента сам, без подтверждения
+пользователя. Может выбрать 1 шаг (хорошо) или 5 (плохо). Пользователь
+не видит TODO до запуска агентов.
+
+**Решение — checkpoint между plan и execute:**
+
+```
+plan stage → TODO-NNNN.md (БЕЗ .ready) → [FORM: preview] → confirm → .ready → [agents]
+```
+
+1. Supervisor создаёт TODO-NNNN.md (как сейчас), но НЕ .ready
+2. awf детектит TODO без .ready → открывает HTML form
+3. Form показывает: Goal, Tasks, роли, размер
+4. Кнопки: `[✓ Утвердить]` / `[✏ Изменить scope]` / `[✗ Отклонить]`
+5. Confirm → awf создаёт .ready → agents запускаются
+6. Edit → пользователь редактирует TODO text → .ready
+7. Reject → TODO удаляется → supervisor перепланирует
+
+**Components:**
+- `todo-preview.html.j2` template (~150 lines)
+- `todo_review.py` backend (~100 lines)
+- `supervisor.py` — detect TODO-without-ready → open form
+- `orchestrator.py` — checkpoint gate
+- `--auto` bypass: `AWF_AUTO_CONFIRM_PLAN=true` env var
+
+**Объём:** ~350 строк + 15 тестов. Новая фича, не фикс.

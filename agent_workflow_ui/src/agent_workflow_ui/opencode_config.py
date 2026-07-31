@@ -181,12 +181,17 @@ def scan_global_roles() -> tuple[list[dict], list[dict]]:
         Tuple (supervisor_variants, custom_agents).
         supervisor_variants: files starting with 'supervisor-'.
         custom_agents: all other .md files.
+
+    UI-4: deduplicates roles by canonical slug. If both 'qa-review.md' and
+    'agent-qa-review.md' exist, only one is returned (preferring the one
+    with more recent mtime). This prevents duplicate entries in the form
+    dropdown.
     """
     if not GLOBAL_ROLES_DIR.exists():
         return [], []
 
     supervisor_variants: list[dict] = []
-    custom_agents: list[dict] = []
+    custom_agents_raw: dict[str, dict] = {}  # canonical_slug → entry
 
     for md_file in sorted(GLOBAL_ROLES_DIR.glob("*.md")):
         name = md_file.stem
@@ -201,8 +206,22 @@ def scan_global_roles() -> tuple[list[dict], list[dict]]:
         if name.startswith("supervisor-"):
             supervisor_variants.append(entry)
         else:
-            custom_agents.append(entry)
+            # UI-4: deduplicate by canonical slug
+            canonical = _canonical_slug(name)
+            existing = custom_agents_raw.get(canonical)
+            if existing is None:
+                custom_agents_raw[canonical] = entry
+            else:
+                # Keep the one with more recent mtime
+                try:
+                    existing_mtime = (GLOBAL_ROLES_DIR / existing["filename"]).stat().st_mtime
+                    new_mtime = md_file.stat().st_mtime
+                    if new_mtime > existing_mtime:
+                        custom_agents_raw[canonical] = entry
+                except OSError:
+                    pass  # keep existing
 
+    custom_agents = list(custom_agents_raw.values())
     return supervisor_variants, custom_agents
 
 
@@ -282,6 +301,19 @@ def scan_global_skills() -> list[dict]:
         })
 
     return result
+
+
+def _canonical_slug(slug: str) -> str:
+    """UI-4: canonical slug for deduplication.
+
+    Strips 'agent-' prefix so 'qa-review' and 'agent-qa-review' map to
+    the same canonical key. Used by scan_global_roles to avoid showing
+    duplicates in the form dropdown.
+    """
+    s = slug.lower().strip()
+    if s.startswith("agent-"):
+        s = s[len("agent-"):]
+    return s
 
 
 def save_custom_role(name: str, content: str, role_type: str = "agent") -> Path:
