@@ -489,8 +489,14 @@ def _detect_supervisor_signal(
         if approve.exists():
             return f"APPROVE-{todo_id}"
     elif kind in ("plan", "replan"):
-        # Newest TODO-*.ready that didn't exist at start (already filtered
-        # by signal_watch snapshot). Return first found by mtime.
+        # Newest TODO-*.ready by mtime. signal_watch already confirmed at
+        # least one NEW TODO-*.ready appeared during supervisor execution
+        # (its snapshot filtered out pre-existing files). Here we just
+        # pick the freshest one — stale TODOs from previous runs are
+        # older by mtime. If signal_watch is bypassed and stale files
+        # exist, this could return an outdated TODO; safe today because
+        # this function is only called from run_supervisor_stage which is
+        # always wrapped by run_subprocess_until_signal.
         todos = sorted(inbox.glob("TODO-*.ready"), key=lambda p: p.stat().st_mtime, reverse=True)
         if todos:
             return todos[0].stem  # "TODO-NNNN.ready" → "TODO-NNNN"

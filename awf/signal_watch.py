@@ -1,11 +1,18 @@
-"""BD-20: subprocess execution with signal-file watch + grace-period termination.
+"""BD-20: subprocess execution with signal-file watch + natural-exit wait.
 
 Extracted from orchestrator.py (A6 refactor) — keeps signal-watch logic
 isolated from the pipeline state machine.
+
+Design (BD-20 redesign): detecting a signal file means "work is logically
+done". We do NOT kill the subprocess — it may still be flushing buffers,
+closing connections, writing metadata. We poll until natural exit. The
+only safety net is ``hard_timeout`` (default 3600s) which SIGKILLs a
+hung process.
 """
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 from ._env import awf_subprocess_env
@@ -13,7 +20,6 @@ from ._log import log as _log
 
 BD20_POLL_INTERVAL = 3
 BD20_HARD_TIMEOUT = 3600
-BD20_SIGNAL_GRACE_SECONDS = 10
 
 
 def run_subprocess_until_signal(
@@ -23,14 +29,13 @@ def run_subprocess_until_signal(
     watch_new_glob: tuple[Path, str] | None = None,
     logs_dir: Path | None = None,
     hard_timeout: int = BD20_HARD_TIMEOUT,
-    grace_seconds: int = BD20_SIGNAL_GRACE_SECONDS,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """BD-20: run subprocess, watch for signal files, terminate if it lingers.
+    """BD-20: run subprocess, watch for signal files, wait for natural exit.
 
-    Polls the subprocess every ``BD20_POLL_INTERVAL`` seconds. As soon as
-    ANY of these conditions fires, gives ``grace_seconds`` to exit, then
-    SIGTERM (and SIGKILL after 5s if still alive):
+    Polls every ``BD20_POLL_INTERVAL`` seconds. As soon as ANY of these
+    conditions fires, the subprocess is considered "logically done" — we
+    keep waiting for its natural exit (no SIGTERM/SIGKILL):
 
     - any path in ``watch_paths`` exists AFTER subprocess start (BD-22 fix:
       snapshot-based — stale files that existed before subprocess launch
@@ -39,6 +44,9 @@ def run_subprocess_until_signal(
       taken at start (used when the filename is picked by the subprocess
       itself, e.g. ``TODO-*.ready`` for supervisor create_todo)
 
+    ``hard_timeout`` is the absolute cap — if exceeded, the process is
+    SIGKILLed (hung-process safety net, not normal flow).
+
     Args:
         cmd: command list.
         cwd: working directory.
@@ -46,20 +54,15 @@ def run_subprocess_until_signal(
         watch_new_glob: (directory, glob_pattern) — detect NEW files matching
             the pattern that didn't exist at subprocess start.
         logs_dir: optional, for logging.
-        hard_timeout: absolute cap.
-        grace_seconds: grace period after signal detected.
+        hard_timeout: absolute cap before SIGKILL (default 3600s).
         env: subprocess environment (defaults to os.environ).
     """
-    import time
-
     watch_paths = watch_paths or []
     # BD-22: snapshot which watch_paths already exist at start (stale signals
     # from previous runs). Only paths that DON'T exist at start, or that
     # appear AFTER start, count as a valid signal.
     pre_existing: set[str] = {str(p) for p in watch_paths if p.exists()}
     if pre_existing and logs_dir:
-
-
         _log(
             logs_dir,
             f"BD-22: ignoring {len(pre_existing)} stale watch_paths "
@@ -80,8 +83,6 @@ def run_subprocess_until_signal(
         rc = proc.poll()
         if rc is not None:
             if logs_dir:
-
-
                 _log(logs_dir, f"subprocess exited naturally with code {rc}")
             return subprocess.CompletedProcess(cmd, rc)
 
@@ -102,19 +103,11 @@ def run_subprocess_until_signal(
             if triggered:
                 signal_seen_at = now
                 if logs_dir:
-
-
                     _log(
                         logs_dir,
-                        f"BD-20: signal detected, granting {grace_seconds}s grace "
-                        f"for subprocess to exit (pid={proc.pid})",
+                        f"BD-20: signal detected, waiting for natural exit "
+                        f"(pid={proc.pid})",
                     )
-
-        # BD-20 redesign: signal detected = "work is logically done".
-        # Do NOT kill on grace — subprocess may still be flushing buffers,
-        # closing connections, writing metadata. Wait for natural exit.
-        # hard_timeout (3600s default) is the only safety net for hung processes.
-        # grace_seconds parameter kept for backward-compat API but ignored.
 
         if now >= deadline:
             if logs_dir:

@@ -1025,7 +1025,6 @@ class TestRunSubprocessUntilSignal:
                 cwd=tmp_path,
                 watch_paths=[stale_signal],
                 logs_dir=None,
-                grace_seconds=0,
                 hard_timeout=1,
             )
             assert False, "Should have raised TimeoutError (stale signal ignored)"

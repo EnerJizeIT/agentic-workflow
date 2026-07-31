@@ -18,7 +18,7 @@
 - **Kind-based pipeline (BD-29).** Stage kind (`plan`/`execute`/`verify`) вычисляется по позиции, а не action-полю. Supervisor всегда первый и последний; между ними — произвольные agent roles.
 - **Произвольные роли.** Пользователь выбирает роли через форму (например `agent-system-analyst`, `agent-weak-llm-implementer`, `agent-qa-review`). Skill content встраивается прямо в `.agentic/roles/<role>.md`.
 - **Interactive supervisor (BD-30).** В интерактивном режиме supervisor = текущий opencode в чате пользователя (не subprocess). awf печатает инструкции и ждёт signal file.
-- **Auto-DONE.** Если agent не успел записать сигнал, но verify-команды прошли и есть work evidence (git diff) — оркестратор синтезирует DONE автоматически.
+- **Auto-DONE.** Если agent не успел записать сигнал, но есть **≥1 verify-команда** в `config.yaml`, все они прошли и есть work evidence (git diff) — оркестратор синтезирует DONE автоматически. Без verify-команд auto-DONE **не срабатывает** (по умолчанию `test_cmd`/`lint_cmd`/`typecheck_cmd`/`build_cmd` пустые).
 - **Auto-commit с isolation (A1).** Коммиты содержат только diff vs baseline — supervisor's mid-flight edits не попадают в agent commit.
 - **Plan progress auto-tracking (BD-33/34).** После verify автоматически отмечается `[x]` в `phases/plan.md` и печатается progress report.
 - **Skill-aware role analysis (BD-31).** `awf analyze-roles` находит дублирования зон ответственности между ролями и добавляет disambiguation patches.
@@ -125,7 +125,7 @@ awf start                           # запусти пайплайн
 | `awf start [опции]` | Запустить пайплайн |
 | `awf start --pipeline <name>` | Конкретный пайплайн |
 | `awf start --from-stage <name>` | Начать с указанной стадии |
-| `awf start --auto` | Supervisor делает subprocess (для CI/тестов) |
+| `awf start --auto` | Supervisor в subprocess (для CI/тестов). При REVIEW-rejection pipeline всё равно останавливается (`return 1`) |
 | `awf start --background` | Фоновый запуск (detached через setsid, лог в `.agentic/logs/`) |
 | `awf continue [опции]` | Продолжить прерванный пайплайн |
 | `awf status` | Текущее состояние воркфлоу |
@@ -177,7 +177,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 657 tests (e2e + unit + plugin)
+├── tests/                         # 692 tests (e2e + unit + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -217,7 +217,7 @@ Worker пишет сигналы в `.agentic/outbox/`. Каноничный ф�
 | `TASK_BLOCKED` | `outbox/BLOCKED-TODO-{NNNN}.md` + `.ready` | Agent (execute) |
 | `TASK_ACK` | `inbox/ACK-TODO-{NNNN}.ready` | Supervisor (verify) |
 | `TASK_PROGRESS` | `outbox/PROGRESS-TODO-{NNNN}.md` (append-only) | Agent |
-| `REVIEW_APPROVED`/`REVIEW_REJECTED` | `outbox/REVIEW-{APPROVED\|REJECTED}-TODO-{NNNN}.md` | Agent |
+| `REVIEW` (rejection) | `outbox/REVIEW-{NNNN}.md` | Supervisor (verify) — отклонение работы, pipeline останавливается |
 | `TEST_PASSED`/`TEST_FAILED` | `outbox/TEST-{PASSED\|FAILED}-TODO-{NNNN}.md` | Agent |
 
 Подробнее: [protocols/communication.md](protocols/communication.md).
@@ -233,8 +233,8 @@ Worker пишет сигналы в `.agentic/outbox/`. Каноничный ф�
 
 Если agent не записал сигнал, но выполнены оба условия:
 
-1. Прошли **verify-команды** из `config.yaml` (`test_cmd`, `build_cmd`, `typecheck_cmd`).
-2. Есть **work evidence** — `git diff` показывает изменения.
+1. Прошли **все настроенные verify-команды** из `config.yaml` (`test_cmd`, `build_cmd`, `typecheck_cmd`, `lint_cmd`). **Должна быть хотя бы одна** — без них auto-DONE не срабатывает (`run_verify_commands` вернёт `False`).
+2. Есть **work evidence** — `git diff` показывает изменения (включая untracked файлы).
 
 Отключается через `automation.auto_done: false` в `config.yaml`.
 
@@ -294,7 +294,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**657 тестов:** e2e + unit (awf) + integration/unit (plugin).
+**692 теста:** e2e + unit (awf) + integration/unit (plugin).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).

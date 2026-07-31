@@ -39,6 +39,16 @@ def _files_changed_since_baseline(
             check=False,
         )
         if result.returncode != 0:
+            # M4 fix: log the underlying git error so user understands
+            # why no files were committed (instead of a silent "no changes"
+            # message that misleads when the baseline SHA is invalid).
+            logs_dir = project_dir / ".agentic" / "logs"
+            if logs_dir.is_dir():
+                _log(
+                    logs_dir,
+                    f"WARNING: git diff vs baseline {baseline_sha!r} failed "
+                    f"(rc={result.returncode}): {result.stderr.strip()}",
+                )
             return []
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
     except (subprocess.SubprocessError, OSError):

@@ -45,37 +45,28 @@ def run(args: Any) -> int:
                 continue
             todo_id = ready_file.stem
 
-            step = "unknown"
-            try:
-                content = ready_file.read_text(encoding="utf-8")
-                for line in content.splitlines():
-                    if "step:" in line:
-                        step = line.split(":", 1)[1].strip()
-                        break
-            except OSError:
-                pass
-
             # H2 fix: support legacy short form (was canonical-only).
             from .signals import find_signal_file
             done = find_signal_file(outbox, "DONE", todo_id, ".ready")
             blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
             if done:
-                print(f"  OK   {todo_id}  {step}")
+                print(f"  OK   {todo_id}")
                 done_count += 1
             elif blocked:
-                print(f"  BLK  {todo_id}  {step}")
+                print(f"  BLK  {todo_id}")
                 blocked_count += 1
             else:
-                print(f"  ...  {todo_id}  {step}  (in progress)")
+                print(f"  ...  {todo_id}  (in progress)")
 
     print()
     print(f"Completed: {done_count} | Blocked: {blocked_count}")
 
-    # Git diff stats
+    # Git diff stats (D2: must run in project_dir, not awf's CWD)
     print()
     print("Files changed:")
     result = subprocess.run(
         ["git", "diff", "--stat"],
+        cwd=project_dir,
         capture_output=True, text=True, check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
