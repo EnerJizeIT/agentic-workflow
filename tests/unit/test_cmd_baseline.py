@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from awf import api, cmd_baseline
+from awf import cmd_baseline
 
 
 class TestBaselineShellSafety:

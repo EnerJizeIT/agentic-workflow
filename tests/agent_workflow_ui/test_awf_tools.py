@@ -383,7 +383,14 @@ class TestToolRegistration:
             assert inspect.iscoroutinefunction(fn), f"{name} must be async"
 
     def test_server_registers_all_11_tools(self):
-        """server.create_server() registers all awf_* tools without error."""
+        """server.create_server() registers all awf_* tools without error.
+
+        Skipped when ``mcp`` package is unavailable (CI runners without
+        opencode-installed deps). The 11 tools themselves are importable
+        (verified by test_all_11_tools_exist_as_callables); this test only
+        verifies FastMCP registration wiring.
+        """
+        pytest.importorskip("mcp.server.fastmcp")
         from agent_workflow_ui.server import create_server
         # FastMCP servers can be created without running them
         # This test verifies imports + registration succeed
