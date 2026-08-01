@@ -219,3 +219,85 @@ class TestLoadSupervisorContext:
         import json
         result = api.load_supervisor_context(awf_project)
         json.dumps(result.as_dict())
+
+
+# ─── _extract_stage_info (dogfood-3 fix) ────────────────────────────────
+
+
+class TestExtractStageInfo:
+    """Dogfood-3 regression: real orchestrator log format is
+    'Stage N/M: <name> (<role> :: <kind>)' — original markers
+    '=== stage:', 'Pipeline stage:', 'Entering stage:' did NOT match.
+    current_stage_name was always None.
+    """
+
+    def _write_log(self, project_dir: Path, lines: list[str]) -> None:
+        logs = project_dir / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "awf-start.out").write_text("\n".join(lines) + "\n")
+
+    def test_parses_real_orchestrator_format(self, awf_project):
+        """Format: '  Stage 2/3: agent-system-analyst (...)'"""
+        from awf.api.context import _extract_stage_info
+
+        self._write_log(awf_project, [
+            "=== Agentic Workflow: Starting Pipeline ===",
+            "Stages: plan agent-system-analyst verify",
+            "  Stage 1/3: plan (supervisor :: plan)",
+            "BD-36: checkpoint decision=approve",
+            "  Stage 2/3: agent-system-analyst (agent-system-analyst :: execute)",
+        ])
+        cur, _nxt, _sig, _ = _extract_stage_info(awf_project)
+        assert cur == "agent-system-analyst"
+
+    def test_extracts_last_signal(self, awf_project):
+        """Last 'BD-30: ... signal detected: TODO-NNNN' → last_signal field."""
+        from awf.api.context import _extract_stage_info
+
+        self._write_log(awf_project, [
+            "  Stage 1/3: plan (supervisor :: plan)",
+            "BD-30: interactive supervisor signal detected: TODO-0001",
+            "  Stage 2/3: agent-system-analyst (... :: execute)",
+        ])
+        _cur, _nxt, sig, _ = _extract_stage_info(awf_project)
+        assert sig == "TODO-0001"
+
+    def test_extracts_done_signal(self, awf_project):
+        from awf.api.context import _extract_stage_info
+
+        self._write_log(awf_project, [
+            "  Stage 2/3: agent-system-analyst (... :: execute)",
+            "Signal received: DONE-TODO-0001.ready",
+        ])
+        _cur, _nxt, sig, _ = _extract_stage_info(awf_project)
+        assert sig == "DONE-TODO-0001"
+
+    def test_extracts_blocked_signal(self, awf_project):
+        from awf.api.context import _extract_stage_info
+
+        self._write_log(awf_project, [
+            "  Stage 2/3: agent-system-analyst (... :: execute)",
+            "BLOCKED signal detected: BLOCKED-TODO-0001.ready",
+        ])
+        _cur, _nxt, sig, _ = _extract_stage_info(awf_project)
+        assert sig == "BLOCKED-TODO-0001"
+
+    def test_no_log_returns_none(self, awf_project):
+        """No log file → all None, no crash."""
+        from awf.api.context import _extract_stage_info
+
+        cur, nxt, sig, log_tail = _extract_stage_info(awf_project)
+        assert cur is None
+        assert sig is None
+        assert log_tail is None
+
+    def test_log_tail_returned(self, awf_project):
+        """log_tail field populated (last 30 lines)."""
+        from awf.api.context import _extract_stage_info
+
+        lines = [f"line {i}" for i in range(50)]
+        self._write_log(awf_project, lines)
+        _cur, _nxt, _sig, log_tail = _extract_stage_info(awf_project)
+        assert log_tail is not None
+        assert "line 49" in log_tail
+        assert "line 10" not in log_tail  # truncated

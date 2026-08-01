@@ -40,23 +40,40 @@ def _extract_stage_info(
             if lines:
                 log_tail_text = "\n".join(lines[-30:])
 
-            # Scan log for stage transitions
+            # Scan log for stage transitions. Format (from orchestrator.py:361):
+            #   "  Stage 1/3: agent-system-analyst (agent-system-analyst :: execute)"
+            # Also accept older markers for forward-compat.
+            import re
+
+            stage_pattern = re.compile(
+                r"Stage\s+\d+/\d+:\s+(\S+)"
+            )
             for line in lines:
-                if "stage:" in line.lower() or "=== stage" in line.lower():
-                    # Format: "=== stage: agent-system-analyst ==="
-                    # or "Pipeline stage: plan"
-                    for marker in ("=== stage:", "Pipeline stage:", "Entering stage:"):
-                        if marker in line:
-                            idx = line.find(marker) + len(marker)
-                            rest = line[idx:].strip().strip("=").strip()
-                            current_stage = rest.split()[0] if rest else None
+                # Preferred: "Stage N/M: <name>" → capture name
+                m = stage_pattern.search(line)
+                if m:
+                    current_stage = m.group(1)
+                    continue
+                # Legacy / alternative markers
+                for marker in ("=== stage:", "Pipeline stage:", "Entering stage:"):
+                    if marker in line:
+                        idx = line.find(marker) + len(marker)
+                        rest = line[idx:].strip().strip("=").strip()
+                        if rest:
+                            current_stage = rest.split()[0]
                             break
-                if "signal detected" in line.lower() or "signal:" in line.lower():
-                    # Format: "BD-30: interactive supervisor signal detected: TODO-0001"
+                # Match signals: "signal detected", "Signal received:", "signal:"
+                # Case-insensitive to handle different log styles.
+                line_lower = line.lower()
+                if "signal detected" in line_lower or "signal received" in line_lower or "signal:" in line_lower:
                     for sig_marker in ("DONE-", "BLOCKED-", "REVIEW-", "TODO-", "ACK-"):
                         if sig_marker in line:
                             idx = line.rfind(sig_marker)
                             rest = line[idx:].split()[0].rstrip(":.,")
+                            # Strip common file extensions
+                            for ext in (".ready", ".md", ".yaml"):
+                                if rest.endswith(ext):
+                                    rest = rest[: -len(ext)]
                             last_signal = rest
                             break
         except OSError:

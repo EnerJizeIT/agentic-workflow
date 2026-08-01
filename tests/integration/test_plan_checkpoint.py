@@ -536,8 +536,18 @@ class TestCheckpointGateDispatch:
         )
         assert rc == 0
 
-    def test_timeout_returns_zero(self, tmp_path, monkeypatch):
-        """Timeout → gate returns 0 (auto-approve)."""
+    def test_timeout_aborts_pipeline_dogfood3(self, tmp_path, monkeypatch):
+        """Dogfood-3 regression: timeout must NOT auto-approve — abort pipeline.
+
+        Old behavior: 'timeout' → return 0 (auto-approve, pipeline continues).
+        Bug surfaced in ses_0423e4b1fffeLB7kYRCaKICWXa: user opened the form
+        but didn't confirm immediately. Timeout fired → pipeline continued
+        without explicit user approval. Supervisor misread log as
+        'auto-decision approve' (technically correct, semantically wrong).
+
+        Fix: timeout → return 1 (abort). User must re-run awf_start after
+        explicit review.
+        """
         from awf.orchestrator import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
@@ -556,7 +566,15 @@ class TestCheckpointGateDispatch:
             auto=False,
             logs_dir=project / ".agentic" / "logs",
         )
-        assert rc == 0
+        # Abort: rc=1 (was 0 — auto-approve — before fix)
+        assert rc == 1, (
+            "Dogfood-3: timeout must abort pipeline, not auto-approve. "
+            "User must explicitly approve or re-run awf_start."
+        )
+
+        # Log records the abort
+        log_text = (project / ".agentic" / "logs" / "orchestrator.log").read_text()
+        assert "pipeline aborted" in log_text or "timed out" in log_text
 
     def test_env_override_disables_gate(self, tmp_path, monkeypatch):
         """AWF_PLAN_CHECKPOINT=false disables gate even when auto=False."""

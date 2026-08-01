@@ -271,9 +271,16 @@ def _run_plan_checkpoint_gate(
 
     if decision == "timeout":
         print(
-            "BD-36: Plan checkpoint timed out — auto-approving.",
+            "BD-36: Plan checkpoint timed out — NO auto-approve. "
+            "Pipeline stopped. Re-run 'awf start' when ready to review.",
             file=sys.stderr,
         )
+        _log(
+            logs_dir,
+            f"BD-36: checkpoint timed out for {current_todo} — pipeline aborted "
+            "(user must re-run awf_start after manual review)",
+        )
+        return 1
 
     # "approve" or "edit" → continue normally
     _log(logs_dir, f"BD-36: checkpoint decision={decision}")
