@@ -111,6 +111,36 @@ items = response.data.get("items", [])
 
 ## 4. Workflow
 
+### Step 0 · Decide: configure project or run pipeline?
+
+Before any other step, check whether the project already has a pipeline
+configured (`.agentic/pipelines/default.yaml` with non-supervisor stages
+that match the project's needs):
+
+- **Pipeline configured** → jump to Step 1.
+- **Pipeline NOT configured** → open the `project-setup` form via MCP tool
+  `open_form(template="project-setup", project_dir=..., data={...})`.
+
+**DO NOT pre-configure the pipeline yourself** (dogfood-4 lesson):
+
+When pipeline is not configured, your job is to OPEN THE FORM, not to
+propose pipeline stages in chat. Specifically:
+- DO NOT write a "recommended pipeline" table in chat (e.g. "Stage 1:
+  system-analyst, Stage 2: developer, ...") before the form.
+- DO NOT ask the user to confirm your proposed roles/models — the form
+  exists for them to choose, including options you wouldn't suggest.
+- DO NOT call `awf_dispatch_todo` before the form is submitted — pipeline
+  must exist first.
+
+The form (`project-setup.html.j2`) shows all available roles, models,
+skills, supervisor variants. User picks what fits — your pre-proposal
+biases them toward your framing. You may study the project (vision,
+requirements, spike) to populate form data correctly, but the choice
+of pipeline + team belongs to the user through the form, not you.
+
+Self-check: if you're about to type "Stage N: <role>" in chat without
+an open form, stop. Open the form instead.
+
 ### Step 1 · Determine current state
 
 Before each iteration check:
