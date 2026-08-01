@@ -165,225 +165,39 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
         if _copy_existing_role_to_project(agent_id, project_dir=project_dir):
             saved += 1
 
-    # BD-9: write pipeline.yaml from team order
-    if team and project_dir:
-        from .pipelines_writer import write_pipeline
-
-        written = write_pipeline(team, project_dir)
-        if written:
-            log.info("Pipeline written to %s", written)
-
-        # BD-12: also patch config.yaml so each role maps to a working agent.
-        # Without this, awf tries `opencode run --agent <role>` which fails
-        # because only `worker` exists in opencode.json (other roles are
-        # skill.md instructions, not real agents).
-        update_config_role_mapping(team, project_dir)
-
-    # UI-2/UI-3: save context_message and supervisor_instruction to
-    # config.yaml + append to supervisor.md. Without this, user's context
-    # and instructions from the form were silently dropped.
+    # BD-9 + BD-12 + UI-2/UI-3: delegate materialization to awf.api
+    # (audit T3 fix: plugin no longer duplicates awf schema knowledge).
+    # Plugin's job here is custom-role CRUD (UI persistence) + copying
+    # global roles to project .agentic/roles/. Materializing pipeline.yaml,
+    # config.yaml role mapping, and supervisor.md patches belongs to awf.
+    #
+    # apply_project_setup is called even when team is empty — context_message
+    # and supervisor_instructions can be submitted standalone (re-configure
+    # existing project without changing team).
     if project_dir:
-        _save_context_and_instructions(data, project_dir)
+        from awf.api import apply_project_setup
+
+        context_msg = str(data.get("context_message", "")).strip()
+        sup_instr = str(data.get("supervisor_instruction", "")).strip()
+        # Skip only when there's truly nothing to materialize
+        if team or context_msg or sup_instr:
+            try:
+                result = apply_project_setup(
+                    project_dir,
+                    team=team,
+                    context_message=context_msg,
+                    supervisor_instructions=sup_instr,
+                )
+                if result.pipeline_file:
+                    log.info("Pipeline written to %s", result.pipeline_file)
+                for w in result.warnings:
+                    log.warning("apply_project_setup: %s", w)
+            except Exception as e:
+                log.error("apply_project_setup failed: %s", e)
 
     return saved
 
 
-def _save_context_and_instructions(data: dict[str, Any], project_dir: Path) -> None:
-    """UI-2/UI-3: save context_message + supervisor_instruction.
-
-    Persists to:
-    1. config.yaml — machine-readable (context.message, supervisor.instructions)
-    2. supervisor.md — appended as sections (supervisor LLM sees them via --file)
-
-    Both fields are OPTIONAL — if empty, no changes made.
-    """
-    import yaml as _yaml
-
-    context_msg = str(data.get("context_message", "")).strip()
-    sup_instr = str(data.get("supervisor_instruction", "")).strip()
-
-    if not context_msg and not sup_instr:
-        return
-
-    # 1. Update config.yaml
-    config_path = project_dir / ".agentic" / "config.yaml"
-    if config_path.exists():
-        try:
-            config = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except (_yaml.YAMLError, OSError):
-            config = {}
-    else:
-        config = {}
-
-    if not isinstance(config, dict):
-        config = {}
-
-    changed = False
-    if context_msg:
-        ctx_section = config.setdefault("context", {})
-        if not isinstance(ctx_section, dict):
-            ctx_section = {}
-            config["context"] = ctx_section
-        ctx_section["message"] = context_msg
-        changed = True
-        log.info("UI-2: saved context.message to config.yaml (%d chars)", len(context_msg))
-
-    if sup_instr:
-        sup_section = config.setdefault("supervisor", {})
-        if not isinstance(sup_section, dict):
-            sup_section = {}
-            config["supervisor"] = sup_section
-        sup_section["instructions"] = sup_instr
-        changed = True
-        log.info("UI-3: saved supervisor.instructions to config.yaml (%d chars)", len(sup_instr))
-
-    if changed:
-        from .state import _atomic_write_text
-        _atomic_write_text(config_path, _yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
-
-    # 2. Append to supervisor.md
-    supervisor_md = project_dir / ".agentic" / "roles" / "supervisor.md"
-    if not supervisor_md.exists():
-        log.warning("UI-2/UI-3: supervisor.md not found at %s — skipping append", supervisor_md)
-        return
-
-    try:
-        current = supervisor_md.read_text(encoding="utf-8")
-    except OSError as e:
-        log.error("UI-2/UI-3: failed to read supervisor.md: %s", e)
-        return
-
-    # Remove existing UI-2/UI-3 sections (idempotent — re-submit replaces)
-    import re
-    current = re.sub(
-        r"\n*## Project context \(from user, UI-2\).*?(?=\n## |\Z)",
-        "",
-        current,
-        flags=re.DOTALL,
-    ).rstrip()
-    current = re.sub(
-        r"\n*## Additional supervisor instructions \(from user, UI-3\).*?(?=\n## |\Z)",
-        "",
-        current,
-        flags=re.DOTALL,
-    ).rstrip()
-
-    sections_to_add: list[str] = []
-    if context_msg:
-        sections_to_add.append(
-            f"\n\n## Project context (from user, UI-2)\n\n{context_msg}\n"
-        )
-    if sup_instr:
-        sections_to_add.append(
-            f"\n\n## Additional supervisor instructions (from user, UI-3)\n\n{sup_instr}\n"
-        )
-
-    if sections_to_add:
-        new_content = current + "".join(sections_to_add) + "\n"
-        from .state import _atomic_write_text
-        _atomic_write_text(supervisor_md, new_content)
-        log.info("UI-2/UI-3: appended %d section(s) to supervisor.md", len(sections_to_add))
-
-
-# Default agent that loads role .md as instruction. All non-supervisor
-# roles run through this — opencode.json only has `worker` (plus
-# optionally `reviewer`, `tester` defined per-project).
-_DEFAULT_AGENT_FOR_ROLE = "worker"
-
-# Roles that already have an agent_name in config.yaml or are special
-# (supervisor = current session, not a subprocess).
-_SKIP_ROLE_MAPPING = {"supervisor"}
-
-
-def update_config_role_mapping(team: list[dict[str, Any]], project_dir: Path) -> Path | None:
-    """BD-12: ensure each team role has models.<role>.agent_name in config.yaml.
-
-    For each role in team that is not supervisor and has no agent_name,
-    set ``agent_name: "worker"`` (the default agent that loads role .md
-    as instruction). Existing agent_name values are preserved. Also
-    preserves any sibling keys (model, temperature, description).
-
-    Args:
-        team: list of team member dicts with ``role`` key.
-        project_dir: awf project root (must contain .agentic/config.yaml).
-
-    Returns:
-        Path to written config.yaml, or None if nothing to do.
-    """
-    import yaml
-
-    config_path = project_dir / ".agentic" / "config.yaml"
-    if not config_path.is_file():
-        log.warning("BD-12: no config.yaml at %s — skip role mapping", config_path)
-        return None
-
-    try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as e:
-        log.error("BD-12: config.yaml parse error: %s", e)
-        return None
-    if not isinstance(config, dict):
-        log.error("BD-12: config.yaml root is not a mapping — skip")
-        return None
-
-    models = config.setdefault("models", {})
-    if not isinstance(models, dict):
-        log.error("BD-12: config.yaml 'models' is not a mapping — skip")
-        return None
-
-    changed = False
-    for member in team:
-        if not isinstance(member, dict):
-            continue
-        role = str(member.get("role") or member.get("agent") or "").strip()
-        if not role or role in _SKIP_ROLE_MAPPING:
-            continue
-        entry = models.get(role)
-        if not isinstance(entry, dict):
-            entry = {}
-            models[role] = entry
-        if not entry.get("agent_name"):
-            entry["agent_name"] = _DEFAULT_AGENT_FOR_ROLE
-            changed = True
-            log.info("BD-12: mapped role %r -> agent_name=%s", role, _DEFAULT_AGENT_FOR_ROLE)
-        # BD-32: preserve model selection from form (was being dropped).
-        # Without this, project-auditor's chosen model never reached
-        # config.yaml, and orchestrator's _get_role_model() returned None.
-        # Three cases:
-        # - member["model"] missing (key absent)  → leave existing model
-        # - member["model"] = "" (user cleared)   → delete existing model
-        # - member["model"] = "x" (user picked)   → set/replace model
-        if "model" in member:
-            member_model = str(member.get("model") or "").strip()
-            if member_model:
-                if entry.get("model") != member_model:
-                    entry["model"] = member_model
-                    changed = True
-                    log.info("BD-32: role %r -> model=%s", role, member_model)
-            elif "model" in entry:
-                # Form explicitly cleared model — drop from config too
-                del entry["model"]
-                changed = True
-                log.info("BD-32: role %r -> model cleared", role)
-
-    if not changed:
-        return None
-
-    # Backup then atomic write.
-    backup = config_path.with_suffix(".yaml.bak")
-    try:
-        backup.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
-    except OSError as e:
-        log.warning("BD-12: backup failed: %s", e)
-
-    from .state import _atomic_write_text
-
-    _atomic_write_text(
-        config_path,
-        yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
-    )
-    log.info("BD-12: config.yaml updated with role mappings")
-    return config_path
 
 
 def process_role_deletions(data: dict[str, Any], project_dir: Path | None = None) -> int:

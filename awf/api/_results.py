@@ -155,6 +155,19 @@ class AnalyzeRolesResult:
         return asdict(self)
 
 
+@dataclass
+class ApplyProjectSetupResult:
+    """Result of :func:`awf.api.apply_project_setup`."""
+
+    pipeline_file: str | None
+    config_updated: bool
+    supervisor_md_updated: bool
+    warnings: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 __all__ = [
     "InitResult",
     "StatusResult",
@@ -166,4 +179,5 @@ __all__ = [
     "AddRoleResult",
     "StartResult",
     "AnalyzeRolesResult",
+    "ApplyProjectSetupResult",
 ]

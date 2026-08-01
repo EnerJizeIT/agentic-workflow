@@ -28,6 +28,7 @@ from ._errors import AwfApiError
 from ._results import (
     AddRoleResult,
     AnalyzeRolesResult,
+    ApplyProjectSetupResult,
     ApproveResult,
     BaselineResult,
     InitResult,
@@ -56,6 +57,7 @@ from .pipeline import (
     start_pipeline,
 )
 from .roles import add_role, analyze_roles
+from .setup import apply_project_setup
 
 __all__ = [
     # Exception
@@ -71,6 +73,7 @@ __all__ = [
     "AddRoleResult",
     "StartResult",
     "AnalyzeRolesResult",
+    "ApplyProjectSetupResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -90,4 +93,6 @@ __all__ = [
     # Roles
     "add_role",
     "analyze_roles",
+    # Project-setup materialization
+    "apply_project_setup",
 ]
