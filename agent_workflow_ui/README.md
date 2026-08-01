@@ -37,7 +37,7 @@ For manual testing:
 python -m agent_workflow_ui
 ```
 
-## Tools (16 total: 5 UI + 11 awf)
+## Tools (18 total: 5 UI + 13 awf)
 
 ### UI tools (form lifecycle)
 
@@ -54,7 +54,7 @@ python -m agent_workflow_ui
 | Tool | Description |
 |---|---|
 | `awf_init` | Create `.agentic/` + assume supervisor role (auto-detects stack) |
-| `awf_status` | Current pipeline state + active TODOs + `pipeline_running` flag |
+| `awf_status` | Current pipeline state + active TODOs + `pipeline_running` + stage visibility |
 | `awf_start` | Launch pipeline (background by default, returns PID) |
 | `awf_continue` | Resume interrupted pipeline |
 | `awf_baseline` | Create git HEAD + tests + env snapshot |
@@ -64,6 +64,8 @@ python -m agent_workflow_ui
 | `awf_reset` | Clear runtime data (tasks_only/full/orphans) |
 | `awf_add_role` | Generate role template at `.agentic/roles/{name}.md` |
 | `awf_analyze_roles` | Detect role overlaps, write disambiguation patches |
+| `awf_dispatch_todo` | **Atomic TODO + baseline + signal** (1 call = ready to run) |
+| `awf_load_supervisor_context` | **One-shot aggregate** (vision + plan + roles + status) |
 
 See [architecture.md](../vision/architecture.md) §6 for full reference and
 [README.md](../README.md) §"MCP-MIGRATION" for the architectural rationale.

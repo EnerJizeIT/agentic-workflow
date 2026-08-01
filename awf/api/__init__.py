@@ -31,16 +31,20 @@ from ._results import (
     ApplyProjectSetupResult,
     ApproveResult,
     BaselineResult,
+    DispatchTodoResult,
     InitResult,
     ReportResult,
     ResetResult,
     RollbackResult,
     StartResult,
     StatusResult,
+    SupervisorContextResult,
 )
 
 # Public functions — organized by submodule for clarity
 from ._stack import derive_project_name, detect_stack
+from .context import load_supervisor_context
+from .dispatch import dispatch_todo
 from .lifecycle import (
     get_report,
     get_status,
@@ -74,6 +78,8 @@ __all__ = [
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
+    "DispatchTodoResult",
+    "SupervisorContextResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -95,4 +101,7 @@ __all__ = [
     "analyze_roles",
     # Project-setup materialization
     "apply_project_setup",
+    # TODO dispatch + supervisor context (dogfood-2 automation)
+    "dispatch_todo",
+    "load_supervisor_context",
 ]

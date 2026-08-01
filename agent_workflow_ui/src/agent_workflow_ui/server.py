@@ -41,5 +41,8 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_reset, name="awf_reset")
     mcp.add_tool(awf.awf_add_role, name="awf_add_role")
     mcp.add_tool(awf.awf_analyze_roles, name="awf_analyze_roles")
+    # Dogfood-2 automation: dispatch + context
+    mcp.add_tool(awf.awf_dispatch_todo, name="awf_dispatch_todo")
+    mcp.add_tool(awf.awf_load_supervisor_context, name="awf_load_supervisor_context")
 
     return mcp

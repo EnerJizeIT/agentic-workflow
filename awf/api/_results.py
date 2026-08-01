@@ -44,6 +44,10 @@ class StatusResult:
     pipeline_running: bool = False
     pipeline_pid: int | None = None
     log_tail: str | None = None
+    # Dogfood-2: pipeline stage visibility (extracted from log + pipeline.yaml)
+    current_stage_name: str | None = None
+    next_stage_role: str | None = None
+    last_signal: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -168,6 +172,50 @@ class ApplyProjectSetupResult:
         return asdict(self)
 
 
+@dataclass
+class DispatchTodoResult:
+    """Result of :func:`awf.api.dispatch_todo`."""
+
+    todo_id: str
+    baseline_sha: str
+    role_hint: str | None
+    files_written: list[str]
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SupervisorContextResult:
+    """Result of :func:`awf.api.load_supervisor_context`.
+
+    Aggregate payload for one-shot supervisor bootstrap: everything needed
+    to act as supervisor in a single MCP response.
+    """
+
+    project_name: str
+    project_dir: str
+    vision_path: str | None
+    vision_excerpt: str
+    plan_md: str
+    supervisor_md: str
+    active_todos: list[dict[str, Any]]
+    done_count: int
+    blocked_count: int
+    pipeline_running: bool
+    pipeline_pid: int | None
+    log_tail: str | None
+    next_stage_role: str | None
+    next_role_prohibitions: str | None
+    current_stage_name: str | None
+    last_signal: str | None
+    git_diff_stat: str
+    warnings: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 __all__ = [
     "InitResult",
     "StatusResult",
@@ -180,4 +228,6 @@ __all__ = [
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
+    "DispatchTodoResult",
+    "SupervisorContextResult",
 ]

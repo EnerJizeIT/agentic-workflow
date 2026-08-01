@@ -397,14 +397,96 @@ async def awf_analyze_roles(
         dry_run: If True, return analysis without writing patches.
 
     Returns:
-        Dict with: overlaps (list of {description}), patches_applied
-        (list of {role_file, preview}), dry_run (bool).
+        Dict with: overlaps (list of {role_a, role_b, zone}),
+        patches_applied (list of {role, preview}), dry_run (bool).
     """
     try:
         result = api.analyze_roles(
             _resolve_project_dir(project_dir),
             dry_run=dry_run,
         )
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+
+
+# ─── Dogfood-2 automation: dispatch + context ────────────────────────────
+
+
+async def awf_dispatch_todo(
+    content: str,
+    project_dir: str | None = None,
+    *,
+    role: str | None = None,
+    todo_id: str | None = None,
+) -> dict[str, Any]:
+    """Atomically create a TODO, baseline it, dispatch the signal.
+
+    Replaces the manual 3-step workflow (write md → awf_baseline → touch
+    .ready). One call = TODO ready to be picked up by next pipeline run.
+
+    Auto-picks next NNNN by scanning inbox + outbox (avoids collisions
+    with already-completed TODOs). Creates BASELINE-NNNN.{sha,status,
+    tests.log,env.log} snapshot. Writes TODO-NNNN.ready signal.
+
+    Args:
+        content: TODO markdown body (the task description, Mode A/B/C
+            per supervisor.md).
+        project_dir: Project root (default: cwd).
+        role: Optional role hint for debugging. Stored as HTML comment
+            in TODO .md. Does NOT affect pipeline routing (that's
+            determined by stage order in pipeline.yaml).
+        todo_id: Override auto-generated id (e.g. "TODO-0007"). Must
+            match pattern TODO-NNNN.
+
+    Returns:
+        Dict with: todo_id, baseline_sha, role_hint, files_written (list
+        of paths created).
+    """
+    try:
+        result = api.dispatch_todo(
+            _resolve_project_dir(project_dir),
+            content,
+            role=role,
+            todo_id=todo_id,
+        )
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+
+
+async def awf_load_supervisor_context(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate everything a supervisor needs in one call.
+
+    Replaces 5-6 separate tool calls at session start or before writing
+    the next TODO. Returns in one payload:
+
+    - vision_excerpt (first 4000 chars of vision/README)
+    - plan_md content
+    - supervisor_md content (role instruction)
+    - active_todos + progress
+    - done/blocked counts
+    - pipeline_running + pid + log_tail
+    - current_stage_name (extracted from log)
+    - next_stage_role + its prohibitions excerpt (from pipeline.yaml)
+    - last_signal (DONE/BLOCKED/REVIEW from log)
+    - git_diff_stat
+
+    Use cases:
+    - Start of new supervisor session
+    - After long pause (rebuild mental model)
+    - Before writing next TODO (full context)
+
+    Args:
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with all fields of SupervisorContextResult.
+    """
+    try:
+        result = api.load_supervisor_context(_resolve_project_dir(project_dir))
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)

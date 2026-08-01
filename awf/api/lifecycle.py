@@ -278,6 +278,17 @@ def get_status(project_dir: Path) -> StatusResult:
 
     pipeline_running, pipeline_pid, log_tail = check_pipeline_running(project_dir)
 
+    # Dogfood-2: stage visibility (only when pipeline running — small overhead)
+    current_stage_name: str | None = None
+    next_stage_role: str | None = None
+    last_signal: str | None = None
+    if pipeline_running:
+        from .context import _extract_stage_info
+
+        current_stage_name, next_stage_role, last_signal, _log_tail_alt = _extract_stage_info(project_dir)
+        # Prefer pipeline detector's log_tail (more recent) over extract's
+        log_tail = log_tail or _log_tail_alt
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -289,6 +300,9 @@ def get_status(project_dir: Path) -> StatusResult:
         pipeline_running=pipeline_running,
         pipeline_pid=pipeline_pid,
         log_tail=log_tail,
+        current_stage_name=current_stage_name,
+        next_stage_role=next_stage_role,
+        last_signal=last_signal,
     )
 
 
