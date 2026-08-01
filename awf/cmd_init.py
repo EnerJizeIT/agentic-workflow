@@ -26,20 +26,41 @@ def run(args: Any) -> int:
     """
     force = getattr(args, "force", False)
     dry_run = getattr(args, "dry_run", False)
+    non_interactive = getattr(args, "non_interactive", False)
+    project_dir_arg = getattr(args, "project_dir", ".")
 
-    agentic = Path(".agentic")
+    project_dir_path = Path(project_dir_arg).resolve()
+    agentic = project_dir_path / ".agentic"
     if agentic.exists() and not force:
         print("ERROR: .agentic/ already exists. Use --force to overwrite.")
         return 1
 
-    if not git_utils.is_git_repo("."):
+    if not git_utils.is_git_repo(project_dir_path):
         print("ERROR: Not a git repository. Run 'git init' first.")
         return 1
+
+    # MCP-6: --non-interactive skips all prompts, delegates fully to api.
+    if non_interactive:
+        try:
+            result = api.init_project(project_dir_path, force=force, dry_run=dry_run)
+        except api.AwfApiError as e:
+            print(f"ERROR: {e}")
+            return 1
+        if dry_run:
+            print("[DRY RUN] Would create .agentic/ skeleton")
+            return 0
+        print(f"Created .agentic/ skeleton for: {result.project_name}")
+        print(f"  Stack: {result.stack}")
+        print(f"  Vision: {result.vision_path or '(not found)'}")
+        print()
+        print("Next: open project-setup form (MCP tool open_form) to pick roles.")
+        return 0
 
     print("=== Agentic Workflow Init ===")
     print()
 
     # Interactive prompts — order MUST match lib/init.sh for E2E compatibility
+    # Use project_dir_path instead of cwd for git checks (MCP-6 compat).
     project_name = input("Project name: ").strip()
     print("(Verify commands below are load-bearing: when set, awf auto-confirms completed")
     print(" work whose verify passes — no manual salvage. Leave blank only if none apply.)")
@@ -64,7 +85,7 @@ def run(args: Any) -> int:
     # Delegate skeleton creation to api.init_project
     try:
         result = api.init_project(
-            project_dir=Path("."),
+            project_dir=project_dir_path,
             force=force,
             project_name=project_name,
             test_cmd=test_cmd,

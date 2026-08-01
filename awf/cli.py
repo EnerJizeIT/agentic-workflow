@@ -117,8 +117,17 @@ def _dispatch_subcommand(argv):
     # New commands (Wave 4c)
     p_init = sub.add_parser("init", help="Initialize .agentic/ skeleton in current project")
     # BD-28: --template removed — UI form (project-setup) configures pipeline + roles.
+    # MCP-6: --non-interactive — fully deterministic (stack-detect + name-from-dir).
+    #        Interactive prompts remain default for human CLI use; agents use MCP tools.
     p_init.add_argument("--force", action="store_true")
     p_init.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p_init.add_argument(
+        "--non-interactive",
+        dest="non_interactive",
+        action="store_true",
+        help="Skip all prompts; auto-detect stack + derive project name from dir.",
+    )
+    p_init.add_argument("--project-dir", default=".", help="Project root (default: cwd)")
 
     p_reset = sub.add_parser("reset", help="Clean runtime data")
     p_reset.add_argument("--tasks-only", dest="tasks_only", action="store_true")
