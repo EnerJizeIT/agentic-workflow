@@ -40,7 +40,7 @@ def initialized_project(git_project):
 
 def run(coro):
     """Run an async coroutine synchronously (test helper)."""
-    return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
+    return asyncio.run(coro)
 
 
 # ─── awf_init ───────────────────────────────────────────────────────────
@@ -223,6 +223,18 @@ class TestAwfApprove:
         ))
         assert result["status"] == "error"
 
+    def test_missing_agentic_returns_error(self, tmp_path):
+        """Audit fix: approve requires .agentic/ (was: created inbox on demand).
+        Consistency with create_baseline, add_role, get_status, etc."""
+        proj = tmp_path / "bare"
+        proj.mkdir()
+        result = run(awf.awf_approve(
+            todo_id="TODO-0001",
+            project_dir=str(proj),
+        ))
+        assert result["status"] == "error"
+        assert "No .agentic/" in result["error"]
+
 
 # ─── awf_report ─────────────────────────────────────────────────────────
 
@@ -345,6 +357,26 @@ class TestAwfStart:
         if result["status"] == "ok":
             assert result["run_mode"] == "background"
             assert result["run_id"] is not None or result["exit_code"] is not None
+
+    def test_foreground_orchestrator_crash_returns_error_not_crash(self, initialized_project, monkeypatch):
+        """Foreground mode catches orchestrator exceptions and returns
+        {status: "ok", exit_code: 1, message: "crashed..."} instead of crashing."""
+        import awf.orchestrator as orch_mod
+
+        def crashing(args):
+            raise KeyError("simulated crash")
+
+        monkeypatch.setattr(orch_mod, "run_pipeline", crashing)
+
+        result = run(awf.awf_start(
+            project_dir=str(initialized_project),
+            background=False,
+        ))
+        # MCP tool catches AwfApiError; but api.start_pipeline now catches
+        # orchestrator exceptions internally and returns StartResult with exit_code=1.
+        assert result["status"] == "ok"
+        assert result["exit_code"] == 1
+        assert "crashed" in result["message"]
 
     def test_missing_agentic(self, tmp_path):
         proj = tmp_path / "nothing"

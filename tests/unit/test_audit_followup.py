@@ -111,71 +111,13 @@ class TestM1RollbackEmptyCheck:
 # ── H6: --project-dir= form in background ────────────────────────────────────
 
 
-class TestH6ProjectDirEqualsForm:
-    """H6 fix: --project-dir=/path form was duplicated in background mode."""
-
-    def test_equals_form_not_duplicated(self, tmp_path, monkeypatch):
-        """--project-dir=/path in argv should NOT cause second --project-dir add."""
-        from awf import cmd_start
-
-        captured: dict = {}
-
-        class _FakeProc:
-            def __init__(self, args_list, **kwargs):
-                captured["argv"] = args_list
-                self.pid = 1
-
-        from types import SimpleNamespace
-        args = SimpleNamespace(
-            command="start", project_dir=str(tmp_path),
-            background=True, auto=False, pipeline="default",
-            from_stage=None, timeout=3600,
-        )
-        monkeypatch.setattr(cmd_start.sys, "argv",
-                            ["awf", "start", "--background", f"--project-dir={tmp_path}"])
-        monkeypatch.setattr(cmd_start.subprocess, "Popen", _FakeProc)
-
-        cmd_start._run_in_background(args)
-
-        child_argv = captured["argv"]
-        # Count --project-dir occurrences (either form)
-        project_dir_count = sum(
-            1 for a in child_argv
-            if a == "--project-dir" or a.startswith("--project-dir=")
-        )
-        assert project_dir_count == 1, (
-            f"H6: expected exactly 1 --project-dir, got {project_dir_count} in {child_argv}"
-        )
-
-    def test_space_form_not_duplicated(self, tmp_path, monkeypatch):
-        """--project-dir /path (space-separated) also not duplicated."""
-        from awf import cmd_start
-
-        captured: dict = {}
-
-        class _FakeProc:
-            def __init__(self, args_list, **kwargs):
-                captured["argv"] = args_list
-                self.pid = 1
-
-        from types import SimpleNamespace
-        args = SimpleNamespace(
-            command="start", project_dir=str(tmp_path),
-            background=True, auto=False, pipeline="default",
-            from_stage=None, timeout=3600,
-        )
-        monkeypatch.setattr(cmd_start.sys, "argv",
-                            ["awf", "start", "--background", "--project-dir", str(tmp_path)])
-        monkeypatch.setattr(cmd_start.subprocess, "Popen", _FakeProc)
-
-        cmd_start._run_in_background(args)
-
-        child_argv = captured["argv"]
-        project_dir_count = sum(
-            1 for a in child_argv
-            if a == "--project-dir" or a.startswith("--project-dir=")
-        )
-        assert project_dir_count == 1
+# ── H6: --project-dir handling ──────────────────────────────────────────────
+# Originally tested argv reconstruction in cmd_start._run_in_background.
+# After MCP-MIGRATION unification: background path lives in
+# api._start_in_background (builds argv from scratch, no parsing) —
+# duplication is structurally impossible. Behavior covered by:
+#   tests/integration/test_awf_integration.py::TestBackgroundStart
+#   tests/unit/test_cmd_start.py (BD-30 invariants)
 
 
 # ── H7: SIGTERM returns real returncode ───────────────────────────────────────

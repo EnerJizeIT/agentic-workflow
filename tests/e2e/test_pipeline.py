@@ -70,10 +70,12 @@ class TestPipeline:
 
         # Configure verification to always pass — attempt_auto_done checks
         # typecheck_cmd, build_cmd, and test_cmd; all non-empty ones must pass.
+        # Quote-style-agnostic regex: handles both " and ' (MCP-audit fix
+        # changed CONFIG_TEMPLATE to single quotes for YAML safety).
         cfg = (initialized_project / ".agentic/config.yaml").read_text()
-        cfg = re.sub(r'typecheck_cmd:\s*"[^"]*"', 'typecheck_cmd: "true"', cfg)
-        cfg = re.sub(r'test_cmd:\s*"[^"]*"', 'test_cmd: "true"', cfg)
-        cfg = re.sub(r'lint_cmd:\s*"[^"]*"', 'lint_cmd: ""', cfg)
+        cfg = re.sub(r'typecheck_cmd:\s*["\'][^"\']*["\']', 'typecheck_cmd: "true"', cfg)
+        cfg = re.sub(r'test_cmd:\s*["\'][^"\']*["\']', 'test_cmd: "true"', cfg)
+        cfg = re.sub(r'lint_cmd:\s*["\'][^"\']*["\']', 'lint_cmd: ""', cfg)
         (initialized_project / ".agentic/config.yaml").write_text(cfg)
 
         awf_env["AWF_TEST_OPENCODE_BEHAVIOR"] = "auto_done"

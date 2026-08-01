@@ -141,7 +141,7 @@ def _offer_opencode_agent_setup(worker_model: str) -> None:
         print()
         print(f"Proposed change to {oc_cfg}:")
         print(detail)
-        print("  (a timestamped backup ${cfg}.bak-<ts> will be created before writing)")
+        print(f"  (a timestamped backup {oc_cfg.name}.bak-<ts> will be created before writing)")
         ans = input("Apply this change to opencode config? [Y/n] ").strip().lower()
         if ans and ans not in ("y", "yes"):
             print("Skipping agent creation (create them manually if needed).")

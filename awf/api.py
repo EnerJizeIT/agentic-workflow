@@ -318,12 +318,16 @@ def _read_file_text(path: Path, max_chars: int | None = None) -> str:
 def approve_commit(project_dir: Path, todo_id: str) -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
 
-    Idempotent — creates .agentic/inbox/ if missing. Raises AwfApiError
-    only if todo_id is empty.
+    Requires ``.agentic/`` to exist (consistent with other API functions:
+    ``create_baseline``, ``add_role``, ``get_status`` all require it).
+    Use :func:`init_project` first for new projects.
+
+    Raises AwfApiError if todo_id is empty or .agentic/ is missing.
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
     project_dir = Path(project_dir).resolve()
+    _require_agentic(project_dir)
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
     signal = inbox / f"APPROVE-{todo_id}.ready"
@@ -559,7 +563,17 @@ def _read_progress(outbox: Path, todo_id: str) -> dict[str, Any]:
 
 
 def _read_ack(inbox: Path, todo_id: str) -> str | None:
-    """Read ACK decision from inbox, or None if no ACK file."""
+    """Read ACK decision from inbox, or None if no ACK file.
+
+    Returns the decision string (e.g. ``"decision: rollback"``) if found.
+    Returns None if:
+    - No ACK file exists
+    - ACK file exists but contains no ``decision`` line (corrupt/incomplete)
+
+    Previously returned the literal string ``"none"`` in the second case,
+    which leaked into status output as ``ACK: none`` — misleading because
+    it suggested an explicit decision rather than absence.
+    """
     ack_file = inbox / f"ACK-{todo_id}.ready"
     if not ack_file.exists():
         return None
@@ -567,7 +581,7 @@ def _read_ack(inbox: Path, todo_id: str) -> str | None:
     for line in text.splitlines():
         if "decision" in line:
             return line.strip()
-    return "none"
+    return None
 
 
 def get_status(project_dir: Path) -> StatusResult:
@@ -1046,7 +1060,9 @@ def init_project(
             f"- [ ] (supervisor заполнит)\n"
         )
     plan_path = agentic / "phases" / "plan.md"
-    plan_path.write_text(plan_body, encoding="utf-8")
+    # H5 invariant: plan.md writes must be atomic (crash mid-write must not
+    # corrupt the file). Direct write_text was a regression in MCP-1 refactor.
+    atomic_write_text(plan_path, plan_body)
     created_files.append(".agentic/phases/plan.md")
 
     # Update .gitignore (idempotent)
@@ -1079,7 +1095,7 @@ def init_project(
 
 
 _CONFIG_TEMPLATE = '''project:
-  name: "{project_name}"
+  name: '{project_name}'
   root: "."
 
 models:
@@ -1090,10 +1106,10 @@ models:
 # role to agent_name="worker"). Don't pre-populate here.
 
 verification:
-  test_cmd: "{test_cmd}"
-  lint_cmd: "{lint_cmd}"
-  typecheck_cmd: "{typecheck_cmd}"
-  build_cmd: "{build_cmd}"
+  test_cmd: '{test_cmd}'
+  lint_cmd: '{lint_cmd}'
+  typecheck_cmd: '{typecheck_cmd}'
+  build_cmd: '{build_cmd}'
   coverage_cmd: ""
 
 phases:
@@ -1176,7 +1192,16 @@ def start_pipeline(
         auto=auto,
         timeout=timeout,
     )
-    exit_code = run_pipeline(args)
+    try:
+        exit_code = run_pipeline(args)
+    except Exception as e:
+        return StartResult(
+            run_mode="foreground",
+            run_id=None,
+            log_file=None,
+            exit_code=1,
+            message=f"Pipeline crashed: {e}",
+        )
     return StartResult(
         run_mode="foreground",
         run_id=None,
@@ -1217,7 +1242,16 @@ def continue_pipeline(
         auto=auto,
         timeout=timeout,
     )
-    exit_code = run_pipeline(args)
+    try:
+        exit_code = run_pipeline(args)
+    except Exception as e:
+        return StartResult(
+            run_mode="foreground",
+            run_id=None,
+            log_file=None,
+            exit_code=1,
+            message=f"Pipeline crashed: {e}",
+        )
     return StartResult(
         run_mode="foreground",
         run_id=None,
@@ -1229,14 +1263,18 @@ def continue_pipeline(
 
 @dataclass
 class _PipelineArgs:
-    """Minimal args namespace for orchestrator.run_pipeline (getattr-based)."""
+    """Minimal args namespace for orchestrator.run_pipeline (getattr-based).
+
+    ``orchestrator.run_pipeline`` reads these via ``getattr(args, name)``.
+    No ``command`` field — orchestrator doesn't use it (start vs continue
+    dispatching happens at the api.py layer above).
+    """
 
     project_dir: str = "."
     pipeline: str | None = None
     from_stage: str | None = None
     auto: bool = False
     timeout: int = 3600
-    command: str = "start"
 
 
 def _start_in_background(

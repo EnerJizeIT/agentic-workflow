@@ -161,10 +161,17 @@ class TestApproveCommit:
         with pytest.raises(api.AwfApiError, match="todo_id is required"):
             api.approve_commit(tmp_git_repo, "")
 
-    def test_creates_agentic_inbox_if_missing(self, tmp_git_repo):
-        """approve_commit is idempotent — creates .agentic/inbox/ if missing."""
+    def test_creates_inbox_inside_agentic(self, tmp_git_repo):
+        """approve creates inbox/ inside existing .agentic/ (audit fix:
+        no longer creates .agentic/ itself — caller must init first)."""
+        (tmp_git_repo / ".agentic").mkdir()
         result = api.approve_commit(tmp_git_repo, "TODO-0009")
         assert (tmp_git_repo / ".agentic" / "inbox" / "APPROVE-TODO-0009.ready").exists()
+
+    def test_missing_agentic_raises(self, tmp_git_repo):
+        """Audit fix: approve_commit requires .agentic/ (consistency)."""
+        with pytest.raises(api.AwfApiError, match="No .agentic/"):
+            api.approve_commit(tmp_git_repo, "TODO-0010")
 
 
 # ─── create_baseline ────────────────────────────────────────────────────
@@ -690,3 +697,83 @@ class TestResultAsDict:
             StartResult, AnalyzeRolesResult,
         ]:
             assert hasattr(cls, "as_dict"), f"{cls.__name__} missing as_dict()"
+
+
+# ─── start_pipeline / continue_pipeline ─────────────────────────────────
+
+
+class TestStartPipeline:
+    def test_missing_agentic_raises(self, tmp_git_repo):
+        with pytest.raises(api.AwfApiError, match="No .agentic/"):
+            api.start_pipeline(tmp_git_repo, background=False)
+
+    def test_foreground_orchestrator_exception_caught(self, tmp_git_repo, monkeypatch):
+        """When orchestrator.run_pipeline raises an unexpected exception,
+        start_pipeline returns StartResult with exit_code=1 (not crash)."""
+        api.init_project(tmp_git_repo, project_name="Test")
+
+        def fake_run_pipeline(args):
+            raise KeyError("simulated orchestrator crash")
+
+        monkeypatch.setattr(api, "run_pipeline", fake_run_pipeline, raising=False)
+        # Patch the import inside start_pipeline
+        import awf.orchestrator as orch_mod
+
+        orig = orch_mod.run_pipeline
+
+        def crashing(args):
+            raise KeyError("simulated orchestrator crash")
+
+        monkeypatch.setattr(orch_mod, "run_pipeline", crashing)
+
+        result = api.start_pipeline(tmp_git_repo, background=False)
+        assert result.run_mode == "foreground"
+        assert result.exit_code == 1
+        assert "crashed" in result.message
+
+    def test_foreground_normal_exit(self, tmp_git_repo, monkeypatch):
+        """When orchestrator returns 0, start_pipeline propagates exit_code."""
+        api.init_project(tmp_git_repo, project_name="Test")
+
+        import awf.orchestrator as orch_mod
+
+        def fake_run(args):
+            return 0
+
+        monkeypatch.setattr(orch_mod, "run_pipeline", fake_run)
+
+        result = api.start_pipeline(tmp_git_repo, background=False)
+        assert result.run_mode == "foreground"
+        assert result.exit_code == 0
+
+
+class TestContinuePipeline:
+    def test_no_active_todo_returns_noop(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="Test")
+        result = api.continue_pipeline(tmp_git_repo)
+        assert result.run_mode == "noop"
+        assert "No active TODO" in result.message
+
+    def test_missing_agentic_raises(self, tmp_git_repo):
+        with pytest.raises(api.AwfApiError, match="No .agentic/"):
+            api.continue_pipeline(tmp_git_repo)
+
+    def test_foreground_orchestrator_exception_caught(self, tmp_git_repo, monkeypatch):
+        """When orchestrator raises, continue_pipeline returns exit_code=1."""
+        api.init_project(tmp_git_repo, project_name="Test")
+        # Create an active TODO so continue_pipeline doesn't return noop
+        inbox = tmp_git_repo / ".agentic" / "inbox"
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# Task")
+
+        import awf.orchestrator as orch_mod
+
+        def crashing(args):
+            raise RuntimeError("simulated crash")
+
+        monkeypatch.setattr(orch_mod, "run_pipeline", crashing)
+
+        result = api.continue_pipeline(tmp_git_repo)
+        assert result.run_mode == "foreground"
+        assert result.exit_code == 1
+        assert "crashed" in result.message

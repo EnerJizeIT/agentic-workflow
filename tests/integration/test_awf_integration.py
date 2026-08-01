@@ -254,19 +254,20 @@ class TestApproveTimeout:
         assert approve_path.exists(), "Signal file must have been created"
 
 
-# ── _run_in_background argv reconstruction (H6) ──────────────────────────────
+# ── Background start (unified through api._start_in_background) ──────────
 
 
-class TestRunInBackgroundArgv:
-    """H6 fix: ``_run_in_background`` must rebuild argv without ``--background``
-    but preserve all other flags — including ``--project-dir`` in BOTH
-    space-separated (``--project-dir /x``) and ``=value`` (``--project-dir=/x``)
-    forms. Failure mode: child launched in wrong CWD, or child re-launches
-    itself in a loop (if ``--background`` is not stripped).
+class TestBackgroundStart:
+    """Background start goes through api.start_pipeline(background=True) —
+    single source of truth (was: legacy _run_in_background in cmd_start).
+
+    Tests verify BEHAVIOR (PID file + log file + Popen called with correct
+    argv), not argv reconstruction internals. H6 fix preserved as a
+    behavior test: --background must NOT be in child argv (would loop).
     """
 
-    def _capture(self, monkeypatch):
-        """Patch subprocess.Popen to capture child_argv instead of spawning."""
+    def _capture_popen(self, monkeypatch):
+        """Patch subprocess.Popen at the api module (where it's now used)."""
         captured: dict = {}
 
         class _CapturingPopen:
@@ -277,99 +278,105 @@ class TestRunInBackgroundArgv:
                 captured["cwd"] = kwargs.get("cwd")
                 captured["start_new_session"] = kwargs.get("start_new_session")
 
-        # Patch the open() call too — _run_in_background opens a log file
-        from awf import cmd_start
-
-        monkeypatch.setattr(cmd_start.subprocess, "Popen", _CapturingPopen)
-        # Avoid real file writes
-        monkeypatch.setattr("builtins.open", lambda *a, **kw: _NullFile())
+        from awf import api
+        monkeypatch.setattr(api.subprocess, "Popen", _CapturingPopen)
         return captured
 
-    def test_background_stripped_project_dir_preserved_equal_form(
-        self, tmp_path, monkeypatch
-    ):
-        """--project-dir=/path form must survive argv rebuild."""
-        from awf import cmd_start
-
-        captured = self._capture(monkeypatch)
-        monkeypatch.setattr(
-            "sys.argv",
-            ["awf", "start", "--background", "--project-dir=" + str(tmp_path)],
+    def _setup_project(self, tmp_path):
+        """Minimal .agentic/ structure required by api.start_pipeline."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentic").mkdir()
+        (proj / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: test\n'
         )
+        return proj
 
+    def test_background_writes_pid_file(self, tmp_path, monkeypatch):
+        """awf start --background writes .agentic/logs/awf-start.pid (MCP-4)."""
+        proj = self._setup_project(tmp_path)
+        self._capture_popen(monkeypatch)
+
+        from awf.cmd_start import run as cmd_start_run
         args = SimpleNamespace(
-            command="start",
-            background=True,
-            project_dir=str(tmp_path),
-            pipeline=None,
-            from_stage=None,
-            auto=False,
-            timeout=3600,
+            command="start", background=True, project_dir=str(proj),
+            pipeline=None, from_stage=None, auto=False, timeout=3600,
         )
-        rc = cmd_start._run_in_background(args)
+        rc = cmd_start_run(args)
         assert rc == 0
 
+        pid_file = proj / ".agentic" / "logs" / "awf-start.pid"
+        assert pid_file.exists(), "PID file must be written for status polling"
+        assert pid_file.read_text().strip() == "12345"  # mocked pid
+
+    def test_background_creates_log_file(self, tmp_path, monkeypatch):
+        """awf start --background creates .agentic/logs/awf-start.out."""
+        proj = self._setup_project(tmp_path)
+        self._capture_popen(monkeypatch)
+
+        from awf.cmd_start import run as cmd_start_run
+        args = SimpleNamespace(
+            command="start", background=True, project_dir=str(proj),
+            pipeline=None, from_stage=None, auto=False, timeout=3600,
+        )
+        rc = cmd_start_run(args)
+        assert rc == 0
+
+        log_file = proj / ".agentic" / "logs" / "awf-start.out"
+        assert log_file.exists()
+
+    def test_background_strips_background_flag_from_child(self, tmp_path, monkeypatch):
+        """H6 regression: --background must NOT appear in child argv (would loop).
+
+        Now checked at the api layer (was: cmd_start._run_in_background).
+        """
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
+
+        from awf.cmd_start import run as cmd_start_run
+        args = SimpleNamespace(
+            command="start", background=True, project_dir=str(proj),
+            pipeline=None, from_stage=None, auto=False, timeout=3600,
+        )
+        cmd_start_run(args)
+
         argv = captured["argv"]
-        assert "--background" not in argv, "H6: --background must be stripped"
+        assert "--background" not in argv, (
+            "H6: child must not receive --background (would cause infinite loop)"
+        )
+
+    def test_background_preserves_project_dir_in_child(self, tmp_path, monkeypatch):
+        """--project-dir must reach the child subprocess (correct cwd)."""
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
+
+        from awf.cmd_start import run as cmd_start_run
+        args = SimpleNamespace(
+            command="start", background=True, project_dir=str(proj),
+            pipeline=None, from_stage=None, auto=False, timeout=3600,
+        )
+        cmd_start_run(args)
+
+        argv = captured["argv"]
+        # project_dir must appear (either form)
         assert any(
-            a.startswith("--project-dir=") for a in argv
-        ), "H6: --project-dir= form must be preserved"
-        assert captured["cwd"] == str(tmp_path.resolve())
+            a == "--project-dir" or a.startswith("--project-dir=") for a in argv
+        ), "project_dir must be passed to child"
+        assert captured["cwd"] == str(proj.resolve())
 
-    def test_background_stripped_project_dir_space_form(self, tmp_path, monkeypatch):
-        """--project-dir /path (space-separated) form must survive rebuild."""
-        from awf import cmd_start
+    def test_background_preserves_other_flags(self, tmp_path, monkeypatch):
+        """--auto, --pipeline, --from-stage, --timeout reach the child."""
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
 
-        captured = self._capture(monkeypatch)
-        monkeypatch.setattr(
-            "sys.argv",
-            ["awf", "start", "--background", "--project-dir", str(tmp_path)],
-        )
-
+        from awf.cmd_start import run as cmd_start_run
         args = SimpleNamespace(
-            command="start",
-            background=True,
-            project_dir=str(tmp_path),
-            pipeline=None,
-            from_stage=None,
-            auto=False,
-            timeout=3600,
-        )
-        rc = cmd_start._run_in_background(args)
-        assert rc == 0
-
-        argv = captured["argv"]
-        assert "--background" not in argv
-        # Both flag and its value must be present, in order
-        assert "--project-dir" in argv
-        idx = argv.index("--project-dir")
-        assert argv[idx + 1] == str(tmp_path)
-
-    def test_other_flags_preserved(self, tmp_path, monkeypatch):
-        """--auto, --pipeline, --from-stage, --timeout must survive rebuild."""
-        from awf import cmd_start
-
-        captured = self._capture(monkeypatch)
-        monkeypatch.setattr(
-            "sys.argv",
-            [
-                "awf", "start", "--background",
-                "--auto", "--pipeline", "release",
-                "--from-stage", "verify",
-                "--timeout", "600",
-                "--project-dir=" + str(tmp_path),
-            ],
-        )
-
-        args = SimpleNamespace(
-            command="start", background=True, project_dir=str(tmp_path),
+            command="start", background=True, project_dir=str(proj),
             pipeline="release", from_stage="verify", auto=True, timeout=600,
         )
-        rc = cmd_start._run_in_background(args)
-        assert rc == 0
+        cmd_start_run(args)
 
         argv = captured["argv"]
-        assert "--background" not in argv
         assert "--auto" in argv
         assert "--pipeline" in argv
         assert argv[argv.index("--pipeline") + 1] == "release"
@@ -378,57 +385,27 @@ class TestRunInBackgroundArgv:
         assert "--timeout" in argv
         assert argv[argv.index("--timeout") + 1] == "600"
 
-    def test_no_duplicate_project_dir_when_already_present(
-        self, tmp_path, monkeypatch
-    ):
-        """If user passed --project-dir, awf must NOT add a second one."""
-        from awf import cmd_start
+    def test_background_prints_pid_and_log_path(self, tmp_path, monkeypatch, capsys):
+        """User-facing output: PID + log file path printed for monitoring."""
+        proj = self._setup_project(tmp_path)
+        self._capture_popen(monkeypatch)
 
-        captured = self._capture(monkeypatch)
-        monkeypatch.setattr(
-            "sys.argv",
-            ["awf", "start", "--background", "--project-dir=" + str(tmp_path)],
-        )
-
+        from awf.cmd_start import run as cmd_start_run
         args = SimpleNamespace(
-            command="start", background=True, project_dir=str(tmp_path),
+            command="start", background=True, project_dir=str(proj),
             pipeline=None, from_stage=None, auto=False, timeout=3600,
         )
-        rc = cmd_start._run_in_background(args)
-        assert rc == 0
+        cmd_start_run(args)
 
-        argv = captured["argv"]
-        # Count --project-dir occurrences (both forms)
-        equal_count = sum(1 for a in argv if a.startswith("--project-dir="))
-        space_count = sum(1 for a in argv if a == "--project-dir")
-        assert equal_count == 1, "Exactly one --project-dir= must be present"
-        assert space_count == 0, "No space-form --project-dir when = form used"
-
-    def test_project_dir_added_when_missing(self, tmp_path, monkeypatch):
-        """If user did NOT pass --project-dir, awf must inject it."""
-        from awf import cmd_start
-
-        captured = self._capture(monkeypatch)
-        monkeypatch.setattr(
-            "sys.argv",
-            ["awf", "start", "--background", "--auto"],
-        )
-
-        args = SimpleNamespace(
-            command="start", background=True, project_dir=str(tmp_path),
-            pipeline=None, from_stage=None, auto=True, timeout=3600,
-        )
-        rc = cmd_start._run_in_background(args)
-        assert rc == 0
-
-        argv = captured["argv"]
-        assert "--project-dir" in argv
-        idx = argv.index("--project-dir")
-        assert argv[idx + 1] == str(tmp_path.resolve())
+        captured = capsys.readouterr()
+        assert "PID 12345" in captured.out
+        assert "awf-start.out" in captured.out
 
 
 class _NullFile:
-    """File-like object that discards writes (used to mock log file open)."""
+    """File-like object that discards writes (legacy: kept for any tests
+    that still reference it; was used to mock log file open in pre-unification
+    _run_in_background tests)."""
 
     def write(self, *_args, **_kwargs):
         return 0
