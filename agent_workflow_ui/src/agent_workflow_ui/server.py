@@ -44,5 +44,7 @@ def create_server() -> FastMCP:
     # Dogfood-2 automation: dispatch + context
     mcp.add_tool(awf.awf_dispatch_todo, name="awf_dispatch_todo")
     mcp.add_tool(awf.awf_load_supervisor_context, name="awf_load_supervisor_context")
+    # Dogfood-5: shortcut tools (deterministic UX, no prompt-only guidance)
+    mcp.add_tool(awf.awf_open_project_setup_form, name="awf_open_project_setup_form")
 
     return mcp

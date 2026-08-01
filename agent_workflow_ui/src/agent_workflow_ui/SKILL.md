@@ -8,11 +8,15 @@ to chat, not a replacement.
 
 ## When to use a form
 
-Call `open_form` when:
+**For project setup** (configuring pipeline + roles + models + supervisor):
+use `awf_open_project_setup_form(project_dir)` — dedicated shortcut tool.
+Plugin auto-populates roles/models/skills. Do NOT call `open_form`
+directly for project setup, do NOT study template structure.
 
-- **Setting up a new project** with full configuration (→ `project-setup` composite template — primary for MVP).
+Call `open_form` directly when:
+
 - **A file upload** is needed (ТЗ, product-vision, custom role `.md`).
-- Need to choose from **4+ options with descriptions** (no specific template yet — agent may create one, see below).
+- **Ad-hoc decision forks** with custom template you created.
 - Monitoring a **long-running pipeline** (→ dashboard, future scope).
 
 ## When NOT to use a form (use chat instead)

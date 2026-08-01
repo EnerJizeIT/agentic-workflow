@@ -490,3 +490,56 @@ async def awf_load_supervisor_context(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+
+
+# ─── Dogfood-5: shortcut tools (no more 'how do I fill the form?') ──────
+
+
+async def awf_open_project_setup_form(
+    project_dir: str,
+    ttl_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Open project-setup form — no data needed, plugin auto-populates.
+
+    Shortcut for ``open_form(template="project-setup", project_dir=...)``
+    that hides the data-filling ceremony. Plugin automatically injects:
+    - global skills (from ``~/.config/opencode/skills/``)
+    - global custom roles (from ``~/.config/awf/roles/``)
+    - available models (from ``opencode.json`` providers)
+    - project-local roles (from ``.agentic/roles/*.md``)
+    - existing supervisor variants + custom agent slugs (for conflict UX)
+
+    Use this instead of ``open_form`` when configuring a project.
+    **Do not study the template structure** or "what data does the form
+    need" — this tool handles all of it. Just call it and wait for
+    ``read_submit``.
+
+    After user submits, plugin automatically materializes via
+    ``awf.api.apply_project_setup`` (writes pipeline.yaml, patches
+    config.yaml + supervisor.md). Use ``awf_status`` to verify, then
+    ``awf_dispatch_todo`` for the first task.
+
+    Args:
+        project_dir: **Required.** Absolute path to awf project root.
+            Must contain ``.agentic/`` (run ``awf_init`` first if missing).
+        ttl_seconds: Auto-cancel form after N seconds (optional).
+
+    Returns:
+        Dict with form_id, browser_opened, submit_url. Same shape as
+        ``open_form``.
+    """
+    from .forms import open_form
+
+    # No data dict — plugin auto-populates everything for project-setup.
+    # Passing empty dict triggers the template defaults + plugin's scan.
+    result = await open_form(
+        template="project-setup",
+        data={},
+        project_dir=project_dir,
+        ttl_seconds=ttl_seconds,
+    )
+    # open_form returns its own dict (no "status" key by UI convention).
+    # Wrap to match awf_* uniform contract: {"status": "ok", **result}.
+    if "error" in result:
+        return {"status": "error", "error": result["error"]}
+    return {"status": "ok", **result}

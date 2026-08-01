@@ -399,6 +399,61 @@ class TestAwfContinue:
 # ─── Tool registration ──────────────────────────────────────────────────
 
 
+class TestAwfOpenProjectSetupForm:
+    """Dogfood-5: shortcut tool — no data dict needed, plugin auto-populates."""
+
+    def _setup_plugin(self, tmp_path, monkeypatch):
+        """Inline plugin_setup (test_tools.py fixture is module-scoped)."""
+        from pathlib import Path
+
+        from agent_workflow_ui.config import ensure_directories, load
+        from agent_workflow_ui.render.engine import create_env
+        from agent_workflow_ui.state import (
+            reset_registry,
+            set_config,
+            set_http_port,
+            set_jinja_env,
+        )
+
+        import agent_workflow_ui as _awui
+
+        DEFAULT_TEMPLATES_DIR = Path(_awui.__file__).parent / "render" / "default_templates"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("AWF_TEMP_DIR", str(tmp_path / "tmp"))
+        config = load()
+        ensure_directories(config)
+        set_config(config)
+        set_http_port(13747)
+        set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
+        reset_registry()
+        # Mock browser to keep tests hermetic
+        from agent_workflow_ui import browser
+        monkeypatch.setattr(browser, "open_path", lambda target, command="auto": (True, "mocked"))
+
+    def test_opens_form_without_data_dict(self, tmp_path, monkeypatch):
+        """One call opens project-setup form. Plugin handles available_roles,
+        available_models, skills, custom roles automatically — supervisor
+        doesn't study template structure or pass data."""
+        proj = tmp_path / "proj"
+        (proj / ".agentic").mkdir(parents=True)
+        self._setup_plugin(tmp_path, monkeypatch)
+
+        result = run(awf.awf_open_project_setup_form(project_dir=str(proj)))
+
+        assert result["status"] == "ok", f"Expected ok, got: {result}"
+        assert "form_id" in result
+        assert result["form_id"].startswith("FORM-")
+
+    def test_works_without_agentic_dir(self, tmp_path, monkeypatch):
+        """Without .agentic/ — form still opens (plugin doesn't fail)."""
+        proj = tmp_path / "no-agentic"
+        proj.mkdir()
+        self._setup_plugin(tmp_path, monkeypatch)
+
+        result = run(awf.awf_open_project_setup_form(project_dir=str(proj)))
+        assert result["status"] == "ok"
+
+
 class TestToolRegistration:
     def test_all_11_tools_exist_as_callables(self):
         """All 11 awf_* tools must be exposed as async callables."""
