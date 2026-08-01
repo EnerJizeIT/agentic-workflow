@@ -55,29 +55,29 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
 
 ### MCP-2 · Plugin dependencies
 
-**Status:** IN PROGRESS. **Priority:** CRITICAL.
+**Status:** DONE. **Priority:** CRITICAL.
 
-- [ ] `agent_workflow_ui/pyproject.toml`: добавить `agentic-workflow` в dependencies.
-- [ ] Проверить что `from awf import api` работает из plugin'а.
-- [ ] Smoke test: plugin может вызвать `awf.api.get_status(project_dir)`.
+- [x] `agent_workflow_ui/pyproject.toml`: добавить `agentic-workflow` в dependencies.
+- [x] Проверить что `from awf import api` работает из plugin'а.
+- [x] Smoke test: plugin может вызвать `awf.api.get_status(project_dir)`.
 
 ### MCP-3 · MCP tools implementation
 
-**Status:** TODO. **Priority:** CRITICAL.
+**Status:** DONE. **Priority:** CRITICAL.
 
 Реализовать 11 MCP tools в plugin'е, каждый вызывает `awf.api.*()`:
 
-- [ ] `awf_init` — детерминированный (stack-detect + name-from-dir). Возвращает supervisor.md + vision excerpt + plan.md как content.
-- [ ] `awf_status` — current pipeline / task state.
-- [ ] `awf_start` — background start, returns run_id (см. MCP-4).
-- [ ] `awf_continue` — resume background.
-- [ ] `awf_baseline` — create snapshot.
-- [ ] `awf_rollback` — rollback to baseline.
-- [ ] `awf_report` — summary report.
-- [ ] `awf_approve` — approve auto-commit.
-- [ ] `awf_reset` — clear runtime data.
-- [ ] `awf_add_role` — generate role template.
-- [ ] `awf_analyze_roles` — role conflict analysis.
+- [x] `awf_init` — детерминированный (stack-detect + name-from-dir). Возвращает supervisor.md + vision excerpt + plan.md как content.
+- [x] `awf_status` — current pipeline / task state.
+- [x] `awf_start` — background start, returns run_id (см. MCP-4).
+- [x] `awf_continue` — resume background.
+- [x] `awf_baseline` — create snapshot.
+- [x] `awf_rollback` — rollback to baseline.
+- [x] `awf_report` — summary report.
+- [x] `awf_approve` — approve auto-commit.
+- [x] `awf_reset` — clear runtime data.
+- [x] `awf_add_role` — generate role template.
+- [x] `awf_analyze_roles` — role conflict analysis.
 
 Tools registered в `server.py` через `mcp.add_tool(...)`.
 
