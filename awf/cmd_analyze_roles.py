@@ -302,7 +302,8 @@ class AnalyzeData:
     overlaps: list[tuple[str, str, str]] = field(default_factory=list)
     patches: dict[str, str] = field(default_factory=dict)
     pipeline_roles: list[str] = field(default_factory=list)
-    applied: bool = False  # True if patches were written to disk
+    applied: bool = False  # True if at least one patch was written to disk
+    failed: list[str] = field(default_factory=list)  # roles whose patch write raised OSError
 
 
 def analyze_roles_core(
@@ -391,9 +392,9 @@ def analyze_roles_core(
             failed.append(role)
 
     if failed:
-        # Don't fail the whole run for one bad file; surface in result
-        # (caller can check disk state if needed).
-        pass
+        # Surface failed writes in the structured result so callers (api/MCP)
+        # can report them accurately instead of claiming success.
+        data.failed = failed
 
-    data.applied = True
+    data.applied = True  # apply step ran; per-patch success derivable from `failed`
     return data

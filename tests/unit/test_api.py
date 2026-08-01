@@ -637,6 +637,67 @@ class TestAddRole:
             api.add_role(tmp_git_repo, "qa")
 
 
+# ─── analyze_roles ──────────────────────────────────────────────────────
+
+
+class TestAnalyzeRoles:
+    def _setup_overlapping_roles(self, repo: Path) -> None:
+        ag = repo / ".agentic"
+        (ag / "roles").mkdir(parents=True)
+        (ag / "pipelines").mkdir(parents=True)
+        (ag / "roles" / "supervisor.md").write_text("# supervisor")
+        (ag / "roles" / "qa.md").write_text("# QA — verifies implementation")
+        (ag / "roles" / "project-auditor.md").write_text("# Auditor — verifies implementation")
+        (ag / "pipelines" / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: qa\n    role: qa\n"
+            "  - name: audit\n    role: project-auditor\n"
+            "  - name: verify\n    role: supervisor\n"
+        )
+
+    def test_dry_run_returns_overlaps_without_writing(self, tmp_git_repo):
+        self._setup_overlapping_roles(tmp_git_repo)
+        result = api.analyze_roles(tmp_git_repo, dry_run=True)
+        assert isinstance(result, api.AnalyzeRolesResult)
+        assert result.dry_run is True
+        assert len(result.overlaps) >= 1
+        # Dry-run: role files untouched
+        assert "BD-31" not in (tmp_git_repo / ".agentic" / "roles" / "qa.md").read_text()
+
+    def test_applied_patches_marked_true(self, tmp_git_repo):
+        self._setup_overlapping_roles(tmp_git_repo)
+        result = api.analyze_roles(tmp_git_repo, dry_run=False)
+        # Every successfully-written patch reports applied=True
+        for entry in result.patches_applied:
+            assert entry["applied"] is True, f"{entry['role']} should be applied"
+
+    def test_failed_write_reports_applied_false_for_that_role(self, tmp_git_repo, monkeypatch):
+        """Regression: a patch write that raises OSError must surface as
+        applied=False for that role — not silently applied=True."""
+        self._setup_overlapping_roles(tmp_git_repo)
+        import awf.cmd_analyze_roles as core_mod
+
+        real_write = core_mod.atomic_write_text
+
+        def flaky(path, content, *a, **kw):
+            if Path(path).name == "qa.md":
+                raise OSError("simulated")
+            return real_write(path, content, *a, **kw)
+
+        monkeypatch.setattr(core_mod, "atomic_write_text", flaky)
+
+        result = api.analyze_roles(tmp_git_repo, dry_run=False)
+        by_role = {e["role"]: e for e in result.patches_applied}
+        assert by_role["qa"]["applied"] is False
+        assert by_role["project-auditor"]["applied"] is True
+
+    def test_missing_roles_dir_raises(self, tmp_git_repo):
+        (tmp_git_repo / ".agentic").mkdir()
+        with pytest.raises(api.AwfApiError, match="No .agentic/roles/"):
+            api.analyze_roles(tmp_git_repo)
+
+
 # ─── init_project ───────────────────────────────────────────────────────
 
 

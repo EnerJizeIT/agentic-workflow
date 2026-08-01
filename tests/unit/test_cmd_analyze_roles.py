@@ -300,3 +300,36 @@ class TestAnalyzeRolesRun:
             assert count == 1, (
                 f"{slug}.md has {count} BD-31 sections after 2 runs (should be 1)"
             )
+
+    def test_failed_write_surfaced_in_result_not_silently_swallowed(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Regression: a patch write that raises OSError must be reported in
+        AnalyzeData.failed and marked applied=False — not silently dropped
+        with applied=True (was the bug before the fix)."""
+        proj = _make_project(tmp_path, roles={
+            "qa": "# QA — verifies implementation",
+            "project-auditor": "# Auditor — verifies implementation",
+        })
+
+        # Force atomic_write_text to fail for the 'qa' role only.
+        real_write = cmd_analyze_roles.atomic_write_text
+
+        def flaky_write(path, content, *a, **kw):
+            if Path(path).name == "qa.md":
+                raise OSError("simulated permission denied")
+            return real_write(path, content, *a, **kw)
+
+        monkeypatch.setattr(cmd_analyze_roles, "atomic_write_text", flaky_write)
+
+        data = cmd_analyze_roles.analyze_roles_core(proj, dry_run=False)
+
+        # qa failed, project-auditor succeeded
+        assert "qa" in data.failed
+        assert "project-auditor" not in data.failed
+        # qa.md was NOT patched (write raised before completion)
+        assert "BD-31: Pipeline-specific disambiguation" not in (
+            proj / ".agentic" / "roles" / "qa.md").read_text()
+        # project-auditor.md WAS patched
+        assert "BD-31: Pipeline-specific disambiguation" in (
+            proj / ".agentic" / "roles" / "project-auditor.md").read_text()

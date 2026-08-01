@@ -83,7 +83,7 @@ def analyze_roles(
         {
             "role": role,
             "preview": addendum.replace("\n", " ")[:200],
-            "applied": data.applied,
+            "applied": data.applied and role not in data.failed,
         }
         for role, addendum in data.patches.items()
     ]
