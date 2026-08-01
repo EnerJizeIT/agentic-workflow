@@ -30,16 +30,16 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
 
 ### MCP-1 · Refactor awf → `api.py` (foundation)
 
-**Status:** TODO. **Priority:** CRITICAL — блокирует MCP-3.
+**Status:** DONE. **Priority:** CRITICAL — блокирует MCP-3.
 
 Перенести бизнес-логику из `cmd_*.py` в `awf/api.py` с типизированными
 функциями. cmd_*.py — тонкие CLI обёртки, вызывающие `api.*()`.
 
-- [ ] Создать `awf/api.py` с public функциями для каждой команды:
+- [x] Создать `awf/api.py` с public функциями для каждой команды:
       - `init_project(project_dir) -> InitResult`
       - `get_status(project_dir) -> StatusResult`
       - `start_pipeline(project_dir, ...) -> StartResult`
-      - `continue_pipeline(project_dir, ...) -> ContinueResult`
+      - `continue_pipeline(project_dir, ...) -> StartResult`
       - `create_baseline(project_dir, todo_id) -> BaselineResult`
       - `rollback(project_dir, todo_id, ...) -> RollbackResult`
       - `approve_commit(project_dir, todo_id) -> ApproveResult`
@@ -47,14 +47,15 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
       - `reset_runtime(project_dir, ...) -> ResetResult`
       - `add_role(project_dir, name, ...) -> RoleResult`
       - `analyze_roles(project_dir, ...) -> AnalyzeResult`
-- [ ] Типизированные dataclass'ы для всех Result'ов (as_dict() для MCP).
-- [ ] cmd_*.py — тонкие обёртки (argparse → call api.*() → print human-readable).
-- [ ] Сохранить backward compat: e2e тесты не ломаются.
-- [ ] Покрытие api.py unit-тестами.
+- [x] Типизированные dataclass'ы для всех Result'ов (as_dict() для MCP).
+- [x] cmd_*.py — тонкие обёртки (argparse → call api.*() → print human-readable).
+- [x] Backward compat preserved: e2e тесты проходят (825).
+- [x] Покрытие api.py unit-тестами (59 тестов в tests/unit/test_api.py).
+- [x] Helpers: detect_stack(), derive_project_name() (MCP-6 stack-detect ready).
 
 ### MCP-2 · Plugin dependencies
 
-**Status:** TODO. **Priority:** CRITICAL.
+**Status:** IN PROGRESS. **Priority:** CRITICAL.
 
 - [ ] `agent_workflow_ui/pyproject.toml`: добавить `agentic-workflow` в dependencies.
 - [ ] Проверить что `from awf import api` работает из plugin'а.
