@@ -569,6 +569,67 @@ def test_open_form_project_dir_no_agentic(plugin_setup, tmp_path, caplog):
     assert "has no .agentic/" in caplog.text
 
 
+def test_open_form_explicit_project_dir_param(plugin_setup, tmp_path):
+    """open_form(project_dir=...) explicit parameter — preferred over data['project_dir'].
+
+    Audit fix: agent was calling open_form without project_dir because the
+    parameter was buried inside data dict. Now it's a top-level parameter
+    with clear docstring. MCP subprocess runs in $HOME (not the project),
+    so cwd-based detection doesn't work — explicit param is canonical.
+    """
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj = tmp_path / "myproj"
+    (proj / ".agentic").mkdir(parents=True)
+
+    result = asyncio.run(open_form(
+        template="project-setup",
+        data={"available_roles": ["worker"]},
+        project_dir=str(proj),
+    ))
+    assert result["form_id"].startswith("FORM-")
+    record = get_registry().get(result["form_id"])
+    assert record is not None
+    assert record.project_dir == proj.resolve()
+
+
+def test_open_form_project_setup_without_project_dir_warns(plugin_setup, caplog):
+    """When project-setup is opened without project_dir → log warning.
+
+    Agent sees the warning in logs and knows to either pass project_dir
+    explicitly or materialize manually from read_submit output.
+    """
+    from agent_workflow_ui.tools.forms import open_form
+
+    with caplog.at_level("WARNING"):
+        result = asyncio.run(open_form(
+            template="project-setup",
+            data={"available_roles": ["worker"]},
+            # NO project_dir — neither param nor data["project_dir"]
+        ))
+    assert result["form_id"].startswith("FORM-")
+    assert "project_dir" in caplog.text
+    assert "materialize" in caplog.text or "apply_project_setup" in caplog.text
+
+
+def test_open_form_explicit_param_overrides_data(plugin_setup, tmp_path):
+    """If both project_dir param AND data['project_dir'] given — param wins."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj_a = tmp_path / "projA"
+    proj_b = tmp_path / "projB"
+    (proj_a / ".agentic").mkdir(parents=True)
+    (proj_b / ".agentic").mkdir(parents=True)
+
+    result = asyncio.run(open_form(
+        template="project-setup",
+        data={"available_roles": ["worker"], "project_dir": str(proj_b)},
+        project_dir=str(proj_a),  # explicit param wins
+    ))
+    record = get_registry().get(result["form_id"])
+    assert record.project_dir == proj_a.resolve()
+
+
 def test_open_form_no_project_dir_compat(plugin_setup):
     """open_form without project_dir → FormRecord.project_dir is None (back-compat)."""
     from agent_workflow_ui.tools.forms import open_form

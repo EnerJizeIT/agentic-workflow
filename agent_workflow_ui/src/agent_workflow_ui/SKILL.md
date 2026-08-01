@@ -61,16 +61,22 @@ the form hasn't been submitted yet and ask them to check.
 
 ## Tool reference
 
-### `open_form(template, data, ttl_seconds?)` — PRIMARY TOOL
+### `open_form(template, data, project_dir?, ttl_seconds?)` — PRIMARY TOOL
 
 Render and open an HTML form in the user's browser. Non-blocking — returns immediately.
 
 **Arguments:**
 - `template` (str, required) — Template name without extension (e.g., "project-setup").
 - `data` (dict, optional) — Variables to render in the template.
+- `project_dir` (str, optional but **required for project-setup**) — Absolute path to awf project root. When provided, submit triggers automatic materialization via `awf.api.apply_project_setup` (writes pipeline.yaml, patches config.yaml + supervisor.md). Without it, submit is saved to `inputs/` only — agent must materialize manually. MCP subprocess runs in $HOME, so cwd-based detection does NOT work — pass explicitly.
 - `ttl_seconds` (int, optional) — Auto-expire form after N seconds.
 
 **Returns:** `{form_id, browser_opened, submit_url, expires_at?, error?}`
+
+**MUST for project-setup:** Always pass `project_dir` explicitly:
+```python
+open_form(template="project-setup", data={...}, project_dir="/abs/path/to/project")
+```
 
 ### `read_submit(form_id)` — USE WHEN USER SAYS "DONE"
 
@@ -183,7 +189,7 @@ Every template gets these injected by plugin:
 ```
 Agent: "I need to configure your project. Let me open a form."
 
-→ open_form(template="project-setup", data={"available_roles": [
+→ open_form(template="project-setup", project_dir="/abs/path/to/project", data={"available_roles": [
     {"id": "backend-dev", "title": "Backend Developer"},
     {"id": "frontend-dev", "title": "Frontend Developer"},
     {"id": "tester", "title": "Tester"}

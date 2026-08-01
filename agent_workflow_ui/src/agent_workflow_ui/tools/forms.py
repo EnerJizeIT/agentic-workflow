@@ -102,6 +102,7 @@ def _collect_opencode_models() -> list[str]:
 async def open_form(
     template: str,
     data: dict[str, Any] | None = None,
+    project_dir: str | None = None,
     ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Open an HTML form in the user's browser for structured input.
@@ -109,6 +110,15 @@ async def open_form(
     Args:
         template: Template name (without extension, e.g. "project-setup").
         data: Variables to render in the template.
+        project_dir: Absolute path to awf project root. **Required for
+            templates that submit data materialized by awf** (project-setup,
+            future scenarios 2-6). When provided, plugin persists submit
+            directly to ``<project_dir>/.agentic/`` (pipeline.yaml,
+            config.yaml patches, supervisor.md sections) via
+            ``awf.api.apply_project_setup``. If omitted, submit is saved to
+            ``inputs/`` only — agent must materialize manually from
+            ``read_submit`` output. MCP subprocess runs in $HOME (not the
+            project), so cwd-based detection does NOT work — pass explicitly.
         ttl_seconds: Auto-cancel after N seconds (optional). Default: no TTL.
 
     Returns:
@@ -129,16 +139,30 @@ async def open_form(
         }
 
     data = dict(data) if data else {}
-    # BD-6: extract project_dir from data so submit paths resolve to the project,
+    # BD-6: extract project_dir so submit paths resolve to the project,
     # not cwd (which is $HOME when opencode launches MCP subprocess).
-    project_dir_raw = data.pop("project_dir", None)
-    project_dir: Path | None = None
+    # Explicit `project_dir` parameter is canonical (cleaner contract than
+    # burying it in `data`). data["project_dir"] kept as back-compat for
+    # callers that haven't migrated.
+    project_dir_raw = project_dir or data.pop("project_dir", None)
+    project_dir_resolved: Path | None = None
     if project_dir_raw:
         p = Path(project_dir_raw).expanduser().resolve()
         if (p / ".agentic").is_dir():
-            project_dir = p
+            project_dir_resolved = p
         else:
-            log.warning("project_dir %s has no .agentic/ — ignoring", p)
+            log.warning(
+                "project_dir %s has no .agentic/ — materialization will be "
+                "skipped on submit. Run awf_init first.",
+                p,
+            )
+    elif template == "project-setup":
+        log.warning(
+            "open_form(template='project-setup') called without project_dir. "
+            "Submit will be saved to inputs/ only — agent must materialize "
+            "manually via awf.api.apply_project_setup. Pass project_dir= "
+            "explicitly for automatic materialization."
+        )
 
     if "available_roles" in data:
         data["available_roles"] = _normalize_available_roles(data["available_roles"])
@@ -160,8 +184,8 @@ async def open_form(
     # UI-1: scan project-local roles (.agentic/roles/*.md) for "previously
     # used in this project" dropdown section.
     project_roles: list[dict] = []
-    if project_dir:
-        roles_dir = project_dir / ".agentic" / "roles"
+    if project_dir_resolved:
+        roles_dir = project_dir_resolved / ".agentic" / "roles"
         if roles_dir.is_dir():
             for rf in sorted(roles_dir.glob("*.md")):
                 if rf.stem == "supervisor":
@@ -219,7 +243,7 @@ async def open_form(
         status="pending",
         expires_at=expires_at_dt,
         data_keys=list(data.keys()),
-        project_dir=project_dir,
+        project_dir=project_dir_resolved,
     )
     registry.add(record)
 
