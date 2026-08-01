@@ -199,8 +199,40 @@ If **DONE**:
 3. Check `git diff --stat` — changes must be in source files, not just `.md`.
 4. Review the actual code changes for correctness and style.
 5. Compare regression results with baseline.
-6. Decide: continue / fix / rollback / ask_user.
-7. If approved — create `.agentic/inbox/ACK-{NNNN}.ready`, mark step `[x]` in phases file.
+6. **Content verify (mandatory when supervisor_instruction says 'verify' /
+   'don't trust'):** cross-check artifact claims against primary sources.
+   - For documentation/requirements: open the source files (vision, spike,
+     specs) the worker referenced and verify specific claims.
+   - For code: re-read the affected files, check edge cases the worker
+     may have skipped.
+   - For data/JSON: validate against the real schema/sample.
+   - **If you cite a fact (e.g. "R5 matches storyboard.sample.json"), you
+     MUST have opened that file.** Accepting worker's claim on faith
+     violates 'verify' instruction.
+7. Decide: continue / fix / rollback / ask_user.
+8. If approved — create `.agentic/inbox/ACK-{NNNN}.ready`, mark step `[x]` in phases file.
+
+**DO NOT modify awf machinery during pipeline run** (dogfood-3 lesson):
+
+While pipeline is running or has unsaved state from a run:
+- DO NOT edit `pipelines/default.yaml` stage policies
+  (`on_approved`, `on_blocked`, `on_rejected`, `max_retries`).
+- DO NOT edit `config.yaml` machinery sections (`retry.*`,
+  `automation.*`, `default_pipeline`).
+- DO NOT edit role `.md` files that are referenced by upcoming stages.
+
+Rationale: orchestrator reloads these between stages. Mid-run edits
+produce non-deterministic behavior — pipeline behavior becomes
+untestable. If you discover a policy problem (e.g. auto-commit happens
+where you wanted manual control):
+
+  1. **Stop the pipeline first** (`kill <PID>`, or wait for current stage
+     to finish naturally).
+  2. Edit the file.
+  3. Re-run `awf_start` (or `awf_continue`).
+
+Editing machinery to "fix" an in-flight pipeline is never the right
+answer — it's editing awf's behavior, which is out of supervisor's scope.
 
 If **BLOCKED**:
 
