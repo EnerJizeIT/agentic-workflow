@@ -267,7 +267,8 @@ class TestBackgroundStart:
     """
 
     def _capture_popen(self, monkeypatch):
-        """Patch subprocess.Popen at the api module (where it's now used)."""
+        """Patch subprocess.Popen at the api._background module (where the
+        background launcher lives after MCP-audit package split)."""
         captured: dict = {}
 
         class _CapturingPopen:
@@ -278,8 +279,8 @@ class TestBackgroundStart:
                 captured["cwd"] = kwargs.get("cwd")
                 captured["start_new_session"] = kwargs.get("start_new_session")
 
-        from awf import api
-        monkeypatch.setattr(api.subprocess, "Popen", _CapturingPopen)
+        from awf.api import _background
+        monkeypatch.setattr(_background.subprocess, "Popen", _CapturingPopen)
         return captured
 
     def _setup_project(self, tmp_path):

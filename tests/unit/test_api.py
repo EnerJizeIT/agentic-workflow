@@ -516,6 +516,94 @@ class TestResetRuntime:
         assert result.cleaned_dirs == []
 
 
+# ─── list_orphans / remove_orphans (two-step protocol) ──────────────────
+
+
+class TestOrphansTwoStep:
+    """MCP-audit cleanup: list_orphans + remove_orphans replace the double
+    computation in cmd_reset. list is read-only; remove takes pre-computed ids."""
+
+    def _setup_with_orphan(self, tmp_git_repo):
+        """Project with 1 orphan TODO (active, no progress) + 1 healthy TODO."""
+        agentic = tmp_git_repo / ".agentic"
+        inbox = agentic / "inbox"
+        outbox = agentic / "outbox"
+        inbox.mkdir(parents=True)
+        outbox.mkdir(parents=True)
+        # Orphan: TODO-0001 active, no PROGRESS file
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# orphan")
+        # Healthy: TODO-0002 active, HAS progress
+        (inbox / "TODO-0002.ready").touch()
+        (inbox / "TODO-0002.md").write_text("# healthy")
+        (outbox / "PROGRESS-TODO-0002.md").write_text("## Task 1 [x]\n")
+        return tmp_git_repo
+
+    def test_list_orphans_returns_only_orphans(self, tmp_git_repo):
+        self._setup_with_orphan(tmp_git_repo)
+        orphans = api.list_orphans(tmp_git_repo)
+        assert orphans == ["TODO-0001"]
+
+    def test_list_orphans_read_only(self, tmp_git_repo):
+        """list_orphans must NOT delete files — pure read."""
+        self._setup_with_orphan(tmp_git_repo)
+        api.list_orphans(tmp_git_repo)
+        # Orphan files still there
+        assert (tmp_git_repo / ".agentic" / "inbox" / "TODO-0001.ready").exists()
+        assert (tmp_git_repo / ".agentic" / "inbox" / "TODO-0001.md").exists()
+
+    def test_list_orphans_empty_when_no_orphans(self, tmp_git_repo):
+        """Healthy project — no orphans."""
+        agentic = tmp_git_repo / ".agentic"
+        inbox = agentic / "inbox"
+        outbox = agentic / "outbox"
+        inbox.mkdir(parents=True)
+        outbox.mkdir(parents=True)
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# task")
+        (outbox / "PROGRESS-TODO-0001.md").write_text("## Task 1 [x]\n")
+        assert api.list_orphans(tmp_git_repo) == []
+
+    def test_remove_orphans_deletes_only_listed(self, tmp_git_repo):
+        """remove_orphans takes explicit list, deletes only those."""
+        self._setup_with_orphan(tmp_git_repo)
+        result = api.remove_orphans(tmp_git_repo, ["TODO-0001"])
+        assert result.mode == "orphans"
+        assert result.orphan_ids == ["TODO-0001"]
+        # Orphan files removed
+        assert not (tmp_git_repo / ".agentic" / "inbox" / "TODO-0001.ready").exists()
+        assert not (tmp_git_repo / ".agentic" / "inbox" / "TODO-0001.md").exists()
+        # Healthy TODO preserved
+        assert (tmp_git_repo / ".agentic" / "inbox" / "TODO-0002.ready").exists()
+
+    def test_remove_orphans_empty_list_noop(self, tmp_git_repo):
+        """Defensive: empty orphan_ids list — no-op, no crash."""
+        self._setup_with_orphan(tmp_git_repo)
+        result = api.remove_orphans(tmp_git_repo, [])
+        assert result.orphan_ids == []
+        # Nothing deleted
+        assert (tmp_git_repo / ".agentic" / "inbox" / "TODO-0001.ready").exists()
+
+    def test_remove_orphans_unknown_id_silently_skipped(self, tmp_git_repo):
+        """remove_orphans with non-existent id — no error, just not in result."""
+        self._setup_with_orphan(tmp_git_repo)
+        result = api.remove_orphans(tmp_git_repo, ["TODO-9999"])
+        assert result.orphan_ids == []  # nothing actually removed
+
+    def test_two_step_protocol_e2e(self, tmp_git_repo):
+        """End-to-end: list → confirm (simulated) → remove. Single computation."""
+        self._setup_with_orphan(tmp_git_repo)
+        # Step 1: list
+        ids = api.list_orphans(tmp_git_repo)
+        assert ids == ["TODO-0001"]
+        # Step 2: user confirms (simulated)
+        # Step 3: remove with pre-computed ids
+        result = api.remove_orphans(tmp_git_repo, ids)
+        assert result.orphan_ids == ["TODO-0001"]
+        # Verify list_orphans now returns empty
+        assert api.list_orphans(tmp_git_repo) == []
+
+
 # ─── add_role ───────────────────────────────────────────────────────────
 
 

@@ -77,13 +77,13 @@ class TestCommitGateMonotonic:
 class TestCmdReportCanonicalLegacy:
 
     def test_cmd_report_uses_find_signal_file(self):
-        """H2 fix: report logic uses find_signal_file (now in api.py)."""
+        """H2 fix: report logic uses find_signal_file (now in api.lifecycle)."""
         import inspect
 
-        from awf import api
+        from awf.api import lifecycle
 
-        src = inspect.getsource(api)
-        assert "find_signal_file" in src, "H2: api must use find_signal_file for report"
+        src = inspect.getsource(lifecycle)
+        assert "find_signal_file" in src, "H2: lifecycle must use find_signal_file for report"
 
     def test_cmd_report_legacy_short_form_recognized(self, tmp_path, monkeypatch):
         """awf report shows DONE for legacy short form DONE-0001.ready."""
@@ -166,9 +166,10 @@ class TestCmdBaselineGlobFix:
         (proj / ".agentic" / "context").mkdir()
         (proj / ".agentic" / "config.yaml").write_text("project:\n  name: t\n")
 
-        # Mock git (no git repo) — patch at api module (logic moved there in MCP-1)
-        monkeypatch.setattr("awf.api.git_utils.is_git_repo", lambda *_: False)
-        monkeypatch.setattr("awf.api.shutil.which", lambda _: None)
+        # Mock git (no git repo) — patch at api.pipeline submodule
+        # (logic lives there after MCP-audit package split).
+        monkeypatch.setattr("awf.api.pipeline.git_utils.is_git_repo", lambda *_: False)
+        monkeypatch.setattr("awf.api.pipeline.shutil.which", lambda _: None)
 
         args = SimpleNamespace(todo_id="TODO-0001", project_dir=str(proj))
         result = cmd_baseline.run(args)
@@ -290,21 +291,21 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src, "H3: verify.py should use atomic_write_text"
 
     def test_cmd_baseline_uses_atomic(self):
-        """H3: baseline logic uses atomic_write_text (now in api.py)."""
+        """H3: baseline logic uses atomic_write_text (in api.pipeline)."""
         import inspect
 
-        from awf import api
+        from awf.api import pipeline
 
-        src = inspect.getsource(api)
+        src = inspect.getsource(pipeline)
         assert "atomic_write_text" in src
 
     def test_cmd_init_uses_atomic(self):
-        """H3: init logic uses atomic_write_text (now in api.py)."""
+        """H3: init logic uses atomic_write_text (in api.lifecycle)."""
         import inspect
 
-        from awf import api
+        from awf.api import lifecycle
 
-        src = inspect.getsource(api)
+        src = inspect.getsource(lifecycle)
         assert "atomic_write_text" in src
 
     def test_cmd_analyze_roles_uses_atomic(self):
@@ -317,21 +318,21 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src
 
     def test_cmd_add_role_uses_atomic(self):
-        """H3: add_role logic uses atomic_write_text (now in api.py)."""
+        """H3: add_role logic uses atomic_write_text (in api.roles)."""
         import inspect
 
-        from awf import api
+        from awf.api import roles
 
-        src = inspect.getsource(api)
+        src = inspect.getsource(roles)
         assert "atomic_write_text" in src
 
     def test_cmd_rollback_uses_atomic(self):
-        """H3: rollback logic uses atomic_write_text (now in api.py)."""
+        """H3: rollback logic uses atomic_write_text (in api.pipeline)."""
         import inspect
 
-        from awf import api
+        from awf.api import pipeline
 
-        src = inspect.getsource(api)
+        src = inspect.getsource(pipeline)
         assert "atomic_write_text" in src
 
     def test_atomic_write_crash_cleans_temp(self, tmp_path, monkeypatch):

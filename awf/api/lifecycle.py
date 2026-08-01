@@ -1,0 +1,493 @@
+"""Lifecycle API: init, status, report, reset, orphans.
+
+All functions return a Result dataclass (see :mod:`awf.api._results`)
+or raise :class:`awf.api.AwfApiError` with a human-readable message.
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from .. import config as cfg_mod
+from .. import paths, todos
+from .._atomic import atomic_write_text
+from ._background import check_pipeline_running
+from ._errors import AwfApiError
+from ._helpers import read_file_text, require_agentic, require_git_repo
+from ._results import (
+    InitResult,
+    ReportResult,
+    ResetResult,
+    StatusResult,
+)
+from ._stack import derive_project_name, detect_stack
+from ._templates import _CONFIG_TEMPLATE, update_gitignore
+
+# ─── init_project ───────────────────────────────────────────────────────
+
+
+def init_project(
+    project_dir: Path,
+    *,
+    force: bool = False,
+    project_name: str | None = None,
+    test_cmd: str | None = None,
+    lint_cmd: str | None = None,
+    typecheck_cmd: str | None = None,
+    build_cmd: str | None = None,
+    dry_run: bool = False,
+) -> InitResult:
+    """Initialize ``.agentic/`` skeleton in project_dir.
+
+    All command parameters are auto-detected via :func:`detect_stack` when
+    not provided explicitly. Project name is derived from directory when
+    not provided.
+
+    Returns :class:`InitResult` with supervisor.md, vision excerpt, plan.md
+    content — caller (CLI/MCP) has everything needed to assume the supervisor
+    role without further file reads.
+    """
+    project_dir = Path(project_dir).resolve()
+    require_git_repo(project_dir)
+
+    agentic = project_dir / ".agentic"
+    if agentic.exists() and not force:
+        raise AwfApiError(
+            f".agentic/ already exists at {agentic}. Use force=True to overwrite."
+        )
+
+    if project_name is None:
+        project_name = derive_project_name(project_dir)
+
+    stack_info = detect_stack(project_dir)
+    if test_cmd is None:
+        test_cmd = stack_info["test_cmd"]
+    if lint_cmd is None:
+        lint_cmd = stack_info["lint_cmd"]
+    if typecheck_cmd is None:
+        typecheck_cmd = stack_info["typecheck_cmd"]
+    if build_cmd is None:
+        build_cmd = stack_info["build_cmd"]
+
+    vision_path = paths.find_vision_file(project_dir)
+
+    warnings: list[str] = []
+    if vision_path is None:
+        warnings.append("Vision/README not found in project root")
+
+    if dry_run:
+        return InitResult(
+            project_name=project_name,
+            project_dir=str(project_dir),
+            stack=stack_info["stack"],
+            vision_path=str(vision_path) if vision_path else None,
+            vision_excerpt="",
+            supervisor_md="",
+            plan_md="",
+            pipeline_configured=False,
+            next_action="[dry-run] no files written",
+            warnings=warnings,
+            created_files=[],
+        )
+
+    created_files: list[str] = []
+    for d in [
+        "roles",
+        "pipelines",
+        "phases",
+        "inbox",
+        "outbox",
+        "context",
+        "logs",
+        "reports",
+    ]:
+        (agentic / d).mkdir(parents=True, exist_ok=True)
+        created_files.append(f".agentic/{d}/")
+
+    config_content = _CONFIG_TEMPLATE.format(
+        project_name=project_name,
+        test_cmd=test_cmd,
+        lint_cmd=lint_cmd,
+        typecheck_cmd=typecheck_cmd,
+        build_cmd=build_cmd,
+    )
+    atomic_write_text(agentic / "config.yaml", config_content)
+    created_files.append(".agentic/config.yaml")
+
+    # Copy supervisor.md template from the awf package
+    framework_dir = Path(__file__).resolve().parent.parent.parent
+    templates_dir = framework_dir / "templates"
+    supervisor_template = templates_dir / "roles" / "supervisor.md"
+    supervisor_dest = agentic / "roles" / "supervisor.md"
+    if supervisor_template.is_file():
+        shutil.copy2(supervisor_template, supervisor_dest)
+        created_files.append(".agentic/roles/supervisor.md")
+    else:
+        warnings.append(f"supervisor.md template not found at {supervisor_template}")
+
+    # plan.md stub — point to vision if found (atomic per H5 invariant)
+    if vision_path is not None:
+        rel = Path("..") / ".." / vision_path.name
+        plan_body = (
+            f"# {project_name} — Plan\n\n"
+            f"> Контекст проекта: прочитай `{rel}` перед планированием.\n\n"
+            f"Steps:\n"
+            f"- [ ] (supervisor заполнит после изучения vision)\n"
+        )
+    else:
+        plan_body = (
+            f"# {project_name} — Plan\n\n"
+            f"> Vision/README не найден в корне проекта. Спроси пользователя "
+            f"о контексте перед планированием.\n\n"
+            f"Steps:\n"
+            f"- [ ] (supervisor заполнит)\n"
+        )
+    plan_path = agentic / "phases" / "plan.md"
+    atomic_write_text(plan_path, plan_body)
+    created_files.append(".agentic/phases/plan.md")
+
+    update_gitignore(project_dir)
+
+    supervisor_md = read_file_text(supervisor_dest) if supervisor_dest.is_file() else ""
+    plan_md = read_file_text(plan_path)
+    vision_excerpt = read_file_text(vision_path, max_chars=4000) if vision_path else ""
+
+    next_action = (
+        "Открой project-setup форму (MCP tool open_form, template='project-setup') "
+        "для выбора pipeline и ролей. После submit — awf start."
+    )
+
+    return InitResult(
+        project_name=project_name,
+        project_dir=str(project_dir),
+        stack=stack_info["stack"],
+        vision_path=str(vision_path) if vision_path else None,
+        vision_excerpt=vision_excerpt,
+        supervisor_md=supervisor_md,
+        plan_md=plan_md,
+        pipeline_configured=False,
+        next_action=next_action,
+        warnings=warnings,
+        created_files=created_files,
+    )
+
+
+# ─── get_status ─────────────────────────────────────────────────────────
+
+
+def _read_ack(inbox: Path, todo_id: str) -> str | None:
+    """Read ACK decision from inbox, or None if no decision found.
+
+    Returns the decision string (e.g. ``"decision: rollback"``) if found.
+    Returns None if no ACK file exists, or if file lacks ``decision`` line.
+    """
+    ack_file = inbox / f"ACK-{todo_id}.ready"
+    if not ack_file.exists():
+        return None
+    text = ack_file.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if "decision" in line:
+            return line.strip()
+    return None
+
+
+def _read_progress(outbox: Path, todo_id: str) -> dict[str, Any]:
+    """Parse PROGRESS-{todo_id}.md for task counts and last entry."""
+    progress_file = outbox / f"PROGRESS-{todo_id}.md"
+    if not progress_file.exists():
+        return {}
+    text = progress_file.read_text(encoding="utf-8")
+    task_lines = [line for line in text.splitlines() if line.startswith("## Task")]
+    total = len(task_lines)
+    done = sum(1 for ln in task_lines if "[x]" in ln)
+    failed = sum(1 for ln in task_lines if "[!]" in ln)
+    last = task_lines[-1] if task_lines else ""
+    return {"total": total, "done": done, "failed": failed, "last": last}
+
+
+def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]:
+    """Count DONE/BLOCKED TODOs. Returns (done_count, blocked_count, blocked_ids)."""
+    from ..signals import find_signal_file
+
+    done_count = 0
+    blocked_count = 0
+    blocked_ids: list[str] = []
+
+    if not inbox.exists():
+        return done_count, blocked_count, blocked_ids
+
+    for ready_file in sorted(inbox.glob("TODO-*.ready")):
+        if not ready_file.is_file():
+            continue
+        todo_id = ready_file.stem
+        done = find_signal_file(outbox, "DONE", todo_id, ".ready")
+        blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
+        if done:
+            done_count += 1
+        elif blocked:
+            blocked_count += 1
+            blocked_ids.append(todo_id)
+
+    return done_count, blocked_count, blocked_ids
+
+
+def get_status(project_dir: Path) -> StatusResult:
+    """Get current workflow state — active TODOs, progress, blocked, conflicts."""
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+
+    config_data = cfg_mod.load(project_dir)
+    project_name = (
+        cfg_mod.get(config_data, "project.name", "Project") or "Project"
+    )
+
+    active_ids = todos.list_active_todos(inbox, outbox)
+    done_count, blocked_count, blocked_ids = _count_done_blocked(inbox, outbox)
+
+    active_todos_list: list[dict[str, Any]] = []
+    for todo_id in active_ids:
+        entry: dict[str, Any] = {"todo_id": todo_id}
+        ack = _read_ack(inbox, todo_id)
+        if ack is not None:
+            entry["ack"] = ack
+        progress = _read_progress(outbox, todo_id)
+        entry["progress"] = progress if progress else None
+        active_todos_list.append(entry)
+
+    conflict_warning: str | None = None
+    if len(active_ids) > 1:
+        newest = active_ids[0]
+        conflict_warning = (
+            f"{len(active_ids)} active TODOs detected. "
+            f"Orchestrator will run: {newest} (highest NNNN). "
+            f"Others are stale — rollback or 'awf reset --orphans'."
+        )
+
+    suggestion: str | None = None
+    if not active_ids and blocked_count == 0:
+        suggestion = (
+            "No active tasks. Supervisor should create the next TODO, "
+            "then run: awf start"
+        )
+
+    pipeline_running, pipeline_pid, log_tail = check_pipeline_running(project_dir)
+
+    return StatusResult(
+        project_name=project_name,
+        active_todos=active_todos_list,
+        done_count=done_count,
+        blocked_count=blocked_count,
+        blocked_ids=blocked_ids,
+        conflict_warning=conflict_warning,
+        suggestion=suggestion,
+        pipeline_running=pipeline_running,
+        pipeline_pid=pipeline_pid,
+        log_tail=log_tail,
+    )
+
+
+# ─── get_report ─────────────────────────────────────────────────────────
+
+
+def get_report(project_dir: Path) -> ReportResult:
+    """Generate workflow report — task statuses, git diff, latest test log."""
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+
+    config_data = cfg_mod.load(project_dir)
+    project_name = (
+        cfg_mod.get(config_data, "project.name", "Project") or "Project"
+    )
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    items: list[dict[str, str]] = []
+    done_count = 0
+    blocked_count = 0
+
+    if inbox.exists():
+        from ..signals import find_signal_file
+
+        for ready_file in sorted(inbox.glob("TODO-*.ready")):
+            if not ready_file.is_file():
+                continue
+            todo_id = ready_file.stem
+            done = find_signal_file(outbox, "DONE", todo_id, ".ready")
+            blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
+            if done:
+                items.append({"todo_id": todo_id, "status": "OK"})
+                done_count += 1
+            elif blocked:
+                items.append({"todo_id": todo_id, "status": "BLK"})
+                blocked_count += 1
+            else:
+                items.append({"todo_id": todo_id, "status": "..."})
+
+    diff_result = subprocess.run(
+        ["git", "diff", "--stat"],
+        cwd=str(project_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    git_diff = diff_result.stdout if diff_result.returncode == 0 else ""
+
+    latest_test_log_tail: str | None = None
+    if outbox.exists():
+        logs = sorted(
+            outbox.glob("TEST-RESULTS-*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if logs:
+            try:
+                content = logs[0].read_text(encoding="utf-8")
+                lines = content.splitlines()
+                tail = lines[-5:] if len(lines) > 5 else lines
+                latest_test_log_tail = "\n".join(tail)
+            except OSError:
+                pass
+
+    return ReportResult(
+        project_name=project_name,
+        generated_at=now,
+        items=items,
+        done_count=done_count,
+        blocked_count=blocked_count,
+        git_diff=git_diff,
+        latest_test_log_tail=latest_test_log_tail,
+    )
+
+
+# ─── reset_runtime ──────────────────────────────────────────────────────
+
+
+def reset_runtime(
+    project_dir: Path,
+    *,
+    tasks_only: bool = False,
+    full: bool = False,
+    orphans: bool = False,
+) -> ResetResult:
+    """Clean runtime data.
+
+    Modes (mutually exclusive):
+    - ``tasks_only``: clean only inbox + outbox.
+    - ``full``: clean inbox/outbox/context/logs/reports.
+    - ``orphans``: convenience mode — list + remove orphans in one call.
+      Prefer :func:`list_orphans` + :func:`remove_orphans` two-step protocol
+      when confirmation is needed.
+    - default: clean inbox/outbox/context/logs/reports (keep phases).
+    """
+    project_dir = Path(project_dir).resolve()
+    agentic = project_dir / ".agentic"
+    if not agentic.is_dir():
+        return ResetResult(cleaned_dirs=[], orphan_ids=[], mode="noop")
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+
+    if orphans:
+        return _reset_orphans(inbox, outbox)
+
+    if full or not tasks_only:
+        dirs_to_clean = ["inbox", "outbox", "context", "logs", "reports"]
+        mode = "full" if full else "default"
+    else:
+        dirs_to_clean = ["inbox", "outbox"]
+        mode = "tasks_only"
+
+    cleaned: list[str] = []
+    for d in dirs_to_clean:
+        dirpath = agentic / d
+        if dirpath.is_dir():
+            for f in dirpath.iterdir():
+                if f.is_file():
+                    f.unlink()
+                elif f.is_dir():
+                    shutil.rmtree(f)
+            cleaned.append(d)
+
+    return ResetResult(cleaned_dirs=cleaned, orphan_ids=[], mode=mode)
+
+
+def _reset_orphans(inbox: Path, outbox: Path) -> ResetResult:
+    """Internal: list + remove orphans in one step.
+
+    Kept for backward compat with reset_runtime(orphans=True).
+    """
+    active_ids = todos.list_active_todos(inbox, outbox)
+    orphan_ids = [tid for tid in active_ids if not todos.has_progress(outbox, tid)]
+
+    for tid in orphan_ids:
+        ready = inbox / f"{tid}.ready"
+        md = inbox / f"{tid}.md"
+        if ready.exists():
+            ready.unlink()
+        if md.exists():
+            md.unlink()
+
+    return ResetResult(cleaned_dirs=[], orphan_ids=orphan_ids, mode="orphans")
+
+
+# ─── list_orphans / remove_orphans (two-step protocol) ──────────────────
+
+
+def list_orphans(project_dir: Path) -> list[str]:
+    """Return orphan TODO ids — active without progress.
+
+    Pure read-only function. Use :func:`remove_orphans` to delete them,
+    or :func:`reset_runtime` with ``orphans=True`` for the one-step legacy mode.
+    """
+    project_dir = Path(project_dir).resolve()
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    active_ids = todos.list_active_todos(inbox, outbox)
+    return [tid for tid in active_ids if not todos.has_progress(outbox, tid)]
+
+
+def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
+    """Remove specific orphan TODOs (pre-computed via :func:`list_orphans`).
+
+    Use this two-step protocol when caller needs to confirm with user
+    before deletion:
+
+        ids = api.list_orphans(project_dir)
+        if user_confirms(ids):
+            api.remove_orphans(project_dir, ids)
+    """
+    project_dir = Path(project_dir).resolve()
+    inbox = paths.inbox(project_dir)
+    removed: list[str] = []
+    for tid in orphan_ids:
+        ready = inbox / f"{tid}.ready"
+        md = inbox / f"{tid}.md"
+        deleted_any = False
+        if ready.exists():
+            ready.unlink()
+            deleted_any = True
+        if md.exists():
+            md.unlink()
+            deleted_any = True
+        if deleted_any:
+            removed.append(tid)
+    return ResetResult(cleaned_dirs=[], orphan_ids=removed, mode="orphans")
+
+
+__all__ = [
+    "init_project",
+    "get_status",
+    "get_report",
+    "reset_runtime",
+    "list_orphans",
+    "remove_orphans",
+]

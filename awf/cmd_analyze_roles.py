@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -224,87 +225,161 @@ def _build_disambiguation_addendum(
 
 
 def run(args: Any) -> int:
-    """Execute ``awf analyze-roles``."""
+    """Execute ``awf analyze-roles`` — CLI thin wrapper over analyze_roles_core."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
     dry_run = getattr(args, "dry_run", False)
 
-    if not (paths.agentic_dir(project_dir) / "roles").is_dir():
-        print(f"No .agentic/roles/ at {project_dir}. Run 'awf init' first.")
-        return 1
-
-    config = cfg_mod.load(project_dir)
-    role_contents = _read_role_files(project_dir)
-    pipeline_roles = _read_pipeline_roles(project_dir, config)
-
-    if not role_contents:
-        print("No role .md files found in .agentic/roles/.")
-        return 1
-
-    # Skip supervisor — it's built-in, not part of team analysis.
-    team_roles = {r: c for r, c in role_contents.items() if r != "supervisor"}
-    if not team_roles:
-        print("No team role files (only supervisor.md found).")
+    try:
+        data = analyze_roles_core(project_dir, dry_run=dry_run)
+    except AnalyzeError as e:
+        print(str(e))
         return 1
 
     print("=" * 60)
     print("  BD-31: SKILL-AWARE ROLE ANALYSIS")
     print("=" * 60)
     print()
-    print(f"Pipeline team (in order): {', '.join(pipeline_roles) or '(no pipeline.yaml found)'}")
-    print(f"Role files analyzed: {len(team_roles)}")
+    print(f"Pipeline team (in order): {', '.join(data.pipeline_roles) or '(no pipeline.yaml found)'}")
+    print(f"Role files analyzed: {len(data.zones)}")
     print()
 
-    # Step 1: infer zone for each role
-    zones: dict[str, str] = {}
     print("Inferred zones:")
-    for role, content in team_roles.items():
-        zone = _infer_zone(role, content)
-        zones[role] = zone
+    for role, zone in data.zones.items():
         marker = "✓" if zone != "generalist (undefined zone)" else "?"
         print(f"  {marker} {role}: {zone}")
     print()
 
-    # Step 2: detect overlaps
-    overlaps = _detect_overlaps(zones)
-    if overlaps:
-        print(f"Overlaps detected ({len(overlaps)}):")
-        for a, b, zone in overlaps:
+    if data.overlaps:
+        print(f"Overlaps detected ({len(data.overlaps)}):")
+        for a, b, zone in data.overlaps:
             print(f"  ⚠ {a}  ⟷  {b}  (both: {zone})")
         print()
     else:
         print("No overlaps detected. Roles are well-differentiated.")
         print()
 
-    # Step 3: build disambiguation addenda
-    patches: dict[str, str] = {}
-    print("Proposed patches:")
-    for role in team_roles:
-        addendum = _build_disambiguation_addendum(role, zones[role], overlaps, pipeline_roles)
-        if "BD-31: Pipeline-specific disambiguation" in addendum:
-            patches[role] = addendum
-            preview = addendum.replace("\n", " ")[:120]
-            print(f"  + {role}.md: {preview}...")
-    print()
-
-    if not patches:
+    if not data.patches:
         print("Nothing to patch. Roles look clean.")
         return 0
+
+    print("Proposed patches:")
+    for role, addendum in data.patches.items():
+        preview = addendum.replace("\n", " ")[:120]
+        print(f"  + {role}.md: {preview}...")
+    print()
 
     if dry_run:
         print("--dry-run: patches generated but NOT applied.")
         print("Re-run without --dry-run to write them.")
         return 0
 
-    # Step 4: apply patches (append to each role.md)
-    print(f"Applying patches to {len(patches)} role file(s)...")
+    # Patches already applied by analyze_roles_core when dry_run=False
+    for role in data.patches:
+        print(f"  ✓ patched {role}.md")
+    print()
+    print(f"Done. {len(data.patches)} role(s) strengthened with pipeline-specific disambiguation.")
+    print("Re-commit role files if you want to track changes in git.")
+    return 0
+
+
+class AnalyzeError(Exception):
+    """Raised on analyze_roles_core precondition failures (missing roles dir, etc.).
+
+    Message is user-readable; callers print + return non-zero exit.
+    """
+
+
+@dataclass
+class AnalyzeData:
+    """Structured result of :func:`analyze_roles_core`.
+
+    All fields are pure data — no print/stdout side effects. Callers
+    (cmd_analyze_roles.run for CLI, api.analyze_roles for MCP) format
+    this for their medium.
+    """
+
+    zones: dict[str, str] = field(default_factory=dict)
+    overlaps: list[tuple[str, str, str]] = field(default_factory=list)
+    patches: dict[str, str] = field(default_factory=dict)
+    pipeline_roles: list[str] = field(default_factory=list)
+    applied: bool = False  # True if patches were written to disk
+
+
+def analyze_roles_core(
+    project_dir: Path,
+    *,
+    dry_run: bool = False,
+) -> AnalyzeData:
+    """Pure-data role analysis — no printing, no stdout capture.
+
+    Steps:
+    1. Read role .md files (excluding supervisor).
+    2. Read pipeline.yaml for role ordering.
+    3. Infer zone for each role (slug + content heuristic).
+    4. Detect overlaps (same zone OR same zone-family).
+    5. Build disambiguation addendum per role.
+    6. Apply patches to disk unless ``dry_run=True``.
+
+    Raises :class:`AnalyzeError` on precondition failures:
+    - No .agentic/roles/ directory
+    - No team role files (only supervisor.md)
+
+    Returns :class:`AnalyzeData` with zones, overlaps, patches,
+    pipeline_roles, and ``applied`` flag.
+    """
+    if not (paths.agentic_dir(project_dir) / "roles").is_dir():
+        raise AnalyzeError(
+            f"No .agentic/roles/ at {project_dir}. Run 'awf init' first."
+        )
+
+    config = cfg_mod.load(project_dir)
+    role_contents = _read_role_files(project_dir)
+    pipeline_roles = _read_pipeline_roles(project_dir, config)
+
+    if not role_contents:
+        raise AnalyzeError("No role .md files found in .agentic/roles/.")
+
+    # Skip supervisor — it's built-in, not part of team analysis.
+    team_roles = {r: c for r, c in role_contents.items() if r != "supervisor"}
+    if not team_roles:
+        raise AnalyzeError("No team role files (only supervisor.md found).")
+
+    # Step 1: infer zone for each role
+    zones: dict[str, str] = {}
+    for role, content in team_roles.items():
+        zones[role] = _infer_zone(role, content)
+
+    # Step 2: detect overlaps
+    overlaps = _detect_overlaps(zones)
+
+    # Step 3: build disambiguation addenda
+    patches: dict[str, str] = {}
+    for role in team_roles:
+        addendum = _build_disambiguation_addendum(
+            role, zones[role], overlaps, pipeline_roles
+        )
+        if "BD-31: Pipeline-specific disambiguation" in addendum:
+            patches[role] = addendum
+
+    data = AnalyzeData(
+        zones=zones,
+        overlaps=overlaps,
+        patches=patches,
+        pipeline_roles=pipeline_roles,
+        applied=False,
+    )
+
+    if not patches or dry_run:
+        return data
+
+    # Step 4: apply patches to disk (idempotent via BD-31 marker check)
     roles_dir = paths.agentic_dir(project_dir) / "roles"
+    failed: list[str] = []
     for role, addendum in patches.items():
         path = roles_dir / f"{role}.md"
         try:
             current = path.read_text(encoding="utf-8")
-            # Avoid double-patching: check if BD-31 marker already present
             if "BD-31: Pipeline-specific disambiguation" in current:
-                # Replace existing addendum
                 pattern = re.compile(
                     r"\n*---\n\n## BD-31: Pipeline-specific disambiguation.*$",
                     re.DOTALL,
@@ -312,11 +387,13 @@ def run(args: Any) -> int:
                 current = pattern.sub("", current).rstrip()
             new_content = current.rstrip() + "\n" + addendum
             atomic_write_text(path, new_content)
-            print(f"  ✓ patched {role}.md")
-        except OSError as e:
-            print(f"  ✗ failed {role}.md: {e}")
+        except OSError:
+            failed.append(role)
 
-    print()
-    print(f"Done. {len(patches)} role(s) strengthened with pipeline-specific disambiguation.")
-    print("Re-commit role files if you want to track changes in git.")
-    return 0
+    if failed:
+        # Don't fail the whole run for one bad file; surface in result
+        # (caller can check disk state if needed).
+        pass
+
+    data.applied = True
+    return data

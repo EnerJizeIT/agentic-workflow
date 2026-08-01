@@ -57,7 +57,7 @@ def test_background_does_NOT_force_auto_bd30(tmp_path: Path) -> None:
             captured["kwargs"] = kwargs
             self.pid = 12345
 
-    with patch.object(api.subprocess, "Popen", _FakeProc):
+    with patch.object(api._background.subprocess, "Popen", _FakeProc):
         rc = cmd_start.run(args)
 
     assert rc == 0
@@ -80,7 +80,7 @@ def test_background_preserves_explicit_auto(tmp_path: Path) -> None:
             captured["argv"] = args_list
             self.pid = 1
 
-    with patch.object(api.subprocess, "Popen", _FakeProc):
+    with patch.object(api._background.subprocess, "Popen", _FakeProc):
         cmd_start.run(args)
 
     child_argv = captured["argv"]
@@ -99,7 +99,7 @@ def test_background_strips_background_flag_from_child(tmp_path: Path) -> None:
             captured["argv"] = args_list
             self.pid = 1
 
-    with patch.object(api.subprocess, "Popen", _FakeProc):
+    with patch.object(api._background.subprocess, "Popen", _FakeProc):
         cmd_start.run(args)
 
     child_argv = captured["argv"]
