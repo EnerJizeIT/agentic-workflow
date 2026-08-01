@@ -2,9 +2,127 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 732 теста (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), и BD-36 plan checkpoint закрыты.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 766 тестов (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), BD-36 plan checkpoint и audit-v2 (HIGH verify.py bool bug) закрыты.
+
+**Активный эпик:** MCP-MIGRATION — миграция awf из standalone CLI в pure MCP toolkit под opencode.
 
 История фиксов — в `git log --oneline`.
+
+---
+
+## 🟢 Active · MCP-MIGRATION — awf как pure MCP toolkit под opencode
+
+**Status:** IN PROGRESS. **Priority:** CRITICAL — architectural pivot.
+
+**Solution concept:** Awf больше НЕ позиционируется как CLI для bash-юзеров.
+Все команды awf доступны opencode-агенту как MCP tools в plugin'е
+`agent-workflow-ui`. Plugin импортирует `awf` как Python package (никакого
+subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не primary path.
+
+**Принципы:**
+1. Один plugin `agent-workflow-ui` (без переименования — меньше миграции).
+2. Plugin depends on `agentic-workflow` package (Python import).
+3. `awf/api.py` — public API для всех callers (CLI + MCP tools).
+4. Long-running ops (start/continue) — background + poll status pattern.
+5. Глобальный AGENTS.md документирует все MCP tools.
+
+**Фазы (последовательные):**
+
+### MCP-1 · Refactor awf → `api.py` (foundation)
+
+**Status:** TODO. **Priority:** CRITICAL — блокирует MCP-3.
+
+Перенести бизнес-логику из `cmd_*.py` в `awf/api.py` с типизированными
+функциями. cmd_*.py — тонкие CLI обёртки, вызывающие `api.*()`.
+
+- [ ] Создать `awf/api.py` с public функциями для каждой команды:
+      - `init_project(project_dir) -> InitResult`
+      - `get_status(project_dir) -> StatusResult`
+      - `start_pipeline(project_dir, ...) -> StartResult`
+      - `continue_pipeline(project_dir, ...) -> ContinueResult`
+      - `create_baseline(project_dir, todo_id) -> BaselineResult`
+      - `rollback(project_dir, todo_id, ...) -> RollbackResult`
+      - `approve_commit(project_dir, todo_id) -> ApproveResult`
+      - `get_report(project_dir) -> ReportResult`
+      - `reset_runtime(project_dir, ...) -> ResetResult`
+      - `add_role(project_dir, name, ...) -> RoleResult`
+      - `analyze_roles(project_dir, ...) -> AnalyzeResult`
+- [ ] Типизированные dataclass'ы для всех Result'ов (as_dict() для MCP).
+- [ ] cmd_*.py — тонкие обёртки (argparse → call api.*() → print human-readable).
+- [ ] Сохранить backward compat: e2e тесты не ломаются.
+- [ ] Покрытие api.py unit-тестами.
+
+### MCP-2 · Plugin dependencies
+
+**Status:** TODO. **Priority:** CRITICAL.
+
+- [ ] `agent_workflow_ui/pyproject.toml`: добавить `agentic-workflow` в dependencies.
+- [ ] Проверить что `from awf import api` работает из plugin'а.
+- [ ] Smoke test: plugin может вызвать `awf.api.get_status(project_dir)`.
+
+### MCP-3 · MCP tools implementation
+
+**Status:** TODO. **Priority:** CRITICAL.
+
+Реализовать 11 MCP tools в plugin'е, каждый вызывает `awf.api.*()`:
+
+- [ ] `awf_init` — детерминированный (stack-detect + name-from-dir). Возвращает supervisor.md + vision excerpt + plan.md как content.
+- [ ] `awf_status` — current pipeline / task state.
+- [ ] `awf_start` — background start, returns run_id (см. MCP-4).
+- [ ] `awf_continue` — resume background.
+- [ ] `awf_baseline` — create snapshot.
+- [ ] `awf_rollback` — rollback to baseline.
+- [ ] `awf_report` — summary report.
+- [ ] `awf_approve` — approve auto-commit.
+- [ ] `awf_reset` — clear runtime data.
+- [ ] `awf_add_role` — generate role template.
+- [ ] `awf_analyze_roles` — role conflict analysis.
+
+Tools registered в `server.py` через `mcp.add_tool(...)`.
+
+### MCP-4 · Long-running design (start/continue)
+
+**Status:** TODO. **Priority:** CRITICAL — без этого agent зависает.
+
+Контракт для background operations:
+
+- [ ] `awf_start` запускает pipeline (subprocess, как `--background`).
+      Возвращает немедленно: `{run_id, logs_path, expected_stages}`.
+- [ ] `awf_status` поллит: возвращает текущую стадию, прогресс, готовые
+      checkpoints (для `open_form`).
+- [ ] Coordination с `open_form`: когда pipeline ждёт checkpoint — status
+      показывает `checkpoint_pending`, agent открывает форму отдельно.
+- [ ] Define lifecycle: running → checkpoint_pending → resumed → done | failed.
+- [ ] Tests: background start, poll status, multiple concurrent runs.
+
+### MCP-5 · Глобальный AGENTS.md
+
+**Status:** TODO. **Priority:** HIGH.
+
+- [ ] Добавить блок в `~/.config/opencode/AGENTS.md` с описанием всех 16 MCP
+      tools (11 awf + 5 UI).
+- [ ] Workflow recipes:
+      - "Новый проект" → `awf_init` → `open_form(project-setup)` → `awf_start`.
+      - "Продолжить работу" → `awf_status` → если running, поллить.
+      - "Откатить" → `awf_rollback`.
+- [ ] Метаправило: "видишь `.agentic/` → используй MCP tools, не bash".
+
+### MCP-6 · CLI simplification
+
+**Status:** TODO. **Priority:** MEDIUM.
+
+- [ ] Убрать интерактивность из `awf init` (стек-detect + name-from-dir).
+- [ ] CLI остаётся как thin dev/debug wrapper над `api.py`.
+- [ ] README обновить: primary path = MCP tools, CLI = debug.
+
+### MCP-7 · Tests & docs
+
+**Status:** TODO. **Priority:** HIGH.
+
+- [ ] MCP tools покрыты тестами (plugin/tests/).
+- [ ] api.py покрыт unit-тестами (awf/tests/unit/).
+- [ ] Integration: plugin tool → api → real workflow.
+- [ ] README обновить с новой архитектурой.
 
 ---
 
