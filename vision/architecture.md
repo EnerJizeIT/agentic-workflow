@@ -4,7 +4,6 @@
 
 **Версия:** 1.2
 **Дата:** 2026-08-01
-**Pivot с v1.1:** объединены UI MCP + awf-mcp в один server (16 tools); plugin теперь depends on awf; CLI primary → MCP primary.
 **Связанные документы:** [Product Vision](agent-ui-plugin.md) v0.5, [File Bus Protocol](../protocols/communication.md), [awf README](../README.md)
 
 ---
@@ -92,7 +91,7 @@ flowchart TD
 ### 2.2 Принципы интеграции
 
 - **opencode runtime** — общий, не зависит от наших продуктов.
-- **MCP layer — ОДИН server** (в v1.1 было два: UI + awf-mcp). Все 16 tools в одном plugin'е.
+- **MCP layer — один server.** Все 16 tools в одном plugin'е.
 - **awf.api — single source of truth** для workflow logic. Plugin и CLI оба делегируют в него.
 - **UI tools agnostic** (только `inputs/`), **workflow tools** — thin wrappers над `awf.api`.
 - **File bus** — внутренний контракт awf. Plugin пишет напрямую только в `inputs/`.
@@ -740,7 +739,6 @@ pip install agent-workflow-ui
 - Dashboards (Сценарий 4 — later).
 - Decision-tree forms в runtime (Сценарий 2 — later).
 - Pipeline-declared forms через `action: request_input` (future).
-- `awf-mcp` separate MCP server (future).
 - HTTP remote transport (future).
 - Real-time updates via SSE/WebSocket (far future).
 - Multi-user (far future).
@@ -770,21 +768,18 @@ pip install agent-workflow-ui
 | Нативный HTML `<form method="POST">` | Browser сам отправляет данные. Никакого JS injection, никаких YAML serializers в JavaScript. |
 | Jinja2 templates | Стандарт Python-шаблонизатор (Flask, Django, Ansible). Простой синтаксис, мощные возможности. |
 | **Composite template `project-setup`** вместо 5 отдельных | Меньше кликов, нагляднее. Все секции (context + supervisor + team + models) на одной странице. Pipeline НЕ выбирается явно — выводится supervisor'ом. |
-| **Inline conflict resolution** через JS `confirm()` | Не требует отдельной follow-up мини-формы (как планировалось в vision v0.3). Быстрее, проще UX. |
+| **Inline conflict resolution** через JS `confirm()` | Не требует отдельной follow-up мини-формы. Быстрее, проще UX. |
 | **Agent-driven project templates** | `.agentic/templates/` override только через агента (front+back). Пользователь не кладёт файлы вручную — избегаем «битых» templates. |
 | **Custom roles в `~/.config/awf/roles/`** (глобально, не per-project) | Кастомные роли — переиспользуемый актив. Создал в одном проекте → доступен во всех. |
 | **Lazy skill install** (через `skill_installer.py`) | End-user principle: после `pip install` plugin готов к работе при первом старте opencode. Заменяет ненадёжные setuptools post-install hooks для user-locale paths. |
 | Templates коммитятся в git (`.agentic/templates/`) | Часть дизайна проекта, как `pipelines/`. Submits — runtime state, gitignored. |
 | Browser open через `xdg-open`/`open` | Без native browser bindings. Используем браузер по умолчанию пользователя. |
-| `awf-mcp` отдельный от `agent-workflow-ui` | Clean separation: UI layer agnostic, awf layer specific. Plugin reusable с другими orchestrators. |
-| Standalone package на PyPI | Не быть заложником текущей версии awf. Plugin работает с любым orchestrator'ом, реализующим file bus. |
+| Plugin зависит от `awf` | `dependencies += ["awf>=0.4.0"]`. Workflow tools — thin wrappers над `awf.api`. Single source of truth для workflow logic. |
 | Pipeline-declared forms отложены | MVP (Сценарий 1) — setup wizard, не pipeline stage. Pipeline-declared — future, когда runtime scenarios (2-5). |
 
 ---
 
 ## 14. Open questions
-
-Вопросы из §14 v1.0 — статус после реализации MVP:
 
 | # | Вопрос | Статус |
 |---|---|---|

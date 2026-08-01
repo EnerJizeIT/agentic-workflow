@@ -5,8 +5,6 @@ custom-width: 75
 
 > **awf's MCP plugin** — единый MCP-сервер с UI-инструментами (HTML-формы, дашборды) **и** workflow-операциями (init, start, status, rollback, ...). Работает только с awf как orchestrator. Plugin зависит от `awf` Python-пакета и импортирует `awf.api` напрямую (без subprocess). **MCP primary path** — opencode-агент вызывает `awf_init`/`awf_status`/... как typed MCP tools; CLI `awf` сохранён как тонкая dev/debug обёртка.
 
-> **Pivot v0.5 (2026-08-01):** в v0.4 фиксулировалось «CLI primary, standalone UI product, agnostic к awf, 2 отдельных MCP server'а». После dogfood'а выяснилось: это создавало дублирование (две точки входа для одного workflow) и сложность для агента (multiple tools across multiple servers). Принято архитектурное решение: **объединить UI + workflow ops в один plugin, MCP primary, plugin зависит от awf**. Generality (другие orchestrators) — отложена до появления реального второго orchestrator'а (см. §11).
-
 ## 1. Что это и границы продукта
 
 ### 1.1 Что это
@@ -20,11 +18,11 @@ Plugin = **primary interface** между агентом и awf-orchestrator'о�
 
 ### 1.2 Границы продукта (scope)
 
-**agent-workflow-ui — это plugin для awf.** Не standalone UI product (было в v0.4). Plugin работает только с awf; зависит от `awf` Python-пакета.
+**agent-workflow-ui — это plugin для awf.** Plugin работает только с awf; зависит от `awf` Python-пакета.
 
 | Что в scope | Что НЕ в scope |
 |---|---|
-| MCP server с UI + workflow tools (всего 16) | Альтернативные orchestrators (поддержка отложена до §11) |
+| MCP server с UI + workflow tools (всего 16) | Альтернативные orchestrators |
 | Jinja2-шаблоны форм и дашбордов | Хранение ролей/скиллов (это orchestrator через `awf_add_role`) |
 | Skill markdown с UI-политиками | LLM-агенты (живут в opencode, не в plugin) |
 | File-based submit ingestion (`inputs/`) | Worker execution (это `awf_start` делегирует в orchestrator) |
@@ -56,13 +54,13 @@ Plugin = **primary interface** между агентом и awf-orchestrator'о�
 
 ## 3. Проблема
 
-В существующем (pre-pivot) workflow:
+В agent workflow без typed инструментов:
 
 1. **Структурированные вводы неэффективны.** Выбор из 10 фич с приоритетами через chat — долгое печатание, error-prone, сложно вернуться назад. Согласование стека, моделей, ролей — требует многих сообщений туда-сюда.
 2. **Visibility для long-running pipeline плохая.** Нужно держать терминал открытым, либо постоянно опрашивать `awf status`. Worker работает 30 минут — пользователь не видит, что происходит внутри.
 3. **Onboarding трудный.** Пользователь ставит awf, не знает какие команды запускать, какие опции выбирать. README помогает, но всё равно — это порог.
 4. **Контекст loss между сессиями.** Возврат к проекту через неделю требует перечитывания chat-истории. Дашборд с актуальным состоянием — лучше.
-5. **Двойной интерфейс (CLI + MCP) — operability problem.** Pre-pivot: агент должен знать, когда использовать CLI (bash), когда — UI tools. Это создавало diverging behavior, race conditions (например `_run_in_background` в CLI vs `_start_in_background` в api — см. историю багфиксов). **Единый MCP primary path** устраняет двойную точку входа.
+5. **Bash-команды для workflow operations — operability problem.** Агент должен знать флаги, парсить stdout, не имеет typed contract. MCP tools дают typed interface — agent видит схему данных, не угадывает.
 
 ## 4. Решение — принцип
 
@@ -344,52 +342,37 @@ flowchart TD
 ### Принципы стек-диаграммы
 
 1. **opencode runtime** — общий, не зависит от наших продуктов.
-2. **MCP layer — ОДИН server** (было 2 в v0.4). `agent-workflow-ui` содержит и UI tools, и workflow tools.
+2. **MCP layer — один server.** `agent-workflow-ui` содержит и UI tools, и workflow tools.
 3. **awf Python package** — один source of truth для workflow logic. Plugin и CLI оба делегируют в `awf.api`.
 4. **File bus** — внутренний контракт awf. Plugin пишет только в `inputs/` (UI submits), остальное — через `awf.api`.
 5. **Browser** — terminal UI для forms/dashboards.
 6. **CLI** — тонкая dev/debug обёртка (пунктир = не основной path).
 
-### Что уходит из v0.4
-
-- **Отдельный `awf-mcp` server** — не нужен, tools встроены в `agent-workflow-ui`.
-- **«Plugin agnostic к orchestrator»** — больше не AGNOSTIC, plugin зависит от awf. Generality отложена до §11.
-- **«CLI primary»** — CLI сохранён как dev/debug, не как primary path.
-
-## 11. Future: возврат к standalone (out of current scope)
-
-**Когда:** при появлении реального второго orchestrator'а (не awf), для которого нужен UI plugin.
-
-**Что делать:**
-1. Выделить 11 awf-specific MCP tools в отдельный plugin `awf-mcp`.
-2. `agent-workflow-ui` вернуть к UI-only role (5 tools): open_form, read_submit, ...
-3. Через `inputs_dir` MCP-параметр — связка с любым orchestrator.
-4. `awf` и `agent-workflow-ui` публикуются отдельно, связаны только file bus протоколом.
-
-**Почему сейчас не так:** нет второго orchestrator'а. Двойная сложность (2 MCP server'а, 2 configs, diverging behavior) не оправдана. Когда появится — pivot обратно.
-
 ## 9. Принятые решения
 
-Все принципиальные вопросы закрыты 2026-07-25 после совместного обсуждения. Решения зафиксированы как **контракт vision v0.4** — пересмотру не подлежат без явного bug-ridden обоснования.
+Все принципиальные вопросы закрыты и зафиксированы как **контракт vision** — пересмотру не подлежат без явного bug-ridden обоснования.
 
 ### 9.1 Идентичность product'а
 
-**Q1 · Имя:** **`agent-workflow-ui`**. Не `agent-ui`, не `awf-ui`. Описательное, не конфликтует с именем awf, явная связь с агентской разработкой. Имя сохранено с v0.4 (когда продукт был standalone UI layer); в v0.5 plugin расширен workflow tools, но переименование не оправдано (узнаваемость для существующих пользователей).
+**Q1 · Имя:** **`agent-workflow-ui`**. Не `agent-ui`, не `awf-ui`. Описательное, не конфликтует с именем awf, явная связь с агентской разработкой.
 
-**Q2 · Расположение plugin (пересмотрено в v0.3):** **отдельная директория верхнего уровня `/agent_workflow_ui/` в том же репо (monorepo).** НЕ подпакет в `awf/`.
+**Q2 · Расположение plugin:** **отдельная директория верхнего уровня `/agent_workflow_ui/` в том же репо (monorepo).** НЕ подпакет в `awf/`.
 
 Структура репо:
 ```
 agentic-workflow/                 # monorepo
 ├── awf/                          # orchestrator (Python package)
+│   └── api/                      # public API package (11 functions + Result dataclasses)
 ├── agent_workflow_ui/            # MCP plugin (Python package, depends on awf)
 │   ├── __init__.py
-│   ├── mcp_server.py             # MCP server implementation
-│   ├── skill/
-│   │   └── SKILL.md              # policy: когда/как использовать формы
-│   ├── templates/                # default form/dashboard templates (Jinja2)
-│   └── pyproject.toml            # отдельный package на PyPI
-├── awf_mcp/                      # (future) awf-specific MCP server
+│   ├── server.py                 # FastMCP server, 16 tools
+│   ├── tools/
+│   │   ├── forms.py              # UI tools (5)
+│   │   ├── templates.py          # list_templates
+│   │   └── awf.py                # awf workflow tools (11)
+│   ├── render/                   # Jinja2 engine + default templates
+│   ├── SKILL.md                  # policy: когда/как использовать формы
+│   └── pyproject.toml            # dependencies += ["awf>=0.4.0"]
 ├── templates/                    # awf templates (roles, pipelines)
 ├── tests/
 ├── pyproject.toml                # workspace metadata
@@ -397,11 +380,10 @@ agentic-workflow/                 # monorepo
 ```
 
 **Принципы:**
-- Awf и agent-workflow-ui — **два независимых продукта** в одном репо.
-- Каждый публикуется как **отдельный package** на PyPI.
-- Связь между ними — только через **file bus protocol** (`protocols/communication.md`).
-- Awf-core не зависит от plugin'а. Plugin не зависит от awf internals (только от file bus contract).
-- При необходимости plugin можно вынести в отдельный репо без архитектурных изменений.
+- Awf и agent-workflow-ui — два пакета в одном monorepo.
+- `agent-workflow-ui` публикуется как отдельный package, зависит от `awf`.
+- Awf-core не зависит от plugin'а (направление зависимости: plugin → awf).
+- Business logic живёт в `awf.api`; plugin и CLI — тонкие обёртки.
 
 ### 9.2 Data flow
 
@@ -435,18 +417,16 @@ agentic-workflow/                 # monorepo
 
 ### 9.5 Boundary с awf
 
-**Q12 · Plugin зависит от awf (пересмотрено в v0.5):** В v0.4 plugin был agnostic через `inputs_dir` MCP-параметр. После pivot: plugin явно depends on `awf>=0.4.0`. UI tools (`open_form`, `read_submit`, ...) остаются agnostic (читают/пишут только `inputs/`). Workflow tools (`awf_init`, `awf_status`, ...) делегируют в `awf.api.*()` напрямую через Python import.
+**Q12 · Plugin зависит от awf.** `pyproject.toml: dependencies += ["awf>=0.4.0"]`. UI tools (`open_form`, `read_submit`, ...) остаются agnostic (читают/пишут только `inputs/`). Workflow tools (`awf_init`, `awf_status`, ...) делегируют в `awf.api.*()` напрямую через Python import.
 
-**Q13 · Один MCP server (пересмотрено в v0.5):**
-
-В v0.4 предполагалось два отдельных server'а: `agent-workflow-ui` (UI) + `awf-mcp` (state queries). В v0.5 — **один server `agent-workflow-ui`** с 16 tools:
+**Q13 · Один MCP server `agent-workflow-ui`** с 16 tools:
 
 | Tool group | Назначение | Что знает про awf |
 |---|---|---|
 | **UI tools** (5): `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates` | Forms lifecycle | Ничего. Agnostic. Только `inputs/` I/O. |
 | **awf workflow tools** (11): `awf_init`, `awf_status`, `awf_start`, ... | Полный lifecycle awf-проекта | Всё. Thin wrappers над `awf.api.*()`. |
 
-Преимущество: одна точка входа для агента, не нужно переключаться между server'ами. Недостаток: plugin не standalone (см. §11 — future возврат к standalone).
+Одна точка входа для агента — не нужно переключаться между server'ами, нет diverging semantics между CLI и MCP paths.
 
 ### 9.6 Вопросы, оставленные для архитектуры
 
@@ -460,26 +440,22 @@ agentic-workflow/                 # monorepo
 
 ## 10. Дальнейшие шаги
 
-1. ✅ ~~Согласовать vision~~ — выполнено.
-2. ✅ ~~Проработать архитектуру~~ — выполнено, [architecture.md](architecture.md) v1.1.
-3. ✅ ~~Проработать MVP~~ — выполнено. Реализован как **composite template `project-setup`** (вместо 4 отдельных). MCP tool signatures зафиксированы. SKILL.md обновлён.
-4. ✅ ~~Реализовать MVP~~ — выполнено v0.1.0: 5 MCP tools, HTTP endpoint, custom roles persistence, lazy skill install, 104 теста, 79% coverage.
-5. ✅ ~~Переработать `BACKLOG.md`~~ — BACKLOG.md синхронизирован с vision.
-6. **Расширять по приоритетам** — Сценарии 2, 3, 4, 5, 6 (см. соответствующие секции).
+Текущий статус: MCP-MIGRATION завершён (16 tools, 876 тестов). Plugin зависит от awf, импортирует `awf.api` напрямую.
+
+**Дальнейшее развитие** — по приоритетам сценариев: Сценарии 2, 3, 4, 5, 6 (см. соответствующие секции).
 
 ---
 
-**Версия документа:** v0.5 (architecture pivot: MCP primary path, plugin зависит от awf, один MCP server с 16 tools. Generality отложена до появления 2-го orchestrator'а — см. §11.)
+**Версия документа:** v0.5
 **Дата последнего обновления:** 2026-08-01
 **Зафиксированные принципы:**
-- **MCP primary path.** Agent вызывает typed MCP tools. CLI `awf` — dev/debug обёртка, не основной path.
+- **MCP primary path.** Agent вызывает typed MCP tools. CLI `awf` — dev/debug обёртка.
 - **Plugin зависит от awf** через `pyproject.toml: dependencies += ["awf>=0.4.0"]`. Все `awf_*` tools — thin async wrappers над `awf.api.*()` синхронными функциями.
-- **Один MCP server** `agent-workflow-ui` с 16 tools (5 UI + 11 awf workflow). Отдельный `awf-mcp` не нужен.
-- **Async submit** (hook model, без waiter-process). HTTP endpoint **всегда включён** — это единственный способ принять submit из браузера.
-- **Agent-driven templates.** Plugin ships с defaults; project-level override в `.agentic/templates/` создаётся только агентом (front+back), не пользователем.
+- **Один MCP server** `agent-workflow-ui` с 16 tools (5 UI + 11 awf workflow).
+- **Async submit** (hook model, без waiter-process). HTTP endpoint **всегда включён**.
+- **Agent-driven templates.** Plugin ships с defaults; project-level override в `.agentic/templates/` создаётся только агентом (front+back).
 - **MVP = composite template `project-setup`.** Все секции на одной странице. Pipeline НЕ выбирается явно — выводится supervisor'ом из состава команды.
 - MCP-based plugin (`agent-workflow-ui`), Jinja2 template engine, **timestamp-based form IDs** (`FORM-YYYYMMDDHHMMSS-XXXX`).
 - **Расположение:** `/agent_workflow_ui/` в monorepo. **Python ≥3.10** (mcp dep).
 - **Inline conflict resolution** через JS confirm() диалог перед перезаписью существующей роли.
 - **MVP features**: spec files upload, recent models grouping, inline delete 🗑 для ролей, supervisor variants, save checkbox 💾.
-- **Future (когда появится 2-й orchestrator):** выделить awf-specific tools в отдельный `awf-mcp` plugin, `agent-workflow-ui` вернуть к standalone UI-only role.
