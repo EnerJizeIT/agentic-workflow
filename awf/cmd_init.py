@@ -1,76 +1,28 @@
-"""Port of lib/init.sh — ``awf init`` command."""
+"""Port of lib/init.sh — ``awf init`` command.
+
+Thin CLI wrapper around :func:`awf.api.init_project`. Retains interactive
+prompts for human CLI use; opencode agents should call ``awf_init`` MCP tool
+instead (no prompts, deterministic stack detection).
+"""
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
 from typing import Any
 
-from . import git_utils, opencode_agents
-from ._atomic import atomic_write_text
+from . import api, git_utils, opencode_agents
 from .xdg import opencode_config_file
-
-
-def _find_framework_dir() -> Path:
-    """Find the framework root (parent of awf/ package, sibling of templates/)."""
-    return Path(__file__).resolve().parent.parent
-
-
-def _find_reused_model() -> str | None:
-    """Try to find an existing opencode agent's model to reuse as default."""
-    oc_cfg = opencode_config_file()
-    if not oc_cfg.exists():
-        return None
-    try:
-        import json
-        with open(oc_cfg, encoding="utf-8") as f:
-            d = json.load(f)
-        agents = d.get("agent") or {}
-        if isinstance(agents, dict):
-            for a in agents.values():
-                if isinstance(a, dict) and a.get("model"):
-                    return a["model"]
-    except Exception:
-        pass
-    return None
-
-
-CONFIG_TEMPLATE = '''project:
-  name: "{project_name}"
-  root: "."
-
-models:
-  supervisor:
-    description: "Current session model"
-# Agent roles (system-analyst, developer, qa, project-auditor, ...) are added
-# dynamically by the project-setup form on first submit (BD-12 auto-maps each
-# role to agent_name="worker"). Don't pre-populate here.
-
-verification:
-  test_cmd: "{test_cmd}"
-  lint_cmd: "{lint_cmd}"
-  typecheck_cmd: "{typecheck_cmd}"
-  build_cmd: "{build_cmd}"
-  coverage_cmd: ""
-
-phases:
-  current: ".agentic/phases/plan.md"
-
-default_pipeline: "default"
-
-retry:
-  max_attempts: 3
-  backoff_seconds: 0
-'''
 
 
 def run(args: Any) -> int:
     """Execute ``awf init`` and return exit code.
 
-    BD-28: simplified — UI form (project-setup) is now the only way to
-    configure pipeline + roles. ``awf init`` creates only the bare .agentic/
-    skeleton + minimal config.yaml + supervisor.md (used by current opencode
-    session). Pipeline.yaml and worker/reviewer/tester roles are populated
-    later by the form submit.
+    Flow:
+    1. Pre-checks (git repo, .agentic existence)
+    2. Interactive prompts (project_name, test/lint/typecheck/build commands)
+       — when called from CLI. MCP path skips these via api.init_project().
+    3. api.init_project() creates the .agentic/ skeleton
+    4. Optional: opencode agents + agent-workflow-ui plugin setup
     """
     force = getattr(args, "force", False)
     dry_run = getattr(args, "dry_run", False)
@@ -101,7 +53,6 @@ def run(args: Any) -> int:
     # (BD-32). Removed the dead prompt — was misleading users.
     worker_model = ""  # kept for opencode_agents.propose() below (legacy compat)
 
-    # Dry run
     if dry_run:
         print("[DRY RUN] Would create:")
         print("  .agentic/config.yaml (models added by project-setup form)")
@@ -110,107 +61,32 @@ def run(args: Any) -> int:
         print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
         return 0
 
-    # Create directories
-    for d in ["roles", "pipelines", "phases", "inbox", "outbox", "context", "logs", "reports"]:
-        (agentic / d).mkdir(parents=True, exist_ok=True)
-
-    # Generate config.yaml
-    config_content = CONFIG_TEMPLATE.format(
-        project_name=project_name,
-        test_cmd=test_cmd,
-        lint_cmd=lint_cmd,
-        typecheck_cmd=typecheck_cmd,
-        build_cmd=build_cmd,
-    )
-    atomic_write_text(agentic / "config.yaml", config_content)
-
-    # Copy supervisor.md template (used by current opencode session — the
-    # form will add worker/reviewer/tester roles later based on user selection).
-    framework_dir = _find_framework_dir()
-    templates_dir = framework_dir / "templates"
-    shutil.copy2(templates_dir / "roles" / "supervisor.md", agentic / "roles" / "supervisor.md")
-
-    # П2: plan.md stub — find vision/README in project root and point
-    # supervisor to it. Without this, supervisor (LLM) sees an empty plan
-    # and has to guess where the project context lives.
-    from .paths import find_vision_file
-    vision_path = find_vision_file(".")
-    if vision_path is not None:
-        # plan.md lives in .agentic/phases/, vision in project root.
-        # Relative path: ../../<vision_filename>
-        rel = Path("..") / ".." / vision_path.name
-        plan_body = (
-            f"# {project_name} — Plan\n\n"
-            f"> Контекст проекта: прочитай `{rel}` перед планированием.\n\n"
-            f"Steps:\n"
-            f"- [ ] (supervisor заполнит после изучения vision)\n"
+    # Delegate skeleton creation to api.init_project
+    try:
+        result = api.init_project(
+            project_dir=Path("."),
+            force=force,
+            project_name=project_name,
+            test_cmd=test_cmd,
+            lint_cmd=lint_cmd,
+            typecheck_cmd=typecheck_cmd,
+            build_cmd=build_cmd,
         )
-    else:
-        plan_body = (
-            f"# {project_name} — Plan\n\n"
-            f"> Vision/README не найден в корне проекта. Спроси пользователя "
-            f"о контексте перед планированием.\n\n"
-            f"Steps:\n"
-            f"- [ ] (supervisor заполнит)\n"
-        )
-    (agentic / "phases" / "plan.md").write_text(plan_body, encoding="utf-8")
-
-    # Update .gitignore
-    # inputs/ and dashboards/ — runtime state from agent-workflow-ui plugin (submits, rendered dashboards).
-    gitignore_block = (
-        ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n.agentic/logs/\n.agentic/reports/\n"
-        ".agentic/inputs/\n.agentic/dashboards/"
-    )
-    gitignore = Path(".gitignore")
-
-    if gitignore.exists():
-        content = gitignore.read_text(encoding="utf-8")
-        if ".agentic/inbox/" not in content:
-            gitignore.write_text(content + "\n# Agentic workflow runtime files\n" + gitignore_block + "\n", encoding="utf-8")
-        elif ".agentic/inputs/" not in content:
-            # Pre-existing gitignore from older awf — append plugin runtime dirs.
-            gitignore.write_text(content + "\n# agent-workflow-ui runtime\n.agentic/inputs/\n.agentic/dashboards/\n", encoding="utf-8")
-    else:
-        gitignore.write_text("# Agentic workflow runtime files\n" + gitignore_block + "\n", encoding="utf-8")
+    except api.AwfApiError as e:
+        print(f"ERROR: {e}")
+        return 1
 
     print()
-    print("Created .agentic/ skeleton (supervisor.md + minimal config.yaml)")
+    print(f"Created .agentic/ skeleton for: {result.project_name}")
+    print(f"  Stack detected: {result.stack}")
+    print(f"  Vision: {result.vision_path or '(not found)'}")
     print("Pipeline + team roles will be configured via project-setup form on first run.")
 
     # Offer to create opencode agents — only `worker` (the universal agent
     # that loads role .md as instruction). Other roles come from skills.
-    oc_cfg = opencode_config_file()
-    if oc_cfg.exists():
-        proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
+    _offer_opencode_agent_setup(worker_model)
 
-        if proposal.startswith("ERR:"):
-            print()
-            print(f"NOTE: cannot propose agent changes — {proposal}")
-            print(f"      Add 'worker' manually to {oc_cfg}.")
-        elif proposal.startswith("NOTHING:"):
-            print()
-            print(proposal)
-        elif proposal.startswith("PROPOSE:"):
-            detail = proposal[len("PROPOSE:"):]
-            print()
-            print(f"Proposed change to {oc_cfg}:")
-            print(detail)
-            print("  (a timestamped backup ${cfg}.bak-<ts> will be created before writing)")
-            ans = input("Apply this change to opencode config? [Y/n] ").strip().lower()
-            if ans and ans not in ("y", "yes"):
-                print("Skipping agent creation (create them manually if needed).")
-            else:
-                result = opencode_agents.apply(str(oc_cfg), ["worker"], worker_model)
-                print(result)
-        else:
-            print()
-            print(f"NOTE: unexpected proposal output: {proposal}")
-    else:
-        print()
-        print(f"NOTE: no opencode config found at {oc_cfg}")
-        print("      Create the 'worker' opencode agent manually (see README → Requirements).")
-
-    _offer_plugin_install(project_name)
+    _offer_plugin_install(result.project_name)
 
     print()
     print("Next steps:")
@@ -220,7 +96,43 @@ def run(args: Any) -> int:
     return 0
 
 
-def _offer_plugin_install(project_name):
+def _offer_opencode_agent_setup(worker_model: str) -> None:
+    """Offer to add 'worker' agent to opencode.json. No-op if already there."""
+    oc_cfg = opencode_config_file()
+    if not oc_cfg.exists():
+        print()
+        print(f"NOTE: no opencode config found at {oc_cfg}")
+        print("      Create the 'worker' opencode agent manually (see README → Requirements).")
+        return
+
+    proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
+    if proposal.startswith("ERR:"):
+        print()
+        print(f"NOTE: cannot propose agent changes — {proposal}")
+        print(f"      Add 'worker' manually to {oc_cfg}.")
+        return
+    if proposal.startswith("NOTHING:"):
+        print()
+        print(proposal)
+        return
+    if proposal.startswith("PROPOSE:"):
+        detail = proposal[len("PROPOSE:"):]
+        print()
+        print(f"Proposed change to {oc_cfg}:")
+        print(detail)
+        print("  (a timestamped backup ${cfg}.bak-<ts> will be created before writing)")
+        ans = input("Apply this change to opencode config? [Y/n] ").strip().lower()
+        if ans and ans not in ("y", "yes"):
+            print("Skipping agent creation (create them manually if needed).")
+            return
+        result = opencode_agents.apply(str(oc_cfg), ["worker"], worker_model)
+        print(result)
+        return
+    print()
+    print(f"NOTE: unexpected proposal output: {proposal}")
+
+
+def _offer_plugin_install(project_name: str) -> None:
     """Offer to configure agent-workflow-ui plugin."""
     print()
     print("agent-workflow-ui plugin (optional):")
@@ -228,11 +140,8 @@ def _offer_plugin_install(project_name):
     print("  See: vision/agent-ui-plugin.md")
 
     try:
-        # A8: use importlib.util.find_spec instead of import_module to avoid
-        # actually loading the plugin (which has side effects: skill_installer
-        # auto-runs on import). find_spec only checks if the package is
-        # importable without executing it.
         import importlib.util
+
         plugin_installed = importlib.util.find_spec("agent_workflow_ui") is not None
     except (ImportError, ValueError):
         plugin_installed = False
@@ -249,7 +158,7 @@ def _offer_plugin_install(project_name):
         print("  After install, re-run `awf init` to configure automatically.")
 
 
-def _add_mcp_config_to_opencode():
+def _add_mcp_config_to_opencode() -> None:
     """Add agent-workflow-ui MCP block to opencode.json."""
     import json
     from datetime import datetime

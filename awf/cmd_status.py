@@ -1,119 +1,38 @@
-"""Port of lib/status.sh — ``awf status`` command."""
+"""Port of lib/status.sh — ``awf status`` command.
+
+Thin CLI wrapper around :func:`awf.api.get_status`.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from . import config as cfg_mod
-from . import paths, todos
-
-
-def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]:
-    """Scan TODO-*.ready files and count DONE / BLOCKED (canonical + legacy).
-
-    H3 fix: was canonical-only. Now uses signals.find_signal_file to also
-    accept legacy short form (DONE-NNNN.ready vs canonical DONE-TODO-NNNN.ready).
-
-    Returns (done_count, blocked_count, blocked_ids).
-    """
-    from .signals import find_signal_file
-
-    done_count = 0
-    blocked_count = 0
-    blocked_ids: list[str] = []
-
-    if not inbox.exists():
-        return done_count, blocked_count, blocked_ids
-
-    for ready_file in sorted(inbox.glob("TODO-*.ready")):
-        if not ready_file.is_file():
-            continue
-        todo_id = ready_file.stem
-        done = find_signal_file(outbox, "DONE", todo_id, ".ready")
-        blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
-        if done:
-            done_count += 1
-        elif blocked:
-            blocked_count += 1
-            blocked_ids.append(todo_id)
-
-    return done_count, blocked_count, blocked_ids
-
-
-def _read_progress(outbox: Path, todo_id: str) -> dict[str, Any]:
-    """Parse PROGRESS-TODO-NNNN.md for task counts and last entry."""
-    progress_file = outbox / f"PROGRESS-{todo_id}.md"
-    if not progress_file.exists():
-        return {}
-
-    text = progress_file.read_text(encoding="utf-8")
-    task_lines = [line for line in text.splitlines() if line.startswith("## Task")]
-    total = len(task_lines)
-    done = sum(1 for ln in task_lines if "[x]" in ln)
-    failed = sum(1 for ln in task_lines if "[!]" in ln)
-    last = task_lines[-1] if task_lines else ""
-
-    return {
-        "total": total,
-        "done": done,
-        "failed": failed,
-        "last": last,
-    }
-
-
-def _read_ack(inbox: Path, todo_id: str) -> str | None:
-    """Read ACK decision from inbox, or None if no ACK file."""
-    ack_file = inbox / f"ACK-{todo_id}.ready"
-    if not ack_file.exists():
-        return None
-    text = ack_file.read_text(encoding="utf-8")
-    for line in text.splitlines():
-        if "decision" in line:
-            return line.strip()
-    return "none"
+from . import api
 
 
 def run(args: Any) -> int:
     """Execute ``awf status`` and return exit code."""
-    project_dir = Path(args.project_dir).resolve()
-    agentic = paths.agentic_dir(project_dir)
+    project_dir = Path(getattr(args, "project_dir", ".")).resolve()
 
-    if not agentic.is_dir():
-        print("No .agentic/ found. Run 'awf init' first.")
+    try:
+        result = api.get_status(project_dir=project_dir)
+    except api.AwfApiError as e:
+        print(str(e))
         return 1
 
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-
-    # Project name
-    config_data = cfg_mod.load(project_dir)
-    project_name = cfg_mod.get(config_data, "project.name", "Project") or "Project"
-
     print("=== Agentic Workflow Status ===")
-    print(f"Project: {project_name}")
+    print(f"Project: {result.project_name}")
     print()
 
-    # Active TODOs
-    active_ids = todos.list_active_todos(inbox, outbox)
-    newest_todo = active_ids[0] if active_ids else ""
-
-    # Count DONE / BLOCKED
-    done_count, blocked_count, blocked_ids = _count_done_blocked(inbox, outbox)
-    active_count = len(active_ids)
-
-    # Print blocked
-    for bid in blocked_ids:
-        print(f"Blocked: {bid}")
-
-    # Print active TODOs with progress
-    for todo_id in active_ids:
+    for entry in result.active_todos:
+        todo_id = entry["todo_id"]
         print(f"Active: {todo_id}")
 
-        ack = _read_ack(inbox, todo_id)
+        ack = entry.get("ack")
         if ack is not None:
             print(f"  ACK: {ack}")
 
-        progress = _read_progress(outbox, todo_id)
+        progress = entry.get("progress")
         if progress:
             print(f"  Progress: {progress['done']}/{progress['total']} tasks done")
             if progress["failed"] > 0:
@@ -123,25 +42,21 @@ def run(args: Any) -> int:
         else:
             print("  Progress: (none — worker has not started)")
 
-    # Summary
+    for bid in result.blocked_ids:
+        print(f"Blocked: {bid}")
+
     print()
     print("Summary:")
-    print(f"  Completed: {done_count}")
-    print(f"  Blocked:   {blocked_count}")
-    print(f"  Active:    {active_count}")
+    print(f"  Completed: {result.done_count}")
+    print(f"  Blocked:   {result.blocked_count}")
+    print(f"  Active:    {len(result.active_todos)}")
 
-    # Conflict warning
-    if active_count > 1:
+    if result.conflict_warning:
         print()
-        print(f"\u26a0\ufe0f  {active_count} active TODOs detected.")
-        print(f"   Orchestrator will run: {newest_todo} (highest NNNN).")
-        print("   The other(s) are stale and should be closed explicitly:")
-        print("     - rollback:    awf rollback TODO-NNNN")
-        print("     - drop orphan: awf reset --orphans")
+        print(f"\u26a0\ufe0f  {result.conflict_warning}")
 
-    # All clear
-    if active_count == 0 and blocked_count == 0:
+    if result.suggestion:
         print()
-        print("No active tasks. Supervisor should create the next TODO, then run: awf start")
+        print(result.suggestion)
 
     return 0

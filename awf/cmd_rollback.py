@@ -1,12 +1,13 @@
-"""Port of lib/rollback.sh — ``awf rollback`` command."""
+"""Port of lib/rollback.sh — ``awf rollback`` command.
+
+Thin CLI wrapper around :func:`awf.api.rollback`.
+"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import paths
-from ._atomic import atomic_write_text
+from . import api
 
 
 def run(args: Any) -> int:
@@ -19,53 +20,32 @@ def run(args: Any) -> int:
         mode = "dry-run"
     project_dir = Path(getattr(args, "project_dir", "."))
 
-    context_dir = paths.context_dir(project_dir)
-    inbox = paths.inbox(project_dir)
-
-    baseline_sha_file = context_dir / f"BASELINE-{todo_id}.sha"
-    if not baseline_sha_file.exists():
-        print(f"ERROR: Baseline SHA not found: {baseline_sha_file}")
-        print("Cannot rollback without baseline.")
+    try:
+        result = api.rollback(
+            project_dir=project_dir,
+            todo_id=todo_id,
+            mode=mode,
+        )
+    except api.AwfApiError as e:
+        print(str(e))
         return 1
 
-    baseline_sha = baseline_sha_file.read_text(encoding="utf-8").strip()
+    print(f"Rolling back {result.todo_id} to baseline: {result.baseline_sha}")
+    print(f"Mode: {result.mode}")
 
-    print(f"Rolling back {todo_id} to baseline: {baseline_sha}")
-    print(f"Mode: {mode}")
-
-    if mode == "dry-run":
-        print(f"[DRY RUN] Would run: git reset --{mode[5:]} {baseline_sha}")
+    if result.mode == "dry-run":
         print()
         print("Changes since baseline:")
-        import subprocess
-        result = subprocess.run(
-            ["git", "diff", baseline_sha, "--stat"],
-            cwd=str(project_dir),
-            capture_output=True, text=True, check=False,
-        )
-        print(result.stdout)
+        print(result.diff_stat)
         return 0
 
-    import subprocess
-    if mode == "hard":
-        subprocess.run(["git", "reset", "--hard", baseline_sha],
-                       cwd=str(project_dir), check=True)
-    else:
-        subprocess.run(["git", "reset", baseline_sha], cwd=str(project_dir), check=True)
+    if result.diff_stat.strip():
+        print()
+        print("Changes reset:")
+        print(result.diff_stat)
 
-    # Create ACK file
-    inbox.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    ack_content = f"""signal: TASK_ACK
-ack_type: DONE
-decision: rollback
-referenced_task_id: {todo_id}
-baseline_sha: {baseline_sha}
-created_by: supervisor
-created_at: {ts}
-"""
-    atomic_write_text(inbox / f"ACK-{todo_id}.ready", ack_content)
-
-    print(f"Rolled back to {baseline_sha}")
-    print(f"ACK file: {inbox}/ACK-{todo_id}.ready")
+    print()
+    print(f"Rolled back to {result.baseline_sha}")
+    if result.ack_file:
+        print(f"ACK file: {result.ack_file}")
     return 0

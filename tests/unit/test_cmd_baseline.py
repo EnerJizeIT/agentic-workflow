@@ -1,11 +1,16 @@
-"""Unit tests for awf.cmd_baseline — shell injection safety."""
+"""Unit tests for awf.cmd_baseline — shell injection safety.
+
+H3 regression: after MCP-1 refactor, baseline logic lives in awf.api.
+Tests patch awf.api.subprocess (not cmd_baseline) to verify the safety
+property survives the move.
+"""
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from awf import cmd_baseline
+from awf import api, cmd_baseline
 
 
 class TestBaselineShellSafety:
@@ -32,7 +37,7 @@ class TestBaselineShellSafety:
         monkeypatch.chdir(proj)
         args = type("Args", (), {"todo_id": "T1"})()
 
-        with patch("awf.cmd_baseline.subprocess.run") as mock_run:
+        with patch("awf.api.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 [], returncode=0, stdout="ok\n", stderr="",
             )
@@ -57,7 +62,7 @@ class TestBaselineShellSafety:
 
         args = type("Args", (), {"todo_id": "T2"})()
 
-        with patch("awf.cmd_baseline.subprocess.run") as mock_run:
+        with patch("awf.api.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 [], returncode=1, stdout="", stderr=""
             )
@@ -81,7 +86,7 @@ class TestBaselineShellSafety:
 
         args = type("Args", (), {"todo_id": "T3"})()
 
-        with patch("awf.cmd_baseline.subprocess.run") as mock_run:
+        with patch("awf.api.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 [], returncode=0, stdout="", stderr=""
             )
@@ -98,7 +103,7 @@ class TestBaselineShellSafety:
         monkeypatch.chdir(proj)
         args = type("Args", (), {"todo_id": "T4"})()
 
-        with patch("awf.cmd_baseline.subprocess.run") as mock_run:
+        with patch("awf.api.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 [], returncode=0, stdout="Python 3.12\n", stderr=""
             )

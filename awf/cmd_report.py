@@ -1,93 +1,56 @@
-"""Port of lib/report.sh — ``awf report`` command."""
+"""Port of lib/report.sh — ``awf report`` command.
+
+Thin CLI wrapper around :func:`awf.api.get_report`.
+"""
 from __future__ import annotations
 
-import subprocess
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import config as cfg_mod
-from . import paths
+from . import api
 
 
 def run(args: Any) -> int:
     """Execute ``awf report`` and return exit code."""
     project_dir = Path(getattr(args, "project_dir", "."))
-    agentic = project_dir / ".agentic"
-    if not agentic.is_dir():
-        print(f"No .agentic/ found at {project_dir}. Run 'awf init' first.")
+
+    try:
+        result = api.get_report(project_dir=project_dir)
+    except api.AwfApiError as e:
+        print(str(e))
         return 1
 
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-    config_file = paths.config_file(project_dir)
-
-    project_name = "Project"
-    if config_file.exists():
-        config_data = cfg_mod.load(project_dir)
-        name = cfg_mod.get(config_data, "project.name", "Project") or "Project"
-        project_name = name
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print("==============================================")
     print("  Agentic Workflow Report")
-    print(f"  Project: {project_name}")
-    print(f"  Generated: {now}")
+    print(f"  Project: {result.project_name}")
+    print(f"  Generated: {result.generated_at}")
     print("==============================================")
     print()
 
-    done_count = 0
-    blocked_count = 0
-
-    if inbox.exists():
-        for ready_file in sorted(inbox.glob("TODO-*.ready")):
-            if not ready_file.is_file():
-                continue
-            todo_id = ready_file.stem
-
-            # H2 fix: support legacy short form (was canonical-only).
-            from .signals import find_signal_file
-            done = find_signal_file(outbox, "DONE", todo_id, ".ready")
-            blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
-            if done:
-                print(f"  OK   {todo_id}")
-                done_count += 1
-            elif blocked:
-                print(f"  BLK  {todo_id}")
-                blocked_count += 1
-            else:
-                print(f"  ...  {todo_id}  (in progress)")
+    for item in result.items:
+        status = item["status"]
+        todo_id = item["todo_id"]
+        if status == "OK":
+            print(f"  OK   {todo_id}")
+        elif status == "BLK":
+            print(f"  BLK  {todo_id}")
+        else:
+            print(f"  ...  {todo_id}  (in progress)")
 
     print()
-    print(f"Completed: {done_count} | Blocked: {blocked_count}")
+    print(f"Completed: {result.done_count} | Blocked: {result.blocked_count}")
 
-    # Git diff stats (D2: must run in project_dir, not awf's CWD)
-    print()
-    print("Files changed:")
-    result = subprocess.run(
-        ["git", "diff", "--stat"],
-        cwd=project_dir,
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        print(result.stdout)
+    if result.git_diff.strip():
+        print()
+        print("Files changed:")
+        print(result.git_diff)
     else:
-        print("  (no changes or not a git repo)")
+        print()
+        print("Files changed: (no changes or not a git repo)")
 
-    # Latest test results
-    if outbox.exists():
-        logs = sorted(outbox.glob("TEST-RESULTS-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if logs:
-            latest = logs[0]
-            try:
-                content = latest.read_text(encoding="utf-8")
-                lines = content.splitlines()
-                tail = lines[-5:] if len(lines) > 5 else lines
-                print()
-                print("Latest test results:")
-                for line in tail:
-                    print(line)
-            except OSError:
-                pass
+    if result.latest_test_log_tail:
+        print()
+        print("Latest test results:")
+        print(result.latest_test_log_tail)
 
     return 0

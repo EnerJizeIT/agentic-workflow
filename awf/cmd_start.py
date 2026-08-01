@@ -1,4 +1,8 @@
-"""Entry point for ``awf start`` and ``awf continue``."""
+"""Entry point for ``awf start`` and ``awf continue``.
+
+Thin CLI wrapper around :func:`awf.api.start_pipeline` /
+:func:`awf.api.continue_pipeline`.
+"""
 from __future__ import annotations
 
 import subprocess
@@ -6,8 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import paths, todos
-from .orchestrator import run_pipeline
+from . import api, paths, todos
 
 
 def _find_active_todo(project_dir: Path) -> str:
@@ -18,20 +21,17 @@ def _find_active_todo(project_dir: Path) -> str:
 def _run_in_background(args: Any) -> int:
     """Re-launch `awf start` detached via setsid-equivalent, log to a file.
 
-    This is the Python equivalent of the old bash `setsid awf start ... </dev/null >LOG 2>&1 &`.
-    `start_new_session=True` does the setsid; stdin/out/err are redirected so the
-    detached process is fully independent of the launching terminal.
+    Kept as cmd_start helper (not in api.py) because it rebuilds sys.argv —
+    api.start_pipeline(background=True) uses its own argv reconstruction.
+    This legacy path is preserved for full backward compat with existing
+    e2e tests that pass --background via CLI.
     """
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
     logs_dir = paths.agentic_dir(project_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / "awf-start.out"
 
-    # Rebuild the argv WITHOUT --background so the detached child runs normally.
-    # We keep all other args (including --auto, --pipeline, --from-stage, --timeout).
-    # H6 fix: also handle --project-dir=/path form (was missing — only space-separated
-    # form worked). Without this, 'awf start --background --project-dir=/x' launched
-    # the child in CWD because the post-loop check added a second --project-dir.
+    # H6 fix: handle both --project-dir=X and --project-dir X forms
     raw_argv = sys.argv[1:]
     child_argv = [sys.executable, "-m", "awf", "start"]
     skip_next_value = False
@@ -52,7 +52,6 @@ def _run_in_background(args: Any) -> int:
             has_project_dir = True
         child_argv.append(arg)
 
-    # Only add --project-dir if not already present in any form
     if not has_project_dir:
         child_argv += ["--project-dir", str(project_dir)]
 
@@ -63,7 +62,7 @@ def _run_in_background(args: Any) -> int:
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,
-            start_new_session=True,  # equivalent of setsid — detached process group
+            start_new_session=True,
         )
 
     print(f"awf start running in background (PID {proc.pid})")
@@ -77,7 +76,7 @@ def run(args: Any) -> int:
     command = getattr(args, "command", "start")
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
 
-    # --background: re-exec detached, then return immediately.
+    # --background: legacy e2e-tested path, kept as-is
     if command == "start" and getattr(args, "background", False):
         return _run_in_background(args)
 
@@ -89,4 +88,32 @@ def run(args: Any) -> int:
         print("=== Agentic Workflow: Continuing Pipeline ===")
         print(f"Resuming with: {current_todo}")
 
-    return run_pipeline(args)
+    try:
+        if command == "continue":
+            result = api.continue_pipeline(
+                project_dir=project_dir,
+                pipeline=getattr(args, "pipeline", None),
+                from_stage=getattr(args, "from_stage", None),
+                auto=getattr(args, "auto", False),
+                timeout=getattr(args, "timeout", 3600),
+            )
+        else:
+            result = api.start_pipeline(
+                project_dir=project_dir,
+                pipeline=getattr(args, "pipeline", None),
+                from_stage=getattr(args, "from_stage", None),
+                auto=getattr(args, "auto", False),
+                timeout=getattr(args, "timeout", 3600),
+            )
+    except api.AwfApiError as e:
+        print(str(e))
+        return 1
+
+    if result.run_mode == "noop":
+        print(result.message)
+        return 0
+
+    # Foreground run completed — exit code from orchestrator
+    if result.exit_code is not None:
+        return result.exit_code
+    return 0

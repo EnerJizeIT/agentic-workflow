@@ -77,13 +77,13 @@ class TestCommitGateMonotonic:
 class TestCmdReportCanonicalLegacy:
 
     def test_cmd_report_uses_find_signal_file(self):
-        """H2 fix: cmd_report uses find_signal_file (not canonical-only)."""
+        """H2 fix: report logic uses find_signal_file (now in api.py)."""
         import inspect
 
-        from awf import cmd_report
+        from awf import api
 
-        src = inspect.getsource(cmd_report)
-        assert "find_signal_file" in src, "H2: cmd_report must use find_signal_file"
+        src = inspect.getsource(api)
+        assert "find_signal_file" in src, "H2: api must use find_signal_file for report"
 
     def test_cmd_report_legacy_short_form_recognized(self, tmp_path, monkeypatch):
         """awf report shows DONE for legacy short form DONE-0001.ready."""
@@ -155,7 +155,8 @@ class TestCmdReportCanonicalLegacy:
 class TestCmdBaselineGlobFix:
 
     def test_baseline_lists_created_files(self, tmp_path, capsys, monkeypatch):
-        """L1 fix: cmd_baseline lists created baseline files."""
+        """L1 fix: baseline lists created files (now via api.create_baseline
+        result.files_created, surfaced via cmd_baseline stdout)."""
         from types import SimpleNamespace
 
         from awf import cmd_baseline
@@ -165,9 +166,9 @@ class TestCmdBaselineGlobFix:
         (proj / ".agentic" / "context").mkdir()
         (proj / ".agentic" / "config.yaml").write_text("project:\n  name: t\n")
 
-        # Mock git (no git repo)
-        monkeypatch.setattr("awf.cmd_baseline.git_utils.is_git_repo", lambda *_: False)
-        monkeypatch.setattr("awf.cmd_baseline.shutil.which", lambda _: None)
+        # Mock git (no git repo) — patch at api module (logic moved there in MCP-1)
+        monkeypatch.setattr("awf.api.git_utils.is_git_repo", lambda *_: False)
+        monkeypatch.setattr("awf.api.shutil.which", lambda _: None)
 
         args = SimpleNamespace(todo_id="TODO-0001", project_dir=str(proj))
         result = cmd_baseline.run(args)
@@ -289,21 +290,21 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src, "H3: verify.py should use atomic_write_text"
 
     def test_cmd_baseline_uses_atomic(self):
-        """H3: cmd_baseline.py uses atomic_write_text."""
+        """H3: baseline logic uses atomic_write_text (now in api.py)."""
         import inspect
 
-        from awf import cmd_baseline
+        from awf import api
 
-        src = inspect.getsource(cmd_baseline)
+        src = inspect.getsource(api)
         assert "atomic_write_text" in src
 
     def test_cmd_init_uses_atomic(self):
-        """H3: cmd_init.py uses atomic_write_text."""
+        """H3: init logic uses atomic_write_text (now in api.py)."""
         import inspect
 
-        from awf import cmd_init
+        from awf import api
 
-        src = inspect.getsource(cmd_init)
+        src = inspect.getsource(api)
         assert "atomic_write_text" in src
 
     def test_cmd_analyze_roles_uses_atomic(self):
@@ -316,21 +317,21 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src
 
     def test_cmd_add_role_uses_atomic(self):
-        """H3: cmd_add_role.py uses atomic_write_text."""
+        """H3: add_role logic uses atomic_write_text (now in api.py)."""
         import inspect
 
-        from awf import cmd_add_role
+        from awf import api
 
-        src = inspect.getsource(cmd_add_role)
+        src = inspect.getsource(api)
         assert "atomic_write_text" in src
 
     def test_cmd_rollback_uses_atomic(self):
-        """H3: cmd_rollback.py uses atomic_write_text."""
+        """H3: rollback logic uses atomic_write_text (now in api.py)."""
         import inspect
 
-        from awf import cmd_rollback
+        from awf import api
 
-        src = inspect.getsource(cmd_rollback)
+        src = inspect.getsource(api)
         assert "atomic_write_text" in src
 
     def test_atomic_write_crash_cleans_temp(self, tmp_path, monkeypatch):

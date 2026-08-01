@@ -161,9 +161,10 @@ class TestApproveCommit:
         with pytest.raises(api.AwfApiError, match="todo_id is required"):
             api.approve_commit(tmp_git_repo, "")
 
-    def test_missing_agentic_raises(self, tmp_git_repo):
-        with pytest.raises(api.AwfApiError, match="No .agentic/"):
-            api.approve_commit(tmp_git_repo, "TODO-0001")
+    def test_creates_agentic_inbox_if_missing(self, tmp_git_repo):
+        """approve_commit is idempotent — creates .agentic/inbox/ if missing."""
+        result = api.approve_commit(tmp_git_repo, "TODO-0009")
+        assert (tmp_git_repo / ".agentic" / "inbox" / "APPROVE-TODO-0009.ready").exists()
 
 
 # ─── create_baseline ────────────────────────────────────────────────────

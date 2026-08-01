@@ -1,24 +1,24 @@
-"""Entry point for ``awf approve <todo-id>``."""
+"""Entry point for ``awf approve <todo-id>``.
+
+Thin CLI wrapper around :func:`awf.api.approve_commit`.
+"""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from . import paths
+from . import api
 
 
 def run(args: Any) -> int:
     """Create APPROVE-TODO-NNNN.ready signal to authorize auto-commit."""
-    project_dir = Path(getattr(args, "project_dir", ".")).resolve()
-    todo_id = getattr(args, "todo_id", "")
-
-    if not todo_id:
-        print("Usage: awf approve <TODO-ID>")
+    try:
+        result = api.approve_commit(
+            project_dir=getattr(args, "project_dir", "."),
+            todo_id=getattr(args, "todo_id", ""),
+        )
+    except api.AwfApiError as e:
+        print(str(e))
         return 1
-
-    inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
-    signal = inbox / f"APPROVE-{todo_id}.ready"
-    signal.touch()
-    print(f"Approved {todo_id}. Pipeline (if waiting) will commit and continue.")
+    print(f"Approved {result.todo_id}. Pipeline (if waiting) will commit and continue.")
+    print(f"Signal: {result.signal_file}")
     return 0

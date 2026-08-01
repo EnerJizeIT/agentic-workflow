@@ -314,12 +314,12 @@ def _read_file_text(path: Path, max_chars: int | None = None) -> str:
 def approve_commit(project_dir: Path, todo_id: str) -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
 
-    Raises AwfApiError if todo_id is empty.
+    Idempotent — creates .agentic/inbox/ if missing. Raises AwfApiError
+    only if todo_id is empty.
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
-    project_dir = project_dir.resolve()
-    _require_agentic(project_dir)
+    project_dir = Path(project_dir).resolve()
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
     signal = inbox / f"APPROVE-{todo_id}.ready"
@@ -337,7 +337,7 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     context_dir = paths.context_dir(project_dir)
@@ -442,7 +442,7 @@ def rollback(
     if mode not in ("hard", "soft", "dry-run"):
         raise AwfApiError(f"invalid mode '{mode}', expected hard/soft/dry-run")
 
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
     context_dir = paths.context_dir(project_dir)
     inbox = paths.inbox(project_dir)
@@ -568,7 +568,7 @@ def _read_ack(inbox: Path, todo_id: str) -> str | None:
 
 def get_status(project_dir: Path) -> StatusResult:
     """Get current workflow state — active TODOs, progress, blocked, conflicts."""
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     inbox = paths.inbox(project_dir)
@@ -629,7 +629,7 @@ def get_report(project_dir: Path) -> ReportResult:
     """Generate workflow report — task statuses, git diff, latest test log."""
     from datetime import datetime
 
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     inbox = paths.inbox(project_dir)
@@ -720,7 +720,7 @@ def reset_runtime(
     - ``orphans=True``: remove orphan TODOs (active without progress)
     - default: clean inbox/outbox/context/logs/reports (keep phases)
     """
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     agentic = project_dir / ".agentic"
     if not agentic.is_dir():
         # Idempotent — nothing to reset
@@ -817,7 +817,7 @@ def add_role(
     """Generate a new role template at ``.agentic/roles/{role_name}.md``."""
     if not role_name:
         raise AwfApiError("role_name is required")
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     if not model:
@@ -869,7 +869,7 @@ def init_project(
     - Not a git repository
     - .agentic/ already exists (unless ``force=True``)
     """
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_git_repo(project_dir)
 
     agentic = project_dir / ".agentic"
@@ -1077,7 +1077,7 @@ def start_pipeline(
     immediately with a PID. Otherwise runs synchronously and returns the
     final exit code.
     """
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     if background:
@@ -1118,7 +1118,7 @@ def continue_pipeline(
     timeout: int = 3600,
 ) -> StartResult:
     """Resume an interrupted pipeline. Finds newest active TODO and continues."""
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     current_todo = todos.newest_active(project_dir)
@@ -1225,7 +1225,7 @@ def analyze_roles(
     captured and returned in ``patches_applied`` for caller convenience.
     Refactor to extract pure logic — tracked as MCP-1 follow-up.
     """
-    project_dir = project_dir.resolve()
+    project_dir = Path(project_dir).resolve()
     _require_agentic(project_dir)
 
     import contextlib

@@ -1,41 +1,13 @@
-"""Port of lib/add-role.sh — ``awf add-role`` command."""
+"""Port of lib/add-role.sh — ``awf add-role`` command.
+
+Thin CLI wrapper around :func:`awf.api.add_role`.
+"""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from ._atomic import atomic_write_text
-
-ROLE_TEMPLATE = '''# ROLE: {role_name}
-
-**Role:** {description}
-**Runs as:** `opencode run --agent {role_name}`
-**Model:** {model}
-
-## 1. Who you are
-
-<describe the responsibility of this role>
-
-## 2. Input
-
-This role receives:
-- <what comes from the previous stage>
-
-## 3. Actions
-
-<describe what to do with the input>
-
-## 4. Output
-
-When finished, create one of:
-- `.agentic/outbox/APPROVED-{{NNNN}}.md` + `.ready` — success
-- `.agentic/outbox/REJECTED-{{NNNN}}.md` + `.ready` — needs fixes
-- `.agentic/outbox/BLOCKED-{{NNNN}}.md` + `.ready` — needs supervisor
-
-## 5. Prohibitions
-
-<list what this role must NOT do>
-'''
+from . import api
 
 
 def run(args: Any) -> int:
@@ -46,29 +18,25 @@ def run(args: Any) -> int:
     project_dir = Path(getattr(args, "project_dir", "."))
 
     if not model:
-        model = input(f"Model id for role '{role_name}' (e.g. claude-sonnet-4-20250514, gpt-4.1): ").strip()
-        if not model:
-            model = "<set-me-in-.agentic/config.yaml>"
+        model = input(
+            f"Model id for role '{role_name}' (e.g. claude-sonnet-4-20250514, gpt-4.1): "
+        ).strip()
 
-    agentic = project_dir / ".agentic"
-    if not agentic.is_dir():
-        print(f"No .agentic/ found at {project_dir}. Run 'awf init' first.")
+    try:
+        result = api.add_role(
+            project_dir=project_dir,
+            role_name=role_name,
+            description=description,
+            model=model,
+        )
+    except api.AwfApiError as e:
+        print(str(e))
         return 1
 
-    roles_dir = agentic / "roles"
-    roles_dir.mkdir(parents=True, exist_ok=True)
-
-    content = ROLE_TEMPLATE.format(
-        role_name=role_name,
-        description=description or "new role",
-        model=model,
-    )
-    atomic_write_text(roles_dir / f"{role_name}.md", content)
-
-    print(f"Created: {roles_dir}/{role_name}.md")
+    print(f"Created: {result.role_file}")
     print()
     print("Next steps:")
-    print(f"  1. Edit the role instructions in {roles_dir}/{role_name}.md")
-    print("  2. Add model config to .agentic/config.yaml under models:" + role_name)
+    print(f"  1. Edit the role instructions in {result.role_file}")
+    print(f"  2. Add model config to .agentic/config.yaml under models:{role_name}")
     print(f"  3. Add a stage to your pipeline YAML that uses role: {role_name}")
     return 0
