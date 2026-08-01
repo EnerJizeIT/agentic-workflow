@@ -330,6 +330,87 @@ class TestGetStatus:
             api.get_status(tmp_git_repo)
 
 
+# ─── MCP-4: pipeline running detection ──────────────────────────────────
+
+
+class TestPipelineRunningDetection:
+    """MCP-4: awf_status detects background pipeline subprocess via PID file."""
+
+    def test_no_pid_file_returns_not_running(self, tmp_git_repo):
+        """No .agentic/logs/awf-start.pid → pipeline_running=False."""
+        (tmp_git_repo / ".agentic").mkdir()
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: T\n'
+        )
+        result = api.get_status(tmp_git_repo)
+        assert result.pipeline_running is False
+        assert result.pipeline_pid is None
+
+    def test_stale_pid_file_cleaned_up(self, tmp_git_repo):
+        """PID file points to dead process → cleaned up, marked not running."""
+        (tmp_git_repo / ".agentic").mkdir()
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
+        logs = tmp_git_repo / ".agentic" / "logs"
+        logs.mkdir()
+        # PID 999999 almost certainly doesn't exist
+        (logs / "awf-start.pid").write_text("999999\n")
+        result = api.get_status(tmp_git_repo)
+        assert result.pipeline_running is False
+        # Stale PID file removed
+        assert not (logs / "awf-start.pid").exists()
+
+    def test_corrupt_pid_file_handled(self, tmp_git_repo):
+        """Garbage in PID file → treated as not running, file cleaned."""
+        (tmp_git_repo / ".agentic").mkdir()
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
+        logs = tmp_git_repo / ".agentic" / "logs"
+        logs.mkdir()
+        (logs / "awf-start.pid").write_text("not-a-number\n")
+        result = api.get_status(tmp_git_repo)
+        assert result.pipeline_running is False
+        assert not (logs / "awf-start.pid").exists()
+
+    def test_live_pid_detected_as_running(self, tmp_git_repo):
+        """PID file pointing to current process → marked running."""
+        import os
+        (tmp_git_repo / ".agentic").mkdir()
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
+        logs = tmp_git_repo / ".agentic" / "logs"
+        logs.mkdir()
+        # Use current process PID — guaranteed alive during test
+        (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
+        (logs / "awf-start.out").write_text("line1\nline2\nline3\n")
+        result = api.get_status(tmp_git_repo)
+        assert result.pipeline_running is True
+        assert result.pipeline_pid == os.getpid()
+        assert result.log_tail is not None
+        assert "line3" in result.log_tail
+
+    def test_log_tail_truncated_to_n_lines(self, tmp_git_repo):
+        """log_tail returns last N lines (default 20)."""
+        import os
+        (tmp_git_repo / ".agentic").mkdir()
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
+        logs = tmp_git_repo / ".agentic" / "logs"
+        logs.mkdir()
+        (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
+        # Write 30 lines
+        (logs / "awf-start.out").write_text("\n".join(f"L{i}" for i in range(30)))
+        result = api.get_status(tmp_git_repo)
+        assert result.pipeline_running is True
+        # Default tail = 20 lines
+        tail_lines = result.log_tail.split("\n")
+        assert len(tail_lines) == 20
+        assert tail_lines[-1] == "L29"
+
+    def test_missing_log_file_returns_none_tail(self, tmp_git_repo):
+        """PID file exists but log file missing → log_tail is None."""
+        (tmp_git_repo / ".agentic").mkdir()
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
+        result = api.get_status(tmp_git_repo)
+        assert result.log_tail is None
+
+
 # ─── get_report ─────────────────────────────────────────────────────────
 
 

@@ -185,6 +185,10 @@ class StatusResult:
     blocked_ids: list[str]
     conflict_warning: str | None
     suggestion: str | None
+    # MCP-4: long-running pipeline state
+    pipeline_running: bool = False
+    pipeline_pid: int | None = None
+    log_tail: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -611,6 +615,9 @@ def get_status(project_dir: Path) -> StatusResult:
             "then run: awf start"
         )
 
+    # MCP-4: detect running pipeline subprocess via PID file
+    pipeline_running, pipeline_pid, log_tail = _check_pipeline_running(project_dir)
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -619,7 +626,77 @@ def get_status(project_dir: Path) -> StatusResult:
         blocked_ids=blocked_ids,
         conflict_warning=conflict_warning,
         suggestion=suggestion,
+        pipeline_running=pipeline_running,
+        pipeline_pid=pipeline_pid,
+        log_tail=log_tail,
     )
+
+
+def _check_pipeline_running(
+    project_dir: Path,
+    *,
+    log_tail_lines: int = 20,
+) -> tuple[bool, int | None, str | None]:
+    """MCP-4: detect a running awf pipeline by reading PID file + os.kill probe.
+
+    Returns ``(is_running, pid, log_tail)``:
+    - ``is_running``: True if PID file exists AND process is alive.
+    - ``pid``: PID from file, or None.
+    - ``log_tail``: last N lines of .agentic/logs/awf-start.out (None if absent).
+
+    Stale PID files (process exited) are cleaned up automatically.
+    """
+    import os
+
+    logs_dir = paths.agentic_dir(project_dir) / "logs"
+    pid_file = logs_dir / "awf-start.pid"
+    log_file = logs_dir / "awf-start.out"
+
+    if not pid_file.is_file():
+        return False, None, _read_log_tail(log_file, log_tail_lines)
+
+    try:
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+        pid = int(pid_str)
+    except (OSError, ValueError):
+        # Corrupt PID file — clean up
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+        return False, None, _read_log_tail(log_file, log_tail_lines)
+
+    # Probe process liveness: signal 0 = "is this process reachable?"
+    try:
+        os.kill(pid, 0)
+        alive = True
+    except (OSError, ProcessLookupError):
+        alive = False
+
+    if not alive:
+        # Stale PID — clean up
+        try:
+            pid_file.unlink()
+        except OSError:
+            pass
+        return False, None, _read_log_tail(log_file, log_tail_lines)
+
+    return True, pid, _read_log_tail(log_file, log_tail_lines)
+
+
+def _read_log_tail(log_file: Path, n: int) -> str | None:
+    """Read last N lines of a log file. Returns None if file is absent."""
+    if not log_file.is_file():
+        return None
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    tail = lines[-n:] if len(lines) > n else lines
+    return "\n".join(tail)
 
 
 # ─── Public API: get_report ─────────────────────────────────────────────
@@ -1170,10 +1247,15 @@ def _start_in_background(
     auto: bool,
     timeout: int,
 ) -> StartResult:
-    """Re-launch awf start detached, log to .agentic/logs/awf-start.out."""
+    """Re-launch awf start detached, log to .agentic/logs/awf-start.out.
+
+    MCP-4: writes PID file (.agentic/logs/awf-start.pid) so awf_status can
+    detect a running pipeline and tail the log for progress.
+    """
     logs_dir = paths.agentic_dir(project_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / "awf-start.out"
+    pid_file = logs_dir / "awf-start.pid"
 
     child_argv: list[str] = [
         sys.executable,
@@ -1200,6 +1282,9 @@ def _start_in_background(
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+
+    # MCP-4: persist PID for status polling (atomic — small file)
+    atomic_write_text(pid_file, f"{proc.pid}\n")
 
     return StartResult(
         run_mode="background",

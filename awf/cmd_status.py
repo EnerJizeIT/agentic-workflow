@@ -24,6 +24,15 @@ def run(args: Any) -> int:
     print(f"Project: {result.project_name}")
     print()
 
+    # MCP-4: pipeline subprocess state (background awf start)
+    if result.pipeline_running:
+        print(f"Pipeline: RUNNING (PID {result.pipeline_pid})")
+        if result.log_tail:
+            print("--- last log lines ---")
+            print(result.log_tail)
+            print("---")
+        print()
+
     for entry in result.active_todos:
         todo_id = entry["todo_id"]
         print(f"Active: {todo_id}")
