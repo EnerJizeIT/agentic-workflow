@@ -143,6 +143,27 @@ Write a TODO that describes **what to build** and **how to verify it**. Include:
 
 **Default to Mode A (high-level).** Escalate to Mode B when the task is complex. Escalate to Mode C (exact diffs) only as a last resort.
 
+**Before writing TODO — verify role scope** (dogfood-1 lesson):
+
+1. Read `.agentic/roles/<next-stage-role>.md` — specifically the
+   "Prohibitions" / "What NOT to do" / "Out of scope" sections.
+2. Confirm the TODO's work fits within that role's allowed scope.
+3. If task is **out of role's scope** (e.g. asking system-analyst to write
+   architecture code, asking developer to write requirements) — the worker
+   will correctly BLOCKED, wasting tokens and a pipeline cycle.
+4. Mitigation: either rephrase TODO to fit the role, or assign to a
+   different role whose prohibitions don't exclude this work, or split
+   the work into multiple TODOs across roles.
+
+Example: `agent-system-analyst` prohibits architecture/code work —
+its job is requirements. If the next pipeline stage is system-analyst
+but the actual work needed is "design TypeScript module structure",
+either:
+  (a) rephrase TODO to "elicit + document requirements for X" (fits role)
+  (b) use a different role whose scope includes architecture
+  (c) split: system-analyst writes requirements → developer/architect
+      implements.
+
 ### Step 5 · Create TASK_READY signal
 
 1. Write `.agentic/inbox/TODO-{NNNN}.md`.
