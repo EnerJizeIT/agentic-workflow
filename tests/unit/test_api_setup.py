@@ -4,9 +4,6 @@ Validates that form submit data correctly materializes into:
 - .agentic/pipelines/default.yaml (BD-9)
 - .agentic/config.yaml role mapping (BD-12) + model preservation (BD-32)
 - .agentic/roles/supervisor.md context/instructions sections (UI-2/UI-3)
-
-Tests moved from plugin's test_pipelines_writer.py + test_ui_followup.py
-(audit T3: logic now in awf.api, single source of truth).
 """
 from __future__ import annotations
 

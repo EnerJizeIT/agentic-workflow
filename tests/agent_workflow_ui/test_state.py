@@ -35,7 +35,7 @@ def test_add_and_get():
     registry = FormRegistry()
     record = FormRecord(
         form_id="FORM-001",
-        template="role-assignment",
+        template="project-setup",
         opened_at=datetime.now(timezone.utc),
     )
     registry.add(record)

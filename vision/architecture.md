@@ -147,11 +147,7 @@ agent_workflow_ui/
 │   ├── frontmatter.py         # YAML frontmatter parser
 │   └── default_templates/     # templates shipped with plugin
 │       ├── project-setup.html.j2       # ← MVP composite template (Сценарий 1)
-│       ├── role-assignment.html.j2     # ← reserved for Сценарий 6 wizard
-│       ├── skill-picker.html.j2        # ← reserved for Сценарий 6 wizard
-│       ├── model-picker.html.j2        # ← reserved for Сценарий 6 wizard
-│       ├── pipeline-picker.html.j2     # ← reserved (в MVP pipeline выводится supervisor'ом)
-│       └── conflict-resolver.html.j2   # ← reserved for inline conflict (в MVP заменён на JS confirm)
+│       └── ack.html.j2                 # submit confirmation page
 ├── pyproject.toml             # package metadata, dependencies += ["awf>=0.4.0"]
 └── SKILL.md                   # policy для LLM (копируется в ~/.config/opencode/skills/agent-workflow-ui/)
 ```
@@ -161,7 +157,7 @@ agent_workflow_ui/
 | Компонент | Ответственность |
 |---|---|
 | `server.py` | MCP protocol handling, tool dispatch, lifecycle. Регистрирует **16 tools**: 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 11 awf workflow (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`). Без `wait_for_submit` / `open_form_and_wait`. |
-| `http_endpoint.py` | Localhost HTTP server, accepts `/submit/<form_id>` POSTs, writes YAML в `inputs/`, после submit: `_maybe_save_custom_roles()` и `_maybe_delete_custom_roles()` синхронизируют `~/.config/awf/roles/`. |
+| `http_endpoint.py` | Localhost HTTP server, accepts `/submit/<form_id>` POSTs, writes YAML в `inputs/`, после submit: `process_role_saves()` и `process_role_deletions()` синхронизируют `~/.config/awf/roles/`. |
 | `browser.py` | Cross-platform browser open (`xdg-open` Linux, `open` macOS, fallback error). |
 | `config.py` | Reads env vars at startup, resolves paths. Defaults: `.agentic/inputs`, `.agentic/templates`, `.agentic/dashboards` (relative to cwd opencode). |
 | `state.py` | In-memory registry: `{form_id, template, opened_at, status}`. **Form ID generator:** `FORM-YYYYMMDDHHMMSS-XXXX` (timestamp + 4 random alphanumeric). |
@@ -207,10 +203,10 @@ Plugin запускается opencode как subprocess при старте с�
 7. **HTTP endpoint:**
    - Парсит form-urlencoded body.
    - Пишет YAML в `inputs/FORM-....yaml`.
-   - Вызывает `_maybe_save_custom_roles()` (если были галочки 💾) и `_maybe_delete_custom_roles()` (если были 🗑).
+   - Вызывает `process_role_saves()` (если были галочки 💾) и `process_role_deletions()` (если были 🗑).
    - Возвращает HTML ack page.
 8. **Агент** получает от пользователя «done» → `read_submit(form_id)` → `{submitted: true, data: {...}}`.
-9. **Агент** анализирует `data` (включая `team_config` JSON, `spec_files_json` JSON) и **сам** генерирует `.agentic/config.yaml`, `roles/`, `pipelines/`, `.gitignore`. Plugin этого не делает — он agnostic.
+9. **Агент** анализирует `data` (включая `team_config` JSON, `spec_files_json` JSON) и **делегирует** materialization в `awf.api.apply_project_setup()` — single source of truth для awf schema (config.yaml/pipeline.yaml/supervisor.md). Plugin не дублирует знание схемы — он только парсит form body + обрабатывает global custom-role CRUD (`~/.config/awf/roles/`).
 
 ### 5.2 Failure modes
 
@@ -236,7 +232,7 @@ Plugin запускается opencode как subprocess при старте с�
 
 | Имя | Тип | Required | Описание |
 |---|---|---|---|
-| `template` | string | yes | Имя template (без расширения, например `"role-assignment"`). |
+| `template` | string | yes | Имя template (без расширения, например `"project-setup"`). |
 | `data` | object | no | Переменные для рендеринга. |
 | `ttl_seconds` | int | no | Авто-отмена через N секунд. Default: без TTL. |
 
@@ -388,11 +384,11 @@ Plugin запускается opencode как subprocess при старте с�
 {
   "templates": [
     {
-      "name": "role-assignment",
+      "name": "project-setup",
       "source": "default",
-      "description": "Multi-select ролей для проекта",
-      "required_data_keys": ["available_roles"],
-      "optional_data_keys": ["default_selection", "project_name"]
+      "description": "Composite form: context + supervisor + team + models",
+      "required_data_keys": [],
+      "optional_data_keys": ["project_name"]
     },
     {
       "name": "stack-picker",
@@ -405,7 +401,7 @@ Plugin запускается opencode как subprocess при старте с�
 }
 ```
 
-**Project templates override defaults по имени.** Если в `.agentic/templates/role-assignment.html.j2` есть файл — он используется вместо default.
+**Project templates override defaults по имени.** Если в `.agentic/templates/project-setup.html.j2` есть файл — он используется вместо default.
 
 ---
 
@@ -453,7 +449,7 @@ data:
 - `submitted_at` (ISO 8601 UTC, required) — когда пользователь нажал Submit.
 - `data` (object, required) — payload из формы. Структура определяется HTML form fields.
   - **JSON-строки** (`team_config`, `spec_files_json`) — backend сохраняет как есть, парсинг — ответственность LLM. Это позволяет backend'у оставаться agnostic к структуре team/spec.
-  - **Исключение:** `team_config` парсится backend'ом **один раз** в `_maybe_save_custom_roles()` чтобы найти custom agents с `save=true`. Это не нарушает agnostic принцип — backend читает только служебные поля, не интерпретирует содержимое.
+  - **Исключение:** `team_config` парсится backend'ом **один раз** в `process_role_saves()` чтобы найти custom agents с `save=true`. Это не нарушает agnostic принцип — backend читает только служебные поля, не интерпретирует содержимое.
 
 ### 7.3 Template file format
 
@@ -638,8 +634,7 @@ Call `open_form` when:
 Call `list_templates` to see what's available. Primary (MVP):
 - `project-setup` — composite form: context + supervisor + team + models. Models pulled from opencode config automatically.
 
-Reserved for future scenarios:
-- `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`.
+Future scenarios (2-6) will add their own templates as they are implemented.
 
 Project-level templates in `.agentic/templates/` override defaults by name. **Только агент может создавать templates** (пишет front + описывает back в supervisor.md).
 
@@ -727,10 +722,10 @@ pip install agent-workflow-ui
 - **HTTP endpoint всегда включён** (единственный способ принять submit из браузера).
 - Jinja2 rendering с ChoiceLoader (project → defaults).
 - **1 primary composite template:** `project-setup.html.j2` (context + supervisor + team + models + spec files).
-- **5 reserved templates** для будущих сценариев: `role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`. Не используются как primary interface в MVP.
+- Future templates for scenarios 2-6 — added as those scenarios are implemented.
 - Browser open через `xdg-open`/`open`.
 - File bus: `.agentic/inputs/`, `.agentic/templates/` (project), `~/.config/awf/roles/` (global custom roles).
-- **Custom roles persistence**: save/delete через `_maybe_save_custom_roles` / `_maybe_delete_custom_roles` в HTTP endpoint.
+- **Custom roles persistence**: save/delete через `process_role_saves` / `process_role_deletions` в HTTP endpoint.
 - **Inline conflict resolution** через JS `confirm()` перед перезаписью существующей роли.
 - **Models auto-discovery**: `opencode models` CLI + recent models из SQLite.
 - **Lazy skill install** при каждом старте plugin'а (через `skill_installer.py`) — автоматически копирует `SKILL.md` в opencode skills dir.
@@ -795,7 +790,7 @@ pip install agent-workflow-ui
 **Новые open questions** (после MVP):
 
 1. **Spec files в YAML vs отдельные файлы** — сейчас spec files embedded в `spec_files_json` (строка в YAML). Для больших ТЗ это раздувает submit file. Возможно стоит писать в `~/.config/awf/specs/` отдельно и в YAML только paths.
-2. **Skill picker vs merged concept** — сейчас custom agent = name + skill .md (merged). `skill-picker` template зарезервирован, но может оказаться unused, если merged concept победит.
+2. **Skill picker vs merged concept** — сейчас custom agent = name + skill .md (merged). Если будущий wizard (Сценарий 6) потребует отдельный skill-picker, его можно будет добавить.
 3. **Expired forms принимают submit** — `do_POST` проверяет только `submitted` и `cancelled`. Expired-формы принимают submit (мягкий TTL). Фиксить или оставить как feature?
 
 ---
@@ -847,6 +842,6 @@ supervisor instructions.
 - [`vision/agent-ui-plugin.md`](agent-ui-plugin.md) — Product Vision (что и зачем).
 - [`protocols/communication.md`](../protocols/communication.md) — File bus protocol spec (будет обновлён с `.agentic/inputs/` и `.agentic/templates/` секциями после реализации plugin'а).
 - [`README.md`](../README.md) — awf README.
-- [`BACKLOG.md`](../BACKLOG.md) — план развития (будет переписан под standalone framing).
+- [`BACKLOG.md`](../BACKLOG.md) — план развития.
 - [MCP specification](https://modelcontextprotocol.io/) — Model Context Protocol documentation.
 - [Anthropic MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) — reference implementation.

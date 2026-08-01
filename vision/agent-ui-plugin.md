@@ -137,7 +137,7 @@ Plugin = **primary interface** между агентом и awf-orchestrator'о�
 
 **Сложность:** средняя (одна composite-форма + inline conflict resolution через JS confirm).
 
-**Связанный шаблон:** `project-setup.html.j2` (composite). Остальные отдельные templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`) зарезервированы для будущих сценариев (wizard в Сценарии 6, ad-hoc forms в Сценарии 2-3).
+**Связанный шаблон:** `project-setup.html.j2` (composite). Будущие сценарии (2-6) добавят свои templates по мере реализации.
 
 ---
 
@@ -261,7 +261,7 @@ Plugin = **primary interface** между агентом и awf-orchestrator'о�
 
 **MVP = Сценарий 1 (Конструктор конфигурации awf).**
 
-**MVP реализован как одна composite-форма `project-setup`** (а не 5 отдельных форм). Все секции (контекст, supervisor, команда, модели) на одной странице — меньше кликов, нагляднее. Pipeline НЕ выбирается явно — выводится supervisor'ом из состава команды. Отдельные templates (`role-assignment`, `skill-picker`, `model-picker`, `pipeline-picker`, `conflict-resolver`) зарезервированы для будущих сценариев (Сценарий 6 wizard, Сценарий 2 ad-hoc), в MVP не используются как primary interface.
+**MVP реализован как одна composite-форма `project-setup`** (а не несколько отдельных). Все секции (контекст, supervisor, команда, модели) на одной странице — меньше кликов, нагляднее. Pipeline НЕ выбирается явно — выводится supervisor'ом из состава команды. Будущие сценарии (2-6) добавят свои templates по мере реализации.
 
 ### Почему Сценарий 1 — первый
 

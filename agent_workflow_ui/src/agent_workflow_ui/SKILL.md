@@ -114,19 +114,11 @@ Plugin injects automatically into every template:
 - `custom_supervisor_roles`, `custom_agents` (from `~/.config/awf/roles/`)
 - `existing_supervisor_slugs`, `existing_agent_slugs` (for client-side conflict detection)
 
-### Reserved for future scenarios
+### Future templates
 
-These templates exist in the package but are NOT primary interface in MVP. They will be used in future scenarios (Onboarding wizard, ad-hoc decision forks, etc.):
+Templates for scenarios 2-6 (decision forks, blockage recovery, dashboards, priority planning, onboarding wizard) will be added as those scenarios are implemented. Currently only `project-setup` ships as a default template.
 
-| Template | Reserved for |
-|---|---|
-| `role-assignment` | Сценарий 6 (wizard step) |
-| `skill-picker` | Сценарий 6 (wizard step) |
-| `model-picker` | Сценарий 6 (wizard step) |
-| `pipeline-picker` | Future (in MVP pipeline is derived from team composition) |
-| `conflict-resolver` | Future (in MVP replaced by inline JS confirm) |
-
-**Do not call these in MVP flow.** Use `project-setup` for setup. Use chat for everything else until future scenarios are implemented.
+**Until future scenarios are implemented:** Use `project-setup` for project configuration. Use chat for everything else.
 
 ## Creating new templates (agent-driven)
 
@@ -184,7 +176,7 @@ Every template gets these injected by plugin:
 - **DO NOT** open a form for Y/N questions — use chat.
 - **DO NOT** open more than 3 forms simultaneously — the user will be confused.
 - **DO NOT** use forms as a chat replacement — they're a supplement.
-- **DO NOT** call reserved templates (`role-assignment`, `skill-picker`, etc.) in MVP flow — use `project-setup` or chat.
+- **DO NOT** invent template names — only `project-setup` ships as default. Future scenarios will add more.
 
 ## Example workflow
 

@@ -1,12 +1,9 @@
 """Project-setup materialization: apply form submit to awf project files.
 
-Moved from agent_workflow_ui/roles_processor.py + pipelines_writer.py
-(audit T3: 'single source of truth' principle was violated — plugin
-duplicated knowledge of awf's config.yaml/pipeline.yaml/supervisor.md
-schema via its own yaml.safe_load/safe_dump).
-
-Plugin now stays thin: parses HTTP form body, handles global custom-role
-CRUD (UI persistence), then delegates schema-aware materialization here.
+Single source of truth for how form submit data (team, context,
+instructions) becomes awf-managed files (config.yaml, pipeline.yaml,
+supervisor.md). Plugin's submit handler calls :func:`apply_project_setup`
+after global custom-role CRUD; plugin never duplicates awf schema knowledge.
 
 Public entry point: :func:`apply_project_setup`.
 """
