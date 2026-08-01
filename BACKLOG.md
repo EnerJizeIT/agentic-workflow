@@ -83,42 +83,48 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 
 ### MCP-4 · Long-running design (start/continue)
 
-**Status:** TODO. **Priority:** CRITICAL — без этого agent зависает.
+**Status:** DONE. **Priority:** CRITICAL.
 
 Контракт для background operations:
 
-- [ ] `awf_start` запускает pipeline (subprocess, как `--background`).
+- [x] `awf_start` запускает pipeline (subprocess, как `--background`).
       Возвращает немедленно: `{run_id, logs_path, expected_stages}`.
-- [ ] `awf_status` поллит: возвращает текущую стадию, прогресс, готовые
-      checkpoints (для `open_form`).
-- [ ] Coordination с `open_form`: когда pipeline ждёт checkpoint — status
-      показывает `checkpoint_pending`, agent открывает форму отдельно.
-- [ ] Define lifecycle: running → checkpoint_pending → resumed → done | failed.
-- [ ] Tests: background start, poll status, multiple concurrent runs.
+      Пишет `.agentic/logs/awf-start.pid` (atomic) для status polling.
+- [x] `awf_status` поллит: возвращает текущую стадию, прогресс, готовые
+      checkpoints (для `open_form`). Новые поля: `pipeline_running`,
+      `pipeline_pid`, `log_tail` (последние 20 строк).
+- [x] Coordination с `open_form`: когда pipeline ждёт checkpoint — status
+      показывает `checkpoint_pending`, agent открывает форму отдельно
+      (через signal files в inbox/outbox).
+- [x] Lifecycle: running → checkpoint_pending → resumed → done | failed.
+      Stale PID files (процесс умер) автоматически очищаются.
+- [x] Tests: 6 новых (TestPipelineRunningDetection) покрывают все ветки.
 
 ### MCP-5 · Глобальный AGENTS.md
 
-**Status:** TODO. **Priority:** HIGH.
+**Status:** DONE. **Priority:** HIGH.
 
-- [ ] Добавить блок в `~/.config/opencode/AGENTS.md` с описанием всех 16 MCP
+- [x] Добавлен блок в `~/.config/opencode/AGENTS.md` с описанием всех 16 MCP
       tools (11 awf + 5 UI).
-- [ ] Workflow recipes:
+- [x] Workflow recipes:
       - "Новый проект" → `awf_init` → `open_form(project-setup)` → `awf_start`.
       - "Продолжить работу" → `awf_status` → если running, поллить.
       - "Откатить" → `awf_rollback`.
-- [ ] Метаправило: "видишь `.agentic/` → используй MCP tools, не bash".
+- [x] Метаправило: "видишь `.agentic/` → используй MCP tools, не bash".
 
 ### MCP-6 · CLI simplification
 
-**Status:** TODO. **Priority:** MEDIUM.
+**Status:** DONE. **Priority:** MEDIUM.
 
-- [ ] Убрать интерактивность из `awf init` (стек-detect + name-from-dir).
-- [ ] CLI остаётся как thin dev/debug wrapper над `api.py`.
-- [ ] README обновить: primary path = MCP tools, CLI = debug.
+- [x] Убрать интерактивность из `awf init` (стек-detect + name-from-dir).
+      Добавлен `--non-interactive` флаг. Интерактивный путь сохранён для
+      human CLI users (e2e compat).
+- [x] CLI остаётся как thin dev/debug wrapper над `api.py`.
+- [x] `--project-dir` flag добавлен к init subcommand.
 
 ### MCP-7 · Tests & docs
 
-**Status:** TODO. **Priority:** HIGH.
+**Status:** IN PROGRESS. **Priority:** HIGH.
 
 - [ ] MCP tools покрыты тестами (plugin/tests/).
 - [ ] api.py покрыт unit-тестами (awf/tests/unit/).

@@ -1,11 +1,11 @@
 # Agentic Workflow Framework
 
-> Декларативный multi-agent фреймворк: **Supervisor планирует → Agents реализуют → Supervisor проверяет**. Коммуникация — через файлы на диске (file bus). Состоит из двух независимых продуктов в одном monorepo:
+> Декларативный multi-agent фреймворк: **Supervisor планирует → Agents реализуют → Supervisor проверяет**. Коммуникация — через файлы на диске (file bus). Состоит из двух продуктов в одном monorepo:
 
-- **`awf`** — Python-оркестратор пайплайнов (CLI, file bus, state machine).
-- **`agent-workflow-ui`** — standalone MCP plugin для opencode: HTML-формы для визуального взаимодействия пользователя с агентом.
+- **`awf`** — Python-оркестратор пайплайнов. Бизнес-логика в `awf/api.py` (public API); CLI `awf` — тонкая обёртка для dev/debug.
+- **`agent-workflow-ui`** — MCP plugin для opencode: 16 typed tools (11 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
 
-Оба продукта публикуются отдельно на PyPI (планируется). Awf-core не зависит от plugin'а и работает без него.
+**Primary path = MCP tools** — opencode-агент вызывает `awf_init`, `awf_status`, `awf_start` и т.д. через MCP protocol. CLI `awf` остаётся для e2e тестов и CI скриптов.
 
 ---
 
@@ -26,7 +26,8 @@
 
 ### agent-workflow-ui (MCP plugin)
 
-- **5 MCP tools:** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`.
+- **16 MCP tools:** 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 11 awf workflow ops (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`).
+- **Plugin depends on `awf` package** — imports `awf.api` directly (no subprocess).
 - **Composite template `project-setup`** — одна HTML-форма для полной настройки проекта: контекст + ТЗ-файлы + supervisor + команда агентов с моделями.
 - **Per-role model selection (BD-32).** Форма показывает dropdown с моделями из `opencode.json` — выбор сохраняется в `config.yaml` как `models.<role>.model`.
 - **HTTP endpoint** (всегда включён) — browser POST'ит submit автоматически. CSRF protection через Origin whitelist (A2).
@@ -193,7 +194,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 766 tests (e2e + unit + integration + plugin)
+├── tests/                         # 861 tests (e2e + unit + integration + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -313,7 +314,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**766 тестов:** e2e + unit (awf) + integration (awf) + integration/unit (plugin).
+**861 тестов:** e2e + unit (awf, включая `test_api.py` 65 тестов) + integration (awf) + integration/unit (plugin, включая `test_awf_tools.py` 30 тестов).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).
