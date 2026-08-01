@@ -1,8 +1,9 @@
 # agent-workflow-ui
 
 MCP plugin for [opencode](https://opencode.ai/) that gives agents tools for
-visual interaction with users: HTML forms for structured input, dashboards
-for monitoring.
+visual interaction with users (HTML forms, dashboards) AND for driving the
+agentic-workflow pipeline (init, start, status, rollback, ...). Depends on
+the `awf` package — imports `awf.api` directly (no subprocess).
 
 ## Status
 
@@ -36,7 +37,9 @@ For manual testing:
 python -m agent_workflow_ui
 ```
 
-## Tools
+## Tools (16 total: 5 UI + 11 awf)
+
+### UI tools (form lifecycle)
 
 | Tool | Description |
 |---|---|
@@ -46,7 +49,24 @@ python -m agent_workflow_ui
 | `list_pending_forms` | List forms awaiting submit |
 | `list_templates` | List available form templates |
 
-See [architecture.md](../vision/architecture.md) §6 for full reference.
+### awf workflow tools (thin wrappers over `awf.api.*`)
+
+| Tool | Description |
+|---|---|
+| `awf_init` | Create `.agentic/` + assume supervisor role (auto-detects stack) |
+| `awf_status` | Current pipeline state + active TODOs + `pipeline_running` flag |
+| `awf_start` | Launch pipeline (background by default, returns PID) |
+| `awf_continue` | Resume interrupted pipeline |
+| `awf_baseline` | Create git HEAD + tests + env snapshot |
+| `awf_rollback` | `git reset` to baseline (hard/soft/dry-run) |
+| `awf_approve` | Authorize auto-commit |
+| `awf_report` | Summary: task statuses + git diff + test log tail |
+| `awf_reset` | Clear runtime data (tasks_only/full/orphans) |
+| `awf_add_role` | Generate role template at `.agentic/roles/{name}.md` |
+| `awf_analyze_roles` | Detect role overlaps, write disambiguation patches |
+
+See [architecture.md](../vision/architecture.md) §6 for full reference and
+[README.md](../README.md) §"MCP-MIGRATION" for the architectural rationale.
 
 ## SKILL.md setup
 

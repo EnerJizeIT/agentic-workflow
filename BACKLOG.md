@@ -12,7 +12,7 @@
 
 ## 🟢 Active · MCP-MIGRATION — awf как pure MCP toolkit под opencode
 
-**Status:** IN PROGRESS. **Priority:** CRITICAL — architectural pivot.
+**Status:** DONE. **Priority:** CRITICAL — architectural pivot.
 
 **Solution concept:** Awf больше НЕ позиционируется как CLI для bash-юзеров.
 Все команды awf доступны opencode-агенту как MCP tools в plugin'е
@@ -22,20 +22,20 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
 **Принципы:**
 1. Один plugin `agent-workflow-ui` (без переименования — меньше миграции).
 2. Plugin depends on `agentic-workflow` package (Python import).
-3. `awf/api.py` — public API для всех callers (CLI + MCP tools).
+3. `awf/api/` — public API package для всех callers (CLI + MCP tools).
 4. Long-running ops (start/continue) — background + poll status pattern.
 5. Глобальный AGENTS.md документирует все MCP tools.
 
 **Фазы (последовательные):**
 
-### MCP-1 · Refactor awf → `api.py` (foundation)
+### MCP-1 · Refactor awf → `api/` package (foundation)
 
 **Status:** DONE. **Priority:** CRITICAL — блокирует MCP-3.
 
-Перенести бизнес-логику из `cmd_*.py` в `awf/api.py` с типизированными
+Перенести бизнес-логику из `cmd_*.py` в `awf/api/` package с типизированными
 функциями. cmd_*.py — тонкие CLI обёртки, вызывающие `api.*()`.
 
-- [x] Создать `awf/api.py` с public функциями для каждой команды:
+- [x] Создать `awf/api/` package с public функциями для каждой команды:
       - `init_project(project_dir) -> InitResult`
       - `get_status(project_dir) -> StatusResult`
       - `start_pipeline(project_dir, ...) -> StartResult`
@@ -46,12 +46,13 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
       - `get_report(project_dir) -> ReportResult`
       - `reset_runtime(project_dir, ...) -> ResetResult`
       - `add_role(project_dir, name, ...) -> RoleResult`
-      - `analyze_roles(project_dir, ...) -> AnalyzeResult`
+      - `analyze_roles(project_dir, ...) -> AnalyzeRolesResult`
 - [x] Типизированные dataclass'ы для всех Result'ов (as_dict() для MCP).
 - [x] cmd_*.py — тонкие обёртки (argparse → call api.*() → print human-readable).
-- [x] Backward compat preserved: e2e тесты проходят (825).
-- [x] Покрытие api.py unit-тестами (59 тестов в tests/unit/test_api.py).
+- [x] Backward compat preserved: e2e тесты проходят (876).
+- [x] Покрытие api/ package unit-тестами (79 тестов в tests/unit/test_api.py).
 - [x] Helpers: detect_stack(), derive_project_name() (MCP-6 stack-detect ready).
+- [x] Audit cleanup: god module split на 10 submodules (largest 493 lines).
 
 ### MCP-2 · Plugin dependencies
 
@@ -60,7 +61,6 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
 - [x] `agent_workflow_ui/pyproject.toml`: добавить `agentic-workflow` в dependencies.
 - [x] Проверить что `from awf import api` работает из plugin'а.
 - [x] Smoke test: plugin может вызвать `awf.api.get_status(project_dir)`.
-
 ### MCP-3 · MCP tools implementation
 
 **Status:** DONE. **Priority:** CRITICAL.
@@ -119,17 +119,19 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 - [x] Убрать интерактивность из `awf init` (стек-detect + name-from-dir).
       Добавлен `--non-interactive` флаг. Интерактивный путь сохранён для
       human CLI users (e2e compat).
-- [x] CLI остаётся как thin dev/debug wrapper над `api.py`.
+- [x] CLI остаётся как thin dev/debug wrapper над `api/` package.
 - [x] `--project-dir` flag добавлен к init subcommand.
 
 ### MCP-7 · Tests & docs
 
-**Status:** IN PROGRESS. **Priority:** HIGH.
+**Status:** DONE. **Priority:** HIGH.
 
-- [ ] MCP tools покрыты тестами (plugin/tests/).
-- [ ] api.py покрыт unit-тестами (awf/tests/unit/).
-- [ ] Integration: plugin tool → api → real workflow.
-- [ ] README обновить с новой архитектурой.
+- [x] MCP tools покрыты тестами (30 в `tests/agent_workflow_ui/test_awf_tools.py`).
+- [x] api/ package покрыт unit-тестами (79 в `tests/unit/test_api.py`).
+- [x] Integration: plugin tool → api → real workflow (TestBackgroundStart, и др.).
+- [x] README обновить с новой архитектурой (structure tree, tools count, test count).
+- [x] CHANGELOG.md — добавлена MCP-MIGRATION секция.
+- [x] Audit cleanup: analyze_roles pure core, two-step orphans, god module split.
 
 ---
 

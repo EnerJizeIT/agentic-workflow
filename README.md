@@ -2,7 +2,7 @@
 
 > Декларативный multi-agent фреймворк: **Supervisor планирует → Agents реализуют → Supervisor проверяет**. Коммуникация — через файлы на диске (file bus). Состоит из двух продуктов в одном monorepo:
 
-- **`awf`** — Python-оркестратор пайплайнов. Бизнес-логика в `awf/api.py` (public API); CLI `awf` — тонкая обёртка для dev/debug.
+- **`awf`** — Python-оркестратор пайплайнов. Бизнес-логика в `awf/api/` (public API package, split by concern); CLI `awf` — тонкая обёртка для dev/debug.
 - **`agent-workflow-ui`** — MCP plugin для opencode: 16 typed tools (11 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
 
 **Primary path = MCP tools** — opencode-агент вызывает `awf_init`, `awf_status`, `awf_start` и т.д. через MCP protocol. CLI `awf` остаётся для e2e тестов и CI скриптов.
@@ -160,6 +160,17 @@ awf start                           # запусти пайплайн (нуже�
 ```
 agentic-workflow/                  # monorepo (два независимых продукта)
 ├── awf/                           # orchestrator (Python package)
+│   ├── api/                       # public API package (split by concern)
+│   │   ├── __init__.py            # public surface — re-exports
+│   │   ├── _errors.py             # AwfApiError
+│   │   ├── _results.py            # 10 Result dataclasses (as_dict for MCP)
+│   │   ├── _stack.py              # detect_stack + derive_project_name
+│   │   ├── _templates.py          # _CONFIG/_ROLE templates, update_gitignore
+│   │   ├── _helpers.py            # require_agentic/git_repo, read helpers
+│   │   ├── _background.py         # PID file + pipeline running detection
+│   │   ├── lifecycle.py           # init/status/report/reset/orphans
+│   │   ├── pipeline.py            # start/continue/baseline/rollback/approve
+│   │   └── roles.py               # add_role, analyze_roles
 │   ├── orchestrator.py            # state machine + transition handlers
 │   ├── supervisor.py              # supervisor stages (plan/verify/replan)
 │   ├── agent_stage.py             # agent stages + handoff collection
@@ -172,18 +183,20 @@ agentic-workflow/                  # monorepo (два независимых п�
 │   ├── transitions.py             # policy lookup
 │   ├── verify.py                  # auto-DONE, work evidence
 │   ├── _log.py                    # file logger
+│   ├── _atomic.py                 # atomic file writes (H3/H5)
 │   ├── _env.py                    # BD-22/25 subprocess env setup
 │   ├── xdg.py                     # XDG_CONFIG_HOME helpers
-│   ├── cmd_analyze_roles.py       # BD-31 skill-aware role analysis
-│   └── cmd_*.py                   # 10 команд (init, start, status, ...)
-├── agent_workflow_ui/             # MCP plugin (standalone dist)
+│   ├── cmd_analyze_roles.py       # BD-31 skill-aware role analysis + core()
+│   └── cmd_*.py                   # 10 thin CLI wrappers over api/*
+├── agent_workflow_ui/             # MCP plugin (depends on awf package)
 │   └── src/agent_workflow_ui/
-│       ├── server.py              # FastMCP server (5 tools)
+│       ├── server.py              # FastMCP server (16 tools: 5 UI + 11 awf)
 │       ├── http_endpoint.py       # localhost HTTP + CSRF (A2)
 │       ├── state.py               # FormRegistry + persistence (A10)
 │       ├── opencode_config.py     # models discovery + roles CRUD
 │       ├── roles_processor.py     # form submit processing
-│       ├── tools/forms.py         # MCP tool impl + temp cleanup (A4)
+│       ├── tools/forms.py         # UI MCP tools (open_form, read_submit, ...)
+│       ├── tools/awf.py           # awf MCP tools (awf_init, awf_status, ...)
 │       ├── render/                # Jinja2 engine + templates
 │       │   ├── engine.py          # create_env + lazy init (A3)
 │       │   └── default_templates/
@@ -194,7 +207,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 861 tests (e2e + unit + integration + plugin)
+├── tests/                         # 876 tests (e2e + unit + integration + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -314,7 +327,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**861 тестов:** e2e + unit (awf, включая `test_api.py` 65 тестов) + integration (awf) + integration/unit (plugin, включая `test_awf_tools.py` 30 тестов).
+**876 тестов:** e2e + unit (awf, включая `test_api.py` 79 тестов) + integration (awf) + integration/unit (plugin, включая `test_awf_tools.py` 30 тестов).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).

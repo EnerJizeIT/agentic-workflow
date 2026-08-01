@@ -5,6 +5,57 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### MCP-MIGRATION — awf как pure MCP toolkit под opencode
+
+Architectural pivot: awf больше НЕ позиционируется как standalone CLI.
+Все команды awf доступны opencode-агенту как MCP tools в plugin'е
+`agent-workflow-ui`. Plugin импортирует `awf` напрямую (без subprocess).
+
+**MCP-1: `awf/api/` package** (refactor of 1446-line god module):
+- Split на 10 focused submodules: `_errors`, `_results`, `_stack`,
+  `_templates`, `_helpers`, `_background`, `lifecycle`, `pipeline`, `roles`.
+- 11 typed Result dataclasses с `as_dict()` для MCP JSON serialization.
+- 11 public functions, все принимают `str | Path` для project_dir.
+- `detect_stack()` — auto-detect test/lint/typecheck/build из package.json,
+  pyproject.toml, Cargo.toml, go.mod, file-heuristic.
+- `derive_project_name()` — Title Case из имени директории.
+- Public surface неизменен: `from awf import api; api.init_project(...)`.
+
+**MCP-2: plugin depends on awf** — `agent_workflow_ui/pyproject.toml`
+добавлен `awf>=0.4.0` в dependencies. Plugin импортирует `awf.api` напрямую.
+
+**MCP-3: 11 MCP tools** в `tools/awf.py` (thin async wrappers над api):
+`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`,
+`awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`,
+`awf_analyze_roles`. Uniform contract: `{status: "ok"|"error", ...}`.
+
+**MCP-4: long-running pipeline coordination**:
+- `awf_start(background=True)` → PID файл (`.agentic/logs/awf-start.pid`).
+- `awf_status` детектит running pipeline: `pipeline_running`, `pipeline_pid`,
+  `log_tail` (последние 20 строк).
+- Stale PID files автоматически очищаются.
+
+**MCP-5: global AGENTS.md** — `~/.config/opencode/AGENTS.md` расширен
+блоком "Agentic Workflow (awf) — MCP Toolkit" с описанием всех 16 tools
+и workflow recipes.
+
+**MCP-6: `awf init --non-interactive`** — детерминированный init без
+prompts (stack-detect + name-from-dir). Интерактивный путь сохранён для
+human CLI users.
+
+**MCP-audit cleanup (post-review):**
+- `analyze_roles` refactor: extracted `analyze_roles_core()` pure function
+  (no stdout capture, no emoji parsing). CLI/MCP wrappers use structured data.
+- Two-step orphan protocol: `list_orphans()` (read-only) +
+  `remove_orphans(ids)` (explicit). Replaces double computation in cmd_reset.
+- `cmd_start._run_in_background` unified with `api.start_pipeline` —
+  single source of truth for background path.
+- `init_project` plan.md write now atomic (H5 invariant restored).
+- `_CONFIG_TEMPLATE` switched to single quotes (YAML safety for commands
+  containing double quotes, e.g. `pytest -k "not slow"`).
+- `approve_commit` now requires `.agentic/` (consistency with other api fns).
+- `_read_ack` returns `None` instead of literal `"none"` string.
+
 ### awf — architectural debt sprint (A1-A10, BD-25..35)
 
 **A6 refactor:** `orchestrator.py` split from 1432 → 362 lines into focused modules:
