@@ -1,10 +1,11 @@
 # agent-workflow-ui — Architecture
 
-> Архитектурный документ для `agent-workflow-ui` — standalone UI plugin к opencode, который даёт агенту инструменты визуального взаимодействия с пользователем: HTML-формы для структурированного ввода и HTML-дашборды для наблюдения за agent workflow.
+> Архитектурный документ для `agent-workflow-ui` — MCP plugin для opencode, который даёт агенту 16 typed MCP tools: 5 UI (HTML-формы для структурированного ввода) + 11 awf workflow operations (init, start, status, rollback, ...). Plugin зависит от `awf` Python-пакета и импортирует `awf.api` напрямую (без subprocess).
 
-**Версия:** 1.1
-**Дата:** 2026-07-26
-**Связанные документы:** [Product Vision](agent-ui-plugin.md), [File Bus Protocol](../protocols/communication.md), [awf README](../README.md)
+**Версия:** 1.2
+**Дата:** 2026-08-01
+**Pivot с v1.1:** объединены UI MCP + awf-mcp в один server (16 tools); plugin теперь depends on awf; CLI primary → MCP primary.
+**Связанные документы:** [Product Vision](agent-ui-plugin.md) v0.5, [File Bus Protocol](../protocols/communication.md), [awf README](../README.md)
 
 ---
 
@@ -12,26 +13,26 @@
 
 ### 1.1 Что это
 
-`agent-workflow-ui` — Python-пакет, реализованный как MCP server. Работает внутри opencode, даёт supervisor-агенту инструменты для:
+`agent-workflow-ui` — Python-пакет, реализованный как MCP server. Работает внутри opencode, даёт supervisor-агенту 16 typed MCP tools:
 
-- **Генерации и открытия HTML-форм** в браузере пользователя.
-- **Чтения ответов** через типизированные MCP tool calls.
-- **Рендеринга HTML-дашбордов** (future scope).
+- **UI tools (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`. Генерация/чтение HTML-форм, открытие в браузере.
+- **awf workflow tools (11):** `awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`. Полный lifecycle awf-проекта.
 
-Plugin работает с **любым agent orchestrator'ом**, реализующим file bus протокол (awf — default, не единственный).
+Все 11 workflow tools — thin async wrappers над `awf.api.*()` синхронными функциями. Business logic живёт в `awf.api`, не в plugin'е.
 
 ### 1.2 Для кого
 
 - **Пользователь** (developer / PM): получает привычный визуальный интерфейс для сложных решений вместо длинных chat-ответов.
-- **Агент** (supervisor LLM): получает структурированный ввод вместо свободного текста, меньше ошибок интерпретации.
-- **Orchestrator** (awf или другой): не меняется, plugin работает поверх его file bus.
+- **Агент** (supervisor LLM): typed MCP tools вместо bash-команд. Один plugin — все операции.
+- **awf orchestrator:** управляется через `awf.api` (single source of truth для CLI и MCP).
 
 ### 1.3 Главные свойства
 
-- CLI остаётся primary medium; HTML-формы — supplement для случаев, где chat неэффективен.
-- Plugin **не зависит от awf internals** — только от file bus контракта.
-- Submit'ы попадают в plugin **автоматически** через локальный HTTP endpoint (стандартный HTML `<form method="POST">`).
-- Templates коммитятся в git (часть дизайна проекта), submits — runtime state (gitignored).
+- **MCP primary path.** Agent вызывает typed MCP tools. CLI `awf` — dev/debug обёртка.
+- **Plugin зависит от awf.** `pyproject.toml: dependencies += ["awf>=0.4.0"]`. Workflow tools импортируют `awf.api` напрямую.
+- **UI tools agnostic** — только `inputs/` I/O, не знают про awf internals.
+- **Submit'ы попадают в plugin автоматически** через локальный HTTP endpoint (стандартный HTML `<form method="POST">`).
+- **Templates коммитятся в git** (часть дизайна проекта), submits — runtime state (gitignored).
 
 ---
 
@@ -46,15 +47,13 @@ flowchart TD
         WA["worker agent<br/>(LLM, subprocess)"]
     end
 
-    subgraph mcp["MCP layer — ортогональные серверы"]
-        UIMCP["agent-workflow-ui<br/>(этот продукт)"]
-        AWFMCP["awf-mcp<br/>(future, separate)"]
-        OTHERMCP["другие MCP<br/>(codebase-memory-mcp, ...)"]
+    subgraph mcp["MCP layer — единый server"]
+        PLUGIN["agent-workflow-ui<br/>16 tools: 5 UI + 11 awf"]
     end
 
-    subgraph orch["orchestrators — swappable"]
-        AWF["awf<br/>(default)"]
-        OTHER["другой orchestrator<br/>(future)"]
+    subgraph awf_pkg["awf — Python package"]
+        API["awf.api<br/>(public API package)"]
+        ORCH["orchestrator<br/>(pipeline, stages, retries)"]
     end
 
     subgraph bus["file bus protocol — .agentic/"]
@@ -64,39 +63,39 @@ flowchart TD
     end
 
     BR["Browser<br/>(forms, dashboards)"]
+    CLI["CLI: awf<br/>(dev/debug wrapper)"]
 
-    SA ==>|"MCP tools"| UIMCP
-    SA ==>|"MCP tools"| AWFMCP
-    SA ==>|"MCP tools"| OTHERMCP
+    SA ==>|"MCP tools (16)"| PLUGIN
     SA -->|"spawns"| WA
+    CLI -.->|"thin wrapper"| API
 
-    UIMCP -->|"writes submits"| INPUTS
-    UIMCP -->|"reads Jinja2"| INPUTS
-    UIMCP -->|"xdg-open"| BR
-    BR -->|"POST submit"| UIMCP
+    PLUGIN -->|"Python import<br/>awf.api.*()"| API
+    PLUGIN -->|"writes submits"| INPUTS
+    PLUGIN -->|"reads Jinja2"| INPUTS
+    PLUGIN -->|"xdg-open"| BR
+    BR -->|"POST submit"| PLUGIN
 
-    AWFMCP -->|"reads state"| IN
-    AWFMCP -->|"reads state"| CTX
-
-    AWF -->|"owns"| IN
-    AWF -->|"owns"| CTX
-    OTHER -.->|"implements protocol"| IN
+    API -->|"orchestrates"| ORCH
+    ORCH -->|"owns"| IN
+    ORCH -->|"owns"| CTX
 
     WA -->|"writes signals"| IN
 
     style oc fill:#e3f2fd,stroke:#1976d2
     style mcp fill:#fce4ec,stroke:#c2185b
-    style orch fill:#fff3e0,stroke:#e65100
+    style awf_pkg fill:#fff3e0,stroke:#e65100
     style bus fill:#f1f8e9,stroke:#33691e
     style BR fill:#fafafa,stroke:#616161
+    style CLI fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5
 ```
 
 ### 2.2 Принципы интеграции
 
 - **opencode runtime** — общий, не зависит от наших продуктов.
-- **MCP layer** — несколько ортогональных серверов. `agent-workflow-ui` — agnostic. `awf-mcp` — awf-specific.
-- **Orchestrators** — swappable. Plugin не знает internals orchestrator'а, только file bus contract.
-- **File bus** — единственный контракт между слоями. Реализован в `.agentic/` директории проекта.
+- **MCP layer — ОДИН server** (в v1.1 было два: UI + awf-mcp). Все 16 tools в одном plugin'е.
+- **awf.api — single source of truth** для workflow logic. Plugin и CLI оба делегируют в него.
+- **UI tools agnostic** (только `inputs/`), **workflow tools** — thin wrappers над `awf.api`.
+- **File bus** — внутренний контракт awf. Plugin пишет напрямую только в `inputs/`.
 
 ---
 
@@ -104,11 +103,12 @@ flowchart TD
 
 ### 3.1 Принципы
 
-1. **CLI primary, HTML supplement.** Chat — основная среда supervisor↔user взаимодействия. HTML-формы — дополнение там, где chat ломается (выбор из 4+ опций, файловые пикеры, приоритизация).
-2. **Standalone product.** Plugin не зависит от awf internals, только от file bus протокола. Публикуется как отдельный package на PyPI.
-3. **MCP как единственный interface.** Агент вызывает plugin только через typed MCP tools. Никаких bash-команд или ручных file reads.
+1. **MCP primary path, CLI supplement.** Agent вызывает typed MCP tools. CLI `awf` — dev/debug обёртка для CI/скриптов/тестов.
+2. **Plugin зависит от awf.** `pyproject.toml: dependencies += ["awf>=0.4.0"]`. Workflow tools импортируют `awf.api` напрямую. UI tools остаются agnostic (только `inputs/` I/O).
+3. **MCP как единственный interface для агента.** Агент вызывает plugin только через typed MCP tools. Никаких bash-команд или ручных file reads.
 4. **Submit автоматический через HTTP.** Пользователь нажимает Submit → данные автоматически попадают в plugin через локальный HTTP endpoint. Стандартный HTML form POST.
 5. **Templates — часть проекта.** Шаблоны форм живут в `.agentic/templates/` и коммитятся в git (как `pipelines/`). Submits — runtime state, gitignored.
+6. **Single source of truth для workflow logic.** `awf.api` содержит всю business logic. CLI и MCP tools — оба тонкие обёртки. Поведение идентично, diverging semantics исключены.
 
 ### 3.2 Ограничения
 
@@ -131,7 +131,7 @@ flowchart TD
 agent_workflow_ui/
 ├── __init__.py
 ├── __main__.py                # entry: python -m agent_workflow_ui
-├── server.py                  # MCP server (stdio transport), регистрирует 5 tools
+├── server.py                  # MCP server (stdio transport), регистрирует 16 tools (5 UI + 11 awf)
 ├── http_endpoint.py           # localhost HTTP для приёма submits + save/delete custom roles
 ├── browser.py                 # xdg-open / open wrapper
 ├── config.py                  # env vars, paths (relative to cwd opencode = project root)
@@ -139,8 +139,10 @@ agent_workflow_ui/
 ├── opencode_config.py         # read opencode models (CLI + SQLite recent), scan/save/delete roles
 ├── skill_installer.py         # auto-install SKILL.md to ~/.config/opencode/skills/ on startup (lazy, idempotent)
 ├── tools/                     # MCP tool implementations
-│   ├── forms.py               # open_form, read_submit, cancel_form, list_pending_forms
-│   └── templates.py           # list_templates
+│   ├── forms.py               # UI tools: open_form, read_submit, cancel_form, list_pending_forms
+│   ├── templates.py           # UI tool: list_templates
+│   └── awf.py                 # awf workflow tools (11): awf_init, awf_status, awf_start, ...
+│                              #   thin async wrappers over awf.api.*()
 ├── render/                    # Jinja2 rendering layer
 │   ├── engine.py              # Environment setup, ChoiceLoader (project first → defaults)
 │   ├── frontmatter.py         # YAML frontmatter parser
@@ -151,7 +153,7 @@ agent_workflow_ui/
 │       ├── model-picker.html.j2        # ← reserved for Сценарий 6 wizard
 │       ├── pipeline-picker.html.j2     # ← reserved (в MVP pipeline выводится supervisor'ом)
 │       └── conflict-resolver.html.j2   # ← reserved for inline conflict (в MVP заменён на JS confirm)
-├── pyproject.toml             # package metadata (separate dist), post-install hook for SKILL.md
+├── pyproject.toml             # package metadata, dependencies += ["awf>=0.4.0"]
 └── SKILL.md                   # policy для LLM (копируется в ~/.config/opencode/skills/agent-workflow-ui/)
 ```
 
@@ -159,15 +161,16 @@ agent_workflow_ui/
 
 | Компонент | Ответственность |
 |---|---|
-| `server.py` | MCP protocol handling, tool dispatch, lifecycle. Регистрирует ровно 5 tools (без `wait_for_submit` / `open_form_and_wait`). |
+| `server.py` | MCP protocol handling, tool dispatch, lifecycle. Регистрирует **16 tools**: 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 11 awf workflow (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`). Без `wait_for_submit` / `open_form_and_wait`. |
 | `http_endpoint.py` | Localhost HTTP server, accepts `/submit/<form_id>` POSTs, writes YAML в `inputs/`, после submit: `_maybe_save_custom_roles()` и `_maybe_delete_custom_roles()` синхронизируют `~/.config/awf/roles/`. |
 | `browser.py` | Cross-platform browser open (`xdg-open` Linux, `open` macOS, fallback error). |
 | `config.py` | Reads env vars at startup, resolves paths. Defaults: `.agentic/inputs`, `.agentic/templates`, `.agentic/dashboards` (relative to cwd opencode). |
 | `state.py` | In-memory registry: `{form_id, template, opened_at, status}`. **Form ID generator:** `FORM-YYYYMMDDHHMMSS-XXXX` (timestamp + 4 random alphanumeric). |
 | `opencode_config.py` | `read_opencode_models()` (через `opencode models` CLI), `read_recent_models()` (SQLite history), `scan_global_roles()` / `save_custom_role()` / `delete_custom_role()` для `~/.config/awf/roles/`. |
 | `skill_installer.py` | `ensure_skill_installed()` — вызывается из `__main__.py` при каждом старте. Idempotent: копирует bundled SKILL.md в `~/.config/opencode/skills/agent-workflow-ui/` если отсутствует или содержимое устарело. Заменяет хрупкие setuptools post-install hooks для user-locale paths. |
-| `tools/forms.py` | Implements form lifecycle tools. `open_form` scans global roles и injects `custom_supervisor_roles`, `custom_agents` в template context. |
-| `tools/templates.py` | Implements template discovery. Сканирует defaults (в пакете) + project-level (`.agentic/templates/`) если есть. |
+| `tools/forms.py` | UI tools: `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`. `open_form` scans global roles и injects `custom_supervisor_roles`, `custom_agents` в template context. |
+| `tools/templates.py` | UI tool: `list_templates`. Сканирует defaults (в пакете) + project-level (`.agentic/templates/`) если есть. |
+| `tools/awf.py` | **awf workflow tools (11)** — thin async wrappers над `awf.api.*()`. Каждый tool: try/except `AwfApiError` → returns `{status: "ok"|"error", ...}`. Не содержит business logic (всё в `awf.api`). |
 | `render/engine.py` | Jinja2 environment с `ChoiceLoader`: project templates first, defaults second. Strips frontmatter из output. |
 | `render/frontmatter.py` | Parses YAML frontmatter at top of `.html.j2` files. |
 | `render/default_templates/` | Templates shipped with plugin. **MVP primary: `project-setup.html.j2`** (composite). Остальные — reserved для будущих сценариев. |
