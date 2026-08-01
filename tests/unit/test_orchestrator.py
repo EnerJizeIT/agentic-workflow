@@ -577,25 +577,31 @@ class TestInteractiveSupervisorBD30:
     def test_wait_for_supervisor_signal_detects_new_todo(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """BD-30: _wait_for_supervisor_signal detects NEW TODO-*.ready (snapshot)."""
+        """BD-30 + dogfood-1: snapshot filters out STALE TODOs (have matching
+        DONE in outbox). Active orphans (no DONE yet) are picked up immediately.
+
+        Before dogfood-1 fix: snapshot filtered ALL pre-existing TODOs →
+        workflow 'create TODO then awf_start' hung forever.
+        """
         from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
         inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
 
-        # Pre-existing TODO (must NOT trigger — snapshot)
+        # STALE TODO-0001 — has matching DONE in outbox, must be filtered.
         (inbox / "TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.ready").write_text("")
 
         # Simulate the new TODO appearing after 2 polls
         call_count = {"n": 0}
-        original_sleep = __import__("time").sleep
 
         def fake_sleep(seconds):
             call_count["n"] += 1
             if call_count["n"] == 2:
                 (inbox / "TODO-0042.ready").write_text("")
-            # Don't actually sleep in tests
             return None
 
         monkeypatch.setattr("time.sleep", fake_sleep)
@@ -604,6 +610,62 @@ class TestInteractiveSupervisorBD30:
             kind="plan", todo_id="", project_dir=proj, logs_dir=logs
         )
         assert result == "TODO-0042", f"Expected TODO-0042, got {result}"
+
+    def test_wait_for_supervisor_signal_picks_up_active_orphan(
+        self, tmp_path: Path
+    ) -> None:
+        """Dogfood-1 regression: TODO created before awf_start picked up immediately.
+
+        Scenario: supervisor creates TODO-0001.ready manually, THEN runs
+        `awf_start`. Old BD-30 snapshot filter excluded it as 'pre-existing'
+        → pipeline hung waiting for 'new' signal that never arrived.
+        Fix: TODO is 'stale' only if it has matching DONE-<id>.ready in outbox.
+        Active orphan (no DONE yet) = supervisor wants us to take it.
+        """
+        from awf.orchestrator import _wait_for_supervisor_signal
+
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+        inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+
+        # Active orphan: TODO exists, no DONE
+        (inbox / "TODO-0001.ready").write_text("")
+        # NO DONE-TODO-0001.ready in outbox
+
+        result = _wait_for_supervisor_signal(
+            kind="plan", todo_id="", project_dir=proj, logs_dir=logs,
+            # Short timeout — must return immediately
+            timeout=5,
+        )
+        assert result == "TODO-0001", (
+            f"Dogfood-1: active orphan TODO-0001 must be picked up immediately. "
+            f"Got: {result}"
+        )
+
+    def test_wait_for_supervisor_signal_orphans_prefer_newest(self, tmp_path: Path) -> None:
+        """Multiple orphan TODOs (no DONE) → pick newest (highest NNNN)."""
+        from awf.orchestrator import _wait_for_supervisor_signal
+
+        proj = self._make_proj(tmp_path)
+        logs = proj / ".agentic" / "logs"
+        inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+
+        # Multiple orphan TODOs, all without DONE
+        (inbox / "TODO-0001.ready").write_text("")
+        (inbox / "TODO-0003.ready").write_text("")
+        (inbox / "TODO-0002.ready").write_text("")
+
+        result = _wait_for_supervisor_signal(
+            kind="plan", todo_id="", project_dir=proj, logs_dir=logs,
+            timeout=5,
+        )
+        assert result == "TODO-0001", (
+            f"Should pick lowest NNNN first (sorted). Got: {result}"
+        )
 
     def test_wait_for_supervisor_signal_detects_ack_for_verify(
         self, tmp_path: Path, monkeypatch
@@ -658,15 +720,23 @@ class TestInteractiveSupervisorBD30:
     def test_wait_for_supervisor_signal_ignores_stale_todo(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """BD-30: pre-existing TODO-*.ready is in snapshot — does NOT trigger."""
+        """BD-30: STALE TODO (has matching DONE in outbox) is filtered out.
+
+        Dogfood-1 fix: snapshot filter only excludes TODOs with matching
+        DONE-<id>.ready in outbox. Active orphan (no DONE) is picked up
+        immediately — see test_wait_for_supervisor_signal_picks_up_active_orphan.
+        """
         from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
         inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
 
-        # Stale TODO from previous run
+        # Truly stale: TODO from previous run + matching DONE in outbox
         (inbox / "TODO-0001.ready").write_text("")
+        (outbox / "DONE-TODO-0001.ready").write_text("")
 
         call_count = {"n": 0}
 

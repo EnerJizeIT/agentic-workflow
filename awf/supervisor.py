@@ -159,15 +159,36 @@ def wait_for_supervisor_signal(
     C1 v2 fix: timeout (default 3600s = 1 hour). Without this, in --background
     mode a forgotten interactive supervisor would hang forever (zombie process).
     Raises TimeoutError on expiry.
+
+    Dogfood-1 fix: snapshot filter only excludes TODOs that already have a
+    matching DONE-<id>.ready in outbox (truly stale). Active orphan TODOs
+    (created by supervisor before `awf start`, no DONE yet) are picked up
+    immediately. Without this, the common workflow "create TODO → awf_start"
+    would hang forever waiting for a "new" signal that never arrives.
     """
     import time
 
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
 
+    # BD-30: snapshot which TODO signals existed BEFORE pipeline start.
+    # Used to distinguish "new signal from interactive supervisor" from
+    # "stale file from previous runs". But only filter as stale if the
+    # TODO already has a matching DONE-<id>.ready (truly completed);
+    # otherwise it's an active orphan — supervisor created TODO before
+    # awf_start, common in interactive Mode B workflow.
     existing_todo_signals: set[str] = set()
+    active_orphan_signals: list[str] = []
     if kind in ("plan", "replan") and inbox.is_dir():
-        existing_todo_signals = {p.name for p in inbox.glob("TODO-*.ready")}
+        for p in inbox.glob("TODO-*.ready"):
+            existing_todo_signals.add(p.name)
+            todo_name = p.stem  # "TODO-0001"
+            if not (outbox / f"DONE-{todo_name}.ready").exists():
+                active_orphan_signals.append(p.name)
+        # If there are active orphans (not-yet-done), take the newest
+        # immediately on first poll iteration. This avoids the UX trap
+        # where "create TODO then awf_start" hangs forever.
+        active_orphan_signals.sort()
 
     deadline_log_interval = 60
     start = time.monotonic()
@@ -176,6 +197,15 @@ def wait_for_supervisor_signal(
 
     while True:
         if kind in ("plan", "replan"):
+            # Dogfood-1: active orphan TODOs (no DONE) picked up immediately.
+            if active_orphan_signals:
+                sig = active_orphan_signals.pop(0).replace(".ready", "")
+                _log(
+                    logs_dir,
+                    f"BD-30/dogfood-1: picked up active orphan TODO signal: {sig} "
+                    f"(created before pipeline start, no matching DONE in outbox)",
+                )
+                return sig
             if inbox.is_dir():
                 current = {p.name for p in inbox.glob("TODO-*.ready")}
                 new_ones = current - existing_todo_signals
