@@ -22,12 +22,24 @@ def detect_work_evidence(project_dir: str | Path, baseline_sha: str) -> bool:
     return False
 
 
-def run_verify_commands(config: dict, project_dir: str | Path | None = None) -> bool:
+def run_verify_commands(
+    config: dict,
+    project_dir: str | Path | None = None,
+    *,
+    todo_id: str | None = None,
+) -> bool:
     """Run each non-empty verify command. Returns True if all pass.
 
     ``project_dir`` is forwarded to ``subprocess.run(cwd=...)`` so commands
     like ``pytest`` / ``npm test`` execute in the project, not in the
     orchestrator's CWD. If None, runs in current CWD (legacy behaviour).
+
+    ``todo_id`` — when provided, captured stdout/stderr of each command is
+    persisted to ``.agentic/outbox/TEST-RESULTS-{todo_id}.log`` (atomic,
+    appended per-command). This enables ``awf_report`` /
+    ``awf.api.get_report`` to surface recent test output instead of returning
+    ``None`` (audit fix). When None, output is discarded (back-compat for
+    ``cmd_baseline`` which captures tests separately).
     """
     cmd_keys = ["test_cmd", "lint_cmd", "typecheck_cmd", "build_cmd"]
     cmds = []
@@ -39,19 +51,40 @@ def run_verify_commands(config: dict, project_dir: str | Path | None = None) -> 
     if not cmds:
         return False  # no commands configured → can't verify
 
-    cwd = str(project_dir) if project_dir is not None else None
+    cwd = Path(project_dir) if project_dir is not None else None
+    log_path: Path | None = None
+    if todo_id and cwd is not None:
+        log_path = cwd / ".agentic" / "outbox" / f"TEST-RESULTS-{todo_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    log_chunks: list[str] = []
     for cmd in cmds:
         parts = shlex.split(cmd)
         if not parts:
             return False
         try:
             result = subprocess.run(
-                parts, capture_output=True, check=False, cwd=cwd,
+                parts,
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(cwd) if cwd is not None else None,
             )
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError) as e:
+            if log_path is not None:
+                log_chunks.append(f"$ {cmd}\nABORTED: {e}\n")
+                atomic_write_text(log_path, "".join(log_chunks))
             return False
+        if log_path is not None:
+            chunk = f"$ {cmd}\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}\n"
+            log_chunks.append(chunk)
         if result.returncode != 0:
+            if log_path is not None:
+                atomic_write_text(log_path, "".join(log_chunks))
             return False
+
+    if log_path is not None:
+        atomic_write_text(log_path, "".join(log_chunks))
     return True
 
 
@@ -86,8 +119,10 @@ def attempt_auto_done(
     if not detect_work_evidence(cwd, baseline_sha):
         return False
 
-    # Verify commands must all pass (run in project_dir)
-    if not run_verify_commands(config, project_dir=project_dir):
+    # Verify commands must all pass (run in project_dir).
+    # Pass todo_id so verify output is persisted to outbox/TEST-RESULTS-*.log
+    # (audit fix: enables awf_report to surface recent test output).
+    if not run_verify_commands(config, project_dir=project_dir, todo_id=todo_id):
         return False
 
     # Synthesize DONE

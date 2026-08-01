@@ -2,7 +2,7 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 766 тестов (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), BD-36 plan checkpoint и audit-v2 (HIGH verify.py bool bug) закрыты.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 857 тестов (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), BD-36 plan checkpoint и audit-v2 (HIGH verify.py bool bug) закрыты.
 
 **Активный эпик:** MCP-MIGRATION — миграция awf из standalone CLI в pure MCP toolkit под opencode.
 
@@ -49,7 +49,7 @@ subprocess). CLI `awf` остаётся как thin dev/debug wrapper, не prim
       - `analyze_roles(project_dir, ...) -> AnalyzeRolesResult`
 - [x] Типизированные dataclass'ы для всех Result'ов (as_dict() для MCP).
 - [x] cmd_*.py — тонкие обёртки (argparse → call api.*() → print human-readable).
-- [x] Backward compat preserved: e2e тесты проходят (876).
+- [x] Backward compat preserved: e2e тесты проходят (857).
 - [x] Покрытие api/ package unit-тестами (79 тестов в tests/unit/test_api.py).
 - [x] Helpers: detect_stack(), derive_project_name() (MCP-6 stack-detect ready).
 - [x] Audit cleanup: god module split на 10 submodules (largest 493 lines).

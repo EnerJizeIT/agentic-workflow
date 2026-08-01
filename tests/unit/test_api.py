@@ -858,17 +858,14 @@ class TestStartPipeline:
 
     def test_foreground_orchestrator_exception_caught(self, tmp_git_repo, monkeypatch):
         """When orchestrator.run_pipeline raises an unexpected exception,
-        start_pipeline returns StartResult with exit_code=1 (not crash)."""
+        start_pipeline returns StartResult with exit_code=1 (not crash).
+
+        Patches ``awf.api.pipeline.run_pipeline`` via the source module
+        (start_pipeline imports it lazily inside the function).
+        """
         api.init_project(tmp_git_repo, project_name="Test")
 
-        def fake_run_pipeline(args):
-            raise KeyError("simulated orchestrator crash")
-
-        monkeypatch.setattr(api, "run_pipeline", fake_run_pipeline, raising=False)
-        # Patch the import inside start_pipeline
         import awf.orchestrator as orch_mod
-
-        orig = orch_mod.run_pipeline
 
         def crashing(args):
             raise KeyError("simulated orchestrator crash")

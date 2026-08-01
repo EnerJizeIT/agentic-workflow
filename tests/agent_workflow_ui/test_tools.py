@@ -59,7 +59,7 @@ def plugin_setup(tmp_path, monkeypatch):
 
 def test_open_form_returns_form_id(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
-    result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     assert result["form_id"].startswith("FORM-")
     assert "browser_opened" in result
     assert "submit_url" in result
@@ -68,8 +68,8 @@ def test_open_form_returns_form_id(plugin_setup):
 
 def test_open_form_increments_form_id(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
-    r1 = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
-    r2 = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    r1 = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
+    r2 = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     assert r1["form_id"] != r2["form_id"]
 
 
@@ -83,7 +83,7 @@ def test_open_form_unknown_template(plugin_setup):
 def test_open_form_with_ttl(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
     result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={"available_roles": ["worker"]},
         ttl_seconds=60,
     ))
@@ -92,16 +92,16 @@ def test_open_form_with_ttl(plugin_setup):
 
 def test_open_form_registers_in_registry(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
-    result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     record = get_registry().get(result["form_id"])
     assert record is not None
-    assert record.template == "role-assignment"
+    assert record.template == "project-setup"
     assert record.status == "pending"
 
 
 def test_open_form_no_data(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
-    result = asyncio.run(open_form(template="role-assignment"))
+    result = asyncio.run(open_form(template="project-setup"))
     assert result["form_id"].startswith("FORM-")
     assert "submit_url" in result
 
@@ -110,7 +110,7 @@ def test_open_form_no_data(plugin_setup):
 
 def test_read_submit_pending(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form, read_submit
-    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     r = asyncio.run(read_submit(open_result["form_id"]))
     assert r["submitted"] is False
     assert r["status"] == "pending"
@@ -118,12 +118,12 @@ def test_read_submit_pending(plugin_setup):
 
 def test_read_submit_after_yaml_written(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form, read_submit
-    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
 
     submit_data = {
         "form_id": form_id,
-        "template": "role-assignment",
+        "template": "project-setup",
         "submitted_at": datetime.now(timezone.utc).isoformat(),
         "data": {"selected_roles": ["worker", "reviewer"]},
     }
@@ -148,7 +148,7 @@ def test_read_submit_unknown_form_id(plugin_setup):
 
 def test_cancel_form(plugin_setup):
     from agent_workflow_ui.tools.forms import cancel_form, open_form, read_submit
-    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
 
     r = asyncio.run(cancel_form(form_id))
@@ -160,7 +160,7 @@ def test_cancel_form(plugin_setup):
 
 def test_cancel_form_already_submitted(plugin_setup):
     from agent_workflow_ui.tools.forms import cancel_form, open_form
-    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
     get_registry().update_status(form_id, "submitted")
 
@@ -187,25 +187,25 @@ def test_list_pending_forms_initially_empty(plugin_setup):
 
 def test_list_pending_forms_after_open(plugin_setup):
     from agent_workflow_ui.tools.forms import list_pending_forms, open_form
-    asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
-    asyncio.run(open_form(template="skill-picker", data={"available_skills": ["backend-developer"]}))
+    asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
+    asyncio.run(open_form(template="project-setup", data={"available_roles": ["reviewer"]}))
 
     r = asyncio.run(list_pending_forms())
     assert r["count"] == 2
-    templates = {p["template"] for p in r["pending"]}
-    assert templates == {"role-assignment", "skill-picker"}
+    # Both forms use the same template name; verify count via instances.
+    assert all(p["template"] == "project-setup" for p in r["pending"])
     assert all("age_seconds" in p for p in r["pending"])
 
 
 def test_list_pending_forms_excludes_cancelled(plugin_setup):
     from agent_workflow_ui.tools.forms import cancel_form, list_pending_forms, open_form
-    r1 = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
-    asyncio.run(open_form(template="skill-picker", data={"available_skills": ["x"]}))
+    r1 = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
+    asyncio.run(open_form(template="project-setup", data={"available_roles": ["reviewer"]}))
     asyncio.run(cancel_form(r1["form_id"]))
 
     r = asyncio.run(list_pending_forms())
     assert r["count"] == 1
-    assert r["pending"][0]["template"] == "skill-picker"
+    assert r["pending"][0]["template"] == "project-setup"
 
 
 # --- list_templates ---
@@ -214,7 +214,9 @@ def test_list_templates_returns_default_templates(plugin_setup):
     from agent_workflow_ui.tools.templates import list_templates
     r = asyncio.run(list_templates())
     names = {t["name"] for t in r["templates"]}
-    expected = {"role-assignment", "skill-picker", "model-picker", "pipeline-picker", "conflict-resolver"}
+    # Only project-setup ships as a default template (audit fix: 5 reserved
+    # templates removed — they had no submit handlers, risk of silent data loss).
+    expected = {"project-setup"}
     assert expected.issubset(names), f"Missing: {expected - names}"
 
 
@@ -234,7 +236,7 @@ def test_list_templates_project_overrides_default(plugin_setup, tmp_path):
     """Project templates override default by name."""
     from agent_workflow_ui.tools.templates import list_templates
 
-    project_template = plugin_setup.templates_dir / "role-assignment.html.j2"
+    project_template = plugin_setup.templates_dir / "project-setup.html.j2"
     project_template.write_text("""---
 description: PROJECT OVERRIDE
 required_data_keys:
@@ -246,7 +248,7 @@ required_data_keys:
     set_jinja_env(create_env([plugin_setup.templates_dir, DEFAULT_TEMPLATES_DIR]))
 
     r = asyncio.run(list_templates())
-    role_template = next(t for t in r["templates"] if t["name"] == "role-assignment")
+    role_template = next(t for t in r["templates"] if t["name"] == "project-setup")
     assert role_template["source"] == "project"
     assert role_template["description"] == "PROJECT OVERRIDE"
 
@@ -261,7 +263,7 @@ def test_read_submit_lazy_expiration(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form, read_submit
 
     result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={"available_roles": ["worker"]},
         ttl_seconds=1,
     ))
@@ -283,7 +285,7 @@ def test_list_pending_forms_excludes_expired(plugin_setup):
     from agent_workflow_ui.tools.forms import list_pending_forms, open_form
 
     asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={"available_roles": ["worker"]},
         ttl_seconds=1,
     ))
@@ -301,7 +303,7 @@ def test_open_form_no_http_port_returns_error(plugin_setup, monkeypatch):
 
     saved = get_http_port()
     set_http_port(None)
-    result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     set_http_port(saved)
 
     assert "error" in result
@@ -312,7 +314,7 @@ def test_read_submit_malformed_yaml(plugin_setup):
     """read_submit returns error status when submit file has invalid YAML."""
     from agent_workflow_ui.tools.forms import open_form, read_submit
 
-    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
 
     submit_file = plugin_setup.inputs_dir / f"{form_id}.yaml"
@@ -328,7 +330,7 @@ def test_read_submit_non_dict_yaml(plugin_setup):
     """read_submit returns error when submit file is valid YAML but not a dict."""
     from agent_workflow_ui.tools.forms import open_form, read_submit
 
-    open_result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     form_id = open_result["form_id"]
 
     submit_file = plugin_setup.inputs_dir / f"{form_id}.yaml"
@@ -351,7 +353,7 @@ def test_open_form_browser_open_fails(plugin_setup, monkeypatch):
     import agent_workflow_ui.tools.forms as forms_mod
     monkeypatch.setattr(forms_mod, "open_path", _fail_open, raising=True)
 
-    result = asyncio.run(open_form(template="role-assignment", data={"available_roles": ["worker"]}))
+    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
     assert result["browser_opened"] is False
     assert "error" in result
     assert "xdg-open" in result["error"]
@@ -533,7 +535,7 @@ def test_open_form_project_dir_set(plugin_setup, tmp_path):
     (proj / ".agentic").mkdir()
 
     result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={
             "available_roles": ["worker"],
             "project_dir": str(proj),
@@ -554,7 +556,7 @@ def test_open_form_project_dir_no_agentic(plugin_setup, tmp_path, caplog):
     # No .agentic/ directory
 
     result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={
             "available_roles": ["worker"],
             "project_dir": str(proj),
@@ -572,7 +574,7 @@ def test_open_form_no_project_dir_compat(plugin_setup):
     from agent_workflow_ui.tools.forms import open_form
 
     result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={"available_roles": ["worker"]},
     ))
     assert result["form_id"].startswith("FORM-")
@@ -590,7 +592,7 @@ def test_open_form_project_dir_not_leaked_to_template(plugin_setup, tmp_path):
     (proj / ".agentic").mkdir()
 
     result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={
             "available_roles": ["worker"],
             "project_dir": str(proj),
@@ -613,7 +615,7 @@ def test_open_form_data_not_mutated(plugin_setup, tmp_path):
     original_keys = set(caller_data.keys())
 
     asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data=caller_data,
     ))
     assert set(caller_data.keys()) == original_keys
@@ -629,7 +631,7 @@ def test_read_submit_with_project_dir(plugin_setup, tmp_path):
     (proj / ".agentic" / "inputs").mkdir(parents=True)
 
     open_result = asyncio.run(open_form(
-        template="role-assignment",
+        template="project-setup",
         data={
             "available_roles": ["worker"],
             "project_dir": str(proj),
@@ -639,7 +641,7 @@ def test_read_submit_with_project_dir(plugin_setup, tmp_path):
 
     submit_data = {
         "form_id": form_id,
-        "template": "role-assignment",
+        "template": "project-setup",
         "submitted_at": datetime.now(timezone.utc).isoformat(),
         "data": {"selected_roles": ["worker"]},
     }

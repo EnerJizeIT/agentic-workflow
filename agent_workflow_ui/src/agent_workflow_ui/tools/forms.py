@@ -107,7 +107,7 @@ async def open_form(
     """Open an HTML form in the user's browser for structured input.
 
     Args:
-        template: Template name (without extension, e.g. "role-assignment").
+        template: Template name (without extension, e.g. "project-setup").
         data: Variables to render in the template.
         ttl_seconds: Auto-cancel after N seconds (optional). Default: no TTL.
 

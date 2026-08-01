@@ -101,7 +101,7 @@ def test_all_tools_registered():
 def test_open_form_stub_returns_form_id(plugin_initialized):
     """open_form returns a form_id and submit_url."""
     server = create_server()
-    result = asyncio.run(server.call_tool("open_form", {"template": "role-assignment", "data": {"available_roles": ["worker"]}}))
+    result = asyncio.run(server.call_tool("open_form", {"template": "project-setup", "data": {"available_roles": ["worker"]}}))
     assert result is not None
     _, structured = result
     assert "form_id" in structured

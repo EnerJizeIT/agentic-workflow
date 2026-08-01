@@ -51,7 +51,7 @@ def render_template(
 
     Args:
         env: Jinja2 environment.
-        template_name: Template name without extension (e.g., "role-assignment").
+        template_name: Template name without extension (e.g., "project-setup").
         context: Variables to pass to template. Plugin injects:
             - form_id (str)
             - submit_url (str)
