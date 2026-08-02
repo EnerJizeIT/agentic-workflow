@@ -5,14 +5,10 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 import yaml
-from agent_workflow_ui.config import ensure_directories, load
 from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.state import (
     get_registry,
-    reset_registry,
-    set_config,
     set_http_port,
     set_jinja_env,
 )
@@ -21,38 +17,9 @@ import agent_workflow_ui as _awui
 
 DEFAULT_TEMPLATES_DIR = Path(_awui.__file__).parent / "render" / "default_templates"
 
+# plugin_setup fixture moved to tests/agent_workflow_ui/conftest.py
+# (shared across test_tools.py + test_awf_tools.py + test_server_smoke.py)
 
-@pytest.fixture
-def plugin_setup(tmp_path, monkeypatch):
-    """Initialize plugin state in tmp_path.
-
-    CRITICAL: monkeypatch browser.open_path to a no-op so tests don't actually
-    open real browser tabs. Without this, every test that calls open_form
-    spawns xdg-open and pollutes the user's browser.
-
-    Also redirects temp_dir to tmp_path so rendered HTML files don't leak
-    into /tmp/ after the test run.
-    """
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("AWF_TEMP_DIR", str(tmp_path / "tmp"))
-    config = load()
-    ensure_directories(config)
-    set_config(config)
-    set_http_port(13747)
-    set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
-    reset_registry()
-
-    # Mock browser.open_path so tests are hermetic — don't open real browser.
-    def _fake_open_path(target, command="auto"):
-        return True, f"mocked open for {target}"
-
-    import agent_workflow_ui.tools.forms as forms_mod
-    monkeypatch.setattr(forms_mod, "open_path", _fake_open_path, raising=True)
-    # Also patch at browser module level in case other code imports it directly.
-    import agent_workflow_ui.browser as browser_mod
-    monkeypatch.setattr(browser_mod, "open_path", _fake_open_path, raising=True)
-
-    return config
 
 
 # --- open_form ---
@@ -298,7 +265,7 @@ def test_list_pending_forms_excludes_expired(plugin_setup):
 
 def test_open_form_no_http_port_returns_error(plugin_setup, monkeypatch):
     """open_form returns error when HTTP endpoint not started."""
-    from agent_workflow_ui.state import get_http_port, set_http_port
+    from agent_workflow_ui.state import get_http_port
     from agent_workflow_ui.tools.forms import open_form
 
     saved = get_http_port()

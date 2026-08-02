@@ -135,3 +135,56 @@ def run_awf(awf_bin: str, args: list, cwd: Path, env: dict, input_data: bytes = 
         capture_output=True, text=False,
         timeout=timeout, check=False,
     )
+
+
+# ─── plugin_setup fixture (shared by tests/agent_workflow_ui/*) ─────────
+#
+# Used to live in tests/agent_workflow_ui/test_tools.py as a local fixture,
+# then briefly in tests/agent_workflow_ui/conftest.py — but the latter
+# broke e2e tests which import `from conftest import run_awf` (pytest was
+# resolving the subdir conftest first). Moved here as the single shared
+# location.
+
+DEFAULT_TEMPLATES_DIR = REPO_ROOT / "agent_workflow_ui" / "src" / "agent_workflow_ui" / "render" / "default_templates"
+
+
+@pytest.fixture
+def plugin_setup(tmp_path, monkeypatch):
+    """Initialize plugin state in tmp_path + mock browser.open_path.
+
+    CRITICAL: monkeypatch open_path at BOTH module levels (forms.py and
+    browser.py). Without the forms.py patch, real subprocess.run fires
+    and tests pollute the user's browser with form tabs.
+
+    forms.py does `from ..browser import open_path` — this creates a
+    separate reference in forms module's namespace. Patching only
+    browser.open_path leaves forms.open_path untouched.
+    """
+    # Late imports (avoid affecting module-level state outside fixture)
+    import agent_workflow_ui.browser as browser_mod
+    import agent_workflow_ui.tools.forms as forms_mod
+    from agent_workflow_ui.config import ensure_directories, load
+    from agent_workflow_ui.render.engine import create_env
+    from agent_workflow_ui.state import (
+        reset_registry,
+        set_config,
+        set_http_port,
+        set_jinja_env,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AWF_TEMP_DIR", str(tmp_path / "tmp"))
+    config = load()
+    ensure_directories(config)
+    set_config(config)
+    set_http_port(13747)
+    set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
+    reset_registry()
+
+    def _fake_open_path(target, command="auto"):
+        return True, f"mocked open for {target}"
+
+    monkeypatch.setattr(forms_mod, "open_path", _fake_open_path, raising=True)
+    monkeypatch.setattr(browser_mod, "open_path", _fake_open_path, raising=True)
+
+    return config
