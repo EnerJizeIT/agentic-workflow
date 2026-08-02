@@ -1,0 +1,254 @@
+---
+description: Increment planning — supervisor offers decomposition variants, user picks one
+required_data_keys:
+  - variants
+optional_data_keys:
+  - project_name
+---
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Increment Planning</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --bg-card: #252526;
+      --bg-input: #3c3c3c;
+      --text: #d4d4d4;
+      --text-muted: #858585;
+      --accent: #569cd6;
+      --accent-green: #4ec9b0;
+      --border: #464647;
+      --danger: #f14c4c;
+      --radius: 6px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 24px;
+      max-width: 900px;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+    h1 { color: var(--accent); margin-bottom: 8px; font-size: 22px; }
+    .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 14px; }
+    .variant-card {
+      background: var(--bg-card);
+      border: 2px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 16px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .variant-card:hover { border-color: var(--accent); }
+    .variant-card.selected {
+      border-color: var(--accent-green);
+      background: rgba(78, 201, 176, 0.08);
+    }
+    .variant-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .variant-id {
+      color: var(--accent-green);
+      font-weight: 600;
+      font-size: 14px;
+      font-family: monospace;
+    }
+    .variant-title {
+      color: var(--text);
+      font-weight: 500;
+      font-size: 16px;
+    }
+    .variant-strategy {
+      display: inline-block;
+      background: var(--bg-input);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      margin-left: auto;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .variant-description {
+      color: var(--text);
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    .variant-meta {
+      display: flex;
+      gap: 16px;
+      color: var(--text-muted);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .variant-meta span strong { color: var(--text); }
+    .increment-list {
+      list-style: none;
+      padding-left: 0;
+    }
+    .increment-list li {
+      padding: 6px 0;
+      padding-left: 24px;
+      position: relative;
+      font-size: 13px;
+      color: var(--text);
+    }
+    .increment-list li::before {
+      content: "→";
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+    }
+    .increment-list li strong {
+      color: var(--accent-green);
+    }
+    .pros-cons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+      font-size: 12px;
+    }
+    .pros-cons > div {
+      background: var(--bg-input);
+      padding: 8px;
+      border-radius: 4px;
+    }
+    .pros-cons h4 {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .pros h4 { color: var(--accent-green); }
+    .cons h4 { color: var(--danger); }
+    .pros-cons ul { padding-left: 16px; }
+    .pros-cons li { font-size: 12px; color: var(--text-muted); }
+
+    .actions {
+      margin-top: 32px;
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+    }
+    button {
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      padding: 10px 24px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { opacity: 0.9; }
+    button:disabled {
+      background: var(--bg-input);
+      color: var(--text-muted);
+      cursor: not-allowed;
+    }
+    button.reject {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--danger);
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Increment Planning</h1>
+  <div class="subtitle">
+    {% if project_name %}Project: {{ project_name }} · {% endif %}
+    Supervisor proposed {{ variants|length }} decomposition variants. Pick one — this shapes the TODO sequence.
+  </div>
+
+  <form id="planning-form" method="POST" action="{{ submit_url }}">
+    <input type="hidden" name="form_id" value="{{ form_id }}">
+
+    {% for v in variants %}
+    <div class="variant-card" data-variant-id="{{ v.id }}" onclick="selectVariant('{{ v.id }}')">
+      <div class="variant-header">
+        <span class="variant-id">{{ v.id }}</span>
+        <span class="variant-title">{{ v.title }}</span>
+        {% if v.strategy %}<span class="variant-strategy">{{ v.strategy }}</span>{% endif %}
+      </div>
+      <div class="variant-description">{{ v.description }}</div>
+
+      <div class="variant-meta">
+        {% if v.estimated_todos %}<span><strong>{{ v.estimated_todos }}</strong> TODOs</span>{% endif %}
+        {% if v.estimated_time %}<span>~<strong>{{ v.estimated_time }}</strong></span>{% endif %}
+        {% if v.risk_level %}<span>risk: <strong>{{ v.risk_level }}</strong></span>{% endif %}
+      </div>
+
+      {% if v.increments %}
+      <ul class="increment-list">
+        {% for inc in v.increments %}
+        <li><strong>{{ inc.name }}</strong> — {{ inc.goal }}{% if inc.artefacts %} <em>(artefacts: {{ inc.artefacts|join(', ') }})</em>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if v.pros or v.cons %}
+      <div class="pros-cons">
+        {% if v.pros %}
+        <div class="pros">
+          <h4>Pros</h4>
+          <ul>{% for p in v.pros %}<li>{{ p }}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+        {% if v.cons %}
+        <div class="cons">
+          <h4>Cons</h4>
+          <ul>{% for c in v.cons %}<li>{{ c }}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+
+    <input type="hidden" name="selected_variant" id="selected-variant-input" value="">
+    <input type="hidden" name="variants_json" id="variants-json-input" value='{{ variants|tojson }}'>
+
+    <div class="actions">
+      <button type="button" class="reject" onclick="rejectPlan()">None — replan</button>
+      <button type="submit" id="submit-btn" disabled>Select &amp; continue</button>
+    </div>
+  </form>
+
+  <script>
+    let selectedId = null;
+
+    function selectVariant(id) {
+      selectedId = id;
+      document.querySelectorAll('.variant-card').forEach(c => {
+        c.classList.toggle('selected', c.dataset.variantId === id);
+      });
+      document.getElementById('selected-variant-input').value = id;
+      document.getElementById('submit-btn').disabled = false;
+    }
+
+    function rejectPlan() {
+      document.getElementById('selected-variant-input').value = '__reject__';
+      document.getElementById('planning-form').submit();
+    }
+
+    // Auto-select first variant for quick submit
+    document.addEventListener('DOMContentLoaded', () => {
+      const first = document.querySelector('.variant-card');
+      if (first && window.location.search.includes('autoselect=1')) {
+        selectVariant(first.dataset.variantId);
+      }
+    });
+  </script>
+</body>
+</html>

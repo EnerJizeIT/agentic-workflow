@@ -28,6 +28,7 @@ from ._errors import AwfApiError
 from ._results import (
     AddRoleResult,
     AnalyzeRolesResult,
+    ApplyIncrementPlanResult,
     ApplyProjectSetupResult,
     ApproveResult,
     BaselineResult,
@@ -60,6 +61,7 @@ from .pipeline import (
     rollback,
     start_pipeline,
 )
+from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
 from .setup import apply_project_setup
 
@@ -80,6 +82,7 @@ __all__ = [
     "ApplyProjectSetupResult",
     "DispatchTodoResult",
     "SupervisorContextResult",
+    "ApplyIncrementPlanResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -104,4 +107,6 @@ __all__ = [
     # TODO dispatch + supervisor context (dogfood-2 automation)
     "dispatch_todo",
     "load_supervisor_context",
+    # Increment planning (dogfood-7 — user picks decomposition variant)
+    "apply_increment_plan",
 ]

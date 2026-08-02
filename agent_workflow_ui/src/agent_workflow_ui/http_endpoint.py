@@ -197,9 +197,39 @@ class SubmitHandler(BaseHTTPRequestHandler):
         process_role_saves(data, project_dir=record.project_dir)
         process_role_deletions(data, project_dir=record.project_dir)
 
+        # Dogfood-7: increment-planning submit → persist via api.apply_increment_plan
+        if record.template == "increment-planning" and record.project_dir:
+            selected_variant_id = (data.get("selected_variant", "") or "").strip()
+            variants_json = data.get("variants_json", "") or "[]"
+            if selected_variant_id and selected_variant_id != "__reject__":
+                try:
+                    import json as _json
+                    variants = _json.loads(variants_json) if isinstance(variants_json, str) else variants_json
+                    selected = next(
+                        (v for v in variants if isinstance(v, dict) and v.get("id") == selected_variant_id),
+                        None,
+                    )
+                    if selected:
+                        # Build plan.md body from selected variant
+                        plan_body = _build_plan_md_from_variant(selected, variants)
+                        from awf.api import apply_increment_plan
+                        apply_increment_plan(
+                            record.project_dir,
+                            plan_body,
+                            selected_variant_id=selected_variant_id,
+                            variants=variants,
+                        )
+                        log.info(
+                            "Increment plan persisted: variant=%s → plan.md",
+                            selected_variant_id,
+                        )
+                except Exception as e:
+                    log.error("apply_increment_plan failed: %s", e)
+
         log.info("Submit received for %s, written to %s", form_id, target)
 
         self._send_html(200, _ack_page(form_id, already_submitted=False))
+
 
     def do_GET(self):
         """Handle GET /health."""
@@ -266,3 +296,79 @@ def start_http_server(config: Config, registry: FormRegistry) -> tuple[Threading
     thread.start()
     log.info("HTTP server listening on http://127.0.0.1:%d", port)
     return server, port
+
+
+
+def _build_plan_md_from_variant(
+    selected: dict[str, Any],
+    all_variants: list[dict[str, Any]],
+) -> str:
+    """Build plan.md body from user-selected increment variant.
+
+    Supervisor's variant carries the decomposition. We render it as
+    markdown so plan.md is human-readable and supervisor can edit later.
+    """
+    title = selected.get("title", "Untitled plan")
+    strategy = selected.get("strategy", "")
+    description = selected.get("description", "")
+    increments = selected.get("increments", []) or []
+    pros = selected.get("pros", []) or []
+    cons = selected.get("cons", []) or []
+    est_todos = selected.get("estimated_todos")
+    est_time = selected.get("estimated_time")
+
+    lines: list[str] = [f"# Plan: {title}", ""]
+    if strategy:
+        lines.append(f"**Strategy:** {strategy}")
+    if description:
+        lines.append("")
+        lines.append(description)
+    lines.append("")
+    if est_todos or est_time:
+        meta_parts = []
+        if est_todos:
+            meta_parts.append(f"~{est_todos} TODOs")
+        if est_time:
+            meta_parts.append(f"~{est_time}")
+        lines.append(f"_Estimated: {', '.join(meta_parts)}_")
+        lines.append("")
+
+    lines.append("## Increments")
+    lines.append("")
+    for i, inc in enumerate(increments, start=1):
+        name = inc.get("name", f"Increment {i}")
+        goal = inc.get("goal", "")
+        artefacts = inc.get("artefacts", []) or []
+        lines.append(f"### {i}. {name}")
+        if goal:
+            lines.append("")
+            lines.append(goal)
+        if artefacts:
+            lines.append("")
+            lines.append(f"**Artefacts:** {', '.join(artefacts)}")
+        lines.append("")
+
+    if pros or cons:
+        lines.append("## Trade-offs")
+        lines.append("")
+        if pros:
+            lines.append("**Pros:**")
+            for p in pros:
+                lines.append(f"- {p}")
+            lines.append("")
+        if cons:
+            lines.append("**Cons:**")
+            for c in cons:
+                lines.append(f"- {c}")
+            lines.append("")
+
+    # Other variants as historical reference
+    if len(all_variants) > 1:
+        other = [v for v in all_variants if v.get("id") != selected.get("id")]
+        lines.append("## Other variants considered")
+        lines.append("")
+        for v in other:
+            lines.append(f"- **{v.get('id', '?')}**: {v.get('title', 'untitled')}")
+        lines.append("")
+
+    return "\n".join(lines)

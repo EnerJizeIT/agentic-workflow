@@ -46,5 +46,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_load_supervisor_context, name="awf_load_supervisor_context")
     # Dogfood-5: shortcut tools (deterministic UX, no prompt-only guidance)
     mcp.add_tool(awf.awf_open_project_setup_form, name="awf_open_project_setup_form")
+    # Dogfood-7: increment planning (user picks decomposition variant)
+    mcp.add_tool(awf.awf_open_increment_planning_form, name="awf_open_increment_planning_form")
 
     return mcp

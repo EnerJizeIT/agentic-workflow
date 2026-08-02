@@ -543,3 +543,77 @@ async def awf_open_project_setup_form(
     if "error" in result:
         return {"status": "error", "error": result["error"]}
     return {"status": "ok", **result}
+
+
+# ─── Dogfood-7: increment planning (user picks decomposition variant) ───
+
+
+async def awf_open_increment_planning_form(
+    variants: list[dict[str, Any]],
+    project_dir: str,
+    ttl_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Open increment-planning form — user picks decomposition variant.
+
+    Replaces ad-hoc chat proposals ("here are 3 ways to decompose MVP,
+    which one?") with a structured form. Supervisor generates variants
+    (creative work — based on vision/requirements study), passes them
+    to this tool. User sees cards with strategies, increments, pros/cons,
+    picks one. Submit persists via ``awf.api.apply_increment_plan``.
+
+    When to call:
+    - After ``awf_load_supervisor_context`` revealed project state.
+    - Before first ``awf_dispatch_todo`` — increment plan shapes the
+      TODO sequence.
+    - When MVP scope is large enough that decomposition matters (≥3
+      artefacts needed). For 1-2 artefacts, skip — single TODO is fine.
+
+    Variant schema (each item in ``variants`` list):
+    ```
+    {
+        "id": "A",                          # short id, shown as badge
+        "title": "Vertical slice: MVP in 3 cuts",
+        "strategy": "vertical",             # vertical|horizontal|risk-first|...
+        "description": "Each increment delivers user-visible value.",
+        "estimated_todos": 3,               # how many TODOs this implies
+        "estimated_time": "2 weeks",        # optional
+        "risk_level": "low",                # optional
+        "increments": [                     # ordered list
+            {"name": "I1: storyboard only", "goal": "...", "artefacts": ["..."]},
+            {"name": "I2: + Jira integration", "goal": "...", "artefacts": ["..."]}
+        ],
+        "pros": ["Fast feedback", "Each step demoable"],
+        "cons": ["Refactoring overhead"]
+    }
+    ```
+
+    Args:
+        variants: list of 2-5 variant dicts (supervisor-generated).
+        project_dir: **Required.** Absolute path to awf project root.
+        ttl_seconds: Auto-cancel after N seconds (optional).
+
+    Returns:
+        Dict with form_id, browser_opened, submit_url.
+    """
+    if not variants or not isinstance(variants, list):
+        return {
+            "status": "error",
+            "error": "variants must be a non-empty list of variant dicts",
+        }
+    if len(variants) > 6:
+        return {
+            "status": "error",
+            "error": f"too many variants ({len(variants)}) — keep to 2-5 for user clarity",
+        }
+
+    from .forms import open_form
+
+    result = await open_form(
+        template="increment-planning",
+        data={"variants": variants},
+        project_dir=project_dir,
+        ttl_seconds=ttl_seconds,
+    )
+    if "error" in result:
+        return {"status": "error", "error": result["error"]}
+    return {"status": "ok", **result}

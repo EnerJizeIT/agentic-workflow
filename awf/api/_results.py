@@ -222,6 +222,19 @@ class SupervisorContextResult:
         return asdict(self)
 
 
+@dataclass
+class ApplyIncrementPlanResult:
+    """Result of :func:`awf.api.apply_increment_plan`."""
+
+    plan_path: str
+    selected_variant_id: str | None
+    variants_offered: int | None
+    updated_at: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 __all__ = [
     "InitResult",
     "StatusResult",
@@ -236,4 +249,5 @@ __all__ = [
     "ApplyProjectSetupResult",
     "DispatchTodoResult",
     "SupervisorContextResult",
+    "ApplyIncrementPlanResult",
 ]
