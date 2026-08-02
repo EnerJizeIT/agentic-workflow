@@ -19,19 +19,24 @@ from .lifecycle import get_status
 
 def _extract_stage_info(
     project_dir: Path,
-) -> tuple[str | None, str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, str | None, bool, int | None]:
     """Read pipeline.yaml + log_tail to figure out current state.
 
-    Returns ``(current_stage_name, next_stage_role, last_signal, log_tail)``.
+    Returns ``(current_stage_name, next_stage_role, last_signal, log_tail,
+    checkpoint_pending, checkpoint_port)``.
 
-    ``current_stage_name`` is inferred from orchestrator log (last
-    '=== stage=' line). ``next_stage_role`` is the role of the stage
-    AFTER current (or first stage if pipeline not started).
+    - ``current_stage_name`` from last 'Stage N/M: <name>' line in awf-start.out.
+    - ``next_stage_role`` = role of stage after current (from pipeline.yaml).
+    - ``last_signal`` = last DONE/BLOCKED/REVIEW/TODO/ACK found in log.
+    - ``checkpoint_pending`` = True if BD-36 checkpoint opened AND no decision yet.
+    - ``checkpoint_port`` = port from 'BD-36: checkpoint opened ... on port N'.
     """
     log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
     log_tail_text = None
     current_stage: str | None = None
     last_signal: str | None = None
+    checkpoint_pending = False
+    checkpoint_port: int | None = None
 
     if log_file.is_file():
         try:
@@ -42,19 +47,36 @@ def _extract_stage_info(
 
             # Scan log for stage transitions. Format (from orchestrator.py:361):
             #   "  Stage 1/3: agent-system-analyst (agent-system-analyst :: execute)"
-            # Also accept older markers for forward-compat.
             import re
 
-            stage_pattern = re.compile(
-                r"Stage\s+\d+/\d+:\s+(\S+)"
+            stage_pattern = re.compile(r"Stage\s+\d+/\d+:\s+(\S+)")
+            checkpoint_open_pattern = re.compile(
+                r"BD-36: checkpoint opened.*on port (\d+)", re.IGNORECASE
             )
+            checkpoint_decision_pattern = re.compile(
+                r"BD-36: checkpoint (decision|rejected|timeout)", re.IGNORECASE
+            )
+            checkpoint_opened = False
+            checkpoint_decided = False
             for line in lines:
-                # Preferred: "Stage N/M: <name>" → capture name
                 m = stage_pattern.search(line)
                 if m:
                     current_stage = m.group(1)
+                    # New stage starting — reset checkpoint state for THIS stage
+                    checkpoint_opened = False
+                    checkpoint_decided = False
                     continue
-                # Legacy / alternative markers
+                if checkpoint_open_pattern.search(line):
+                    checkpoint_opened = True
+                    pm = checkpoint_open_pattern.search(line)
+                    if pm:
+                        try:
+                            checkpoint_port = int(pm.group(1))
+                        except ValueError:
+                            pass
+                elif checkpoint_decision_pattern.search(line):
+                    checkpoint_decided = True
+                # Legacy markers
                 for marker in ("=== stage:", "Pipeline stage:", "Entering stage:"):
                     if marker in line:
                         idx = line.find(marker) + len(marker)
@@ -62,26 +84,24 @@ def _extract_stage_info(
                         if rest:
                             current_stage = rest.split()[0]
                             break
-                # Match signals: "signal detected", "Signal received:", "signal:"
-                # Case-insensitive to handle different log styles.
                 line_lower = line.lower()
                 if "signal detected" in line_lower or "signal received" in line_lower or "signal:" in line_lower:
                     for sig_marker in ("DONE-", "BLOCKED-", "REVIEW-", "TODO-", "ACK-"):
                         if sig_marker in line:
                             idx = line.rfind(sig_marker)
                             rest = line[idx:].split()[0].rstrip(":.,")
-                            # Strip common file extensions
                             for ext in (".ready", ".md", ".yaml"):
                                 if rest.endswith(ext):
                                     rest = rest[: -len(ext)]
                             last_signal = rest
                             break
+            checkpoint_pending = checkpoint_opened and not checkpoint_decided
         except OSError:
             pass
 
     # Determine next_stage_role from pipeline.yaml
     next_stage_role: str | None = None
-    pipeline_file = (project_dir / ".agentic" / "pipelines" / "default.yaml")
+    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
     if pipeline_file.is_file():
         try:
             import yaml
@@ -91,25 +111,117 @@ def _extract_stage_info(
             role_by_name = {s.get("name"): s.get("role") for s in stages if isinstance(s, dict)}
 
             if current_stage and current_stage in role_by_name:
-                # Find next stage after current
                 names = list(role_by_name.keys())
                 if current_stage in names:
                     idx = names.index(current_stage)
                     if idx + 1 < len(names):
                         next_stage_role = role_by_name[names[idx + 1]]
             elif stages:
-                # Pipeline not started or unknown stage → first execute stage
                 for s in stages:
                     if isinstance(s, dict) and s.get("role") != "supervisor":
                         next_stage_role = s.get("role")
                         break
                 if next_stage_role is None and stages:
-                    # All supervisor stages? Take the plan one
                     next_stage_role = stages[0].get("role") if isinstance(stages[0], dict) else None
         except (yaml.YAMLError, OSError):
             pass
 
-    return current_stage, next_stage_role, last_signal, log_tail_text
+    return current_stage, next_stage_role, last_signal, log_tail_text, checkpoint_pending, checkpoint_port
+
+
+def _compute_expected_action(
+    *,
+    pipeline_running: bool,
+    current_stage_kind: str | None,
+    checkpoint_pending: bool,
+    has_active_todos: bool,
+    done_count: int,
+) -> str | None:
+    """Dogfood-6: structural determinism. Returns ONE instruction string
+    telling supervisor what to do NOW, so they don't have to read execution
+    model rules from supervisor.md.
+
+    Decision tree based on observable state (not on supervisor remembering rules):
+    - pipeline_running=False → either start pipeline or create TODO
+    - checkpoint_pending=True → wait (user confirms in browser)
+    - current_stage_kind='plan' → wait (plan stage, supervisor's plan TODO done)
+    - current_stage_kind='execute' → wait (worker running, auto-transition)
+    - current_stage_kind='verify' → supervisor must ACK or REVIEW
+    """
+    if not pipeline_running:
+        if not has_active_todos:
+            return (
+                "no active TODO + pipeline not running — write a TODO via "
+                "awf_dispatch_todo, then awf_start"
+            )
+        return "active TODO exists but pipeline not running — call awf_start"
+
+    if checkpoint_pending:
+        return (
+            "BD-36 checkpoint form is open in user's browser — WAIT for user "
+            "confirmation. Do NOT call awf_approve (that's for verify stage) "
+            "and do NOT search list_pending_forms (BD-36 is not there). "
+            "Poll awf_status; when checkpoint_pending becomes False, pipeline "
+            "continues."
+        )
+
+    if current_stage_kind == "plan":
+        return (
+            "pipeline at plan stage (BD-36 not yet open or already resolved) — "
+            "wait for next status update"
+        )
+
+    if current_stage_kind == "execute":
+        return (
+            "worker stage running — auto-transition on worker DONE. Do NOT "
+            "intervene. Poll awf_status until current_stage_kind becomes 'verify'."
+        )
+
+    if current_stage_kind == "verify":
+        return (
+            "VERIFY STAGE — pipeline waiting for YOUR decision. Read DONE "
+            "reports (outbox/DONE-*.md), check git diff, verify artifact "
+            "quality. Then either awf_approve (continue) or write REVIEW-*.md "
+            "to replan."
+        )
+
+    return None
+
+
+def _compute_stage_kind(
+    project_dir: Path,
+    current_stage_name: str | None,
+) -> str | None:
+    """Read pipeline.yaml and figure out kind of current stage.
+
+    Awf's orchestrator computes kind from position:
+      - First stage: plan (supervisor)
+      - Last stage: verify (supervisor)
+      - Middle stages: execute (worker)
+
+    Returns 'plan' | 'execute' | 'verify' | None.
+    """
+    if not current_stage_name:
+        return None
+    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    if not pipeline_file.is_file():
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
+        names = [s.get("name") for s in stages if isinstance(s, dict)]
+        if current_stage_name not in names:
+            return None
+        idx = names.index(current_stage_name)
+        if idx == 0:
+            return "plan"
+        if idx == len(names) - 1:
+            return "verify"
+        return "execute"
+    except (yaml.YAMLError, OSError):
+        return None
 
 
 def _read_role_prohibitions(project_dir: Path, role: str | None) -> str | None:
@@ -204,7 +316,7 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
     pipeline_running, pipeline_pid, _log_tail_bg = check_pipeline_running(project_dir)
 
     # Stage info from logs + pipeline.yaml
-    current_stage, next_role, last_signal, log_tail_stage = _extract_stage_info(project_dir)
+    current_stage, next_role, last_signal, log_tail_stage, _cp, _cpp = _extract_stage_info(project_dir)
     # Prefer log_tail from check_pipeline_running (more recent)
     log_tail = _log_tail_bg or log_tail_stage
 

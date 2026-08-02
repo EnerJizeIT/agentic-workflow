@@ -278,16 +278,38 @@ def get_status(project_dir: Path) -> StatusResult:
 
     pipeline_running, pipeline_pid, log_tail = check_pipeline_running(project_dir)
 
-    # Dogfood-2: stage visibility (only when pipeline running — small overhead)
+    # Dogfood-2/6: stage visibility + expected action (only when pipeline running)
     current_stage_name: str | None = None
     next_stage_role: str | None = None
     last_signal: str | None = None
+    current_stage_kind: str | None = None
+    expected_action: str | None = None
+    checkpoint_pending = False
+    checkpoint_port: int | None = None
     if pipeline_running:
-        from .context import _extract_stage_info
+        from .context import (
+            _compute_expected_action,
+            _compute_stage_kind,
+            _extract_stage_info,
+        )
 
-        current_stage_name, next_stage_role, last_signal, _log_tail_alt = _extract_stage_info(project_dir)
-        # Prefer pipeline detector's log_tail (more recent) over extract's
+        (
+            current_stage_name,
+            next_stage_role,
+            last_signal,
+            _log_tail_alt,
+            checkpoint_pending,
+            checkpoint_port,
+        ) = _extract_stage_info(project_dir)
         log_tail = log_tail or _log_tail_alt
+        current_stage_kind = _compute_stage_kind(project_dir, current_stage_name)
+        expected_action = _compute_expected_action(
+            pipeline_running=pipeline_running,
+            current_stage_kind=current_stage_kind,
+            checkpoint_pending=checkpoint_pending,
+            has_active_todos=bool(active_ids),
+            done_count=done_count,
+        )
 
     return StatusResult(
         project_name=project_name,
@@ -303,6 +325,10 @@ def get_status(project_dir: Path) -> StatusResult:
         current_stage_name=current_stage_name,
         next_stage_role=next_stage_role,
         last_signal=last_signal,
+        current_stage_kind=current_stage_kind,
+        expected_action=expected_action,
+        checkpoint_pending=checkpoint_pending,
+        checkpoint_port=checkpoint_port,
     )
 
 

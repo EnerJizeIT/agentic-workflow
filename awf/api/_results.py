@@ -48,6 +48,12 @@ class StatusResult:
     current_stage_name: str | None = None
     next_stage_role: str | None = None
     last_signal: str | None = None
+    # Dogfood-6: structural determinism — supervisor sees expected action,
+    # doesn't have to read rules from supervisor.md
+    current_stage_kind: str | None = None  # "plan" | "execute" | "verify" | "idle"
+    expected_action: str | None = None  # what supervisor should do NOW
+    checkpoint_pending: bool = False  # BD-36 form open in user's browser
+    checkpoint_port: int | None = None  # for debugging / direct access
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

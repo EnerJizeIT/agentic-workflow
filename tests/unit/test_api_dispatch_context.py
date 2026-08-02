@@ -248,7 +248,7 @@ class TestExtractStageInfo:
             "BD-36: checkpoint decision=approve",
             "  Stage 2/3: agent-system-analyst (agent-system-analyst :: execute)",
         ])
-        cur, _nxt, _sig, _ = _extract_stage_info(awf_project)
+        cur, _nxt, _sig, _, _cp, _cpp = _extract_stage_info(awf_project)
         assert cur == "agent-system-analyst"
 
     def test_extracts_last_signal(self, awf_project):
@@ -260,7 +260,7 @@ class TestExtractStageInfo:
             "BD-30: interactive supervisor signal detected: TODO-0001",
             "  Stage 2/3: agent-system-analyst (... :: execute)",
         ])
-        _cur, _nxt, sig, _ = _extract_stage_info(awf_project)
+        _cur, _nxt, sig, _, _cp, _cpp = _extract_stage_info(awf_project)
         assert sig == "TODO-0001"
 
     def test_extracts_done_signal(self, awf_project):
@@ -270,7 +270,7 @@ class TestExtractStageInfo:
             "  Stage 2/3: agent-system-analyst (... :: execute)",
             "Signal received: DONE-TODO-0001.ready",
         ])
-        _cur, _nxt, sig, _ = _extract_stage_info(awf_project)
+        _cur, _nxt, sig, _, _cp, _cpp = _extract_stage_info(awf_project)
         assert sig == "DONE-TODO-0001"
 
     def test_extracts_blocked_signal(self, awf_project):
@@ -280,14 +280,14 @@ class TestExtractStageInfo:
             "  Stage 2/3: agent-system-analyst (... :: execute)",
             "BLOCKED signal detected: BLOCKED-TODO-0001.ready",
         ])
-        _cur, _nxt, sig, _ = _extract_stage_info(awf_project)
+        _cur, _nxt, sig, _, _cp, _cpp = _extract_stage_info(awf_project)
         assert sig == "BLOCKED-TODO-0001"
 
     def test_no_log_returns_none(self, awf_project):
         """No log file → all None, no crash."""
         from awf.api.context import _extract_stage_info
 
-        cur, nxt, sig, log_tail = _extract_stage_info(awf_project)
+        cur, nxt, sig, log_tail, _cp, _cpp = _extract_stage_info(awf_project)
         assert cur is None
         assert sig is None
         assert log_tail is None
@@ -298,7 +298,7 @@ class TestExtractStageInfo:
 
         lines = [f"line {i}" for i in range(50)]
         self._write_log(awf_project, lines)
-        _cur, _nxt, _sig, log_tail = _extract_stage_info(awf_project)
+        _cur, _nxt, _sig, log_tail, _cp, _cpp = _extract_stage_info(awf_project)
         assert log_tail is not None
         assert "line 49" in log_tail
         assert "line 10" not in log_tail  # truncated
