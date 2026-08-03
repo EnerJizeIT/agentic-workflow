@@ -137,6 +137,113 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 
 ## 🟡 Open
 
+### AUDIT-2026-08-03 — Незакрытые находки external audit
+
+**Source:** `/home/pklochkov/Desktop/awf-audit-report.md` (audit at HEAD `b54bd4d`).
+Закрыто в этой сессии: T1.1-T1.4, T2.1-T2.3, T2.5 (8 находок, коммиты `94328f5`, `91fa1f2`).
+
+Ниже — что осталось. Приоритеты мои, пересматриваются по мере роста pain.
+
+#### T2 — точечные фиксы (one-liners, низкий риск)
+
+**[T2.6] `awf/opencode_agents.py:55-96` `apply()` без atomic**
+> Crash во время write → сломанный `opencode.json`. Функция `atomic_write_text`
+> доступна в проекте. Trivial fix — обернуть write.
+> Severity: MEDIUM (crash в improbably moment = corrupt user config).
+
+**[T2.7] `awf/api/pipeline.py:261-270, 311-320` `except Exception` слишком широкое**
+> В `start_pipeline`/`continue_pipeline` оборачивают весь orchestrator call.
+> Если orchestrator поднимет `SystemExit`/`KeyboardInterrupt` — будут пойманы,
+> что некорректно. Должно быть `except AwfApiError` для domain errors + re-raise
+> остальное.
+> Severity: LOW (тесты проходят, но поведение при Ctrl+C может удивлять).
+
+**[T2.8] `awf/opencode_agents.py:10-52` stringly-typed protocol `propose()`**
+> Возвращает `"ERR:"`, `"NOTHING:"`, `"PROPOSE:"` — caller проверяет через
+> `startswith`. Хрупко. Refactor: Enum или dataclass (`Proposal(type=..., detail=...)`).
+> Severity: LOW (работает, но каждое новое состояние = риск забыть branch).
+
+#### T1 — safe deletions (отложено, требуют инфраструктурных решений)
+
+**[T1.5] `awf/orchestrator.py:__all__` re-exports 17 приватных имён**
+> Audit предлагал удалить. Реально: tests импортируют
+> `from awf.orchestrator import _foo` (white-box testing). Без `__all__`
+> ruff `--fix` агрессивно удаляет эти re-exports (treats как unused).
+> Решение: либо ruff `per-file-ignores` для orchestrator.py, либо
+> оставить `__all__` как легитимный "white-box public surface" marker.
+> Severity: LOW (не баг, cosmetic disagreement с audit).
+
+**[T1.6] `awf/api/lifecycle.py:_reset_orphans` legacy one-shot path**
+> Duplicate of `list_orphans` + `remove_orphans` two-step protocol.
+> Сейчас `_reset_orphans` вызывается из `reset_runtime(orphans=True)`
+> как fallback. Refactor: переписать `reset_runtime(orphans=True)` на
+> вызов two-step protocol, удалить `_reset_orphans`.
+> Severity: LOW (работает корректно, just dead-ish code).
+
+#### T3 — рефакторинг (дни)
+
+**[T3.1] Дубликат HTTP infrastructure**
+> `awf/plan_checkpoint.py` (one-shot HTTP server) + `agent_workflow_ui/.../http_endpoint.py`
+> (long-lived) — у каждого свой `_find_free_port`, свой `BaseHTTPRequestHandler`,
+> свой ack-HTML. ~150 строк дубликата. Также **3 разные atomic-write реализации**:
+> `awf._atomic.atomic_write_text`, `state._atomic_write_text` (уже объединён),
+> `http_endpoint._atomic_write_yaml`.
+> Решение: вынести `_find_free_port` в общий utils, при необходимости —
+> общий `http_server` helper.
+> Severity: MEDIUM (DRY violation, но два сервера обоснованно separate).
+
+**[T3.2] `forms.py:open_form` 158 строк, SRP violation**
+> Делает: registry lookup + project_dir validation + role scanning +
+> model collection + template rendering + browser launch + record creation
+> + cleanup_temp_files в одной функции.
+> Разбить на `_prepare_form_data() → _render() → _launch_and_record()`.
+> Severity: MEDIUM (читаемость, тестируемость).
+
+**[T3.3] `orchestrator.py:run_pipeline` cyclomatic complexity 107**
+> Уже разбит на `_handle_*` функции, но supervisor-stage block (375-436) и
+> agent-stage block (438-507) стоит извлечь в `_handle_supervisor_stage()` /
+> `_handle_agent_stage()`. Это опустит `run_pipeline` до ~80 строк и cyc~30.
+> Severity: MEDIUM (поддержка, тестируемость).
+
+**[T3.4] `_ZONES_OF_RESPONSIBILITY` extraction**
+> Словарь 20+ пар (en + ru keywords) в `awf/api/roles.py`. Разросся.
+> Кандидат на extraction в data-файл (`awf/data/role_zones.yaml`) или config.
+> Особенно если будет support других языков.
+> Severity: LOW (работает, просто растет).
+
+**[T3.5] `opencode_config.py` hotspots**
+> `scan_global_skills` (cyc=49), `scan_global_roles` (26), `_read_models_from_config` (18).
+> Топ hotspot'ы plugin'а. Чтение opencode.json/skills перемешано с нормализацией.
+> Разделить на `reader.py` (raw read) + `normalize.py` (filter + transform).
+> Severity: MEDIUM (readability, future modifications).
+
+#### T4 — архитектурные изменения (недели, design discussion)
+
+**[T4.1] Pipeline state persistence (replace regex log parsing)**
+> Сейчас `awf/api/context.py:_extract_stage_info` парсит `awf-start.out`
+> через regex для восстановления pipeline state. Любой change в `print()`
+> формате orchestrator ломает status detection без ошибки.
+> Предлагаемое решение: после каждой stage transition orchestrator пишет
+> `.agentic/state/current.yaml` (`{stage_idx, stage_name, stage_kind,
+> started_at, last_signal, checkpoint_pending}`). `api.get_status` читает
+> structured state, не логи.
+> Эффект: debug проще, форматы логов свободны для изменения, тесты проще.
+> **Требует design discussion** — это change в core flow.
+> Severity: HIGH architectural (но не user-visible bug — текущая regex
+> реализация работает пока формат логов не меняется).
+
+#### Test smells (не блокеры, можно поправить opportunistic)
+
+**[Test-1] `tests/unit/test_orchestrator_handlers.py:59,78,94`**
+> Monkey-patch `_run_supervisor_stage` на `lambda *a, **kw: None`.
+> Реальная функция возвращает `str`, не `None`. Тесты проходят случайно
+> (None не используется в handler-ах для verify, только в plan/replan flows),
+> но хрупкое место.
+> Fix: заменить на `lambda *a, **kw: ""` (пустая строка = валидный return).
+> Severity: LOW.
+
+---
+
 ### BD-35 · Pipeline stages don't produce verifiable contribution — branch chain + diff-monitoring
 
 **Status:** OPEN. **Priority:** HIGH — fundamental to "pipeline as conveyor".
