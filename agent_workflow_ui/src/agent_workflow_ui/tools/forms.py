@@ -10,7 +10,7 @@ import yaml
 from jinja2 import TemplateNotFound
 
 from ..browser import open_path
-from ..opencode_config import _xdg_config_home, scan_global_roles, scan_global_skills
+from ..opencode_config import scan_global_roles, scan_global_skills
 from ..render.engine import render_template
 from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_registry
 
@@ -46,57 +46,15 @@ def _normalize_available_roles(value: Any) -> list[dict[str, Any]]:
 
 
 def _collect_opencode_models() -> list[str]:
-    """BD-32: collect unique model IDs from opencode.json for form dropdown.
+    """BD-32: delegate to opencode_config.read_available_models().
 
-    Scans ~/.config/opencode/opencode.json and extracts model strings
-    from: agent.<name>.model and provider.<name>.models.<id>.
-
-    Returns a sorted unique list. Falls back to [] on any error
-    (form will show '(нет моделей)' placeholder — non-fatal).
+    T3 audit-v2 fix: was a duplicate parser (cyc=48) in forms.py.
+    Now calls the canonical implementation in opencode_config.py
+    (single source of truth for model discovery).
     """
-    import json
+    from ..opencode_config import read_available_models
 
-    oc_path = _xdg_config_home() / "opencode" / "opencode.json"
-    if not oc_path.is_file():
-        return []
-
-    try:
-        cfg = json.loads(oc_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        log.warning("BD-32: failed to parse %s: %s", oc_path, e)
-        return []
-
-    if not isinstance(cfg, dict):
-        return []
-
-    models: set[str] = set()
-
-    # From agents: agent.<name>.model (e.g. "vllm/llm")
-    agents = cfg.get("agent") or {}
-    if isinstance(agents, dict):
-        for agent_cfg in agents.values():
-            if isinstance(agent_cfg, dict):
-                m = agent_cfg.get("model")
-                if isinstance(m, str) and m.strip():
-                    models.add(m.strip())
-
-    # From providers: provider.<name>.models.<id> → "<name>/<id>"
-    providers = cfg.get("provider") or {}
-    if isinstance(providers, dict):
-        for pname, pcfg in providers.items():
-            if not isinstance(pcfg, dict):
-                continue
-            pmodels = pcfg.get("models")
-            if isinstance(pmodels, dict):
-                for mid in pmodels.keys():
-                    if isinstance(mid, str) and mid.strip():
-                        models.add(f"{pname}/{mid.strip()}")
-            elif isinstance(pmodels, list):
-                for mid in pmodels:
-                    if isinstance(mid, str) and mid.strip():
-                        models.add(f"{pname}/{mid.strip()}")
-
-    return sorted(models)
+    return read_available_models()
 
 
 async def open_form(

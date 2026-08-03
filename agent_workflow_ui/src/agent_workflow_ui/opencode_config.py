@@ -52,7 +52,7 @@ def read_opencode_models() -> list[str]:
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         log.warning("opencode models CLI failed: %s", e)
 
-    return _read_models_from_config()
+    return read_available_models()
 
 
 def read_recent_models(limit: int = 8) -> list[str]:
@@ -110,8 +110,17 @@ def read_recent_models(limit: int = 8) -> list[str]:
     return recent
 
 
-def _read_models_from_config() -> list[str]:
-    """Parse ~/.config/opencode/opencode.json for model IDs."""
+def read_available_models() -> list[str]:
+    """Parse ~/.config/opencode/opencode.json for model IDs.
+
+    Single source of truth for model discovery (T3 audit-v2 fix).
+    Scans: provider.<name>.models.<id>, agent.<name>.model, top-level model.
+    Returns sorted unique list. Falls back to [] on any error.
+
+    Used by:
+    - opencode_config.py:read_recent_models() (for grouping)
+    - forms.py:open_form() (for project-setup dropdown)
+    """
     cfg_path = _xdg_config_home() / "opencode" / "opencode.json"
     if not cfg_path.exists():
         return []

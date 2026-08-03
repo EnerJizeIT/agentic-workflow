@@ -163,14 +163,23 @@ agentic-workflow/                  # monorepo (два независимых п�
 │   ├── api/                       # public API package (split by concern)
 │   │   ├── __init__.py            # public surface — re-exports
 │   │   ├── _errors.py             # AwfApiError
-│   │   ├── _results.py            # 10 Result dataclasses (as_dict for MCP)
+│   │   ├── _results.py            # Result dataclasses (as_dict for MCP)
 │   │   ├── _stack.py              # detect_stack + derive_project_name
 │   │   ├── _templates.py          # _CONFIG/_ROLE templates, update_gitignore
 │   │   ├── _helpers.py            # require_agentic/git_repo, read helpers
 │   │   ├── _background.py         # PID file + pipeline running detection
 │   │   ├── lifecycle.py           # init/status/report/reset/orphans
 │   │   ├── pipeline.py            # start/continue/baseline/rollback/approve
-│   │   └── roles.py               # add_role, analyze_roles
+│   │   ├── roles.py               # add_role, analyze_roles (zones from data file)
+│   │   ├── setup.py               # apply_project_setup (form materialization)
+│   │   ├── dispatch.py            # dispatch_todo (atomic TODO + baseline + signal)
+│   │   ├── context.py             # load_supervisor_context (aggregate bootstrap)
+│   │   ├── planning.py            # apply_increment_plan (variant persistence)
+│   │   ├── dashboard.py           # generate_dashboard (live HTML render)
+│   │   └── wait_event.py          # wait_for_event (supervisor wake-up, no polling)
+│   ├── pipeline_state.py          # T4.1 structured state file (.agentic/state/)
+│   ├── data/role_zones.yaml       # BD-31 role→zone mapping (extensible data file)
+│   ├── templates/dashboard.html.j2  # DASH dashboard Jinja2 template
 │   ├── orchestrator.py            # state machine + transition handlers
 │   ├── supervisor.py              # supervisor stages (plan/verify/replan)
 │   ├── agent_stage.py             # agent stages + handoff collection

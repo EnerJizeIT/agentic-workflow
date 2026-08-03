@@ -170,12 +170,8 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 > Решение: ruff `per-file-ignores` в pyproject.toml (`"awf/orchestrator.py" = ["F401"]`).
 > `__all__` удалён — re-exports для white-box tests защищены ruff config.
 
-**[T1.6] `awf/api/lifecycle.py:_reset_orphans` legacy one-shot path**
-> Duplicate of `list_orphans` + `remove_orphans` two-step protocol.
-> Сейчас `_reset_orphans` вызывается из `reset_runtime(orphans=True)`
-> как fallback. Refactor: переписать `reset_runtime(orphans=True)` на
-> вызов two-step protocol, удалить `_reset_orphans`.
-> Severity: LOW (работает корректно, just dead-ish code).
+**[T1.6] _reset_orphans** — ✅ CLOSED
+> _reset_orphans deleted. reset_runtime(orphans=True) uses list_orphans + remove_orphans.
 
 #### T3 — рефакторинг (дни)
 
@@ -202,11 +198,8 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 > agent-stage block (438-507) стоит извлечь в `_handle_supervisor_stage()` /
 > `_handle_agent_stage()`. Status: **DEFERRED INDEFINITELY** — core flow стабилен. Рефактор = высокий regression risk.
 
-**[T3.4] `_ZONES_OF_RESPONSIBILITY` extraction**
-> Словарь 20+ пар (en + ru keywords) в `awf/api/roles.py`. Разросся.
-> Кандидат на extraction в data-файл (`awf/data/role_zones.yaml`) или config.
-> Особенно если будет support других языков.
-> Severity: LOW (работает, просто растет).
+**[T3.4] _ZONES extraction** — ✅ CLOSED
+> Extracted to awf/data/role_zones.yaml. _load_role_zones() reads at runtime.
 
 **[T3.5] `opencode_config.py` hotspots**
 > `scan_global_skills` (cyc=49), `scan_global_roles` (26), `_read_models_from_config` (18).
