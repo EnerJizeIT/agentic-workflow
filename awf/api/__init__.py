@@ -46,6 +46,7 @@ from ._results import (
     StartResult,
     StatusResult,
     SupervisorContextResult,
+    WaitEventResult,
 )
 
 # Public functions — organized by submodule for clarity
@@ -70,6 +71,7 @@ from .pipeline import (
 from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
 from .setup import apply_project_setup
+from .wait_event import wait_for_event
 
 __all__ = [
     # Exception
@@ -89,6 +91,7 @@ __all__ = [
     "DispatchTodoResult",
     "SupervisorContextResult",
     "ApplyIncrementPlanResult",
+    "WaitEventResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -115,4 +118,6 @@ __all__ = [
     "load_supervisor_context",
     # Increment planning (dogfood-7 — user picks decomposition variant)
     "apply_increment_plan",
+    # Supervisor wake-up (DASH Phase 3 — no more polling)
+    "wait_for_event",
 ]

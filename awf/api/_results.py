@@ -240,6 +240,27 @@ class ApplyIncrementPlanResult:
         return asdict(self)
 
 
+@dataclass
+class WaitEventResult:
+    """Result of :func:`awf.api.wait_for_event` (Phase 3 — supervisor wake-up).
+
+    event_type is one of:
+    - ``verify`` — pipeline reached verify stage
+    - ``blocked`` — worker wrote BLOCKED
+    - ``checkpoint`` — BD-36 checkpoint form open
+    - ``done`` — pipeline exited
+    - ``timeout`` — no event within timeout
+    - ``idle`` — pipeline not running
+    """
+
+    event_type: str
+    message: str
+    state_snapshot: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 __all__ = [
     "InitResult",
     "StatusResult",
@@ -255,4 +276,5 @@ __all__ = [
     "DispatchTodoResult",
     "SupervisorContextResult",
     "ApplyIncrementPlanResult",
+    "WaitEventResult",
 ]

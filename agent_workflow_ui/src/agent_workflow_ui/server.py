@@ -50,5 +50,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_open_increment_planning_form, name="awf_open_increment_planning_form")
     # DASH Phase 2: pipeline dashboard
     mcp.add_tool(awf.awf_open_pipeline_dashboard, name="awf_open_pipeline_dashboard")
+    # DASH Phase 3: supervisor wake-up (no more polling)
+    mcp.add_tool(awf.awf_wait_for_event, name="awf_wait_for_event")
 
     return mcp

@@ -664,3 +664,54 @@ async def awf_open_pipeline_dashboard(
         "opened": success,
         "message": msg,
     }
+
+
+# ─── DASH Phase 3: supervisor wake-up (no more polling) ─────────────────
+
+
+async def awf_wait_for_event(
+    project_dir: str | None = None,
+    timeout: int = 120,
+) -> dict[str, Any]:
+    """Block until pipeline event — replaces sleep+status polling loops.
+
+    Single call that blocks up to ``timeout`` seconds (default 120 = 2 min).
+    Returns immediately when:
+
+    - ``verify`` — pipeline reached verify stage (supervisor must act)
+    - ``blocked`` — worker wrote BLOCKED signal
+    - ``checkpoint`` — BD-36 checkpoint form opened (tell user)
+    - ``done`` — pipeline completed (state file cleared)
+    - ``timeout`` — no event within timeout (call again to continue waiting)
+
+    **Replaces** the old pattern::
+
+        while True:
+            sleep(30)
+            awf_status()  # N tool calls, N responses, tokens burned on idle
+
+    **With**::
+
+        result = awf_wait_for_event(timeout=120)
+        # ONE call, ONE response, returns only when there's something to do
+        if result["event_type"] == "verify":
+            # do verify work
+        elif result["event_type"] == "timeout":
+            result = awf_wait_for_event(timeout=120)  # continue waiting
+
+    Args:
+        project_dir: Project root (default: cwd).
+        timeout: Max seconds to block (default 120).
+
+    Returns:
+        Dict with: event_type (verify/blocked/checkpoint/done/timeout/idle),
+        message (instruction for supervisor), state_snapshot.
+    """
+    try:
+        result = api.wait_for_event(
+            _resolve_project_dir(project_dir),
+            timeout=timeout,
+        )
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
