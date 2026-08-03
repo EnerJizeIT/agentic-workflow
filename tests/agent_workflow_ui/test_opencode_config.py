@@ -390,6 +390,56 @@ def test_read_recent_models_respects_limit(tmp_path, monkeypatch):
     assert len(recent) == 2
 
 
+def test_read_recent_models_closes_connection_on_error(tmp_path, monkeypatch):
+    """SQL error during query does not leak the sqlite3 connection.
+
+    Regression: previously conn.close() was inside the try block — any
+    exception during conn.execute(...) would skip close(). Now wrapped
+    in try/finally. We can't monkey-patch Connection.close directly
+    (it's read-only in CPython), so we wrap at the sqlite3.connect
+    level with a proxy that records close() calls.
+    """
+    import sqlite3
+
+    fake_home = tmp_path / "fake_home"
+    share_dir = fake_home / ".local" / "share" / "opencode"
+    share_dir.mkdir(parents=True)
+    db_path = share_dir / "opencode.db"
+
+    # Create DB without the `session` table — query will raise
+    # sqlite3.OperationalError ("no such table").
+    sqlite3.connect(str(db_path)).close()
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    closed_flags: list[bool] = []
+    real_connect = sqlite3.connect
+
+    class _ConnProxy:
+        """Proxy that records close() calls and forwards everything else."""
+
+        def __init__(self, real):
+            self._real = real
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def close(self):
+            closed_flags.append(True)
+            return self._real.close()
+
+    def tracking_connect(*args, **kwargs):
+        return _ConnProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+
+    result = opencode_config.read_recent_models(limit=10)
+    # Empty result on error.
+    assert result == []
+    # Connection was still closed despite the SQL error.
+    assert closed_flags, "sqlite3.Connection.close() was never called — leak"
+
+
 # ── BD-27: scan_global_skills ────────────────────────────────────────────────
 
 

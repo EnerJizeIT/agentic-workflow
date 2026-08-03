@@ -6,6 +6,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._atomic import atomic_write_text
+
 
 def propose(cfg_path: str, roles: list[str], model: str) -> str:
     """Return a human-readable description of what would change.
@@ -84,8 +86,13 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
             updated.append(r)
 
     if added or updated:
-        with open(cfg, "w", encoding="utf-8") as f:
-            json.dump(d, f, indent=2, ensure_ascii=False)
+        # T2.6 fix: atomic write — crash mid-write no longer corrupts
+        # opencode.json. Was: direct open(..., "w") + json.dump.
+        atomic_write_text(
+            cfg,
+            json.dumps(d, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         parts: list[str] = []
         if added:
             parts.append(f"added: {', '.join(added)}")

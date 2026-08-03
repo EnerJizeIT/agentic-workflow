@@ -421,6 +421,49 @@ class TestOpencodeAgentsNoEmptyModel:
         data = json.loads(cfg.read_text())
         assert data["agent"]["worker"]["model"] == "claude-4"
 
+    def test_apply_atomic_no_corrupt_on_write(self, tmp_path, monkeypatch):
+        """T2.6 fix: apply uses atomic_write_text — no temp files left on crash.
+
+        If json.dumps succeeds but the rename step raises, the original
+        opencode.json must remain intact (not truncated/empty).
+        """
+        import json
+
+        from awf import _atomic, opencode_agents
+
+        cfg = tmp_path / "opencode.json"
+        original = {"agent": {"existing": {"model": "old"}}}
+        cfg.write_text(json.dumps(original))
+
+        # Sabotage os.replace (last step of atomic_write_text) to simulate
+        # crash during the final rename. The temp file is cleaned up by
+        # atomic_write_text's exception handler.
+        real_replace = _atomic.os.replace
+
+        def boom(src, dst):
+            raise OSError("simulated crash during rename")
+
+        monkeypatch.setattr(_atomic.os, "replace", boom)
+
+        try:
+            opencode_agents.apply(str(cfg), ["worker"], "claude-4")
+        except OSError:
+            pass
+
+        # Original config must be intact — atomic_write_text never touched
+        # the destination file because os.replace raised.
+        data = json.loads(cfg.read_text())
+        assert data == original, (
+            "T2.6 regression: opencode.json was modified despite atomic write crash"
+        )
+
+        # No leftover temp files (atomic_write_text cleans up on failure).
+        leftovers = list(cfg.parent.glob(f".{cfg.name}.*.tmp"))
+        assert not leftovers, f"Temp files leaked: {leftovers}"
+
+        # Restore for any subsequent assertions.
+        monkeypatch.setattr(_atomic.os, "replace", real_replace)
+
 
 # ── M2: short_id dedup ───────────────────────────────────────────────────────
 

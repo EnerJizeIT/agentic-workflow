@@ -222,7 +222,11 @@ async def open_form(
 
     temp_file = config.temp_dir / f"agent-workflow-ui-{form_id}.html"
     temp_file.parent.mkdir(parents=True, exist_ok=True)
-    temp_file.write_text(rendered, encoding="utf-8")
+    # T2.6 fix: atomic write — half-written temp HTML on crash is silent
+    # (browser shows broken form, user resubmits). Aligns with the rest
+    # of the codebase which uses atomic writes for any persistent artifact.
+    from awf._atomic import atomic_write_text
+    atomic_write_text(temp_file, rendered, encoding="utf-8")
 
     success, msg = open_path(temp_file, command=config.open_browser_cmd)
 

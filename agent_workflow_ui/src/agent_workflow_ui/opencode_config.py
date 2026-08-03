@@ -9,7 +9,14 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from awf._atomic import atomic_write_text as _atomic_write_text
+
 log = logging.getLogger(__name__)
+
+
+def _atomic_write_role(path: Path, content: str) -> None:
+    """Wrapper around awf._atomic.atomic_write_text for role .md files."""
+    _atomic_write_text(path, content, encoding="utf-8")
 
 
 def _xdg_config_home() -> Path:
@@ -62,18 +69,20 @@ def read_recent_models(limit: int = 8) -> list[str]:
 
     try:
         conn = sqlite3.connect(str(db_path), timeout=3)
-        rows = conn.execute(
-            """
-            SELECT model, MAX(time_created) as last_used
-            FROM session
-            WHERE model IS NOT NULL
-            GROUP BY model
-            ORDER BY last_used DESC
-            LIMIT ?
-            """,
-            (limit * 2,),  # fetch extra, dedup after parsing
-        ).fetchall()
-        conn.close()
+        try:
+            rows = conn.execute(
+                """
+                SELECT model, MAX(time_created) as last_used
+                FROM session
+                WHERE model IS NOT NULL
+                GROUP BY model
+                ORDER BY last_used DESC
+                LIMIT ?
+                """,
+                (limit * 2,),  # fetch extra, dedup after parsing
+            ).fetchall()
+        finally:
+            conn.close()
     except Exception as e:
         log.warning("Failed to read recent models from DB: %s", e)
         return []
@@ -338,7 +347,8 @@ def save_custom_role(name: str, content: str, role_type: str = "agent") -> Path:
     # Defense-in-depth: ensure resolved path stays inside GLOBAL_ROLES_DIR.
     if not path.is_relative_to(GLOBAL_ROLES_DIR.resolve()):
         raise ValueError(f"Slug {slug!r} escapes roles dir")
-    path.write_text(content, encoding="utf-8")
+    # T2.6 fix: atomic write — crash mid-write no longer corrupts role .md.
+    _atomic_write_role(path, content)
     log.info("Saved custom role: %s", path)
     return path
 

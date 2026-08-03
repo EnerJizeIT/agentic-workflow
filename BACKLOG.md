@@ -2,7 +2,7 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 910 тестов (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), BD-36 plan checkpoint и audit-v2 (HIGH verify.py bool bug) закрыты.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 927 тестов (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), BD-36 plan checkpoint и audit-v2 (HIGH verify.py bool bug) закрыты.
 
 **Активный эпик:** MCP-MIGRATION — миграция awf из standalone CLI в pure MCP toolkit под opencode.
 
@@ -146,17 +146,20 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 
 #### T2 — точечные фиксы (one-liners, низкий риск)
 
-**[T2.6] `awf/opencode_agents.py:55-96` `apply()` без atomic**
+**[T2.6] `awf/opencode_agents.py:55-96` `apply()` без atomic** — ✅ CLOSED
 > Crash во время write → сломанный `opencode.json`. Функция `atomic_write_text`
 > доступна в проекте. Trivial fix — обернуть write.
-> Severity: MEDIUM (crash в improbably moment = corrupt user config).
+> **Closed by QA review 2026-08-03:** `apply()` switched to `atomic_write_text`.
+> Crash-test `test_apply_atomic_no_corrupt_on_write` added. Also fixed
+> `save_custom_role()` non-atomic write + `forms.py` temp HTML write.
+> **Bonus:** `read_recent_models()` DB connection leak fixed (try/finally).
 
-**[T2.7] `awf/api/pipeline.py:261-270, 311-320` `except Exception` слишком широкое**
-> В `start_pipeline`/`continue_pipeline` оборачивают весь orchestrator call.
-> Если orchestrator поднимет `SystemExit`/`KeyboardInterrupt` — будут пойманы,
-> что некорректно. Должно быть `except AwfApiError` для domain errors + re-raise
-> остальное.
-> Severity: LOW (тесты проходят, но поведение при Ctrl+C может удивлять).
+**[T2.7] `awf/api/pipeline.py:261-270, 311-320` `except Exception` слишком широкое** — FALSE POSITIVE
+> Audit предполагал SystemExit/KeyboardInterrupt catch. QA verified:
+> Python's SystemExit/KeyboardInterrupt inherit from BaseException, NOT
+> Exception — current code does NOT catch them. No behavioral bug.
+> Cosmetic improvement only (`except AwfApiError` + re-raise Exception
+> would be more expressive). Not fixing — zero risk.
 
 **[T2.8] `awf/opencode_agents.py:10-52` stringly-typed protocol `propose()`**
 > Возвращает `"ERR:"`, `"NOTHING:"`, `"PROPOSE:"` — caller проверяет через
@@ -234,13 +237,12 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 
 #### Test smells (не блокеры, можно поправить opportunistic)
 
-**[Test-1] `tests/unit/test_orchestrator_handlers.py:59,78,94`**
-> Monkey-patch `_run_supervisor_stage` на `lambda *a, **kw: None`.
-> Реальная функция возвращает `str`, не `None`. Тесты проходят случайно
-> (None не используется в handler-ах для verify, только в plan/replan flows),
-> но хрупкое место.
-> Fix: заменить на `lambda *a, **kw: ""` (пустая строка = валидный return).
-> Severity: LOW.
+**[Test-1] `tests/unit/test_orchestrator_handlers.py:59,78,94`** — FALSE POSITIVE
+> Audit: monkey-patch `_run_supervisor_stage` → `lambda *a, **kw: None`.
+> QA verified: handlers `_handle_escalate`/`_handle_rollback` do NOT use
+> the return value of `_run_supervisor_stage()` (orchestrator.py lines 197,
+> 228 — call without assignment). `None` return is semantically correct.
+> No fix needed.
 
 ---
 
