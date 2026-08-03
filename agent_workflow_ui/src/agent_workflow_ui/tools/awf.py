@@ -644,15 +644,24 @@ async def awf_open_pipeline_dashboard(
     dashboard_path = p / ".agentic" / "dashboards" / "current.html"
 
     if not dashboard_path.is_file():
-        # Generate on-demand if missing (e.g. pipeline not started yet)
+        # Generate on-demand if missing — but with a hard timeout guard
+        # so MCP tool call doesn't block if generation is slow.
         try:
             from awf.api.dashboard import generate_dashboard
 
             result = generate_dashboard(p)
             if result is None:
-                return {"status": "error", "error": "Dashboard generation failed"}
+                return {
+                    "status": "error",
+                    "error": "Dashboard generation returned None. Pipeline may not be running.",
+                    "fallback": f"Open manually: xdg-open '{dashboard_path}'",
+                }
         except Exception as e:
-            return {"status": "error", "error": f"Dashboard generation failed: {e}"}
+            return {
+                "status": "error",
+                "error": f"Dashboard generation failed: {e}",
+                "fallback": f"Pipeline may be running. Check: xdg-open '{dashboard_path}'",
+            }
 
     # Open in browser via plugin's browser module
     from ..browser import open_path
@@ -671,11 +680,11 @@ async def awf_open_pipeline_dashboard(
 
 async def awf_wait_for_event(
     project_dir: str | None = None,
-    timeout: int = 120,
+    timeout: int = 30,
 ) -> dict[str, Any]:
     """Block until pipeline event — replaces sleep+status polling loops.
 
-    Single call that blocks up to ``timeout`` seconds (default 120 = 2 min).
+    Single call that blocks up to ``timeout`` seconds (default 30 = under typical MCP timeout)).
     Returns immediately when:
 
     - ``verify`` — pipeline reached verify stage (supervisor must act)
@@ -692,12 +701,12 @@ async def awf_wait_for_event(
 
     **With**::
 
-        result = awf_wait_for_event(timeout=120)
+        result = awf_wait_for_event(timeout=30)
         # ONE call, ONE response, returns only when there's something to do
         if result["event_type"] == "verify":
             # do verify work
         elif result["event_type"] == "timeout":
-            result = awf_wait_for_event(timeout=120)  # continue waiting
+            result = awf_wait_for_event(timeout=30)  # continue waiting
 
     Args:
         project_dir: Project root (default: cwd).
@@ -713,5 +722,35 @@ async def awf_wait_for_event(
             timeout=timeout,
         )
         return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+
+
+# ─── Model configuration validation (dogfood-10) ─────────────────────────
+
+
+async def awf_check_model_config(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Check that models in config.yaml have valid providers in opencode.json.
+
+    Prevents silent fallback to wrong model. Returns per-role model
+    validation + warnings if provider not found.
+
+    Call BEFORE ``awf_start`` to catch configuration issues:
+    - Provider not in opencode.json → worker silently uses cloud fallback
+    - Model ID not in provider's models list → similar fallback
+    - Missing models → worker uses opencode default
+
+    Args:
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: models (list of {role, model, provider, valid, note}),
+        warnings (list of strings), providers_available (list).
+    """
+    try:
+        result = api.check_model_config(_resolve_project_dir(project_dir))
+        return {"status": "ok", **result}
     except api.AwfApiError as e:
         return _err(e)

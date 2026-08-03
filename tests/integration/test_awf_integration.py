@@ -291,6 +291,11 @@ class TestBackgroundStart:
         (proj / ".agentic" / "config.yaml").write_text(
             'project:\n  name: test\n'
         )
+        # Dogfood-10: start_pipeline background guard requires active TODO
+        inbox = proj / ".agentic" / "inbox"
+        inbox.mkdir(exist_ok=True)
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# Task")
         return proj
 
     def test_background_writes_pid_file(self, tmp_path, monkeypatch):

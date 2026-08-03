@@ -856,6 +856,35 @@ class TestStartPipeline:
         with pytest.raises(api.AwfApiError, match="No .agentic/"):
             api.start_pipeline(tmp_git_repo, background=False)
 
+    def test_background_noop_without_active_todo(self, tmp_git_repo):
+        """Dogfood-10: background start without TODO → noop with guidance."""
+        api.init_project(tmp_git_repo, project_name="Test")
+        result = api.start_pipeline(tmp_git_repo, background=True)
+        assert result.run_mode == "noop"
+        assert "No active TODO" in result.message
+        assert "awf_dispatch_todo" in result.message
+
+    def test_background_works_with_active_todo(self, tmp_git_repo):
+        """With active TODO → pipeline starts (or fails for other reasons, but NOT 'no TODO')."""
+        api.init_project(tmp_git_repo, project_name="Test")
+        inbox = tmp_git_repo / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# Task")
+        result = api.start_pipeline(tmp_git_repo, background=True)
+        # Should NOT be noop with "No active TODO"
+        if result.run_mode == "noop":
+            assert "No active TODO" not in result.message
+
+    def test_from_stage_skips_todo_check(self, tmp_git_repo):
+        """from_stage= bypasses TODO guard (resume mid-pipeline)."""
+        api.init_project(tmp_git_repo, project_name="Test")
+        result = api.start_pipeline(
+            tmp_git_repo, background=True, from_stage="agent-developer"
+        )
+        if result.run_mode == "noop":
+            assert "No active TODO" not in result.message
+
     def test_foreground_orchestrator_exception_caught(self, tmp_git_repo, monkeypatch):
         """When orchestrator.run_pipeline raises an unexpected exception,
         start_pipeline returns StartResult with exit_code=1 (not crash).

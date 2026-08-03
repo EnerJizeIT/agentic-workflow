@@ -240,6 +240,24 @@ def start_pipeline(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    # Dogfood-10: guard — refuse to start pipeline without active TODO.
+    # Only for background mode (production supervisor flow). Foreground
+    # mode is used by tests/CI — skip guard there.
+    if background and not from_stage:
+        active = todos.newest_active(project_dir)
+        if not active:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=(
+                    "No active TODO in inbox. Pipeline needs a TODO to work on. "
+                    "Create one via awf_dispatch_todo(project_dir, content, role), "
+                    "then call awf_start again."
+                ),
+            )
+
     # Dogfood-8: detect BD-36 checkpoint state + build appropriate warning
     from ..plan_checkpoint import is_checkpoint_enabled
 

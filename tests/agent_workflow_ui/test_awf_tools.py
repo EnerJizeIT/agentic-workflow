@@ -35,6 +35,11 @@ def git_project(tmp_path):
 def initialized_project(git_project):
     """Project with .agentic/ already set up via api.init_project."""
     api.init_project(git_project, project_name="Test Project")
+    # Dogfood-10: start_pipeline background guard requires active TODO
+    inbox = git_project / ".agentic" / "inbox"
+    inbox.mkdir(exist_ok=True)
+    (inbox / "TODO-0001.ready").touch()
+    (inbox / "TODO-0001.md").write_text("# Task")
     return git_project
 
 
@@ -98,10 +103,13 @@ class TestAwfInit:
 
 
 class TestAwfStatus:
-    def test_empty_project(self, initialized_project):
-        result = run(awf.awf_status(project_dir=str(initialized_project)))
+    def test_empty_project(self, git_project):
+        """Project without TODO — uses git_project (no init)."""
+        from awf import api as _api
+        _api.init_project(git_project, project_name="Test")
+        result = run(awf.awf_status(project_dir=str(git_project)))
         assert result["status"] == "ok"
-        assert result["project_name"] == "Test Project"
+        assert result["project_name"] == "Test"
         assert result["active_todos"] == []
         assert result["suggestion"] is not None
 
@@ -240,10 +248,13 @@ class TestAwfApprove:
 
 
 class TestAwfReport:
-    def test_empty_project(self, initialized_project):
-        result = run(awf.awf_report(project_dir=str(initialized_project)))
+    def test_empty_project(self, git_project):
+        """Project without TODO — uses git_project (no init)."""
+        from awf import api as _api
+        _api.init_project(git_project, project_name="Test")
+        result = run(awf.awf_report(project_dir=str(git_project)))
         assert result["status"] == "ok"
-        assert result["project_name"] == "Test Project"
+        assert result["project_name"] == "Test"
         assert result["items"] == []
         assert result["done_count"] == 0
 
@@ -389,8 +400,11 @@ class TestAwfStart:
 
 
 class TestAwfContinue:
-    def test_no_active_todo_returns_noop(self, initialized_project):
-        result = run(awf.awf_continue(project_dir=str(initialized_project)))
+    def test_no_active_todo_returns_noop(self, git_project):
+        """Project without active TODO → continue returns noop."""
+        api.init_project(git_project, project_name="Test")
+        # NO TODO created — simulate empty inbox
+        result = run(awf.awf_continue(project_dir=str(git_project)))
         assert result["status"] == "ok"
         assert result["run_mode"] == "noop"
         assert "No active TODO" in result["message"]

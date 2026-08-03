@@ -61,6 +61,7 @@ from .lifecycle import (
     remove_orphans,
     reset_runtime,
 )
+from .model_check import check_model_config
 from .pipeline import (
     approve_commit,
     continue_pipeline,
@@ -120,4 +121,6 @@ __all__ = [
     "apply_increment_plan",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "wait_for_event",
+    # Model configuration validation
+    "check_model_config",
 ]

@@ -111,7 +111,33 @@ items = response.data.get("items", [])
 
 ## 4. Workflow
 
-### Step 0 · Decide: configure project or run pipeline?
+### Step 0 · Role boundaries (READ THIS FIRST)
+
+**You are the supervisor. You plan, delegate, verify, commit. You DO NOT write code.**
+
+Every change to project source files (`.js`, `.ts`, `.py`, `.html`, `.json`,
+`.css`, config files, documentation files) MUST go through the pipeline:
+```
+dispatch_todo → worker stages (agents do the work) → verify stage (you check)
+```
+
+**If pipeline is slow** — fix the root cause (model config, TODO clarity,
+Mode C for trivial fixes), **do not bypass pipeline by editing files yourself**.
+Editing source files directly is a **role violation** — even if you know
+exactly what to change and could do it faster. Your job is to ensure
+**quality through delegation + verification**, not to be the fastest coder.
+
+**What you CAN edit directly** (without pipeline):
+- `.agentic/phases/plan.md` — your own planning document
+- `.agentic/inbox/TODO-*.md` — TODO content you write
+- `.agentic/config.yaml` — awf configuration (models, verification commands)
+
+**What you CANNOT edit directly** (must go through pipeline):
+- Any file in the project root or `src/`, `lib/`, `tests/`, etc.
+- Any `.md` documentation file that workers produce (architecture, requirements)
+- Any code file (any extension)
+
+### Step 0b · Decide: configure project or run pipeline?
 
 Before any other step, check whether the project already has a pipeline
 configured (`.agentic/pipelines/default.yaml` with non-supervisor stages
@@ -171,7 +197,7 @@ Write a TODO that describes **what to build** and **how to verify it**. Include:
 - **Prohibitions:** What NOT to do (adapted to the project).
 - **Architecture notes:** Public interfaces that must not change, new dependencies if any.
 
-**Default to Mode A (high-level).** Escalate to Mode B when the task is complex. Escalate to Mode C (exact diffs) only as a last resort.
+**Default to Mode A (high-level).** Escalate to Mode B when the task is complex. Use Mode C (exact diffs) for trivial point fixes (typo, dead code removal, regex fix) — it reduces worker loop steps from 10+ to 3-5. Escalate to Mode B/C mix when the task has both complex analysis AND simple fixes.
 
 **Before writing TODO — verify role scope** (dogfood-1 lesson):
 

@@ -188,6 +188,84 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
     return ("running", "running", "Pipeline running", "●", "Running")
 
 
+def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Read worker subprocess activity from /proc (Linux only).
+
+    Shows CPU time, process state, IO stats — so user can tell if
+    worker is actively running or hung.
+
+    Returns dict with: active, worker_pid, state (sleeping/running/zombie),
+    cpu_seconds, read_mb, write_kb. Empty dict if unavailable.
+    """
+    if not state:
+        return {}
+    pid = state.get("pipeline_pid")
+    if not pid:
+        return {}
+
+    try:
+        import os
+        import subprocess
+
+        # Find child processes (worker = child of orchestrator)
+        result = subprocess.run(
+            ["ps", "--ppid", str(pid), "-o", "pid=", "--noheaders"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        child_pids = [p.strip() for p in result.stdout.split() if p.strip()]
+        if not child_pids:
+            return {"active": False, "reason": "No child process — worker not running"}
+
+        worker_pid = child_pids[0]
+
+        # Read /proc/<pid>/stat for CPU + state
+        stat_path = Path(f"/proc/{worker_pid}/stat")
+        if not stat_path.is_file():
+            return {"active": False, "reason": f"PID {worker_pid} not in /proc"}
+
+        stat_raw = stat_path.read_text()
+        # stat format: pid (comm) state ...
+        # Handle comm with spaces/parens
+        last_paren = stat_raw.rfind(")")
+        state_char = stat_raw[last_paren + 2:].split()[0]
+        fields = stat_raw[last_paren + 2:].split()
+        utime = int(fields[11])
+        stime = int(fields[12])
+
+        ticks = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        cpu_seconds = round((utime + stime) / ticks, 1)
+
+        state_names = {
+            "R": "running",
+            "S": "sleeping (waiting for model)",
+            "Z": "zombie (crashed)",
+            "D": "disk wait",
+            "T": "stopped",
+        }
+
+        # Read /proc/<pid>/io for network/file IO
+        io_path = Path(f"/proc/{worker_pid}/io")
+        rchar = wchar = 0
+        if io_path.is_file():
+            for line in io_path.read_text().splitlines():
+                key, _, val = line.partition(":")
+                if key.strip() == "rchar":
+                    rchar = int(val.strip())
+                elif key.strip() == "wchar":
+                    wchar = int(val.strip())
+
+        return {
+            "active": True,
+            "worker_pid": int(worker_pid),
+            "state": state_names.get(state_char, state_char),
+            "cpu_seconds": cpu_seconds,
+            "read_mb": round(rchar / 1024 / 1024, 1),
+            "write_kb": round(wchar / 1024, 1),
+        }
+    except (OSError, ValueError, IndexError, FileNotFoundError):
+        return {"active": False, "reason": "Could not read worker stats"}
+
+
 def generate_dashboard(project_dir: Path) -> Path | None:
     """Generate dashboard HTML to ``.agentic/dashboards/current.html``.
 
@@ -307,6 +385,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             handoffs=handoffs,
             tasks=tasks,
             tasks_done=tasks_done,
+            worker_activity=_read_worker_activity(state),
         )
     except Exception:
         return None

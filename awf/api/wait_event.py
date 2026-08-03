@@ -28,7 +28,7 @@ from ._results import WaitEventResult
 def wait_for_event(
     project_dir: Path,
     *,
-    timeout: int = 120,
+    timeout: int = 30,
     poll_interval: int = 10,
 ) -> WaitEventResult:
     """Block until pipeline event or timeout.
@@ -44,7 +44,8 @@ def wait_for_event(
 
     Args:
         project_dir: awf project root.
-        timeout: max seconds to block (default 120 = 2 min).
+        timeout: max seconds to block (default 30 — under MCP plugin
+            single-thread limit; longer values freeze ALL other MCP tools).
         poll_interval: seconds between state checks (default 10).
 
     Returns:

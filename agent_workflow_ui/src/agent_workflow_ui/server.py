@@ -52,5 +52,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_open_pipeline_dashboard, name="awf_open_pipeline_dashboard")
     # DASH Phase 3: supervisor wake-up (no more polling)
     mcp.add_tool(awf.awf_wait_for_event, name="awf_wait_for_event")
+    # Model configuration validation (dogfood-10)
+    mcp.add_tool(awf.awf_check_model_config, name="awf_check_model_config")
 
     return mcp
