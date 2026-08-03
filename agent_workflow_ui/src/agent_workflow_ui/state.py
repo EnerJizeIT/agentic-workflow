@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 
 def _xdg_config_home() -> Path:
@@ -55,21 +54,38 @@ class FormRegistry:
     # A9/A10: respect XDG_CONFIG_HOME (was hardcoded ~/.config).
     # Uses local _xdg_config_home (no cross-package import to awf.xdg).
     PERSIST_FILE = _xdg_config_home() / "awf" / "state" / "forms_registry.yaml"
-    PERSIST_ENABLED = True  # set False in tests via env AWF_DISABLE_FORM_PERSIST=1
+    # QA-A: class-level default; instances read via property. Tests that
+    # need to disable persistence set ``reg.persist_enabled = False`` on
+    # the specific instance, not the class attribute (avoids test pollution
+    # where one disabled instance would silently affect all future ones).
+    PERSIST_ENABLED = True
 
     def __init__(self) -> None:
         self._forms: dict[str, FormRecord] = {}
         self._lock = threading.Lock()
-        # A10: tests disable persistence via env var to keep isolation
+        # QA-A fix: instance attribute shadows class default. Tests that
+        # set reg.PERSIST_ENABLED = False now hit this instance attr.
+        # Class attribute remains True for fresh instances.
         import os
         if os.environ.get("AWF_DISABLE_FORM_PERSIST", ""):
-            FormRegistry.PERSIST_ENABLED = False
-        if FormRegistry.PERSIST_ENABLED:
+            self._persist_enabled = False
+        else:
+            self._persist_enabled = FormRegistry.PERSIST_ENABLED
+        if self._persist_enabled:
             self._load_persisted()
+
+    @property
+    def persist_enabled(self) -> bool:
+        """QA-A: instance-level persistence flag (replaces class mutation)."""
+        return self._persist_enabled
+
+    @persist_enabled.setter
+    def persist_enabled(self, value: bool) -> None:
+        self._persist_enabled = bool(value)
 
     def _load_persisted(self) -> None:
         """A10: load registry from disk on startup (if exists)."""
-        if not FormRegistry.PERSIST_ENABLED:
+        if not self._persist_enabled:
             return
         if not self.PERSIST_FILE.is_file():
             return
@@ -98,7 +114,7 @@ class FormRegistry:
 
     def _persist(self) -> None:
         """A10: write registry to disk atomically."""
-        if not FormRegistry.PERSIST_ENABLED:
+        if not self._persist_enabled:
             return
         try:
             import yaml
@@ -269,10 +285,6 @@ def get_jinja_env() -> Any:
         _jinja_env = create_default_env()
     return _jinja_env
 
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Write text file atomically (temp + rename)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".{uuid4().hex}.tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+# QA-B: was a local _atomic_write_text duplicate. Plugin depends on awf
+# (from awf import api), so we use the canonical implementation.
+from awf._atomic import atomic_write_text as _atomic_write_text  # noqa: E402

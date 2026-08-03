@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 from . import paths
+from ._atomic import atomic_write_text
 from ._log import log as _log
 from .pipeline import Stage
 from .signals import clean_stage_signals, expected_signal_prefixes
@@ -209,7 +210,9 @@ def collect_handoff(
     ]
 
     out_file = handoff_dir / f"{role}-{todo_id}.md"
-    out_file.write_text("\n".join(parts), encoding="utf-8")
+    # QA-C: handoff write atomic (was direct write_text — inconsistent with
+    # rest of codebase which uses atomic_write_text for crash safety).
+    atomic_write_text(out_file, "\n".join(parts))
     print(f"Handoff out: {out_file}")
     _log(logs_dir, f"Handoff written: {out_file}")
     return out_file

@@ -192,10 +192,14 @@ class SubmitHandler(BaseHTTPRequestHandler):
         self.registry.finalize_submit(form_id)
 
         # Persist custom roles if requested (delegates to roles_processor)
+        # QA-D: only project-setup submit has role fields. Other templates
+        # (increment-planning, etc.) called process_role_saves/deletions as
+        # no-op but wasted cycles + log noise. Gate explicitly.
         from .roles_processor import process_role_deletions, process_role_saves
 
-        process_role_saves(data, project_dir=record.project_dir)
-        process_role_deletions(data, project_dir=record.project_dir)
+        if record.template == "project-setup":
+            process_role_saves(data, project_dir=record.project_dir)
+            process_role_deletions(data, project_dir=record.project_dir)
 
         # Dogfood-7: increment-planning submit → persist via api.apply_increment_plan
         if record.template == "increment-planning" and record.project_dir:
