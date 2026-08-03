@@ -250,6 +250,24 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _is_local_origin(origin: str) -> bool:
+    """QA-A: CSRF defense — check if Origin/Referer is localhost.
+
+    Allows: http://127.0.0.1:*, http://localhost:*, http://[::1]:*,
+    file://* (HTML form opened locally).
+    Rejects: any other origin (cross-site POST from malicious JS).
+    """
+    for prefix in (
+        "http://127.0.0.1:",
+        "http://localhost:",
+        "http://[::1]:",
+        "file://",
+    ):
+        if origin.startswith(prefix):
+            return True
+    return False
+
+
 def _start_checkpoint_server(
     port: int,
     decision_holder: dict[str, str],
@@ -271,6 +289,17 @@ def _start_checkpoint_server(
             self.end_headers()
 
         def do_POST(self) -> None:  # noqa: N802 — http.server API
+            # QA-A: CSRF check — accept only from localhost forms.
+            # Same-origin check via Origin/Referer header. Allows file://
+            # forms (Origin: null or absent). Rejects cross-origin POST.
+            origin = self.headers.get("Origin", "") or self.headers.get("Referer", "")
+            if origin and origin not in ("null",) and not _is_local_origin(origin):
+                self.send_response(403)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"Forbidden: cross-origin POST rejected")
+                return
+
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8", errors="replace")
             params = parse_qs(body, keep_blank_values=True)

@@ -6,6 +6,7 @@ backward compatibility with tests and external callers.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -359,15 +360,15 @@ def run_pipeline(args: Any) -> int:
             stage_kind=s_kind,
             stage_role=s_role,
             todo_id=current_todo,
-            pipeline_pid=__import__("os").getpid(),
+            pipeline_pid=os.getpid(),
         )
         # DASH Phase 2: regenerate dashboard HTML after state change.
         # Non-critical — pipeline continues if dashboard fails.
         try:
             from .api.dashboard import generate_dashboard
             generate_dashboard(project_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(logs_dir, f"Dashboard regeneration failed: {e}")
 
         # --- Supervisor stage ---
         if s_role == "supervisor":

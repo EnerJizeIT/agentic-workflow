@@ -9,6 +9,7 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -302,7 +303,7 @@ def start_pipeline(
             run_id=None,
             log_file=None,
             exit_code=1,
-            message=f"Pipeline crashed: {e}",
+            message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
         )
     return StartResult(
         run_mode="foreground",
@@ -352,7 +353,7 @@ def continue_pipeline(
             run_id=None,
             log_file=None,
             exit_code=1,
-            message=f"Pipeline crashed: {e}",
+            message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
         )
     return StartResult(
         run_mode="foreground",

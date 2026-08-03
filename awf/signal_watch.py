@@ -11,6 +11,7 @@ hung process.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -80,6 +81,14 @@ def run_subprocess_until_signal(
         watch_dir, pattern = watch_new_glob
         if watch_dir.is_dir():
             snapshot = {p.name for p in watch_dir.glob(pattern)}
+
+    # QA-E: early check for 'opencode' binary specifically (most common case).
+    # Tests use mock commands like "x" — don't break those.
+    if cmd and isinstance(cmd, list) and cmd[0] == "opencode":
+        if not shutil.which("opencode"):
+            raise FileNotFoundError(
+                "'opencode' not found on PATH. Install opencode or add to PATH."
+            )
 
     proc = subprocess.Popen(cmd, cwd=str(cwd), env=env or awf_subprocess_env())
     deadline = time.monotonic() + hard_timeout
