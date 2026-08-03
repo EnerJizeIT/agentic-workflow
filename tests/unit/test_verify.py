@@ -5,6 +5,43 @@ from pathlib import Path
 from awf import verify
 
 
+class TestVerifyCmdTimeout:
+    """QA 2026-08-03: hung verify command must not block orchestrator.
+
+    Before fix: subprocess.run had no timeout. A watcher (`pytest --watch`)
+    or stdin-prompt would freeze `attempt_auto_done` and the whole pipeline.
+    """
+
+    def test_hung_command_returns_false(self, monkeypatch) -> None:
+        """`sleep 30` with AWF_VERIFY_TIMEOUT=1 → TimeoutExpired caught, returns False."""
+        monkeypatch.setenv("AWF_VERIFY_TIMEOUT", "1")
+        cfg = {"verification": {"test_cmd": "sleep 30"}}
+        # Must return quickly (within a few seconds), not hang for 30s.
+        result = verify.run_verify_commands(cfg)
+        assert result is False
+
+    def test_hung_command_writes_log(self, tmp_path: Path, monkeypatch) -> None:
+        """Timeout produces TEST-RESULTS log with TIMEOUT marker."""
+        monkeypatch.setenv("AWF_VERIFY_TIMEOUT", "1")
+        agentic = tmp_path / ".agentic" / "outbox"
+        agentic.mkdir(parents=True)
+        cfg = {"verification": {"test_cmd": "sleep 30"}}
+        result = verify.run_verify_commands(cfg, project_dir=tmp_path, todo_id="TODO-X")
+        assert result is False
+        log = (agentic / "TEST-RESULTS-TODO-X.log").read_text()
+        assert "TIMEOUT" in log
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch) -> None:
+        """AWF_VERIFY_TIMEOUT='abc' (typo) → default 600, no crash."""
+        monkeypatch.setenv("AWF_VERIFY_TIMEOUT", "abc")
+        assert verify._verify_cmd_timeout() == verify.DEFAULT_VERIFY_TIMEOUT
+
+    def test_zero_env_disables_timeout(self, monkeypatch) -> None:
+        """AWF_VERIFY_TIMEOUT=0 → legacy behavior (no timeout)."""
+        monkeypatch.setenv("AWF_VERIFY_TIMEOUT", "0")
+        assert verify._verify_cmd_timeout() == 0
+
+
 class TestDetectWorkEvidence:
 
     def test_clean_tree_no_evidence(self, tmp_git_repo: Path) -> None:

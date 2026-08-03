@@ -117,3 +117,85 @@ class TestBaselineShellSafety:
                     found = True
                     break
             assert found, "No call found with --version"
+
+
+class TestBaselineTimeout:
+    """QA 2026-08-03: hung test_cmd / pip list must not block baseline creation.
+
+    Before fix: ``subprocess.run`` had no timeout in ``create_baseline``.
+    A hung watcher (`pytest --watch`) or stdin-prompt froze the whole
+    baseline snapshot indefinitely.
+    """
+
+    def _setup(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        agentic = proj / ".agentic"
+        (agentic / "context").mkdir(parents=True)
+        (agentic / "config.yaml").write_text(
+            "verification:\n  test_cmd: pytest --watch\n"
+        )
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
+        subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
+        (proj / "README.md").write_text("init\n")
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        return proj
+
+    def test_test_cmd_timeout_records_failure(self, tmp_path: Path, monkeypatch) -> None:
+        """test_cmd hangs → test_status='failed', baseline still created."""
+        from awf.api import pipeline as api_pipeline
+
+        proj = self._setup(tmp_path)
+        monkeypatch.chdir(proj)
+        args = type("Args", (), {"todo_id": "TTO"})()
+
+        real_run = subprocess.run
+        call_count = {"n": 0}
+
+        def fake_run(cmd, *a, **kw):
+            call_count["n"] += 1
+            # First subprocess.run call is `git rev-parse HEAD` (no timeout kwarg).
+            # Second is test_cmd — raise TimeoutExpired.
+            # Subsequent calls (git status, pip list) — pass through.
+            if isinstance(cmd, list) and cmd and "pytest" in str(cmd[0]):
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout", 300))
+            return real_run(cmd, *a, **kw)
+
+        monkeypatch.setattr(api_pipeline.subprocess, "run", fake_run)
+        result = cmd_baseline.run(args)
+
+        # Baseline returns 0 even on test failure (baseline itself succeeded).
+        assert result == 0
+        # test_status should be 'failed' (logged timeout), not 'passed'.
+        tests_log = (proj / ".agentic" / "context" / "BASELINE-TTO.tests.log").read_text()
+        assert "timed out" in tests_log.lower()
+
+    def test_timeout_kwarg_passed_to_subprocess(self, tmp_path: Path, monkeypatch) -> None:
+        """Verify timeout= kwarg is actually passed for test_cmd and pip list."""
+        proj = self._setup(tmp_path)
+        monkeypatch.chdir(proj)
+        args = type("Args", (), {"todo_id": "TTK"})()
+
+        captured_timeouts = []
+        original_run = subprocess.run
+
+        def spy_run(cmd, *a, **kw):
+            if isinstance(cmd, list) and "pip" in str(cmd):
+                captured_timeouts.append(("pip_list", kw.get("timeout")))
+            elif isinstance(cmd, list) and "pytest" in str(cmd[0]):
+                captured_timeouts.append(("test_cmd", kw.get("timeout")))
+            return original_run(cmd, *a, **kw)
+
+        monkeypatch.setattr(
+            "awf.api.pipeline.subprocess.run", spy_run
+        )
+        cmd_baseline.run(args)
+
+        # Both must have non-None timeouts (was None before fix).
+        names = {name for name, _ in captured_timeouts}
+        assert "test_cmd" in names, "test_cmd call not captured"
+        assert "pip_list" in names, "pip list call not captured"
+        for name, t in captured_timeouts:
+            assert t is not None and t > 0, f"{name} missing timeout (was None before fix)"

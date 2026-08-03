@@ -1,6 +1,7 @@
 """Verify commands and auto-DONE logic."""
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -8,6 +9,26 @@ from pathlib import Path
 from . import config as cfg_mod
 from . import git_utils
 from ._atomic import atomic_write_text
+
+# Per-command timeout for verify commands (test/lint/typecheck/build).
+# A hung watcher (`pytest --watch`) or stdin-prompt would otherwise block
+# the orchestrator indefinitely — `attempt_auto_done` lives in the main
+# pipeline loop, so a hang freezes the whole pipeline.
+# Override via env: AWF_VERIFY_TIMEOUT=0 disables timeout (legacy behavior).
+DEFAULT_VERIFY_TIMEOUT = 600  # 10 minutes per command
+
+
+def _verify_cmd_timeout() -> int:
+    """Per-command timeout override via AWF_VERIFY_TIMEOUT env var.
+
+    Returns 0 to disable (caller passes None to subprocess.run).
+    Falls back to default on invalid value (e.g. "abc", "10s").
+    """
+    raw = os.environ.get("AWF_VERIFY_TIMEOUT", str(DEFAULT_VERIFY_TIMEOUT))
+    try:
+        return max(0, int(raw))
+    except (ValueError, TypeError):
+        return DEFAULT_VERIFY_TIMEOUT
 
 
 def detect_work_evidence(project_dir: str | Path, baseline_sha: str) -> bool:
@@ -58,6 +79,7 @@ def run_verify_commands(
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
     log_chunks: list[str] = []
+    cmd_timeout = _verify_cmd_timeout()
     for cmd in cmds:
         parts = shlex.split(cmd)
         if not parts:
@@ -69,7 +91,17 @@ def run_verify_commands(
                 text=True,
                 check=False,
                 cwd=str(cwd) if cwd is not None else None,
+                timeout=cmd_timeout or None,
             )
+        except subprocess.TimeoutExpired:
+            # Hung command (watcher, stdin prompt, infinite loop). Treat
+            # as failure — orchestrator must not block forever.
+            if log_path is not None:
+                log_chunks.append(
+                    f"$ {cmd}\nTIMEOUT after {cmd_timeout}s — command did not exit\n"
+                )
+                atomic_write_text(log_path, "".join(log_chunks))
+            return False
         except (FileNotFoundError, OSError) as e:
             if log_path is not None:
                 log_chunks.append(f"$ {cmd}\nABORTED: {e}\n")

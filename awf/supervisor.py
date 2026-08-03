@@ -142,6 +142,22 @@ def resolve_role_file(role: str, project_dir: Path) -> Path:
     )
 
 
+def _safe_supervisor_timeout() -> int:
+    """Parse AWF_SUPERVISOR_TIMEOUT with safe fallback on invalid value.
+
+    Without this, ``AWF_SUPERVISOR_TIMEOUT=abc`` raised ValueError at
+    runtime inside run_supervisor_stage — pipeline crashed mid-flight
+    with an opaque traceback. Now falls back to 3600.
+    """
+    import os
+
+    raw = os.environ.get("AWF_SUPERVISOR_TIMEOUT", "3600")
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return 3600
+
+
 def wait_for_supervisor_signal(
     kind: str,
     todo_id: str,
@@ -375,9 +391,9 @@ def run_supervisor_stage(
     if not auto:
         print_interactive_supervisor_instructions(kind, todo_id, project_dir, phases_file)
         _log(logs_dir, f"BD-30: interactive supervisor {kind} — waiting for signal")
-        # C1 v2: configurable timeout via env (default 3600s = 1 hour)
-        import os
-        timeout = int(os.environ.get("AWF_SUPERVISOR_TIMEOUT", "3600"))
+        # C1 v2: configurable timeout via env (default 3600s = 1 hour).
+        # Invalid env value falls back to default (was: ValueError crash).
+        timeout = _safe_supervisor_timeout()
         signal = wait_for_supervisor_signal(kind, todo_id, project_dir, logs_dir, timeout=timeout)
         _log(logs_dir, f"BD-30: interactive supervisor {kind} completed by user (opencode): {signal}")
         return signal

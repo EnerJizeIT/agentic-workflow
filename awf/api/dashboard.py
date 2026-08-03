@@ -219,7 +219,6 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             pass
 
     # Determine current stage from state
-    state.get("stage_name") if state else None
     current_stage_idx = state.get("stage_idx") if state else -1
 
     # Build stage display data
@@ -312,11 +311,14 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     except Exception:
         return None
 
-    # Write to .agentic/dashboards/current.html
+    # Write to .agentic/dashboards/current.html (atomic — concurrent
+    # browser meta-refresh reads must not see a half-written file).
+    from .._atomic import atomic_write_text
+
     dashboards_dir = project_dir / ".agentic" / DASHBOARD_DIR
     dashboards_dir.mkdir(parents=True, exist_ok=True)
     output_path = dashboards_dir / DASHBOARD_FILE
-    output_path.write_text(html, encoding="utf-8")
+    atomic_write_text(output_path, html)
     return output_path
 
 

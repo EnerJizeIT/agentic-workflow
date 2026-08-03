@@ -78,16 +78,28 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
         if test_cmd:
             parts = shlex.split(test_cmd)
             if parts:
-                result = subprocess.run(
-                    parts,
-                    cwd=str(project_dir),
-                    capture_output=True,
-                    text=True,
-                )
-                log_content = result.stdout + result.stderr
-                atomic_write_text(tests_log_path, log_content)
-                test_status = "passed" if result.returncode == 0 else "failed"
-                test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
+                try:
+                    result = subprocess.run(
+                        parts,
+                        cwd=str(project_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+                except subprocess.TimeoutExpired:
+                    # test_cmd hung (watcher / stdin prompt / infinite loop).
+                    # Don't block baseline creation — record failure, continue.
+                    atomic_write_text(
+                        tests_log_path,
+                        f"test_cmd timed out after 300s: {test_cmd}\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"test_cmd timed out: {test_cmd}"
+                else:
+                    log_content = result.stdout + result.stderr
+                    atomic_write_text(tests_log_path, log_content)
+                    test_status = "passed" if result.returncode == 0 else "failed"
+                    test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
             else:
                 atomic_write_text(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
                 test_status = "no_test_cmd"
@@ -104,8 +116,13 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
 
     env_parts: list[str] = []
     for cmd in [[python_cmd, "--version"], [python_cmd, "-m", "pip", "list"]]:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        env_parts.append(result.stdout + result.stderr)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            env_parts.append(result.stdout + result.stderr)
+        except subprocess.TimeoutExpired:
+            env_parts.append(f"{cmd[0]} timed out after 30s\n")
+        except (FileNotFoundError, OSError) as e:
+            env_parts.append(f"{cmd[0]} failed: {e}\n")
     atomic_write_text(context_dir / f"BASELINE-{todo_id}.env.log", "".join(env_parts))
 
     files_created = sorted(

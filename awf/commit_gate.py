@@ -16,8 +16,24 @@ from pathlib import Path
 from . import git_utils, paths
 from ._log import log as _log
 
-APPROVE_TIMEOUT_SECONDS: int = int(os.environ.get("AWF_APPROVE_TIMEOUT_SECONDS", "1800"))
 APPROVE_POLL_INTERVAL: int = 2
+
+
+def _safe_int_env(name: str, default: int) -> int:
+    """Parse int from env var with safe fallback on invalid value.
+
+    Without this, ``AWF_APPROVE_TIMEOUT_SECONDS=1800s`` (typo) crashed the
+    whole ``awf.commit_gate`` module on import. Now falls back to default
+    and logs nothing — typo is a config mistake, not a crash-worthy event.
+    """
+    raw = os.environ.get(name, str(default))
+    try:
+        return max(1, int(raw))
+    except (ValueError, TypeError):
+        return default
+
+
+APPROVE_TIMEOUT_SECONDS: int = _safe_int_env("AWF_APPROVE_TIMEOUT_SECONDS", 1800)
 
 
 def _files_changed_since_baseline(
