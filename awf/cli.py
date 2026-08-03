@@ -230,8 +230,3 @@ def _dispatch_subcommand(argv):
         from . import cmd_analyze_roles
         return cmd_analyze_roles.run(args)
 
-    print(
-        f"awf: '{args.command}' not implemented in Python yet",
-        file=sys.stderr,
-    )
-    return 2

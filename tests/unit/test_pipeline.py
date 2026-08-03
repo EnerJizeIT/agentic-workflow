@@ -35,8 +35,6 @@ class TestLoadStages:
     def test_simple_stage_actions(self, tmp_pipeline_file) -> None:
         tmp_path, _ = tmp_pipeline_file
         stages = load_stages(tmp_path / ".agentic" / "pipelines" / "simple.yaml")
-        assert stages[1].action == "execute_todo"
-        assert stages[2].action == "verify_result"
 
     def test_simple_verify_on_approved(self, tmp_pipeline_file) -> None:
         tmp_path, _ = tmp_pipeline_file
@@ -69,7 +67,6 @@ class TestLoadStages:
         review = stages[2]
         assert review.name == "review"
         assert review.role == "reviewer"
-        assert review.action == "review_code"
         assert review.on_rejected == "rollback_to:implement"
         assert review.max_retries == 2
 
@@ -79,7 +76,6 @@ class TestLoadStages:
         test = stages[3]
         assert test.name == "test"
         assert test.role == "tester"
-        assert test.action == "run_tests"
         assert test.on_failed == "rollback_to:implement"
 
     def test_full_finalize_stage(self, tmp_pipeline_file) -> None:
@@ -99,7 +95,7 @@ class TestLoadStages:
         assert stages[0].description == ""
 
     def test_stage_dataclass_defaults(self) -> None:
-        s = Stage(name="x", role="r", action="a")
+        s = Stage(name="x", role="r")
         assert s.description == ""
         assert s.on_blocked == "escalate"
         assert s.on_approved == "next"

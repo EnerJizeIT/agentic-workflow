@@ -29,11 +29,6 @@ def config_file(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "config.yaml"
 
 
-def skills_dir(project_dir: str | Path = ".") -> Path:
-    """Return .agentic/skills/."""
-    return agentic_dir(project_dir) / "skills"
-
-
 # П2/П6: candidate filenames in priority order. The numbered prefix on
 # PRODUCT-VISION matches the convention used in user's pet-projects
 # (forces sort order at top of file listing).

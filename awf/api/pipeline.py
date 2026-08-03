@@ -85,26 +85,17 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
                     text=True,
                 )
                 log_content = result.stdout + result.stderr
-                tests_log_path.write_text(log_content, encoding="utf-8")
+                atomic_write_text(tests_log_path, log_content)
                 test_status = "passed" if result.returncode == 0 else "failed"
                 test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
             else:
-                tests_log_path.write_text(
-                    "No test_cmd configured, skipping test baseline.\n",
-                    encoding="utf-8",
-                )
+                atomic_write_text(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
                 test_status = "no_test_cmd"
         else:
-            tests_log_path.write_text(
-                "No test_cmd configured, skipping test baseline.\n",
-                encoding="utf-8",
-            )
+            atomic_write_text(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
             test_status = "no_test_cmd"
     else:
-        tests_log_path.write_text(
-            "No config.yaml found, skipping test baseline.\n",
-            encoding="utf-8",
-        )
+        atomic_write_text(tests_log_path, "No config.yaml found, skipping test baseline.\n")
         test_status = "no_config"
 
     python_cmd = "python3"
@@ -115,9 +106,7 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
     for cmd in [[python_cmd, "--version"], [python_cmd, "-m", "pip", "list"]]:
         result = subprocess.run(cmd, capture_output=True, text=True)
         env_parts.append(result.stdout + result.stderr)
-    (context_dir / f"BASELINE-{todo_id}.env.log").write_text(
-        "".join(env_parts), encoding="utf-8"
-    )
+    atomic_write_text(context_dir / f"BASELINE-{todo_id}.env.log", "".join(env_parts))
 
     files_created = sorted(
         f.name for f in context_dir.glob(f"BASELINE-{todo_id}.*") if f.is_file()

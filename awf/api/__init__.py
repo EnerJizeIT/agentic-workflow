@@ -5,17 +5,23 @@ Business logic lives in submodules — this file re-exports the public
 surface so callers can ``from awf import api; api.init_project(...)``.
 
 Layout:
-- ``_errors``    — AwfApiError
-- ``_results``   — Result dataclasses (InitResult, StatusResult, ...)
-- ``_stack``     — detect_stack, derive_project_name
-- ``_templates`` — _CONFIG_TEMPLATE, _ROLE_TEMPLATE, update_gitignore
-- ``_helpers``   — require_agentic, require_git_repo, read helpers
-- ``_background`` — start_in_background, check_pipeline_running, PipelineArgs
-- ``lifecycle``  — init_project, get_status, get_report, reset_runtime,
-                   list_orphans, remove_orphans
-- ``pipeline``   — start_pipeline, continue_pipeline, create_baseline,
-                   rollback, approve_commit
-- ``roles``      — add_role, analyze_roles
+- ``_errors``      — AwfApiError
+- ``_results``     — Result dataclasses (InitResult, StatusResult,
+                     DispatchTodoResult, ApplyIncrementPlanResult, ...)
+- ``_stack``       — detect_stack, derive_project_name
+- ``_templates``   — _CONFIG_TEMPLATE, _ROLE_TEMPLATE, update_gitignore
+- ``_helpers``     — require_agentic, require_git_repo, read helpers
+- ``_background``  — start_in_background, check_pipeline_running, PipelineArgs
+- ``lifecycle``    — init_project, get_status, get_report, reset_runtime,
+                     list_orphans, remove_orphans
+- ``pipeline``     — start_pipeline, continue_pipeline, create_baseline,
+                     rollback, approve_commit
+- ``roles``        — add_role, analyze_roles
+- ``setup``        — apply_project_setup (project-setup form materialization)
+- ``dispatch``     — dispatch_todo (atomic TODO + baseline + signal)
+- ``context``      — load_supervisor_context (aggregate bootstrap payload),
+                     _extract_stage_info, _compute_expected_action
+- ``planning``     — apply_increment_plan (increment variant persistence)
 
 Error convention: every function returns a Result dataclass (success)
 or raises AwfApiError with a human-readable message. Callers wrap in

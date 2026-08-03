@@ -38,8 +38,6 @@ class Stage:
     max_retries: int = 1
     # Computed at load time — not in YAML.
     kind: str = "execute"  # "plan" | "execute" | "verify"
-    # Back-compat only — read from YAML if present, but kind wins.
-    action: str = ""
 
 
 _DEFAULTS: dict[str, Any] = {
@@ -100,8 +98,6 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         kwargs: dict[str, Any] = {}
         for key in ("name", "role", "description"):
             kwargs[key] = s.get(key, "")
-        # action: read for back-compat (logged as ignored)
-        kwargs["action"] = s.get("action", "")
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         mr = s.get("max_retries", _DEFAULTS["max_retries"])
