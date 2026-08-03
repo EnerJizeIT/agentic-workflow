@@ -10,34 +10,34 @@ class TestBD31aZoneClassification:
 
     def test_system_analyst_classified_as_requirements(self):
         """BD-31a fix: system-analyst → 'writes requirements', not 'writes code'."""
-        from awf.cmd_analyze_roles import _infer_zone
+        from awf.api.roles import _infer_zone
         # Even if skill.md content contains "implement", slug must win
         zone = _infer_zone("system-analyst", "# Skill\nYou implement features and write code")
         assert "requirements" in zone, f"Expected requirements, got {zone!r}"
 
     def test_dev_classified_as_code(self):
-        from awf.cmd_analyze_roles import _infer_zone
+        from awf.api.roles import _infer_zone
         zone = _infer_zone("dev", "# Developer\nWrites code")
         assert "code" in zone
 
     def test_qa_review_classified_as_verify(self):
-        from awf.cmd_analyze_roles import _infer_zone
+        from awf.api.roles import _infer_zone
         zone = _infer_zone("qa-review", "# QA\nVerifies work")
         assert "verif" in zone
 
     def test_project_auditor_classified_as_code_health(self):
-        from awf.cmd_analyze_roles import _infer_zone
+        from awf.api.roles import _infer_zone
         zone = _infer_zone("project-auditor", "# Auditor\nAudits code")
         assert "code health" in zone or "quality" in zone
 
     def test_unknown_role_generalist(self):
-        from awf.cmd_analyze_roles import _infer_zone
+        from awf.api.roles import _infer_zone
         zone = _infer_zone("totally-unknown", "random content")
         assert "generalist" in zone
 
     def test_slug_wins_over_content(self):
         """Slug match takes priority over content match."""
-        from awf.cmd_analyze_roles import _infer_zone
+        from awf.api.roles import _infer_zone
         # 'architect' in slug, but content says 'writes code' → architect wins
         zone = _infer_zone("architect", "writes code, implements features")
         assert "designs" in zone or "architect" in zone.lower()
@@ -50,7 +50,7 @@ class TestBD31bDisambiguation:
 
     def test_dev_gets_specific_disambiguation(self):
         """BD-31b fix: dev role gets specific disambiguation (was empty)."""
-        from awf.cmd_analyze_roles import _build_disambiguation_addendum
+        from awf.api.roles import _build_disambiguation_addendum
         result = _build_disambiguation_addendum(
             role="dev",
             zone="writes code",
@@ -62,7 +62,7 @@ class TestBD31bDisambiguation:
 
     def test_auditor_gets_code_health_instruction(self):
         """BD-31b fix: project-auditor gets 'Focus on code health' (was fallback)."""
-        from awf.cmd_analyze_roles import _build_disambiguation_addendum
+        from awf.api.roles import _build_disambiguation_addendum
         result = _build_disambiguation_addendum(
             role="project-auditor",
             zone="verifies code health / project quality",
@@ -73,7 +73,7 @@ class TestBD31bDisambiguation:
         assert "qa-review" in result  # mentions the other role
 
     def test_qa_gets_todo_requirements_instruction(self):
-        from awf.cmd_analyze_roles import _build_disambiguation_addendum
+        from awf.api.roles import _build_disambiguation_addendum
         result = _build_disambiguation_addendum(
             role="qa-review",
             zone="verifies implementation against requirements",
@@ -83,7 +83,7 @@ class TestBD31bDisambiguation:
         assert "TODO" in result or "requirements" in result.lower()
 
     def test_system_analyst_gets_requirements_instruction(self):
-        from awf.cmd_analyze_roles import _build_disambiguation_addendum
+        from awf.api.roles import _build_disambiguation_addendum
         result = _build_disambiguation_addendum(
             role="system-analyst",
             zone="writes requirements / vision",
@@ -101,7 +101,7 @@ class TestBD31cBroaderOverlap:
 
     def test_qa_auditor_overlap_detected(self):
         """BD-31c fix: qa-review + project-auditor overlap detected via zone family."""
-        from awf.cmd_analyze_roles import _detect_overlaps
+        from awf.api.roles import _detect_overlaps
         zones = {
             "qa-review": "verifies implementation against requirements",
             "project-auditor": "verifies code health / project quality",
@@ -113,12 +113,12 @@ class TestBD31cBroaderOverlap:
         ]
 
     def test_zone_family_groups_verify(self):
-        from awf.cmd_analyze_roles import _zone_family
+        from awf.api.roles import _zone_family
         assert _zone_family("verifies implementation against requirements") == "verify"
         assert _zone_family("verifies code health / project quality") == "verify"
 
     def test_different_families_no_overlap(self):
-        from awf.cmd_analyze_roles import _detect_overlaps
+        from awf.api.roles import _detect_overlaps
         zones = {
             "dev": "writes code",
             "qa-review": "verifies implementation against requirements",
@@ -127,7 +127,7 @@ class TestBD31cBroaderOverlap:
         assert overlaps == []
 
     def test_generalist_not_flagged(self):
-        from awf.cmd_analyze_roles import _detect_overlaps
+        from awf.api.roles import _detect_overlaps
         zones = {
             "role-a": "generalist (undefined zone)",
             "role-b": "generalist (undefined zone)",

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from awf import cmd_analyze_roles
-from awf.cmd_analyze_roles import (
+from awf.api.roles import (
     _build_disambiguation_addendum,
     _detect_overlaps,
     _infer_zone,
@@ -313,14 +313,15 @@ class TestAnalyzeRolesRun:
         })
 
         # Force atomic_write_text to fail for the 'qa' role only.
-        real_write = cmd_analyze_roles.atomic_write_text
+        from awf.api.roles import atomic_write_text as real_write
 
         def flaky_write(path, content, *a, **kw):
             if Path(path).name == "qa.md":
                 raise OSError("simulated permission denied")
             return real_write(path, content, *a, **kw)
 
-        monkeypatch.setattr(cmd_analyze_roles, "atomic_write_text", flaky_write)
+        import awf.api.roles as _roles_mod
+        monkeypatch.setattr(_roles_mod, "atomic_write_text", flaky_write)
 
         data = cmd_analyze_roles.analyze_roles_core(proj, dry_run=False)
 

@@ -676,7 +676,7 @@ class TestAnalyzeRoles:
         """Regression: a patch write that raises OSError must surface as
         applied=False for that role — not silently applied=True."""
         self._setup_overlapping_roles(tmp_git_repo)
-        import awf.cmd_analyze_roles as core_mod
+        import awf.api.roles as core_mod
 
         real_write = core_mod.atomic_write_text
 

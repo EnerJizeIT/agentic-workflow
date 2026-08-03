@@ -309,12 +309,12 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src
 
     def test_cmd_analyze_roles_uses_atomic(self):
-        """H3: cmd_analyze_roles.py uses atomic_write_text."""
+        """H3: analyze_roles logic uses atomic_write_text (now in awf.api.roles)."""
         import inspect
 
-        from awf import cmd_analyze_roles
+        from awf.api import roles
 
-        src = inspect.getsource(cmd_analyze_roles)
+        src = inspect.getsource(roles)
         assert "atomic_write_text" in src
 
     def test_cmd_add_role_uses_atomic(self):
