@@ -361,6 +361,13 @@ def run_pipeline(args: Any) -> int:
             todo_id=current_todo,
             pipeline_pid=__import__("os").getpid(),
         )
+        # DASH Phase 2: regenerate dashboard HTML after state change.
+        # Non-critical — pipeline continues if dashboard fails.
+        try:
+            from .api.dashboard import generate_dashboard
+            generate_dashboard(project_dir)
+        except Exception:
+            pass
 
         # --- Supervisor stage ---
         if s_role == "supervisor":

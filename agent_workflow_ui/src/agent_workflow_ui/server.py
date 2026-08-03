@@ -48,5 +48,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_open_project_setup_form, name="awf_open_project_setup_form")
     # Dogfood-7: increment planning (user picks decomposition variant)
     mcp.add_tool(awf.awf_open_increment_planning_form, name="awf_open_increment_planning_form")
+    # DASH Phase 2: pipeline dashboard
+    mcp.add_tool(awf.awf_open_pipeline_dashboard, name="awf_open_pipeline_dashboard")
 
     return mcp
