@@ -398,6 +398,23 @@ def run_pipeline(args: Any) -> int:
                     return rc
 
             if s_kind == "verify":
+                # QA finding: empty sup_signal (supervisor auto-skipped,
+                # supervisor.md missing, salvage/unknown kind, or watchdog
+                # returned nothing) was silently treated as "approved implicit"
+                # — pipeline committed unreviewed work. Now: no signal = abort.
+                if not sup_signal:
+                    print(
+                        f"ERROR: verify stage produced no supervisor signal for {current_todo}.",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "  Supervisor stage returned empty signal (skipped or failed).",
+                        file=sys.stderr,
+                    )
+                    print("  Pipeline stopped — manual review required.", file=sys.stderr)
+                    _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
+                    return 1
+
                 # C1 fix: check what supervisor actually decided.
                 # REVIEW-{todo_id} = rejection → don't commit, don't close Step,
                 # escalate to replan (gives supervisor a chance to refine TODO).

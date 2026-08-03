@@ -160,7 +160,7 @@ def run_plan_checkpoint(
         print("=" * 60)
         print(f"  Form:   file://{html_path}")
         print(f"  Server: http://127.0.0.1:{port}")
-        print(f"  Timeout: {timeout}s (auto-approve on expiry)")
+        print(f"  Timeout: {timeout}s (pipeline aborts on expiry — re-run awf_start to retry)")
         print("=" * 60)
         try:
             webbrowser.open(f"file://{html_path}")
@@ -185,7 +185,9 @@ def run_plan_checkpoint(
             time.sleep(0.2)
 
         if not decision_holder:
-            _log(logs_dir, f"BD-36: checkpoint timeout for {todo_id} — auto-approve")
+            # QA: orchestrator treats "timeout" as ABORT (returns 1), not
+            # auto-approve. Log message must reflect that — was misleading.
+            _log(logs_dir, f"BD-36: checkpoint timeout for {todo_id} — pipeline will abort")
             return "timeout"
 
         decision = decision_holder["decision"]

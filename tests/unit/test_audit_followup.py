@@ -372,3 +372,99 @@ class TestC1PipelineReviewRejection:
         assert not step_marked["v"], "C1: must NOT mark Step done on REVIEW rejection"
         # Verify the REVIEW file was written
         assert (outbox / "REVIEW-TODO-0001.md").exists(), "C1: REVIEW file should exist"
+
+
+# ── QA: empty sup_signal at verify must abort (not silently approve) ────────
+
+
+class TestQAEmptyVerifySignalAborts:
+    """Regression: empty supervisor signal at verify stage must abort pipeline.
+
+    Before fix: ``sup_signal.startswith("REVIEW-")`` was False for empty
+    string, so the orchestrator fell through to the "approved implicit"
+    path and committed unreviewed work — even when supervisor auto-skipped
+    (no supervisor.md, salvage, unknown kind) or subprocess produced no
+    ACK/APPROVE/REVIEW. This test verifies the explicit empty-signal
+    abort was added.
+    """
+
+    def _make_project(self, tmp_path):
+        proj = tmp_path / "proj"
+        for d in ("roles", "inbox", "outbox", "context", "logs", "pipelines", "phases"):
+            (proj / ".agentic" / d).mkdir(parents=True)
+        (proj / ".agentic" / "roles" / "supervisor.md").write_text("# Supervisor")
+        (proj / ".agentic" / "roles" / "worker.md").write_text("# Worker")
+        (proj / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: t\nphases:\n  current: ".agentic/phases/plan.md"\n'
+            'default_pipeline: "default"\n'
+        )
+        (proj / ".agentic" / "phases" / "plan.md").write_text(
+            "- [ ] Step 1: initial task\n"
+        )
+        (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: plan\n    role: supervisor\n\n"
+            "  - name: implement\n    role: worker\n\n"
+            "  - name: verify\n    role: supervisor\n"
+        )
+        return proj
+
+    def test_empty_verify_signal_returns_1_no_commit(self, tmp_path, monkeypatch):
+        """Verify returns empty signal → pipeline returns 1, no commit, no step mark."""
+        from types import SimpleNamespace
+
+        from awf import orchestrator
+
+        proj = self._make_project(tmp_path)
+        inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        (inbox / "TODO-0001.md").write_text("Step 1\nGoal: do something\n")
+        (inbox / "TODO-0001.ready").write_text("")
+
+        # Supervisor: plan → TODO, verify → "" (simulating auto-skip / no signal)
+        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir):
+            if stage.kind == "plan":
+                return "TODO-0001"
+            if stage.kind == "verify":
+                return ""  # no signal — the bug scenario
+            return ""
+
+        monkeypatch.setattr(orchestrator, "_run_supervisor_stage", fake_supervisor)
+        monkeypatch.setattr(orchestrator, "_find_active_todo", lambda pd: "TODO-0001")
+
+        def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None):
+            (outbox / f"DONE-{todo_id}.md").write_text("Done.\n")
+            (outbox / f"DONE-{todo_id}.ready").write_text("")
+
+        monkeypatch.setattr(orchestrator, "_run_agent_stage", fake_agent)
+
+        # Track verify-path side effects (must NOT happen)
+        verify_commit_calls = {"n": 0}
+        real_maybe_commit = orchestrator._maybe_commit
+
+        def spy_commit(s_name, todo, action, *a, **kw):
+            # Only count calls made from verify stage with commit_and_next
+            if s_name == "verify" and action in ("commit_and_next", "commit_and_report"):
+                verify_commit_calls["n"] += 1
+            return real_maybe_commit(s_name, todo, action, *a, **kw)
+
+        monkeypatch.setattr(orchestrator, "_maybe_commit", spy_commit)
+        monkeypatch.setattr(orchestrator, "_read_baseline_sha", lambda *a: "")
+
+        step_marked = {"v": False}
+        monkeypatch.setattr(
+            orchestrator, "_mark_plan_step_done", lambda *a, **kw: step_marked.__setitem__("v", True)
+        )
+
+        args = SimpleNamespace(
+            project_dir=str(proj),
+            pipeline=None,
+            from_stage=None,
+            auto=False,
+        )
+
+        result = orchestrator.run_pipeline(args)
+
+        assert result == 1, "QA: empty sup_signal at verify must return 1"
+        assert verify_commit_calls["n"] == 0, "QA: must NOT commit on empty verify signal"
+        assert not step_marked["v"], "QA: must NOT mark Step done on empty verify signal"
