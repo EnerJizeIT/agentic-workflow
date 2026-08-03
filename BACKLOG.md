@@ -273,9 +273,115 @@ collapses to "1 effective agent + N rubber-stamps".
 |---|---|---|
 | **2 · Decision fork** | Runtime ad-hoc forms (в любом месте pipeline). Шаблон `decision-tree.html.j2`. | Low |
 | **3 · Blockage recovery** | Шаблон `blockage-recovery.html.j2`. Multi-step flow (проблема → варианты → выбор → комментарий). | Medium |
-| **4 · Long-running monitoring** | Dashboard rendering, `dashboard.html.j2`, meta-refresh. | Medium |
+| **4 · Long-running monitoring** | **IN PROGRESS** — см. DASH ниже. | Medium |
 | **5 · Priority planning** | Drag-and-drop UI, новый тип template `priority-matrix.html.j2`. | High |
 | **6 · Onboarding wizard** | Multi-form state, conditional logic между формами. | High |
+
+---
+
+## 🟢 Active · DASH — Pipeline dashboard + supervisor wake-up
+
+**Status:** IN PROGRESS (brainstorming + prototype phase). **Priority:** HIGH.
+
+**Цель:** Снять supervisor overhead (polling) + дать пользователю живой
+визуальный опыт pipeline execution.
+
+**Сейчас:** supervisor делает `awf_start` → blocks MCP tool call → спит →
+`sleep(30) + awf_status` циклы → тратит токены на polling.
+
+**Цель:** `awf_start` returns immediately → dashboard открывается в браузере
+user'а → user видит live прогресс → supervisor автоматически пробуждается
+только когда нужен (verify stage, BLOCKED, checkpoint pending).
+
+### Фаза 1 · Прототип dashboard (design-first)
+
+**Status:** TODO.
+
+Standalone HTML prototype с mock data — не integrated с awf. Цель: собрать
+визуальный язык, iterate по дизайну перед кодингом integration.
+
+**UI layers (progressive disclosure):**
+
+1. **Header** (always visible): project name + todo_id + elapsed time + status badge (running / checkpoint / done)
+2. **Pipeline flow** (always visible): stages как visual chain `●━━━●━━━●━━━○━━━○` с pulsing dot на current stage, ✓ на completed, · на pending
+3. **Expandable cards** (по клику):
+   - **Handoffs** — что создала каждая роль (имя файла + preview первых строк)
+   - **Events stream** — terminal-style лог агентов (читаем из `.agentic/logs/awf-start.out` tail)
+   - **Task progress** — если есть PROGRESS-TODO-NNNN.md, показать task checklist
+4. **Checkpoint banner** (условный): если `checkpoint_pending=True` → prominent top banner с form_url ссылкой + кнопкой "Open approve form"
+5. **Footer**: status + "Return to chat" message когда done
+
+**Animations (CSS, не GIFs):**
+- Pulsing dot на current stage (CSS `@keyframes pulse`)
+- Spinner на current stage card (`border-spin` animation)
+- Slide-in для новых events в stream
+- Glow effect на completed stages
+- Checkmark draw animation на DONE
+
+**Theme:** dark, matches project-setup.html.j2 (CSS variables --bg, --accent, --accent-green, --danger).
+
+**Mock data для прототипа:**
+```yaml
+project: "Jira Epic Presenter"
+todo: "TODO-0001"
+elapsed: "4m 32s"
+status: "running"
+stages:
+  - {name: plan, role: supervisor, status: done}
+  - {name: system-analyst, role: agent-system-analyst, status: done}
+  - {name: architect, role: agent-architect, status: done}
+  - {name: implement, role: agent-implementer, status: current}
+  - {name: qa-review, role: agent-qa-review, status: pending}
+  - {name: verify, role: supervisor, status: pending}
+handoffs:
+  - {role: system-analyst, file: "requirements/mvp.md", preview: "# MVP Requirements\n## R1: Storyboard generation..."}
+  - {role: architect, file: "2. ARCHITECTURE.md", preview: "# Architecture\n## Components..."}
+events:
+  - {ts: "15:30:01", msg: "system-analyst started (PID 632378)"}
+  - {ts: "15:32:15", msg: "system-analyst DONE: requirements/mvp.md (18 requirements)"}
+  - {ts: "15:32:16", msg: "architect started"}
+  - {ts: "15:33:45", msg: "architect DONE: 2. ARCHITECTURE.md (7 components)"}
+  - {ts: "15:33:46", msg: "implement started (current)"}
+```
+
+**Deliverable:** `/tmp/opencode/dashboard-prototype.html` — standalone file, открывается в браузере, user iterate по дизайну.
+
+### Фаза 2 · Integrate с awf
+
+**Status:** TODO (после утверждения прототипа).
+
+- `agent_workflow_ui/.../default_templates/pipeline-dashboard.html.j2` — Jinja2 template на основе прототипа
+- `awf/api/dashboard.py` — `generate_dashboard(project_dir)` → read state (T4.1) + pipeline.yaml + handoffs + log tail → render HTML
+- Orchestrator hook — после `write_state()` → regenerate dashboard HTML в `.agentic/dashboards/current.html`
+- MCP tool `awf_open_pipeline_dashboard(project_dir)` — supervisor открывает дашборд для user (после вопроса "открыть дашборд?")
+- Auto-refresh: `<meta http-equiv="refresh" content="5">` (5 секунд)
+
+**Supervisor flow:**
+```
+1. awf_start(background=True) → pipeline запущен
+2. Supervisor спрашивает user: "Открыть дашборд прогресса в браузере?"
+3. Если да → awf_open_pipeline_dashboard(project_dir) → browser open
+4. Supervisor: НЕ поллит, ждёт wake-up (Фаза 3)
+5. User видит live прогресс в браузере
+6. Когда pipeline done → dashboard показывает "DONE — возвращайся в chat"
+```
+
+### Фаза 3 · Supervisor wake-up (убрать polling совсем)
+
+**Status:** TODO (после Фазы 2).
+
+**Цель:** supervisor вообще не делает `sleep + awf_status` циклы. Pipeline
+автоматически «будит» supervisor когда:
+- Verify stage reached → supervisor должен verify
+- BLOCKED signal → supervisor должен решить
+- Checkpoint pending → supervisor должен сообщить user (если дашборд не открыт)
+
+**Варианты реализации:**
+- **A) MCP notifications** — plugin отправляет MCP notification когда state меняется. Agent видит notification → просыпается. Требует FastMCP notifications support.
+- **B) Signal file + short poll** — `.agentic/state/supervisor_wake.ready` создаётся когда verify/BLOCKED. Supervisor проверяет раз в 60 сек (не 30). Дешевле текущего.
+- **C) Foreground split** — `awf_start` blocks до verify stage, потом возвращает "verify reached" → supervisor делает verify → `awf_continue`. Pipeline разбит на фазы.
+
+**Решение:** обсудить после Фазы 2 — когда видно реальный dashboard UX, проще выбрать wake-up механизм.
 
 ---
 
