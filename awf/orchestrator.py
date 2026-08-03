@@ -68,32 +68,10 @@ from .supervisor import (
 )
 from .transitions import resolve_transition
 
-# Public re-exports for back-compat — keep underscore aliases pointing to the
-# new module locations so existing tests/external callers don't break.
-__all__ = [
-    "_awf_subprocess_env",
-    "_build_prompt",
-    "_collect_handoff",
-    "_extract_step_id_from_todo",
-    "_find_active_todo",
-    "_find_stage_index",
-    "_get_agent_name",
-    "_get_role_model",
-    "_global_roles_dir",
-    "_log",
-    "_mark_plan_step_done",
-    "_maybe_commit",
-    "_print_progress_report",
-    "_read_baseline_sha",
-    "_resolve_prev_handoffs",
-    "_resolve_role_file",
-    "_run_agent_stage",
-    "_run_subprocess_until_signal",
-    "_run_supervisor_stage",
-    "_run_supervisor_via_subprocess",
-    "_wait_for_supervisor_signal",
-    "run_pipeline",
-]
+# T1.5: re-exports for white-box tests (from awf.orchestrator import _foo).
+# __all__ removed — ruff per-file-ignore (pyproject.toml) protects the
+# underscore aliases from being auto-removed by ruff --fix. Tests import
+# explicitly; no star-import callers.
 
 
 def _find_stage_index(stages: list[Stage], name: str) -> int:

@@ -52,3 +52,9 @@ ignore = [
     "E501",  # long lines common in test data
     "E702",  # semicolons used in compact setup helpers (e.g. create(); activate())
 ]
+# T1.5: orchestrator.py re-exports 17 underscore-prefixed private functions
+# via __all__. These are used by white-box tests (from awf.orchestrator
+# import _foo). Ruff sees them as "unused imports" (F401) and removes them
+# with --fix. __all__ declares them as intentional public surface for tests.
+# Per-file-ignore prevents ruff from removing these critical aliases.
+"awf/orchestrator.py" = ["F401"]

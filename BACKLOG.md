@@ -161,20 +161,14 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 > Cosmetic improvement only (`except AwfApiError` + re-raise Exception
 > would be more expressive). Not fixing — zero risk.
 
-**[T2.8] `awf/opencode_agents.py:10-52` stringly-typed protocol `propose()`**
-> Возвращает `"ERR:"`, `"NOTHING:"`, `"PROPOSE:"` — caller проверяет через
-> `startswith`. Хрупко. Refactor: Enum или dataclass (`Proposal(type=..., detail=...)`).
-> Severity: LOW (работает, но каждое новое состояние = риск забыть branch).
+**[T2.8] `awf/opencode_agents.py:10-52` stringly-typed protocol `propose()`** — ✅ CLOSED
+> Refactored to `ProposalKind` Enum + `Proposal` dataclass. __str__ back-compat.
 
 #### T1 — safe deletions (отложено, требуют инфраструктурных решений)
 
-**[T1.5] `awf/orchestrator.py:__all__` re-exports 17 приватных имён**
-> Audit предлагал удалить. Реально: tests импортируют
-> `from awf.orchestrator import _foo` (white-box testing). Без `__all__`
-> ruff `--fix` агрессивно удаляет эти re-exports (treats как unused).
-> Решение: либо ruff `per-file-ignores` для orchestrator.py, либо
-> оставить `__all__` как легитимный "white-box public surface" marker.
-> Severity: LOW (не баг, cosmetic disagreement с audit).
+**[T1.5] `awf/orchestrator.py:__all__` re-exports** — ✅ CLOSED
+> Решение: ruff `per-file-ignores` в pyproject.toml (`"awf/orchestrator.py" = ["F401"]`).
+> `__all__` удалён — re-exports для white-box tests защищены ruff config.
 
 **[T1.6] `awf/api/lifecycle.py:_reset_orphans` legacy one-shot path**
 > Duplicate of `list_orphans` + `remove_orphans` two-step protocol.
@@ -193,20 +187,20 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 > `http_endpoint._atomic_write_yaml`.
 > Решение: вынести `_find_free_port` в общий utils, при необходимости —
 > общий `http_server` helper.
-> Severity: MEDIUM (DRY violation, но два сервера обоснованно separate).
+> Status: **WON'T FIX** — design boundary обоснован (awf-core не зависит от plugin).
+> Объединение нарушит separation. Дубликат _find_free_port — минорный.
 
 **[T3.2] `forms.py:open_form` 158 строк, SRP violation**
 > Делает: registry lookup + project_dir validation + role scanning +
 > model collection + template rendering + browser launch + record creation
 > + cleanup_temp_files в одной функции.
-> Разбить на `_prepare_form_data() → _render() → _launch_and_record()`.
-> Severity: MEDIUM (читаемость, тестируемость).
+> Status: **DEFERRED INDEFINITELY** — работает, покрыт тестами, change frequency низкая.
+> Рефактор = риск regression без user-visible benefit.
 
 **[T3.3] `orchestrator.py:run_pipeline` cyclomatic complexity 107**
 > Уже разбит на `_handle_*` функции, но supervisor-stage block (375-436) и
 > agent-stage block (438-507) стоит извлечь в `_handle_supervisor_stage()` /
-> `_handle_agent_stage()`. Это опустит `run_pipeline` до ~80 строк и cyc~30.
-> Severity: MEDIUM (поддержка, тестируемость).
+> `_handle_agent_stage()`. Status: **DEFERRED INDEFINITELY** — core flow стабилен. Рефактор = высокий regression risk.
 
 **[T3.4] `_ZONES_OF_RESPONSIBILITY` extraction**
 > Словарь 20+ пар (en + ru keywords) в `awf/api/roles.py`. Разросся.
@@ -217,23 +211,15 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 **[T3.5] `opencode_config.py` hotspots**
 > `scan_global_skills` (cyc=49), `scan_global_roles` (26), `_read_models_from_config` (18).
 > Топ hotspot'ы plugin'а. Чтение opencode.json/skills перемешано с нормализацией.
-> Разделить на `reader.py` (raw read) + `normalize.py` (filter + transform).
-> Severity: MEDIUM (readability, future modifications).
+> Status: **DEFERRED INDEFINITELY** — работает, тесты покрывают. 0 user-visible benefit.
 
 #### T4 — архитектурные изменения (недели, design discussion)
 
-**[T4.1] Pipeline state persistence (replace regex log parsing)**
-> Сейчас `awf/api/context.py:_extract_stage_info` парсит `awf-start.out`
-> через regex для восстановления pipeline state. Любой change в `print()`
-> формате orchestrator ломает status detection без ошибки.
-> Предлагаемое решение: после каждой stage transition orchestrator пишет
-> `.agentic/state/current.yaml` (`{stage_idx, stage_name, stage_kind,
-> started_at, last_signal, checkpoint_pending}`). `api.get_status` читает
-> structured state, не логи.
-> Эффект: debug проще, форматы логов свободны для изменения, тесты проще.
-> **Требует design discussion** — это change в core flow.
-> Severity: HIGH architectural (но не user-visible bug — текущая regex
-> реализация работает пока формат логов не меняется).
+**[T4.1] Pipeline state persistence** — ✅ CLOSED
+> Implemented `awf/pipeline_state.py`: write_state() / read_state() / clear_state().
+> Orchestrator writes structured `.agentic/state/current.yaml` after each
+> stage transition. plan_checkpoint writes checkpoint state. `_extract_stage_info`
+> reads state file FIRST, regex as backward-compat fallback. 17 tests added.
 
 #### Test smells (не блокеры, можно поправить opportunistic)
 
