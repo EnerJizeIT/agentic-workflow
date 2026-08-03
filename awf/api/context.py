@@ -20,20 +20,110 @@ from .lifecycle import get_status
 def _extract_stage_info(
     project_dir: Path,
 ) -> tuple[str | None, str | None, str | None, str | None, bool, int | None, str | None]:
-    """Read pipeline.yaml + log_tail to figure out current state.
+    """Read pipeline state from structured file first, fall back to regex.
+
+    T4.1: orchestrator + plan_checkpoint persist structured state to
+    ``.agentic/state/current.yaml`` after each transition. This function
+    reads that file — single source of truth, no fragile regex.
+
+    Falls back to regex parsing of ``awf-start.out`` if state file
+    missing (older pipeline run, or pipeline_state writes failed).
 
     Returns ``(current_stage_name, next_stage_role, last_signal, log_tail,
     checkpoint_pending, checkpoint_port, checkpoint_form_url)``.
+    """
+    # ── T4.1: structured state file (preferred) ────────────────────────
+    from ..pipeline_state import is_state_stale, read_state
 
-    - ``current_stage_name`` from last 'Stage N/M: <name>' line in awf-start.out.
-    - ``next_stage_role`` = role of stage after current (from pipeline.yaml).
-    - ``last_signal`` = last DONE/BLOCKED/REVIEW/TODO/ACK found in log.
-    - ``checkpoint_pending`` = True if BD-36 checkpoint opened AND no decision yet.
-    - ``checkpoint_port`` = port from 'BD-36: checkpoint opened ... on port N'.
-    - ``checkpoint_form_url`` = file:// URL from 'BD-36: form_url=file://...'
+    state = read_state(project_dir)
+    log_tail_text = _read_log_tail(
+        paths.agentic_dir(project_dir) / "logs" / "awf-start.out", 30
+    )
+    if state and not is_state_stale(state):
+        # All fields available from structured state — no regex needed.
+        current_stage = state.get("stage_name")
+        checkpoint_pending = bool(state.get("checkpoint_pending", False))
+        checkpoint_port = state.get("checkpoint_port")
+        checkpoint_form_url = state.get("checkpoint_form_url")
+        last_signal = state.get("last_signal")
+
+        # next_stage_role still needs pipeline.yaml lookup
+        next_stage_role = _lookup_next_stage_role(project_dir, current_stage)
+
+        # last_signal: prefer state, fall back to regex if missing
+        if not last_signal:
+            _, _, last_signal, _, _, _, _ = _extract_stage_info_regex(project_dir)
+
+        return (
+            current_stage,
+            next_stage_role,
+            last_signal,
+            log_tail_text,
+            checkpoint_pending,
+            checkpoint_port if checkpoint_port is not None else None,
+            checkpoint_form_url,
+        )
+
+    # ── Fallback: regex log parsing (pre-T4.1 behaviour) ──────────────
+    return _extract_stage_info_regex(project_dir, log_tail_text)
+
+
+def _lookup_next_stage_role(project_dir: Path, current_stage: str | None) -> str | None:
+    """Look up next stage role from pipeline.yaml based on current stage."""
+    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    if not pipeline_file.is_file():
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
+        role_by_name = {s.get("name"): s.get("role") for s in stages if isinstance(s, dict)}
+
+        if current_stage and current_stage in role_by_name:
+            names = list(role_by_name.keys())
+            if current_stage in names:
+                idx = names.index(current_stage)
+                if idx + 1 < len(names):
+                    return role_by_name[names[idx + 1]]
+        elif stages:
+            for s in stages:
+                if isinstance(s, dict) and s.get("role") != "supervisor":
+                    return s.get("role")
+            if stages:
+                return stages[0].get("role") if isinstance(stages[0], dict) else None
+    except (yaml.YAMLError, OSError):
+        pass
+    return None
+
+
+def _read_log_tail(log_file: Path, n: int) -> str | None:
+    """Read last N lines of a log file. Returns None if file is absent."""
+    if not log_file.is_file():
+        return None
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    tail = lines[-n:] if len(lines) > n else lines
+    return "\n".join(tail)
+
+
+def _extract_stage_info_regex(
+    project_dir: Path,
+    log_tail_text: str | None = None,
+) -> tuple[str | None, str | None, str | None, str | None, bool, int | None, str | None]:
+    """Fallback: parse awf-start.out via regex (pre-T4.1 behaviour).
+
+    Kept for backward compatibility with pipelines started before T4.1
+    state writes were added. Prefer read_state() in new code.
     """
     log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
-    log_tail_text = None
+    if log_tail_text is None:
+        log_tail_text = _read_log_tail(log_file, 30)
     current_stage: str | None = None
     last_signal: str | None = None
     checkpoint_pending = False
@@ -44,8 +134,6 @@ def _extract_stage_info(
         try:
             log_text = log_file.read_text(encoding="utf-8", errors="replace")
             lines = log_text.splitlines()
-            if lines:
-                log_tail_text = "\n".join(lines[-30:])
 
             import re
 
@@ -56,9 +144,7 @@ def _extract_stage_info(
             checkpoint_decision_pattern = re.compile(
                 r"BD-36: checkpoint (decision|rejected|timeout)", re.IGNORECASE
             )
-            checkpoint_form_url_pattern = re.compile(
-                r"BD-36: form_url=(\S+)"
-            )
+            checkpoint_form_url_pattern = re.compile(r"BD-36: form_url=(\S+)")
             checkpoint_opened = False
             checkpoint_decided = False
             for line in lines:
@@ -103,33 +189,7 @@ def _extract_stage_info(
         except OSError:
             pass
 
-    # Determine next_stage_role from pipeline.yaml
-    next_stage_role: str | None = None
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
-    if pipeline_file.is_file():
-        try:
-            import yaml
-
-            data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-            stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
-            role_by_name = {s.get("name"): s.get("role") for s in stages if isinstance(s, dict)}
-
-            if current_stage and current_stage in role_by_name:
-                names = list(role_by_name.keys())
-                if current_stage in names:
-                    idx = names.index(current_stage)
-                    if idx + 1 < len(names):
-                        next_stage_role = role_by_name[names[idx + 1]]
-            elif stages:
-                for s in stages:
-                    if isinstance(s, dict) and s.get("role") != "supervisor":
-                        next_stage_role = s.get("role")
-                        break
-                if next_stage_role is None and stages:
-                    next_stage_role = stages[0].get("role") if isinstance(stages[0], dict) else None
-        except (yaml.YAMLError, OSError):
-            pass
-
+    next_stage_role = _lookup_next_stage_role(project_dir, current_stage)
     return current_stage, next_stage_role, last_signal, log_tail_text, checkpoint_pending, checkpoint_port, checkpoint_form_url
 
 

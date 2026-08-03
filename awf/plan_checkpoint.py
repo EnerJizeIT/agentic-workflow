@@ -174,6 +174,15 @@ def run_plan_checkpoint(
         # and surface to supervisor (who tells user where to approve).
         _log(logs_dir, f"BD-36: form_url=file://{html_path}")
         _log(logs_dir, f"BD-36: server_url=http://127.0.0.1:{port}")
+        # T4.1: persist checkpoint state to structured file (no regex needed)
+        from .pipeline_state import write_state
+        write_state(
+            project_dir,
+            logs_dir=logs_dir,
+            checkpoint_pending=True,
+            checkpoint_port=port,
+            checkpoint_form_url=f"file://{html_path}",
+        )
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -196,6 +205,14 @@ def run_plan_checkpoint(
 
         decision = decision_holder["decision"]
         _log(logs_dir, f"BD-36: checkpoint decision for {todo_id}: {decision}")
+        # T4.1: persist checkpoint resolution (no longer pending)
+        from .pipeline_state import write_state
+        write_state(
+            project_dir,
+            logs_dir=logs_dir,
+            checkpoint_pending=False,
+            checkpoint_decision=decision,
+        )
 
         # BUG-3 fix: empty edited_content would silently wipe the TODO.
         # Treat as no-op (approve path) and log the rejection.

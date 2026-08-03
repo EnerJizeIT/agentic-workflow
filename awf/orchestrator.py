@@ -25,6 +25,7 @@ from .agent_stage import (
 )
 from .commit_gate import maybe_commit as _maybe_commit  # noqa: F401
 from .pipeline import Stage, load_stages, resolve_pipeline_file
+from .pipeline_state import clear_state, write_state
 from .plan_progress import (  # noqa: F401
     extract_step_id_from_todo as _extract_step_id_from_todo,
 )
@@ -370,6 +371,18 @@ def run_pipeline(args: Any) -> int:
             print(f"  {s_desc}")
         print("-" * 43)
         _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_kind})")
+        # T4.1: persist stage transition to structured state file
+        # (replaces regex parsing in api.get_status).
+        write_state(
+            project_dir,
+            logs_dir=logs_dir,
+            stage_idx=stage_idx,
+            stage_name=s_name,
+            stage_kind=s_kind,
+            stage_role=s_role,
+            todo_id=current_todo,
+            pipeline_pid=__import__("os").getpid(),
+        )
 
         # --- Supervisor stage ---
         if s_role == "supervisor":
@@ -566,4 +579,6 @@ def run_pipeline(args: Any) -> int:
     _print_progress_report(project_dir, logs_dir)
     print("Run 'awf start' for the next iteration.")
     _log(logs_dir, "Pipeline complete")
+    # T4.1: clear structured state on clean exit (pipeline not running anymore)
+    clear_state(project_dir, logs_dir=logs_dir)
     return 0
