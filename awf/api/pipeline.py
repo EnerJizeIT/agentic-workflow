@@ -222,6 +222,12 @@ def start_pipeline(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    # Dogfood-8: detect BD-36 checkpoint state + build appropriate warning
+    from ..plan_checkpoint import is_checkpoint_enabled
+
+    config_data = cfg_mod.load(project_dir)
+    checkpoint_active = is_checkpoint_enabled(config_data, auto)
+
     if background:
         pid, log_file, _pid_file = start_in_background(
             project_dir,
@@ -230,12 +236,36 @@ def start_pipeline(
             auto=auto,
             timeout=timeout,
         )
+        # Dogfood-8: warn supervisor about BD-36 checkpoint
+        msg = f"awf start running in background (PID {pid})"
+        if checkpoint_active:
+            msg += (
+                ". BD-36 checkpoint ENABLED — after plan stage, HTML form opens "
+                "in user's browser. Poll awf_status in 2-3 sec to get "
+                "checkpoint_form_url, then tell user to approve. DO NOT call "
+                "awf_approve (that's for verify stage only)."
+            )
         return StartResult(
             run_mode="background",
             run_id=pid,
             log_file=str(log_file),
             exit_code=None,
-            message=f"awf start running in background (PID {pid})",
+            message=msg,
+        )
+
+    # Dogfood-8: foreground + checkpoint enabled = incompatible
+    if checkpoint_active:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=1,
+            message=(
+                "Foreground mode incompatible with BD-36 interactive checkpoint "
+                "(stdout conflicts with MCP stdio, form won't display). "
+                "Use background=True (default) or disable checkpoint via "
+                "AWF_PLAN_CHECKPOINT=false env var."
+            ),
         )
 
     from ..orchestrator import run_pipeline

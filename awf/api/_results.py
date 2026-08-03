@@ -219,6 +219,9 @@ class SupervisorContextResult:
     last_signal: str | None
     git_diff_stat: str
     warnings: list[str] = field(default_factory=list)
+    # Dogfood-9: structural trigger for increment planning
+    increment_planning_needed: bool = False
+    final_stage_commit_policy: str | None = None  # on_approved value from last stage
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -140,18 +140,32 @@ def _compute_expected_action(
     checkpoint_pending: bool,
     has_active_todos: bool,
     done_count: int,
+    last_signal: str | None = None,
 ) -> str | None:
     """Dogfood-6: structural determinism. Returns ONE instruction string
     telling supervisor what to do NOW, so they don't have to read execution
     model rules from supervisor.md.
 
     Decision tree based on observable state (not on supervisor remembering rules):
+    - pipeline_running=False + last_signal=REVIEW → write new TODO, restart
     - pipeline_running=False → either start pipeline or create TODO
     - checkpoint_pending=True → wait (user confirms in browser)
     - current_stage_kind='plan' → wait (plan stage, supervisor's plan TODO done)
     - current_stage_kind='execute' → wait (worker running, auto-transition)
     - current_stage_kind='verify' → supervisor must ACK or REVIEW
     """
+    # Dogfood-8: REVIEW signal → pipeline exited, supervisor must restart
+    if (
+        not pipeline_running
+        and last_signal
+        and last_signal.startswith("REVIEW-")
+    ):
+        return (
+            "Pipeline exited after REVIEW rejection. Write the next TODO via "
+            "awf_dispatch_todo (with fixes from the REVIEW), then awf_start "
+            "to resume. The new TODO must address the issues that caused rejection."
+        )
+
     if not pipeline_running:
         if not has_active_todos:
             return (
@@ -166,7 +180,7 @@ def _compute_expected_action(
             "confirmation. Do NOT call awf_approve (that's for verify stage) "
             "and do NOT search list_pending_forms (BD-36 is not there). "
             "Poll awf_status; when checkpoint_pending becomes False, pipeline "
-            "continues."
+            "continues. Tell user the checkpoint_form_url so they can open it."
         )
 
     if current_stage_kind == "plan":
@@ -271,6 +285,73 @@ def _read_role_prohibitions(project_dir: Path, role: str | None) -> str | None:
     return None
 
 
+def _is_plan_stub(plan_md: str) -> bool:
+    """Dogfood-9: detect if plan.md is the init template stub.
+
+    init_project writes a stub with markers:
+      - '# {project_name} — Plan'
+      - 'supervisor заполнит после изучения vision'
+      - OR 'supervisor заполнит'
+      - OR 'Спроси пользователя о контексте'
+
+    apply_increment_plan replaces stub with real plan + frontmatter.
+    No frontmatter + stub markers → True.
+    """
+    if not plan_md:
+        return True
+    # Has frontmatter → already materialized (not stub)
+    if plan_md.lstrip().startswith("---"):
+        return False
+    stub_markers = [
+        "supervisor заполнит",
+        "Спроси пользователя о контексте",
+        "(supervisor заполнит",
+    ]
+    return any(marker in plan_md for marker in stub_markers)
+
+
+def _get_final_stage_commit_policy(project_dir: Path) -> str | None:
+    """Dogfood-9: read on_approved from last stage of pipeline.yaml.
+
+    Returns 'commit_and_next' / 'commit_and_report' / 'next' / None.
+    Supervisor needs to know if auto-commit will fire.
+    """
+    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    if not pipeline_file.is_file():
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
+        if not stages:
+            return None
+        last = stages[-1]
+        if isinstance(last, dict):
+            return last.get("on_approved") or last.get("on_passed")
+    except (yaml.YAMLError, OSError):
+        pass
+    return None
+
+
+def _pipeline_exists(project_dir: Path) -> bool:
+    """Check if pipeline.yaml exists with non-supervisor stages."""
+    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    if not pipeline_file.is_file():
+        return False
+    try:
+        import yaml
+
+        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
+        return any(
+            isinstance(s, dict) and s.get("role") != "supervisor"
+            for s in stages
+        )
+    except (yaml.YAMLError, OSError):
+        return False
+
+
 def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
     """Aggregate everything a supervisor needs in one call.
 
@@ -349,6 +430,16 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
             f"next_stage_role='{next_role}' has no prohibitions section in .md"
         )
 
+    # Dogfood-9: structural triggers for increment planning + commit visibility
+    pipeline_configured = _pipeline_exists(project_dir)
+    increment_planning_needed = (
+        pipeline_configured
+        and not pipeline_running
+        and not status.active_todos  # no active TODOs in flight
+        and _is_plan_stub(plan_md)
+    )
+    final_commit_policy = _get_final_stage_commit_policy(project_dir)
+
     return SupervisorContextResult(
         project_name=project_name,
         project_dir=str(project_dir),
@@ -368,6 +459,8 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         last_signal=last_signal,
         git_diff_stat=git_diff_stat,
         warnings=warnings,
+        increment_planning_needed=increment_planning_needed,
+        final_stage_commit_policy=final_commit_policy,
     )
 
 

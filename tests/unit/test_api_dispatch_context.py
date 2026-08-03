@@ -221,6 +221,80 @@ class TestLoadSupervisorContext:
         result = api.load_supervisor_context(awf_project)
         json.dumps(result.as_dict())
 
+    def test_increment_planning_needed_when_pipeline_and_stub(self, awf_project):
+        """Dogfood-9: increment_planning_needed=True when pipeline exists
+        but plan.md is init stub. Supervisor must propose variants."""
+        # Add pipeline.yaml with non-supervisor stages
+        pipelines = awf_project / ".agentic" / "pipelines"
+        pipelines.mkdir(exist_ok=True)
+        (pipelines / "default.yaml").write_text(yaml.safe_dump({
+            "stages": [
+                {"name": "plan", "role": "supervisor"},
+                {"name": "work", "role": "developer"},
+                {"name": "verify", "role": "supervisor"},
+            ],
+        }))
+        # plan.md is still init stub from init_project
+
+        result = api.load_supervisor_context(awf_project)
+        assert result.increment_planning_needed is True, (
+            "Supervisor should propose increment variants before dispatching TODO"
+        )
+
+    def test_increment_planning_not_needed_after_apply(self, awf_project):
+        """After apply_increment_plan → plan.md has frontmatter → not stub."""
+        pipelines = awf_project / ".agentic" / "pipelines"
+        pipelines.mkdir(exist_ok=True)
+        (pipelines / "default.yaml").write_text(yaml.safe_dump({
+            "stages": [
+                {"name": "plan", "role": "supervisor"},
+                {"name": "work", "role": "developer"},
+            ],
+        }))
+        api.apply_increment_plan(awf_project, "# Real plan\n\nActual content")
+
+        result = api.load_supervisor_context(awf_project)
+        assert result.increment_planning_needed is False
+
+    def test_increment_planning_not_needed_without_pipeline(self, awf_project):
+        """No pipeline.yaml → no increment planning needed."""
+        result = api.load_supervisor_context(awf_project)
+        assert result.increment_planning_needed is False
+
+    def test_increment_planning_not_needed_with_active_todo(self, awf_project):
+        """Active TODO in flight → don't interrupt with increment planning."""
+        pipelines = awf_project / ".agentic" / "pipelines"
+        pipelines.mkdir(exist_ok=True)
+        (pipelines / "default.yaml").write_text(yaml.safe_dump({
+            "stages": [{"name": "work", "role": "developer"}],
+        }))
+        inbox = awf_project / ".agentic" / "inbox"
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# active task")
+
+        result = api.load_supervisor_context(awf_project)
+        assert result.increment_planning_needed is False
+
+    def test_final_stage_commit_policy_visible(self, awf_project):
+        """Dogfood-9: final_stage_commit_policy shows if auto-commit fires."""
+        pipelines = awf_project / ".agentic" / "pipelines"
+        pipelines.mkdir(exist_ok=True)
+        (pipelines / "default.yaml").write_text(yaml.safe_dump({
+            "stages": [
+                {"name": "plan", "role": "supervisor"},
+                {"name": "work", "role": "developer"},
+                {"name": "verify", "role": "supervisor", "on_approved": "commit_and_next"},
+            ],
+        }))
+
+        result = api.load_supervisor_context(awf_project)
+        assert result.final_stage_commit_policy == "commit_and_next"
+
+    def test_final_stage_commit_policy_none_without_pipeline(self, awf_project):
+        """No pipeline → no commit policy."""
+        result = api.load_supervisor_context(awf_project)
+        assert result.final_stage_commit_policy is None
+
 
 # ─── _extract_stage_info (dogfood-3 fix) ────────────────────────────────
 

@@ -311,6 +311,7 @@ def get_status(project_dir: Path) -> StatusResult:
             checkpoint_pending=checkpoint_pending,
             has_active_todos=bool(active_ids),
             done_count=done_count,
+            last_signal=last_signal,
         )
 
     return StatusResult(
