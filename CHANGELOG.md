@@ -5,6 +5,50 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### DASH — Pipeline dashboard + supervisor wake-up
+
+Scenario 4 (long-running monitoring) — complete. Three phases:
+
+**Phase 1: Prototype** — standalone HTML mock (approved design):
+dark theme (VS Code palette), CSS animations (breathe, pulse-ring,
+slideIn, spin-border), progressive disclosure (header → pipeline flow →
+expandable cards: events stream, handoffs, task progress).
+
+**Phase 2: Dashboard integration** (`37e5870`):
+- `awf/templates/dashboard.html.j2` — Jinja2 template (auto-refresh 5s)
+- `awf/api/dashboard.py` — `generate_dashboard(project_dir)` reads T4.1
+  state + pipeline.yaml + handoffs + log events + task progress → renders
+- Orchestrator hook: regenerate after each `write_state()` (stage transition)
+- MCP tool `awf_open_pipeline_dashboard(project_dir)` — supervisor asks
+  user before opening
+
+**Phase 3: Supervisor wake-up** (`0d9d99c`):
+- `awf/api/wait_event.py` — `wait_for_event(project_dir, timeout=120)`
+  Single blocking call replaces sleep+status polling loops. Returns
+  immediately on: verify stage reached, BLOCKED signal, checkpoint
+  pending, pipeline done, or timeout.
+- MCP tool `awf_wait_for_event(project_dir?, timeout=120)` — ONE tool
+  call with ONE response vs N sleep+status cycles.
+- Token savings: supervisor burns tokens on verify work, not idle polling.
+
+**Also in this release:**
+- T4.1 Pipeline state persistence — `.agentic/state/current.yaml` replaces
+  regex log parsing (structured source of truth, regex as fallback).
+- Dogfood-9 structural triggers: `increment_planning_needed` flag,
+  `final_stage_commit_policy` visibility, REVIEW restart guidance,
+  foreground+BD-36 incompatibility warning.
+- Dogfood-8 A1 commit isolation: untracked files now included in auto-commit.
+- Dogfood-7 Increment planning: `awf_open_increment_planning_form` — user
+  picks decomposition variant, persisted to plan.md.
+- Quick wins: T1.6 _reset_orphans removed, T2.8 propose() → Enum,
+  T3.4 _ZONES extracted to data file.
+- QA fixes: atomic writes (T2.6), DB connection leak, test false-positives
+  documented.
+
+22 MCP tools total (5 UI + 17 awf). 954 tests. ruff clean.
+
+## [Unreleased]
+
 ### MCP-MIGRATION — awf как pure MCP toolkit под opencode
 
 Architectural pivot: awf больше НЕ позиционируется как standalone CLI.

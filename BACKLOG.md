@@ -273,15 +273,15 @@ collapses to "1 effective agent + N rubber-stamps".
 |---|---|---|
 | **2 · Decision fork** | Runtime ad-hoc forms (в любом месте pipeline). Шаблон `decision-tree.html.j2`. | Low |
 | **3 · Blockage recovery** | Шаблон `blockage-recovery.html.j2`. Multi-step flow (проблема → варианты → выбор → комментарий). | Medium |
-| **4 · Long-running monitoring** | **IN PROGRESS** — см. DASH ниже. | Medium |
+| **4 · Long-running monitoring** | ✅ DONE — см. DASH ниже. | Medium |
 | **5 · Priority planning** | Drag-and-drop UI, новый тип template `priority-matrix.html.j2`. | High |
 | **6 · Onboarding wizard** | Multi-form state, conditional logic между формами. | High |
 
 ---
 
-## 🟢 Active · DASH — Pipeline dashboard + supervisor wake-up
+## ✅ Done · DASH — Pipeline dashboard + supervisor wake-up
 
-**Status:** IN PROGRESS (brainstorming + prototype phase). **Priority:** HIGH.
+**Status:** DONE. **Priority:** HIGH.
 
 **Цель:** Снять supervisor overhead (polling) + дать пользователю живой
 визуальный опыт pipeline execution.
@@ -295,7 +295,7 @@ user'а → user видит live прогресс → supervisor автомат�
 
 ### Фаза 1 · Прототип dashboard (design-first)
 
-**Status:** TODO.
+**Status:** DONE (`d8e306c`). Прототип одобрен пользователем.
 
 Standalone HTML prototype с mock data — не integrated с awf. Цель: собрать
 визуальный язык, iterate по дизайну перед кодингом integration.
@@ -348,7 +348,7 @@ events:
 
 ### Фаза 2 · Integrate с awf
 
-**Status:** TODO (после утверждения прототипа).
+**Status:** DONE (`37e5870`).
 
 - `agent_workflow_ui/.../default_templates/pipeline-dashboard.html.j2` — Jinja2 template на основе прототипа
 - `awf/api/dashboard.py` — `generate_dashboard(project_dir)` → read state (T4.1) + pipeline.yaml + handoffs + log tail → render HTML
@@ -368,7 +368,9 @@ events:
 
 ### Фаза 3 · Supervisor wake-up (убрать polling совсем)
 
-**Status:** TODO (после Фазы 2).
+**Status:** DONE (`0d9d99c`). Реализован `awf_wait_for_event` — single
+blocking call заменяет sleep+status polling. Supervisor делает ONE tool
+call вместо N циклов. Token savings: 1 response vs N.
 
 **Цель:** supervisor вообще не делает `sleep + awf_status` циклы. Pipeline
 автоматически «будит» supervisor когда:

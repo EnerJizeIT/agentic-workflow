@@ -194,31 +194,24 @@ either:
   (c) split: system-analyst writes requirements → developer/architect
       implements.
 
-### Step 5 · Create TASK_READY signal
+### Step 5 · Dispatch TODO (atomic)
 
-1. Write `.agentic/inbox/TODO-{NNNN}.md`.
-2. Write `.agentic/inbox/TODO-{NNNN}.ready`:
-   ```yaml
-   signal: TASK_READY
-   task_id: TODO-{NNNN}
-   step: "<step name>"
-   priority: high|medium|low
-   created_by: supervisor
-   created_at: <ISO timestamp>
-   ```
+Use `awf_dispatch_todo(project_dir, content, role=...)` — writes TODO-NNNN.md
++ creates BASELINE snapshot + writes .ready signal in ONE call. Replaces
+manual 3-step workflow.
 
-**The `.md` file must be created BEFORE the `.ready` file.**
+### Step 6 · Start pipeline + wait
 
-### Step 6 · Wait for agent signal
+1. `awf_start(project_dir, background=True)` — pipeline launches detached.
+2. Ask user: "Pipeline started. Open live dashboard in browser?"
+3. If yes → `awf_open_pipeline_dashboard(project_dir)`.
+4. **Do NOT poll with sleep+awf_status.** Instead:
+   `awf_wait_for_event(project_dir, timeout=120)` — ONE call blocks up to
+   2 min, returns when verify stage reached / BLOCKED / checkpoint / done.
+   If timeout → call again.
 
-The agent will create one of:
-- `.agentic/outbox/DONE-TODO-{NNNN}.md` + `.ready` — success.
-- `.agentic/outbox/BLOCKED-TODO-{NNNN}.md` + `.ready` — blocked.
-
-**While waiting:** You can monitor agent progress:
-- `awf status` — shows progress for active tasks.
-- `.agentic/outbox/PROGRESS-{NNNN}.md` — append-only log of completed tasks.
-- The agent writes to this file after each task. Read it to see what's done and what's in progress.
+Pipeline auto-regenerates dashboard after each stage transition — user
+sees live progress without supervisor intervention.
 
 ### Step 7 · Verify result
 

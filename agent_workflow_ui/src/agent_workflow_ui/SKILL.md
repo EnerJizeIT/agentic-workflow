@@ -13,11 +13,23 @@ use `awf_open_project_setup_form(project_dir)` — dedicated shortcut tool.
 Plugin auto-populates roles/models/skills. Do NOT call `open_form`
 directly for project setup, do NOT study template structure.
 
+**For increment planning** (choosing decomposition strategy):
+use `awf_open_increment_planning_form(variants, project_dir)` — user
+picks from supervisor-generated variants.
+
+**For pipeline monitoring** (watching agents work):
+use `awf_open_pipeline_dashboard(project_dir)` — live dashboard with
+auto-refresh 5s. Ask user before opening.
+
+**For supervisor wake-up** (no more polling):
+use `awf_wait_for_event(project_dir, timeout=120)` — ONE call blocks
+until verify/blocked/checkpoint/done. Replaces sleep+status loops.
+
 Call `open_form` directly when:
 
 - **A file upload** is needed (ТЗ, product-vision, custom role `.md`).
 - **Ad-hoc decision forks** with custom template you created.
-- Monitoring a **long-running pipeline** (→ dashboard, future scope).
+- Monitoring a **long-running pipeline** (→ dashboard, see above).
 
 ## When NOT to use a form (use chat instead)
 
