@@ -54,6 +54,8 @@ class StatusResult:
     expected_action: str | None = None  # what supervisor should do NOW
     checkpoint_pending: bool = False  # BD-36 form open in user's browser
     checkpoint_port: int | None = None  # for debugging / direct access
+    # Dogfood-8: form URL supervisor can tell user about
+    checkpoint_form_url: str | None = None  # file://path or http://127.0.0.1:PORT
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

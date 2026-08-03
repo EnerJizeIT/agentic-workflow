@@ -248,7 +248,7 @@ class TestExtractStageInfo:
             "BD-36: checkpoint decision=approve",
             "  Stage 2/3: agent-system-analyst (agent-system-analyst :: execute)",
         ])
-        cur, _nxt, _sig, _, _cp, _cpp = _extract_stage_info(awf_project)
+        cur, _nxt, _sig, _, _cp, _cpp, _cfurl = _extract_stage_info(awf_project)
         assert cur == "agent-system-analyst"
 
     def test_extracts_last_signal(self, awf_project):
@@ -260,7 +260,7 @@ class TestExtractStageInfo:
             "BD-30: interactive supervisor signal detected: TODO-0001",
             "  Stage 2/3: agent-system-analyst (... :: execute)",
         ])
-        _cur, _nxt, sig, _, _cp, _cpp = _extract_stage_info(awf_project)
+        _cur, _nxt, sig, _, _cp, _cpp, _cfurl = _extract_stage_info(awf_project)
         assert sig == "TODO-0001"
 
     def test_extracts_done_signal(self, awf_project):
@@ -270,7 +270,7 @@ class TestExtractStageInfo:
             "  Stage 2/3: agent-system-analyst (... :: execute)",
             "Signal received: DONE-TODO-0001.ready",
         ])
-        _cur, _nxt, sig, _, _cp, _cpp = _extract_stage_info(awf_project)
+        _cur, _nxt, sig, _, _cp, _cpp, _cfurl = _extract_stage_info(awf_project)
         assert sig == "DONE-TODO-0001"
 
     def test_extracts_blocked_signal(self, awf_project):
@@ -280,14 +280,14 @@ class TestExtractStageInfo:
             "  Stage 2/3: agent-system-analyst (... :: execute)",
             "BLOCKED signal detected: BLOCKED-TODO-0001.ready",
         ])
-        _cur, _nxt, sig, _, _cp, _cpp = _extract_stage_info(awf_project)
+        _cur, _nxt, sig, _, _cp, _cpp, _cfurl = _extract_stage_info(awf_project)
         assert sig == "BLOCKED-TODO-0001"
 
     def test_no_log_returns_none(self, awf_project):
         """No log file → all None, no crash."""
         from awf.api.context import _extract_stage_info
 
-        cur, nxt, sig, log_tail, _cp, _cpp = _extract_stage_info(awf_project)
+        cur, nxt, sig, log_tail, _cp, _cpp, _cfurl = _extract_stage_info(awf_project)
         assert cur is None
         assert sig is None
         assert log_tail is None
@@ -298,7 +298,35 @@ class TestExtractStageInfo:
 
         lines = [f"line {i}" for i in range(50)]
         self._write_log(awf_project, lines)
-        _cur, _nxt, _sig, log_tail, _cp, _cpp = _extract_stage_info(awf_project)
+        _cur, _nxt, _sig, log_tail, _cp, _cpp, _cfurl = _extract_stage_info(awf_project)
         assert log_tail is not None
         assert "line 49" in log_tail
         assert "line 10" not in log_tail  # truncated
+
+    def test_extracts_checkpoint_form_url(self, awf_project):
+        """Dogfood-8: form_url extracted from log so supervisor can show it to user."""
+        from awf.api.context import _extract_stage_info
+
+        self._write_log(awf_project, [
+            "  Stage 1/3: plan (supervisor :: plan)",
+            "BD-36: checkpoint opened for TODO-0001 on port 42123",
+            "BD-36: form_url=file:///tmp/awf-checkpoint-TODO-0001-abc.html",
+            "BD-36: server_url=http://127.0.0.1:42123",
+        ])
+        _cur, _nxt, _sig, _lt, cp_pending, cp_port, cp_url = _extract_stage_info(awf_project)
+        assert cp_pending is True
+        assert cp_port == 42123
+        assert cp_url == "file:///tmp/awf-checkpoint-TODO-0001-abc.html"
+
+    def test_checkpoint_form_url_cleared_after_decision(self, awf_project):
+        """After approve/edit/reject — checkpoint_pending=False (form_url may persist in log history)."""
+        from awf.api.context import _extract_stage_info
+
+        self._write_log(awf_project, [
+            "  Stage 1/3: plan (supervisor :: plan)",
+            "BD-36: checkpoint opened for TODO-0001 on port 42123",
+            "BD-36: form_url=file:///tmp/awf-checkpoint-TODO-0001-abc.html",
+            "BD-36: checkpoint decision=approve",
+        ])
+        _cur, _nxt, _sig, _lt, cp_pending, _cp_port, _cp_url = _extract_stage_info(awf_project)
+        assert cp_pending is False

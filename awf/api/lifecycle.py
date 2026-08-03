@@ -286,6 +286,7 @@ def get_status(project_dir: Path) -> StatusResult:
     expected_action: str | None = None
     checkpoint_pending = False
     checkpoint_port: int | None = None
+    checkpoint_form_url: str | None = None
     if pipeline_running:
         from .context import (
             _compute_expected_action,
@@ -300,6 +301,7 @@ def get_status(project_dir: Path) -> StatusResult:
             _log_tail_alt,
             checkpoint_pending,
             checkpoint_port,
+            checkpoint_form_url,
         ) = _extract_stage_info(project_dir)
         log_tail = log_tail or _log_tail_alt
         current_stage_kind = _compute_stage_kind(project_dir, current_stage_name)
@@ -329,6 +331,7 @@ def get_status(project_dir: Path) -> StatusResult:
         expected_action=expected_action,
         checkpoint_pending=checkpoint_pending,
         checkpoint_port=checkpoint_port,
+        checkpoint_form_url=checkpoint_form_url,
     )
 
 

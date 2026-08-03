@@ -27,9 +27,22 @@ def _files_changed_since_baseline(
     """A1 fix: list files changed since baseline SHA.
 
     Returns relative paths (POSIX). Empty list on error or no baseline.
+
+    Dogfood-8 fix: previously only ``git diff --name-only`` was used —
+    which shows **modified tracked files only**. New files created by
+    worker (untracked in git) were silently excluded from commit. In
+    real dogfood (ses_038a07341ffeKO2qkdB8MWCHA1), auto-commit included
+    only ``.gitignore`` while 35 source files stayed untracked.
+
+    Now combines:
+    1. ``git diff --name-only <sha>`` — modified tracked files since baseline.
+    2. ``git ls-files --others --exclude-standard`` — new untracked files
+       (respects .gitignore — awf runtime dirs stay excluded).
     """
     if not baseline_sha:
         return []
+
+    # 1. Modified tracked files
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", baseline_sha],
@@ -39,9 +52,6 @@ def _files_changed_since_baseline(
             check=False,
         )
         if result.returncode != 0:
-            # M4 fix: log the underlying git error so user understands
-            # why no files were committed (instead of a silent "no changes"
-            # message that misleads when the baseline SHA is invalid).
             logs_dir = project_dir / ".agentic" / "logs"
             if logs_dir.is_dir():
                 _log(
@@ -50,9 +60,37 @@ def _files_changed_since_baseline(
                     f"(rc={result.returncode}): {result.stderr.strip()}",
                 )
             return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        modified = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     except (subprocess.SubprocessError, OSError):
         return []
+
+    # 2. Untracked files (new files worker created since baseline)
+    try:
+        untracked_result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if untracked_result.returncode == 0:
+            untracked = [
+                line.strip() for line in untracked_result.stdout.splitlines() if line.strip()
+            ]
+        else:
+            untracked = []
+    except (subprocess.SubprocessError, OSError):
+        untracked = []
+
+    # Combine + dedupe (a file could be in both lists if it was deleted
+    # then re-created). Order: modified first, then new untracked.
+    seen: set[str] = set()
+    combined: list[str] = []
+    for path in [*modified, *untracked]:
+        if path and path not in seen:
+            seen.add(path)
+            combined.append(path)
+    return combined
 
 
 def _commit_specific_files(

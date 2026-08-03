@@ -170,6 +170,10 @@ def run_plan_checkpoint(
             _log(logs_dir, f"BD-36: webbrowser.open failed: {e} — open URL manually")
 
         _log(logs_dir, f"BD-36: checkpoint opened for {todo_id} on port {port}")
+        # Dogfood-8: also log form URL so api.get_status can extract it
+        # and surface to supervisor (who tells user where to approve).
+        _log(logs_dir, f"BD-36: form_url=file://{html_path}")
+        _log(logs_dir, f"BD-36: server_url=http://127.0.0.1:{port}")
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

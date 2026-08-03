@@ -19,17 +19,18 @@ from .lifecycle import get_status
 
 def _extract_stage_info(
     project_dir: Path,
-) -> tuple[str | None, str | None, str | None, str | None, bool, int | None]:
+) -> tuple[str | None, str | None, str | None, str | None, bool, int | None, str | None]:
     """Read pipeline.yaml + log_tail to figure out current state.
 
     Returns ``(current_stage_name, next_stage_role, last_signal, log_tail,
-    checkpoint_pending, checkpoint_port)``.
+    checkpoint_pending, checkpoint_port, checkpoint_form_url)``.
 
     - ``current_stage_name`` from last 'Stage N/M: <name>' line in awf-start.out.
     - ``next_stage_role`` = role of stage after current (from pipeline.yaml).
     - ``last_signal`` = last DONE/BLOCKED/REVIEW/TODO/ACK found in log.
     - ``checkpoint_pending`` = True if BD-36 checkpoint opened AND no decision yet.
     - ``checkpoint_port`` = port from 'BD-36: checkpoint opened ... on port N'.
+    - ``checkpoint_form_url`` = file:// URL from 'BD-36: form_url=file://...'
     """
     log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
     log_tail_text = None
@@ -37,6 +38,7 @@ def _extract_stage_info(
     last_signal: str | None = None
     checkpoint_pending = False
     checkpoint_port: int | None = None
+    checkpoint_form_url: str | None = None
 
     if log_file.is_file():
         try:
@@ -45,8 +47,6 @@ def _extract_stage_info(
             if lines:
                 log_tail_text = "\n".join(lines[-30:])
 
-            # Scan log for stage transitions. Format (from orchestrator.py:361):
-            #   "  Stage 1/3: agent-system-analyst (agent-system-analyst :: execute)"
             import re
 
             stage_pattern = re.compile(r"Stage\s+\d+/\d+:\s+(\S+)")
@@ -56,13 +56,15 @@ def _extract_stage_info(
             checkpoint_decision_pattern = re.compile(
                 r"BD-36: checkpoint (decision|rejected|timeout)", re.IGNORECASE
             )
+            checkpoint_form_url_pattern = re.compile(
+                r"BD-36: form_url=(\S+)"
+            )
             checkpoint_opened = False
             checkpoint_decided = False
             for line in lines:
                 m = stage_pattern.search(line)
                 if m:
                     current_stage = m.group(1)
-                    # New stage starting — reset checkpoint state for THIS stage
                     checkpoint_opened = False
                     checkpoint_decided = False
                     continue
@@ -76,7 +78,9 @@ def _extract_stage_info(
                             pass
                 elif checkpoint_decision_pattern.search(line):
                     checkpoint_decided = True
-                # Legacy markers
+                fm = checkpoint_form_url_pattern.search(line)
+                if fm:
+                    checkpoint_form_url = fm.group(1)
                 for marker in ("=== stage:", "Pipeline stage:", "Entering stage:"):
                     if marker in line:
                         idx = line.find(marker) + len(marker)
@@ -126,7 +130,7 @@ def _extract_stage_info(
         except (yaml.YAMLError, OSError):
             pass
 
-    return current_stage, next_stage_role, last_signal, log_tail_text, checkpoint_pending, checkpoint_port
+    return current_stage, next_stage_role, last_signal, log_tail_text, checkpoint_pending, checkpoint_port, checkpoint_form_url
 
 
 def _compute_expected_action(
@@ -316,7 +320,7 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
     pipeline_running, pipeline_pid, _log_tail_bg = check_pipeline_running(project_dir)
 
     # Stage info from logs + pipeline.yaml
-    current_stage, next_role, last_signal, log_tail_stage, _cp, _cpp = _extract_stage_info(project_dir)
+    current_stage, next_role, last_signal, log_tail_stage, _cp, _cpp, _cfurl = _extract_stage_info(project_dir)
     # Prefer log_tail from check_pipeline_running (more recent)
     log_tail = _log_tail_bg or log_tail_stage
 
