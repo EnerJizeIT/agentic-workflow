@@ -1,0 +1,41 @@
+# Role → Zone mapping for BD-31 disambiguation analysis.
+#
+# Ordered by SPECIFICITY — most specific first. _infer_zone checks
+# slug BEFORE content head to avoid false matches (e.g. system-analyst
+# skill.md contains "implement features" in body, but slug
+# "system-analyst" must win → "writes requirements").
+#
+# Keys are matched as substrings (case-insensitive) against role slug
+# first, then against the first 600 chars of role .md content.
+# Values are zone labels used in overlap detection + disambiguation.
+#
+# To extend: add new (substring → zone) pairs at the bottom. No code
+# changes required — _load_role_zones() reads this file at runtime.
+# Fallback to built-in defaults if file missing/corrupt.
+
+system-analyst: writes requirements / vision
+system analyst: writes requirements / vision
+analyst: writes requirements / vision
+аналитик: writes requirements / vision
+
+architect: designs system structure
+
+refactor: improves structure without behavior change
+debug: isolates bugs
+security: security review
+performance: performance investigation
+
+test-automator: writes/runs tests
+tester: writes/runs tests
+тест: writes/runs tests
+
+project-auditor: verifies code health / project quality
+audit: verifies code health / project quality
+
+qa-review: verifies implementation against requirements
+qa: verifies implementation against requirements
+review: verifies implementation against requirements
+
+developer: writes code
+разработчик: writes code
+implement: writes code

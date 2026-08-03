@@ -1,31 +1,82 @@
-"""Propose and apply changes to ~/.config/opencode/opencode.json."""
+"""Propose and apply changes to ``~/.config/opencode/opencode.json``.
+
+T2.8 fix: ``propose()`` was returning stringly-typed prefixes
+(``"ERR:"/"NOTHING:"/"PROPOSE:"``) parsed by caller via ``startswith``.
+Replaced with :class:`Proposal` dataclass + :class:`ProposalKind` enum.
+"""
 from __future__ import annotations
 
+import enum
 import json
 import shutil
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ._atomic import atomic_write_text
 
 
-def propose(cfg_path: str, roles: list[str], model: str) -> str:
-    """Return a human-readable description of what would change.
+class ProposalKind(enum.Enum):
+    """What :func:`propose` concluded about the requested change."""
 
-    Returns "NOTHING: ..." when no change is needed, "PROPOSE: ..." when there
-    are pending changes, or "ERR: ..." on error.
+    NOTHING = "nothing"  # all requested roles already present
+    PROPOSE = "propose"  # there are changes to apply
+    ERR = "err"  # precondition failed (file unreadable, schema wrong)
+
+
+@dataclass
+class Proposal:
+    """Typed result of :func:`propose` — replaces stringly-typed prefixes.
+
+    Caller checks ``kind`` instead of ``startswith("PROPOSE:")`` — type-safe,
+    exhaustiveness-checked by linter on Enum match.
+    """
+
+    kind: ProposalKind
+    detail: str = ""  # human-readable summary (PROPOSE: change list, ERR: reason)
+    to_add: list[str] = field(default_factory=list)
+    to_update: list[str] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        """Back-compat: render as PREFIX:detail string for legacy callers."""
+        prefix = self.kind.value.upper()
+        if self.detail:
+            return f"{prefix}:{self.detail}"
+        return f"{prefix}:"
+
+
+def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
+    """Inspect opencode.json and return what would change.
+
+    Returns :class:`Proposal` with ``kind`` indicating outcome:
+    - :attr:`ProposalKind.NOTHING` — all roles already present with matching model.
+    - :attr:`ProposalKind.PROPOSE` — there are additions or model updates.
+    - :attr:`ProposalKind.ERR` — file unreadable or schema wrong.
+
+    The legacy string-prefix format is preserved via ``Proposal.__str__``
+    (renders as ``"NOTHING:..."`` etc.) so old ``startswith`` callers keep
+    working — but new callers should check ``proposal.kind`` directly.
     """
     try:
         with open(cfg_path, encoding="utf-8") as f:
             d = json.load(f)
     except Exception as e:
-        return f"ERR:cannot read {cfg_path}: {e}"
+        return Proposal(
+            kind=ProposalKind.ERR,
+            detail=f"cannot read {cfg_path}: {e}",
+        )
 
     agents = d.get("agent")
     if agents is None:
-        return f"ERR:no 'agent' key in {cfg_path}"
+        return Proposal(
+            kind=ProposalKind.ERR,
+            detail=f"no 'agent' key in {cfg_path}",
+        )
     if not isinstance(agents, dict):
-        return "ERR:'agent' is not an object"
+        return Proposal(
+            kind=ProposalKind.ERR,
+            detail="'agent' is not an object",
+        )
 
     to_add: list[str] = []
     to_update: list[str] = []
@@ -38,7 +89,10 @@ def propose(cfg_path: str, roles: list[str], model: str) -> str:
             to_update.append(f"{r}: model {cur.get('model')!r} -> {model!r}")
 
     if not to_add and not to_update:
-        return f"NOTHING: all of {', '.join(roles)} already present."
+        return Proposal(
+            kind=ProposalKind.NOTHING,
+            detail=f"all of {', '.join(roles)} already present.",
+        )
 
     lines: list[str] = []
     if to_add:
@@ -51,7 +105,12 @@ def propose(cfg_path: str, roles: list[str], model: str) -> str:
         lines.append(f"  model: {model}")
     else:
         lines.append("  model: <blank> — agent entries will have empty model, edit them manually")
-    return "PROPOSE:\n" + "\n".join(lines)
+    return Proposal(
+        kind=ProposalKind.PROPOSE,
+        detail="\n" + "\n".join(lines),
+        to_add=to_add,
+        to_update=to_update,
+    )
 
 
 def apply(cfg_path: str, roles: list[str], model: str) -> str:
@@ -72,9 +131,6 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
     updated: list[str] = []
     for r in roles:
         cur = agents.get(r)
-        # M5 fix: only include "model" key if model is non-empty.
-        # Empty string in opencode.json could be interpreted as 'use model
-        # with empty name' rather than 'no model specified'.
         agent_def: dict = {"description": f"awf {r} agent"}
         if model:
             agent_def["model"] = model
@@ -87,7 +143,7 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
 
     if added or updated:
         # T2.6 fix: atomic write — crash mid-write no longer corrupts
-        # opencode.json. Was: direct open(..., "w") + json.dump.
+        # opencode.json.
         atomic_write_text(
             cfg,
             json.dumps(d, indent=2, ensure_ascii=False),

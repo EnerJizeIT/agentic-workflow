@@ -113,50 +113,66 @@ def _read_pipeline_roles(project_dir: Path, config: dict) -> list[str]:
     return [s.role for s in stages if s.role != "supervisor"]
 
 
-_ZONES_OF_RESPONSIBILITY = {
-    # role-substring → zone label.
-    # BD-31a fix: ordered by SPECIFICITY — most specific first.
-    # _infer_zone checks slug BEFORE content head to avoid false matches
-    # (e.g. system-analyst skill.md contains "implement features" in body,
-    # but slug "system-analyst" must win → "writes requirements").
+# Default role → zone mapping. T3.4 extraction: data lives in
+# ``awf/data/role_zones.yaml`` (loaded once at first use, cached).
+# Fallback to small built-in if data file missing/corrupt.
+_DEFAULT_ZONES_FALLBACK: dict[str, str] = {
     "system-analyst": "writes requirements / vision",
-    "system analyst": "writes requirements / vision",
-    "analyst": "writes requirements / vision",
-    "аналитик": "writes requirements / vision",
     "architect": "designs system structure",
-    "refactor": "improves structure without behavior change",
-    "debug": "isolates bugs",
-    "security": "security review",
-    "performance": "performance investigation",
-    "test-automator": "writes/runs tests",
-    "tester": "writes/runs tests",
-    "тест": "writes/runs tests",
-    "project-auditor": "verifies code health / project quality",
-    "audit": "verifies code health / project quality",
-    "qa-review": "verifies implementation against requirements",
-    "qa": "verifies implementation against requirements",
-    "review": "verifies implementation against requirements",
     "developer": "writes code",
-    "разработчик": "writes code",
-    "implement": "writes code",
+    "qa": "verifies implementation against requirements",
+    "audit": "verifies code health / project quality",
 }
+
+_ZONES_CACHE: dict[str, str] | None = None
+
+
+def _load_role_zones() -> dict[str, str]:
+    """T3.4: load role → zone mapping from ``awf/data/role_zones.yaml``.
+
+    Loaded once, cached in module global. Falls back to
+    ``_DEFAULT_ZONES_FALLBACK`` if file missing or YAML error.
+    Users extend by editing the .yaml — no code changes required.
+    """
+    global _ZONES_CACHE
+    if _ZONES_CACHE is not None:
+        return _ZONES_CACHE
+
+    from pathlib import Path
+
+    import yaml
+
+    data_file = Path(__file__).resolve().parent.parent / "data" / "role_zones.yaml"
+    try:
+        loaded = yaml.safe_load(data_file.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            # Normalize all keys/values to str
+            zones = {str(k): str(v) for k, v in loaded.items()}
+        else:
+            zones = dict(_DEFAULT_ZONES_FALLBACK)
+    except (OSError, yaml.YAMLError):
+        zones = dict(_DEFAULT_ZONES_FALLBACK)
+
+    _ZONES_CACHE = zones
+    return zones
 
 
 def _infer_zone(role_slug: str, content: str) -> str:
     """Best-effort guess of a role's zone from its slug + content head.
 
-    BD-31a fix: slug match takes PRIORITY over content match. Previously,
-    system-analyst matched 'implement' from skill body text before reaching
-    'analyst' key, classifying it as 'writes code' instead of requirements.
+    BD-31a fix: slug match takes PRIORITY over content match.
+    T3.4: zones loaded from ``awf/data/role_zones.yaml`` (extensible
+    without code changes).
     """
+    zones = _load_role_zones()
     slug_lower = role_slug.lower()
     # Pass 1: slug-only (highest confidence)
-    for needle, zone in _ZONES_OF_RESPONSIBILITY.items():
+    for needle, zone in zones.items():
         if needle in slug_lower:
             return zone
     # Pass 2: content head (fallback for roles with generic slug)
     head = content[:600].lower()
-    for needle, zone in _ZONES_OF_RESPONSIBILITY.items():
+    for needle, zone in zones.items():
         if needle in head:
             return zone
     return "generalist (undefined zone)"

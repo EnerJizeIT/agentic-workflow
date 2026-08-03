@@ -437,11 +437,11 @@ def reset_runtime(
     if not agentic.is_dir():
         return ResetResult(cleaned_dirs=[], orphan_ids=[], mode="noop")
 
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-
     if orphans:
-        return _reset_orphans(inbox, outbox)
+        # T1.6: use two-step protocol (list + remove) instead of legacy
+        # _reset_orphans one-shot. Single computation path, no duplication.
+        ids = list_orphans(project_dir)
+        return remove_orphans(project_dir, ids)
 
     if full or not tasks_only:
         dirs_to_clean = ["inbox", "outbox", "context", "logs", "reports"]
@@ -462,25 +462,6 @@ def reset_runtime(
             cleaned.append(d)
 
     return ResetResult(cleaned_dirs=cleaned, orphan_ids=[], mode=mode)
-
-
-def _reset_orphans(inbox: Path, outbox: Path) -> ResetResult:
-    """Internal: list + remove orphans in one step.
-
-    Kept for backward compat with reset_runtime(orphans=True).
-    """
-    active_ids = todos.list_active_todos(inbox, outbox)
-    orphan_ids = [tid for tid in active_ids if not todos.has_progress(outbox, tid)]
-
-    for tid in orphan_ids:
-        ready = inbox / f"{tid}.ready"
-        md = inbox / f"{tid}.md"
-        if ready.exists():
-            ready.unlink()
-        if md.exists():
-            md.unlink()
-
-    return ResetResult(cleaned_dirs=[], orphan_ids=orphan_ids, mode="orphans")
 
 
 # ─── list_orphans / remove_orphans (two-step protocol) ──────────────────

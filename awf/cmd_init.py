@@ -127,20 +127,22 @@ def _offer_opencode_agent_setup(worker_model: str) -> None:
         return
 
     proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
-    if proposal.startswith("ERR:"):
+    # T2.8: typed Proposal instead of stringly-typed startswith checks.
+    # __str__ keeps legacy format for prints, but branching on .kind is
+    # exhaustiveness-checked and self-documenting.
+    if proposal.kind is opencode_agents.ProposalKind.ERR:
         print()
         print(f"NOTE: cannot propose agent changes — {proposal}")
         print(f"      Add 'worker' manually to {oc_cfg}.")
         return
-    if proposal.startswith("NOTHING:"):
+    if proposal.kind is opencode_agents.ProposalKind.NOTHING:
         print()
         print(proposal)
         return
-    if proposal.startswith("PROPOSE:"):
-        detail = proposal[len("PROPOSE:"):]
+    if proposal.kind is opencode_agents.ProposalKind.PROPOSE:
         print()
         print(f"Proposed change to {oc_cfg}:")
-        print(detail)
+        print(proposal.detail)
         print(f"  (a timestamped backup {oc_cfg.name}.bak-<ts> will be created before writing)")
         ans = input("Apply this change to opencode config? [Y/n] ").strip().lower()
         if ans and ans not in ("y", "yes"):
