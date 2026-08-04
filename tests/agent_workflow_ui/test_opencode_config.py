@@ -279,14 +279,14 @@ def test_scan_global_roles_returns_dicts_with_keys(isolated_roles_dir):
 # ── read_opencode_models / read_available_models ──────────────────────────
 
 
-def testread_available_models_missing_file(tmp_path, monkeypatch):
+def test_read_available_models_missing_file(tmp_path, monkeypatch):
     """Returns empty list when opencode.json doesn't exist."""
     fake_home = tmp_path / "fake_home"
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     assert opencode_config.read_available_models() == []
 
 
-def testread_available_models_parses(monkeypatch, tmp_path):
+def test_read_available_models_parses(monkeypatch, tmp_path):
     """Extracts provider/model pairs from opencode.json."""
     fake_home = tmp_path / "fake_home"
     oc_dir = fake_home / ".config" / "opencode"
@@ -307,7 +307,7 @@ def testread_available_models_parses(monkeypatch, tmp_path):
     assert "openai/gpt-4.1" in models
 
 
-def testread_available_models_invalid_json(tmp_path, monkeypatch):
+def test_read_available_models_invalid_json(tmp_path, monkeypatch):
     """Returns empty list on JSON parse error."""
     fake_home = tmp_path / "fake_home"
     oc_dir = fake_home / ".config" / "opencode"

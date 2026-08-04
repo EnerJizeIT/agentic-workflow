@@ -11,7 +11,9 @@ User sees live progress in browser (auto-refresh 5s via <meta>).
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -204,9 +206,6 @@ def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
         return {}
 
     try:
-        import os
-        import subprocess
-
         # Find child processes (worker = child of orchestrator)
         result = subprocess.run(
             ["ps", "--ppid", str(pid), "-o", "pid=", "--noheaders"],
@@ -262,7 +261,7 @@ def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
             "read_mb": round(rchar / 1024 / 1024, 1),
             "write_kb": round(wchar / 1024, 1),
         }
-    except (OSError, ValueError, IndexError, FileNotFoundError):
+    except (OSError, ValueError, IndexError, FileNotFoundError, subprocess.SubprocessError):
         return {"active": False, "reason": "Could not read worker stats"}
 
 

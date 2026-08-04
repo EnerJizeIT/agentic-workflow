@@ -202,7 +202,7 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 > Extracted to awf/data/role_zones.yaml. _load_role_zones() reads at runtime.
 
 **[T3.5] `opencode_config.py` hotspots**
-> `scan_global_skills` (cyc=49), `scan_global_roles` (26), `_read_models_from_config` (18).
+> `scan_global_skills` (cyc=49), `scan_global_roles` (26), `read_available_models` (18).
 > Топ hotspot'ы plugin'а. Чтение opencode.json/skills перемешано с нормализацией.
 > Status: **DEFERRED INDEFINITELY** — работает, тесты покрывают. 0 user-visible benefit.
 

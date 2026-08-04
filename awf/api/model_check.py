@@ -45,6 +45,19 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     warnings: list[str] = []
 
+    def _models_keys(val: Any) -> list[str]:
+        """Normalize provider.models to list of model IDs.
+
+        opencode.json allows both forms:
+        - dict: ``{"claude-3.5": {...}, "claude-3.7": {...}}`` → keys
+        - list: ``["claude-3.5", "claude-3.7"]`` → elements
+        """
+        if isinstance(val, dict):
+            return [str(k) for k in val.keys()]
+        if isinstance(val, list):
+            return [str(m) for m in val if isinstance(m, str)]
+        return []
+
     for role, role_cfg in models_config.items():
         if not isinstance(role_cfg, dict):
             continue
@@ -68,10 +81,11 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
         # Check if provider exists in opencode.json
         provider_exists = provider_name in oc_providers if provider_name else False
         provider_has_model = False
+        available_in_provider: list[str] = []
         if provider_exists:
             provider_cfg = oc_providers[provider_name]
-            models_in_provider = provider_cfg.get("models", {}) or {}
-            provider_has_model = model_id in models_in_provider
+            available_in_provider = _models_keys(provider_cfg.get("models", {}))
+            provider_has_model = model_id in available_in_provider
 
         # Also check if model is referenced in agent configs
         agent_has_model = any(
@@ -91,7 +105,7 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
             warnings.append(
                 f"Role '{role}': provider '{provider_name}' exists but model "
                 f"'{model_id}' not found in its models list. "
-                f"Available: {list((oc_providers[provider_name].get('models', {}) or {}).keys())[:5]}"
+                f"Available: {available_in_provider[:5]}"
             )
         else:
             valid = False
