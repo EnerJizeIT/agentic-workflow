@@ -1047,6 +1047,7 @@ def test_bd32_collect_opencode_models_from_agents(tmp_path, monkeypatch):
         }
     }))
 
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     models = _collect_opencode_models()
     assert sorted(models) == ["anthropic/claude-sonnet-4", "vllm/llm"]
@@ -1068,6 +1069,7 @@ def test_bd32_collect_opencode_models_from_providers(tmp_path, monkeypatch):
         }
     }))
 
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     models = _collect_opencode_models()
     assert "vllm/llm" in models
@@ -1079,6 +1081,7 @@ def test_bd32_collect_opencode_models_missing_file(tmp_path, monkeypatch):
     """BD-32: no opencode.json → empty list (no crash)."""
     from agent_workflow_ui.tools.forms import _collect_opencode_models
 
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "nonexistent")
     assert _collect_opencode_models() == []
 
@@ -1092,5 +1095,6 @@ def test_bd32_collect_opencode_models_invalid_json(tmp_path, monkeypatch):
     oc_dir.mkdir(parents=True)
     (oc_dir / "opencode.json").write_text(":::not valid json:::")
 
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     assert _collect_opencode_models() == []

@@ -121,6 +121,32 @@ def read_available_models() -> list[str]:
     - opencode_config.py:read_recent_models() (for grouping)
     - forms.py:open_form() (for project-setup dropdown)
     """
+    # Try 'opencode models' CLI first — returns ALL available models
+    # (internal providers like zai-coding-plan, opencode/*, plus configured).
+    try:
+        result = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            models: set[str] = set()
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                # Skip non-model lines (page-assist notices, empty lines)
+                if not line or line.startswith("[") or line.startswith("page-assist"):
+                    continue
+                # Lines like "opencode/glm-5.2", "vllm/llm", "zai-coding-plan/glm-5.2"
+                if "/" in line:
+                    models.add(line)
+            if models:
+                return sorted(models)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Fallback: parse opencode.json directly (fewer models, no internal providers)
     cfg_path = _xdg_config_home() / "opencode" / "opencode.json"
     if not cfg_path.exists():
         return []

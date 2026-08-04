@@ -281,12 +281,16 @@ def test_scan_global_roles_returns_dicts_with_keys(isolated_roles_dir):
 
 def test_read_available_models_missing_file(tmp_path, monkeypatch):
     """Returns empty list when opencode.json doesn't exist."""
+    # Mock opencode CLI to return empty (force fallback to opencode.json)
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     fake_home = tmp_path / "fake_home"
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     assert opencode_config.read_available_models() == []
 
 
 def test_read_available_models_parses(monkeypatch, tmp_path):
+    # Mock opencode CLI to return empty (force fallback to opencode.json)
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     """Extracts provider/model pairs from opencode.json."""
     fake_home = tmp_path / "fake_home"
     oc_dir = fake_home / ".config" / "opencode"
@@ -309,6 +313,8 @@ def test_read_available_models_parses(monkeypatch, tmp_path):
 
 def test_read_available_models_invalid_json(tmp_path, monkeypatch):
     """Returns empty list on JSON parse error."""
+    # Mock opencode CLI to return empty (force fallback to opencode.json)
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     fake_home = tmp_path / "fake_home"
     oc_dir = fake_home / ".config" / "opencode"
     oc_dir.mkdir(parents=True)
