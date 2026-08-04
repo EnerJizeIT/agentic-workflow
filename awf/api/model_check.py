@@ -47,6 +47,26 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
     # explicit config in opencode.json. If a model is in recent list,
     # it was used successfully before → don't mark as invalid.
     recent_models: set[str] = set()
+
+    # Also: get ALL available models from 'opencode models' CLI.
+    # This covers internal providers that don't appear in opencode.json.
+    # If a model is in this list, it's definitely valid.
+    cli_models: set[str] = set()
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line and "/" in line and not line.startswith("["):
+                    cli_models.add(line)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
     try:
         pass  # ensures awf import works
     except Exception:
@@ -147,6 +167,12 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
         elif agent_has_model:
             valid = True
             note = f"Model '{model}' used by opencode agent config"
+        elif model in cli_models:
+            valid = True
+            note = (
+                f"Model '{model}' available via 'opencode models' CLI "
+                f"(internal provider). opencode resolves it automatically."
+            )
         elif model in recent_models:
             valid = True
             note = (
