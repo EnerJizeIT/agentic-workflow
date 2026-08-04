@@ -42,6 +42,54 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
 
+    # Recent models from opencode.db — these may include internal opencode
+    # providers (zai-coding-plan, openai, anthropic) that don't require
+    # explicit config in opencode.json. If a model is in recent list,
+    # it was used successfully before → don't mark as invalid.
+    recent_models: set[str] = set()
+    try:
+        pass  # ensures awf import works
+    except Exception:
+        pass
+    try:
+        import sqlite3
+
+        db_path = xdg.opencode_config_file().parent.parent / "local" / "share" / "opencode" / "opencode.db"
+        # Also check XDG data home
+        import os
+
+        data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+        if data_home:
+            db_path = Path(data_home) / "opencode" / "opencode.db"
+        else:
+            db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+        if db_path.is_file():
+            conn = sqlite3.connect(str(db_path), timeout=3)
+            try:
+                rows = conn.execute(
+                    "SELECT DISTINCT model FROM session WHERE model IS NOT NULL"
+                ).fetchall()
+                for r in rows:
+                    raw = r[0]
+                    if not raw:
+                        continue
+                    # opencode.db stores model as JSON: {"id":"x","providerID":"y"}
+                    try:
+                        m = json.loads(raw)
+                        pid = m.get("providerID", "")
+                        mid = m.get("id", "")
+                        if pid and mid:
+                            recent_models.add(f"{pid}/{mid}")
+                    except (json.JSONDecodeError, TypeError):
+                        # Fallback: plain string model id
+                        if isinstance(raw, str):
+                            recent_models.add(raw)
+            finally:
+                conn.close()
+    except Exception:
+        pass
+
     results: list[dict[str, Any]] = []
     warnings: list[str] = []
 
@@ -99,6 +147,13 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
         elif agent_has_model:
             valid = True
             note = f"Model '{model}' used by opencode agent config"
+        elif model in recent_models:
+            valid = True
+            note = (
+                f"Model '{model}' found in recent opencode sessions. "
+                f"Provider may be internal (zai-coding-plan, openai, etc.) — "
+                f"opencode resolves it without explicit config."
+            )
         elif provider_exists and not provider_has_model:
             valid = False
             note = f"Provider '{provider_name}' exists but model '{model_id}' not in its models list"

@@ -57,6 +57,18 @@ def _collect_opencode_models() -> list[str]:
     return read_available_models()
 
 
+def _collect_recent_models() -> list[str]:
+    """Recent models from opencode.db sessions (user previously used these).
+
+    These may include models from internal opencode providers (zai-coding-plan,
+    openai, anthropic) that don't require explicit config in opencode.json.
+    Without this list, user can't pick models they used in past sessions.
+    """
+    from ..opencode_config import read_recent_models
+
+    return read_recent_models()
+
+
 async def open_form(
     template: str,
     data: dict[str, Any] | None = None,
@@ -138,6 +150,7 @@ async def open_form(
     # chosen model was silently dropped (project-auditor got vllm/llm
     # regardless of what user picked).
     available_models = _collect_opencode_models()
+    recent_models = _collect_recent_models()
 
     # UI-1: scan project-local roles (.agentic/roles/*.md) for "previously
     # used in this project" dropdown section.
@@ -163,6 +176,7 @@ async def open_form(
             "custom_agents": custom_agents,
             "global_skills": global_skills,
             "available_models": available_models,
+            "recent_models": recent_models,
             "project_roles": project_roles,
             "existing_supervisor_slugs": existing_supervisor_slugs,
             "existing_agent_slugs": existing_agent_slugs,
