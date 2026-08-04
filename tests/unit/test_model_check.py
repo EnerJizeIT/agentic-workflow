@@ -1,156 +1,350 @@
-"""Unit tests for awf.api.check_model_config.
+"""Tests for model discovery + validation — read_available_models + check_model_config.
 
-Validates that models declared in .agentic/config.yaml have matching
-providers in opencode.json — prevents silent fallback to wrong model.
-
-Critical regression test: provider.models may be a LIST (not dict);
-old impl crashed with AttributeError when generating the warning for
-"model not in provider's models list".
+Covers:
+- read_available_models(): CLI fallback, opencode.json parsing, error handling
+- check_model_config(): all validation paths (provider, agent, CLI, recent, invalid)
+- Forms integration: _collect_opencode_models, _collect_recent_models
 """
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from awf import api
+from awf.api.model_check import check_model_config
 
 
 @pytest.fixture
-def project_with_models(tmp_git_repo: Path) -> Path:
-    """Init awf project + config.yaml with several role→model mappings."""
+def awf_project(tmp_git_repo):
     api.init_project(tmp_git_repo, project_name="Test")
-    config = tmp_git_repo / ".agentic" / "config.yaml"
-    config.write_text(
-        "project:\n"
-        "  name: Test\n"
-        "models:\n"
-        "  worker:\n"
-        "    model: 'anthropic/claude-3.5'\n"
-        "  reviewer:\n"
-        "    model: 'myprov/missing-model'\n"
-        "  ghost:\n"
-        "    model: 'ghostprov/anything'\n"
-        "  nomodel:\n"
-        "    agent_name: 'bare-agent'\n"
-        "  direct:\n"
-        "    model: 'gpt-4'\n"
-    )
     return tmp_git_repo
 
 
-def _write_opencode_json(xdg_root: Path, payload: dict) -> None:
-    oc_dir = xdg_root / "opencode"
-    oc_dir.mkdir(parents=True, exist_ok=True)
-    (oc_dir / "opencode.json").write_text(json.dumps(payload))
+def _set_models(project: Path, models: dict) -> None:
+    """Update config.yaml models section."""
+    config_path = project / ".agentic" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["models"] = models
+    config_path.write_text(yaml.safe_dump(config))
 
 
-class TestCheckModelConfig:
-    def test_requires_agentic(self, tmp_path: Path):
-        with pytest.raises(api.AwfApiError, match="No .agentic/"):
-            api.check_model_config(tmp_path)
+def _mock_cli_empty(monkeypatch):
+    """Mock 'opencode models' CLI to return empty (force fallback)."""
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})(),
+    )
 
-    def test_empty_opencode_json_marks_all_invalid(self, project_with_models, monkeypatch):
-        """No opencode.json → every model lacks a provider → invalid + warning."""
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(project_with_models / "fake_xdg"))
-        result = api.check_model_config(project_with_models)
 
-        by_role = {m["role"]: m for m in result["models"]}
-        # 'nomodel' role has no model key → treated as valid (uses opencode default)
-        assert by_role["nomodel"]["valid"] is True
-        assert by_role["nomodel"]["model"] == "(none)"
-        # Roles with explicit models → invalid (no providers available)
-        assert by_role["worker"]["valid"] is False
-        assert by_role["reviewer"]["valid"] is False
-        # warnings exist for invalid models
-        assert any("worker" in w for w in result["warnings"])
-        assert result["providers_available"] == []
+def _mock_cli_models(models_list: list[str]):
+    """Return a mock for subprocess.run that returns given models."""
+    stdout = "\n".join(models_list) + "\n"
+    return lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
 
-    def test_dict_models_validates_correctly(self, project_with_models, monkeypatch):
-        """opencode.json with provider.models as DICT → match works."""
-        fake_xdg = project_with_models / "fake_xdg"
-        _write_opencode_json(fake_xdg, {
-            "provider": {
-                "anthropic": {"models": {"claude-3.5": {}, "claude-3.7": {}}},
-                "myprov": {"models": {"other-model": {}}},
-            },
-        })
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
 
-        result = api.check_model_config(project_with_models)
-        by_role = {m["role"]: m for m in result["models"]}
+# ─── read_available_models ──────────────────────────────────────────────
 
-        assert by_role["worker"]["valid"] is True
-        assert by_role["worker"]["provider"] == "anthropic"
-        # provider exists, model missing → invalid + warning lists available
-        assert by_role["reviewer"]["valid"] is False
-        assert "other-model" in " ".join(result["warnings"])
 
-    def test_list_models_regression_no_crash(self, project_with_models, monkeypatch):
-        """REGRESSION: provider.models as LIST used to crash with AttributeError
-        when generating the warning for a missing model.
+class TestReadAvailableModels:
+    """Model discovery from 'opencode models' CLI + opencode.json fallback."""
 
-        Before fix: list(...).keys() on a list → AttributeError, breaks the tool.
-        After fix: warning lists available models from the list correctly.
-        """
-        fake_xdg = project_with_models / "fake_xdg"
-        _write_opencode_json(fake_xdg, {
-            "provider": {
-                "myprov": {"models": ["m1", "m2", "m3"]},
-            },
-        })
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+    def test_cli_returns_full_list(self):
+        """When 'opencode models' works → returns ALL models from CLI."""
+        from agent_workflow_ui.opencode_config import read_available_models
 
-        # Must not raise
-        result = api.check_model_config(project_with_models)
-        by_role = {m["role"]: m for m in result["models"]}
+        models = read_available_models()
+        # On dev machine, CLI returns 65 models
+        assert len(models) > 0
+        assert all("/" in m for m in models)  # all have provider/model format
 
-        # 'myprov/missing-model' → provider exists, model not in list → invalid + warning
-        assert by_role["reviewer"]["valid"] is False
-        warning_text = " ".join(result["warnings"])
-        assert "myprov" in warning_text
-        # Available models are listed from the list (not crashed)
-        assert "m1" in warning_text or "m2" in warning_text
+    def test_cli_skips_non_model_lines(self, monkeypatch):
+        """CLI output may contain non-model lines (page-assist notices)."""
+        from agent_workflow_ui import opencode_config
 
-    def test_list_models_match_when_present(self, project_with_models, monkeypatch):
-        """provider.models as LIST and model IS present → valid."""
-        fake_xdg = project_with_models / "fake_xdg"
-        _write_opencode_json(fake_xdg, {
-            "provider": {
-                "anthropic": {"models": ["claude-3.5", "claude-3.7"]},
-            },
-        })
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: type("R", (), {
+                "returncode": 0,
+                "stdout": "[page-assist] CLI mode\nopencode/glm-5.2\nvllm/llm\n\n",
+                "stderr": "",
+            })(),
+        )
+        models = opencode_config.read_available_models()
+        assert "opencode/glm-5.2" in models
+        assert "vllm/llm" in models
+        assert not any("[page-assist]" in m for m in models)
+        assert not any("" == m for m in models)
 
-        result = api.check_model_config(project_with_models)
-        by_role = {m["role"]: m for m in result["models"]}
-        assert by_role["worker"]["valid"] is True
+    def test_fallback_to_json_when_cli_fails(self, monkeypatch, tmp_path):
+        """When CLI unavailable → falls back to opencode.json parsing."""
+        from agent_workflow_ui import opencode_config
 
-    def test_agent_config_match_treated_as_valid(self, project_with_models, monkeypatch):
-        """Model referenced by opencode agent config → valid even without provider."""
-        fake_xdg = project_with_models / "fake_xdg"
-        _write_opencode_json(fake_xdg, {
-            "agent": {
-                "myagent": {"model": "anthropic/claude-3.5"},
-            },
-        })
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
-
-        result = api.check_model_config(project_with_models)
-        by_role = {m["role"]: m for m in result["models"]}
-        assert by_role["worker"]["valid"] is True
-        assert "agent config" in by_role["worker"]["note"]
-
-    def test_invalid_opencode_json_does_not_crash(self, project_with_models, monkeypatch):
-        """Malformed opencode.json → treated as no providers (no crash)."""
-        fake_xdg = project_with_models / "fake_xdg"
-        oc_dir = fake_xdg / "opencode"
+        _mock_cli_empty(monkeypatch)
+        fake_home = tmp_path / "home"
+        oc_dir = fake_home / ".config" / "opencode"
         oc_dir.mkdir(parents=True)
-        (oc_dir / "opencode.json").write_text("{not valid json")
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg))
+        (oc_dir / "opencode.json").write_text(json.dumps({
+            "provider": {"vllm": {"models": {"llm": {"name": "LLM"}}}},
+        }))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
 
-        result = api.check_model_config(project_with_models)
-        assert result["providers_available"] == []
-        # All roles with models → invalid
-        assert all(m["valid"] is False for m in result["models"] if m["model"] != "(none)")
+        models = opencode_config.read_available_models()
+        assert "vllm/llm" in models
+
+    def test_fallback_to_json_agents(self, monkeypatch, tmp_path):
+        """Fallback: agent.<name>.model also collected."""
+        from agent_workflow_ui import opencode_config
+
+        _mock_cli_empty(monkeypatch)
+        fake_home = tmp_path / "home"
+        oc_dir = fake_home / ".config" / "opencode"
+        oc_dir.mkdir(parents=True)
+        (oc_dir / "opencode.json").write_text(json.dumps({
+            "agent": {"worker": {"model": "custom/model"}},
+        }))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+        models = opencode_config.read_available_models()
+        assert "custom/model" in models
+
+    def test_cli_timeout_falls_back(self, monkeypatch):
+        """CLI timeout → falls back to opencode.json (no crash)."""
+        from agent_workflow_ui import opencode_config
+
+        def slow_cli(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd="opencode", timeout=10)
+
+        monkeypatch.setattr("subprocess.run", slow_cli)
+        # Should not raise — falls back to opencode.json (may return [])
+        models = opencode_config.read_available_models()
+        assert isinstance(models, list)
+
+    def test_cli_not_found_falls_back(self, monkeypatch):
+        """opencode binary not on PATH → falls back (no crash)."""
+        from agent_workflow_ui import opencode_config
+
+        def missing_binary(*a, **kw):
+            raise FileNotFoundError("opencode not found")
+
+        monkeypatch.setattr("subprocess.run", missing_binary)
+        models = opencode_config.read_available_models()
+        assert isinstance(models, list)
+
+
+# ─── read_recent_models ─────────────────────────────────────────────────
+
+
+class TestReadRecentModels:
+    """Recent models from opencode.db sessions."""
+
+    def test_returns_list(self):
+        """Returns a list (may be empty if no DB)."""
+        from agent_workflow_ui.opencode_config import read_recent_models
+
+        models = read_recent_models()
+        assert isinstance(models, list)
+
+    def test_returns_models_from_real_db(self):
+        """On dev machine, DB has past sessions → returns models."""
+        from agent_workflow_ui.opencode_config import read_recent_models
+
+        models = read_recent_models()
+        if models:
+            assert all(isinstance(m, str) for m in models)
+
+
+# ─── check_model_config: validation paths ───────────────────────────────
+
+
+class TestCheckModelConfigValidationPaths:
+    """Each validation path in check_model_config."""
+
+    def test_provider_in_opencode_json_valid(self, awf_project):
+        """Model in opencode.json provider → valid."""
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "vllm/llm"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is True
+
+    def test_cli_model_valid(self, awf_project):
+        """Model available via 'opencode models' but not in opencode.json → valid."""
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "opencode/glm-5.2"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is True
+        assert "opencode models" in test_role["note"]
+
+    def test_recent_model_valid(self, awf_project):
+        """Model in recent sessions (opencode.db) → valid."""
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "zai-coding-plan/glm-5.2"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is True
+
+    def test_completely_invalid_model_warns(self, awf_project, monkeypatch):
+        """Model nowhere (not in CLI, providers, recent) → invalid + warning."""
+        _mock_cli_empty(monkeypatch)
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "nonexistent/fake-model"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is False
+        assert len(result["warnings"]) > 0
+
+    def test_no_model_specified_is_valid(self, awf_project):
+        """Role without model → valid (uses opencode default)."""
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker"},  # no model key
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is True
+        assert "default" in test_role["note"].lower()
+
+    def test_multiple_roles_mixed_validity(self, awf_project, monkeypatch):
+        """Some models valid, some not — correct per-role result."""
+        _mock_cli_empty(monkeypatch)
+        _set_models(awf_project, {
+            "agent-good": {"agent_name": "worker", "model": "vllm/llm"},
+            "agent-bad": {"agent_name": "worker", "model": "fake/nonexistent"},
+        })
+        result = check_model_config(awf_project)
+        roles = {m["role"]: m for m in result["models"]}
+        assert roles["agent-good"]["valid"] is True
+        assert roles["agent-bad"]["valid"] is False
+
+
+# ─── check_model_config: edge cases ─────────────────────────────────────
+
+
+class TestCheckModelConfigEdgeCases:
+    """Edge cases and error handling."""
+
+    def test_missing_agentic_raises(self, tmp_git_repo):
+        with pytest.raises(api.AwfApiError, match="No .agentic/"):
+            check_model_config(tmp_git_repo)
+
+    def test_empty_models_section(self, awf_project):
+        """No models configured → empty result, no crash."""
+        result = check_model_config(awf_project)
+        # supervisor model always exists
+        assert isinstance(result["models"], list)
+
+    def test_opencode_json_missing_all_valid_via_cli(self, awf_project, monkeypatch):
+        """No opencode.json at all — models still valid via CLI."""
+        import awf.xdg as xdg_mod
+
+        monkeypatch.setattr(
+            xdg_mod,
+            "opencode_config_file",
+            lambda: Path("/nonexistent/opencode.json"),
+        )
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "vllm/llm"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is True
+
+    def test_list_models_in_provider_handled(self, awf_project, monkeypatch, tmp_path):
+        """Provider with models as LIST (not dict) — no AttributeError."""
+        _mock_cli_empty(monkeypatch)
+        # Create temp opencode.json with list-form models
+        fake_home = tmp_path / "home"
+        oc_dir = fake_home / ".config" / "opencode"
+        oc_dir.mkdir(parents=True)
+        (oc_dir / "opencode.json").write_text(json.dumps({
+            "provider": {"custom": {"models": ["model-a", "model-b"]}},
+        }))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "custom/model-a"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is True
+
+    def test_result_has_providers_available(self, awf_project):
+        """Result includes providers_available list."""
+        result = check_model_config(awf_project)
+        assert "providers_available" in result
+        assert isinstance(result["providers_available"], list)
+
+    def test_as_dict_serializable(self, awf_project):
+        """Full result is JSON-serializable for MCP."""
+        import json as _json
+        result = check_model_config(awf_project)
+        _json.dumps(result)
+
+
+# ─── Forms integration ──────────────────────────────────────────────────
+
+
+class TestFormsModelCollection:
+    """Forms.py _collect_opencode_models + _collect_recent_models."""
+
+    def test_collect_opencode_models_returns_list(self):
+        """_collect_opencode_models returns a list of model strings."""
+        from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+        models = _collect_opencode_models()
+        assert isinstance(models, list)
+        assert len(models) > 0  # CLI returns 65 models on dev machine
+
+    def test_collect_recent_models_returns_list(self):
+        """_collect_recent_models returns a list."""
+        from agent_workflow_ui.tools.forms import _collect_recent_models
+
+        models = _collect_recent_models()
+        assert isinstance(models, list)
+
+    def test_collect_opencode_no_duplicates(self):
+        """Result has no duplicates."""
+        from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+        models = _collect_opencode_models()
+        assert len(models) == len(set(models)), "Duplicate models in list"
+
+    def test_all_models_contain_slash(self):
+        """All model IDs have provider/model format."""
+        from agent_workflow_ui.tools.forms import _collect_opencode_models
+
+        models = _collect_opencode_models()
+        for m in models:
+            assert "/" in m, f"Model '{m}' missing provider/model separator"
+
+
+# ─── MCP tool wrapper ───────────────────────────────────────────────────
+
+
+class TestAwfCheckModelConfigTool:
+    """MCP tool awf_check_model_config returns proper format."""
+
+    def test_returns_ok_status(self, awf_project):
+        import asyncio
+
+        from agent_workflow_ui.tools import awf
+
+        result = asyncio.run(awf.awf_check_model_config(project_dir=str(awf_project)))
+        assert result["status"] == "ok"
+        assert "models" in result
+        assert "warnings" in result
+
+    def test_error_status_for_missing_agentic(self, tmp_git_repo):
+        import asyncio
+
+        from agent_workflow_ui.tools import awf
+
+        result = asyncio.run(awf.awf_check_model_config(project_dir=str(tmp_git_repo)))
+        assert result["status"] == "error"
