@@ -151,6 +151,12 @@ async def open_form(
     # regardless of what user picked).
     available_models = _collect_opencode_models()
     recent_models = _collect_recent_models()
+    # Merge: "All models" = provider models + recent models (unique).
+    # opencode has internal providers (zai-coding-plan, openai, etc.) that
+    # don't appear in opencode.json — but work when selected. Recent models
+    # from opencode.db cover these. Without merge, "All" section showed only
+    # explicit providers (1 model) instead of full list.
+    all_models = sorted(set(available_models) | set(recent_models))
 
     # UI-1: scan project-local roles (.agentic/roles/*.md) for "previously
     # used in this project" dropdown section.
@@ -175,7 +181,7 @@ async def open_form(
             "custom_supervisor_roles": supervisor_variants,
             "custom_agents": custom_agents,
             "global_skills": global_skills,
-            "available_models": available_models,
+            "available_models": all_models,
             "recent_models": recent_models,
             "project_roles": project_roles,
             "existing_supervisor_slugs": existing_supervisor_slugs,
