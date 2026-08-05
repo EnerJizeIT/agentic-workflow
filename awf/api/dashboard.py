@@ -161,6 +161,67 @@ def _read_handoffs(project_dir: Path) -> list[dict[str, str]]:
     return handoffs
 
 
+def _extract_stage_timings(project_dir: Path) -> dict[str, str]:
+    """Extract per-stage durations from orchestrator.log.
+
+    Returns {stage_name: "Xm Ys"} for completed stages.
+    Current stage shows elapsed (ongoing).
+    """
+    import re as _re
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    log_file = project_dir / ".agentic" / "logs" / "orchestrator.log"
+    if not log_file.is_file():
+        return {}
+
+    try:
+        log_text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+
+    time_pat = _re.compile(r"\[(\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})Z)\]")
+    stage_pat = _re.compile(r"Stage\s+\d+:\s+(\S+)")
+
+    # Collect (timestamp, stage_name) transitions
+    transitions: list[tuple[int, str]] = []
+    for line in log_text.splitlines():
+        tm = time_pat.search(line)
+        sm = stage_pat.search(line)
+        if tm and sm:
+            try:
+                h, mn, s = int(tm.group(2)), int(tm.group(3)), int(tm.group(4))
+                epoch = _dt(2026, 8, 5, h, mn, s, tzinfo=_tz.utc).timestamp()  # approximate
+                # Better: parse full ISO
+                dt = _dt.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
+                epoch = int(dt.timestamp())
+                transitions.append((epoch, sm.group(1)))
+            except (ValueError, TypeError):
+                continue
+
+    if len(transitions) < 2:
+        return {}
+
+    timings: dict[str, str] = {}
+    for i in range(len(transitions) - 1):
+        start_epoch, name = transitions[i]
+        end_epoch = transitions[i + 1][0]
+        duration = int(end_epoch - start_epoch)
+        m, s = divmod(duration, 60)
+        timings[name] = f"{m}m {s}s" if m > 0 else f"{s}s"
+
+    # Current (last) stage — elapsed so far
+    import time as _time
+
+    last_epoch, last_name = transitions[-1]
+    elapsed = int(_time.time()) - last_epoch
+    if elapsed > 0:
+        m, s = divmod(elapsed, 60)
+        timings[last_name] = f"{m}m {s}s" if m > 0 else f"{s}s"
+
+    return timings
+
+
 def _read_tasks(project_dir: Path, todo_id: str | None) -> list[dict[str, str]]:
     """Read PROGRESS-{todo_id}.md for task checklist."""
     if not todo_id:
@@ -404,6 +465,9 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             if d.is_dir():
                 completed_todos.append(d.name)
 
+    # Per-stage timings from orchestrator.log
+    stage_timings = _extract_stage_timings(project_dir)
+
     # Elapsed time — pass epoch for live JS ticker
 
     elapsed_epoch = 0
@@ -457,6 +521,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             tasks=tasks,
             tasks_done=tasks_done,
             completed_todos=completed_todos,
+            stage_timings=stage_timings,
             worker_activity=_read_worker_activity(state),
         )
     except Exception as e:

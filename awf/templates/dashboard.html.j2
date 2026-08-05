@@ -124,6 +124,7 @@
     .stage-label.current { color: var(--accent); font-weight: 600; }
     .stage-label.pending { color: var(--text-dim); }
     .stage-role { font-size: 10px; color: var(--text-dim); font-family: var(--mono); }
+    .stage-duration { font-size: 10px; color: var(--text-muted); font-family: var(--mono); margin-top: 2px; }
     .stage-connector { flex: 1; height: 3px; min-width: 24px; border-radius: 2px; margin: -26px 4px 0; z-index: 0; }
     .stage-connector.done { background: var(--accent-green); }
     .stage-connector.pending { background: var(--border); }
@@ -259,6 +260,9 @@
     </div>
     <div class="stage-label {{ stage.status }}">{{ stage.name }}</div>
     {% if stage.model %}<div class="stage-role">{{ stage.model }}</div>{% endif %}
+    {% if stage_timings and stage_timings.get(stage.name) %}
+    <div class="stage-duration">{{ stage_timings[stage.name] }}</div>
+    {% endif %}
   </div>
   {% if not loop.last %}
   <div class="stage-connector {{ stage.status if stage.status == 'done' else 'pending' }}"></div>

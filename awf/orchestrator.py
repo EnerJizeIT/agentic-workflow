@@ -581,6 +581,9 @@ def run_pipeline(args: Any) -> int:
     print("Run 'awf start' for the next iteration.")
     _log(logs_dir, "Pipeline complete")
     # T4.1: clear structured state on clean exit (pipeline not running anymore)
+    # But first generate final dashboard so user sees "complete" state
+    from .api.dashboard import generate_dashboard as _gen_dash
+    _gen_dash(project_dir)
     clear_state(project_dir, logs_dir=logs_dir)
     return 0
 
