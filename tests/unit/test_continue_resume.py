@@ -51,7 +51,7 @@ def project(tmp_git_repo):
 class TestContinuePipelineResume:
     """DF5-2: continue_pipeline reads state for from_stage."""
 
-    def test_resumes_from_state_stage_name(self, project):
+    def test_resumes_from_state_stage_name(self, project, monkeypatch):
         """State has stage_name='implement' → from_stage='implement'."""
         # Write state as if pipeline crashed at implement stage
         write_state(
@@ -62,15 +62,15 @@ class TestContinuePipelineResume:
             todo_id="TODO-0001",
         )
 
-        # Mock run_pipeline to capture args
+        # Mock run_pipeline to capture args (foreground mode)
         captured_args: list = []
 
         def mock_run_pipeline(args):
             captured_args.append(args)
-            return 0  # success
+            return 0
 
         with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
-            result = continue_pipeline(project)
+            result = continue_pipeline(project, background=False)
 
         assert result.run_mode == "foreground"
         assert result.exit_code == 0
@@ -91,13 +91,12 @@ class TestContinuePipelineResume:
             return 0
 
         with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
-            continue_pipeline(project, from_stage="verify")
+            continue_pipeline(project, from_stage="verify", background=False)
 
         assert captured_args[0].from_stage == "verify"
 
     def test_no_state_starts_from_beginning(self, project):
         """No state file → from_stage stays None → pipeline starts from 0."""
-        # Ensure no state file
         state_file = project / ".agentic" / "state" / "current.yaml"
         if state_file.exists():
             state_file.unlink()
@@ -109,28 +108,46 @@ class TestContinuePipelineResume:
             return 0
 
         with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
-            continue_pipeline(project)
+            continue_pipeline(project, background=False)
 
         assert captured_args[0].from_stage is None
 
     def test_refuses_if_pipeline_already_running(self, project):
         """DF5-6: if PID alive → noop."""
-        # Write state with current process PID (alive)
         import os
         write_state(project, pipeline_pid=os.getpid(), stage_name="implement")
-
-        result = continue_pipeline(project)
+        result = continue_pipeline(project, background=False)
         assert result.run_mode == "noop"
         assert "already running" in result.message.lower()
 
     def test_noop_without_active_todo(self, project):
         """No active TODO → noop."""
-        # Remove TODO from inbox
         inbox = project / ".agentic" / "inbox"
         (inbox / "TODO-0001.ready").unlink()
-
-        result = continue_pipeline(project)
+        result = continue_pipeline(project, background=False)
         assert result.run_mode == "noop"
+
+    def test_background_mode_launches_subprocess(self, project, monkeypatch):
+        """background=True → launches detached subprocess (not synchronous)."""
+        write_state(project, stage_name="implement", stage_kind="execute")
+
+        captured: dict = {}
+
+        class _FakeProc:
+            pid = 54321
+
+            def __init__(self, args, **kwargs):
+                captured["argv"] = list(args)
+
+        from awf.api import _background
+        monkeypatch.setattr(_background.subprocess, "Popen", _FakeProc)
+        monkeypatch.setattr("awf.api.pipeline._verify_child_alive", lambda pid, log_file=None: True)
+
+        result = continue_pipeline(project, background=True)
+
+        assert result.run_mode == "background"
+        assert result.run_id == 54321
+        assert "implement" in result.message
 
 
 class TestContinueReconcile:
@@ -147,7 +164,7 @@ class TestContinueReconcile:
             return 0
 
         with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
-            result = continue_pipeline(project)
+            result = continue_pipeline(project, background=False)
 
         # Stale PID cleared → pipeline runs (not noop)
         assert result.run_mode == "foreground"

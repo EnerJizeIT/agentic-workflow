@@ -178,7 +178,8 @@ async def awf_continue(
         Same shape as :func:`awf_start`.
     """
     try:
-        result = api.continue_pipeline(
+        result = await asyncio.to_thread(
+            api.continue_pipeline,
             _resolve_project_dir(project_dir),
             pipeline=pipeline,
             from_stage=from_stage,

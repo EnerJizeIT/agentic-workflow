@@ -521,6 +521,7 @@ def continue_pipeline(
     from_stage: str | None = None,
     auto: bool = False,
     timeout: int = 3600,
+    background: bool = True,
 ) -> StartResult:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -528,6 +529,10 @@ def continue_pipeline(
     If state file has ``stage_name``, uses it as ``from_stage`` — so the
     pipeline resumes from the stage that was running when it stopped,
     NOT from stage 0 (plan).
+
+    ``background=True`` (default) launches a detached subprocess — same
+    infrastructure as ``start_pipeline``. Without this, MCP tool would
+    block the event loop for the entire pipeline duration.
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
@@ -558,11 +563,46 @@ def continue_pipeline(
         )
 
     # DF5-2: read pipeline state to determine resume point.
-    # If from_stage not explicitly given, use stage_name from state file.
     if not from_stage:
         state = read_state(project_dir)
         if state and state.get("stage_name"):
             from_stage = state["stage_name"]
+
+    if background:
+        pid, log_file, _pid_file = start_in_background(
+            project_dir,
+            pipeline=pipeline,
+            from_stage=from_stage,
+            auto=auto,
+            timeout=timeout,
+        )
+        child_alive = _verify_child_alive(pid, log_file)
+        if not child_alive:
+            log_tail = ""
+            try:
+                log_tail = log_file.read_text(encoding="utf-8")[-500:] if log_file else ""
+            except OSError:
+                pass
+            return StartResult(
+                run_mode="error",
+                run_id=pid,
+                log_file=str(log_file) if log_file else None,
+                exit_code=1,
+                message=(
+                    f"Pipeline started (PID {pid}) but exited immediately. "
+                    f"Last log output:\n{log_tail}"
+                ),
+            )
+        msg = f"awf continue running in background (PID {pid})"
+        if from_stage:
+            msg += f", resuming from stage '{from_stage}'"
+        return StartResult(
+            run_mode="background",
+            run_id=pid,
+            log_file=str(log_file),
+            exit_code=None,
+            message=msg,
+        )
 
     from ..orchestrator import run_pipeline
 

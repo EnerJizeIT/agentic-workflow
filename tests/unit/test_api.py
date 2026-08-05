@@ -948,7 +948,7 @@ class TestContinuePipeline:
 
         monkeypatch.setattr(orch_mod, "run_pipeline", crashing)
 
-        result = api.continue_pipeline(tmp_git_repo)
+        result = api.continue_pipeline(tmp_git_repo, background=False)
         assert result.run_mode == "foreground"
         assert result.exit_code == 1
         assert "crashed" in result.message
