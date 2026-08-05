@@ -23,6 +23,10 @@
 - **Plan progress auto-tracking (BD-33/34).** После verify автоматически отмечается `[x]` в `phases/plan.md` и печатается progress report.
 - **Skill-aware role analysis (BD-31).** `awf analyze-roles` находит дублирования зон ответственности между ролями и добавляет disambiguation patches.
 - **Plan checkpoint (BD-36).** После plan stage открывается HTML форма с TODO контентом и кнопками ✓ Утвердить / ✏ Изменить / ✗ Отклонить. Пользователь контролирует scope до запуска агентов. Bypass: `--auto`, `automation.plan_checkpoint: false`, или env `AWF_PLAN_CHECKPOINT=false`.
+- **TODO lifecycle (DF6-1..4).** После verify approve — TODO архивируется в `.agentic/done/{id}/`. Reconcile перед каждым `awf_start` чистит stale PID, дедуплицирует сигналы, supersede'ит старые TODO. BD-30 orphan pickup проверяет `done/` — не подхватывает завершённые TODO.
+- **Stage-specific snippet injection.** `build_prompt()` добавляет фокусные инструкции для каждой стадии (plan/verify/salvage) в конец prompt — Qwen видит релевантные правила последними (recency bias).
+- **MCP event loop safety (DF5-12).** `wait_for_event` и `start_pipeline` используют `asyncio.to_thread()` — event loop свободен для других tools во время ожидания.
+- **Pipeline state persistence (T4.1).** `.agentic/state/current.yaml` — structured source of truth для stage info. `wait_for_event` polls every 3s.
 
 ### agent-workflow-ui (MCP plugin)
 
@@ -216,7 +220,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 1006 tests (e2e + unit + integration + plugin)
+├── tests/                         # 1067 tests (e2e + unit + integration + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -333,7 +337,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**1006 тестов:** e2e + unit (awf, включая `test_api.py`) + integration (awf) + integration/unit (plugin).
+**1067 тестов:** e2e + unit (awf, включая `test_api.py`) + integration (awf) + integration/unit (plugin).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).

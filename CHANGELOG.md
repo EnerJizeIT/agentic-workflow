@@ -45,9 +45,40 @@ expandable cards: events stream, handoffs, task progress).
 - QA fixes: atomic writes (T2.6), DB connection leak, test false-positives
   documented.
 
-23 MCP tools total (5 UI + 18 awf). 1006 tests. ruff clean.
+23 MCP tools total (5 UI + 18 awf). 1067 tests. ruff clean.
 
 ## [Unreleased]
+
+### DF5/DF6 — Dogfood v5/v6 fixes: lifecycle, reliability, supervisor autonomy
+
+**DF6-1..4: TODO lifecycle management**
+- `archive_todo()`: after verify approve, moves inbox/outbox/handoff → `done/{id}/`
+- `_reconcile()`: before each background start — clears stale PID, dedup ACK+APPROVE, supersede old TODOs
+- BD-30 orphan pickup checks `done/` — no false positive on archived TODOs
+- `done_count` counts from `done/` directory
+
+**DF6-5..8: pipeline reliability**
+- `AWF_BACKGROUND_CHILD=1` env: checkpoint works in background mode (no noop crash)
+- Dashboard `_determine_status`: detects dead PID → shows "Pipeline process dead"
+- `PR_SET_PDEATHSIG`: worker subprocess dies with orchestrator (Linux)
+- Salvage path: `SALVAGE-{todo_id}.md` in inbox + `salvage_needed` in state + `wait_for_event` event_type="salvage"
+
+**DF5-12 fix: MCP event loop blocking**
+- `wait_for_event` and `start_pipeline` wrapped in `asyncio.to_thread()`
+- Event loop free during 30s wait — other MCP tools respond normally
+
+**Stage-specific snippet injection**
+- `build_prompt()` appends focused instructions per stage (plan/verify/salvage)
+- `_SNIPPET_ALWAYS` + stage snippet at END of prompt (recency bias)
+- `kind="salvage"` separate from `kind="verify"` (different context)
+
+**Other improvements**
+- `wait_for_event` poll interval: 10s → 3s
+- `awf_status`: `salvage_needed`, `salvage_stage`, `expected_action` fields
+- Dashboard: `completed_todos` from `done/` directory
+- `supervisor.md`: Quick Reference (5 imperatives at top)
+- Concurrency regression test (3 tests)
+- 61 new tests: lifecycle (16), reconcile (10), integration (4), snippets (28), concurrency (3)
 
 ### MCP-MIGRATION — awf как pure MCP toolkit под opencode
 

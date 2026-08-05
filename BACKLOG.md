@@ -2,9 +2,9 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1006 тестов, CI green, 23 MCP tools. DF5-1..12 + QA-2026-08-05 закрыты. Dogfood v6 (ses_02e507f92ffe5FxdRIQipenL9f) выявил системные проблемы lifecycle management.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1067 тестов, CI green, 23 MCP tools. DF5-1..12 + DF6-1..8 + QA-2026-08-05 закрыты. Stage-specific snippet injection. asyncio.to_thread для MCP event loop. TODO lifecycle (archive + reconcile). ruff clean.
 
-**Активный эпик:** DF6 — TODO Lifecycle + Pipeline Reliability + Supervisor Autonomy.
+**Активный эпик:** следующий dogfood — протестировать весь флоу с lifecycle/reliability/snippet fixes.
 
 История фиксов — в `git log --oneline`.
 
