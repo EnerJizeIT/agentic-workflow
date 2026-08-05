@@ -35,6 +35,90 @@ def get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
+def _build_pipeline_context(project_dir: Path, todo_id: str) -> str:
+    """BD-10: Build pipeline context for worker prompt.
+
+    Tells the worker:
+    - What stage it is and what comes before/after in the pipeline
+    - What prior TODOs produced (done/ directory)
+    - Explicit scope boundary: don't do other stages' work
+
+    This prevents system-analyst from implementing code when
+    REQUIREMENTS.md already exists, implementer from writing
+    requirements, etc.
+    """
+    import yaml as _yaml
+
+    parts: list[str] = []
+
+    # 1. Read pipeline stages
+    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    if not pipeline_file.is_file():
+        return ""
+
+    try:
+        pipeline = _yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+    except (OSError, _yaml.YAMLError):
+        return ""
+
+    stages = pipeline.get("stages", []) if pipeline else []
+    if not stages:
+        return ""
+
+    # 2. Find current stage from state file
+    from .pipeline_state import read_state
+
+    state = read_state(project_dir)
+    current_stage_name = state.get("stage_name", "") if state else ""
+    if not current_stage_name:
+        return ""
+
+    # 3. Find position in pipeline
+    current_idx = None
+    for i, s in enumerate(stages):
+        if s.get("name") == current_stage_name:
+            current_idx = i
+            break
+
+    if current_idx is None:
+        return ""
+
+    total = len(stages)
+    parts.append(f"## Pipeline context (you are stage {current_idx + 1} of {total})")
+
+    # 4. List other stages
+    before = [s["name"] for s in stages[:current_idx]]
+    after = [s["name"] for s in stages[current_idx + 1:]]
+
+    if before:
+        parts.append(f"Before you: {', '.join(before)}")
+    if after:
+        parts.append(f"After you: {', '.join(after)}")
+
+    # 5. Explicit scope boundary
+    role_name = current_stage_name
+    if "system-analyst" in role_name and after:
+        parts.append("\nYour scope: requirements analysis. Implementation, architecture, QA — other stages handle those.")
+    elif "architector" in role_name and after:
+        parts.append("\nYour scope: architecture/design. Requirements, implementation, QA — other stages handle those.")
+    elif "implementer" in role_name and before:
+        parts.append("\nYour scope: implementation. Requirements and architecture should already exist — use them, don't recreate.")
+    elif "qa-review" in role_name:
+        parts.append("\nYour scope: quality review. Don't implement — review what others built.")
+    elif "project-auditor" in role_name:
+        parts.append("\nYour scope: project audit. Don't implement — assess overall quality.")
+
+    # 6. Prior completed work from done/
+    done_dir = project_dir / ".agentic" / "done"
+    if done_dir.is_dir():
+        completed = sorted(d.name for d in done_dir.iterdir() if d.is_dir())
+        if completed:
+            parts.append(f"\nPrior completed TODOs: {', '.join(completed)}")
+            parts.append("Their output files already exist — review them, don't redo.")
+
+    return "\n".join(parts)
+
+
 ## ─── Stage-specific snippets (focused injection) ───────────────────────
 # Each snippet is ~15-20 lines of DIRECTLY RELEVANT instructions for one
 # stage. Appended to build_prompt() output so Qwen sees focused rules at
@@ -167,6 +251,16 @@ def build_prompt(
             f"don't redo prior work. "
             f"Do not commit unless the TODO explicitly asks for it."
         )
+        # BD-10: pipeline context — tell worker its place in the team.
+        # Without this, system-analyst tries to implement code, implementer
+        # tries to write requirements, etc. Worker needs to know:
+        # - What stage it is (position in pipeline)
+        # - What comes before/after (don't do others' work)
+        # - What prior TODOs produced (don't redo)
+        if project_dir is not None:
+            ctx = _build_pipeline_context(project_dir, todo_id)
+            if ctx:
+                base += "\n\n" + ctx
         return base
 
     # П6: auto-inject project vision/README excerpt for plan stage.

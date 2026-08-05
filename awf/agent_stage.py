@@ -49,7 +49,7 @@ def run_agent_stage(
     inbox = paths.inbox(project_dir)
     todo_file = inbox / f"{todo_id}.md"
 
-    prompt = build_prompt(kind, todo_id)
+    prompt = build_prompt(kind, todo_id, project_dir=project_dir)
 
     print(f"Running agent: {agent_name}")
     print(f"Role file: {role_file}")

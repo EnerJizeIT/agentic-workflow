@@ -70,40 +70,62 @@ def _format_elapsed(started_at: str | None) -> str:
 
 
 def _parse_log_events(log_text: str, max_events: int = 30) -> list[dict[str, str]]:
-    """Extract events from awf-start.out log.
+    """Extract events from orchestrator.log.
 
-    Looks for lines with timestamps + known patterns:
-    - 'Stage N/M: <name>' → start event
-    - 'DONE' → done event
-    - 'BLOCKED' → blocked event
-    - 'BD-36: checkpoint' → checkpoint event
-    - 'signal detected' → signal event
+    Parses lines like: ``[2026-08-05T15:42:19Z] Stage 1: agent-system-analyst``
+    Returns last ``max_events`` events with cleaned timestamps (HH:MM:SS).
     """
     events: list[dict[str, str]] = []
-    time_pattern = re.compile(r"(\d{2}:\d{2}:\d{2})")
-    stage_pattern = re.compile(r"Stage\s+\d+/\d+:\s+(\S+)")
+    # orchestrator.log format: [2026-08-05T15:42:19Z] message
+    time_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})Z?)\]\s*(.*)")
 
     for line in log_text.splitlines():
-        ts_match = time_pattern.search(line)
-        ts = ts_match.group(1) if ts_match else "--:--:--"
+        m = time_pattern.match(line)
+        if not m:
+            continue
+        ts_short = m.group(2)  # HH:MM:SS
+        msg = m.group(3).strip()  # message after timestamp
 
-        stage_match = stage_pattern.search(line)
-        if stage_match:
-            events.append({"ts": ts, "msg": f"▶ {stage_match.group(1)} started", "type": "start"})
+        # Stage transitions
+        stage_m = re.match(r"Stage\s+\d+:\s+(\S+)", msg)
+        if stage_m:
+            events.append({"ts": ts_short, "msg": f"▶ {stage_m.group(1)}", "type": "start"})
             continue
 
-        line_lower = line.lower()
-        if "done" in line_lower and "todo" in line_lower:
-            # Extract artifact info if present
-            events.append({"ts": ts, "msg": f"✓ {line.strip()[:100]}", "type": "done"})
-        elif "blocked" in line_lower:
-            events.append({"ts": ts, "msg": f"⚠ {line.strip()[:100]}", "type": "warn"})
-        elif "bd-36" in line_lower and "checkpoint" in line_lower:
-            events.append({"ts": ts, "msg": f"⏸ {line.strip()[:100]}", "type": "info"})
-        elif "signal detected" in line_lower or "signal received" in line_lower:
-            events.append({"ts": ts, "msg": f"📨 {line.strip()[:100]}", "type": "info"})
-        elif "created:" in line_lower or "wrote:" in line_lower:
-            events.append({"ts": ts, "msg": f"  {line.strip()[:100]}", "type": "info"})
+        # Signal detected
+        if "signal detected" in msg.lower():
+            events.append({"ts": ts_short, "msg": f"📨 {msg[:80]}", "type": "info"})
+            continue
+
+        # Checkpoint
+        if "BD-36" in msg and "checkpoint" in msg.lower():
+            events.append({"ts": ts_short, "msg": "⏸ Checkpoint opened", "type": "info"})
+            continue
+
+        # Pipeline complete
+        if "Pipeline complete" in msg:
+            events.append({"ts": ts_short, "msg": "✅ Pipeline complete", "type": "done"})
+            continue
+
+        # Salvage
+        if "salvage" in msg.lower() and "waiting" not in msg.lower():
+            events.append({"ts": ts_short, "msg": f"🔧 {msg[:80]}", "type": "warn"})
+            continue
+
+        # Transition (signal → action)
+        if msg.startswith("Transition:"):
+            events.append({"ts": ts_short, "msg": f"→ {msg[:80]}", "type": "info"})
+            continue
+
+        # Agent stage finished
+        if "Agent stage finished" in msg:
+            events.append({"ts": ts_short, "msg": "✓ Stage complete", "type": "done"})
+            continue
+
+        # Auto-committed
+        if "Auto-committed" in msg or "auto-committed" in msg.lower():
+            events.append({"ts": ts_short, "msg": "📦 Committed", "type": "done"})
+            continue
 
     return events[-max_events:]
 
@@ -347,7 +369,8 @@ def generate_dashboard(project_dir: Path) -> Path | None:
         status_label = "Status"
 
     # Events from log
-    log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
+    # Events — read orchestrator.log (has timestamps, unlike awf-start.out)
+    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
     events: list[dict[str, str]] = []
     if log_file.is_file():
         try:
@@ -372,7 +395,19 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             if d.is_dir():
                 completed_todos.append(d.name)
 
-    # Elapsed time
+    # Elapsed time — pass epoch for live JS ticker
+
+    elapsed_epoch = 0
+    if state:
+        started = state.get("started_at") or state.get("updated_at")
+        if started:
+            try:
+                from datetime import datetime as _dt
+                # Parse ISO format: 2026-08-05T15:42:19.123456+00:00
+                dt = _dt.fromisoformat(started)
+                elapsed_epoch = int(dt.timestamp())
+            except (ValueError, TypeError):
+                pass
     elapsed = _format_elapsed(state.get("started_at") if state else None)
     if not elapsed and state:
         elapsed = _format_elapsed(state.get("updated_at"))
@@ -397,6 +432,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             todo_id=todo_id or "",
             todo_summary="",
             elapsed=elapsed,
+            elapsed_epoch=elapsed_epoch,
             status=status,
             status_class=status_class,
             status_text=status_text,
