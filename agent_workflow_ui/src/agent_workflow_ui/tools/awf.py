@@ -87,6 +87,8 @@ async def awf_init(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
@@ -105,6 +107,8 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Pipeline execution ─────────────────────────────────────────────────
@@ -155,6 +159,8 @@ async def awf_start(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 async def awf_continue(
@@ -189,6 +195,8 @@ async def awf_continue(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Baseline / rollback ────────────────────────────────────────────────
@@ -220,6 +228,8 @@ async def awf_baseline(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 async def awf_rollback(
@@ -255,6 +265,8 @@ async def awf_rollback(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Auto-commit approval ───────────────────────────────────────────────
@@ -282,6 +294,8 @@ async def awf_approve(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Reports ────────────────────────────────────────────────────────────
@@ -303,6 +317,8 @@ async def awf_report(project_dir: str | None = None) -> dict[str, Any]:
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Maintenance ────────────────────────────────────────────────────────
@@ -347,6 +363,8 @@ async def awf_reset(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 async def awf_add_role(
@@ -380,6 +398,8 @@ async def awf_add_role(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 async def awf_analyze_roles(
@@ -413,6 +433,8 @@ async def awf_analyze_roles(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Dogfood-2 automation: dispatch + context ────────────────────────────
@@ -458,6 +480,8 @@ async def awf_dispatch_todo(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 async def awf_load_supervisor_context(
@@ -497,6 +521,8 @@ async def awf_load_supervisor_context(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Dogfood-5: shortcut tools (no more 'how do I fill the form?') ──────
@@ -732,6 +758,8 @@ async def awf_wait_for_event(
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
 # ─── Model configuration validation (dogfood-10) ─────────────────────────
@@ -764,3 +792,5 @@ async def awf_check_model_config(
         return {"status": "ok", **result}
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
