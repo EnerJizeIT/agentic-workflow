@@ -530,3 +530,365 @@ plan → 2 agents → verify → commit. Всё mock'ается по частя�
 
 **Решение:** `tests/integration/test_pipeline_e2e.py` — mock `opencode run`
 subprocess, проверить весь flow. ~200 строк.
+
+---
+
+## 🐛 Найдено в dogfood v5 (2026-08-04, ses_03496f539ffeUThO9Y8nHNSq86)
+
+> Сессия: supervisor + весь флоу на vllm/Qwen. Pipeline: plan → system-analyst
+> → architector → implementer → qa-review → project-auditor → verify.
+> System-analyst отработал чисто (DONE signal написан). Architector написал
+> ARCHITECTURE.md, но не написал сигнал. Pipeline застрял в salvage.
+> User вызвал `awf continue` — запустился НОВЫЙ pipeline со stage 0.
+
+### DF5-1 · Worker (Qwen) не пишет DONE-сигнал — слабый prompt anchor
+
+**Priority:** CRITICAL · **Where:** `awf/supervisor.py:78-86` (`build_prompt` execute branch)
+
+**Симптом:** agent-architector (vllm/Qwen) написал `2. ARCHITECTURE.md`, вышел
+из opencode с кодом 0, но НЕ создал `DONE-TODO-0001.ready`. Pipeline
+заблокировался на ожидании сигнала.
+
+**Почему:** Инструкция о сигнале — одна строка в самом конце prompt-суффикса
+(`build_prompt` execute branch, строки 78-86):
+```
+"When done, write .agentic/outbox/PROGRESS-{todo_id}.md, DONE-{todo_id}.md,
+and create the sentinel .agentic/outbox/DONE-{todo_id}.ready file..."
+```
+Skill-файл `agent-architector.md` (112 строк) сфокусирован на `architecture.md`
+и ни слова не говорит про outbox/сигналы. Worker (Qwen) «утонул» в деталях
+навыка, не увидел/забыл сигнал-инструкцию. System-analyst (тот же Qwen) —
+сигнал написал; разница в длине/фокусе role-файла.
+
+**Файлы для контекста:**
+- `awf/supervisor.py:78-86` — `build_prompt()` execute branch (prompt suffix)
+- `awf/agent_stage.py:52` — вызов `build_prompt(kind, todo_id)`
+- `awf/agent_stage.py:84` — `cmd += ["--", prompt]` (prompt передаётся последним)
+- `.agentic/roles/agent-architector.md` — skill без упоминания signal contract
+
+**Решение:**
+1. В `build_prompt()` execute-branch — добавить **сильный якорь в НАЧАЛЕ** prompt:
+   ```
+   ## CRITICAL completion contract (read first, before any other instruction)
+   When you finish: create empty file `.agentic/outbox/DONE-{todo_id}.ready`.
+   If blocked: create `.agentic/outbox/BLOCKED-{todo_id}.ready`.
+   The pipeline BLOCKS until this file appears. This is non-negotiable.
+   ```
+2. Оставить старую инструкцию в конце как напоминание.
+3. (Опционально) В конец role-файла при `awf add-role` / setup форме
+   добавлять секцию "## Signal contract" с конкретным путём.
+
+### DF5-2 · `awf continue` перезапускает с stage 0, а не продолжает
+
+**Priority:** CRITICAL · **Where:** `awf/api/pipeline.py:335-382` (`continue_pipeline`)
+
+**Симптом:** После того как pipeline застрял в salvage (DF5-1 → DF5-3),
+user вызвал `awf continue`. Запустился НОВЫЙ pipeline со stage 0 (plan),
+а не продолжение с agent-implementer. Два (потом три) pipeline-процесса
+работали одновременно. State file был перезаписан на `stage_idx: 0`.
+
+**Почему:** `continue_pipeline()` находит active TODO (✓), но вызывает
+`run_pipeline(PipelineArgs(from_stage=None))`. А `orchestrator.py:329-331`:
+```python
+stage_idx = 0
+if from_stage:  # None → пропускается
+    stage_idx = _find_stage_index(stages, from_stage)
+```
+Функция НЕ читает `pipeline_state.read_state()` — хотя state file
+(`current.yaml`, T4.1) содержит `stage_idx` и `stage_name` последней стадии.
+
+**Файлы для контекста:**
+- `awf/api/pipeline.py:335-382` — `continue_pipeline()` (не читает state)
+- `awf/pipeline_state.py:85` — `read_state()` уже есть, не используется
+- `awf/orchestrator.py:329-331` — `stage_idx = 0` если `from_stage` пуст
+- `awf/orchestrator.log:27-33` (jira-epic-presenter) — два "Pipeline started"
+  подряд вместо одного "Resuming from stage X"
+
+**Решение:**
+1. В `continue_pipeline()` читать state:
+   ```python
+   state = read_state(project_dir)
+   if state and "stage_name" in state and not from_stage:
+       from_stage = state["stage_name"]
+   ```
+2. Guard: если state.pipeline_pid жив (через `os.kill(pid, 0)`) — отказать:
+   "Pipeline already running (PID XXXX). Kill it first or wait."
+3. (Опционально) После успеха — не перезаписывать state до перехода на след. stage.
+
+### DF5-3 · auto-DONE не работает для greenfield/doc-heavy проектов
+
+**Priority:** HIGH · **Where:** `awf/verify.py:72-73`
+
+**Симптом:** `attempt_auto_done()` должен синтезировать DONE когда есть git diff.
+Но для jira-epic-presenter (новый проект, 0 verify-команд) всегда возвращает False.
+
+**Почему:** `run_verify_commands()` (verify.py:72-73):
+```python
+if not cmds:
+    return False  # no commands configured → can't verify
+```
+→ `attempt_auto_done()` (verify.py:157) тоже False, даже если
+`detect_work_evidence()` = True (есть новый ARCHITECTURE.md).
+
+Результат: каждый «worker забыл сигнал» в greenfield проекте превращается
+в полный salvage → supervisor-stuck цикл.
+
+**Файлы для контекста:**
+- `awf/verify.py:46-73` — `run_verify_commands` (return False если cmds пусто)
+- `awf/verify.py:123-173` — `attempt_auto_done` (зависит от run_verify_commands)
+- `awf/orchestrator.py:486-488` — salvage trigger: `attempt_auto_done` False → salvage
+
+**Решение:**
+Если verify-команд нет, трактовать как «no blocking checks»:
+```python
+if not cmds:
+    # No verification configured — treat as "no blocking checks".
+    # Work evidence alone (detect_work_evidence) is sufficient for auto-DONE.
+    # Supervisor review is still in place.
+    return True  # was: return False
+```
+Альтернатива: добавить `config.automation.auto_done_no_verify` (default True)
+для контроля поведения. Тест: project без verify-команд + git diff → DONE синтезирован.
+
+### DF5-4 · Salvage path — плохой UX для supervisor в opencode
+
+**Priority:** MEDIUM · **Where:** `awf/orchestrator.py:490-522` (salvage block)
+
+**Симптом:** Нет сигнала → orchestrator печатает BD-30 supervisor verify prompt
+в stdout (`awf-start.out`) → ждёт 3600s. Но supervisor в opencode НЕ видит
+этот stdout (он идёт в background-лог). User увидел «застряло» в `awf_status`
+и вызвал `awf continue` (что привело к DF5-2).
+
+**Почему:** Salvage переиспользует `_run_supervisor_stage(verify)`, который
+печатает инструкции в stdout и ждёт файла. Это работает для plan/verify
+в нормальном flow (когда pipeline foreground). Но в background-режиме
+(pipeline запущен через `awf_start(background=True)`) supervisor в opencode
+не видит этих инструкций.
+
+**Файлы для контекста:**
+- `awf/orchestrator.py:490-522` — salvage block
+- `awf/supervisor.py:270-358` — `_run_supervisor_stage_interactive` (stdout)
+- `awf/api/context.py` — `load_supervisor_context` (не знает про salvage)
+- `awf/api/wait_event.py` — `wait_for_event` (не детектит salvage отдельно)
+
+**Решение:**
+1. При salvage — писать структурированный salvage-prompt в inbox:
+   `.agentic/inbox/SALVAGE-{todo_id}.md` с: что произошло, git diff stat,
+   ожидаемое действие (ACK / REVIEW / replan).
+2. `awf_status` / `load_supervisor_context` показывают `salvage_needed: true`
+   + содержимое salvage-prompt.
+3. `wait_for_event` возвращает `event_type="salvage"` — supervisor в opencode
+   понимает что делать без чтения логов.
+
+### DF5-5 · Handoff подхватывает чужой PROGRESS-файл
+
+**Priority:** MEDIUM · **Where:** `awf/agent_stage.py:115-160` (`collect_handoff`)
+
+**Симптом:** `agent-architector-TODO-0001.md` (handoff) содержит в секции
+"PROGRESS notes (from worker)" заметки system-analyst'а, а не architector'а.
+
+**Почему:** `collect_handoff()` в `agent_stage.py:130` читает
+`PROGRESS-{todo_id}.md` из outbox. Если текущий worker не написал свой PROGRESS
+(как architector), читается ПРОШЛЫЙ worker'овский файл (system-analyst'а).
+Результат: следующий role (implementer) видит чужие заметки как «что
+сделал architector» — вводит в заблуждение.
+
+Дополнительно: handoff показывает git diff от baseline
+(`.gitignore | 4 ++++`), а не отработки architector'а — потому что
+baseline не сдвинулся после stage 1 (git commit не произошёл между stages).
+
+**Файлы для контекста:**
+- `awf/agent_stage.py:115-160` — `collect_handoff` (читает outbox/PROGRESS-*)
+- `awf/agent_stage.py:130` — `progress = outbox / f"PROGRESS-{todo_id}.md"`
+- jira-epic-presenter `.agentic/handoff/agent-architector-TODO-0001.md`
+  (содержит system-analyst'овский PROGRESS)
+
+**Решение:**
+1. В `collect_handoff()` — проверять mtime PROGRESS-файла:
+   если файл не обновлялся после stage_start_time → писать
+   "Worker did not leave progress notes."
+2. Альтернатива: после каждой успешной стадии (после сигнала) —
+   очистка PROGRESS-{todo_id}.md (или переименование в
+   `PROGRESS-{todo_id}-{role}.md` для истории).
+3. Git diff в handoff должен быть от **commit после предыдущей стадии**,
+   не от первоначального baseline (иначе diff копит все изменения).
+
+### DF5-6 · Concurrent pipelines — нет lock'а на запуск
+
+**Priority:** HIGH · **Where:** `awf/api/pipeline.py:246-273` (`start_pipeline`)
+
+**Симптом:** В dogfood сессии одновременно работали 2-3 pipeline-процесса
+(PID 1295626 + 1303796 + ещё один от второго `awf continue`). State file
+перезаписывался каждым из них.
+
+**Почему:** `start_pipeline` (background) проверяет active TODO (BD-30
+dogfood-1 fix), но НЕ проверяет, жив ли уже pipeline-процесс.
+`continue_pipeline` — тоже не проверяет.
+
+**Файлы для контекста:**
+- `awf/api/pipeline.py:246-273` — `start_pipeline` background launch
+- `awf/api/pipeline.py:335-382` — `continue_pipeline` (нет PID check)
+- `awf/pipeline_state.py` — state file (перезаписывается конкурентно)
+
+**Решение:**
+1. Перед стартом — читать `state.pipeline_pid`, проверять `os.kill(pid, 0)`.
+   Если жив → отказ: "Pipeline already running (PID XXXX). Use `awf status`
+   to check, or kill PID to force restart."
+2. Записывать PID в state file при старте (уже делается через `pipeline_pid`
+   поле, но не проверяется при повторном запуске).
+3. То же для `continue_pipeline` — если pipeline жив, continue = noop.
+
+### DF5-7 · Dashboard template syntax error — `{% endif %` без `}`
+
+**Priority:** CRITICAL · **Where:** `awf/templates/dashboard.html.j2:194`
+
+**Симптом:** Dashboard НИКОГДА не генерируется. `generate_dashboard()` падает
+на Jinja2 TemplateSyntaxError и возвращает None (DF5-8 глотает ошибку).
+Supervisor потратил ~15 сообщений пытаясь понять почему dashboard пустой.
+
+**Why:** Строка 194: `{% endif %` — пропущена закрывающая фигурная скобка `}`.
+Должно быть `{% endif %}`. Этот `endif` закрывает `{% if worker_activity %}`
+от строки 177 (блок CSS для worker activity bar).
+
+**Файлы для контекста:**
+- `awf/templates/dashboard.html.j2:177` — `{% if worker_activity %}` (открывает)
+- `awf/templates/dashboard.html.j2:194` — `{% endif %` (битый, без `}`)
+- `awf/api/dashboard.py:389-390` — `except Exception: return None` (глотает)
+
+**Решение:** One-char fix: `{% endif %` → `{% endif %}`.
++ добавить unit-тест: `generate_dashboard()` рендерит без exception.
+
+### DF5-8 · `generate_dashboard` глотает ВСЕ ошибки молча
+
+**Priority:** HIGH · **Where:** `awf/api/dashboard.py:389-390`
+
+**Симптом:** Любая ошибка рендеринга (TemplateSyntaxError, KeyError, TypeError,
+missing data) → `except Exception: return None`. Dashboard просто не появляется.
+Никакого лога, никакого warning'а. Supervisor не может понять причину без
+ручного дебага через Python REPL.
+
+**Почему:** bare `except Exception` — анти-паттерн. Спрятал реальный баг
+(DF5-7) на неопределённое время. Dashboard — фичя для мониторинга, не
+critical-path; но silent failure превращает каждый dashboard баг в
+30-минутный дебаг.
+
+**Файлы для контекста:**
+- `awf/api/dashboard.py:366-390` — try/except блок рендеринга
+- `awf/orchestrator.py` — вызовы `generate_dashboard()` после `write_state()`
+  (тоже могут глотать None return)
+
+**Решение:**
+1. Логировать exception: `_log(logs_dir, f"Dashboard generation failed: {e}")`
+   (передать `logs_dir` в `generate_dashboard` или использовать logging).
+2. Сузить except до конкретных типов (TemplateError, OSError).
+3. При template syntax error — писать `.agentic/dashboards/error.txt` с traceback.
+
+### DF5-9 · Supervisor (Qwen) нарушил role boundaries — редактировал awf
+
+**Priority:** MEDIUM · **Where:** supervisor.md role instructions
+
+**Симптом:** Supervisor (Qwen в opencode-сессии) нашёл баг в awf (DF5-7)
+и попытался его исправить: `edit awf/templates/dashboard.html.j2`.
+User остановил: "Не правь awf сам. Это не твоя работа". Supervisor откатил
+через `git checkout`.
+
+**Почему:** supervisor.md содержит "Step 0 Role boundaries: DO NOT edit
+project source files. All changes go through pipeline." Но:
+1. Qwen менее послушен инструкциям чем Claude/GPT.
+2. awf/ — это не "project source files" с точки зрения supervisor'а
+   (project = jira-epic-presenter, awf = инструмент). Формулировка
+   неоднозначна.
+3. Supervisor имеет полный доступ к tools (edit, bash, write) — граница
+   только текстовая, нет технического enforcement.
+
+**Файлы для контекста:**
+- `templates/roles/supervisor.md` — Step 0 role boundaries
+- Session parts [201-228] — supervisor редактирует awf, user останавливает
+
+**Решение:**
+1. Усилить формулировку: "DO NOT edit ANY files outside jira-epic-presenter/
+   project tree. awf/ tooling, templates, Python code — read-only for you.
+   Found a bug in awf? Write it to BACKLOG or tell user, do NOT fix it."
+2. (Опционально) opencode permission rules могут запретить edit вне project_dir.
+
+### DF5-10 · `awf_start` возвращает "ok" когда pipeline сразу умирает
+
+**Priority:** HIGH · **Where:** `awf/api/pipeline.py:267-290` + orchestrator
+
+**Симптом:** Первый `awf_start(background=True, checkpoint=enabled)` вернул:
+```json
+{"status": "ok", "run_mode": "background", "run_id": 1295433}
+```
+Но pipeline УЖЕ умер — child subprocess запустил `run_pipeline()` в foreground,
+попал на BD-36 check "foreground+checkpoint=noop", вышел с code 1.
+awf-start.out содержит: "Foreground mode incompatible with BD-36 interactive
+checkpoint". User не знал что pipeline мёртв — status показывал active TODO
+но лог не рос.
+
+**Почему:** `start_pipeline(background=True)` → `start_in_background()` →
+Popen (subprocess запущен) → return PID. Но содержимое subprocess'а
+(run_pipeline) может сразу выйти с noop/error. Background launch
+проверяет только "процесс стартовал", не "процесс жив через 1 сек".
+
+Дополнительно: background child (`python -m awf start`) вызывает
+`start_pipeline(background=False)` (CLI не передаёт --background — он САМ
+background child). Foreground + checkpoint → noop. Это design conflict:
+checkpoint должен работать в background mode (form в браузере, не stdout),
+но foreground check не различает "real foreground" vs "background child".
+
+**Файлы для контекста:**
+- `awf/api/pipeline.py:267-290` — background launch (не ждёт child)
+- `awf/api/_background.py:61-75` — child_argv (без --background flag)
+- `awf/orchestrator.py` — foreground+checkpoint check (noop return)
+- Session parts [84-99] — первый start вернул ok, но pipeline умер
+
+**Решение:**
+1. После `start_in_background()` → подождать 1 сек → проверить `proc.poll()`.
+   Если процесс уже умер → вернуть `run_mode="error"` с exit_code и log_tail.
+2. Передать env var `AWF_BACKGROUND_CHILD=1` в child. В orchestrator
+   foreground+checkpoint check: если `AWF_BACKGROUND_CHILD=1` → НЕ noop
+   (checkpoint form открывается в браузере, stdout goes to file, не MCP stdio).
+
+### DF5-11 · Supervisor (Qwen) не использует wait_for_event проактивно
+
+**Priority:** LOW · **Where:** supervisor.md workflow steps / AGENTS.md
+
+**Симптом:** User спросил "Тебя оповестят о завершении и ты проснешься?"
+Supervisor ответил "Нет, сам не проснусь." — и не предложил вызвать
+`wait_for_event`. User должен был сам сказать "Давай мне статус сам".
+Pipeline шёл ~5 минут без мониторинга.
+
+**Почему:** AGENTS.md описывает `wait_for_event` в workflow recipe, но
+supervisor.md (то что видит Qwen) не содержит явного шага "после
+awf_start → вызвать wait_for_event и ждать". Qwen не следует рецепту
+из AGENTS.md — он следует своему role file.
+
+**Решение:**
+1. В supervisor.md добавить шаг: "After awf_start → call awf_wait_for_event
+   immediately. Do NOT ask user 'should I wait?' — just start waiting."
+2. (Опционально) AGENTS.md уже содержит это, но для Qwen нужно дублирование
+   в role file.
+
+### DF5-12 · MCP tool timeouts во время активного pipeline
+
+**Priority:** MEDIUM · **Where:** MCP plugin (single-threaded server)
+
+**Симптом:** Когда pipeline работает (subprocess активен), MCP tools
+таймаутят: `awf_continue` (part[273]) вернул error, `awf_status` тоже
+медленный. Supervisor переключился на bash (`python3 -m awf status`).
+
+**Почему:** MCP plugin работает в single-threaded subprocess opencode.
+Pipeline subprocess не блокирует MCP напрямую, но ресурсы (CPU, I/O)
+конкурируют. vLLM + pipeline workers + MCP server на одной машине →
+MCP timeout при нагрузке.
+
+**Файлы для контекста:**
+- Session parts [273, 281, 286] — MCP timeouts, fallback to bash
+- `agent_workflow_ui/server.py` — MCP server (single-threaded)
+
+**Решение:**
+1. Увеличить MCP tool timeout в opencode config (если настраивается).
+2. `awf_wait_for_event` уже использует blocking poll (хорошо), но другие
+   tools (`status`, `continue`) должны быть quick — проверить, не блокируют
+   ли они на I/O.
+3. (Long-term) MCP server на отдельном процессе / thread pool.

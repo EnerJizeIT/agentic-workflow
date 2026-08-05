@@ -386,7 +386,18 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             tasks_done=tasks_done,
             worker_activity=_read_worker_activity(state),
         )
-    except Exception:
+    except Exception as e:
+        import traceback as _tb
+
+        from .._log import log as _log
+        logs_dir = project_dir / ".agentic" / "logs"
+        _log(logs_dir, f"Dashboard generation failed: {e}")
+        err_path = project_dir / ".agentic" / DASHBOARD_DIR / "error.txt"
+        try:
+            err_path.parent.mkdir(parents=True, exist_ok=True)
+            err_path.write_text(f"{type(e).__name__}: {e}\n\n{_tb.format_exc()}", encoding="utf-8")
+        except OSError:
+            pass
         return None
 
     # Write to .agentic/dashboards/current.html (atomic — concurrent
