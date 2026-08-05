@@ -116,8 +116,10 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
         shutil.move(str(todo_md), str(dest / "TODO.md"))
         moved_anything = True
 
-    # Delete consumed signal files from inbox
-    for pattern in [f"TODO-{todo_id}.ready", f"ACK-{todo_id}.ready", f"APPROVE-{todo_id}.ready"]:
+    # Delete consumed signal files from inbox.
+    # NOTE: {todo_id} already contains "TODO-" prefix (e.g. "TODO-0001"),
+    # so dispatch signal is {todo_id}.ready (not TODO-{todo_id}.ready).
+    for pattern in [f"{todo_id}.ready", f"ACK-{todo_id}.ready", f"APPROVE-{todo_id}.ready"]:
         p = inbox_p / pattern
         if p.exists():
             p.unlink()
@@ -133,6 +135,15 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
                 else:
                     src.unlink()  # .ready signals consumed
                 moved_anything = True
+
+    # Move handoff files to done/{id}/handoff/
+    handoff_p = project_dir / ".agentic" / "handoff"
+    if handoff_p.is_dir():
+        for hf in handoff_p.glob(f"*-{todo_id}.md"):
+            handoff_dest = dest / "handoff"
+            handoff_dest.mkdir(exist_ok=True)
+            shutil.move(str(hf), str(handoff_dest / hf.name))
+            moved_anything = True
 
     if not moved_anything:
         # Clean up empty dest dir
