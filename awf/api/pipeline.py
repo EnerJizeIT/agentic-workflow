@@ -101,13 +101,14 @@ def _reconcile(project_dir: Path) -> None:
 
     from .. import paths, todos
     from .._log import log as _log
-    from ..pipeline_state import clear_state, read_state
+    from ..pipeline_state import read_state
 
     inbox = paths.inbox(project_dir)
     logs_dir = project_dir / ".agentic" / "logs"
     cleaned: list[str] = []
 
-    # 1. Clear stale PID
+    # 1. Clear stale PID — but PRESERVE other state fields (stage_name, etc.)
+    # so continue_pipeline can still resume from the correct stage.
     state = read_state(project_dir)
     if state and state.get("pipeline_pid"):
         pid_str = state["pipeline_pid"]
@@ -115,7 +116,18 @@ def _reconcile(project_dir: Path) -> None:
             pid_int = int(pid_str)
             os.kill(pid_int, 0)
         except (ProcessLookupError, PermissionError, ValueError, TypeError, OSError):
-            clear_state(project_dir)
+            # Remove just the PID, keep stage info for continue_pipeline.
+            # Write YAML directly — write_state merges, can't remove keys.
+            state.pop("pipeline_pid", None)
+            import yaml as _yaml
+
+            from ..paths import agentic_dir
+            state_file = agentic_dir(project_dir) / "state" / "current.yaml"
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(
+                _yaml.dump(state, default_flow_style=False, allow_unicode=True),
+                encoding="utf-8",
+            )
             cleaned.append(f"cleared stale PID {pid_str}")
 
     # 2. Deduplicate ACK+APPROVE (keep APPROVE, remove ACK)
