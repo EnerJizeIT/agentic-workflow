@@ -452,7 +452,10 @@ def start_pipeline(
             )
 
         # Dogfood-8: warn supervisor about BD-36 checkpoint
-        msg = f"awf start running in background (PID {pid})"
+        msg = (
+            f"awf start running in background (PID {pid}). "
+            f"NEXT: call awf_wait_for_event(project_dir, timeout=30) to monitor progress."
+        )
         if checkpoint_active:
             msg += (
                 ". BD-36 checkpoint ENABLED — after plan stage, HTML form opens "
@@ -593,9 +596,12 @@ def continue_pipeline(
                     f"Last log output:\n{log_tail}"
                 ),
             )
-        msg = f"awf continue running in background (PID {pid})"
+        msg = (
+            f"awf continue running in background (PID {pid})"
+        )
         if from_stage:
             msg += f", resuming from stage '{from_stage}'"
+        msg += ". NEXT: call awf_wait_for_event(project_dir, timeout=30) to monitor progress."
         return StartResult(
             run_mode="background",
             run_id=pid,

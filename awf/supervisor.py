@@ -95,17 +95,17 @@ def _build_pipeline_context(project_dir: Path, todo_id: str) -> str:
     if after:
         parts.append(f"After you: {', '.join(after)}")
 
-    # 5. Explicit scope boundary
-    role_name = current_stage_name
-    if "system-analyst" in role_name and after:
+    # 5. Explicit scope boundary — match common role name patterns
+    role_lower = current_stage_name.lower()
+    if "analyst" in role_lower and after:
         parts.append("\nYour scope: requirements analysis. Implementation, architecture, QA — other stages handle those.")
-    elif "architector" in role_name and after:
+    elif "architect" in role_lower and after:
         parts.append("\nYour scope: architecture/design. Requirements, implementation, QA — other stages handle those.")
-    elif "implementer" in role_name and before:
+    elif "implement" in role_lower and before:
         parts.append("\nYour scope: implementation. Requirements and architecture should already exist — use them, don't recreate.")
-    elif "qa-review" in role_name:
+    elif "qa" in role_lower or "review" in role_lower:
         parts.append("\nYour scope: quality review. Don't implement — review what others built.")
-    elif "project-auditor" in role_name:
+    elif "audit" in role_lower:
         parts.append("\nYour scope: project audit. Don't implement — assess overall quality.")
 
     # 6. Prior completed work from done/
