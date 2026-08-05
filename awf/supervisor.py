@@ -418,7 +418,7 @@ def wait_for_supervisor_signal(
                     _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig}")
                     return sig
 
-        if kind == "verify" and todo_id:
+        if kind in ("verify", "salvage") and todo_id:
             for sig_path in (
                 inbox / f"ACK-{todo_id}.ready",
                 inbox / f"APPROVE-{todo_id}.ready",

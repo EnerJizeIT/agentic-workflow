@@ -73,18 +73,27 @@ def _parse_log_events(log_text: str, max_events: int = 30) -> list[dict[str, str
     """Extract events from orchestrator.log.
 
     Parses lines like: ``[2026-08-05T15:42:19Z] Stage 1: agent-system-analyst``
-    Returns last ``max_events`` events with cleaned timestamps (HH:MM:SS).
+    Returns last ``max_events`` events with timestamps converted to local time.
     """
     events: list[dict[str, str]] = []
     # orchestrator.log format: [2026-08-05T15:42:19Z] message
-    time_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})Z?)\]\s*(.*)")
+    time_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})Z?)\]\s*(.*)")
 
     for line in log_text.splitlines():
         m = time_pattern.match(line)
         if not m:
             continue
-        ts_short = m.group(2)  # HH:MM:SS
-        msg = m.group(3).strip()  # message after timestamp
+        # Convert UTC HH:MM:SS to local time
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+        try:
+            utc_dt = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ")
+            utc_dt = utc_dt.replace(tzinfo=_tz.utc)
+            local_dt = utc_dt.astimezone()
+            ts_short = local_dt.strftime("%H:%M:%S")
+        except (ValueError, TypeError):
+            ts_short = f"{m.group(2)}:{m.group(3)}:{m.group(4)}"
+        msg = m.group(5).strip()
 
         # Stage transitions
         stage_m = re.match(r"Stage\s+\d+:\s+(\S+)", msg)
