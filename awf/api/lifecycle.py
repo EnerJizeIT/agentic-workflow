@@ -208,8 +208,11 @@ def _read_progress(outbox: Path, todo_id: str) -> dict[str, Any]:
     return {"total": total, "done": done, "failed": failed, "last": last}
 
 
-def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]:
-    """Count DONE/BLOCKED TODOs. Returns (done_count, blocked_count, blocked_ids)."""
+def _count_done_blocked(inbox: Path, outbox: Path, done: Path | None = None) -> tuple[int, int, list[str]]:
+    """Count DONE/BLOCKED TODOs. Returns (done_count, blocked_count, blocked_ids).
+
+    DF6-4: also counts archived TODOs in done/ directory.
+    """
     from ..signals import find_signal_file
 
     done_count = 0
@@ -217,19 +220,32 @@ def _count_done_blocked(inbox: Path, outbox: Path) -> tuple[int, int, list[str]]
     blocked_ids: list[str] = []
 
     if not inbox.exists():
+        # DF6-4: even if inbox is empty, count done/ archives
+        if done and done.is_dir():
+            done_count = sum(1 for d in done.iterdir() if d.is_dir())
         return done_count, blocked_count, blocked_ids
 
     for ready_file in sorted(inbox.glob("TODO-*.ready")):
         if not ready_file.is_file():
             continue
         todo_id = ready_file.stem
-        done = find_signal_file(outbox, "DONE", todo_id, ".ready")
+        done_sig = find_signal_file(outbox, "DONE", todo_id, ".ready")
         blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
-        if done:
+        if done_sig:
             done_count += 1
         elif blocked:
             blocked_count += 1
             blocked_ids.append(todo_id)
+
+    # DF6-4: count archived TODOs in done/ directory
+    if done and done.is_dir():
+        for d in done.iterdir():
+            if d.is_dir():
+                todo_id = d.name  # e.g. "TODO-0001"
+                # Only count if not already counted from outbox (back-compat)
+                done_sig = find_signal_file(outbox, "DONE", todo_id, ".ready")
+                if not done_sig:
+                    done_count += 1
 
     return done_count, blocked_count, blocked_ids
 
@@ -248,7 +264,9 @@ def get_status(project_dir: Path) -> StatusResult:
     )
 
     active_ids = todos.list_active_todos(inbox, outbox)
-    done_count, blocked_count, blocked_ids = _count_done_blocked(inbox, outbox)
+    done_count, blocked_count, blocked_ids = _count_done_blocked(
+        inbox, outbox, paths.done_dir(project_dir)
+    )
 
     active_todos_list: list[dict[str, Any]] = []
     for todo_id in active_ids:

@@ -24,6 +24,16 @@ def context_dir(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "context"
 
 
+def done_dir(project_dir: str | Path = ".") -> Path:
+    """DF6-1: Return .agentic/done/ — archive for completed TODOs."""
+    return agentic_dir(project_dir) / "done"
+
+
+def handoff_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/handoff/."""
+    return agentic_dir(project_dir) / "handoff"
+
+
 def config_file(project_dir: str | Path = ".") -> Path:
     """Return .agentic/config.yaml."""
     return agentic_dir(project_dir) / "config.yaml"

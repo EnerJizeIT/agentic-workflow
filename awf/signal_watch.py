@@ -81,7 +81,11 @@ def run_subprocess_until_signal(
         if watch_dir.is_dir():
             snapshot = {p.name for p in watch_dir.glob(pattern)}
 
-    proc = subprocess.Popen(cmd, cwd=str(cwd), env=env or awf_subprocess_env())
+    from ._env import _pdeathsig_preexec
+    proc = subprocess.Popen(
+        cmd, cwd=str(cwd), env=env or awf_subprocess_env(),
+        preexec_fn=_pdeathsig_preexec,
+    )
     deadline = time.monotonic() + hard_timeout
     signal_seen_at: float | None = None
 

@@ -254,13 +254,16 @@ manual 3-step workflow.
 Pipeline auto-regenerates dashboard after each stage transition — user
 sees live progress without supervisor intervention.
 
-### Step 7 · Verify result
+### Step 7 · Verify — YOU are the reviewer, not a relay
 
-If **DONE**:
+When pipeline reaches verify stage, you MUST act as the decision maker.
+Do NOT relay "pipeline waits for your decision" to the user — that's YOUR call.
 
-1. Read `DONE-TODO-{NNNN}.md`.
-2. Run verification commands from config independently.
-3. Check `git diff --stat` — changes must be in source files, not just `.md`.
+**Mandatory verify steps:**
+
+1. Read ALL handoff files in `.agentic/handoff/`.
+2. Run `git diff --stat` to see what changed since baseline.
+3. Run verification commands from config independently.
 4. Review the actual code changes for correctness and style.
 5. Compare regression results with baseline.
 6. **Content verify (mandatory when supervisor_instruction says 'verify' /
@@ -273,8 +276,15 @@ If **DONE**:
    - **If you cite a fact (e.g. "R5 matches storyboard.sample.json"), you
      MUST have opened that file.** Accepting worker's claim on faith
      violates 'verify' instruction.
-7. Decide: continue / fix / rollback / ask_user.
-8. If approved — create `.agentic/inbox/ACK-{NNNN}.ready`, mark step `[x]` in phases file.
+7. **DECIDE AND ACT — do NOT ask user for permission:**
+   - Work is good → `awf_approve(todo_id)` — no user permission needed.
+   - Work has issues → write `.agentic/outbox/REVIEW-{todo_id}.md` with specific fixes.
+   - Complete failure → `awf_rollback(todo_id)` + new TODO.
+8. Mark step `[x]` in phases file after approve.
+
+**CRITICAL:** You are the supervisor. The user hired you to make these decisions.
+DO NOT wait for the user to say "ACK" — that's YOUR call. If the work is good,
+approve it. If not, reject it. The user trusts your judgement.
 
 **DO NOT modify awf machinery during pipeline run** (dogfood-3 lesson):
 

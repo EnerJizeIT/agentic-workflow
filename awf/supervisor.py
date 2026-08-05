@@ -197,16 +197,19 @@ def wait_for_supervisor_signal(
     # BD-30: snapshot which TODO signals existed BEFORE pipeline start.
     # Used to distinguish "new signal from interactive supervisor" from
     # "stale file from previous runs". But only filter as stale if the
-    # TODO already has a matching DONE-<id>.ready (truly completed);
-    # otherwise it's an active orphan — supervisor created TODO before
-    # awf_start, common in interactive Mode B workflow.
+    # TODO already has a matching DONE-<id>.ready in outbox (truly completed)
+    # OR is archived in done/ (DF6-1/DF6-3); otherwise it's an active orphan.
+    from .todos import is_archived
+
     existing_todo_signals: set[str] = set()
     active_orphan_signals: list[str] = []
     if kind in ("plan", "replan") and inbox.is_dir():
         for p in inbox.glob("TODO-*.ready"):
             existing_todo_signals.add(p.name)
             todo_name = p.stem  # "TODO-0001"
-            if not (outbox / f"DONE-{todo_name}.ready").exists():
+            has_done = (outbox / f"DONE-{todo_name}.ready").exists()
+            is_done = has_done or is_archived(project_dir, todo_name)
+            if not is_done:
                 active_orphan_signals.append(p.name)
         # If there are active orphans (not-yet-done), take the newest
         # immediately on first poll iteration. This avoids the UX trap

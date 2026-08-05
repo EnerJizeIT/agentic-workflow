@@ -137,7 +137,7 @@ class _FakeCompletedProc:
 
 class _ImmediateExitPopen:
     """Popen stub that exits immediately with code 0."""
-    def __init__(self, cmd, cwd=None, env=None):
+    def __init__(self, cmd, cwd=None, env=None, **kwargs):
         self.cmd = cmd
         self.returncode = 0
         self.pid = 12345

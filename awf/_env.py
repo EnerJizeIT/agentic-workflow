@@ -7,6 +7,26 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+
+
+def _pdeathsig_preexec() -> None:
+    """DF6-8: Set PR_SET_PDEATHSIG so child dies when parent (orchestrator) dies.
+
+    Linux-only. On other platforms, no-op (best effort).
+    Prevents orphan worker subprocesses from continuing after orchestrator crash.
+    """
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+        import signal as _signal
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        PR_SET_PDEATHSIG = 1
+        libc.prctl(PR_SET_PDEATHSIG, _signal.SIGTERM)
+    except Exception:
+        pass  # best effort — don't crash if libc/prctl unavailable
 
 
 def awf_subprocess_env() -> dict[str, str]:

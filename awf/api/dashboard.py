@@ -170,9 +170,23 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
     """Determine dashboard status fields from pipeline state.
 
     Returns (status, status_class, status_text, status_icon, status_label).
+
+    DF6-6: checks pipeline PID liveness. If state has pipeline_pid but
+    the process is dead, shows "Pipeline dead" instead of stale "running".
     """
     if not state:
         return ("idle", "done", "Idle", "○", "Status")
+
+    # DF6-6: PID liveness check
+    pid = state.get("pipeline_pid")
+    if pid:
+        try:
+            import os as _os
+            _os.kill(int(pid), 0)
+        except (ProcessLookupError, PermissionError, ValueError, TypeError, OSError):
+            return ("dead", "blocked", "⚠️ Pipeline process dead", "✕", "Dead")
+        except Exception:
+            pass
 
     checkpoint_pending = bool(state.get("checkpoint_pending", False))
     stage_kind = state.get("stage_kind", "")

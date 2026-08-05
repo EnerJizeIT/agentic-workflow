@@ -76,7 +76,7 @@ def update_gitignore(project_dir: Path) -> None:
     """
     gitignore_block = (
         ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n"
-        ".agentic/logs/\n.agentic/reports/\n"
+        ".agentic/logs/\n.agentic/reports/\n.agentic/done/\n"
         ".agentic/inputs/\n.agentic/dashboards/\n"
     )
     gitignore = project_dir / ".gitignore"

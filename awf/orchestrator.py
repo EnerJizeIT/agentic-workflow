@@ -447,6 +447,11 @@ def run_pipeline(args: Any) -> int:
                     project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
                 )
                 _mark_plan_step_done(project_dir, current_todo, logs_dir)
+                # DF6-1: archive completed TODO to done/{todo_id}/
+                from .todos import archive_todo
+                archived = archive_todo(project_dir, current_todo)
+                if archived:
+                    _log(logs_dir, f"DF6-1: archived {current_todo} → {archived}")
                 stage_idx += 1
                 continue
 

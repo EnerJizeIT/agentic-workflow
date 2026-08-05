@@ -71,9 +71,11 @@ class TestSignals:
             cwd=initialized_project, env=awf_env, input_data=b"", timeout=60
         )
 
-        # The stub should have processed TODO-0002 (the newest), not TODO-0001
-        assert (initialized_project / ".agentic/outbox/DONE-TODO-0002.ready").exists(), \
-            f"Expected DONE-TODO-0002 (newest picked). stderr={result.stderr.decode()!r}"
+        # The stub should have processed TODO-0002 (the newest), not TODO-0001.
+        # DF6-1: after verify approve, TODO is archived to done/{todo_id}/
+        done_dir = initialized_project / ".agentic/done/TODO-0002"
+        assert done_dir.is_dir(), \
+            f"Expected done/TODO-0002/ (DF6-1 archive). stderr={result.stderr.decode()!r}"
 
     def test_reset_orphans(self, initialized_project: Path, awf_bin: str, awf_env: dict):
         """awf reset --orphans --force removes orphan TODOs, preserves in-flight and closed."""

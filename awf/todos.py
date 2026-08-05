@@ -79,3 +79,74 @@ def newest_active(project_root: str | Path) -> str:
     outbox = paths.outbox(project_root)
     active = list_active_todos(inbox, outbox)
     return active[0] if active else ""
+
+
+def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
+    """DF6-1: Move completed TODO files from inbox/outbox to done/{todo_id}/.
+
+    After verify approve (ACK/APPROVE), call this to archive:
+    - inbox/TODO-{id}.md        → done/{id}/TODO.md
+    - inbox/TODO-{id}.ready     → deleted (signal consumed)
+    - inbox/ACK-{id}.ready      → deleted
+    - inbox/APPROVE-{id}.ready  → deleted
+    - outbox/PROGRESS-{id}.md   → done/{id}/PROGRESS.md
+    - outbox/DONE-{id}.md       → done/{id}/DONE.md
+    - outbox/DONE-{id}.ready    → deleted
+
+    Returns path to done/{todo_id}/ dir, or None if nothing to archive.
+    Idempotent — safe to call multiple times.
+    """
+    import shutil
+
+    from . import paths
+
+    project_dir = Path(project_dir)
+    inbox_p = paths.inbox(project_dir)
+    outbox_p = paths.outbox(project_dir)
+    dest = paths.done_dir(project_dir) / todo_id
+
+    moved_anything = False
+
+    # Create dest dir
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Move TODO .md
+    todo_md = inbox_p / f"{todo_id}.md"
+    if todo_md.is_file():
+        shutil.move(str(todo_md), str(dest / "TODO.md"))
+        moved_anything = True
+
+    # Delete consumed signal files from inbox
+    for pattern in [f"TODO-{todo_id}.ready", f"ACK-{todo_id}.ready", f"APPROVE-{todo_id}.ready"]:
+        p = inbox_p / pattern
+        if p.exists():
+            p.unlink()
+            moved_anything = True
+
+    # Move PROGRESS and DONE from outbox
+    for prefix in ("PROGRESS", "DONE"):
+        for ext in (".md", ".ready"):
+            src = outbox_p / f"{prefix}-{todo_id}{ext}"
+            if src.is_file():
+                if ext == ".md":
+                    shutil.move(str(src), str(dest / f"{prefix}.md"))
+                else:
+                    src.unlink()  # .ready signals consumed
+                moved_anything = True
+
+    if not moved_anything:
+        # Clean up empty dest dir
+        try:
+            dest.rmdir()
+        except OSError:
+            pass
+        return None
+
+    return dest
+
+
+def is_archived(project_dir: str | Path, todo_id: str) -> bool:
+    """DF6-3: Check if a TODO has been archived to done/{todo_id}/."""
+    from . import paths
+
+    return (paths.done_dir(project_dir) / todo_id).is_dir()

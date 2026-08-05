@@ -6,6 +6,7 @@ detached subprocess via :func:`awf.api._background.start_in_background`.
 """
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -82,6 +83,62 @@ def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
         return False
     except OSError:
         return False
+
+
+def _reconcile(project_dir: Path) -> None:
+    """DF6-2: Reconcile project state before start/continue.
+
+    Ensures consistent state by cleaning up:
+    1. Stale pipeline PID in state file → clear state.
+    2. Duplicate ACK+APPROVE signals → remove older one.
+    3. Multiple active TODOs → keep newest, archive rest as superseded.
+
+    Note: does NOT auto-archive TODOs based on ACK/APPROVE presence —
+    that's done by orchestrator verify stage (DF6-1). Tests pre-create
+    APPROVE signals for BD-8 auto-approval; auto-archiving would break them.
+    """
+    import os
+
+    from .. import paths, todos
+    from .._log import log as _log
+    from ..pipeline_state import clear_state, read_state
+
+    inbox = paths.inbox(project_dir)
+    logs_dir = project_dir / ".agentic" / "logs"
+    cleaned: list[str] = []
+
+    # 1. Clear stale PID
+    state = read_state(project_dir)
+    if state and state.get("pipeline_pid"):
+        pid_str = state["pipeline_pid"]
+        try:
+            pid_int = int(pid_str)
+            os.kill(pid_int, 0)
+        except (ProcessLookupError, PermissionError, ValueError, TypeError, OSError):
+            clear_state(project_dir)
+            cleaned.append(f"cleared stale PID {pid_str}")
+
+    # 2. Deduplicate ACK+APPROVE (keep APPROVE, remove ACK)
+    if inbox.is_dir():
+        for ack in inbox.glob("ACK-*.ready"):
+            todo_id = ack.name.replace("ACK-", "").replace(".ready", "")
+            approve = inbox / f"APPROVE-{todo_id}.ready"
+            if approve.exists():
+                ack.unlink()
+                cleaned.append(f"dedup: removed ACK-{todo_id} (APPROVE exists)")
+
+    # 3. Multiple active TODOs → keep newest, archive rest
+    if inbox.is_dir():
+        active = sorted(inbox.glob("TODO-*.ready"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if len(active) > 1:
+            for old_ready in active[1:]:
+                todo_id = old_ready.stem
+                result = todos.archive_todo(project_dir, todo_id)
+                if result:
+                    cleaned.append(f"superseded {todo_id} (newer TODO exists)")
+
+    if cleaned and logs_dir.is_dir():
+        _log(logs_dir, f"DF6-2 reconcile: {'; '.join(cleaned)}")
 
 # ─── approve_commit ─────────────────────────────────────────────────────
 
@@ -308,6 +365,13 @@ def start_pipeline(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    # DF6-2: reconcile state before starting — archive completed TODOs,
+    # clear stale PIDs, deduplicate signals. Only for background mode
+    # (MCP/supervisor path). Foreground/CI tests may pre-create APPROVE
+    # signals that should not trigger archival.
+    if background:
+        _reconcile(project_dir)
+
     # Dogfood-10: guard — refuse to start pipeline without active TODO.
     # Only for background mode (production supervisor flow). Foreground
     # mode is used by tests/CI — skip guard there.
@@ -393,7 +457,10 @@ def start_pipeline(
         )
 
     # Dogfood-8: foreground + checkpoint enabled = incompatible
-    if checkpoint_active:
+    # DF6-5: EXCEPT when this process is a background child (AWF_BACKGROUND_CHILD=1).
+    # In background mode, stdout goes to a log file, not MCP stdio — so the
+    # checkpoint form can safely open in browser without conflicts.
+    if checkpoint_active and not os.environ.get("AWF_BACKGROUND_CHILD"):
         return StartResult(
             run_mode="noop",
             run_id=None,
@@ -453,7 +520,8 @@ def continue_pipeline(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
-    # DF5-6: refuse if pipeline already running.
+    # DF6-2: reconcile state before continuing
+    _reconcile(project_dir)
     live_pid = _is_pipeline_running(project_dir)
     if live_pid:
         return StartResult(

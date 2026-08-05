@@ -82,6 +82,10 @@ def start_in_background(
             stdout=out,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            # DF6-5: signal child that it's a background process.
+            # orchestrator's foreground+checkpoint check reads this env
+            # to allow checkpoint (form opens in browser, stdout goes to file).
+            env={**os.environ, "AWF_BACKGROUND_CHILD": "1"},
         )
 
     atomic_write_text(pid_file, f"{proc.pid}\n")

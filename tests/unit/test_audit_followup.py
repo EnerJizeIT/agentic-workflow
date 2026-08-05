@@ -131,7 +131,7 @@ class TestH7HardTimeoutKill:
         from awf.signal_watch import run_subprocess_until_signal
 
         class _HangingPopen:
-            def __init__(self, cmd, cwd=None, env=None):
+            def __init__(self, cmd, cwd=None, env=None, **kwargs):
                 self.cmd = cmd
                 self.pid = 999
                 self.returncode = None
