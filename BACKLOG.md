@@ -2,9 +2,9 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1006 тестов, CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. 23 MCP tools (5 UI + 18 awf). Dogfood v5 findings (DF5-1..DF5-12) и QA-2026-08-05 findings закрыты. ruff clean.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1006 тестов, CI green, 23 MCP tools. DF5-1..12 + QA-2026-08-05 закрыты. Dogfood v6 (ses_02e507f92ffe5FxdRIQipenL9f) выявил системные проблемы lifecycle management.
 
-**Активный эпик:** следующий dogfood — протестировать весь флоу с фиксы из DF5/QA.
+**Активный эпик:** DF6 — TODO Lifecycle + Pipeline Reliability + Supervisor Autonomy.
 
 История фиксов — в `git log --oneline`.
 
@@ -892,3 +892,214 @@ MCP timeout при нагрузке.
    tools (`status`, `continue`) должны быть quick — проверить, не блокируют
    ли они на I/O.
 3. (Long-term) MCP server на отдельном процессе / thread pool.
+
+---
+
+## 🐛 Найдено в dogfood v6 (2026-08-05, ses_02e507f92ffe5FxdRIQipenL9f)
+
+> Сессия: supervisor + весь флоу на vllm/Qwen. TODO-0001 был ACK'd в
+> предыдущей сессии. Supervisor ACK'нул → pipeline завершился → dispatch
+> TODO-0002 → awf_start. Pipeline упал (foreground+checkpoint), dashboard
+> показывал stale stage, supervisor действовал пассивно.
+
+### Корневой анализ
+
+Три системные проблемы, все сводятся к отсутствию lifecycle management:
+
+**1. TODO Lifecycle отсутствует.** После verify ACK/APPROVE orchestrator
+коммитит, отмечает plan step, переходит к следующей стадии — но НЕ очищает
+inbox. `TODO-{id}.ready` + `TODO-{id}.md` + `ACK-{id}.ready` остаются.
+Следующий `awf_start` → BD-30 orphan pickup находит старый TODO → обрабатывает
+его вместо нового. Нет понятия "completed TODO" — только inbox сигналы и
+outbox DONE'ы, которые не синхронизированы.
+
+**2. Pipeline state не валидируется перед операциями.** `awf_start` и
+`awf_continue` не проверяют консистентность state: устаревшие PID, конфликты
+сигналов, orphan TODO'ы. Каждая операция должна начинаться с reconcile.
+
+**3. Supervisor (LLM) пассивен на verify.** supervisor.md говорит "decide:
+continue/fix/rollback" — но Qwen интерпретирует это как "доложи пользователю
+и жди". Нет явного запрета на пассивное поведение.
+
+---
+
+### DF6-1 · TODO Archive: после verify approve — перемещать TODO в done/
+
+**Priority:** CRITICAL · **Where:** `awf/orchestrator.py:441-451` (verify approve path)
+
+**Что:** После verify approve (ACK/APPROVE) orchestrator перемещает
+TODO-файлы из inbox в `.agentic/done/{todo_id}/`:
+- `inbox/TODO-{id}.md` → `done/{id}/TODO.md`
+- `inbox/TODO-{id}.ready` → удаляется (сигнал отработан)
+- `inbox/ACK-{id}.ready` / `APPROVE-{id}.ready` → удаляется
+- `outbox/PROGRESS-{id}.md` → `done/{id}/PROGRESS.md`
+- `outbox/DONE-{id}.*` → `done/{id}/`
+
+**Почему:** Сейчас после ACK `inbox/TODO-0001.ready` остаётся → BD-30 orphan
+pickup при следующем `awf_start` находит его → обрабатывает старый TODO
+вместо нового. Это сломало весь dogfood v6.
+
+**Где править:**
+- `awf/orchestrator.py:441-451` — после `_maybe_commit`, добавить `_archive_todo()`
+- `awf/todos.py` — новая функция `archive_todo(project_dir, todo_id)`
+- `awf/paths.py` — `done_dir(project_dir)` → `.agentic/done/`
+- `.gitignore` — `.agentic/done/` (runtime state)
+
+**Тесты:**
+- После ACK: `inbox/TODO-*.ready` не существует, `done/{id}/` существует
+- BD-30 не подхватывает архивированный TODO
+- `awf_status` считает `done/` → `done_count` правильный
+
+### DF6-2 · Reconcile: авто-сверка state перед start/continue
+
+**Priority:** CRITICAL · **Where:** `awf/api/pipeline.py` (start_pipeline + continue_pipeline)
+
+**Что:** Перед каждым `awf_start` / `awf_continue` запускать `_reconcile()`:
+
+1. **Archive orphan ACK'd TODOs:** для каждого `inbox/TODO-*.ready` без
+   matching `DONE-*` в outbox → проверить есть ли `ACK-*` или `APPROVE-*`
+   в inbox → если да, archive (он завершён, просто не очищен).
+2. **Clear stale PID:** `state.pipeline_pid` → `os.kill(pid, 0)` → если мёртв,
+   `clear_state()`.
+3. **Deduplicate signals:** `ACK-{id}.ready` + `APPROVE-{id}.ready` → удалить
+   старший по mtime.
+4. **Validate single active TODO:** если >1 `TODO-*.ready` в inbox → оставить
+   новейший по mtime, остальные архивировать как "superseded".
+
+**Почему:** DF6-1 archive закроит основной случай, но старые проекты с
+мусором в inbox всё равно сломаются. Reconcile = defensive layer.
+
+**Где править:**
+- `awf/api/pipeline.py` — `_reconcile(project_dir)` перед стартом
+- Вызов в `start_pipeline()` (после TODO guard, перед background launch)
+- Вызов в `continue_pipeline()` (перед чтением state)
+
+**Тесты:**
+- Inbox с TODO-0001.ready + ACK-TODO-0001.ready → после reconcile: архивировано
+- Inbox с 2 TODO-*.ready → после reconcile: 1 активный, 1 superseded
+- State с мёртвым PID → после reconcile: state очищен
+
+### DF6-3 · BD-30 orphan pickup: проверять done/ директорию
+
+**Priority:** HIGH · **Where:** `awf/supervisor.py` (`wait_for_supervisor_signal` BD-30 logic)
+
+**Что:** BD-30 orphan pickup при сканировании inbox должен исключать TODO'ы
+которые есть в `done/`. Сейчас проверяет только `outbox/DONE-{id}`.
+Добавить проверку `done/{id}/` existence.
+
+**Почему:** DF6-1 archive переместит файлы в done/, но BD-30 может всё равно
+найти TODO-*.ready в inbox если он не был удалён (edge case: crash во время
+archive). Defense-in-depth.
+
+**Где править:**
+- `awf/supervisor.py` — orphan pickup: `if done_dir / todo_id exists: skip`
+
+### DF6-4 · done_count: считать из done/ директории
+
+**Priority:** HIGH · **Where:** `awf/api/lifecycle.py:211-234` (`_count_done_blocked`)
+
+**Что:** `_count_done_blocked` сейчас считает `outbox/DONE-*.ready`. После
+DF6-1, завершённые TODO'ы архивируются в `done/`. Добавить подсчёт
+`done/*/` директорий.
+
+**Почему:** `awf_status` показал `done_count: 0` после ACK'd TODO-0001.
+Supervisor не видит прогресс.
+
+**Где править:**
+- `awf/api/lifecycle.py:211` — `done_count = len(list(done_dir.glob("*/")))` + старая логика для back-compat
+
+### DF6-5 · BD-36 checkpoint: auto-disable для background child
+
+**Priority:** HIGH · **Where:** `awf/api/_background.py` + `awf/orchestrator.py`
+
+**Что:** Background child запускается через `python -m awf start` (без
+`--background`). Child работает в foreground mode. Foreground + checkpoint =
+noop error → child умирает → pipeline мёртв, но `awf_start` вернул "ok".
+
+Два варианта фикса:
+- **A (env signal):** передать `AWF_BACKGROUND_CHILD=1` в child env.
+  orchestrator foreground+checkpoint check: если env установлен → не noop
+  (checkpoint form открывается в браузере, stdout goes to file — конфликт
+  с MCP stdio отсутствует).
+- **B (auto-disable):** `start_in_background` передаёт `--no-checkpoint`
+  в child argv. Теряем checkpoint для background mode, но не падаем.
+
+Рекомендуется **A** — checkpoint должен работать в background (form в
+браузере, не stdout). Это то что ожидает пользователь.
+
+**Почему:** Каждый `awf_start(background=True)` с включённым checkpoint
+(дефолт) → pipeline немедленно умирает. DF5-10 `_verify_child_alive` детектит
+это, но не предотвращает.
+
+**Где править:**
+- `awf/api/_background.py` — child env: `env["AWF_BACKGROUND_CHILD"] = "1"`
+- `awf/orchestrator.py` — foreground+checkpoint check:
+  `if os.environ.get("AWF_BACKGROUND_CHILD"): pass  # OK — stdout goes to file`
+
+### DF6-6 · Dashboard: детект мёртвого orchestrator
+
+**Priority:** MEDIUM · **Where:** `awf/api/dashboard.py:169` (`_determine_status`)
+
+**Что:** `_determine_status` проверяет state fields, но НЕ проверяет жив ли
+`pipeline_pid`. Если orchestrator умер, но state не очищен (crash) →
+dashboard показывает "Pipeline running" indefinitely.
+
+Добавить: если `state.pipeline_pid` есть, проверить `os.kill(pid, 0)`.
+Если мёртв → status = "dead", status_text = "⚠️ Pipeline process dead",
+status_class = "blocked".
+
+**Почему:** В dogfood v6 dashboard показывал system-analyst (stale state)
+хотя orchestrator был мёртв.
+
+**Где править:**
+- `awf/api/dashboard.py:169` — `_determine_status` — добавить PID liveness check
+
+### DF6-7 · Supervisor.md: verify imperatives — запрет пассивности
+
+**Priority:** HIGH · **Where:** `templates/roles/supervisor.md:257-277` (Step 7)
+
+**Что:** Текущий verify шаг говорит "Decide: continue / fix / rollback".
+Qwen интерпретирует как "доложи пользователю и жди". Нужны явные imperatives:
+
+```markdown
+### Step 7 · Verify — YOU are the reviewer, not a relay
+
+When pipeline reaches verify stage, you MUST:
+
+1. Read ALL handoff files in `.agentic/handoff/`.
+2. Run `git diff --stat` to see what changed.
+3. Evaluate quality yourself — do NOT ask user "should I approve?".
+4. DECIDE AND ACT:
+   - Work is good → `awf_approve(todo_id)` — no user permission needed.
+   - Work has issues → write REVIEW-{todo_id}.md with specific fixes.
+5. DO NOT relay "pipeline waits for your decision" to the user.
+   YOU are the decision maker. User hired you as supervisor.
+6. DO NOT wait for user to say "ACK" — that's YOUR call.
+```
+
+**Почему:** Supervisor передал "ждёт твоего ACK/REVIEW" вместо того чтобы
+самому прочитать handoffs и решить. Пользователь сказал "ACK" — supervisor
+выполнил, но это роль человека, не supervisor'а.
+
+### DF6-8 · Worker orphan kill (PR_SET_PDEATHSIG)
+
+**Priority:** LOW · **Where:** `awf/agent_stage.py` + `awf/_env.py`
+
+**Что:** Worker subprocess (opencode run) переживает смерть orchestrator'а.
+На Linux можно вызвать `prctl(PR_SET_PDEATHSIG, SIGTERM)` в child — process
+получает SIGTERM когда родитель умирает.
+
+Реализация: в `_env.py` `setup_subprocess_env()` добавить `preexec_fn`:
+```python
+import ctypes
+libc = ctypes.CDLL("libc.so.6")
+libc.prctl(1, signal.SIGTERM)  # PR_SET_PDEATHSIG = 1
+```
+
+**Почему:** В dogfood v6 worker продолжал работать после смерти orchestrator'а
+и создавал файлы. Pipeline был мёртв, но worker жил. Dashboard показывал
+stale state, supervisor не понимал что происходит.
+
+**Где править:**
+- `awf/_env.py` — `preexec_fn` в subprocess.run / Popen calls
+- Guard: только на Linux (`sys.platform == "linux"`)
