@@ -39,16 +39,14 @@ APPROVE_TIMEOUT_SECONDS: int = _safe_int_env("AWF_APPROVE_TIMEOUT_SECONDS", 1800
 def _files_changed_since_baseline(
     project_dir: Path,
     baseline_sha: str,
+    todo_id: str = "",
 ) -> list[str]:
     """A1 fix: list files changed since baseline SHA.
 
     Returns relative paths (POSIX). Empty list on error or no baseline.
 
-    Dogfood-8 fix: previously only ``git diff --name-only`` was used —
-    which shows **modified tracked files only**. New files created by
-    worker (untracked in git) were silently excluded from commit. In
-    real dogfood (ses_038a07341ffeKO2qkdB8MWCHA1), auto-commit included
-    only ``.gitignore`` while 35 source files stayed untracked.
+    QA-1: ``todo_id`` used to locate ``BASELINE-{todo_id}.untracked`` snapshot
+    so pre-existing untracked files are excluded from worker commit.
 
     Now combines:
     1. ``git diff --name-only <sha>`` — modified tracked files since baseline.
@@ -100,12 +98,20 @@ def _files_changed_since_baseline(
     except (subprocess.SubprocessError, OSError):
         untracked = []
 
-    # QA-1: filter out files that were already untracked at baseline time
-    baseline_untracked_path = project_dir / ".agentic" / "context" / f"BASELINE-{baseline_sha}.untracked"
-    # Try by todo_id pattern if sha-based path doesn't exist
-    if not baseline_untracked_path.exists():
+    # QA-1: filter out files that were already untracked at baseline time.
+    # BASELINE-{todo_id}.untracked was written by create_baseline().
+    baseline_untracked_path: Path | None = None
+    if todo_id:
+        candidate = project_dir / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
+        if candidate.exists():
+            baseline_untracked_path = candidate
+    if not baseline_untracked_path:
+        # Fallback: most recent .untracked file (best effort for old baselines)
         context_dir = project_dir / ".agentic" / "context"
-        candidates = sorted(context_dir.glob("BASELINE-*.untracked"), key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = sorted(
+            context_dir.glob("BASELINE-*.untracked"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
         if candidates:
             baseline_untracked_path = candidates[0]
 
@@ -217,7 +223,7 @@ def maybe_commit(
 
     # A1 fix: commit only baseline-diff files (isolate worker changes)
     if baseline_sha:
-        changed = _files_changed_since_baseline(project_dir, baseline_sha)
+        changed = _files_changed_since_baseline(project_dir, baseline_sha, todo_id=todo_id)
         if not changed:
             print(f"No changes since baseline — skip commit at '{stage_name}'.", file=sys.stderr)
             _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")

@@ -45,7 +45,7 @@ expandable cards: events stream, handoffs, task progress).
 - QA fixes: atomic writes (T2.6), DB connection leak, test false-positives
   documented.
 
-22 MCP tools total (5 UI + 17 awf). 954 tests. ruff clean.
+23 MCP tools total (5 UI + 18 awf). 1006 tests. ruff clean.
 
 ## [Unreleased]
 

@@ -3,7 +3,7 @@
 > Декларативный multi-agent фреймворк: **Supervisor планирует → Agents реализуют → Supervisor проверяет**. Коммуникация — через файлы на диске (file bus). Состоит из двух продуктов в одном monorepo:
 
 - **`awf`** — Python-оркестратор пайплайнов. Бизнес-логика в `awf/api/` (public API package, split by concern); CLI `awf` — тонкая обёртка для dev/debug.
-- **`agent-workflow-ui`** — MCP plugin для opencode: 22 typed tools (17 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
+- **`agent-workflow-ui`** — MCP plugin для opencode: 23 typed tools (18 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
 
 **Primary path = MCP tools** — opencode-агент вызывает `awf_init`, `awf_status`, `awf_start` и т.д. через MCP protocol. CLI `awf` остаётся для e2e тестов и CI скриптов.
 
@@ -18,7 +18,7 @@
 - **Kind-based pipeline (BD-29).** Stage kind (`plan`/`execute`/`verify`) вычисляется по позиции, а не action-полю. Supervisor всегда первый и последний; между ними — произвольные agent roles.
 - **Произвольные роли.** Пользователь выбирает роли через форму (например `agent-system-analyst`, `agent-weak-llm-implementer`, `agent-qa-review`). Skill content встраивается прямо в `.agentic/roles/<role>.md`.
 - **Interactive supervisor (BD-30).** В интерактивном режиме supervisor = текущий opencode в чате пользователя (не subprocess). awf печатает инструкции и ждёт signal file.
-- **Auto-DONE.** Если agent не успел записать сигнал, но есть **≥1 verify-команда** в `config.yaml`, все они прошли и есть work evidence (git diff) — оркестратор синтезирует DONE автоматически. Без verify-команд auto-DONE **не срабатывает** (по умолчанию `test_cmd`/`lint_cmd`/`typecheck_cmd`/`build_cmd` пустые).
+- **Auto-DONE.** Если agent не успел записать сигнал, но есть work evidence (git diff) и все настроенные verify-команды прошли — оркестратор синтезирует DONE автоматически. Если verify-команд нет (greenfield проект) — auto-DONE срабатывает по work evidence alone. Отключается через `automation.auto_done: false`.
 - **Auto-commit с isolation (A1).** Коммиты содержат только diff vs baseline — supervisor's mid-flight edits не попадают в agent commit.
 - **Plan progress auto-tracking (BD-33/34).** После verify автоматически отмечается `[x]` в `phases/plan.md` и печатается progress report.
 - **Skill-aware role analysis (BD-31).** `awf analyze-roles` находит дублирования зон ответственности между ролями и добавляет disambiguation patches.
@@ -26,7 +26,7 @@
 
 ### agent-workflow-ui (MCP plugin)
 
-- **22 MCP tools:** 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 17 awf workflow ops (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`).
+- **23 MCP tools:** 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 18 awf workflow ops (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`).
 - **Plugin depends on `awf` package** — imports `awf.api` directly (no subprocess).
 - **Composite template `project-setup`** — одна HTML-форма для полной настройки проекта: контекст + ТЗ-файлы + supervisor + команда агентов с моделями.
 - **Per-role model selection (BD-32).** Форма показывает dropdown с моделями из `opencode.json` — выбор сохраняется в `config.yaml` как `models.<role>.model`.
@@ -216,7 +216,7 @@ agentic-workflow/                  # monorepo (два независимых п�
 ├── templates/roles/supervisor.md  # supervisor instruction template
 ├── protocols/communication.md     # file bus specification
 ├── vision/                        # product vision + architecture docs
-├── tests/                         # 927 tests (e2e + unit + integration + plugin)
+├── tests/                         # 1006 tests (e2e + unit + integration + plugin)
 └── BACKLOG.md                     # roadmap
 ```
 
@@ -270,10 +270,7 @@ Worker пишет сигналы в `.agentic/outbox/`. Каноничный ф�
 
 ### Auto-DONE
 
-Если agent не записал сигнал, но выполнены оба условия:
-
-1. Прошли **все настроенные verify-команды** из `config.yaml` (`test_cmd`, `build_cmd`, `typecheck_cmd`, `lint_cmd`). **Должна быть хотя бы одна** — без них auto-DONE не срабатывает (`run_verify_commands` вернёт `False`).
-2. Есть **work evidence** — `git diff` показывает изменения (включая untracked файлы).
+Если agent не записал сигнал, но есть **work evidence** — `git diff` показывает изменения (включая untracked файлы). Если verify-команды настроены — они должны пройти. Если verify-команд нет (greenfield/doc проект) — work evidence alone достаточно.
 
 Отключается через `automation.auto_done: false` в `config.yaml`.
 
@@ -336,7 +333,7 @@ python3 -m pytest tests/agent_workflow_ui/ -v
 python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
 ```
 
-**927 тестов:** e2e + unit (awf, включая `test_api.py` 84 тестов) + integration (awf) + integration/unit (plugin, включая `test_awf_tools.py` 34 тестов).
+**1006 тестов:** e2e + unit (awf, включая `test_api.py`) + integration (awf) + integration/unit (plugin).
 
 **Покрытие:**
 - **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).

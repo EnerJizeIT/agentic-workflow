@@ -2,9 +2,9 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 969 тестов (e2e + unit + integration + plugin), CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. Все BD-* баги, A-* архитектурные долги, D1-D5 + M1-M5 отчёта glm-5.2, QA-report пробелы (BD-22/APPROVE timeout/H6 argv), BD-36 plan checkpoint и audit-v2 (HIGH verify.py bool bug) закрыты.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1006 тестов, CI green на Python 3.10/3.11/3.12, coverage 90%+ на plugin. 23 MCP tools (5 UI + 18 awf). Dogfood v5 findings (DF5-1..DF5-12) и QA-2026-08-05 findings закрыты. ruff clean.
 
-**Активный эпик:** MCP-MIGRATION — миграция awf из standalone CLI в pure MCP toolkit под opencode.
+**Активный эпик:** следующий dogfood — протестировать весь флоу с фиксы из DF5/QA.
 
 История фиксов — в `git log --oneline`.
 

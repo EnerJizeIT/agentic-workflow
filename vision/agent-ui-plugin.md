@@ -9,10 +9,10 @@ custom-width: 75
 
 ### 1.1 Что это
 
-**agent-workflow-ui** — MCP plugin для opencode, реализованный как Python-пакет + Skill markdown. Даёт агенту (supervisor'у) **16 typed MCP tools**:
+**agent-workflow-ui** — MCP plugin для opencode, реализованный как Python-пакет + Skill markdown. Даёт агенту (supervisor'у) **23 typed MCP tools**:
 
 1. **UI tools (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`. Генерация/чтение HTML-форм для структурированного ввода от пользователя.
-2. **awf workflow tools (17):** `awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`. Полный lifecycle управления awf-проектом — без shell-команд.
+2. **awf workflow tools (18):** `awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`. Полный lifecycle управления awf-проектом — без shell-команд.
 
 Plugin = **primary interface** между агентом и awf-orchestrator'ом. CLI `awf` остаётся как thin dev/debug wrapper (CI, e2e тесты, ad-hoc inspection).
 
@@ -22,13 +22,13 @@ Plugin = **primary interface** между агентом и awf-orchestrator'о�
 
 | Что в scope | Что НЕ в scope |
 |---|---|
-| MCP server с UI + workflow tools (всего 22) | Альтернативные orchestrators |
+| MCP server с UI + workflow tools (всего 23) | Альтернативные orchestrators |
 | Jinja2-шаблоны форм и дашбордов | Хранение ролей/скиллов (это orchestrator через `awf_add_role`) |
 | Skill markdown с UI-политиками | LLM-агенты (живут в opencode, не в plugin) |
 | File-based submit ingestion (`inputs/`) | Worker execution (это `awf_start` делегирует в orchestrator) |
 | Thin wrappers над `awf.api.*` (без business logic в plugin) | Дублирование logic между CLI и MCP tools (один источник — `awf.api`) |
 
-**Plugin зависит от awf.** `agent_workflow_ui/pyproject.toml: dependencies += ["awf>=0.4.0"]`. Все 11 workflow tools — thin async wrappers, вызывающие `awf.api.<function>()` напрямую (Python import, не subprocess).
+**Plugin зависит от awf.** `agent_workflow_ui/pyproject.toml: dependencies += ["awf>=0.4.0"]`. Все 18 workflow tools — thin async wrappers, вызывающие `awf.api.<function>()` напрямую (Python import, не subprocess).
 
 ### 1.3 Архитектурный принцип
 
