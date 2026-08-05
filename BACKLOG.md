@@ -541,7 +541,7 @@ subprocess, проверить весь flow. ~200 строк.
 > ARCHITECTURE.md, но не написал сигнал. Pipeline застрял в salvage.
 > User вызвал `awf continue` — запустился НОВЫЙ pipeline со stage 0.
 
-### DF5-1 · Worker (Qwen) не пишет DONE-сигнал — слабый prompt anchor
+### DF5-1 · Worker (Qwen) не пишет DONE-сигнал — слабый prompt anchor ✅ FIXED
 
 **Priority:** CRITICAL · **Where:** `awf/supervisor.py:78-86` (`build_prompt` execute branch)
 
@@ -578,7 +578,7 @@ Skill-файл `agent-architector.md` (112 строк) сфокусирован 
 3. (Опционально) В конец role-файла при `awf add-role` / setup форме
    добавлять секцию "## Signal contract" с конкретным путём.
 
-### DF5-2 · `awf continue` перезапускает с stage 0, а не продолжает
+### DF5-2 · `awf continue` перезапускает с stage 0, а не продолжает ✅ FIXED
 
 **Priority:** CRITICAL · **Where:** `awf/api/pipeline.py:335-382` (`continue_pipeline`)
 
@@ -615,7 +615,7 @@ if from_stage:  # None → пропускается
    "Pipeline already running (PID XXXX). Kill it first or wait."
 3. (Опционально) После успеха — не перезаписывать state до перехода на след. stage.
 
-### DF5-3 · auto-DONE не работает для greenfield/doc-heavy проектов
+### DF5-3 · auto-DONE не работает для greenfield/doc-heavy проектов ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/verify.py:72-73`
 
@@ -650,7 +650,7 @@ if not cmds:
 Альтернатива: добавить `config.automation.auto_done_no_verify` (default True)
 для контроля поведения. Тест: project без verify-команд + git diff → DONE синтезирован.
 
-### DF5-4 · Salvage path — плохой UX для supervisor в opencode
+### DF5-4 · Salvage path — плохой UX для supervisor в opencode ✅ FIXED
 
 **Priority:** MEDIUM · **Where:** `awf/orchestrator.py:490-522` (salvage block)
 
@@ -680,7 +680,7 @@ if not cmds:
 3. `wait_for_event` возвращает `event_type="salvage"` — supervisor в opencode
    понимает что делать без чтения логов.
 
-### DF5-5 · Handoff подхватывает чужой PROGRESS-файл
+### DF5-5 · Handoff подхватывает чужой PROGRESS-файл ✅ FIXED
 
 **Priority:** MEDIUM · **Where:** `awf/agent_stage.py:115-160` (`collect_handoff`)
 
@@ -713,7 +713,7 @@ baseline не сдвинулся после stage 1 (git commit не произ�
 3. Git diff в handoff должен быть от **commit после предыдущей стадии**,
    не от первоначального baseline (иначе diff копит все изменения).
 
-### DF5-6 · Concurrent pipelines — нет lock'а на запуск
+### DF5-6 · Concurrent pipelines — нет lock'а на запуск ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/api/pipeline.py:246-273` (`start_pipeline`)
 
@@ -738,7 +738,7 @@ dogfood-1 fix), но НЕ проверяет, жив ли уже pipeline-про
    поле, но не проверяется при повторном запуске).
 3. То же для `continue_pipeline` — если pipeline жив, continue = noop.
 
-### DF5-7 · Dashboard template syntax error — `{% endif %` без `}`
+### DF5-7 · Dashboard template syntax error — `{% endif %` без `}` ✅ FIXED
 
 **Priority:** CRITICAL · **Where:** `awf/templates/dashboard.html.j2:194`
 
@@ -758,7 +758,7 @@ Supervisor потратил ~15 сообщений пытаясь понять �
 **Решение:** One-char fix: `{% endif %` → `{% endif %}`.
 + добавить unit-тест: `generate_dashboard()` рендерит без exception.
 
-### DF5-8 · `generate_dashboard` глотает ВСЕ ошибки молча
+### DF5-8 · `generate_dashboard` глотает ВСЕ ошибки молча ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/api/dashboard.py:389-390`
 
@@ -783,7 +783,7 @@ critical-path; но silent failure превращает каждый dashboard �
 2. Сузить except до конкретных типов (TemplateError, OSError).
 3. При template syntax error — писать `.agentic/dashboards/error.txt` с traceback.
 
-### DF5-9 · Supervisor (Qwen) нарушил role boundaries — редактировал awf
+### DF5-9 · Supervisor (Qwen) нарушил role boundaries — редактировал awf ✅ FIXED
 
 **Priority:** MEDIUM · **Where:** supervisor.md role instructions
 
@@ -811,7 +811,7 @@ project source files. All changes go through pipeline." Но:
    Found a bug in awf? Write it to BACKLOG or tell user, do NOT fix it."
 2. (Опционально) opencode permission rules могут запретить edit вне project_dir.
 
-### DF5-10 · `awf_start` возвращает "ok" когда pipeline сразу умирает
+### DF5-10 · `awf_start` возвращает "ok" когда pipeline сразу умирает ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/api/pipeline.py:267-290` + orchestrator
 
@@ -849,7 +849,7 @@ checkpoint должен работать в background mode (form в брауз�
    foreground+checkpoint check: если `AWF_BACKGROUND_CHILD=1` → НЕ noop
    (checkpoint form открывается в браузере, stdout goes to file, не MCP stdio).
 
-### DF5-11 · Supervisor (Qwen) не использует wait_for_event проактивно
+### DF5-11 · Supervisor (Qwen) не использует wait_for_event проактивно ✅ FIXED
 
 **Priority:** LOW · **Where:** supervisor.md workflow steps / AGENTS.md
 
@@ -869,7 +869,7 @@ awf_start → вызвать wait_for_event и ждать". Qwen не следу
 2. (Опционально) AGENTS.md уже содержит это, но для Qwen нужно дублирование
    в role file.
 
-### DF5-12 · MCP tool timeouts во время активного pipeline
+### DF5-12 · MCP tool timeouts во время активного pipeline ✅ FIXED
 
 **Priority:** MEDIUM · **Where:** MCP plugin (single-threaded server)
 
@@ -923,7 +923,7 @@ continue/fix/rollback" — но Qwen интерпретирует это как 
 
 ---
 
-### DF6-1 · TODO Archive: после verify approve — перемещать TODO в done/
+### DF6-1 · TODO Archive: после verify approve — перемещать TODO в done/ ✅ FIXED
 
 **Priority:** CRITICAL · **Where:** `awf/orchestrator.py:441-451` (verify approve path)
 
@@ -950,7 +950,7 @@ pickup при следующем `awf_start` находит его → обра�
 - BD-30 не подхватывает архивированный TODO
 - `awf_status` считает `done/` → `done_count` правильный
 
-### DF6-2 · Reconcile: авто-сверка state перед start/continue
+### DF6-2 · Reconcile: авто-сверка state перед start/continue ✅ FIXED
 
 **Priority:** CRITICAL · **Where:** `awf/api/pipeline.py` (start_pipeline + continue_pipeline)
 
@@ -979,7 +979,7 @@ pickup при следующем `awf_start` находит его → обра�
 - Inbox с 2 TODO-*.ready → после reconcile: 1 активный, 1 superseded
 - State с мёртвым PID → после reconcile: state очищен
 
-### DF6-3 · BD-30 orphan pickup: проверять done/ директорию
+### DF6-3 · BD-30 orphan pickup: проверять done/ директорию ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/supervisor.py` (`wait_for_supervisor_signal` BD-30 logic)
 
@@ -994,7 +994,7 @@ archive). Defense-in-depth.
 **Где править:**
 - `awf/supervisor.py` — orphan pickup: `if done_dir / todo_id exists: skip`
 
-### DF6-4 · done_count: считать из done/ директории
+### DF6-4 · done_count: считать из done/ директории ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/api/lifecycle.py:211-234` (`_count_done_blocked`)
 
@@ -1008,7 +1008,7 @@ Supervisor не видит прогресс.
 **Где править:**
 - `awf/api/lifecycle.py:211` — `done_count = len(list(done_dir.glob("*/")))` + старая логика для back-compat
 
-### DF6-5 · BD-36 checkpoint: auto-disable для background child
+### DF6-5 · BD-36 checkpoint: auto-disable для background child ✅ FIXED
 
 **Priority:** HIGH · **Where:** `awf/api/_background.py` + `awf/orchestrator.py`
 
@@ -1036,7 +1036,7 @@ noop error → child умирает → pipeline мёртв, но `awf_start` в
 - `awf/orchestrator.py` — foreground+checkpoint check:
   `if os.environ.get("AWF_BACKGROUND_CHILD"): pass  # OK — stdout goes to file`
 
-### DF6-6 · Dashboard: детект мёртвого orchestrator
+### DF6-6 · Dashboard: детект мёртвого orchestrator ✅ FIXED
 
 **Priority:** MEDIUM · **Where:** `awf/api/dashboard.py:169` (`_determine_status`)
 
@@ -1054,7 +1054,7 @@ status_class = "blocked".
 **Где править:**
 - `awf/api/dashboard.py:169` — `_determine_status` — добавить PID liveness check
 
-### DF6-7 · Supervisor.md: verify imperatives — запрет пассивности
+### DF6-7 · Supervisor.md: verify imperatives — запрет пассивности ✅ FIXED
 
 **Priority:** HIGH · **Where:** `templates/roles/supervisor.md:257-277` (Step 7)
 
@@ -1081,7 +1081,7 @@ When pipeline reaches verify stage, you MUST:
 самому прочитать handoffs и решить. Пользователь сказал "ACK" — supervisor
 выполнил, но это роль человека, не supervisor'а.
 
-### DF6-8 · Worker orphan kill (PR_SET_PDEATHSIG)
+### DF6-8 · Worker orphan kill (PR_SET_PDEATHSIG) ✅ FIXED
 
 **Priority:** LOW · **Where:** `awf/agent_stage.py` + `awf/_env.py`
 
