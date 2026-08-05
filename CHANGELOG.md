@@ -45,16 +45,54 @@ expandable cards: events stream, handoffs, task progress).
 - QA fixes: atomic writes (T2.6), DB connection leak, test false-positives
   documented.
 
-23 MCP tools total (5 UI + 18 awf). 1067 tests. ruff clean.
+23 MCP tools total (5 UI + 18 awf). 1091 tests. ruff clean.
 
 ## [Unreleased]
 
-### DF5/DF6 — Dogfood v5/v6 fixes: lifecycle, reliability, supervisor autonomy
+### Dogfood v7 (ses_02d6ac634ffeFT7AJllJ1gwr00) — live session fixes
 
-**DF6-1..4: TODO lifecycle management**
-- `archive_todo()`: after verify approve, moves inbox/outbox/handoff → `done/{id}/`
-- `_reconcile()`: before each background start — clears stale PID, dedup ACK+APPROVE, supersede old TODOs
-- BD-30 orphan pickup checks `done/` — no false positive on archived TODOs
+**CRITICAL: Salvage signal detection bug**
+- `wait_for_supervisor_signal` checked `kind == "verify"` for ACK/APPROVE
+  detection. Salvage (kind="salvage") was excluded → supervisor's APPROVE
+  signal was INVISIBLE → pipeline stuck forever.
+- Fix: `kind in ("verify", "salvage")` — one word, critical impact.
+- 5 regression tests in test_salvage_signal.py.
+
+**BD-10: Pipeline context injection**
+- `_build_pipeline_context()`: tells worker its position (stage N of M),
+  what comes before/after, explicit scope boundary per role.
+- Prevents system-analyst from implementing code, implementer from
+  writing requirements, etc.
+- 8 tests in test_pipeline_context.py.
+
+**Dashboard improvements**
+- Live elapsed timer (JS setInterval, not meta refresh)
+- Card expansion persistence (localStorage across refreshes)
+- Smart refresh (fetch + DOM patch, no full page reload)
+- Events stream: reads orchestrator.log (has timestamps), converts UTC → local
+- Per-stage timing from orchestrator.log transitions
+- Salvage banner (yellow, same style as checkpoint)
+- Final dashboard generated before clear_state on pipeline complete
+- reset_runtime clears state + regenerates dashboard
+
+**Snippet improvements**
+- _SNIPPET_ALWAYS: "DO NOT git commit/push manually"
+- _SNIPPET_ALWAYS: "After ANY action → call awf_wait_for_event"
+- _SNIPPET_VERIFY: "After approve → call awf_wait_for_event"
+- _SNIPPET_SALVAGE: "Read SALVAGE-{todo_id}.md" as step 1
+- _SNIPPET_SALVAGE: "Do NOT git commit manually"
+
+**MCP reliability**
+- `awf_continue` now supports `background=True` (was synchronous-only)
+- asyncio.to_thread on: start, continue, wait_for_event, baseline,
+  check_model_config, load_supervisor_context (6 tools)
+- Catch-all `except Exception` on all 15 MCP tool wrappers
+- `awf_start`/`awf_continue` response includes "NEXT: call awf_wait_for_event"
+
+**supervisor.md**
+- Quick Reference (5 imperatives at top, before any other content)
+- COMPLETELY OFF-LIMITS section for awf tooling
+- Verify: "YOU are the reviewer, not a relay"
 - `done_count` counts from `done/` directory
 
 **DF6-5..8: pipeline reliability**
