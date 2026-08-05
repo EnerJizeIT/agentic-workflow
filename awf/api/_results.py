@@ -56,6 +56,9 @@ class StatusResult:
     checkpoint_port: int | None = None  # for debugging / direct access
     # Dogfood-8: form URL supervisor can tell user about
     checkpoint_form_url: str | None = None  # file://path or http://127.0.0.1:PORT
+    # DF5-4: salvage state (worker didn't signal)
+    salvage_needed: bool = False
+    salvage_stage: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

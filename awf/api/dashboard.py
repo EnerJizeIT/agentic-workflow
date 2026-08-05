@@ -134,10 +134,15 @@ def _read_tasks(project_dir: Path, todo_id: str | None) -> list[dict[str, str]]:
     """Read PROGRESS-{todo_id}.md for task checklist."""
     if not todo_id:
         return []
+    # Check outbox first, then done/ (DF6-1 archive moves PROGRESS)
     outbox = paths.outbox(project_dir)
     progress_file = outbox / f"PROGRESS-{todo_id}.md"
     if not progress_file.is_file():
-        return []
+        done_progress = paths.done_dir(project_dir) / todo_id / "PROGRESS.md"
+        if done_progress.is_file():
+            progress_file = done_progress
+        else:
+            return []
 
     try:
         content = progress_file.read_text(encoding="utf-8")
@@ -359,6 +364,14 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     tasks = _read_tasks(project_dir, todo_id)
     tasks_done = sum(1 for t in tasks if t["status"] == "done")
 
+    # DF6-4: completed TODOs from done/ directory
+    done_directory = paths.done_dir(project_dir)
+    completed_todos = []
+    if done_directory.is_dir():
+        for d in sorted(done_directory.iterdir()):
+            if d.is_dir():
+                completed_todos.append(d.name)
+
     # Elapsed time
     elapsed = _format_elapsed(state.get("started_at") if state else None)
     if not elapsed and state:
@@ -398,6 +411,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             handoffs=handoffs,
             tasks=tasks,
             tasks_done=tasks_done,
+            completed_todos=completed_todos,
             worker_activity=_read_worker_activity(state),
         )
     except Exception as e:

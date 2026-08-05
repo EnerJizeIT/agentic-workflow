@@ -332,6 +332,25 @@ def get_status(project_dir: Path) -> StatusResult:
             last_signal=last_signal,
         )
 
+    # DF5-4: salvage state — read from state file even if pipeline not running
+    # (orchestrator may have crashed after setting salvage_needed)
+    salvage_needed = False
+    salvage_stage: str | None = None
+    from ..pipeline_state import read_state as _read_state
+    _state = _read_state(project_dir)
+    if _state:
+        salvage_needed = bool(_state.get("salvage_needed", False))
+        salvage_stage = _state.get("salvage_stage")
+        # If state exists but pipeline not detected as running, enrich
+        # stage info from state (crash recovery)
+        if not pipeline_running:
+            from .context import _compute_expected_action, _compute_stage_kind
+            if not current_stage_name:
+                current_stage_name = _state.get("stage_name")
+            current_stage_kind = _compute_stage_kind(project_dir, current_stage_name)
+            if salvage_needed:
+                expected_action = "Salvage: worker didn't signal. Review git diff, then ACK or REVIEW."
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -351,6 +370,8 @@ def get_status(project_dir: Path) -> StatusResult:
         checkpoint_pending=checkpoint_pending,
         checkpoint_port=checkpoint_port,
         checkpoint_form_url=checkpoint_form_url,
+        salvage_needed=salvage_needed,
+        salvage_stage=salvage_stage,
     )
 
 
