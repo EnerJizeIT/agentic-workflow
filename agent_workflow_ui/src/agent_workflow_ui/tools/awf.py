@@ -214,7 +214,9 @@ async def awf_baseline(
         test_log_excerpt.
     """
     try:
-        result = api.create_baseline(_resolve_project_dir(project_dir), todo_id)
+        result = await asyncio.to_thread(
+            api.create_baseline, _resolve_project_dir(project_dir), todo_id
+        )
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
@@ -489,7 +491,9 @@ async def awf_load_supervisor_context(
         Dict with all fields of SupervisorContextResult.
     """
     try:
-        result = api.load_supervisor_context(_resolve_project_dir(project_dir))
+        result = await asyncio.to_thread(
+            api.load_supervisor_context, _resolve_project_dir(project_dir)
+        )
         return _ok(result)
     except api.AwfApiError as e:
         return _err(e)
@@ -754,7 +758,9 @@ async def awf_check_model_config(
         warnings (list of strings), providers_available (list).
     """
     try:
-        result = api.check_model_config(_resolve_project_dir(project_dir))
+        result = await asyncio.to_thread(
+            api.check_model_config, _resolve_project_dir(project_dir)
+        )
         return {"status": "ok", **result}
     except api.AwfApiError as e:
         return _err(e)
