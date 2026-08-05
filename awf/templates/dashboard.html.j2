@@ -226,6 +226,12 @@
       <div class="stat-value" style="color: var(--accent-green)">{{ stages_done }}/{{ stages_total }}</div>
       <div class="stat-label">Stages</div>
     </div>
+    {% if completed_todos %}
+    <div class="stat">
+      <div class="stat-value" style="color: var(--accent-green)">{{ completed_todos | length }}</div>
+      <div class="stat-label">Done TODOs</div>
+    </div>
+    {% endif %}
   </div>
   <div class="status-badge {{ status_class }}">
     <div class="status-dot {{ status_class }}"></div>
@@ -344,6 +350,25 @@
           {% if task.status == 'done' %}✓{% endif %}
         </div>
         <div class="task-text {{ task.status }}">{{ task.text }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if completed_todos %}
+  <div class="card expanded">
+    <div class="card-header">
+      <div class="card-icon">✅</div>
+      <div class="card-title">Completed TODOs</div>
+      <div class="card-count">{{ completed_todos | length }}</div>
+      <div class="card-chevron">▶</div>
+    </div>
+    <div class="card-body">
+      {% for todo in completed_todos %}
+      <div class="task-item">
+        <div class="task-check done">✓</div>
+        <div class="task-text done">{{ todo }}</div>
       </div>
       {% endfor %}
     </div>
