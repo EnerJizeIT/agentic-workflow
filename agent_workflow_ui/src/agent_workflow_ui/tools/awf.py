@@ -10,6 +10,7 @@ shell commands — directly through MCP protocol.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -142,7 +143,8 @@ async def awf_start(
         exit_code (foreground only), message.
     """
     try:
-        result = api.start_pipeline(
+        result = await asyncio.to_thread(
+            api.start_pipeline,
             _resolve_project_dir(project_dir),
             background=background,
             pipeline=pipeline,
@@ -717,7 +719,8 @@ async def awf_wait_for_event(
         message (instruction for supervisor), state_snapshot.
     """
     try:
-        result = api.wait_for_event(
+        result = await asyncio.to_thread(
+            api.wait_for_event,
             _resolve_project_dir(project_dir),
             timeout=timeout,
         )
