@@ -500,6 +500,19 @@ def reset_runtime(
                     shutil.rmtree(f)
             cleaned.append(d)
 
+    # Clear pipeline state file so stale "running" doesn't persist
+    state_file = agentic / "state" / "current.yaml"
+    if state_file.is_file():
+        state_file.unlink()
+        cleaned.append("state")
+
+    # Regenerate dashboard so user sees clean state
+    try:
+        from .dashboard import generate_dashboard as _gen_dash
+        _gen_dash(project_dir)
+    except Exception:
+        pass
+
     return ResetResult(cleaned_dirs=cleaned, orphan_ids=[], mode=mode)
 
 

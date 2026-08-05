@@ -127,7 +127,9 @@ def _build_pipeline_context(project_dir: Path, todo_id: str) -> str:
 _SNIPPET_ALWAYS = """\
 ## ⚡ Critical rules (always apply)
 - DO NOT edit source files, awf tooling, or templates. All changes through pipeline.
+- DO NOT git commit/push manually — pipeline auto-commits after verify approve.
 - You ARE the decision maker. Do NOT ask user "should I approve?" — decide yourself.
+- After ANY action (approve, dispatch, start) → call awf_wait_for_event to verify result.
 - If MCP tool times out → bash fallback: `python3 -m awf status --project-dir <path>`
 """
 
@@ -149,6 +151,7 @@ _SNIPPET_VERIFY = """\
    - Work is good → create .agentic/inbox/ACK-{todo_id}.ready
    - Work has issues → write .agentic/outbox/REVIEW-{todo_id}.md with specific fixes
 5. DO NOT relay "pipeline waits for your decision" to user — that's YOUR call.
+6. After approve → call awf_wait_for_event to confirm pipeline continued.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -157,7 +160,8 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
 1. Check git diff — did worker produce useful work?
 2. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
 3. If no → create .agentic/outbox/REVIEW-{todo_id}.md (reject with specifics)
-4. Do NOT panic or freeze — this is a normal recovery path.
+4. After ACK → call awf_wait_for_event to confirm pipeline continued.
+5. Do NOT git commit manually — pipeline auto-commits after ACK.
 """
 
 _STAGE_SNIPPETS = {
