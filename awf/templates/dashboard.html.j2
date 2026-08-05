@@ -252,6 +252,16 @@
 </div>
 {% endif %}
 
+{% if salvage_needed %}
+<div class="checkpoint-banner" style="border-color: var(--accent-yellow);">
+  <div class="checkpoint-icon">🔧</div>
+  <div class="checkpoint-text">
+    <div class="checkpoint-title">Salvage: {{ salvage_stage or 'worker' }} didn't signal</div>
+    <div class="checkpoint-desc">Worker ran but didn't create DONE signal. Review work and ACK or REVIEW.</div>
+  </div>
+</div>
+{% endif %}
+
 <div class="pipeline-flow">
   {% for stage in stages %}
   <div class="stage-node">

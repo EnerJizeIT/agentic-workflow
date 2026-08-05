@@ -516,6 +516,8 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             stages_total=stages_total,
             checkpoint_pending=bool(state.get("checkpoint_pending", False)) if state else False,
             checkpoint_form_url=state.get("checkpoint_form_url") if state else None,
+            salvage_needed=bool(state.get("salvage_needed", False)) if state else False,
+            salvage_stage=state.get("salvage_stage") if state else None,
             events=events,
             handoffs=handoffs,
             tasks=tasks,

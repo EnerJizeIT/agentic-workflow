@@ -157,11 +157,12 @@ _SNIPPET_VERIFY = """\
 _SNIPPET_SALVAGE = """\
 ## Salvage — worker didn't signal
 The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller models.
-1. Check git diff — did worker produce useful work?
-2. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
-3. If no → create .agentic/outbox/REVIEW-{todo_id}.md (reject with specifics)
-4. After ACK → call awf_wait_for_event to confirm pipeline continued.
-5. Do NOT git commit manually — pipeline auto-commits after ACK.
+1. Read .agentic/inbox/SALVAGE-{todo_id}.md for details on what happened.
+2. Check git diff — did worker produce useful work?
+3. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
+4. If no → create .agentic/outbox/REVIEW-{todo_id}.md (reject with specifics)
+5. After ACK → call awf_wait_for_event to confirm pipeline continued.
+6. Do NOT git commit manually — pipeline auto-commits after ACK.
 """
 
 _STAGE_SNIPPETS = {
