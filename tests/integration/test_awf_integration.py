@@ -268,7 +268,11 @@ class TestBackgroundStart:
 
     def _capture_popen(self, monkeypatch):
         """Patch subprocess.Popen at the api._background module (where the
-        background launcher lives after MCP-audit package split)."""
+        background launcher lives after MCP-audit package split).
+
+        Also patches _verify_child_alive (DF5-10) so tests don't do a real
+        1-second sleep + os.kill on a fake PID.
+        """
         captured: dict = {}
 
         class _CapturingPopen:
@@ -281,6 +285,8 @@ class TestBackgroundStart:
 
         from awf.api import _background
         monkeypatch.setattr(_background.subprocess, "Popen", _CapturingPopen)
+        # DF5-10: mock child liveness check — fake Popen PID is not real
+        monkeypatch.setattr("awf.api.pipeline._verify_child_alive", lambda pid, log_file=None: True)
         return captured
 
     def _setup_project(self, tmp_path):

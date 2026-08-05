@@ -16,10 +16,57 @@ from pathlib import Path
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
+from ..pipeline_state import read_state
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import require_agentic
 from ._results import ApproveResult, BaselineResult, RollbackResult, StartResult
+
+
+def _is_pipeline_running(project_dir: Path) -> int | None:
+    """DF5-6: Check if a pipeline subprocess is still alive.
+
+    Reads ``pipeline_pid`` from state file and probes via ``os.kill(pid, 0)``.
+    Returns the live PID, or None if no pipeline / process is dead.
+    """
+    import os
+
+    state = read_state(project_dir)
+    if not state:
+        return None
+    pid = state.get("pipeline_pid")
+    if not pid:
+        return None
+    try:
+        pid_int = int(pid)
+    except (ValueError, TypeError):
+        return None
+    try:
+        os.kill(pid_int, 0)
+        return pid_int
+    except (ProcessLookupError, PermissionError):
+        return None
+    except OSError:
+        return None
+
+
+def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
+    """DF5-10: Wait briefly, then check if a background child is still alive.
+
+    Returns True if the process is running after a short delay.
+    Extracted as a standalone function so tests can mock it.
+    """
+    import os
+    import time as _time
+
+    _time.sleep(1.0)
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except OSError:
+        return False
 
 # ─── approve_commit ─────────────────────────────────────────────────────
 
@@ -258,6 +305,20 @@ def start_pipeline(
                 ),
             )
 
+    # DF5-6: refuse to start if a pipeline is already running.
+    live_pid = _is_pipeline_running(project_dir)
+    if live_pid and background:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=0,
+            message=(
+                f"Pipeline already running (PID {live_pid}). "
+                f"Use awf_status to check progress, or kill PID {live_pid} to force restart."
+            ),
+        )
+
     # Dogfood-8: detect BD-36 checkpoint state + build appropriate warning
     from ..plan_checkpoint import is_checkpoint_enabled
 
@@ -272,6 +333,27 @@ def start_pipeline(
             auto=auto,
             timeout=timeout,
         )
+
+        # DF5-10: wait briefly, then check if child died immediately.
+        child_alive = _verify_child_alive(pid, log_file)
+
+        if not child_alive:
+            log_tail = ""
+            try:
+                log_tail = log_file.read_text(encoding="utf-8")[-500:] if log_file else ""
+            except OSError:
+                pass
+            return StartResult(
+                run_mode="error",
+                run_id=pid,
+                log_file=str(log_file) if log_file else None,
+                exit_code=1,
+                message=(
+                    f"Pipeline started (PID {pid}) but exited immediately. "
+                    f"Last log output:\n{log_tail}"
+                ),
+            )
+
         # Dogfood-8: warn supervisor about BD-36 checkpoint
         msg = f"awf start running in background (PID {pid})"
         if checkpoint_active:
@@ -340,9 +422,29 @@ def continue_pipeline(
     auto: bool = False,
     timeout: int = 3600,
 ) -> StartResult:
-    """Resume an interrupted pipeline. Finds newest active TODO and continues."""
+    """Resume an interrupted pipeline. Finds newest active TODO and continues.
+
+    DF5-2: reads ``pipeline_state`` to determine which stage to resume from.
+    If state file has ``stage_name``, uses it as ``from_stage`` — so the
+    pipeline resumes from the stage that was running when it stopped,
+    NOT from stage 0 (plan).
+    """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # DF5-6: refuse if pipeline already running.
+    live_pid = _is_pipeline_running(project_dir)
+    if live_pid:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=0,
+            message=(
+                f"Pipeline already running (PID {live_pid}). "
+                f"Use awf_status to check progress. If stuck, kill PID {live_pid} first."
+            ),
+        )
 
     current_todo = todos.newest_active(project_dir)
     if not current_todo:
@@ -353,6 +455,13 @@ def continue_pipeline(
             exit_code=0,
             message="No active TODO found.",
         )
+
+    # DF5-2: read pipeline state to determine resume point.
+    # If from_stage not explicitly given, use stage_name from state file.
+    if not from_stage:
+        state = read_state(project_dir)
+        if state and state.get("stage_name"):
+            from_stage = state["stage_name"]
 
     from ..orchestrator import run_pipeline
 

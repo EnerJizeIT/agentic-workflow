@@ -151,11 +151,17 @@ def attempt_auto_done(
     if not detect_work_evidence(cwd, baseline_sha):
         return False
 
-    # Verify commands must all pass (run in project_dir).
-    # Pass todo_id so verify output is persisted to outbox/TEST-RESULTS-*.log
-    # (audit fix: enables awf_report to surface recent test output).
-    if not run_verify_commands(config, project_dir=project_dir, todo_id=todo_id):
-        return False
+    # DF5-3: if verify commands are configured, they must all pass.
+    # If NO commands configured (greenfield/doc-heavy projects), treat as
+    # "no blocking checks" — work evidence alone is sufficient for auto-DONE.
+    # Supervisor review stage is still in place as a safety net.
+    has_verify_cmds = any(
+        cfg_mod.get(config, f"verification.{k}", "")
+        for k in ("test_cmd", "lint_cmd", "typecheck_cmd", "build_cmd")
+    )
+    if has_verify_cmds:
+        if not run_verify_commands(config, project_dir=project_dir, todo_id=todo_id):
+            return False
 
     # Synthesize DONE
     done_md = outbox / f"DONE-{todo_id}.md"

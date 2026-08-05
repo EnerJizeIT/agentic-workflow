@@ -252,15 +252,30 @@ class TestAttemptAutoDone:
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0007", cfg, sha)
         assert result is True
 
-    def test_no_verify_cmds_no_done(self, tmp_git_repo: Path) -> None:
+    def test_no_verify_cmds_auto_done_with_work(self, tmp_git_repo: Path) -> None:
+        """DF5-3: no verify cmds + work evidence → auto-DONE (greenfield projects).
+
+        Previously returned False (blocked all greenfield/doc-heavy projects).
+        Now: no verify commands = no blocking checks. Work evidence alone
+        is sufficient. Supervisor review stage still acts as safety net.
+        """
         outbox, sha = self._setup_repo(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
         cfg = {
             "automation": {"auto_done": True},
         }
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0006", cfg, sha)
+        assert result is True
+        assert (outbox / "DONE-TODO-0006.ready").exists()
+
+    def test_no_verify_cmds_no_work_evidence(self, tmp_git_repo: Path) -> None:
+        """DF5-3: no verify cmds + NO work → still False (no evidence)."""
+        outbox, sha = self._setup_repo(tmp_git_repo)
+        cfg = {
+            "automation": {"auto_done": True},
+        }
+        result = verify.attempt_auto_done(tmp_git_repo, "TODO-0006", cfg, sha)
         assert result is False
-        assert not (outbox / "DONE-TODO-0006.ready").exists()
 
     def test_auto_done_string_true(self, tmp_git_repo: Path) -> None:
         outbox, sha = self._setup_repo(tmp_git_repo)

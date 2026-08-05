@@ -7,7 +7,9 @@ backward compatibility with tests and external callers.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -494,6 +496,14 @@ def run_pipeline(args: Any) -> int:
             )
             _log(logs_dir, f"No signal after {s_name} — salvage path")
 
+            # DF5-4: write salvage context to inbox so supervisor in opencode
+            # can understand what happened without reading background logs.
+            _write_salvage_prompt(project_dir, current_todo, s_name, baseline_sha, logs_dir)
+
+            # Update state so awf_status / wait_for_event can surface it
+            from .pipeline_state import write_state as _ws
+            _ws(project_dir, salvage_needed=True, salvage_stage=s_name, logs_dir=logs_dir)
+
             if auto:
                 baseline_sha = _read_baseline_sha(project_dir, current_todo)
                 if baseline_sha and verify.detect_work_evidence(project_dir, baseline_sha):
@@ -568,3 +578,74 @@ def run_pipeline(args: Any) -> int:
     # T4.1: clear structured state on clean exit (pipeline not running anymore)
     clear_state(project_dir, logs_dir=logs_dir)
     return 0
+
+
+def _write_salvage_prompt(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    baseline_sha: str | None,
+    logs_dir: Path,
+) -> None:
+    """DF5-4: Write a SALVAGE-{todo_id}.md file to inbox.
+
+    This file explains to the supervisor (in opencode) what happened:
+    - Worker ran but didn't produce a DONE/BLOCKED signal
+    - Git diff stat shows what work was left
+    - Supervisor needs to decide: ACK (accept), REVIEW (reject), or replan
+    """
+    from ._atomic import atomic_write_text
+
+    inbox = paths.inbox(project_dir)
+    salvage_file = inbox / f"SALVAGE-{todo_id}.md"
+
+    parts: list[str] = [
+        f"# Salvage needed: {stage_name} did not signal",
+        "",
+        f"**TODO:** {todo_id}",
+        f"**Stage:** {stage_name}",
+        f"**Time:** {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## What happened",
+        "",
+        f"The worker at stage `{stage_name}` completed its subprocess (exit 0) but",
+        f"did NOT create the DONE-{todo_id}.ready signal file in outbox.",
+        "This usually means the worker finished its task but forgot the",
+        "completion signal (common with smaller models / turn-budget limits).",
+        "",
+    ]
+
+    # Git diff stat
+    if baseline_sha:
+        try:
+            diff = subprocess.run(
+                ["git", "diff", "--stat", baseline_sha],
+                cwd=str(project_dir),
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            diff_output = diff.stdout.strip() if diff.stdout else "(no changes)"
+        except (subprocess.TimeoutExpired, OSError):
+            diff_output = "(git diff failed)"
+        parts += [
+            "## Git diff (vs baseline)",
+            "",
+            "```",
+            diff_output,
+            "```",
+            "",
+        ]
+
+    parts += [
+        "## What to do",
+        "",
+        f"1. **Review the diff** — did `{stage_name}` produce useful work?",
+        f"2. **Check handoffs** — read `.agentic/handoff/{stage_name}-{todo_id}.md`",
+        "3. **Decide:**",
+        f"   - Work looks good → create `.agentic/inbox/ACK-{todo_id}.ready`",
+        f"   - Work is wrong → create `.agentic/outbox/REVIEW-{todo_id}.md` with feedback",
+        "   - Need to redo → create a new TODO and restart pipeline",
+        "",
+    ]
+
+    atomic_write_text(salvage_file, "\n".join(parts))
+    _log(logs_dir, f"DF5-4: salvage prompt written to {salvage_file}")

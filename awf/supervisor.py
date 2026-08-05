@@ -74,16 +74,23 @@ def build_prompt(
             f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
         )
     else:
-        # execute (default) — no context/instructions for agent stages
-        return (
+        # execute (default) — no context/instructions for agent stages.
+        # DF5-1: signal contract FIRST, before skill content. Workers
+        # (especially Qwen/vLLM) skip the one-liner buried at the end
+        # when skill file is 100+ lines of detail. This anchor goes first.
+        base = (
+            f"## CRITICAL completion contract (read this BEFORE your skill)\n"
+            f"Pipeline BLOCKS until you create the signal file. This is non-negotiable.\n\n"
+            f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready\n"
+            f"  🚫 Blocked? → touch .agentic/outbox/BLOCKED-{todo_id}.ready\n\n"
+            f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n\n"
+            f"## Task\n"
             f"Execute your part of {todo_id} according to your role/skill instructions. "
             f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
-            f"don't redo prior work. When done, write .agentic/outbox/PROGRESS-{todo_id}.md (running notes), "
-            f".agentic/outbox/DONE-{todo_id}.md (summary), and create the sentinel "
-            f".agentic/outbox/DONE-{todo_id}.ready file (NOTE: .ready extension, NOT .md.ready). "
-            f"If blocked, write BLOCKED-{todo_id}.md + BLOCKED-{todo_id}.ready instead. "
+            f"don't redo prior work. "
             f"Do not commit unless the TODO explicitly asks for it."
         )
+        return base
 
     # П6: auto-inject project vision/README excerpt for plan stage.
     # Without this, supervisor (LLM) sees only generic instructions and

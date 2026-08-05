@@ -127,6 +127,12 @@ Editing source files directly is a **role violation** — even if you know
 exactly what to change and could do it faster. Your job is to ensure
 **quality through delegation + verification**, not to be the fastest coder.
 
+**DF5-9: DO NOT edit awf tooling files.** The `awf/` directory, templates,
+Python source, tests — all read-only for you. If you find a bug in awf
+(dashboard rendering error, orchestrator logic, template typo), write it
+to `BACKLOG.md` or tell the user — do NOT fix it yourself. Your scope is
+the PROJECT (jira-epic-presenter, etc.), not the TOOL (awf).
+
 **What you CAN edit directly** (without pipeline):
 - `.agentic/phases/plan.md` — your own planning document
 - `.agentic/inbox/TODO-*.md` — TODO content you write
@@ -136,6 +142,7 @@ exactly what to change and could do it faster. Your job is to ensure
 - Any file in the project root or `src/`, `lib/`, `tests/`, etc.
 - Any `.md` documentation file that workers produce (architecture, requirements)
 - Any code file (any extension)
+- **Any file in the awf/ tooling directory** (templates, source, tests)
 
 ### Step 0b · Decide: configure project or run pipeline?
 
@@ -231,10 +238,12 @@ manual 3-step workflow.
 1. `awf_start(project_dir, background=True)` — pipeline launches detached.
 2. Ask user: "Pipeline started. Open live dashboard in browser?"
 3. If yes → `awf_open_pipeline_dashboard(project_dir)`.
-4. **Do NOT poll with sleep+awf_status.** Instead:
-   `awf_wait_for_event(project_dir, timeout=120)` — ONE call blocks up to
-   2 min, returns when verify stage reached / BLOCKED / checkpoint / done.
-   If timeout → call again.
+4. **DF5-11: IMMEDIATELY call `awf_wait_for_event` — do NOT ask user "should I wait?".**
+   `awf_wait_for_event(project_dir, timeout=30)` — ONE call blocks up to
+   30 sec, returns when verify stage reached / BLOCKED / checkpoint / salvage / done.
+   If timeout → call again (don't explain, just call).
+   This is your DEFAULT behavior after starting a pipeline — you are a
+   watchkeeper, not a passive chatbot that waits for user to prompt you.
 
 Pipeline auto-regenerates dashboard after each stage transition — user
 sees live progress without supervisor intervention.

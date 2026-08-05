@@ -104,6 +104,19 @@ def _check_for_event(state: dict[str, Any]) -> WaitEventResult | None:
     stage_kind = state.get("stage_kind", "")
     last_signal = state.get("last_signal", "")
     checkpoint_pending = bool(state.get("checkpoint_pending", False))
+    salvage_needed = bool(state.get("salvage_needed", False))
+
+    # DF5-4: salvage has highest priority — worker didn't signal
+    if salvage_needed:
+        return WaitEventResult(
+            event_type="salvage",
+            message=(
+                f"Salvage needed: stage '{state.get('salvage_stage', '?')}' ran but "
+                f"didn't produce a signal. Read .agentic/inbox/SALVAGE-*.md "
+                f"for details. Review git diff, then ACK or REVIEW."
+            ),
+            state_snapshot=_state_to_dict(state),
+        )
 
     if checkpoint_pending:
         return WaitEventResult(
@@ -149,6 +162,8 @@ def _state_to_dict(state: dict[str, Any]) -> dict[str, Any]:
         "last_signal": state.get("last_signal"),
         "checkpoint_pending": state.get("checkpoint_pending", False),
         "checkpoint_form_url": state.get("checkpoint_form_url"),
+        "salvage_needed": state.get("salvage_needed", False),
+        "salvage_stage": state.get("salvage_stage"),
     }
 
 

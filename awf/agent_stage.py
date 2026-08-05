@@ -61,6 +61,15 @@ def run_agent_stage(
     outbox = paths.outbox(project_dir)
     clean_stage_signals(outbox, todo_id, *prefixes)
 
+    # DF5-5: clean stale PROGRESS from previous stage so collect_handoff
+    # doesn't pick up the previous worker's notes as this stage's output.
+    # PROGRESS is per-stage running notes, not cumulative. Previous stage's
+    # PROGRESS is already captured in its handoff .md file (BD-19).
+    stale_progress = outbox / f"PROGRESS-{todo_id}.md"
+    if stale_progress.exists():
+        stale_progress.unlink()
+        _log(logs_dir, f"DF5-5: cleaned stale PROGRESS-{todo_id}.md from previous stage")
+
     _log(logs_dir, f"Agent stage started: {role} ({kind}) for {todo_id}")
 
     cmd = [
@@ -147,6 +156,16 @@ def collect_handoff(
         if body:
             parts += ["## PROGRESS notes (from worker)", "", body, ""]
             has_output = True
+    else:
+        # DF5-5: PROGRESS file doesn't exist — worker didn't leave notes.
+        # (stale PROGRESS from previous stage was cleaned before agent run.)
+        parts += [
+            "## ⚠️ Worker did not leave progress notes",
+            "",
+            f"Role `{role}` did not write PROGRESS-{todo_id}.md.",
+            "The work may still be valid — inspect git diff and DONE report.",
+            "",
+        ]
 
     if done_path.is_file():
         body = done_path.read_text(encoding="utf-8").strip()
