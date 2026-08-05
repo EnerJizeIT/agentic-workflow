@@ -111,6 +111,14 @@ def test_read_submit_unknown_form_id(plugin_setup):
     assert "error" in r
 
 
+def test_read_submit_rejects_path_traversal(plugin_setup):
+    """QA-5: read_submit rejects form_id with path separators."""
+    from agent_workflow_ui.tools.forms import read_submit
+    r = asyncio.run(read_submit("FORM-../../etc/passwd"))
+    assert r["submitted"] is False
+    assert r["status"] == "error"
+
+
 # --- cancel_form ---
 
 def test_cancel_form(plugin_setup):

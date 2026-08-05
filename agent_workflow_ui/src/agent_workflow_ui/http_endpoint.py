@@ -42,8 +42,20 @@ def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
 
 
 def _is_valid_form_id(form_id: str) -> bool:
-    """Check if form_id looks valid (FORM-* prefix, reasonable length)."""
-    return form_id.startswith("FORM-") and 6 < len(form_id) < 100
+    """Check if form_id looks valid (FORM-* prefix, reasonable length).
+
+    Defense-in-depth against path traversal: form_id builds the submit file
+    path (``inputs_dir / f"{form_id}.yaml"``). The registry lookup is the
+    primary guard (IDs are server-generated), but reject path separators and
+    ``..`` here too so a crafted ID can never escape inputs_dir even if a
+    future code path bypasses the registry check.
+    """
+    if not form_id.startswith("FORM-") or not (6 < len(form_id) < 100):
+        return False
+    # Legit IDs are FORM-<alphanumeric/hyphen> only.
+    if "/" in form_id or "\\" in form_id or ".." in form_id:
+        return False
+    return True
 
 
 def _is_origin_allowed(origin: str, referer: str) -> bool:

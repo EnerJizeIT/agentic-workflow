@@ -1302,10 +1302,10 @@ class TestRunPipelineGracefulCrash:
         ag_src = open(ag.__file__).read()
         assert "raise RuntimeError(" in sup_src, "supervisor.run_supervisor_via_subprocess must raise on non-zero exit"
         assert "raise RuntimeError(" in ag_src, "agent_stage.run_agent_stage must raise on non-zero exit"
-        # run_pipeline catches RuntimeError and stops pipeline
+        # run_pipeline catches RuntimeError and TimeoutError, stops pipeline
         import awf.orchestrator as orch
         orch_src = open(orch.__file__).read()
-        assert "except RuntimeError as e:" in orch_src
+        assert "except (RuntimeError, TimeoutError)" in orch_src
         assert "Pipeline stopped" in orch_src
 
 

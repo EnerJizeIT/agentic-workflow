@@ -281,6 +281,17 @@ async def read_submit(form_id: str) -> dict[str, Any]:
     Returns:
         Dict with submitted (bool), form_id, status. If submitted: data, submitted_at, template.
     """
+    # QA-5: validate form_id separators (defense-in-depth, same as http_endpoint)
+    from ..http_endpoint import _is_valid_form_id
+
+    if not _is_valid_form_id(form_id):
+        return {
+            "submitted": False,
+            "form_id": form_id,
+            "status": "error",
+            "error": f"Invalid form_id: '{form_id}'",
+        }
+
     registry = get_registry()
     config = get_config()
 

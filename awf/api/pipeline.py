@@ -27,7 +27,10 @@ def _is_pipeline_running(project_dir: Path) -> int | None:
     """DF5-6: Check if a pipeline subprocess is still alive.
 
     Reads ``pipeline_pid`` from state file and probes via ``os.kill(pid, 0)``.
-    Returns the live PID, or None if no pipeline / process is dead.
+    QA-4: on Linux, also verifies ``/proc/<pid>/cmdline`` contains ``awf``
+    to guard against PID reuse (another process took the same PID after
+    awf pipeline exited).
+    Returns the live PID, or None if no pipeline / process is dead / PID reused.
     """
     import os
 
@@ -43,11 +46,23 @@ def _is_pipeline_running(project_dir: Path) -> int | None:
         return None
     try:
         os.kill(pid_int, 0)
-        return pid_int
     except (ProcessLookupError, PermissionError):
         return None
     except OSError:
         return None
+
+    # QA-4: PID reuse defense — verify the process is actually an awf pipeline.
+    # On Linux, /proc/<pid>/cmdline contains the process command line.
+    cmdline_path = Path(f"/proc/{pid_int}/cmdline")
+    if cmdline_path.exists():
+        try:
+            cmdline = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+            if "awf" not in cmdline and "python" not in cmdline.lower():
+                return None  # PID reused by unrelated process
+        except OSError:
+            pass  # Can't read — assume it's ours (best effort)
+
+    return pid_int
 
 
 def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
@@ -110,6 +125,12 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
         status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", status)
+        # QA-1: snapshot untracked files at baseline time so commit_gate
+        # can distinguish worker-created files from pre-existing untracked.
+        untracked = git_utils.git_stdout(
+            project_dir, "ls-files", "--others", "--exclude-standard", check=False,
+        )
+        atomic_write_text(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
     else:
         sha = "(not a git repo)"
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")

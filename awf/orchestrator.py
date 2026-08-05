@@ -376,7 +376,7 @@ def run_pipeline(args: Any) -> int:
         if s_role == "supervisor":
             try:
                 sup_signal = _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
-            except RuntimeError as e:
+            except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
                 print(f"  Details: {e}", file=sys.stderr)
                 print(f"  See {logs_dir / 'orchestrator.log'} for full context.", file=sys.stderr)
@@ -427,7 +427,7 @@ def run_pipeline(args: Any) -> int:
                     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
                     try:
                         _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
-                    except RuntimeError as e:
+                    except (RuntimeError, TimeoutError) as e:
                         print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
                         return 1
                     new_todo = _find_active_todo(project_dir)
@@ -467,7 +467,7 @@ def run_pipeline(args: Any) -> int:
         prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
         try:
             _run_agent_stage(stage, current_todo, project_dir, config, logs_dir, prev_handoffs=prev_handoffs)
-        except RuntimeError as e:
+        except (RuntimeError, TimeoutError) as e:
             print(f"ERROR: agent stage '{s_name}' (role={s_role}) crashed. Pipeline stopped.", file=sys.stderr)
             print(f"  Details: {e}", file=sys.stderr)
             print(f"  See {logs_dir / 'orchestrator.log'} for full context.", file=sys.stderr)

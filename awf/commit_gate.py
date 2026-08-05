@@ -81,6 +81,8 @@ def _files_changed_since_baseline(
         return []
 
     # 2. Untracked files (new files worker created since baseline)
+    # QA-1: exclude pre-existing untracked files (existed before baseline).
+    # Read BASELINE-{todo_id}.untracked snapshot to filter them out.
     try:
         untracked_result = subprocess.run(
             ["git", "ls-files", "--others", "--exclude-standard"],
@@ -97,6 +99,26 @@ def _files_changed_since_baseline(
             untracked = []
     except (subprocess.SubprocessError, OSError):
         untracked = []
+
+    # QA-1: filter out files that were already untracked at baseline time
+    baseline_untracked_path = project_dir / ".agentic" / "context" / f"BASELINE-{baseline_sha}.untracked"
+    # Try by todo_id pattern if sha-based path doesn't exist
+    if not baseline_untracked_path.exists():
+        context_dir = project_dir / ".agentic" / "context"
+        candidates = sorted(context_dir.glob("BASELINE-*.untracked"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if candidates:
+            baseline_untracked_path = candidates[0]
+
+    if baseline_untracked_path.exists():
+        try:
+            pre_existing = {
+                line.strip()
+                for line in baseline_untracked_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+            untracked = [f for f in untracked if f not in pre_existing]
+        except OSError:
+            pass  # best effort — if can't read, include all untracked
 
     # Combine + dedupe (a file could be in both lists if it was deleted
     # then re-created). Order: modified first, then new untracked.

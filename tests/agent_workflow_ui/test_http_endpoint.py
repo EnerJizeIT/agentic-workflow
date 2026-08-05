@@ -41,6 +41,11 @@ def test_is_valid_form_id():
     assert not _is_valid_form_id("FORM-1")
     assert not _is_valid_form_id("FOO-001")
     assert not _is_valid_form_id("")
+    # Path traversal defense (defense-in-depth — registry.get is primary guard)
+    assert not _is_valid_form_id("FORM-../../etc/passwd")
+    assert not _is_valid_form_id("FORM-foo/bar")
+    assert not _is_valid_form_id("FORM-foo\\bar")
+    assert not _is_valid_form_id("FORM-..secret")
 
 
 def test_health_endpoint(http_setup):

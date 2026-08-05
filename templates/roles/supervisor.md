@@ -142,7 +142,13 @@ the PROJECT (jira-epic-presenter, etc.), not the TOOL (awf).
 - Any file in the project root or `src/`, `lib/`, `tests/`, etc.
 - Any `.md` documentation file that workers produce (architecture, requirements)
 - Any code file (any extension)
-- **Any file in the awf/ tooling directory** (templates, source, tests)
+
+**What is COMPLETELY OFF-LIMITS** (no pipeline, no direct edit, no exception):
+- **awf/ tooling directory** — source, templates, tests, configs
+- **agent_workflow_ui/ plugin** — source, templates, tests
+- **BACKLOG.md** — you may read and suggest items, but do NOT edit directly
+  (tell user or write to `.agentic/inbox/` instead)
+- If you find a bug in awf itself → report to user, do NOT fix it
 
 ### Step 0b · Decide: configure project or run pipeline?
 

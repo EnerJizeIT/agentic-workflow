@@ -68,15 +68,8 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
         pass
 
     try:
-        pass  # ensures awf import works
-    except Exception:
-        pass
-    try:
-        import sqlite3
-
-        db_path = xdg.opencode_config_file().parent.parent / "local" / "share" / "opencode" / "opencode.db"
-        # Also check XDG data home
         import os
+        import sqlite3
 
         data_home = os.environ.get("XDG_DATA_HOME", "").strip()
         if data_home:
