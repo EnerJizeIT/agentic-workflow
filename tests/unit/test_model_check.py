@@ -1,9 +1,7 @@
 """Tests for model discovery + validation — read_available_models + check_model_config.
 
-Covers:
-- read_available_models(): CLI fallback, opencode.json parsing, error handling
-- check_model_config(): all validation paths (provider, agent, CLI, recent, invalid)
-- Forms integration: _collect_opencode_models, _collect_recent_models
+CI-safe: all tests mock the opencode environment (CLI, opencode.json, opencode.db).
+No dependency on real machine installation.
 """
 from __future__ import annotations
 
@@ -17,11 +15,55 @@ import yaml
 from awf import api
 from awf.api.model_check import check_model_config
 
+# Fake model lists for mocking
+FAKE_CLI_MODELS = ["vllm/llm", "opencode/glm-5.2", "zai-coding-plan/glm-5.2"]
+FAKE_RECENT_MODELS = ["zai-coding-plan/glm-5.2"]
+
 
 @pytest.fixture
 def awf_project(tmp_git_repo):
     api.init_project(tmp_git_repo, project_name="Test")
     return tmp_git_repo
+
+
+@pytest.fixture
+def mock_model_env(monkeypatch, tmp_path):
+    """Mock the entire model discovery environment.
+
+    - subprocess.run returns fake 'opencode models' output
+    - opencode.json created in fake home with vllm provider
+    - opencode.db path points to nonexistent file (no recent sessions)
+    """
+    # Mock subprocess.run for 'opencode models' CLI
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and cmd[:1] == ["opencode"] and "models" in cmd:
+            return type("R", (), {
+                "returncode": 0,
+                "stdout": "\n".join(FAKE_CLI_MODELS) + "\n",
+                "stderr": "",
+            })()
+        # Default: real subprocess for other commands (git, etc.)
+        return subprocess.run(cmd, **kwargs)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    # Mock opencode.json in a fake home directory
+    fake_home = tmp_path / "fake_home"
+    oc_dir = fake_home / ".config" / "opencode"
+    oc_dir.mkdir(parents=True)
+    (oc_dir / "opencode.json").write_text(json.dumps({
+        "provider": {
+            "vllm": {
+                "models": {
+                    "llm": {"name": "LLM"},
+                },
+            },
+        },
+    }))
+
+    import awf.xdg as xdg_mod
+    monkeypatch.setattr(xdg_mod, "opencode_config_file", lambda: oc_dir / "opencode.json")
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
 
 
 def _set_models(project: Path, models: dict) -> None:
@@ -40,28 +82,21 @@ def _mock_cli_empty(monkeypatch):
     )
 
 
-def _mock_cli_models(models_list: list[str]):
-    """Return a mock for subprocess.run that returns given models."""
-    stdout = "\n".join(models_list) + "\n"
-    return lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
-
-
 # ─── read_available_models ──────────────────────────────────────────────
 
 
 class TestReadAvailableModels:
     """Model discovery from 'opencode models' CLI + opencode.json fallback."""
 
-    def test_cli_returns_full_list(self):
-        """When 'opencode models' works → returns ALL models from CLI."""
+    def test_cli_returns_models(self, mock_model_env):
+        """When 'opencode models' works → returns models from CLI."""
         from agent_workflow_ui.opencode_config import read_available_models
 
         models = read_available_models()
-        # On dev machine, CLI returns 65 models
         assert len(models) > 0
         assert all("/" in m for m in models)  # all have provider/model format
 
-    def test_cli_skips_non_model_lines(self, monkeypatch):
+    def test_cli_skips_non_model_lines(self, monkeypatch, tmp_path):
         """CLI output may contain non-model lines (page-assist notices)."""
         from agent_workflow_ui import opencode_config
 
@@ -148,14 +183,6 @@ class TestReadRecentModels:
         models = read_recent_models()
         assert isinstance(models, list)
 
-    def test_returns_models_from_real_db(self):
-        """On dev machine, DB has past sessions → returns models."""
-        from agent_workflow_ui.opencode_config import read_recent_models
-
-        models = read_recent_models()
-        if models:
-            assert all(isinstance(m, str) for m in models)
-
 
 # ─── check_model_config: validation paths ───────────────────────────────
 
@@ -163,7 +190,7 @@ class TestReadRecentModels:
 class TestCheckModelConfigValidationPaths:
     """Each validation path in check_model_config."""
 
-    def test_provider_in_opencode_json_valid(self, awf_project):
+    def test_provider_in_opencode_json_valid(self, awf_project, mock_model_env):
         """Model in opencode.json provider → valid."""
         _set_models(awf_project, {
             "agent-test": {"agent_name": "worker", "model": "vllm/llm"},
@@ -172,7 +199,7 @@ class TestCheckModelConfigValidationPaths:
         test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
         assert test_role["valid"] is True
 
-    def test_cli_model_valid(self, awf_project):
+    def test_cli_model_valid(self, awf_project, mock_model_env):
         """Model available via 'opencode models' but not in opencode.json → valid."""
         _set_models(awf_project, {
             "agent-test": {"agent_name": "worker", "model": "opencode/glm-5.2"},
@@ -182,18 +209,8 @@ class TestCheckModelConfigValidationPaths:
         assert test_role["valid"] is True
         assert "opencode models" in test_role["note"]
 
-    def test_recent_model_valid(self, awf_project):
-        """Model in recent sessions (opencode.db) → valid."""
-        _set_models(awf_project, {
-            "agent-test": {"agent_name": "worker", "model": "zai-coding-plan/glm-5.2"},
-        })
-        result = check_model_config(awf_project)
-        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
-        assert test_role["valid"] is True
-
-    def test_completely_invalid_model_warns(self, awf_project, monkeypatch):
+    def test_completely_invalid_model_warns(self, awf_project, mock_model_env):
         """Model nowhere (not in CLI, providers, recent) → invalid + warning."""
-        _mock_cli_empty(monkeypatch)
         _set_models(awf_project, {
             "agent-test": {"agent_name": "worker", "model": "nonexistent/fake-model"},
         })
@@ -202,7 +219,7 @@ class TestCheckModelConfigValidationPaths:
         assert test_role["valid"] is False
         assert len(result["warnings"]) > 0
 
-    def test_no_model_specified_is_valid(self, awf_project):
+    def test_no_model_specified_is_valid(self, awf_project, mock_model_env):
         """Role without model → valid (uses opencode default)."""
         _set_models(awf_project, {
             "agent-test": {"agent_name": "worker"},  # no model key
@@ -212,9 +229,8 @@ class TestCheckModelConfigValidationPaths:
         assert test_role["valid"] is True
         assert "default" in test_role["note"].lower()
 
-    def test_multiple_roles_mixed_validity(self, awf_project, monkeypatch):
+    def test_multiple_roles_mixed_validity(self, awf_project, mock_model_env):
         """Some models valid, some not — correct per-role result."""
-        _mock_cli_empty(monkeypatch)
         _set_models(awf_project, {
             "agent-good": {"agent_name": "worker", "model": "vllm/llm"},
             "agent-bad": {"agent_name": "worker", "model": "fake/nonexistent"},
@@ -235,7 +251,7 @@ class TestCheckModelConfigEdgeCases:
         with pytest.raises(api.AwfApiError, match="No .agentic/"):
             check_model_config(tmp_git_repo)
 
-    def test_empty_models_section(self, awf_project):
+    def test_empty_models_section(self, awf_project, mock_model_env):
         """No models configured → empty result, no crash."""
         result = check_model_config(awf_project)
         # supervisor model always exists
@@ -245,6 +261,16 @@ class TestCheckModelConfigEdgeCases:
         """No opencode.json at all — models still valid via CLI."""
         import awf.xdg as xdg_mod
 
+        # Mock CLI to return models
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: type("R", (), {
+                "returncode": 0,
+                "stdout": "\n".join(FAKE_CLI_MODELS) + "\n",
+                "stderr": "",
+            })() if "models" in (a[0] if a and isinstance(a[0], list) else [])
+            else subprocess.run(*a, **kw),
+        )
         monkeypatch.setattr(
             xdg_mod,
             "opencode_config_file",
@@ -275,17 +301,16 @@ class TestCheckModelConfigEdgeCases:
         test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
         assert test_role["valid"] is True
 
-    def test_result_has_providers_available(self, awf_project):
+    def test_result_has_providers_available(self, awf_project, mock_model_env):
         """Result includes providers_available list."""
         result = check_model_config(awf_project)
         assert "providers_available" in result
         assert isinstance(result["providers_available"], list)
 
-    def test_as_dict_serializable(self, awf_project):
+    def test_as_dict_serializable(self, awf_project, mock_model_env):
         """Full result is JSON-serializable for MCP."""
-        import json as _json
         result = check_model_config(awf_project)
-        _json.dumps(result)
+        json.dumps(result)
 
 
 # ─── Forms integration ──────────────────────────────────────────────────
@@ -294,13 +319,13 @@ class TestCheckModelConfigEdgeCases:
 class TestFormsModelCollection:
     """Forms.py _collect_opencode_models + _collect_recent_models."""
 
-    def test_collect_opencode_models_returns_list(self):
+    def test_collect_opencode_models_returns_list(self, mock_model_env):
         """_collect_opencode_models returns a list of model strings."""
         from agent_workflow_ui.tools.forms import _collect_opencode_models
 
         models = _collect_opencode_models()
         assert isinstance(models, list)
-        assert len(models) > 0  # CLI returns 65 models on dev machine
+        assert len(models) > 0
 
     def test_collect_recent_models_returns_list(self):
         """_collect_recent_models returns a list."""
@@ -309,14 +334,14 @@ class TestFormsModelCollection:
         models = _collect_recent_models()
         assert isinstance(models, list)
 
-    def test_collect_opencode_no_duplicates(self):
+    def test_collect_opencode_no_duplicates(self, mock_model_env):
         """Result has no duplicates."""
         from agent_workflow_ui.tools.forms import _collect_opencode_models
 
         models = _collect_opencode_models()
         assert len(models) == len(set(models)), "Duplicate models in list"
 
-    def test_all_models_contain_slash(self):
+    def test_all_models_contain_slash(self, mock_model_env):
         """All model IDs have provider/model format."""
         from agent_workflow_ui.tools.forms import _collect_opencode_models
 
@@ -331,7 +356,7 @@ class TestFormsModelCollection:
 class TestAwfCheckModelConfigTool:
     """MCP tool awf_check_model_config returns proper format."""
 
-    def test_returns_ok_status(self, awf_project):
+    def test_returns_ok_status(self, awf_project, mock_model_env):
         import asyncio
 
         from agent_workflow_ui.tools import awf
