@@ -710,7 +710,7 @@ async def awf_wait_for_event(
 
     Args:
         project_dir: Project root (default: cwd).
-        timeout: Max seconds to block (default 120).
+        timeout: Max seconds to block (default 30 — MCP plugin single-thread limit).
 
     Returns:
         Dict with: event_type (verify/blocked/checkpoint/done/timeout/idle),

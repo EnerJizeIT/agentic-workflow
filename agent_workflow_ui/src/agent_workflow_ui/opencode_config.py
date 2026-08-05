@@ -31,27 +31,12 @@ GLOBAL_ROLES_DIR = _xdg_config_home() / "awf" / "roles"
 
 
 def read_opencode_models() -> list[str]:
-    """Get all available model IDs from opencode.
+    """Deprecated alias for :func:`read_available_models`.
 
-    Primary: `opencode models` CLI. Covers all providers including /connect auth.
-    Fallback: parse opencode.json.
+    Kept for backward compat — referenced in architecture.md and called
+    from ``__main__.py`` as a Jinja2 global. New code should use
+    ``read_available_models`` directly.
     """
-    try:
-        result = subprocess.run(
-            ["opencode", "models"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode == 0:
-            models = []
-            for line in result.stdout.strip().splitlines():
-                line = line.strip()
-                if line and not line.startswith("[") and "/" in line:
-                    models.append(line)
-            if models:
-                return sorted(models)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        log.warning("opencode models CLI failed: %s", e)
-
     return read_available_models()
 
 
