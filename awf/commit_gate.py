@@ -115,7 +115,7 @@ def _files_changed_since_baseline(
         if candidates:
             baseline_untracked_path = candidates[0]
 
-    if baseline_untracked_path.exists():
+    if baseline_untracked_path and baseline_untracked_path.exists():
         try:
             pre_existing = {
                 line.strip()
