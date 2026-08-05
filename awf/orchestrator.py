@@ -526,7 +526,7 @@ def run_pipeline(args: Any) -> int:
                     _log(logs_dir, f"Auto: no work + no signal — stop at {s_name}")
                 return 1
 
-            salvage_stage = Stage(name="salvage", role="supervisor", kind="verify")
+            salvage_stage = Stage(name="salvage", role="supervisor", kind="salvage")
             _run_supervisor_stage(salvage_stage, current_todo, auto=False, project_dir=project_dir, logs_dir=logs_dir)
             signal = read_signal_for_todo(outbox, current_todo, *prefixes)
             if not signal:

@@ -35,6 +35,74 @@ def get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
+## ─── Stage-specific snippets (focused injection) ───────────────────────
+# Each snippet is ~15-20 lines of DIRECTLY RELEVANT instructions for one
+# stage. Appended to build_prompt() output so Qwen sees focused rules at
+# the END of the prompt (recency bias → higher compliance).
+
+_SNIPPET_ALWAYS = """\
+## ⚡ Critical rules (always apply)
+- DO NOT edit source files, awf tooling, or templates. All changes through pipeline.
+- You ARE the decision maker. Do NOT ask user "should I approve?" — decide yourself.
+- If MCP tool times out → bash fallback: `python3 -m awf status --project-dir <path>`
+"""
+
+_SNIPPET_PLAN = """\
+## Plan stage — your job right now
+1. Study project vision (above) + phases file (.agentic/phases/plan.md)
+2. Determine next uncompleted step toward goal
+3. Write .agentic/inbox/TODO-{NNNN}.md — goal level (WHAT to build), not micromanage
+4. Create signal: .agentic/inbox/TODO-{NNNN}.ready
+5. Workers are capable — give autonomy, don't over-specify
+"""
+
+_SNIPPET_VERIFY = """\
+## Verify stage — YOU are the reviewer, not a relay
+1. Read ALL handoffs in .agentic/handoff/
+2. Run: git diff --stat — check what actually changed
+3. Read the actual code changes for correctness
+4. DECIDE YOURSELF (do NOT ask user):
+   - Work is good → create .agentic/inbox/ACK-{todo_id}.ready
+   - Work has issues → write .agentic/outbox/REVIEW-{todo_id}.md with specific fixes
+5. DO NOT relay "pipeline waits for your decision" to user — that's YOUR call.
+"""
+
+_SNIPPET_SALVAGE = """\
+## Salvage — worker didn't signal
+The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller models.
+1. Check git diff — did worker produce useful work?
+2. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
+3. If no → create .agentic/outbox/REVIEW-{todo_id}.md (reject with specifics)
+4. Do NOT panic or freeze — this is a normal recovery path.
+"""
+
+_STAGE_SNIPPETS = {
+    "plan": _SNIPPET_PLAN,
+    "verify": _SNIPPET_VERIFY,
+    "salvage": _SNIPPET_SALVAGE,
+}
+
+
+def _stage_snippet(kind: str, todo_id: str = "") -> str:
+    """Load stage-specific focused instructions.
+
+    Returns the snippet text with {todo_id} substituted, or empty string
+    if no snippet for this stage kind.
+    """
+    snippet = _STAGE_SNIPPETS.get(kind, "")
+    if snippet and todo_id:
+        snippet = snippet.replace("{todo_id}", todo_id)
+    return snippet
+
+
+def get_salvage_snippet(todo_id: str = "") -> str:
+    """Public API: salvage instructions for orchestrator."""
+    snippet = _SNIPPET_ALWAYS + "\n" + _SNIPPET_SALVAGE
+    if todo_id:
+        snippet = snippet.replace("{todo_id}", todo_id)
+    return snippet
+
+
 def build_prompt(
     kind: str,
     todo_id: str,
@@ -72,6 +140,15 @@ def build_prompt(
             "If yes, write ACK signal at "
             f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
             f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
+        )
+    elif kind == "salvage":
+        base = (
+            f"You are the supervisor. The worker at a previous stage ran but did NOT create "
+            f"DONE-{todo_id}.ready. This is a SALVAGE situation — the worker likely finished "
+            f"the work but forgot the signal. Review what was done: check `git diff --stat` "
+            f"against baseline in .agentic/context/BASELINE-{todo_id}.sha. "
+            f"If the work is acceptable, create .agentic/inbox/ACK-{todo_id}.ready. "
+            f"If not, create .agentic/outbox/REVIEW-{todo_id}.md."
         )
     else:
         # execute (default) — no context/instructions for agent stages.
@@ -116,13 +193,20 @@ def build_prompt(
                 pass  # non-fatal — supervisor falls back to generic prompt
 
     # UI-2/UI-3: append user's context + instructions for supervisor stages
-    if config and kind in ("plan", "verify"):
+    if config and kind in ("plan", "verify", "salvage"):
         ctx_msg = cfg_mod.get(config, "context.message", "") or ""
         sup_instr = cfg_mod.get(config, "supervisor.instructions", "") or ""
         if ctx_msg:
             base += f"\n\n## Project context (from user)\n{ctx_msg}"
         if sup_instr:
             base += f"\n\n## Additional instructions (from user)\n{sup_instr}"
+
+    # Stage-specific focused snippet injection.
+    # Order: always rules first (context), then stage-specific (actionable LAST).
+    # Recency bias: Qwen pays most attention to the END of the prompt.
+    snippet = _stage_snippet(kind, todo_id)
+    if snippet:
+        base += "\n\n" + _SNIPPET_ALWAYS + "\n" + snippet
 
     return base
 
