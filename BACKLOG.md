@@ -13,25 +13,25 @@
 
 > 5 HIGH + 7 MEDIUM. Layer 1 (KAUD-1..6) — изолированные безопасные фиксы.
 
-### KAUD-1 · `get_report()` игнорирует done/ архивы (HIGH)
+### KAUD-1 · `get_report()` игнорирует done/ архивы (HIGH) ✅ FIXED
 
 **Where:** `awf/api/lifecycle.py:381-451`
 `get_report()` не считает TODOs из `.agentic/done/`. После DF6-1 archive, `done_count` = 0.
 **Fix:** reuse `_count_done_blocked(inbox, outbox, done_dir)`.
 
-### KAUD-2 · `_build_pipeline_context()` хардкодит default.yaml (HIGH)
+### KAUD-2 · `_build_pipeline_context()` хардкодит default.yaml (HIGH) ✅ FIXED
 
 **Where:** `awf/supervisor.py:55`
 Всегда читает `default.yaml`, игнорируя `default_pipeline` из config.yaml.
 **Fix:** read pipeline name from config.
 
-### KAUD-3 · CSRF origin validation — startswith bypass (HIGH)
+### KAUD-3 · CSRF origin validation — startswith bypass (HIGH) ✅ FIXED
 
 **Where:** `http_endpoint.py:61-88` + `plan_checkpoint.py:253-269`
 `http://127.0.0.1.evil.com` проходит `startswith("http://127.0.0.1")`.
 **Fix:** `urlparse` + check hostname.
 
-### KAUD-4 · CLI `--timeout` игнорируется (HIGH)
+### KAUD-4 · CLI `--timeout` игнорируется (HIGH) ✅ FIXED
 
 **Where:** `awf/api/pipeline.py` + `awf/orchestrator.py`
 `args.timeout` не доходит до `_run_agent_stage()` / `_run_supervisor_stage()`.
@@ -43,13 +43,13 @@
 Worker config заменяет пользовательский. Grants bash/write/webfetch globally.
 **Fix:** merge with user's config (не заменять).
 
-### KAUD-6 · `_reconcile()` пишет state неатомарно (MEDIUM)
+### KAUD-6 · `_reconcile()` пишет state неатомарно (MEDIUM) ✅ FIXED
 
 **Where:** `awf/api/pipeline.py:88-153`
 `write_text()` напрямую. Crash mid-write → повреждённый state.
 **Fix:** use `atomic_write_text()`.
 
-### KAUD-7 · `signal_watch` lexicographic tie-break (MEDIUM)
+### KAUD-7 · `signal_watch` lexicographic tie-break (MEDIUM) ✅ FIXED
 
 **Where:** `awf/signal_watch.py` — `watch_new_glob`
 `sorted()[0]` выбирает лексикографически меньший (TODO-0002 вместо TODO-0010).
@@ -61,19 +61,19 @@ Worker config заменяет пользовательский. Grants bash/wri
 Локальная переменная. После краша — эвристическая реконструкция.
 **Fix:** include `current_todo` in `write_state()`.
 
-### KAUD-9 · Worker stdout не перенаправляется в лог (MEDIUM)
+### KAUD-9 · Worker stdout не перенаправляется в лог (MEDIUM) ✅ FIXED
 
 **Where:** `awf/agent_stage.py`
 Worker наследует stdout → mixed с awf-start.out.
 **Fix:** redirect to `.agentic/logs/<role>-<todo_id>.out`.
 
-### KAUD-10 · `pytest-timeout` закомментирован (MEDIUM)
+### KAUD-10 · `pytest-timeout` закомментирован (MEDIUM) ✅ FIXED
 
 **Where:** `pyproject.toml`
 Hanging test блокирует CI навсегда.
 **Fix:** re-enable with 120s per-test timeout.
 
-### KAUD-11 · `open_form` TTL docs vs code mismatch (MEDIUM)
+### KAUD-11 · `open_form` TTL docs vs code mismatch (MEDIUM) ✅ FIXED
 
 **Where:** `agent_workflow_ui/tools/forms.py:206-209`
 Code: 86400s default. Docs: "no TTL".
@@ -87,25 +87,25 @@ Code: 86400s default. Docs: "no TTL".
 
 > 2 bugs + 3 quality + 2 deferred.
 
-### DAUD-1 · `{NNNN}` в _SNIPPET_PLAN — литерал в prompt (BUG)
+### DAUD-1 · `{NNNN}` в _SNIPPET_PLAN — литерал в prompt (BUG) ✅ FIXED
 
 **Where:** `awf/supervisor.py` — `_SNIPPET_PLAN`
 `TODO-{NNNN}.md` остаётся литералом. Qwen может создать `TODO-{NNNN}.md`.
 **Fix:** заменить на «TODO-NNNN (подставь следующий номер)».
 
-### DAUD-2 · TOCTOU race в `_find_free_port()` (BUG)
+### DAUD-2 · TOCTOU race в `_find_free_port()` (BUG) ✅ FIXED
 
 **Where:** `awf/plan_checkpoint.py:246-250`
 Порт может быть занят между check и bind.
 **Fix:** retry 2-3 попытки, 500ms между ними.
 
-### DAUD-3 · Dead code — `opencode_skills_dir()` (QUALITY)
+### DAUD-3 · Dead code — `opencode_skills_dir()` (QUALITY) ✅ FIXED
 
 **Where:** `awf/xdg.py:37-39`
 Не вызывается нигде.
 **Fix:** удалить.
 
-### DAUD-4 · Двойной `except Exception` вокруг dashboard (QUALITY)
+### DAUD-4 · Двойной `except Exception` вокруг dashboard (QUALITY) ✅ FIXED
 
 **Where:** `awf/orchestrator.py:369-373` + `dashboard.py:529-541`
 Dashboard сам логирует. Внешний try/except — двойное логирование.
@@ -144,7 +144,7 @@ Dashboard сам логирует. Внешний try/except — двойное 
 
 ## 🔍 Self-identified (не найдено аудитами)
 
-### SELF-1 · `wait_for_event` не детектит stage transitions (HIGH)
+### SELF-1 · `wait_for_event` не детектит stage transitions (HIGH) ✅ FIXED
 
 **Where:** `awf/api/wait_event.py` — `_check_for_event()`
 
@@ -156,7 +156,7 @@ Pipeline: analyst → architector → implementer. Каждый переход �
 с прошлого poll → вернуть `event_type="stage_changed"` с именем нового stage.
 Нужен `prev_stage_name` параметр или сравнение с последним возвращённым state.
 
-### SELF-2 · Нет `awf_kill` tool (MEDIUM)
+### SELF-2 · Нет `awf_kill` tool (MEDIUM) ✅ FIXED
 
 **Where:** MCP tools (`agent_workflow_ui/tools/awf.py`)
 

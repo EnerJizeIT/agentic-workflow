@@ -1,6 +1,6 @@
 # agent-workflow-ui — Architecture
 
-> Архитектурный документ для `agent-workflow-ui` — MCP plugin для opencode, который даёт агенту 23 typed MCP tools: 5 UI (HTML-формы для структурированного ввода) + 18 awf workflow operations (init, start, status, rollback, dashboard, wait_for_event, check_model_config, ...). Plugin зависит от `awf` Python-пакета и импортирует `awf.api` напрямую (без subprocess).
+> Архитектурный документ для `agent-workflow-ui` — MCP plugin для opencode, который даёт агенту 24 typed MCP tools: 5 UI (HTML-формы для структурированного ввода) + 19 awf workflow operations (init, start, status, rollback, dashboard, wait_for_event, check_model_config, ...). Plugin зависит от `awf` Python-пакета и импортирует `awf.api` напрямую (без subprocess).
 
 **Версия:** 1.3
 **Дата:** 2026-08-05
@@ -12,7 +12,7 @@
 
 ### 1.1 Что это
 
-`agent-workflow-ui` — Python-пакет, реализованный как MCP server. Работает внутри opencode, даёт supervisor-агенту 23 typed MCP tools:
+`agent-workflow-ui` — Python-пакет, реализованный как MCP server. Работает внутри opencode, даёт supervisor-агенту 24 typed MCP tools:
 
 - **UI tools (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`. Генерация/чтение HTML-форм, открытие в браузере.
 - **awf workflow tools (18):** `awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`. Полный lifecycle awf-проекта.
@@ -47,7 +47,7 @@ flowchart TD
     end
 
     subgraph mcp["MCP layer — единый server"]
-        PLUGIN["agent-workflow-ui<br/>23 tools: 5 UI + 18 awf"]
+        PLUGIN["agent-workflow-ui<br/>24 tools: 5 UI + 19 awf"]
     end
 
     subgraph awf_pkg["awf — Python package"]
@@ -91,7 +91,7 @@ flowchart TD
 ### 2.2 Принципы интеграции
 
 - **opencode runtime** — общий, не зависит от наших продуктов.
-- **MCP layer — один server.** Все 23 tools в одном plugin'е.
+- **MCP layer — один server.** Все 24 tools в одном plugin'е.
 - **awf.api — single source of truth** для workflow logic. Plugin и CLI оба делегируют в него.
 - **UI tools agnostic** (только `inputs/`), **workflow tools** — thin wrappers над `awf.api`.
 - **File bus** — внутренний контракт awf. Plugin пишет напрямую только в `inputs/`.
@@ -130,7 +130,7 @@ flowchart TD
 agent_workflow_ui/
 ├── __init__.py
 ├── __main__.py                # entry: python -m agent_workflow_ui
-├── server.py                  # MCP server (stdio transport), регистрирует 23 tools (5 UI + 18 awf)
+├── server.py                  # MCP server (stdio transport), регистрирует 24 tools (5 UI + 19 awf)
 ├── http_endpoint.py           # localhost HTTP для приёма submits + save/delete custom roles
 ├── browser.py                 # xdg-open / open wrapper
 ├── config.py                  # env vars, paths (relative to cwd opencode = project root)
@@ -161,7 +161,7 @@ agent_workflow_ui/
 
 | Компонент | Ответственность |
 |---|---|
-| `server.py` | MCP protocol handling, tool dispatch, lifecycle. Регистрирует **23 tools**: 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 18 awf workflow (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`). |
+| `server.py` | MCP protocol handling, tool dispatch, lifecycle. Регистрирует **24 tools**: 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 19 awf workflow (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`). |
 | `http_endpoint.py` | Localhost HTTP server, accepts `/submit/<form_id>` POSTs, writes YAML в `inputs/`, после submit: `process_role_saves()` и `process_role_deletions()` синхронизируют `~/.config/awf/roles/`. |
 | `browser.py` | Cross-platform browser open (`xdg-open` Linux, `open` macOS, fallback error). |
 | `config.py` | Reads env vars at startup, resolves paths. Defaults: `.agentic/inputs`, `.agentic/templates`, `.agentic/dashboards` (relative to cwd opencode). |

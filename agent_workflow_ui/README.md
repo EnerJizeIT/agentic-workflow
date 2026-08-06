@@ -37,7 +37,7 @@ For manual testing:
 python -m agent_workflow_ui
 ```
 
-## Tools (23 total: 5 UI + 18 awf)
+## Tools (23 total: 5 UI + 19 awf)
 
 ### UI tools (form lifecycle)
 
@@ -69,8 +69,9 @@ python -m agent_workflow_ui
 | `awf_open_project_setup_form` | Open project-setup form (auto-populates roles/models/skills) |
 | `awf_open_increment_planning_form` | Open increment-planning form (variant picker) |
 | `awf_open_pipeline_dashboard` | Open live pipeline dashboard in browser |
-| `awf_wait_for_event` | Block until pipeline event (verify/blocked/checkpoint/salvage/done) |
+| `awf_wait_for_event` | Block until pipeline event (verify/blocked/checkpoint/salvage/stage_changed/done) |
 | `awf_check_model_config` | Validate models in config.yaml against opencode providers |
+| `awf_kill` | Kill running pipeline cleanly (SIGTERM → wait → SIGKILL) |
 
 See [architecture.md](../vision/architecture.md) §6 for full reference and
 [README.md](../README.md) §"MCP-MIGRATION" for the architectural rationale.

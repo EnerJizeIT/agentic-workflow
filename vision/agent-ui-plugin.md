@@ -9,7 +9,7 @@ custom-width: 75
 
 ### 1.1 Что это
 
-**agent-workflow-ui** — MCP plugin для opencode, реализованный как Python-пакет + Skill markdown. Даёт агенту (supervisor'у) **23 typed MCP tools**:
+**agent-workflow-ui** — MCP plugin для opencode, реализованный как Python-пакет + Skill markdown. Даёт агенту (supervisor'у) **24 typed MCP tools**:
 
 1. **UI tools (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`. Генерация/чтение HTML-форм для структурированного ввода от пользователя.
 2. **awf workflow tools (18):** `awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`. Полный lifecycle управления awf-проектом — без shell-команд.

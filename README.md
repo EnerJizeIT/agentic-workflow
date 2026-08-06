@@ -3,7 +3,7 @@
 > Декларативный multi-agent фреймворк: **Supervisor планирует → Agents реализуют → Supervisor проверяет**. Коммуникация — через файлы на диске (file bus). Состоит из двух продуктов в одном monorepo:
 
 - **`awf`** — Python-оркестратор пайплайнов. Бизнес-логика в `awf/api/` (public API package, split by concern); CLI `awf` — тонкая обёртка для dev/debug.
-- **`agent-workflow-ui`** — MCP plugin для opencode: 23 typed tools (18 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
+- **`agent-workflow-ui`** — MCP plugin для opencode: 24 typed tools (19 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
 
 **Primary path = MCP tools** — opencode-агент вызывает `awf_init`, `awf_status`, `awf_start` и т.д. через MCP protocol. CLI `awf` остаётся для e2e тестов и CI скриптов.
 
@@ -30,7 +30,7 @@
 
 ### agent-workflow-ui (MCP plugin)
 
-- **23 MCP tools:** 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 18 awf workflow ops (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`).
+- **24 MCP tools:** 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 19 awf workflow ops (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_kill`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`).
 - **Plugin depends on `awf` package** — imports `awf.api` directly (no subprocess).
 - **Composite template `project-setup`** — одна HTML-форма для полной настройки проекта: контекст + ТЗ-файлы + supervisor + команда агентов с моделями.
 - **Per-role model selection (BD-32).** Форма показывает dropdown с моделями из `opencode.json` — выбор сохраняется в `config.yaml` как `models.<role>.model`.
