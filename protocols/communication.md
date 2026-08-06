@@ -1,6 +1,3 @@
----
-custom-width: 75
----
 # Communication Protocol
 
 **Version:** 1.0  

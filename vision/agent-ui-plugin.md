@@ -1,6 +1,3 @@
----
-custom-width: 75
----
 # agent-workflow-ui — Product Vision
 
 > **awf's MCP plugin** — единый MCP-сервер с UI-инструментами (HTML-формы, дашборды) **и** workflow-операциями (init, start, status, rollback, ...). Работает только с awf как orchestrator. Plugin зависит от `awf` Python-пакета и импортирует `awf.api` напрямую (без subprocess). **MCP primary path** — opencode-агент вызывает `awf_init`/`awf_status`/... как typed MCP tools; CLI `awf` сохранён как тонкая dev/debug обёртка.
