@@ -2,9 +2,9 @@
 
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md). Каждый эпик декомпозируем в awf TODO при начале работы.
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1067 тестов, CI green, 23 MCP tools. DF5-1..12 + DF6-1..8 + QA-2026-08-05 закрыты. Stage-specific snippet injection. asyncio.to_thread для MCP event loop. TODO lifecycle (archive + reconcile). ruff clean.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1096 тестов, CI green, 23 MCP tools. DF5-1..12 + DF6-1..8 + QA-2026-08-05 + salvage signal fix + ID collision fix закрыты. Stage-specific snippet injection. asyncio.to_thread для MCP event loop. TODO lifecycle (archive + reconcile). Pipeline context injection (BD-10). ruff clean.
 
-**Активный эпик:** следующий dogfood — протестировать весь флоу с lifecycle/reliability/snippet fixes.
+**Активный эпик:** KAUD — Kimi audit 2026-08-06 (5 HIGH + 7 MEDIUM).
 
 История фиксов — в `git log --oneline`.
 
@@ -1103,3 +1103,164 @@ stale state, supervisor не понимал что происходит.
 **Где править:**
 - `awf/_env.py` — `preexec_fn` в subprocess.run / Popen calls
 - Guard: только на Linux (`sys.platform == "linux"`)
+
+---
+
+## 🐛 KAUD — Kimi Audit 2026-08-06
+
+> Источник: `/home/pklochkov/Desktop/kimi - audit_report_agentic_workflow.md`
+> 5 HIGH, 18 MEDIUM, 6 LOW. Ниже HIGH + отобранные MEDIUM.
+
+### KAUD-1 · `get_report()` игнорирует done/ архивы (HIGH)
+
+**Where:** `awf/api/lifecycle.py:381-451`
+
+`get_report()` не считает TODOs из `.agentic/done/`. После DF6-1 archive,
+`done_count` = 0, `items` пустой. Та же логика что DF6-4 для `get_status()`,
+но `get_report()` не обновили.
+
+**Fix:** reuse `_count_done_blocked(inbox, outbox, done_dir)` — как в `get_status()`.
+
+### KAUD-2 · `_build_pipeline_context()` хардкодит default.yaml (HIGH)
+
+**Where:** `awf/supervisor.py:55`
+
+Всегда читает `.agentic/pipelines/default.yaml`, игнорируя `default_pipeline`
+из config.yaml и `--pipeline` CLI flag. Non-default pipelines получают пустой
+pipeline context → worker не знает своё место.
+
+**Fix:** read pipeline name from config or pass as parameter.
+```python
+pipeline_name = cfg_mod.get(config, "default_pipeline", "default") or "default"
+pipeline_file = project_dir / ".agentic" / "pipelines" / f"{pipeline_name}.yaml"
+```
+
+### KAUD-3 · CSRF origin validation использует startswith (HIGH)
+
+**Where:** `agent_workflow_ui/http_endpoint.py:61-88` + `awf/plan_checkpoint.py:253-269`
+
+`_is_origin_allowed()` использует `origin.startswith("http://127.0.0.1")`.
+Bypass: `http://127.0.0.1.evil.com` проходит проверку.
+
+**Fix:** parse URL via `urllib.parse.urlparse`, check `hostname in {"127.0.0.1", "localhost"}`.
+```python
+from urllib.parse import urlparse
+parsed = urlparse(origin)
+if parsed.hostname not in ("127.0.0.1", "localhost"):
+    return False
+```
+
+### KAUD-4 · CLI `--timeout` игнорируется (HIGH)
+
+**Where:** `awf/api/pipeline.py:494-503` + `awf/orchestrator.py:272-588`
+
+`run_pipeline()` принимает `args.timeout` но не передаёт его в
+`_run_agent_stage()` или `_run_supervisor_stage()`. Workers всегда
+используют дефолт 3600s. Пользователь не может увеличить timeout
+для медленных моделей (vllm/llm на QA-ревью).
+
+**Fix:** add `timeout` parameter to `_run_agent_stage()` and
+`run_supervisor_stage()`, pass through to `run_subprocess_until_signal()` /
+`wait_for_supervisor_signal()`.
+
+### KAUD-5 · Child opencode config over-privileged (HIGH)
+
+**Where:** `awf/_env.py` — `awf_subprocess_env()`
+
+Worker config grants `bash: allow`, `write: allow`, `webfetch: allow`
+globally. Заменяет пользовательский config полностью.
+
+**Fix options:**
+- A: Merge with user's existing config (не заменять)
+- B: Restrict `bash`/`webfetch` to `prompt` (workers не bash-скрипты)
+- C: Restrict `edit`/`write` to project directory only
+
+Рекомендуется A+B: merge + tighter defaults.
+
+### KAUD-6 · `_reconcile()` пишет state неатомарно (MEDIUM)
+
+**Where:** `awf/api/pipeline.py:88-153`
+
+`write_text()` напрямую — неатомарно. Если процесс убит mid-write,
+state file повреждён → следующий запуск не может прочитать.
+
+**Fix:** use `awf._atomic.atomic_write_text()` (уже есть в кодовой базе).
+
+### KAUD-7 · `signal_watch` lexicographic tie-break (MEDIUM)
+
+**Where:** `awf/signal_watch.py` — `watch_new_glob`
+
+Picks `sorted(new_files)[0]` — lexicographically smallest. При множественных
+сигналах за один poll interval выбирает не тот (TODO-0002 вместо TODO-0010).
+
+**Fix:** sort by numeric ID, not lexicographically.
+```python
+# Before: sorted(new_files)[0]
+# After:  sorted(new_files, key=lambda f: int(re.search(r'\d+', f).group()))[0]
+```
+
+### KAUD-8 · `current_todo` не персистится в state (MEDIUM)
+
+**Where:** `awf/orchestrator.py`
+
+`current_todo` — локальная переменная в `run_pipeline()`. State file не
+сохраняет её. После краша, `awf continue` реконструирует через
+`todos.newest_active()` (numeric ID sort), что может дать другой TODO.
+
+**Fix:** include `current_todo` in `write_state()` calls. Read back in
+`continue_pipeline()`.
+
+### KAUD-9 · Worker stdout не перенаправляется в лог (MEDIUM)
+
+**Where:** `awf/agent_stage.py` — `run_agent_stage()`
+
+Worker subprocess наследует stdout/stderr → mixed с `awf-start.out` или
+терминалом. Невозможно прочитать вывод конкретного worker'а отдельно.
+
+**Fix:** redirect to `.agentic/logs/<role>-<todo_id>.out`.
+```python
+log_path = logs_dir / f"{role}-{todo_id}.out"
+with open(log_path, "w") as f:
+    proc = subprocess.Popen(..., stdout=f, stderr=subprocess.STDOUT)
+```
+
+### KAUD-10 · `pytest-timeout` закомментирован (MEDIUM)
+
+**Where:** `pyproject.toml`
+
+Если тест зависает (real subprocess, dead lock), CI блокируется навсегда.
+
+**Fix:** re-enable with per-test timeout (e.g., 120s).
+```toml
+[tool.pytest.ini_options]
+timeout = 120
+```
+
+### KAUD-11 · `open_form` TTL docs vs code mismatch (MEDIUM)
+
+**Where:** `agent_workflow_ui/tools/forms.py:206-209`
+
+Code: default TTL = 86400s (24h) from config.
+Docs: "Default: no TTL".
+
+**Fix:** align — either remove default TTL from code or update docs.
+
+### KAUD-12 · BACKLOG/CHANGELOG ~80% закрытых записей (LOW)
+
+**Where:** `BACKLOG.md`, `CHANGELOG.md`
+
+~900 строк закрытых DF5/DF6/QA entries. Трудно найти активные задачи.
+
+**Fix:** archive closed entries to `BACKLOG-archive.md`, keep only
+active items in BACKLOG.md.
+
+### Решения по вопросам аудитора
+
+1. **Non-default pipelines** — YES, используются (project-setup form позволяет
+   выбрать pipeline). KAUD-2 = HIGH.
+2. **Slow test suite** — KNOWN pain (~7 min). Приоритет MEDIUM.
+3. **Starting point** — Layer 1 (KAUD-1..6), потом Layer 2.
+4. **Child permissions** — Workers NEED bash (запуск tsc, build, git status).
+   webfetch нужен для research. Ограничение к project dir — сложно реализовать
+   (opencode permission system не поддерживает path-scoped rules).
+   Решение: merge config (KAUD-5 вариант A), не трогать permissions пока.
