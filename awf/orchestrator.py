@@ -355,223 +355,31 @@ def run_pipeline(args: Any) -> int:
             print(f"  {s_desc}")
         print("-" * 43)
         _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_kind})")
-        # T4.1: persist stage transition to structured state file
-        # (replaces regex parsing in api.get_status).
         write_state(
-            project_dir,
-            logs_dir=logs_dir,
-            stage_idx=stage_idx,
-            stage_name=s_name,
-            stage_kind=s_kind,
-            stage_role=s_role,
-            todo_id=current_todo,
-            pipeline_pid=os.getpid(),
+            project_dir, logs_dir=logs_dir, stage_idx=stage_idx,
+            stage_name=s_name, stage_kind=s_kind, stage_role=s_role,
+            todo_id=current_todo, pipeline_pid=os.getpid(),
         )
-        # DASH Phase 2: regenerate dashboard HTML after state change.
-        # DAUD-4: generate_dashboard has its own error handling (DF5-8).
-        # No outer try/except needed — avoids double logging.
         from .api.dashboard import generate_dashboard
         generate_dashboard(project_dir)
 
-        # --- Supervisor stage ---
+        # DAUD-7: dispatch to extracted stage handlers
+        from .pipeline_engine import execute_agent_stage, execute_supervisor_stage
+
         if s_role == "supervisor":
-            try:
-                sup_signal = _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
-            except (RuntimeError, TimeoutError) as e:
-                print(f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
-                print(f"  Details: {e}", file=sys.stderr)
-                print(f"  See {logs_dir / 'orchestrator.log'} for full context.", file=sys.stderr)
-                _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-                return 1
-
-            if s_kind == "plan":
-                current_todo = _find_active_todo(project_dir)
-                if not current_todo:
-                    print("No active TODO found. Create one first, then continue.")
-                    _log(logs_dir, "No active TODO after supervisor stage")
-                    return 1
-                print(f"Active TODO: {current_todo}")
-
-                # BD-36: Plan checkpoint — preview TODO before agents start.
-                rc = _run_plan_checkpoint_gate(
-                    current_todo, project_dir, config, auto, logs_dir,
-                )
-                if rc != 0:
-                    return rc
-
-            if s_kind == "verify":
-                # QA finding: empty sup_signal (supervisor auto-skipped,
-                # supervisor.md missing, salvage/unknown kind, or watchdog
-                # returned nothing) was silently treated as "approved implicit"
-                # — pipeline committed unreviewed work. Now: no signal = abort.
-                if not sup_signal:
-                    print(
-                        f"ERROR: verify stage produced no supervisor signal for {current_todo}.",
-                        file=sys.stderr,
-                    )
-                    print(
-                        "  Supervisor stage returned empty signal (skipped or failed).",
-                        file=sys.stderr,
-                    )
-                    print("  Pipeline stopped — manual review required.", file=sys.stderr)
-                    _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
-                    return 1
-
-                # C1 fix: check what supervisor actually decided.
-                # REVIEW-{todo_id} = rejection → don't commit, don't close Step,
-                # escalate to replan (gives supervisor a chance to refine TODO).
-                if sup_signal.startswith("REVIEW-"):
-                    print(f"Supervisor REJECTED work on {current_todo} (REVIEW signal).", file=sys.stderr)
-                    print(f"  See .agentic/outbox/REVIEW-{current_todo}.md for details.", file=sys.stderr)
-                    _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
-                    # Trigger replan: supervisor creates new refined TODO
-                    replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-                    try:
-                        _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
-                    except (RuntimeError, TimeoutError) as e:
-                        print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
-                        return 1
-                    new_todo = _find_active_todo(project_dir)
-                    if new_todo and new_todo != current_todo:
-                        current_todo = new_todo
-                    # Pipeline stops — user must read REVIEW, fix issues,
-                    # then `awf start` to retry from the new TODO.
-                    print("Pipeline stopped: supervisor rejected. Read REVIEW, fix, then 'awf start'.", file=sys.stderr)
-                    return 1
-
-                # Approved path: ACK or APPROVE signal
-                print(f"Supervisor approved {current_todo} ({sup_signal or 'implicit'}).")
-                # A1: pass baseline_sha so _maybe_commit isolates changes
-                baseline_sha = _read_baseline_sha(project_dir, current_todo)
-                _maybe_commit(
-                    s_name, current_todo, stage.on_approved,
-                    project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
-                )
-                _mark_plan_step_done(project_dir, current_todo, logs_dir)
-                # DF6-1: archive completed TODO to done/{todo_id}/
-                from .todos import archive_todo
-                archived = archive_todo(project_dir, current_todo)
-                if archived:
-                    _log(logs_dir, f"DF6-1: archived {current_todo} → {archived}")
-                stage_idx += 1
-                continue
-
-            stage_idx += 1
-            continue
-
-        # --- Agent stage ---
-        if not current_todo:
-            current_todo = _find_active_todo(project_dir)
-            if not current_todo:
-                print(f"No active TODO for agent stage '{s_name}'. Run supervisor stage first.")
-                return 1
-
-        # П3: auto-create baseline SHA if missing (was manual `awf baseline`).
-        # Idempotent — if supervisor or previous run created it, leave alone.
-        _ensure_baseline_sha(project_dir, current_todo, logs_dir)
-
-        prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
-        try:
-            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout)
-        except (RuntimeError, TimeoutError) as e:
-            print(f"ERROR: agent stage '{s_name}' (role={s_role}) crashed. Pipeline stopped.", file=sys.stderr)
-            print(f"  Details: {e}", file=sys.stderr)
-            print(f"  See {logs_dir / 'orchestrator.log'} for full context.", file=sys.stderr)
-            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-            return 1
-
-        prefixes = expected_signal_prefixes(s_kind)
-
-        signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-
-        if not signal:
-            try:
-                signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
-            except TimeoutError:
-                pass
-
-        if not signal:
-            baseline_sha = _read_baseline_sha(project_dir, current_todo)
-            if baseline_sha and verify.attempt_auto_done(project_dir, current_todo, config, baseline_sha):
-                signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-
-        if not signal:
-            print(
-                f"WARNING: No signal after agent stage '{s_name}' (worker ran but didn't signal).",
-                file=sys.stderr,
+            current_todo, delta, rc = execute_supervisor_stage(
+                stage, current_todo, auto, project_dir, config, logs_dir,
             )
-            _log(logs_dir, f"No signal after {s_name} — salvage path")
-
-            # DF5-4: write salvage context to inbox so supervisor in opencode
-            # can understand what happened without reading background logs.
-            _write_salvage_prompt(project_dir, current_todo, s_name, baseline_sha, logs_dir)
-
-            # Update state so awf_status / wait_for_event can surface it
-            from .pipeline_state import write_state as _ws
-            _ws(project_dir, salvage_needed=True, salvage_stage=s_name, logs_dir=logs_dir)
-
-            if auto:
-                baseline_sha = _read_baseline_sha(project_dir, current_todo)
-                if baseline_sha and verify.detect_work_evidence(project_dir, baseline_sha):
-                    print(
-                        f"  Worker left changes vs baseline. TODO {current_todo} left ACTIVE for manual salvage.",
-                        file=sys.stderr,
-                    )
-                    print(
-                        f"  Inspect: git diff ; awf status ; then write DONE-{current_todo}.ready or replan.",
-                        file=sys.stderr,
-                    )
-                    _log(logs_dir, f"Auto: work detected; {current_todo} left active for manual salvage")
-                else:
-                    print("  No worker changes and no signal — treating as failure.", file=sys.stderr)
-                    _log(logs_dir, f"Auto: no work + no signal — stop at {s_name}")
-                return 1
-
-            salvage_stage = Stage(name="salvage", role="supervisor", kind="salvage")
-            _run_supervisor_stage(salvage_stage, current_todo, auto=False, project_dir=project_dir, logs_dir=logs_dir)
-            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-            if not signal:
-                print("No signal after supervisor salvage. Stopping.", file=sys.stderr)
-                _log(logs_dir, f"Stopped: salvage produced no signal at {s_name}")
-                return 1
-            print(f"Salvaged signal: {signal}", file=sys.stderr)
-            _log(logs_dir, f"Salvaged signal: {signal} via supervisor")
-
-        sig_type = signal_type(signal)
-        print(f"Signal classified as: {sig_type}")
-
-        action, target = resolve_transition(stage, sig_type)
-        _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
-
-        # A6 refactor: dispatch to handler functions (was 50-line if/elif chain).
-        if action in ("next", "commit_and_next", "commit_and_report"):
-            stage_idx = _handle_next(
-                project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
-            )
-
-        elif action == "escalate":
-            stage_idx, current_todo, exit_code = _handle_escalate(
-                project_dir, logs_dir, s_name, current_todo, auto, stage, retry_counts, stage_idx,
-            )
-            if exit_code != 0:
-                return exit_code
-
-        elif action == "rollback":
-            stage_idx, current_todo, exit_code = _handle_rollback(
-                project_dir, logs_dir, stages, current_todo, auto, target,
-            )
-            if exit_code != 0:
-                return exit_code
-
-        elif action == "stop":
-            print("Pipeline stopped by policy.")
-            _log(logs_dir, f"Pipeline stopped by policy at stage {s_name}")
-            return 0
-
+            if rc != 0:
+                return rc
+            stage_idx += delta
         else:
-            print(f"Unknown transition: {action}")
-            return 1
+            current_todo, stage_idx, rc = execute_agent_stage(
+                stage, current_todo, project_dir, config, logs_dir,
+                stages, stage_idx, retry_counts, auto, agent_hard_timeout,
+            )
+            if rc != 0:
+                return rc
 
     # All stages completed
     print()
