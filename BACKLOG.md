@@ -4,7 +4,7 @@
 
 **Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0 стабильны. 1096 тестов, CI green, 23 MCP tools. DF5-1..12 + DF6-1..8 + QA-2026-08-05 + salvage signal fix + ID collision fix закрыты. Stage-specific snippet injection. asyncio.to_thread для MCP event loop. TODO lifecycle (archive + reconcile). Pipeline context injection (BD-10). ruff clean.
 
-**Активный эпик:** KAUD — Kimi audit 2026-08-06 (5 HIGH + 7 MEDIUM).
+**Активный эпик:** KAUD + DAUD — два аудита (Kimi + DeepSeek) 2026-08-06.
 
 История фиксов — в `git log --oneline`.
 
@@ -1264,3 +1264,96 @@ active items in BACKLOG.md.
    webfetch нужен для research. Ограничение к project dir — сложно реализовать
    (opencode permission system не поддерживает path-scoped rules).
    Решение: merge config (KAUD-5 вариант A), не трогать permissions пока.
+
+---
+
+## 🐛 DAUD — DeepSeek Audit 2026-08-06
+
+> Источник: `/home/pklochkov/Desktop/deepseek - awf-audit-report-2026-08-06.md`
+> 7 findings (0 critical, 2 bugs, 3 quality, 2 architecture).
+> Фокус: dead code, prompt clarity, race conditions, code quality.
+
+### DAUD-1 · `{NNNN}` в _SNIPPET_PLAN — литерал в prompt (BUG)
+
+**Where:** `awf/supervisor.py` — `_SNIPPET_PLAN`
+
+`_SNIPPET_PLAN` содержит `TODO-{NNNN}.md` — фигурные скобки выглядят как
+шаблонная переменная. `_stage_snippet()` подставляет только `{todo_id}`,
+но для plan стадии `todo_id` пустой → `{NNNN}` остаётся литералом в промпте.
+Qwen может создать файл `TODO-{NNNN}.md` вместо `TODO-0005.md`.
+Аналогично BD-21 (та же проблема с `{todo_id}`).
+
+**Fix:** заменить на человеческий язык: «TODO-NNNN (подставь следующий номер,
+например TODO-0005)».
+
+### DAUD-2 · TOCTOU race в `_find_free_port()` (BUG)
+
+**Where:** `awf/plan_checkpoint.py:246-250`
+
+Между `_find_free_port()` (сокет закрывается) и `_start_checkpoint_server(port)`
+другой процесс может занять порт → `OSError: Address already in use`.
+
+**Fix:** обернуть `_start_checkpoint_server` в retry (2-3 попытки,
+500ms между ними). Если после N попыток порт занят — понятная ошибка.
+
+### DAUD-3 · Dead code — `opencode_skills_dir()` (QUALITY)
+
+**Where:** `awf/xdg.py:37-39`
+
+Функция не вызывается нигде. Спекулятивный код «на вырост».
+
+**Fix:** удалить. Если понадобится — добавим осознанно.
+
+### DAUD-4 · Двойной `except Exception` вокруг `generate_dashboard()` (QUALITY)
+
+**Where:** `awf/orchestrator.py:369-373` + `awf/api/dashboard.py:529-541`
+
+Dashboard уже сам логирует ошибки и пишет `error.txt` (DF5-8).
+Внешняя обёртка в оркестраторе логирует второй раз — шум в логах.
+
+**Fix:** убрать внешний try/except в оркестраторе.
+`generate_dashboard()` самодостаточен.
+
+### DAUD-5 · Signal file content validation — warning-only (QUALITY)
+
+**Where:** `awf/signals.py:78-113` — `read_signal_for_todo()`
+
+Проверяется только `st_size > 0` для `.md`-компаньона. Worker может
+написать «ok» в `DONE-TODO-0001.md` — и verify признает это отчётом.
+
+**Fix:** добавить минимальную проверку (наличие markdown-заголовка `#`).
+Warning в лог, НЕ блокировать pipeline. Defence-in-depth.
+
+### DAUD-6 · `plan_checkpoint.py` → Jinja2 (DEFERRED)
+
+**Where:** `awf/plan_checkpoint.py:~200 строк HTML через конкатенацию`
+
+Дашборд использует Jinja2, checkpoint — нет. ~200 строк boilerplate.
+
+**Решение:** DEFER до scenario 2/3 (когда понадобятся новые формы).
+2-3 часа работы, нет user-facing импакта сейчас.
+
+### DAUD-7 · `orchestrator.run_pipeline()` refactor (ARCHITECTURE)
+
+**Where:** `awf/orchestrator.py:272-588` (390 строк, cognitive complexity 107)
+
+Три ответственности: state machine, side effects, error recovery.
+Совпадает с KAUD recommendation (Layer 3).
+
+**Решение:** DEFER. 1-2 дня работы. Приоритет ниже чем Layer 1/2 фиксы.
+
+### Архитектурные ориентиры (NOT в backlog — hold in mind)
+
+A. **`tools/awf.py` (796 строк)** — разбить по зонам до scenario 2.
+   Час сейчас против дня с regression risk через 5 сценариев.
+
+B. **`supervisor.py` (809 строк)** — разделить `wait_for_supervisor_signal`
+   на `_wait_for_plan` / `_wait_for_verify` ДО добавления новых stage kind.
+
+C. **Два HTTP-сервера** — one-shot в core (`plan_checkpoint.py`),
+   long-lived в plugin (`http_endpoint.py`). Не плодить третий.
+
+### Решения по вопросам аудитора
+
+1. **`opencode_skills_dir()`** — DELETE (DAUD-3). Не используется, не планируется.
+2. **`plan_checkpoint.py` Jinja2** — DEFER (DAUD-6). Нет user impact сейчас.
