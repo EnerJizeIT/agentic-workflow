@@ -142,6 +142,47 @@ Dashboard сам логирует. Внешний try/except — двойное 
 
 ---
 
+## 🔍 Self-identified (не найдено аудитами)
+
+### SELF-1 · `wait_for_event` не детектит stage transitions (HIGH)
+
+**Where:** `awf/api/wait_event.py` — `_check_for_event()`
+
+Pipeline: analyst → architector → implementer. Каждый переход — новый stage.
+Но `wait_for_event` возвращает `timeout` на каждом переходе (нет события для
+"stage changed"). Supervisor видит "timeout" 10 раз пока 5 агентов работают.
+
+**Fix:** в `_check_for_event()` добавить проверку: если `stage_name` изменился
+с прошлого poll → вернуть `event_type="stage_changed"` с именем нового stage.
+Нужен `prev_stage_name` параметр или сравнение с последним возвращённым state.
+
+### SELF-2 · Нет `awf_kill` tool (MEDIUM)
+
+**Where:** MCP tools (`agent_workflow_ui/tools/awf.py`)
+
+Supervisor не может cleanly остановить pipeline. Использует bash `pkill` —
+нарушает role boundaries, оставляет zombie процессы.
+
+**Fix:** `awf_kill(project_dir)` — читает `pipeline_pid` из state,
+отправляет SIGTERM, ждёт 5 сек, SIGKILL если не умер, чистит state.
+
+### SELF-3 · Dashboard smart refresh не обновляет `data-epoch` (LOW)
+
+**Where:** `awf/templates/dashboard.html.j2` — smart refresh JS
+
+Когда pipeline переходит на новый stage, `started_at` в state меняется.
+Smart refresh патчит innerHTML секций, но не атрибут `data-epoch` на
+`#elapsed-timer`. Timer продолжает считать от старого start time.
+
+**Fix:** в smart refresh JS, после DOM patch, обновить `data-epoch`
+из свежего HTML:
+```javascript
+const freshEpoch = doc.querySelector('#elapsed-timer')?.dataset.epoch;
+if (freshEpoch) document.querySelector('#elapsed-timer').dataset.epoch = freshEpoch;
+```
+
+---
+
 ## 🔮 Future scenarios
 
 | Сценарий | Что добавляет | Сложность |
