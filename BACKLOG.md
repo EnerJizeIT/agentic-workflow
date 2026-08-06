@@ -3,7 +3,7 @@
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md).
 > История закрытых записей — в [BACKLOG-archive.md](BACKLOG-archive.md).
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0. 1115 тестов, CI green, 24 MCP tools. ruff clean.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0. 1115 тестов, CI green, 24 MCP tools. orchestrator refactored (DAUD-7). ruff clean.
 
 **Активный эпик:** завершён. Все KAUD + DAUD + SELF findings закрыты (кроме deferred).
 
@@ -121,7 +121,7 @@ Dashboard сам логирует. Внешний try/except — двойное 
 
 2-3 часа, нет user impact сейчас. Отложить до scenario 2/3.
 
-### DAUD-7 · `orchestrator.run_pipeline()` refactor (DEFERRED)
+### DAUD-7 · orchestrator.run_pipeline() refactor (DEFERRED) ✅ FIXED
 
 Совпадает с KAUD Layer 3. 1-2 дня. Низкий приоритет.
 
