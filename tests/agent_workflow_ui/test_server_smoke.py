@@ -70,7 +70,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 23 tools are registered with correct names (5 UI + 18 awf)."""
+    """All 24 tools are registered with correct names (5 UI + 19 awf)."""
     server = create_server()
     tools = asyncio.run(server.list_tools())
 
@@ -107,6 +107,7 @@ def test_all_tools_registered():
         "awf_wait_for_event",
         # Model configuration validation (dogfood-10)
         "awf_check_model_config",
+        "awf_kill",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

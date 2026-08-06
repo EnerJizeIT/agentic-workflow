@@ -64,6 +64,9 @@ def run_subprocess_until_signal(
             callers that don't pass it get the original behavior.
     """
     watch_paths = watch_paths or []
+    # KAUD-4: handle hard_timeout=None (use default)
+    if hard_timeout is None:
+        hard_timeout = BD20_HARD_TIMEOUT
     # BD-22: snapshot which watch_paths already exist at start (stale signals
     # from previous runs). Only paths that DON'T exist at start, or that
     # appear AFTER start, count as a valid signal.

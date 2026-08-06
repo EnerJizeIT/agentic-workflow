@@ -83,6 +83,19 @@ def wait_for_event(
                 message="Pipeline exited (state file cleared). Check awf_report.",
             )
 
+        # SELF-1: detect stage transitions (agent finished → next agent started)
+        prev_stage = prev_state.get("stage_name") if prev_state else None
+        curr_stage = current_state.get("stage_name")
+        if prev_stage and curr_stage and prev_stage != curr_stage:
+            return WaitEventResult(
+                event_type="stage_changed",
+                message=(
+                    f"Stage transition: '{prev_stage}' → '{curr_stage}'. "
+                    f"Previous stage completed. Poll again to wait for next event."
+                ),
+                state_snapshot=_state_to_dict(current_state),
+            )
+
         # Check for events
         result = _check_for_event(current_state)
         if result:

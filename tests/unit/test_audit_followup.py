@@ -337,7 +337,7 @@ class TestC1PipelineReviewRejection:
         monkeypatch.setattr(orchestrator, "_find_active_todo", lambda pd: "TODO-0001")
 
         # Mock agent stage (worker) — just writes DONE signal
-        def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None):
+        def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, **kwargs):
             (outbox / f"DONE-{todo_id}.md").write_text("Done.\n")
             (outbox / f"DONE-{todo_id}.ready").write_text("")
 
@@ -432,7 +432,7 @@ class TestQAEmptyVerifySignalAborts:
         monkeypatch.setattr(orchestrator, "_run_supervisor_stage", fake_supervisor)
         monkeypatch.setattr(orchestrator, "_find_active_todo", lambda pd: "TODO-0001")
 
-        def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None):
+        def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, **kwargs):
             (outbox / f"DONE-{todo_id}.md").write_text("Done.\n")
             (outbox / f"DONE-{todo_id}.ready").write_text("")
 

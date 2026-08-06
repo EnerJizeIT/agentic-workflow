@@ -27,8 +27,12 @@ def run_agent_stage(
     config: dict,
     logs_dir: Path,
     prev_handoffs: list[Path] | None = None,
+    hard_timeout: int | None = None,
 ) -> None:
     """Spawn opencode run for an agent stage.
+
+    KAUD-4: ``hard_timeout`` overrides default 3600s timeout. Pass through
+    from CLI --timeout or config. None = use BD20_HARD_TIMEOUT default.
 
     BD-15: ``prev_handoffs`` is a list of handoff .md files from previous
     pipeline stages (in pipeline order). Each is passed to the agent as
@@ -110,6 +114,7 @@ def run_agent_stage(
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         env=awf_subprocess_env(),
+        hard_timeout=hard_timeout,
     )
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:

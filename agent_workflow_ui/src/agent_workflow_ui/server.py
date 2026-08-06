@@ -54,5 +54,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_wait_for_event, name="awf_wait_for_event")
     # Model configuration validation (dogfood-10)
     mcp.add_tool(awf.awf_check_model_config, name="awf_check_model_config")
+    # Kill pipeline (SELF-2)
+    mcp.add_tool(awf.awf_kill, name="awf_kill")
 
     return mcp

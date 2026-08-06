@@ -794,3 +794,31 @@ async def awf_check_model_config(
         return _err(e)
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+# ─── Kill pipeline (SELF-2) ─────────────────────────────────────────────
+
+
+async def awf_kill(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Kill running pipeline cleanly.
+
+    Reads pipeline_pid from state, sends SIGTERM, waits 5s, SIGKILL if
+    still alive, clears state. Use when pipeline is stuck or needs to stop.
+
+    Args:
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: killed (bool), pid, message.
+    """
+    try:
+        result = await asyncio.to_thread(
+            api.kill_pipeline, _resolve_project_dir(project_dir)
+        )
+        return {"status": "ok", **result}
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}

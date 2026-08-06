@@ -637,10 +637,66 @@ def continue_pipeline(
     )
 
 
+def kill_pipeline(
+    project_dir: Path,
+) -> dict:
+    """SELF-2: Kill running pipeline cleanly.
+
+    Reads pipeline_pid from state, sends SIGTERM, waits 5s,
+    SIGKILL if still alive, clears state.
+
+    Returns dict with killed (bool), pid, message.
+    """
+    import os
+    import signal as _signal
+    import time as _time
+
+    project_dir = Path(project_dir).resolve()
+    pid = _is_pipeline_running(project_dir)
+
+    if not pid:
+        # Clear stale state if any
+        from ..pipeline_state import clear_state
+        clear_state(project_dir)
+        return {"killed": False, "pid": None, "message": "No running pipeline found."}
+
+    killed = False
+    try:
+        os.kill(pid, _signal.SIGTERM)
+        # Wait up to 5s for graceful shutdown
+        for _ in range(10):
+            _time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError):
+                killed = True
+                break
+            except OSError:
+                killed = True
+                break
+
+        if not killed:
+            os.kill(pid, _signal.SIGKILL)
+            _time.sleep(0.5)
+            killed = True
+    except (ProcessLookupError, PermissionError):
+        killed = True  # already dead
+    except OSError:
+        pass
+
+    # Clear state
+    from ..pipeline_state import clear_state
+    clear_state(project_dir)
+
+    msg = f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
+    return {"killed": killed, "pid": pid, "message": msg}
+
+
 __all__ = [
     "approve_commit",
     "create_baseline",
     "rollback",
     "start_pipeline",
     "continue_pipeline",
+    "kill_pipeline",
 ]

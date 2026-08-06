@@ -295,6 +295,9 @@ def run_pipeline(args: Any) -> int:
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
+    # KAUD-4: read --timeout from CLI args, pass to agent stages
+    cli_timeout = getattr(args, "timeout", None)
+    agent_hard_timeout = int(cli_timeout) if cli_timeout else None
 
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
@@ -469,7 +472,8 @@ def run_pipeline(args: Any) -> int:
 
         prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
         try:
-            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir, prev_handoffs=prev_handoffs)
+            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
+                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout)
         except (RuntimeError, TimeoutError) as e:
             print(f"ERROR: agent stage '{s_name}' (role={s_role}) crashed. Pipeline stopped.", file=sys.stderr)
             print(f"  Details: {e}", file=sys.stderr)
