@@ -59,32 +59,38 @@ def _is_valid_form_id(form_id: str) -> bool:
 
 
 def _is_origin_allowed(origin: str, referer: str) -> bool:
-    """A2: CSRF check — is this Origin/Referer combination allowed?
+    """A2/KAUD-3: CSRF check — is this Origin/Referer combination allowed?
+
+    Uses urlparse to check hostname, not startswith (which allowed bypass
+    via http://127.0.0.1.evil.com).
 
     Forms opened via file:// (opencode temp HTML) send Origin: "null"
-    (browser standard for sandboxed/local file origins). Chrome's
-    strict-origin-when-cross-origin policy also strips Referer, so we
-    can't rely on Referer to confirm file:// origin.
-
-    Since the HTTP server binds to 127.0.0.1 ONLY (no remote access),
-    Origin: "null" is always safe — it means a local file or sandboxed
-    iframe, never a remote attacker.
+    (browser standard for sandboxed/local file origins).
     """
-    allowed_origins = (
-        "http://127.0.0.1",
-        "http://localhost",
-        "https://127.0.0.1",
-        "https://localhost",
-    )
+    from urllib.parse import urlparse
+
+    ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
+
+    def _check_url(url: str) -> bool:
+        if not url:
+            return False
+        try:
+            parsed = urlparse(url)
+            return parsed.hostname in ALLOWED_HOSTS
+        except (ValueError, TypeError):
+            return False
+
     # Origin "null" — local file:// page or sandboxed iframe. Server is
     # 127.0.0.1-only, so this is always safe.
     if origin == "null":
         return True
     if origin:
-        return origin.startswith(allowed_origins)
+        return _check_url(origin)
     # No Origin header — check Referer if present (curl/non-browser has neither)
     if referer:
-        return referer.startswith(("file://",) + allowed_origins)
+        if referer.startswith("file://"):
+            return True
+        return _check_url(referer)
     return True  # no Origin, no Referer — backward compat for curl
 
 

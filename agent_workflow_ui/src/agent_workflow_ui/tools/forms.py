@@ -89,7 +89,7 @@ async def open_form(
             ``inputs/`` only — agent must materialize manually from
             ``read_submit`` output. MCP subprocess runs in $HOME (not the
             project), so cwd-based detection does NOT work — pass explicitly.
-        ttl_seconds: Auto-cancel after N seconds (optional). Default: no TTL.
+        ttl_seconds: Auto-cancel after N seconds (optional). Default: 24h from config.
 
     Returns:
         Dict with form_id, browser_opened, submit_url, expires_at (optional),

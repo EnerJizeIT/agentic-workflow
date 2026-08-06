@@ -51,8 +51,11 @@ def _build_pipeline_context(project_dir: Path, todo_id: str) -> str:
 
     parts: list[str] = []
 
-    # 1. Read pipeline stages
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    # 1. Read pipeline stages — KAUD-2: read pipeline name from config
+    from . import config as _cfg_mod
+    config_data = _cfg_mod.load(project_dir)
+    pipeline_name = _cfg_mod.get(config_data, "default_pipeline", "default") or "default"
+    pipeline_file = project_dir / ".agentic" / "pipelines" / f"{pipeline_name}.yaml"
     if not pipeline_file.is_file():
         return ""
 
@@ -137,8 +140,8 @@ _SNIPPET_PLAN = """\
 ## Plan stage — your job right now
 1. Study project vision (above) + phases file (.agentic/phases/plan.md)
 2. Determine next uncompleted step toward goal
-3. Write .agentic/inbox/TODO-{NNNN}.md — goal level (WHAT to build), not micromanage
-4. Create signal: .agentic/inbox/TODO-{NNNN}.ready
+3. Write .agentic/inbox/TODO-NNNN.md — use next sequential number (e.g. TODO-0005)
+4. Create signal: .agentic/inbox/TODO-NNNN.ready (same number)
 5. Workers are capable — give autonomy, don't over-specify
 """
 

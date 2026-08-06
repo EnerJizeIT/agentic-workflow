@@ -124,10 +124,9 @@ def _reconcile(project_dir: Path) -> None:
             from ..paths import agentic_dir
             state_file = agentic_dir(project_dir) / "state" / "current.yaml"
             state_file.parent.mkdir(parents=True, exist_ok=True)
-            state_file.write_text(
-                _yaml.dump(state, default_flow_style=False, allow_unicode=True),
-                encoding="utf-8",
-            )
+            # KAUD-6: Write atomically — crash mid-write corrupts state.
+            from .._atomic import atomic_write_text as _atomic
+            _atomic(state_file, _yaml.dump(state, default_flow_style=False, allow_unicode=True))
             cleaned.append(f"cleared stale PID {pid_str}")
 
     # 2. Deduplicate ACK+APPROVE (keep APPROVE, remove ACK)

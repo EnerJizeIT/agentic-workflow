@@ -365,12 +365,10 @@ def run_pipeline(args: Any) -> int:
             pipeline_pid=os.getpid(),
         )
         # DASH Phase 2: regenerate dashboard HTML after state change.
-        # Non-critical — pipeline continues if dashboard fails.
-        try:
-            from .api.dashboard import generate_dashboard
-            generate_dashboard(project_dir)
-        except Exception as e:
-            _log(logs_dir, f"Dashboard regeneration failed: {e}")
+        # DAUD-4: generate_dashboard has its own error handling (DF5-8).
+        # No outer try/except needed — avoids double logging.
+        from .api.dashboard import generate_dashboard
+        generate_dashboard(project_dir)
 
         # --- Supervisor stage ---
         if s_role == "supervisor":

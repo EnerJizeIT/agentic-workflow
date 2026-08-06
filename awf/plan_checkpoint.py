@@ -135,11 +135,24 @@ def run_plan_checkpoint(
     decision_holder: dict[str, str] = {}
     edited_holder: dict[str, str] = {}
 
-    server = _start_checkpoint_server(
-        port=port,
-        decision_holder=decision_holder,
-        edited_holder=edited_holder,
-    )
+    # DAUD-2: TOCTOU race — port may be taken between _find_free_port and bind.
+    # Retry with new ports if OSError occurs.
+    server = None
+    for attempt in range(3):
+        try:
+            server = _start_checkpoint_server(
+                port=port,
+                decision_holder=decision_holder,
+                edited_holder=edited_holder,
+            )
+            break
+        except OSError:
+            if attempt < 2:
+                import time as _time
+                _time.sleep(0.5)
+                port = _find_free_port()
+            else:
+                raise
 
     html_path = ""
     try:
@@ -251,21 +264,26 @@ def _find_free_port() -> int:
 
 
 def _is_local_origin(origin: str) -> bool:
-    """QA-A: CSRF defense — check if Origin/Referer is localhost.
+    """QA-A/KAUD-3: CSRF defense — check if Origin/Referer is localhost.
 
-    Allows: http://127.0.0.1:*, http://localhost:*, http://[::1]:*,
-    file://* (HTML form opened locally).
-    Rejects: any other origin (cross-site POST from malicious JS).
+    Uses urlparse hostname check (not startswith, which allowed bypass
+    via http://127.0.0.1.evil.com).
     """
-    for prefix in (
-        "http://127.0.0.1:",
-        "http://localhost:",
-        "http://[::1]:",
-        "file://",
-    ):
-        if origin.startswith(prefix):
-            return True
-    return False
+    from urllib.parse import urlparse
+
+    ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+    if not origin:
+        return True  # no Origin header — backward compat
+    if origin.startswith("file://"):
+        return True
+    if origin == "null":
+        return True  # sandboxed/local file origin
+    try:
+        parsed = urlparse(origin)
+        return parsed.hostname in ALLOWED_HOSTS
+    except (ValueError, TypeError):
+        return False
 
 
 def _start_checkpoint_server(

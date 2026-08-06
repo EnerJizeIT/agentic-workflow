@@ -33,12 +33,6 @@ def opencode_config_file() -> Path:
     """opencode.json path."""
     return opencode_config_dir() / "opencode.json"
 
-
-def opencode_skills_dir() -> Path:
-    """opencode skills dir: $XDG_CONFIG_HOME/opencode/skills."""
-    return opencode_config_dir() / "skills"
-
-
 def awf_config_dir() -> Path:
     """awf config dir: $XDG_CONFIG_HOME/awf."""
     return xdg_config_home() / "awf"

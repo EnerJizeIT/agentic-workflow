@@ -385,6 +385,7 @@ def get_report(project_dir: Path) -> ReportResult:
 
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
+    done_d = paths.done_dir(project_dir)
 
     config_data = cfg_mod.load(project_dir)
     project_name = (
@@ -394,9 +395,10 @@ def get_report(project_dir: Path) -> ReportResult:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     items: list[dict[str, str]] = []
-    done_count = 0
-    blocked_count = 0
+    # KAUD-1: reuse _count_done_blocked for consistent counting with get_status
+    done_count, blocked_count, _ = _count_done_blocked(inbox, outbox, done_d)
 
+    # Build items list from active TODOs + archived TODOs
     if inbox.exists():
         from ..signals import find_signal_file
 
@@ -408,12 +410,16 @@ def get_report(project_dir: Path) -> ReportResult:
             blocked = find_signal_file(outbox, "BLOCKED", todo_id, ".ready")
             if done:
                 items.append({"todo_id": todo_id, "status": "OK"})
-                done_count += 1
             elif blocked:
                 items.append({"todo_id": todo_id, "status": "BLK"})
-                blocked_count += 1
             else:
                 items.append({"todo_id": todo_id, "status": "..."})
+
+    # KAUD-1: include archived TODOs in items
+    if done_d.is_dir():
+        for d in sorted(done_d.iterdir()):
+            if d.is_dir():
+                items.append({"todo_id": d.name, "status": "OK"})
 
     diff_result = subprocess.run(
         ["git", "diff", "--stat"],

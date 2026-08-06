@@ -28,9 +28,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-# To get per-test timeouts, install pytest-timeout and uncomment:
-# timeout = 60
-# timeout_method = "signal"
+# KAUD-10: per-test timeout prevents hanging CI
+timeout = 120
+timeout_method = "signal"
 
 [tool.ruff]
 line-length = 100

@@ -82,8 +82,21 @@ def run_subprocess_until_signal(
             snapshot = {p.name for p in watch_dir.glob(pattern)}
 
     from ._env import _pdeathsig_preexec
+    # KAUD-9: redirect worker stdout/stderr to log file instead of inheriting.
+    # Prevents mixing worker output with awf-start.out.
+    worker_log = None
+    if logs_dir and logs_dir.is_dir():
+        # Derive a log file name from the command (role name)
+        log_name = "worker-output.out"
+        for arg in cmd:
+            if "agent-" in str(arg) and ".md" not in str(arg):
+                log_name = f"{arg}.out"
+                break
+        worker_log = open(logs_dir / log_name, "w", encoding="utf-8")  # noqa: SIM115
     proc = subprocess.Popen(
         cmd, cwd=str(cwd), env=env or awf_subprocess_env(),
+        stdout=worker_log if worker_log else None,
+        stderr=subprocess.STDOUT if worker_log else None,
         preexec_fn=_pdeathsig_preexec,
     )
     deadline = time.monotonic() + hard_timeout
@@ -92,6 +105,8 @@ def run_subprocess_until_signal(
     while True:
         rc = proc.poll()
         if rc is not None:
+            if worker_log:
+                worker_log.close()
             if logs_dir:
                 _log(logs_dir, f"subprocess exited naturally with code {rc}")
             return subprocess.CompletedProcess(cmd, rc)
@@ -116,9 +131,13 @@ def run_subprocess_until_signal(
                         new_files = current - snapshot
                         if new_files:
                             triggered = True
-                            # Pick lexicographically smallest for determinism
-                            # when multiple TODO-*.ready arrive in same poll.
-                            fired_name = sorted(new_files)[0]
+                            # KAUD-7: sort by numeric ID, not lexicographic.
+                            # TODO-0010 should come after TODO-0009, not before TODO-0002.
+                            import re as _re
+                            def _sort_key(name: str) -> tuple:
+                                m = _re.search(r"(\d+)", name)
+                                return (int(m.group(1)) if m else 0, name)
+                            fired_name = sorted(new_files, key=_sort_key)[0]
             if triggered:
                 signal_seen_at = now
                 if signal_holder is not None and fired_name:
@@ -135,6 +154,8 @@ def run_subprocess_until_signal(
                 _log(logs_dir, f"BD-20: hard timeout reached, killing (pid={proc.pid})")
             proc.kill()
             proc.wait()
+            if worker_log:
+                worker_log.close()
             raise TimeoutError(
                 f"Subprocess did not produce signal within {hard_timeout}s"
             )
