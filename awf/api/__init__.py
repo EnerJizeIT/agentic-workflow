@@ -66,6 +66,7 @@ from .pipeline import (
     approve_commit,
     continue_pipeline,
     create_baseline,
+    kill_pipeline,
     rollback,
     start_pipeline,
 )
@@ -106,6 +107,7 @@ __all__ = [
     # Pipeline
     "start_pipeline",
     "continue_pipeline",
+    "kill_pipeline",
     "create_baseline",
     "rollback",
     "approve_commit",

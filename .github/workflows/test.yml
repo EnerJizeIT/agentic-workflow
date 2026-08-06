@@ -43,7 +43,7 @@ jobs:
         run: |
           python -m pytest tests/ -v
 
-      - name: Plugin coverage gate (≥75%)
+      - name: Plugin coverage gate (≥80%)
         # Combined awf+plugin coverage is misleading because pytest-cov doesn't
         # track subprocess execution in E2E tests (awf-core cmd_*.py modules).
         # Apply the gate only to the plugin, where unit tests are the norm.
@@ -53,4 +53,4 @@ jobs:
           python -m pytest tests/agent_workflow_ui/ \
             --cov=agent_workflow_ui \
             --cov-report=term-missing \
-            --cov-fail-under=75
+            --cov-fail-under=80
