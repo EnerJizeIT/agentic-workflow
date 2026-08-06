@@ -30,28 +30,48 @@ def _pdeathsig_preexec() -> None:
 
 
 def awf_subprocess_env() -> dict[str, str]:
-    """BD-22: env for opencode subprocess spawned by awf.
+    """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
-    Sets ``OPENCODE_CONFIG_CONTENT`` to override global permission rules so
-    the subprocess can run ``edit``/``bash``/``write`` without prompting
-    the user.
+    Sets ``OPENCODE_CONFIG_CONTENT`` to override permission rules so
+    the subprocess can run ``edit``/``bash``/``write`` without prompting.
+
+    KAUD-5: MERGES with user's existing opencode.json instead of replacing.
+    Reads user's config, adds our permission overrides on top, preserves
+    user's other settings (theme, providers, agents, etc.).
 
     BD-25: strip ``OPENCODE_SERVER_*`` env vars so the subprocess does NOT
-    attach to a running ``opencode serve`` instance (was sharing state).
+    attach to a running ``opencode serve`` instance.
     """
     env = os.environ.copy()
-    env["OPENCODE_CONFIG_CONTENT"] = json.dumps({
-        "permission": {
-            "edit": "allow",
-            "bash": "allow",
-            "write": "allow",
-            "webfetch": "allow",
-        }
+
+    # KAUD-5: Start from user's existing config, then merge our overrides
+    user_config: dict = {}
+    try:
+        from .xdg import opencode_config_file
+        config_path = opencode_config_file()
+        if config_path.is_file():
+            user_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(user_config, dict):
+                user_config = {}
+    except (OSError, json.JSONDecodeError):
+        pass  # If user config is unreadable, start from empty
+
+    # Merge: user config + our permission overrides (ours take priority)
+    merged = user_config.copy()
+    merged_permissions = merged.get("permission", {})
+    if not isinstance(merged_permissions, dict):
+        merged_permissions = {}
+    merged_permissions.update({
+        "edit": "allow",
+        "bash": "allow",
+        "write": "allow",
+        "webfetch": "allow",
     })
-    # BD-25: explicit whitelist of env vars to strip (was wide prefix match
-    # which could nuke legit vars like OPENCODE_SERVER_STATUS).
-    # These are the ones that cause opencode run to attach to a running
-    # 'opencode serve' instance.
+    merged["permission"] = merged_permissions
+
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(merged)
+
+    # BD-25: strip server env vars
     strip_keys = (
         "OPENCODE_SERVER",
         "OPENCODE_SERVER_URL",

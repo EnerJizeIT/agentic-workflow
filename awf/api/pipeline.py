@@ -554,7 +554,12 @@ def continue_pipeline(
             ),
         )
 
-    current_todo = todos.newest_active(project_dir)
+    # KAUD-8: Prefer todo_id from state file (accurate crash recovery)
+    # over newest_active() heuristic (might pick wrong TODO if multiple active).
+    state = read_state(project_dir)
+    state_todo_id = state.get("todo_id") if state else None
+
+    current_todo = state_todo_id or todos.newest_active(project_dir)
     if not current_todo:
         return StartResult(
             run_mode="noop",
@@ -565,9 +570,9 @@ def continue_pipeline(
         )
 
     # DF5-2: read pipeline state to determine resume point.
-    if not from_stage:
-        state = read_state(project_dir)
-        if state and state.get("stage_name"):
+    # KAUD-8: state already read above for todo_id — reuse for from_stage.
+    if not from_stage and state:
+        if state.get("stage_name"):
             from_stage = state["stage_name"]
 
     if background:

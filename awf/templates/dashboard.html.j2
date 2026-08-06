@@ -471,6 +471,12 @@ setInterval(awf_tick, 1000);
         document.querySelectorAll('.card[data-card-id]').forEach(card => {
           if (expanded.includes(card.dataset.cardId)) card.classList.add('expanded');
         });
+        // SELF-3: update data-epoch so timer tracks new stage start time
+        const freshEpoch = doc.querySelector('#elapsed-timer');
+        if (freshEpoch && freshEpoch.dataset.epoch) {
+          const timer = document.querySelector('#elapsed-timer');
+          if (timer) timer.dataset.epoch = freshEpoch.dataset.epoch;
+        }
         // Check if pipeline completed — stop refreshing
         if (doc.querySelector('.done-notice')) {
           document.body.innerHTML = doc.body.innerHTML;

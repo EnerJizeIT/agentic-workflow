@@ -3,9 +3,9 @@
 > План развития. Основан на [Product Vision](vision/agent-ui-plugin.md) и [Architecture](vision/architecture.md).
 > История закрытых записей — в [BACKLOG-archive.md](BACKLOG-archive.md).
 
-**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0. 1096 тестов, CI green, 23 MCP tools. ruff clean.
+**Текущее состояние:** awf v0.4.0 + agent-workflow-ui v0.1.0. 1115 тестов, CI green, 24 MCP tools. ruff clean.
 
-**Активный эпик:** KAUD + DAUD — фиксы из двух аудитов (Kimi + DeepSeek).
+**Активный эпик:** завершён. Все KAUD + DAUD + SELF findings закрыты (кроме deferred).
 
 ---
 
@@ -37,7 +37,7 @@
 `args.timeout` не доходит до `_run_agent_stage()` / `_run_supervisor_stage()`.
 **Fix:** pass timeout through the chain.
 
-### KAUD-5 · Child opencode config over-privileged (HIGH)
+### KAUD-5 · Child opencode config over-privileged (HIGH) ✅ FIXED
 
 **Where:** `awf/_env.py` — `awf_subprocess_env()`
 Worker config заменяет пользовательский. Grants bash/write/webfetch globally.
@@ -55,7 +55,7 @@ Worker config заменяет пользовательский. Grants bash/wri
 `sorted()[0]` выбирает лексикографически меньший (TODO-0002 вместо TODO-0010).
 **Fix:** sort by numeric ID.
 
-### KAUD-8 · `current_todo` не персистится в state (MEDIUM)
+### KAUD-8 · current_todo не персистится в state (MEDIUM) ✅ FIXED
 
 **Where:** `awf/orchestrator.py`
 Локальная переменная. После краша — эвристическая реконструкция.
@@ -166,7 +166,7 @@ Supervisor не может cleanly остановить pipeline. Использ
 **Fix:** `awf_kill(project_dir)` — читает `pipeline_pid` из state,
 отправляет SIGTERM, ждёт 5 сек, SIGKILL если не умер, чистит state.
 
-### SELF-3 · Dashboard smart refresh не обновляет `data-epoch` (LOW)
+### SELF-3 · Dashboard data-epoch update (LOW) ✅ FIXED
 
 **Where:** `awf/templates/dashboard.html.j2` — smart refresh JS
 
