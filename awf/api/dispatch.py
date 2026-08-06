@@ -24,14 +24,15 @@ from .pipeline import create_baseline
 def _next_todo_id(project_dir: Path) -> str:
     """Pick next TODO-NNNN id (max existing + 1).
 
-    Scans both inbox and outbox for any TODO-NNNN.* files to avoid
-    collisions with already-completed TODOs.
+    Scans inbox, outbox, AND done/ for any TODO-NNNN.* files to avoid
+    collisions with already-completed/archived TODOs.
     """
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
+    done = paths.done_dir(project_dir)
 
     max_num = 0
-    for d in (inbox, outbox):
+    for d in (inbox, outbox, done):
         if not d.is_dir():
             continue
         for f in d.glob("TODO-*.md"):
@@ -40,6 +41,15 @@ def _next_todo_id(project_dir: Path) -> str:
                 num = int(m.group(1))
                 if num > max_num:
                     max_num = num
+        # Also check done/ subdirectories (done/TODO-NNNN/)
+        if d == done:
+            for sub in d.iterdir():
+                if sub.is_dir():
+                    m = re.match(r"^TODO-(\d+)$", sub.name)
+                    if m:
+                        num = int(m.group(1))
+                        if num > max_num:
+                            max_num = num
 
     return f"TODO-{max_num + 1:04d}"
 
