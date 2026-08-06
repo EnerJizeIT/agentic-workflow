@@ -1,363 +1,68 @@
-# Agentic Workflow Framework
+# agentic-workflow
 
-> Декларативный multi-agent фреймворк: **Supervisor планирует → Agents реализуют → Supervisor проверяет**. Коммуникация — через файлы на диске (file bus). Состоит из двух продуктов в одном monorepo:
+Pipeline-оркестратор для AI-агентов в opencode. Два пакета: `awf` (Python core) + `agent-workflow-ui` (MCP plugin).
 
-- **`awf`** — Python-оркестратор пайплайнов. Бизнес-логика в `awf/api/` (public API package, split by concern); CLI `awf` — тонкая обёртка для dev/debug.
-- **`agent-workflow-ui`** — MCP plugin для opencode: 24 typed tools (19 awf workflow ops + 5 UI forms). Plugin импортирует `awf` напрямую (без subprocess).
+## Что это
 
-**Primary path = MCP tools** — opencode-агент вызывает `awf_init`, `awf_status`, `awf_start` и т.д. через MCP protocol. CLI `awf` остаётся для e2e тестов и CI скриптов.
+Supervisor (LLM) планирует → worker-агенты выполняют → supervisor проверяет → коммит. Pipeline управляется через MCP tools — без shell-команд.
 
----
+```
+User → opencode (supervisor LLM)
+           ↓ MCP tools
+     agent-workflow-ui plugin (24 tools)
+           ↓ Python import
+     awf orchestrator → opencode run (worker agents)
+```
 
-## Ключевые особенности
+## Структура
 
-### awf (orchestrator)
+```
+awf/                        # Python core
+├── api/                    # Public API (18 functions)
+├── orchestrator.py         # Pipeline dispatch loop
+├── pipeline_engine.py      # Stage handlers (supervisor/agent)
+├── supervisor.py           # Supervisor prompts + signals
+├── agent_stage.py          # Worker spawn + handoff
+├── signal_watch.py         # File-based signal detection
+├── plan_checkpoint.py      # BD-36 checkpoint (HTML form)
+├── pipeline_state.py       # State persistence
+├── commit_gate.py          # Auto-commit isolation
+├── verify.py               # Test/lint verification
+├── dashboard.py            # Dashboard generation
+└── templates/              # Jinja2 (dashboard)
+agent_workflow_ui/          # MCP plugin
+├── tools/awf.py            # 19 awf MCP tool wrappers
+├── tools/forms.py          # 5 UI MCP tool wrappers
+├── http_endpoint.py        # HTML form server
+├── opencode_config.py      # Model discovery
+└── render/                 # Template engine
+templates/roles/supervisor.md  # Supervisor role instructions
+tests/                      # 1118 tests
+```
 
-- **Supervisor ↔ Agents через file-bus.** Задачи и отчёты передаются через `.agentic/inbox/` и `.agentic/outbox/` с `.ready`-сигналами. Никаких HTTP, WebSocket, очередей.
-- **Pipeline как YAML.** Стадии, роли, transition-политики — всё декларативно в `.agentic/pipelines/default.yaml`.
-- **Kind-based pipeline (BD-29).** Stage kind (`plan`/`execute`/`verify`) вычисляется по позиции, а не action-полю. Supervisor всегда первый и последний; между ними — произвольные agent roles.
-- **Произвольные роли.** Пользователь выбирает роли через форму (например `agent-system-analyst`, `agent-weak-llm-implementer`, `agent-qa-review`). Skill content встраивается прямо в `.agentic/roles/<role>.md`.
-- **Interactive supervisor (BD-30).** В интерактивном режиме supervisor = текущий opencode в чате пользователя (не subprocess). awf печатает инструкции и ждёт signal file.
-- **Auto-DONE.** Если agent не успел записать сигнал, но есть work evidence (git diff) и все настроенные verify-команды прошли — оркестратор синтезирует DONE автоматически. Если verify-команд нет (greenfield проект) — auto-DONE срабатывает по work evidence alone. Отключается через `automation.auto_done: false`.
-- **Auto-commit с isolation (A1).** Коммиты содержат только diff vs baseline — supervisor's mid-flight edits не попадают в agent commit.
-- **Plan progress auto-tracking (BD-33/34).** После verify автоматически отмечается `[x]` в `phases/plan.md` и печатается progress report.
-- **Skill-aware role analysis (BD-31).** `awf analyze-roles` находит дублирования зон ответственности между ролями и добавляет disambiguation patches.
-- **Plan checkpoint (BD-36).** После plan stage открывается HTML форма с TODO контентом и кнопками ✓ Утвердить / ✏ Изменить / ✗ Отклонить. Пользователь контролирует scope до запуска агентов. Bypass: `--auto`, `automation.plan_checkpoint: false`, или env `AWF_PLAN_CHECKPOINT=false`.
-- **TODO lifecycle (DF6-1..4).** После verify approve — TODO архивируется в `.agentic/done/{id}/`. Reconcile перед каждым `awf_start` чистит stale PID, дедуплицирует сигналы, supersede'ит старые TODO. BD-30 orphan pickup проверяет `done/` — не подхватывает завершённые TODO.
-- **Stage-specific snippet injection.** `build_prompt()` добавляет фокусные инструкции для каждой стадии (plan/verify/salvage) в конец prompt — Qwen видит релевантные правила последними (recency bias).
-- **MCP event loop safety (DF5-12).** `wait_for_event` и `start_pipeline` используют `asyncio.to_thread()` — event loop свободен для других tools во время ожидания.
-- **Pipeline state persistence (T4.1).** `.agentic/state/current.yaml` — structured source of truth для stage info. `wait_for_event` polls every 3s.
+## 24 MCP tools
 
-### agent-workflow-ui (MCP plugin)
+**UI (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`
 
-- **24 MCP tools:** 5 UI (`open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`) + 19 awf workflow ops (`awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_kill`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`).
-- **Plugin depends on `awf` package** — imports `awf.api` directly (no subprocess).
-- **Composite template `project-setup`** — одна HTML-форма для полной настройки проекта: контекст + ТЗ-файлы + supervisor + команда агентов с моделями.
-- **Per-role model selection (BD-32).** Форма показывает dropdown с моделями из `opencode.json` — выбор сохраняется в `config.yaml` как `models.<role>.model`.
-- **HTTP endpoint** (всегда включён) — browser POST'ит submit автоматически. CSRF protection через Origin whitelist (A2).
-- **FormRegistry persistence (A10).** Pending forms сохраняются в `~/.config/awf/state/forms_registry.yaml` — переживают crash/restart.
-- **XDG-aware (A9).** Уважает `XDG_CONFIG_HOME` для всех config paths.
-- **Custom roles persistence** в `$XDG_CONFIG_HOME/awf/roles/` — сохранение/удаление через форму, переиспользование между проектами.
-- **Lazy skill install** — SKILL.md автоматически копируется в opencode skills dir при первом старте plugin'а.
-
-Подробнее: [`agent_workflow_ui/README.md`](agent_workflow_ui/README.md), [`vision/agent-ui-plugin.md`](vision/agent-ui-plugin.md).
-
----
+**Workflow (19):** `awf_init`, `awf_status`, `awf_start`, `awf_continue`, `awf_kill`, `awf_baseline`, `awf_rollback`, `awf_approve`, `awf_report`, `awf_reset`, `awf_add_role`, `awf_analyze_roles`, `awf_dispatch_todo`, `awf_load_supervisor_context`, `awf_open_project_setup_form`, `awf_open_increment_planning_form`, `awf_open_pipeline_dashboard`, `awf_wait_for_event`, `awf_check_model_config`
 
 ## Установка
 
-### Требования
+```bash
+pip install -e ".[dev]"
+pip install -e "./agent_workflow_ui[dev]"
+```
 
-- **bash** 4+ (только wrapper).
-- **python3** ≥ 3.9 для awf, ≥ 3.10 для plugin (зависимость `mcp>=1.0`).
-- **PyYAML** (устанавливается автоматически).
-- **git** (целевой проект должен быть git-репозиторием).
-- **opencode** CLI в `$PATH` (нужен только для `awf start`).
-
-### awf
+## Команды
 
 ```bash
-# 1) Клонировать
-git clone git@github.com:EnerJizeIT/agentic-workflow.git
-cd agentic-workflow
-
-# 2) Установить
-pip install -e .
-
-# 3) Вариант A — вызывать напрямую
-./bin/awf
-
-# Вариант B — symlink для доступа из любого каталога
-ln -s "$PWD/bin/awf" ~/.local/bin/awf
-awf
+ruff check awf/ tests/ agent_workflow_ui/src/agent_workflow_ui/   # lint
+python -m pytest tests/                                            # тесты
 ```
 
-Если `~/.local/bin/` нет в `$PATH`, добавь в `~/.bashrc`:
+## Документы
 
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-### agent-workflow-ui plugin (опционально)
-
-```bash
-pip install -e ./agent_workflow_ui
-```
-
-После установки `awf init` предложит автоматически добавить MCP-конфиг в `~/.config/opencode/opencode.json`. SKILL.md установится автоматически при первом старте opencode (lazy install).
-
-### Обновление
-
-```bash
-cd agentic-workflow
-git pull && pip install -e . && pip install -e ./agent_workflow_ui
-```
-
----
-
-## Быстрый старт
-
-> **Важно:** `awf start` и `awf continue` работают **только внутри opencode**.
-> Эти команды запускают supervisor и agent stages через `opencode run`. Другие
-> команды (`init`, `status`, `baseline`, `report`, `analyze-roles`, `rollback`,
-> `approve`, `add-role`) — standalone CLI, работают без opencode.
-
-```bash
-# 1. Установить awf (один раз)
-git clone git@github.com:EnerJizeIT/agentic-workflow.git
-cd agentic-workflow && pip install -e .
-ln -s "$PWD/bin/awf" ~/.local/bin/awf
-
-# 2. В любом git-проекте (внутри opencode):
-cd /path/to/your-project
-awf init                            # отвечай на вопросы
-# plan.md автоматически укажет на PRODUCT-VISION.md / README.md (П2)
-awf start                           # запусти пайплайн (нужен opencode)
-```
-
-### Что произойдёт
-
-1. **`awf init`** создаст `.agentic/` с supervisor.md, config.yaml. Plan.md
-   stub автоматически найдёт vision/README в корне и укажет supervisor'у на него.
-2. **Pipeline configuration** — если `.agentic/pipelines/default.yaml` ещё нет,
-   `awf start` подскажет открыть UI форму (MCP tool `agent-workflow-ui_open_form`)
-   для выбора ролей и моделей.
-3. **`awf start`** запустит оркестратор:
-   - **Supervisor plan stage:** awf печатает инструкции + подсказывает vision файл (П6).
-     Ты (в opencode) читаешь, создаёшь TODO.md и `.ready` signal.
-     **Baseline создаётся автоматически** (П3) — больше не нужно `awf baseline`.
-   - **Plan checkpoint (BD-36):** открывается HTML форма с TODO контентом.
-     Жми ✓ Утвердить / ✏ Изменить / ✗ Отклонить. Awf ждёт решения.
-   - **Agent stages:** `opencode run --auto` запускается для каждой роли, читает TODO
-     + handoffs от предыдущих ролей, пишет DONE/BLOCKED.
-   - **Supervisor verify stage:** awf печатает инструкции — ты проверяешь aggregate
-     handoffs, делаешь `git diff`, создаёшь ACK signal или REVIEW.
-
----
-
-## Команды awf
-
-| Команда | Описание |
-|---|---|
-| `awf` или `awf help` | Показать справку |
-| `awf init` | Создать `.agentic/` в проекте (supervisor.md + config.yaml + plan.md stub) |
-| `awf init --force` | Пересоздать без подтверждения |
-| `awf start [опции]` | Запустить пайплайн |
-| `awf start --pipeline <name>` | Конкретный пайплайн |
-| `awf start --from-stage <name>` | Начать с указанной стадии |
-| `awf start --auto` | Supervisor в subprocess (для CI/тестов). При REVIEW-rejection pipeline всё равно останавливается (`return 1`) |
-| `awf start --background` | Фоновый запуск (detached через setsid, лог в `.agentic/logs/`) |
-| `awf continue [опции]` | Продолжить прерванный пайплайн |
-| `awf status` | Текущее состояние воркфлоу |
-| `awf report` | Сводный отчёт о работе |
-| `awf add-role <name>` | Создать шаблон новой роли |
-| `awf approve <id>` | Approve auto-commit для TODO в `--auto` режиме |
-| `awf baseline <id>` | Снимок состояния перед задачей |
-| `awf rollback <id>` | Откат к baseline |
-| `awf reset` | Очистить runtime-данные (inbox/outbox/logs) |
-| `awf analyze-roles` | BD-31: проанализировать роли, добавить disambiguation patches |
-
----
-
-## Архитектура
-
-```
-agentic-workflow/                  # monorepo (два независимых продукта)
-├── awf/                           # orchestrator (Python package)
-│   ├── api/                       # public API package (split by concern)
-│   │   ├── __init__.py            # public surface — re-exports
-│   │   ├── _errors.py             # AwfApiError
-│   │   ├── _results.py            # Result dataclasses (as_dict for MCP)
-│   │   ├── _stack.py              # detect_stack + derive_project_name
-│   │   ├── _templates.py          # _CONFIG/_ROLE templates, update_gitignore
-│   │   ├── _helpers.py            # require_agentic/git_repo, read helpers
-│   │   ├── _background.py         # PID file + pipeline running detection
-│   │   ├── lifecycle.py           # init/status/report/reset/orphans
-│   │   ├── pipeline.py            # start/continue/baseline/rollback/approve
-│   │   ├── roles.py               # add_role, analyze_roles (zones from data file)
-│   │   ├── setup.py               # apply_project_setup (form materialization)
-│   │   ├── dispatch.py            # dispatch_todo (atomic TODO + baseline + signal)
-│   │   ├── context.py             # load_supervisor_context (aggregate bootstrap)
-│   │   ├── planning.py            # apply_increment_plan (variant persistence)
-│   │   ├── dashboard.py           # generate_dashboard (live HTML render)
-│   │   └── wait_event.py          # wait_for_event (supervisor wake-up, no polling)
-│   ├── pipeline_state.py          # T4.1 structured state file (.agentic/state/)
-│   ├── data/role_zones.yaml       # BD-31 role→zone mapping (extensible data file)
-│   ├── templates/dashboard.html.j2  # DASH dashboard Jinja2 template
-│   ├── orchestrator.py            # state machine + transition handlers
-│   ├── supervisor.py              # supervisor stages (plan/verify/replan)
-│   ├── agent_stage.py             # agent stages + handoff collection
-│   ├── signal_watch.py            # BD-20/22 signal-watch + grace termination
-│   ├── commit_gate.py             # auto-commit + A1 baseline isolation
-│   ├── plan_checkpoint.py         # BD-36 plan checkpoint (HTML preview + HTTP)
-│   ├── plan_progress.py           # BD-33/34 plan-step tracking + report
-│   ├── pipeline.py                # Stage dataclass, kind by position
-│   ├── signals.py                 # signal prefix filtering
-│   ├── transitions.py             # policy lookup
-│   ├── verify.py                  # auto-DONE, work evidence
-│   ├── _log.py                    # file logger
-│   ├── _atomic.py                 # atomic file writes (H3/H5)
-│   ├── _env.py                    # BD-22/25 subprocess env setup
-│   ├── xdg.py                     # XDG_CONFIG_HOME helpers
-│   ├── cmd_analyze_roles.py       # BD-31 skill-aware role analysis + core()
-│   └── cmd_*.py                   # 10 thin CLI wrappers over api/*
-├── agent_workflow_ui/             # MCP plugin (depends on awf package)
-│   └── src/agent_workflow_ui/
-│       ├── server.py              # FastMCP server (22 tools: 5 UI + 17 awf)
-│       ├── http_endpoint.py       # localhost HTTP + CSRF (A2)
-│       ├── state.py               # FormRegistry + persistence (A10)
-│       ├── opencode_config.py     # models discovery + roles CRUD
-│       ├── roles_processor.py     # form submit processing
-│       ├── tools/forms.py         # UI MCP tools (open_form, read_submit, ...)
-│       ├── tools/awf.py           # awf MCP tools (awf_init, awf_status, ...)
-│       ├── render/                # Jinja2 engine + templates
-│       │   ├── engine.py          # create_env + lazy init (A3)
-│       │   └── default_templates/
-│       │       ├── project-setup.html.j2
-│       │       └── ack.html.j2    # submit confirmation (A3)
-│       └── SKILL.md               # LLM policy (auto-copied to opencode skills)
-├── bin/awf                        # thin bash-wrapper → python3 -m awf
-├── templates/roles/supervisor.md  # supervisor instruction template
-├── protocols/communication.md     # file bus specification
-├── vision/                        # product vision + architecture docs
-├── tests/                         # 1096 tests (e2e + unit + integration + plugin)
-└── BACKLOG.md                     # roadmap
-```
-
----
-
-## Как это работает
-
-### Pipeline (kind-based, BD-29)
-
-Pipeline всегда: `[supervisor:plan] + [agents...] + [supervisor:verify]`. Kind вычисляется по позиции:
-
-```yaml
-stages:
-  - name: "plan"           # kind=plan (position 0)
-    role: "supervisor"
-  - name: "implement"      # kind=execute (middle)
-    role: "agent-weak-llm-implementer"
-    on_blocked: "escalate"
-    max_retries: 3
-  - name: "qa"             # kind=execute (middle)
-    role: "agent-qa-review"
-  - name: "verify"         # kind=verify (last)
-    role: "supervisor"
-    on_approved: "commit_and_next"
-```
-
-**Supervisor — встроенная роль**, всегда на plan и verify positions. Между ними — произвольные agent roles, выбранные пользователем через форму.
-
-### Сигналы
-
-Worker пишет сигналы в `.agentic/outbox/`. Каноничный формат — `{PREFIX}-TODO-{NNNN}` (например `DONE-TODO-0001`).
-
-| Сигнал | Файл | Кто пишет |
-|---|---|---|
-| `TASK_READY` | `inbox/TODO-{NNNN}.md` + `.ready` | Supervisor (plan) |
-| `TASK_DONE` | `outbox/DONE-TODO-{NNNN}.md` + `.ready` | Agent (execute) |
-| `TASK_BLOCKED` | `outbox/BLOCKED-TODO-{NNNN}.md` + `.ready` | Agent (execute) |
-| `TASK_ACK` | `inbox/ACK-TODO-{NNNN}.ready` | Supervisor (verify) |
-| `TASK_PROGRESS` | `outbox/PROGRESS-TODO-{NNNN}.md` (append-only) | Agent |
-| `REVIEW` (rejection) | `outbox/REVIEW-{NNNN}.md` | Supervisor (verify) — отклонение работы, pipeline останавливается |
-| `TEST_PASSED`/`TEST_FAILED` | `outbox/TEST-{PASSED\|FAILED}-TODO-{NNNN}.md` | Agent |
-
-Подробнее: [protocols/communication.md](protocols/communication.md).
-
-### Transition policies
-
-- `on_approved: commit_and_next` — закоммитить и перейти дальше.
-- `on_blocked: escalate` — эскалация на supervisor (replan).
-- `on_blocked: rollback_to:<stage>` — откат к указанной стадии.
-- `on_rejected: replan` — supervisor переделывает план.
-
-### Auto-DONE
-
-Если agent не записал сигнал, но есть **work evidence** — `git diff` показывает изменения (включая untracked файлы). Если verify-команды настроены — они должны пройти. Если verify-команд нет (greenfield/doc проект) — work evidence alone достаточно.
-
-Отключается через `automation.auto_done: false` в `config.yaml`.
-
-### ⚠️ Security note (H8)
-
-awf subprocesses (`opencode run` spawned by agent/supervisor stages) run with
-**blanket permissions** (`edit: allow`, `bash: allow`, `write: allow`,
-`webfetch: allow`) — see `awf/_env.py`. This is required for autonomous
-pipeline operation, but means **any role.md can execute arbitrary commands**.
-
-**For pet projects** (single user, trusted role sources): acceptable.
-
-**For team / PyPI publish**: this is a known limitation. Before sharing
-roles externally, audit their `.md` content. Future work: scoped permissions
-per role (e.g. reviewer → only `edit: ask`).
-
----
-
-## Файлы `.agentic/`
-
-```
-.agentic/
-├── config.yaml              # модели, verify-команды, default_pipeline
-├── roles/                   # инструкции для ролей (skill content встроен)
-│   └── supervisor.md
-├── pipelines/
-│   └── default.yaml         # стадии пайплайна
-├── phases/
-│   └── plan.md              # план с [ ]/[x] чекбоксами
-├── inbox/                   # TODO от supervisor → agents [gitignored]
-├── outbox/                  # DONE/BLOCKED/PROGRESS от agents [gitignored]
-├── handoff/                 # per-role handoffs (BD-15) [gitignored]
-├── inputs/                  # form submits от plugin [gitignored]
-├── context/                 # baseline SHA и тест-логи [gitignored]
-├── logs/                    # orchestrator.log + awf-start.out [gitignored]
-└── reports/                 # сводные отчёты [gitignored]
-```
-
----
-
-## Тестирование
-
-```bash
-# Все тесты:
-python3 -m pytest tests/ -v
-
-# Только awf E2E:
-python3 -m pytest tests/e2e/ -v
-
-# Только awf unit:
-python3 -m pytest tests/unit/ -v
-
-# Только awf integration:
-python3 -m pytest tests/integration/ -v
-
-# Только plugin:
-python3 -m pytest tests/agent_workflow_ui/ -v
-
-# Coverage plugin:
-python3 -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing
-```
-
-**1096 тестов:** e2e + unit (awf, включая `test_api.py`) + integration (awf) + integration/unit (plugin).
-
-**Покрытие:**
-- **agent-workflow-ui:** **90%** (target ≥80%, enforced в CI через `--cov-fail-under=80`).
-- **awf-core:** unit + e2e (через bin/awf subprocess).
-
-**Линт:** `ruff check tests/ awf/ agent_workflow_ui/src/agent_workflow_ui/` — весь репо проходит чисто.
-
-**CI:** GitHub Actions, Python 3.10/3.11/3.12, ruff + pytest + coverage gate.
-
----
-
-## Спецификации
-
-- [protocols/communication.md](protocols/communication.md) — спецификация файловой шины.
-- [vision/agent-ui-plugin.md](vision/agent-ui-plugin.md) — Product Vision plugin'а.
-- [vision/architecture.md](vision/architecture.md) — Architecture plugin'а.
-- [BACKLOG.md](BACKLOG.md) — roadmap (BD-35 + Future scenarios).
-
----
-
-## Лицензия
-
-MIT (см. `pyproject.toml`).
+- [BACKLOG.md](BACKLOG.md) — открытые задачи
+- [vision/architecture.md](vision/architecture.md) — архитектура
+- [vision/agent-ui-plugin.md](vision/agent-ui-plugin.md) — product vision
+- [protocols/communication.md](protocols/communication.md) — file bus protocol
