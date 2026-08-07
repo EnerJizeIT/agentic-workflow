@@ -256,7 +256,7 @@ class TestBuildPromptWithContext:
         """Without config, prompt works normally (backward compat)."""
         from awf.supervisor import build_prompt
         prompt = build_prompt("plan", "TODO-0001")
-        assert "TODO-{NNNN}" in prompt
+        assert "TODO-NNNN" in prompt
 
 
 # ── UI-2/UI-3 end-to-end: form submit → config → supervisor.md → build_prompt ──
