@@ -303,6 +303,7 @@ class TestC1PipelineReviewRejection:
         """
         from types import SimpleNamespace
 
+        import awf.pipeline_engine as engine
         from awf import orchestrator
 
         proj = self._make_project(tmp_path)
@@ -331,21 +332,23 @@ class TestC1PipelineReviewRejection:
                 return ""
             return ""
 
-        monkeypatch.setattr(orchestrator, "_run_supervisor_stage", fake_supervisor)
+        # Patch on pipeline_engine (where execute_*_stage calls them),
+        # not just orchestrator (DAUD-7 extraction created separate refs).
+        monkeypatch.setattr(engine, "_run_supervisor_stage", fake_supervisor)
 
         # Mock _find_active_todo to return our TODO
-        monkeypatch.setattr(orchestrator, "_find_active_todo", lambda pd: "TODO-0001")
+        monkeypatch.setattr(engine, "_find_active_todo", lambda pd: "TODO-0001")
 
         # Mock agent stage (worker) — just writes DONE signal
         def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, **kwargs):
             (outbox / f"DONE-{todo_id}.md").write_text("Done.\n")
             (outbox / f"DONE-{todo_id}.ready").write_text("")
 
-        monkeypatch.setattr(orchestrator, "_run_agent_stage", fake_agent)
+        monkeypatch.setattr(engine, "_run_agent_stage", fake_agent)
 
         # Mock _maybe_commit — agent stage "next" transition calls it,
         # but we don't care about that for C1 (C1 is about verify stage).
-        monkeypatch.setattr(orchestrator, "_maybe_commit", lambda *a, **kw: None)
+        monkeypatch.setattr(engine, "_maybe_commit", lambda *a, **kw: None)
 
         # Mock _mark_plan_step_done to detect if it was called
         # (only called on verify approved path, NOT on REVIEW)
@@ -354,7 +357,7 @@ class TestC1PipelineReviewRejection:
         def fake_mark(*a, **kw):
             step_marked["v"] = True
 
-        monkeypatch.setattr(orchestrator, "_mark_plan_step_done", fake_mark)
+        monkeypatch.setattr(engine, "_mark_plan_step_done", fake_mark)
 
         args = SimpleNamespace(
             project_dir=str(proj),
@@ -413,6 +416,7 @@ class TestQAEmptyVerifySignalAborts:
         """Verify returns empty signal → pipeline returns 1, no commit, no step mark."""
         from types import SimpleNamespace
 
+        import awf.pipeline_engine as engine
         from awf import orchestrator
 
         proj = self._make_project(tmp_path)
@@ -429,18 +433,18 @@ class TestQAEmptyVerifySignalAborts:
                 return ""  # no signal — the bug scenario
             return ""
 
-        monkeypatch.setattr(orchestrator, "_run_supervisor_stage", fake_supervisor)
-        monkeypatch.setattr(orchestrator, "_find_active_todo", lambda pd: "TODO-0001")
+        monkeypatch.setattr(engine, "_run_supervisor_stage", fake_supervisor)
+        monkeypatch.setattr(engine, "_find_active_todo", lambda pd: "TODO-0001")
 
         def fake_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, **kwargs):
             (outbox / f"DONE-{todo_id}.md").write_text("Done.\n")
             (outbox / f"DONE-{todo_id}.ready").write_text("")
 
-        monkeypatch.setattr(orchestrator, "_run_agent_stage", fake_agent)
+        monkeypatch.setattr(engine, "_run_agent_stage", fake_agent)
 
         # Track verify-path side effects (must NOT happen)
         verify_commit_calls = {"n": 0}
-        real_maybe_commit = orchestrator._maybe_commit
+        real_maybe_commit = engine._maybe_commit
 
         def spy_commit(s_name, todo, action, *a, **kw):
             # Only count calls made from verify stage with commit_and_next
@@ -448,12 +452,12 @@ class TestQAEmptyVerifySignalAborts:
                 verify_commit_calls["n"] += 1
             return real_maybe_commit(s_name, todo, action, *a, **kw)
 
-        monkeypatch.setattr(orchestrator, "_maybe_commit", spy_commit)
-        monkeypatch.setattr(orchestrator, "_read_baseline_sha", lambda *a: "")
+        monkeypatch.setattr(engine, "_maybe_commit", spy_commit)
+        monkeypatch.setattr(engine, "_read_baseline_sha", lambda *a: "")
 
         step_marked = {"v": False}
         monkeypatch.setattr(
-            orchestrator, "_mark_plan_step_done", lambda *a, **kw: step_marked.__setitem__("v", True)
+            engine, "_mark_plan_step_done", lambda *a, **kw: step_marked.__setitem__("v", True)
         )
 
         args = SimpleNamespace(
