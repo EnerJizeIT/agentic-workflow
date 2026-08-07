@@ -6,12 +6,6 @@
 
 ## Открытые задачи
 
-### AUD-11 · [DECISION] Packaging: editable-only
-
-`lifecycle.py` ищет supervisor.md через `__file__/../../..` (вне пакета);
-`dashboard.html.j2`, `role_zones.yaml` не в package-data; `jinja2` не в deps awf.
-**Решение:** editable-only (README уже предписывает `pip install -e`). Документировать явно.
-
 ### AUD-12 · [T3] Рефакторинг
 
 - **`_xdg_config_home` ×3 копии** → consolidate в `awf.xdg` (комментарий "avoid circular import" в state.py неверен)

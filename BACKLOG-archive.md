@@ -1152,3 +1152,7 @@ Root cause: тесты без mock `subprocess.run` спавнили реаль�
 ### AUD-10 · [LOW] CI comment stale + docs counter drift — ✅ FIXED
 
 **Fix:** stale comment удалён, ручные счётчики тестов/функций убраны из README и architecture.md.
+
+### AUD-11 · [DECISION] Packaging: editable-only — ✅ CLOSED
+
+Документировано в README: editable-only install, wheel не поддерживается.
