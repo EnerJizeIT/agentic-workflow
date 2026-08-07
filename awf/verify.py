@@ -31,16 +31,39 @@ def _verify_cmd_timeout() -> int:
         return DEFAULT_VERIFY_TIMEOUT
 
 
-def detect_work_evidence(project_dir: str | Path, baseline_sha: str) -> bool:
-    """Return True if there are tracked changes OR untracked files vs baseline."""
+def detect_work_evidence(
+    project_dir: str | Path,
+    baseline_sha: str,
+    todo_id: str = "",
+) -> bool:
+    """Return True if there are tracked changes OR new untracked files vs baseline.
+
+    AUD-1: When ``todo_id`` is provided, pre-existing untracked files
+    (snapshotted in ``BASELINE-{todo_id}.untracked`` at baseline time)
+    are excluded — only worker-created files count as work evidence.
+    Without ``todo_id``, all untracked files count (backward compat).
+    """
     cwd = Path(project_dir)
     if not git_utils.is_git_repo(cwd):
         return False
     if git_utils.has_diff(cwd, baseline_sha):
         return True
-    if git_utils.untracked_files(cwd):
-        return True
-    return False
+
+    untracked = git_utils.untracked_files(cwd)
+    if todo_id:
+        snapshot = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
+        if snapshot.exists():
+            try:
+                pre_existing = {
+                    line.strip()
+                    for line in snapshot.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                }
+                untracked = [f for f in untracked if f not in pre_existing]
+            except OSError:
+                pass
+
+    return bool(untracked)
 
 
 def run_verify_commands(
@@ -148,7 +171,7 @@ def attempt_auto_done(
             return False
 
     # Must have work evidence
-    if not detect_work_evidence(cwd, baseline_sha):
+    if not detect_work_evidence(cwd, baseline_sha, todo_id):
         return False
 
     # DF5-3: if verify commands are configured, they must all pass.

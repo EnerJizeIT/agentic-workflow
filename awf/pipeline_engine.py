@@ -19,7 +19,6 @@ from pathlib import Path
 
 from . import paths, verify
 from ._log import log as _log
-from .pipeline_state import write_state as _write_state
 from .orchestrator import (
     Stage,
     _ensure_baseline_sha,
@@ -36,6 +35,7 @@ from .orchestrator import (
     _run_supervisor_stage,
     _write_salvage_prompt,
 )
+from .pipeline_state import write_state as _write_state
 from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
 from .transitions import resolve_transition
 
@@ -192,7 +192,7 @@ def execute_agent_stage(
         _ws(project_dir, salvage_needed=True, salvage_stage=s_name, logs_dir=logs_dir)
 
         if auto:
-            if baseline_sha and verify.detect_work_evidence(project_dir, baseline_sha):
+            if baseline_sha and verify.detect_work_evidence(project_dir, baseline_sha, current_todo):
                 print(f"  Worker left changes. {current_todo} left ACTIVE for manual salvage.", file=sys.stderr)
                 _log(logs_dir, f"Auto: work detected; {current_todo} left active")
             else:

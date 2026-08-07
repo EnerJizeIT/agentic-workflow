@@ -78,6 +78,43 @@ class TestDetectWorkEvidence:
         not_repo.mkdir()
         assert verify.detect_work_evidence(not_repo, "abc") is False
 
+    def test_pre_existing_untracked_filtered(self, tmp_git_repo: Path) -> None:
+        """AUD-1: pre-existing untracked files must NOT count as work evidence."""
+        (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
+        subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=tmp_git_repo, check=True)
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_git_repo, capture_output=True, text=True,
+        ).stdout.strip()
+        # Pre-existing untracked file (was there before worker started)
+        (tmp_git_repo / "stale.txt").write_text("was here before\n")
+        # Create baseline snapshot recording it as pre-existing
+        ctx_dir = tmp_git_repo / ".agentic" / "context"
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        (ctx_dir / "BASELINE-TODO-0001.untracked").write_text("stale.txt\n")
+        # With todo_id → snapshot filters out stale.txt → no evidence
+        assert verify.detect_work_evidence(tmp_git_repo, sha, "TODO-0001") is False
+        # Without todo_id → backward compat → counts as evidence
+        assert verify.detect_work_evidence(tmp_git_repo, sha) is True
+
+    def test_new_untracked_not_filtered(self, tmp_git_repo: Path) -> None:
+        """AUD-1: worker-created files still count as evidence even with snapshot."""
+        (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
+        subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=tmp_git_repo, check=True)
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tmp_git_repo, capture_output=True, text=True,
+        ).stdout.strip()
+        (tmp_git_repo / "stale.txt").write_text("was here before\n")
+        (tmp_git_repo / "worker_created.py").write_text("new code\n")
+        ctx_dir = tmp_git_repo / ".agentic" / "context"
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        (ctx_dir / "BASELINE-TODO-0002.untracked").write_text("stale.txt\n")
+        # stale.txt filtered, but worker_created.py remains → evidence
+        assert verify.detect_work_evidence(tmp_git_repo, sha, "TODO-0002") is True
+
 
 class TestRunVerifyCommands:
 
