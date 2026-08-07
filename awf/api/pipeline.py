@@ -139,8 +139,15 @@ def _reconcile(project_dir: Path) -> None:
                 cleaned.append(f"dedup: removed ACK-{todo_id} (APPROVE exists)")
 
     # 3. Multiple active TODOs → keep newest, archive rest
+    # AUD-4: sort by TODO number, not mtime (editing TODO-0005 after creating
+    # TODO-0007 would make mtime newer and archive the wrong one).
     if inbox.is_dir():
-        active = sorted(inbox.glob("TODO-*.ready"), key=lambda p: p.stat().st_mtime, reverse=True)
+        def _todo_num(p: Path) -> int:
+            import re
+            m = re.search(r"TODO-(\d+)", p.name)
+            return int(m.group(1)) if m else 0
+
+        active = sorted(inbox.glob("TODO-*.ready"), key=_todo_num, reverse=True)
         if len(active) > 1:
             for old_ready in active[1:]:
                 todo_id = old_ready.stem

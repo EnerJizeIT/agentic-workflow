@@ -159,6 +159,10 @@ def run_subprocess_until_signal(
             proc.wait()
             if worker_log:
                 worker_log.close()
+            if signal_seen_at is not None:
+                raise TimeoutError(
+                    f"Signal was detected but process did not exit within {hard_timeout}s"
+                )
             raise TimeoutError(
                 f"Subprocess did not produce signal within {hard_timeout}s"
             )

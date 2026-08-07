@@ -53,7 +53,12 @@ def read_recent_models(limit: int = 8) -> list[str]:
 
     Returns list of 'provider/model' strings, deduplicated.
     """
-    db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    # AUD-5: respect XDG_DATA_HOME (was hardcoded ~/.local/share)
+    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if data_home:
+        db_path = Path(data_home) / "opencode" / "opencode.db"
+    else:
+        db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
     if not db_path.exists():
         return []
 

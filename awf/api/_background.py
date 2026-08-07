@@ -130,6 +130,17 @@ def check_pipeline_running(
     except (OSError, ProcessLookupError):
         alive = False
 
+    # AUD-8: PID reuse defense — verify the process is actually an awf pipeline.
+    if alive:
+        cmdline_path = Path(f"/proc/{pid}/cmdline")
+        if cmdline_path.exists():
+            try:
+                cmdline = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+                if "awf" not in cmdline and "python" not in cmdline.lower():
+                    alive = False  # PID reused by unrelated process
+            except OSError:
+                pass
+
     if not alive:
         try:
             pid_file.unlink()
