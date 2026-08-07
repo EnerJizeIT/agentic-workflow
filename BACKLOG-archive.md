@@ -1100,3 +1100,55 @@ stale state, supervisor не понимал что происходит.
 
 ---
 
+
+## ✅ Done · AUD-2026-08-07 — Audit fixes
+
+**Source:** `/home/pklochkov/Desktop/agentic-workflow-audit-2026-08-07.md`
+Закрыто в одной сессии (коммиты `51336f4`..`4b2cc24`).
+
+### AUD-1 · [CRITICAL] verify.py: false-positive auto-DONE на untracked файлах — ✅ FIXED
+
+`detect_work_evidence()` считал ЛЮБОЙ untracked файл «работой» без фильтра по baseline.
+Worker не сделал ничего → pre-existing untracked файл → auto-DONE.
+**Fix:** добавлен `todo_id` параметр, фильтр через `BASELINE-{todo_id}.untracked` snapshot.
+
+### AUD-2 · [HIGH] Полный прогон тестов зависает (>25 мин) — ✅ FIXED
+
+Root cause: тесты без mock `subprocess.run` спавнили реальный `opencode models` + commit_gate approve wait 1800s.
+**Fix:** conftest autouse intercepts `['opencode', 'models']` + `AWF_APPROVE_TIMEOUT_SECONDS=5`.
+**Result:** 1046 tests in 6:53 (was >25min hang). Plugin tests 57s (was 182s = 3.2x speedup).
+
+### AUD-3 · [MEDIUM] 5 мест читают pipeline.yaml в обход resolve_pipeline_file — ✅ FIXED
+
+`context.py` ×4 + `dashboard.py` ×1 хардкодили `default.yaml`.
+**Fix:** `_load_pipeline_stages` helper через `resolve_pipeline_file` + `load_stages` (-79 строк).
+
+### AUD-4 · [MEDIUM] _reconcile сортирует по mtime — ✅ FIXED
+
+**Fix:** сортировка по номеру TODO (regex extraction), не mtime.
+
+### AUD-5 · [MEDIUM] read_recent_models игнорирует XDG_DATA_HOME — ✅ FIXED
+
+**Fix:** `opencode_config.py` теперь уважает `XDG_DATA_HOME`.
+
+### AUD-6 · [LOW] Мёртвый код (3 пункта) — ✅ FIXED
+
+- `context.py:63` — no-op expression удалён
+- `context.py:93-94` — избыточный `if stages:` удалён
+- `plan_checkpoint.py:278` — мёртвая `file://` ветка удалена
+
+### AUD-7 · [LOW] Dashboard autoescape=False → XSS — ✅ FIXED
+
+**Fix:** `autoescape=True` (handoff preview из LLM-контента больше не исполняет `<script>`).
+
+### AUD-8 · [LOW] _background.py PID reuse — ✅ FIXED
+
+**Fix:** `/proc/<pid>/cmdline` проверка добавлена в `check_pipeline_running`.
+
+### AUD-9 · [LOW] signal_watch.py message врёт — ✅ FIXED
+
+**Fix:** два сообщения: «signal detected but process hung» vs «no signal at all».
+
+### AUD-10 · [LOW] CI comment stale + docs counter drift — ✅ FIXED
+
+**Fix:** stale comment удалён, ручные счётчики тестов/функций убраны из README и architecture.md.
