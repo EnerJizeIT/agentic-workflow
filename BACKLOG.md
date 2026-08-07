@@ -6,54 +6,6 @@
 
 ## Открытые задачи
 
-### KA2-1 · [LOW] _background.py затирает лог при перезапуске
-
-`start_in_background:77` — `open(log_file, "wb")` перезаписывает `awf-start.out` при каждом запуске.
-**Фикс:** `"wb"` → `"ab"` (append). One-char fix.
-
-### KA2-2 · [LOW] signal_watch.py — worker_log без context manager
-
-`open(logs_dir / log_name, "w")` не обёрнут в `with`/try-finally.
-Если `Popen` выбросит исключение → утечка file handle.
-**Фикс:** try/finally или `with`.
-
-### KA2-3 · [LOW] forms.py TTL — расхождение docs и кода
-
-Docs (AGENTS.md, open_form) говорят "Default: no TTL".
-Код применяет `ttl_seconds=86400` из config если не передано явно.
-**Фикс:** согласовать — либо убрать default TTL из кода, либо исправить docs.
-
-### KA2-4 · [LOW] cmd_init.py — отсутствует encoding="utf-8"
-
-`cfg_path.open()` в двух местах (чтение/запись opencode.json).
-На Windows/non-UTF8 локали может сломаться.
-**Фикс:** добавить `encoding="utf-8"`.
-
-### KA2-5 · [MEDIUM] read_signal_for_todo — фиксированный prefix order
-
-`signals.py:96-109` — перебирает prefixes по порядку: DONE, BLOCKED, REVIEW-APPROVED, …
-Если worker написал DONE, потом передумал и написал BLOCKED — DONE побеждает потому что первый в списке.
-**Фикс:** выбирать signal с позднейшим mtime вместо первого совпадения.
-
-### KA2-6 · [MEDIUM] --timeout не доходит до supervisor stages
-
-`orchestrator.py` передаёт `agent_hard_timeout` в agent stages (KAUD-4),
-но `run_supervisor_stage` / `wait_for_supervisor_signal` используют env-based timeout (`_safe_supervisor_timeout`).
-CLI `--timeout` игнорируется для supervisor.
-**Фикс:** пробросить `timeout` в `_run_supervisor_stage` → `wait_for_supervisor_signal`.
-
-### KA2-7 · [MEDIUM] _env.py — E2BIG risk при большом opencode.json
-
-`awf_subprocess_env` сериализует весь opencode.json в `OPENCODE_CONFIG_CONTENT` env var.
-Linux env size limit ~128KB. Большой config → `subprocess.Popen` упадёт с E2BIG.
-**Фикс:** писать merged config во временный файл, передавать путь через env var.
-
-### KA2-8 · [LOW] Model cache — нет production-инвалидации
-
-`_MODELS_CACHE` обновляется только по TTL (300s).
-Юзер добавил провайдера → project-setup форма не видит его 5 минут.
-**Фикс:** добавить `_invalidate_models_cache()` вызов при `awf_check_model_config` или при изменении mtime opencode.json.
-
 ### AUD-12 · [T3] Рефакторинг
 
 - **`_xdg_config_home` ×3 копии** → consolidate в `awf.xdg` (комментарий "avoid circular import" в state.py неверен)

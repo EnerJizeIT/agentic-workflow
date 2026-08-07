@@ -1156,3 +1156,44 @@ Root cause: тесты без mock `subprocess.run` спавнили реаль�
 ### AUD-11 · [DECISION] Packaging: editable-only — ✅ CLOSED
 
 Документировано в README: editable-only install, wheel не поддерживается.
+
+## ✅ Done · KA2 — Kimi re-audit fixes (2026-08-07)
+
+**Source:** `/home/pklochkov/Desktop/kimi - audit_report_agentic_workflow-2026-08-07.md`
+Закрыто в одной сессии (коммиты `08096c3`..`383ec80`).
+
+### KA2-1 · _background.py log truncation — ✅ FIXED
+`open(log_file, "wb")` → `"ab"` (append).
+
+### KA2-2 · signal_watch.py worker_log leak — ✅ FIXED
+`worker_log = open(...)` wrapped in try/finally.
+
+### KA2-3 · forms.py TTL docs — ✅ NO-OP
+Docs already correct ("Default: 24h from config").
+
+### KA2-4 · cmd_init.py encoding — ✅ FIXED
+Added `encoding="utf-8"` to both `cfg_path.open()` calls.
+
+### KA2-5 · read_signal_for_todo prefix order — ✅ FIXED
+Now selects signal with latest mtime instead of first prefix match.
++ 2 regression tests.
+
+### KA2-6 · --timeout for supervisor stages — ✅ FIXED
+`AWF_SUPERVISOR_TIMEOUT` set from `agent_hard_timeout` at pipeline start.
+
+### KA2-7 · _env.py E2BIG risk — ✅ FIXED
+Guards against >100KB config: strips to permissions-only if too large.
+
+### KA2-8 · Model cache invalidation — ✅ FIXED
+Cache invalidated on opencode.json mtime change (no more 5-min wait).
+
+### 3 findings already fixed before Kimi's audit:
+- #2 `--pipeline` flag → fixed in `aac5692`
+- 7.2 state persistence → fixed in `aac5692`
+- 7.4 uncommitted wait_event → committed in `51336f4`
+
+### 4 findings disagreed (intentional design):
+- #5 bash/webfetch:allow (workers need them)
+- #16 except Exception in MCP tools (must return error dict)
+- #18 HTTP auth (localhost + origin check sufficient)
+- #20 model_check generic Exception (best-effort probe)
