@@ -169,6 +169,30 @@ class TestReadAvailableModels:
         models = opencode_config.read_available_models()
         assert isinstance(models, list)
 
+    def test_cache_avoids_duplicate_subprocess(self, monkeypatch):
+        """QA-4: second call within TTL returns cached result (no subprocess)."""
+        from agent_workflow_ui import opencode_config
+
+        call_count = 0
+
+        def counting_cli(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return type("R", (), {
+                "returncode": 0,
+                "stdout": "vllm/llm\nopencode/glm-5.2\n",
+                "stderr": "",
+            })()
+
+        monkeypatch.setattr("subprocess.run", counting_cli)
+        models1 = opencode_config.read_available_models()
+        assert call_count == 1
+        assert "vllm/llm" in models1
+
+        models2 = opencode_config.read_available_models()
+        assert call_count == 1  # subprocess NOT called again
+        assert models2 == models1
+
 
 # ─── read_recent_models ─────────────────────────────────────────────────
 

@@ -7,11 +7,16 @@ import os
 import re
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 from awf._atomic import atomic_write_text as _atomic_write_text
 
 log = logging.getLogger(__name__)
+
+_MODELS_CACHE: list[str] | None = None
+_MODELS_CACHE_TS: float = 0.0
+_MODELS_TTL: int = 300
 
 
 def _atomic_write_role(path: Path, content: str) -> None:
@@ -95,16 +100,36 @@ def read_recent_models(limit: int = 8) -> list[str]:
     return recent
 
 
+def _invalidate_models_cache() -> None:
+    """Clear the models cache. Called from tests to ensure isolation."""
+    global _MODELS_CACHE, _MODELS_CACHE_TS
+    _MODELS_CACHE = None
+    _MODELS_CACHE_TS = 0.0
+
+
 def read_available_models() -> list[str]:
+    """Return available models, cached for _MODELS_TTL seconds (300s).
+
+    First call invokes 'opencode models' CLI (up to 10s) and caches
+    the result. Subsequent calls within TTL return the cached list
+    instantly. Empty results are not cached (retry on next call).
+    """
+    global _MODELS_CACHE, _MODELS_CACHE_TS
+    if _MODELS_CACHE is not None and (time.monotonic() - _MODELS_CACHE_TS) < _MODELS_TTL:
+        return list(_MODELS_CACHE)
+    result = _compute_models()
+    if result:
+        _MODELS_CACHE = list(result)
+        _MODELS_CACHE_TS = time.monotonic()
+    return result
+
+
+def _compute_models() -> list[str]:
     """Parse ~/.config/opencode/opencode.json for model IDs.
 
     Single source of truth for model discovery (T3 audit-v2 fix).
     Scans: provider.<name>.models.<id>, agent.<name>.model, top-level model.
     Returns sorted unique list. Falls back to [] on any error.
-
-    Used by:
-    - opencode_config.py:read_recent_models() (for grouping)
-    - forms.py:open_form() (for project-setup dropdown)
     """
     # Try 'opencode models' CLI first — returns ALL available models
     # (internal providers like zai-coding-plan, opencode/*, plus configured).

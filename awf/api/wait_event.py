@@ -83,7 +83,15 @@ def wait_for_event(
                 message="Pipeline exited (state file cleared). Check awf_report.",
             )
 
-        # SELF-1: detect stage transitions (agent finished → next agent started)
+        # Check for actionable events FIRST (verify/blocked/checkpoint/salvage).
+        # These require supervisor action and must not be masked by stage_changed.
+        result = _check_for_event(current_state)
+        if result:
+            return result
+
+        # SELF-1: detect stage transitions (agent finished → next agent started).
+        # Only returned when no actionable event is pending — avoids masking
+        # verify/blocked events that happen to coincide with a stage transition.
         prev_stage = prev_state.get("stage_name") if prev_state else None
         curr_stage = current_state.get("stage_name")
         if prev_stage and curr_stage and prev_stage != curr_stage:
@@ -95,11 +103,6 @@ def wait_for_event(
                 ),
                 state_snapshot=_state_to_dict(current_state),
             )
-
-        # Check for events
-        result = _check_for_event(current_state)
-        if result:
-            return result
 
         prev_state = current_state
 

@@ -204,7 +204,18 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(409, f"Form {form_id} is being submitted by another request or already processed.")
             return
 
-        _atomic_write_yaml(target, payload)
+        # QA-FIX: if _atomic_write_yaml fails (disk full, permission, etc.),
+        # rollback form status to "pending" — otherwise it stays stuck in
+        # "submitting" forever and user can't resubmit (claim_for_submit
+        # rejects anything != "pending"). finalize_submit below only runs
+        # on success.
+        try:
+            _atomic_write_yaml(target, payload)
+        except OSError as e:
+            self.registry.update_status(form_id, "pending")
+            log.error("Failed to write submit file %s: %s", target, e)
+            self._send_text(500, "Server error: failed to persist submit. Please retry.")
+            return
 
         # H4 fix: finalize submit status
         self.registry.finalize_submit(form_id)

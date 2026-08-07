@@ -175,6 +175,45 @@ def test_submit_too_large_body_returns_413(http_setup):
     assert exc_info.value.code == 413
 
 
+def test_submit_write_failure_rolls_back_to_pending(http_setup, monkeypatch):
+    """If YAML write fails after claim, form status rolls back to pending.
+
+    Regression: without rollback, claim_for_submit puts the form in
+    "submitting" state, and any subsequent POST is rejected with 409
+    forever — user can never resubmit.
+    """
+    import agent_workflow_ui.http_endpoint as ep
+
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-rollback",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+
+    def _fail_write(path, data):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(ep, "_atomic_write_yaml", _fail_write)
+
+    data = b"foo=bar"
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-rollback",
+        data=data,
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 500
+
+    # Critical: status must be back to "pending", not stuck in "submitting"
+    record = registry.get("FORM-rollback")
+    assert record.status == "pending", (
+        f"Expected rollback to 'pending', got '{record.status}'. "
+        "Form is stuck — user can't resubmit."
+    )
+
+
 # --- Task 4: http_endpoint.py coverage gaps ---
 
 def test_get_submit_path_returns_404(http_setup):

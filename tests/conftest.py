@@ -23,16 +23,15 @@ STUBS_DIR = REPO_ROOT / "tests" / "stubs"
 def _isolate_xdg_env(monkeypatch):
     """A9: clear XDG_CONFIG_HOME so tests that patch Path.home() work.
 
-    On GitHub Actions runners, XDG_CONFIG_HOME is often set to /home/runner/.config.
-    After A9, awf uses XDG_CONFIG_HOME (not Path.home()) for path resolution.
-    Without this fixture, tests that monkeypatch Path.home() still see the
-    real XDG path → 12 test failures on CI (all pass locally).
-
-    Tests that want to verify XDG behavior explicitly can call
-    monkeypatch.setenv('XDG_CONFIG_HOME', ...) AFTER this fixture runs
-    (later setenv wins).
+    Also invalidates the models cache (QA-4) so subprocess mock results
+    from one test don't leak into another.
     """
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    try:
+        from agent_workflow_ui.opencode_config import _invalidate_models_cache
+        _invalidate_models_cache()
+    except ImportError:
+        pass
 
 
 @pytest.fixture
