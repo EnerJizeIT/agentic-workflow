@@ -14,6 +14,11 @@ os.environ.setdefault("AWF_DISABLE_FORM_PERSIST", "1")
 # test_plan_checkpoint.py re-enables per-test via monkeypatch.
 os.environ.setdefault("AWF_PLAN_CHECKPOINT", "false")
 
+# AUD-2: cap commit_gate approve timeout at 5s in tests (was 1800s).
+# If a test reaches commit_gate without pre-created APPROVE file,
+# it would sleep for 30 minutes.
+os.environ.setdefault("AWF_APPROVE_TIMEOUT_SECONDS", "5")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"
@@ -23,10 +28,26 @@ STUBS_DIR = REPO_ROOT / "tests" / "stubs"
 def _isolate_xdg_env(monkeypatch):
     """A9: clear XDG_CONFIG_HOME so tests that patch Path.home() work.
 
-    Also invalidates the models cache (QA-4) so subprocess mock results
-    from one test don't leak into another.
+    AUD-2: intercept 'opencode models' subprocess so tests that call
+    read_available_models() without explicit mock get a fast empty response
+    instead of spawning a real 10s subprocess.
+
+    Also invalidates the models cache (QA-4) so results from one test
+    don't leak into another.
     """
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    # AUD-2: mock 'opencode models' → empty (tests that need real behavior
+    # override via their own monkeypatch.setattr).
+    _real_run = subprocess.run
+
+    def _intercept_opencode_models(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2 and cmd[:2] == ["opencode", "models"]:
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return _real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("subprocess.run", _intercept_opencode_models)
+
     try:
         from agent_workflow_ui.opencode_config import _invalidate_models_cache
         _invalidate_models_cache()
