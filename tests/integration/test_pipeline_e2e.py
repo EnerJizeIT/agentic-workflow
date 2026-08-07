@@ -112,7 +112,7 @@ def _mock_stages(monkeypatch, project: Path):
     """
     calls: dict = {"supervisor": [], "agent": []}
 
-    def mock_supervisor(stage, todo_id, auto, project_dir, logs_dir):
+    def mock_supervisor(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
         calls["supervisor"].append((stage.name, stage.kind, todo_id))
         # Plan: just let orchestrator find TODO (return empty signal)
         if stage.kind == "plan":
@@ -192,7 +192,7 @@ class TestFullPipelineReview:
         # Override verify to write REVIEW
         import awf.pipeline_engine as engine
 
-        def mock_supervisor_review(stage, todo_id, auto, project_dir, logs_dir):
+        def mock_supervisor_review(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
             calls["supervisor"].append((stage.name, stage.kind, todo_id))
             if stage.kind == "plan":
                 return ""
