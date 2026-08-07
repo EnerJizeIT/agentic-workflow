@@ -37,7 +37,7 @@ def _get_template() -> Any:
 
     env = Environment(
         loader=FileSystemLoader(str(_TEMPLATE_PATH.parent)),
-        autoescape=False,
+        autoescape=True,
         trim_blocks=True,
         lstrip_blocks=True,
     )

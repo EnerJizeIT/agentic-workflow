@@ -22,7 +22,7 @@ opencode run (worker agents)
 
 | Файл | Ответственность |
 |---|---|
-| `api/` | Public API (18 функций) — thin wrappers, не бизнес-логика |
+| `api/` | Public API — thin wrappers, не бизнес-логика |
 | `orchestrator.py` | Pipeline dispatch loop: setup → stage loop → complete |
 | `pipeline_engine.py` | Stage handlers: `execute_supervisor_stage`, `execute_agent_stage` |
 | `supervisor.py` | Prompts (`build_prompt`), signal detection, snippet injection |

@@ -60,7 +60,7 @@ def _extract_stage_info(
             last_signal,
             log_tail_text,
             checkpoint_pending,
-            checkpoint_port if checkpoint_port is not None else None,
+            checkpoint_port,
             checkpoint_form_url,
         )
 
@@ -90,8 +90,7 @@ def _lookup_next_stage_role(project_dir: Path, current_stage: str | None) -> str
             for s in stages:
                 if isinstance(s, dict) and s.get("role") != "supervisor":
                     return s.get("role")
-            if stages:
-                return stages[0].get("role") if isinstance(stages[0], dict) else None
+            return stages[0].get("role") if isinstance(stages[0], dict) else None
     except (yaml.YAMLError, OSError):
         pass
     return None

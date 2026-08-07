@@ -37,7 +37,7 @@ agent_workflow_ui/          # MCP plugin
 ├── opencode_config.py      # Model discovery
 └── render/                 # Template engine
 templates/roles/supervisor.md  # Supervisor role instructions
-tests/                      # 1118 tests
+tests/                      # unit + integration + e2e
 ```
 
 ## 24 MCP tools

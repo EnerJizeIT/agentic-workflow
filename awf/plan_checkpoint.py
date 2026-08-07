@@ -275,8 +275,6 @@ def _is_local_origin(origin: str) -> bool:
 
     if not origin:
         return True  # no Origin header — backward compat
-    if origin.startswith("file://"):
-        return True
     if origin == "null":
         return True  # sandboxed/local file origin
     try:

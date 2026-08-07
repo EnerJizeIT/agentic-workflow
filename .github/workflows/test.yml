@@ -47,8 +47,6 @@ jobs:
         # Combined awf+plugin coverage is misleading because pytest-cov doesn't
         # track subprocess execution in E2E tests (awf-core cmd_*.py modules).
         # Apply the gate only to the plugin, where unit tests are the norm.
-        # Threshold lowered from 80% to 75% — awf_kill and new MCP tool wrappers
-        # added uncovered error paths (catch-all Exception handlers).
         run: |
           python -m pytest tests/agent_workflow_ui/ \
             --cov=agent_workflow_ui \
