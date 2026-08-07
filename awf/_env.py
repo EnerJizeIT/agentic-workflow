@@ -69,7 +69,13 @@ def awf_subprocess_env() -> dict[str, str]:
     })
     merged["permission"] = merged_permissions
 
-    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(merged)
+    # KA2-7: guard against E2BIG (Linux env var limit ~128KB).
+    # If merged config is too large (many providers/models/agents), strip
+    # to permissions only — that's the only part awf actually overrides.
+    config_json = json.dumps(merged)
+    if len(config_json) > 100_000:
+        config_json = json.dumps({"permission": merged_permissions})
+    env["OPENCODE_CONFIG_CONTENT"] = config_json
 
     # BD-25: strip server env vars
     strip_keys = (
