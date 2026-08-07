@@ -316,7 +316,7 @@ class TestC1PipelineReviewRejection:
         # Mock supervisor stage: plan → returns TODO, verify → returns REVIEW
         call_count = {"n": 0}
 
-        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir):
+        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
             call_count["n"] += 1
             if stage.kind == "plan":
                 return "TODO-0001"
@@ -422,7 +422,7 @@ class TestQAEmptyVerifySignalAborts:
         (inbox / "TODO-0001.ready").write_text("")
 
         # Supervisor: plan → TODO, verify → "" (simulating auto-skip / no signal)
-        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir):
+        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
             if stage.kind == "plan":
                 return "TODO-0001"
             if stage.kind == "verify":

@@ -11,10 +11,20 @@ from pathlib import Path
 
 from .. import config as cfg_mod
 from .. import paths
+from ..pipeline import Stage, load_stages, resolve_pipeline_file
 from ._background import check_pipeline_running
 from ._helpers import read_file_text, require_agentic
 from ._results import SupervisorContextResult
 from .lifecycle import get_status
+
+
+def _load_pipeline_stages(project_dir: Path) -> list[Stage]:
+    """AUD-3: resolve pipeline via canonical path (not hardcoded default.yaml)."""
+    try:
+        pipeline_file = resolve_pipeline_file(project_dir)
+        return load_stages(pipeline_file)
+    except Exception:
+        return []
 
 
 def _extract_stage_info(
@@ -70,29 +80,20 @@ def _extract_stage_info(
 
 def _lookup_next_stage_role(project_dir: Path, current_stage: str | None) -> str | None:
     """Look up next stage role from pipeline.yaml based on current stage."""
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
-    if not pipeline_file.is_file():
+    stages = _load_pipeline_stages(project_dir)
+    if not stages:
         return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
-        role_by_name = {s.get("name"): s.get("role") for s in stages if isinstance(s, dict)}
-
-        if current_stage and current_stage in role_by_name:
-            names = list(role_by_name.keys())
-            if current_stage in names:
-                idx = names.index(current_stage)
-                if idx + 1 < len(names):
-                    return role_by_name[names[idx + 1]]
-        elif stages:
-            for s in stages:
-                if isinstance(s, dict) and s.get("role") != "supervisor":
-                    return s.get("role")
-            return stages[0].get("role") if isinstance(stages[0], dict) else None
-    except (yaml.YAMLError, OSError):
-        pass
+    role_by_name = {s.name: s.role for s in stages}
+    if current_stage and current_stage in role_by_name:
+        names = list(role_by_name.keys())
+        idx = names.index(current_stage)
+        if idx + 1 < len(names):
+            return role_by_name[names[idx + 1]]
+    else:
+        for s in stages:
+            if s.role != "supervisor":
+                return s.role
+        return stages[0].role if stages else None
     return None
 
 
@@ -280,25 +281,11 @@ def _compute_stage_kind(
     """
     if not current_stage_name:
         return None
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
-    if not pipeline_file.is_file():
-        return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
-        names = [s.get("name") for s in stages if isinstance(s, dict)]
-        if current_stage_name not in names:
-            return None
-        idx = names.index(current_stage_name)
-        if idx == 0:
-            return "plan"
-        if idx == len(names) - 1:
-            return "verify"
-        return "execute"
-    except (yaml.YAMLError, OSError):
-        return None
+    stages = _load_pipeline_stages(project_dir)
+    for s in stages:
+        if s.name == current_stage_name:
+            return s.kind
+    return None
 
 
 def _read_role_prohibitions(project_dir: Path, role: str | None) -> str | None:
@@ -375,40 +362,17 @@ def _get_final_stage_commit_policy(project_dir: Path) -> str | None:
     Returns 'commit_and_next' / 'commit_and_report' / 'next' / None.
     Supervisor needs to know if auto-commit will fire.
     """
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
-    if not pipeline_file.is_file():
+    stages = _load_pipeline_stages(project_dir)
+    if not stages:
         return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
-        if not stages:
-            return None
-        last = stages[-1]
-        if isinstance(last, dict):
-            return last.get("on_approved") or last.get("on_passed")
-    except (yaml.YAMLError, OSError):
-        pass
-    return None
+    last = stages[-1]
+    return last.on_approved or last.on_passed
 
 
 def _pipeline_exists(project_dir: Path) -> bool:
     """Check if pipeline.yaml exists with non-supervisor stages."""
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
-    if not pipeline_file.is_file():
-        return False
-    try:
-        import yaml
-
-        data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-        stages = (data or {}).get("stages", []) if isinstance(data, dict) else []
-        return any(
-            isinstance(s, dict) and s.get("role") != "supervisor"
-            for s in stages
-        )
-    except (yaml.YAMLError, OSError):
-        return False
+    stages = _load_pipeline_stages(project_dir)
+    return any(s.role != "supervisor" for s in stages)
 
 
 def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:

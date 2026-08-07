@@ -394,17 +394,17 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     project_dir = Path(project_dir).resolve()
     state = read_state(project_dir)
 
-    # Read pipeline.yaml for stages
-    pipeline_file = project_dir / ".agentic" / "pipelines" / "default.yaml"
+    # Read pipeline.yaml for stages (AUD-3: use canonical path)
     stages_raw: list[dict[str, Any]] = []
-    if pipeline_file.is_file():
-        try:
+    try:
+        from ..pipeline import resolve_pipeline_file
+        pipeline_file = resolve_pipeline_file(project_dir)
+        if pipeline_file.is_file():
             import yaml
-
             data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
             stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
-        except (yaml.YAMLError, OSError):
-            pass
+    except Exception:
+        pass
 
     # Determine current stage from state
     current_stage_idx = state.get("stage_idx") if state else -1
