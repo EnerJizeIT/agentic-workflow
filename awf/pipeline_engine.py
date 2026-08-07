@@ -227,14 +227,14 @@ def execute_agent_stage(
         return current_todo, new_idx, 0
 
     elif action == "escalate":
-        new_todo, new_idx, exit_code = _handle_escalate(
+        new_idx, new_todo, exit_code = _handle_escalate(
             project_dir, logs_dir, s_name, current_todo, auto, stage, retry_counts, stage_idx,
             pipeline_name,
         )
         return new_todo, new_idx, exit_code
 
     elif action == "rollback":
-        new_todo, new_idx, exit_code = _handle_rollback(
+        new_idx, new_todo, exit_code = _handle_rollback(
             project_dir, logs_dir, stages, current_todo, auto, target, pipeline_name,
         )
         return new_todo, new_idx, exit_code

@@ -228,10 +228,10 @@ def build_prompt(
         base = (
             "You are the supervisor. Read the phases/plan file. Determine the next step "
             "that is not yet completed. Create a TODO file at "
-            ".agentic/inbox/TODO-{NNNN}.md (use next sequential ID). "
+            ".agentic/inbox/TODO-NNNN.md (use next sequential ID). "
             "Baseline is created automatically by awf (П3) — no need to run "
             "`awf baseline` manually. Then create the .ready signal at "
-            ".agentic/inbox/TODO-{NNNN}.ready. If a TODO already exists in inbox, review "
+            ".agentic/inbox/TODO-NNNN.ready. If a TODO already exists in inbox, review "
             "it — refine, accept, or replace as needed (do NOT blindly skip). Keep the TODO "
             "at the goal level (what success looks like), do NOT micromanage individual "
             "roles — each role's skill.md already defines its zone."
@@ -614,8 +614,8 @@ def run_supervisor_stage(
         print("What to do (plan):")
         print("  1. Study the project state and phases file")
         print("  2. Determine the next step (or review existing TODO if present)")
-        print("  3. Write task to .agentic/inbox/TODO-{NNNN}.md")
-        print("  4. Create signal: .agentic/inbox/TODO-{NNNN}.ready")
+        print("  3. Write task to .agentic/inbox/TODO-NNNN.md")
+        print("  4. Create signal: .agentic/inbox/TODO-NNNN.ready")
         print("     (baseline is created automatically by awf on next stage)")
     elif kind == "verify":
         print("What to do (verify):")
@@ -623,7 +623,7 @@ def run_supervisor_stage(
         print("  2. Run verification commands independently")
         print("  3. Check git diff — changes must be in source files")
         print("  4. Decide: continue / fix / rollback")
-        print("  5. If approved: create .agentic/inbox/ACK-{NNNN}.ready")
+        print("  5. If approved: create .agentic/inbox/ACK-NNNN.ready")
     else:
         print(f"What to do ({kind}): see supervisor.md instructions")
 
@@ -704,7 +704,7 @@ def run_supervisor_via_subprocess(
             extra_files.append(str(blocked))
         prompt = (
             f"Worker reported BLOCKED on {todo_id}. Read the BLOCKED note, analyze the problem, "
-            "create a refined TODO at .agentic/inbox/TODO-{NNNN}.md (next sequential ID), "
+            "create a refined TODO at .agentic/inbox/TODO-NNNN.md (next sequential ID), "
             "baseline it, and create the .ready signal."
         )
     elif kind == "salvage":

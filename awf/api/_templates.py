@@ -58,9 +58,9 @@ This role receives:
 ## 4. Output
 
 When finished, create one of:
-- `.agentic/outbox/APPROVED-{{NNNN}}.md` + `.ready` — success
-- `.agentic/outbox/REJECTED-{{NNNN}}.md` + `.ready` — needs fixes
-- `.agentic/outbox/BLOCKED-{{NNNN}}.md` + `.ready` — needs supervisor
+- `.agentic/outbox/APPROVED-NNNN.md` + `.ready` — success
+- `.agentic/outbox/REJECTED-NNNN.md` + `.ready` — needs fixes
+- `.agentic/outbox/BLOCKED-NNNN.md` + `.ready` — needs supervisor
 
 ## 5. Prohibitions
 

@@ -115,3 +115,117 @@ class TestHandleRollback:
             auto=False, target="nonexistent",
         )
         assert exit_code == 1
+
+
+class TestPipelineEngineUnpacking:
+    """Regression: DAUD-7 re-audit found swapped unpacking in execute_agent_stage.
+
+    _handle_escalate/_handle_rollback return (int, str, int) = (idx, todo, exit).
+    execute_agent_stage must return (str, int, int) = (todo, idx, exit).
+    """
+
+    def test_escalate_return_order(self, tmp_path, monkeypatch):
+        """execute_agent_stage passes escalate return in correct order."""
+        from awf import pipeline_engine
+
+        # Mock prerequisites
+        monkeypatch.setattr(
+            pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: []
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
+
+        # Write BLOCKED signal
+        outbox = tmp_path / ".agentic" / "outbox"
+        outbox.mkdir(parents=True)
+        (outbox / "BLOCKED-TODO-0001.md").write_text("# Blocked\nNeed help\n")
+        (outbox / "BLOCKED-TODO-0001.ready").touch()
+
+        # Mock _handle_escalate to return sentinel (int, str, int)
+        monkeypatch.setattr(
+            pipeline_engine,
+            "_handle_escalate",
+            lambda *a, **kw: (42, "TODO-0099", 0),
+        )
+
+        stage = _make_stage()
+        stages = [
+            Stage(name="plan", role="supervisor", kind="plan"),
+            stage,
+            Stage(name="verify", role="supervisor", kind="verify"),
+        ]
+
+        todo, idx, exit_code = pipeline_engine.execute_agent_stage(
+            stage=stage,
+            current_todo="TODO-0001",
+            project_dir=tmp_path,
+            config={},
+            logs_dir=tmp_path,
+            stages=stages,
+            stage_idx=1,
+            retry_counts=[0, 0, 0],
+            auto=False,
+            agent_hard_timeout=None,
+        )
+
+        # Must be (str, int, int) — not (int, str, int)
+        assert todo == "TODO-0099"
+        assert idx == 42
+        assert exit_code == 0
+        assert isinstance(todo, str)
+        assert isinstance(idx, int)
+
+    def test_rollback_return_order(self, tmp_path, monkeypatch):
+        """execute_agent_stage passes rollback return in correct order."""
+        from awf import pipeline_engine
+
+        monkeypatch.setattr(
+            pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None
+        )
+        monkeypatch.setattr(
+            pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: []
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
+
+        # Write REVIEW-REJECTED signal (triggers rollback)
+        outbox = tmp_path / ".agentic" / "outbox"
+        outbox.mkdir(parents=True)
+        (outbox / "REVIEW-REJECTED-TODO-0001.md").write_text("# Rejected\nBad code\n")
+        (outbox / "REVIEW-REJECTED-TODO-0001.ready").touch()
+
+        monkeypatch.setattr(
+            pipeline_engine,
+            "_handle_rollback",
+            lambda *a, **kw: (7, "TODO-0088", 0),
+        )
+
+        stage = Stage(
+            name="implement", role="worker", kind="execute",
+            on_rejected="rollback_to:implement",
+        )
+        stages = [
+            Stage(name="plan", role="supervisor", kind="plan"),
+            stage,
+            Stage(name="verify", role="supervisor", kind="verify"),
+        ]
+
+        todo, idx, exit_code = pipeline_engine.execute_agent_stage(
+            stage=stage,
+            current_todo="TODO-0001",
+            project_dir=tmp_path,
+            config={},
+            logs_dir=tmp_path,
+            stages=stages,
+            stage_idx=1,
+            retry_counts=[0, 0, 0],
+            auto=False,
+            agent_hard_timeout=None,
+        )
+
+        assert todo == "TODO-0088"
+        assert idx == 7
+        assert exit_code == 0
+        assert isinstance(todo, str)
+        assert isinstance(idx, int)
