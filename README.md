@@ -48,6 +48,8 @@ tests/                      # unit + integration + e2e
 
 ## Установка
 
+Editable-only (`-e`). Wheel-дистрибуция не поддерживается — package-data и пути к шаблонам рассчитаны на исходную структуру каталогов.
+
 ```bash
 pip install -e ".[dev]"
 pip install -e "./agent_workflow_ui[dev]"
