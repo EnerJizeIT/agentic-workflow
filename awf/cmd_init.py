@@ -195,7 +195,7 @@ def _add_mcp_config_to_opencode() -> None:
     shutil.copy2(cfg_path, backup)
 
     try:
-        with cfg_path.open() as f:
+        with cfg_path.open(encoding="utf-8") as f:
             cfg = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"  ERROR: cannot parse {cfg_path}: {e}")
@@ -211,7 +211,7 @@ def _add_mcp_config_to_opencode() -> None:
         "command": ["python3", "-m", "agent_workflow_ui"],
     }
 
-    with cfg_path.open("w") as f:
+    with cfg_path.open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
 

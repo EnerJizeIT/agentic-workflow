@@ -74,7 +74,7 @@ def start_in_background(
         child_argv.append("--auto")
     child_argv += ["--timeout", str(timeout)]
 
-    with open(log_file, "wb") as out:
+    with open(log_file, "ab") as out:
         proc = subprocess.Popen(
             child_argv,
             cwd=str(project_dir),
