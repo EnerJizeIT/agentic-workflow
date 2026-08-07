@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 _MODELS_CACHE: list[str] | None = None
 _MODELS_CACHE_TS: float = 0.0
 _MODELS_TTL: int = 300
+_MODELS_CONFIG_MTIME: float = 0.0
 
 
 def _atomic_write_role(path: Path, content: str) -> None:
@@ -107,9 +108,22 @@ def read_recent_models(limit: int = 8) -> list[str]:
 
 def _invalidate_models_cache() -> None:
     """Clear the models cache. Called from tests to ensure isolation."""
-    global _MODELS_CACHE, _MODELS_CACHE_TS
+    global _MODELS_CACHE, _MODELS_CACHE_TS, _MODELS_CONFIG_MTIME
     _MODELS_CACHE = None
     _MODELS_CACHE_TS = 0.0
+    _MODELS_CONFIG_MTIME = 0.0
+
+
+def _config_mtime_changed() -> bool:
+    """KA2-8: check if opencode.json was modified since cache was populated."""
+    try:
+        from awf.xdg import opencode_config_file
+        cfg = opencode_config_file()
+    except Exception:
+        return False
+    if not cfg.is_file():
+        return False
+    return cfg.stat().st_mtime > _MODELS_CONFIG_MTIME
 
 
 def read_available_models() -> list[str]:
@@ -118,14 +132,28 @@ def read_available_models() -> list[str]:
     First call invokes 'opencode models' CLI (up to 10s) and caches
     the result. Subsequent calls within TTL return the cached list
     instantly. Empty results are not cached (retry on next call).
+
+    KA2-8: cache is also invalidated if opencode.json mtime changed
+    (user added/removed provider) — no need to wait for TTL.
     """
-    global _MODELS_CACHE, _MODELS_CACHE_TS
-    if _MODELS_CACHE is not None and (time.monotonic() - _MODELS_CACHE_TS) < _MODELS_TTL:
+    global _MODELS_CACHE, _MODELS_CACHE_TS, _MODELS_CONFIG_MTIME
+    if (
+        _MODELS_CACHE is not None
+        and (time.monotonic() - _MODELS_CACHE_TS) < _MODELS_TTL
+        and not _config_mtime_changed()
+    ):
         return list(_MODELS_CACHE)
     result = _compute_models()
     if result:
         _MODELS_CACHE = list(result)
         _MODELS_CACHE_TS = time.monotonic()
+        try:
+            from awf.xdg import opencode_config_file
+            cfg = opencode_config_file()
+            if cfg.is_file():
+                _MODELS_CONFIG_MTIME = cfg.stat().st_mtime
+        except Exception:
+            pass
     return result
 
 
