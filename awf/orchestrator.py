@@ -159,6 +159,7 @@ def _handle_escalate(
     stage: Stage,
     retry_counts: list[int],
     stage_idx: int,
+    pipeline_name: str | None = None,
 ) -> tuple[int, str, int]:
     """Transition: BLOCKED → supervisor replan + retry same stage.
 
@@ -176,7 +177,9 @@ def _handle_escalate(
     _log(logs_dir, "Escalating to supervisor for retry")
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
+    _run_supervisor_stage(
+        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+    )
 
     new_todo = _find_active_todo(project_dir)
     if not new_todo:
@@ -193,6 +196,7 @@ def _handle_rollback(
     current_todo: str,
     auto: bool,
     target: str,
+    pipeline_name: str | None = None,
 ) -> tuple[int, str, int]:
     """Transition: rollback to a target stage + supervisor replan.
 
@@ -207,7 +211,9 @@ def _handle_rollback(
     _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
+    _run_supervisor_stage(
+        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+    )
     new_todo = _find_active_todo(project_dir)
     if not new_todo:
         print("Rollback: supervisor did not create a new TODO. Stopping.", file=sys.stderr)
@@ -368,7 +374,7 @@ def run_pipeline(args: Any) -> int:
 
         if s_role == "supervisor":
             current_todo, delta, rc = execute_supervisor_stage(
-                stage, current_todo, auto, project_dir, config, logs_dir,
+                stage, current_todo, auto, project_dir, config, logs_dir, pipeline_name
             )
             if rc != 0:
                 return rc

@@ -35,7 +35,11 @@ def get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
-def _build_pipeline_context(project_dir: Path, todo_id: str) -> str:
+def _build_pipeline_context(
+    project_dir: Path,
+    todo_id: str,
+    pipeline_name: str | None = None,
+) -> str:
     """BD-10: Build pipeline context for worker prompt.
 
     Tells the worker:
@@ -51,11 +55,18 @@ def _build_pipeline_context(project_dir: Path, todo_id: str) -> str:
 
     parts: list[str] = []
 
-    # 1. Read pipeline stages — KAUD-2: read pipeline name from config
+    # 1. Read pipeline stages — KAUD-2: respect explicit pipeline_name,
+    #    then config.default_pipeline, then "default".
     from . import config as _cfg_mod
+    from .pipeline import resolve_pipeline_file
+
     config_data = _cfg_mod.load(project_dir)
-    pipeline_name = _cfg_mod.get(config_data, "default_pipeline", "default") or "default"
-    pipeline_file = project_dir / ".agentic" / "pipelines" / f"{pipeline_name}.yaml"
+    if not pipeline_name:
+        pipeline_name = _cfg_mod.get(config_data, "default_pipeline", "default") or "default"
+    try:
+        pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config_data)
+    except FileNotFoundError:
+        return ""
     if not pipeline_file.is_file():
         return ""
 
@@ -200,6 +211,7 @@ def build_prompt(
     todo_id: str,
     config: dict | None = None,
     project_dir: Path | None = None,
+    pipeline_name: str | None = None,
 ) -> str:
     """BD-29: build prompt for a stage kind.
 
@@ -266,7 +278,7 @@ def build_prompt(
         # - What comes before/after (don't do others' work)
         # - What prior TODOs produced (don't redo)
         if project_dir is not None:
-            ctx = _build_pipeline_context(project_dir, todo_id)
+            ctx = _build_pipeline_context(project_dir, todo_id, pipeline_name)
             if ctx:
                 base += "\n\n" + ctx
         return base
@@ -562,6 +574,7 @@ def run_supervisor_stage(
     auto: bool,
     project_dir: Path,
     logs_dir: Path,
+    pipeline_name: str | None = None,
 ) -> str:
     """Dispatch a supervisor stage.
 
@@ -615,7 +628,9 @@ def run_supervisor_stage(
         print(f"What to do ({kind}): see supervisor.md instructions")
 
     print()
-    return run_supervisor_via_subprocess(kind, todo_id, project_dir, config, phases_file, logs_dir)
+    return run_supervisor_via_subprocess(
+        kind, todo_id, project_dir, config, phases_file, logs_dir, pipeline_name
+    )
 
 
 def run_supervisor_via_subprocess(
@@ -625,6 +640,7 @@ def run_supervisor_via_subprocess(
     config: dict,
     phases_file: str,
     logs_dir: Path,
+    pipeline_name: str | None = None,
 ) -> str:
     """BD-14/29: spawn ``opencode run --auto --agent ... --file supervisor.md``.
 
@@ -655,7 +671,9 @@ def run_supervisor_via_subprocess(
     if kind == "plan":
         if phases_path.is_file():
             extra_files.append(str(phases_path))
-        prompt = build_prompt("plan", todo_id, config=config, project_dir=project_dir)
+        prompt = build_prompt(
+            "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        )
     elif kind == "verify":
         if not todo_id:
             print("[auto mode] No todo_id for verify — skip.")
@@ -673,7 +691,9 @@ def run_supervisor_via_subprocess(
             for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
                 if hf.is_file():
                     extra_files.append(str(hf))
-        prompt = build_prompt("verify", todo_id, config=config)
+        prompt = build_prompt(
+            "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        )
     elif kind == "replan":
         if not todo_id:
             print("[auto mode] No todo_id for replan — skip.")

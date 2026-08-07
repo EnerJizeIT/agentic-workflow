@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import paths, verify
 from ._log import log as _log
+from .pipeline_state import write_state as _write_state
 from .orchestrator import (
     Stage,
     _ensure_baseline_sha,
@@ -46,6 +47,7 @@ def execute_supervisor_stage(
     project_dir: Path,
     config: dict,
     logs_dir: Path,
+    pipeline_name: str | None = None,
 ) -> tuple[str, int, int]:
     """Execute one supervisor stage.
 
@@ -57,7 +59,9 @@ def execute_supervisor_stage(
     s_kind = stage.kind
 
     try:
-        sup_signal = _run_supervisor_stage(stage, current_todo, auto, project_dir, logs_dir)
+        sup_signal = _run_supervisor_stage(
+            stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+        )
     except (RuntimeError, TimeoutError) as e:
         print(f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
         print(f"  Details: {e}", file=sys.stderr)
@@ -71,6 +75,9 @@ def execute_supervisor_stage(
             _log(logs_dir, "No active TODO after supervisor stage")
             return current_todo, 0, 1
         print(f"Active TODO: {current_todo}")
+        # Persist the new TODO immediately so awf continue can recover it
+        # even if the pipeline stops before the next stage start.
+        _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
 
         rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
         if rc != 0:
@@ -87,13 +94,17 @@ def execute_supervisor_stage(
             _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
             replan_stage = Stage(name="replan", role="supervisor", kind="replan")
             try:
-                _run_supervisor_stage(replan_stage, current_todo, auto, project_dir, logs_dir)
+                _run_supervisor_stage(
+                    replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+                )
             except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
                 return current_todo, 0, 1
             new_todo = _find_active_todo(project_dir)
             if new_todo and new_todo != current_todo:
                 current_todo = new_todo
+                # Persist replanned TODO so continue resumes the right task.
+                _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
             print("Pipeline stopped: supervisor rejected.", file=sys.stderr)
             return current_todo, 0, 1
 
@@ -126,6 +137,7 @@ def execute_agent_stage(
     retry_counts: list,
     auto: bool,
     agent_hard_timeout: int | None,
+    pipeline_name: str | None = None,
 ) -> tuple[str, int, int]:
     """Execute one agent stage.
 
@@ -189,8 +201,10 @@ def execute_agent_stage(
             return current_todo, stage_idx, 1
 
         salvage_stage = Stage(name="salvage", role="supervisor", kind="salvage")
-        _run_supervisor_stage(salvage_stage, current_todo, auto=False,
-                              project_dir=project_dir, logs_dir=logs_dir)
+        _run_supervisor_stage(
+            salvage_stage, current_todo, auto=False,
+            project_dir=project_dir, logs_dir=logs_dir, pipeline_name=pipeline_name
+        )
         signal = read_signal_for_todo(outbox, current_todo, *prefixes)
         if not signal:
             print("No signal after supervisor salvage. Stopping.", file=sys.stderr)
@@ -215,12 +229,13 @@ def execute_agent_stage(
     elif action == "escalate":
         new_todo, new_idx, exit_code = _handle_escalate(
             project_dir, logs_dir, s_name, current_todo, auto, stage, retry_counts, stage_idx,
+            pipeline_name,
         )
         return new_todo, new_idx, exit_code
 
     elif action == "rollback":
         new_todo, new_idx, exit_code = _handle_rollback(
-            project_dir, logs_dir, stages, current_todo, auto, target,
+            project_dir, logs_dir, stages, current_todo, auto, target, pipeline_name,
         )
         return new_todo, new_idx, exit_code
 
