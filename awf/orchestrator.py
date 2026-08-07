@@ -304,6 +304,11 @@ def run_pipeline(args: Any) -> int:
     # KAUD-4: read --timeout from CLI args, pass to agent stages
     cli_timeout = getattr(args, "timeout", None)
     agent_hard_timeout = int(cli_timeout) if cli_timeout else None
+    # KA2-6: also forward to supervisor stages via env var (covers all
+    # supervisor calls: primary, escalate, rollback, salvage — without
+    # threading timeout through 5+ function signatures).
+    if agent_hard_timeout:
+        os.environ["AWF_SUPERVISOR_TIMEOUT"] = str(agent_hard_timeout)
 
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
