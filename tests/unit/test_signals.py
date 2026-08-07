@@ -113,6 +113,36 @@ class TestReadSignalForTodo:
         result = read_signal_for_todo(outbox, "TODO-0001", "DONE", "BLOCKED")
         assert result == "BLOCKED-TODO-0001"
 
+    def test_latest_mtime_wins_over_prefix_order(self, tmp_path: Path) -> None:
+        """KA2-5: if DONE and BLOCKED both exist, latest mtime wins."""
+        import os
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        done = outbox / "DONE-TODO-0001.ready"
+        blocked = outbox / "BLOCKED-TODO-0001.ready"
+        done.write_text("")
+        blocked.write_text("")
+        # Force BLOCKED to have newer mtime than DONE
+        os.utime(done, (1000, 1000))
+        os.utime(blocked, (2000, 2000))
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE", "BLOCKED")
+        assert result == "BLOCKED-TODO-0001"
+
+    def test_done_wins_if_newer(self, tmp_path: Path) -> None:
+        """KA2-5: if BLOCKED written first, then DONE — DONE wins."""
+        import os
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        done = outbox / "DONE-TODO-0001.ready"
+        blocked = outbox / "BLOCKED-TODO-0001.ready"
+        done.write_text("")
+        blocked.write_text("")
+        # Force DONE to have newer mtime
+        os.utime(blocked, (1000, 1000))
+        os.utime(done, (2000, 2000))
+        result = read_signal_for_todo(outbox, "TODO-0001", "DONE", "BLOCKED")
+        assert result == "DONE-TODO-0001"
+
     def test_legacy_short_blocked(self, tmp_path: Path) -> None:
         outbox = tmp_path / "outbox"
         outbox.mkdir()
