@@ -171,7 +171,12 @@ class TestFullPipelineHappyPath:
 
         # State cleared
         state = project / ".agentic" / "state" / "current.yaml"
-        assert not state.exists(), "State should be cleared after completion"
+        # SMO: state persists with phase="done" (not fully cleared)
+        assert state.exists(), "State should have phase=done after completion"
+        from awf.pipeline_state import read_state
+        final_state = read_state(project)
+        assert final_state is not None
+        assert final_state.get("phase") == "done"
 
 
 class TestFullPipelineBlocked:
