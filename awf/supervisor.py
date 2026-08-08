@@ -165,14 +165,18 @@ _SNIPPET_PLAN = """\
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
 1. Read ALL handoffs in .agentic/handoff/
-2. Read BRIEF-{todo_id}.md if it exists — this is the user-approved contract.
-   Check: does the work meet the success criteria from the Brief?
+2. Read BRIEF-{todo_id}.md — this is the user-approved contract.
+   For EACH success criterion in the Brief:
+   - Mark ✅ met or ❌ not met
+   - If ❌ → you MUST write REVIEW with specifics, not approve
 3. Run: git diff --stat — check what actually changed
 4. Read the actual code changes for correctness
-5. DECIDE YOURSELF (do NOT ask user):
-   - Work meets Brief criteria → create .agentic/inbox/ACK-{todo_id}.ready
-   - Work has issues → write .agentic/outbox/REVIEW-{todo_id}.md with specific fixes
-6. DO NOT relay "pipeline waits for your decision" to user — that's YOUR call.
+5. Run verify commands from the Brief independently
+6. DECIDE YOURSELF (do NOT ask user):
+   - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
+   - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
+     listing which criteria failed and what to fix
+7. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -737,9 +741,16 @@ def run_supervisor_via_subprocess(
             for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
                 if hf.is_file():
                     extra_files.append(str(hf))
+        # R8: inline Brief content so supervisor sees contract without opening file
+        brief_content = ""
+        brief_path = inbox / f"BRIEF-{todo_id}.md"
+        if brief_path.is_file():
+            brief_content = brief_path.read_text(encoding="utf-8")
         prompt = build_prompt(
             "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
         )
+        if brief_content:
+            prompt += f"\n\n---\n## BRIEF (user-approved contract):\n{brief_content}\n---\n"
     elif kind == "replan":
         if not todo_id:
             print("[auto mode] No todo_id for replan — skip.")
