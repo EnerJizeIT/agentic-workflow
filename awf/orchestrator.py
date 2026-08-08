@@ -28,7 +28,7 @@ from .agent_stage import (
 )
 from .commit_gate import maybe_commit as _maybe_commit  # noqa: F401
 from .pipeline import Stage, load_stages, resolve_pipeline_file
-from .pipeline_state import clear_state, write_state
+from .pipeline_state import clear_state, read_state, write_state
 from .plan_progress import (  # noqa: F401
     extract_step_id_from_todo as _extract_step_id_from_todo,
 )
@@ -405,7 +405,10 @@ def run_pipeline(args: Any) -> int:
     # But first generate final dashboard so user sees "complete" state
     from .api.dashboard import generate_dashboard as _gen_dash
     _gen_dash(project_dir)
+    # SMO: write phase=done + preserve goal for next iteration
+    prev_state = read_state(project_dir) or {}
     clear_state(project_dir, logs_dir=logs_dir)
+    write_state(project_dir, phase="done", goal=prev_state.get("goal"))
     return 0
 
 

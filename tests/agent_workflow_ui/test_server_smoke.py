@@ -70,7 +70,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 26 tools are registered with correct names (5 UI + 21 awf)."""
+    """All 29 tools are registered with correct names (5 UI + 24 awf)."""
     server = create_server()
     tools = asyncio.run(server.list_tools())
 
@@ -109,6 +109,10 @@ def test_all_tools_registered():
         # Model configuration validation (dogfood-10)
         "awf_check_model_config",
         "awf_kill",
+        # SMO: phase-aware supervisor tools
+        "awf_current_step",
+        "awf_set_goal",
+        "awf_confirm_normalized",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

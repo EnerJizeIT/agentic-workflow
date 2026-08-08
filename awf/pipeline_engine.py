@@ -109,9 +109,10 @@ def execute_supervisor_stage(
             _log(logs_dir, "No active TODO after supervisor stage")
             return current_todo, 0, 1
         print(f"Active TODO: {current_todo}")
-        _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
+        _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="brief")
 
     if s_kind == "verify":
+        _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="verify")
         if not sup_signal:
             print(f"ERROR: verify stage produced no supervisor signal for {current_todo}.", file=sys.stderr)
             _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
@@ -186,6 +187,7 @@ def execute_agent_stage(
             return current_todo, stage_idx, 1
 
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
+    _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")
 
     prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
 

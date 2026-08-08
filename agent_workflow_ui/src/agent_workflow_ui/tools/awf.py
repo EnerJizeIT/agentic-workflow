@@ -835,3 +835,98 @@ async def awf_kill(
         return _err(e)
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+# ─── SMO: Phase-aware supervisor tools ─────────────────────────────────
+
+
+async def awf_current_step(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Determine current supervisor phase and return compact prompt.
+
+    SMO: Replaces loading 600+ line supervisor.md. Detects phase from
+    project state (init/goal/form/normalize/brief/run/verify) and returns
+    only the relevant section + core invariants (~50-100 lines).
+
+    Call this at the START of every interaction to know what to do.
+
+    Args:
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: phase (str), prompt (str), goal (str|None).
+    """
+    try:
+        from awf.phase import detect_phase, get_phase_prompt
+        from awf.pipeline_state import read_state
+
+        pd = _resolve_project_dir(project_dir)
+        phase = await asyncio.to_thread(detect_phase, pd)
+        prompt = await asyncio.to_thread(get_phase_prompt, phase, pd)
+        state = await asyncio.to_thread(read_state, pd)
+        goal = state.get("goal") if state else None
+
+        return {
+            "status": "ok",
+            "phase": phase,
+            "prompt": prompt,
+            "goal": goal,
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+async def awf_set_goal(
+    goal: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Set session goal and advance to form phase.
+
+    SMO.3: Called after supervisor elicited goal from user. Stores goal
+    in state and advances phase: goal → form.
+
+    Args:
+        goal: User's goal for this session (1-3 sentences).
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: phase ("form"), goal (str).
+    """
+    try:
+        from awf.phase import advance_phase
+
+        pd = _resolve_project_dir(project_dir)
+        new_phase = await asyncio.to_thread(
+            advance_phase, pd, goal=goal
+        )
+        return {"status": "ok", "phase": new_phase, "goal": goal}
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+async def awf_confirm_normalized(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Confirm skills normalization is done, advance to brief phase.
+
+    SMO.5: Called after supervisor completed 3-part normalization checklist.
+    Advances phase: normalize → brief. Awf does NOT let supervisor proceed
+    until this is called (gate).
+
+    Args:
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: phase ("brief").
+    """
+    try:
+        from awf.phase import advance_phase
+
+        pd = _resolve_project_dir(project_dir)
+        new_phase = await asyncio.to_thread(
+            advance_phase, pd, normalized=True
+        )
+        return {"status": "ok", "phase": new_phase}
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}

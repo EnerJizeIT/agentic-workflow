@@ -57,5 +57,9 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_check_model_config, name="awf_check_model_config")
     # Kill pipeline (SELF-2)
     mcp.add_tool(awf.awf_kill, name="awf_kill")
+    # SMO: Phase-aware supervisor tools
+    mcp.add_tool(awf.awf_current_step, name="awf_current_step")
+    mcp.add_tool(awf.awf_set_goal, name="awf_set_goal")
+    mcp.add_tool(awf.awf_confirm_normalized, name="awf_confirm_normalized")
 
     return mcp
