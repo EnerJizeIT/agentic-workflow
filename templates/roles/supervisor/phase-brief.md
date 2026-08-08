@@ -50,9 +50,8 @@ Do NOT: micro-manage the whole pipeline in one TODO.
 ## Step 3: Dispatch + start
 
 1. `awf_dispatch_todo(project_dir, content=<TODO content>, role=<first role>)`
-2. `awf_start(project_dir, background=True)`
-3. `awf_open_pipeline_dashboard(project_dir)` — MANDATORY.
-4. Go IDLE. User monitors dashboard.
+2. `awf_start(project_dir, background=True)` — dashboard opens automatically.
+3. Go IDLE. User monitors dashboard.
 
 ## Before writing TODO — verify role scope
 Read `.agentic/roles/<next-role>.md` prohibitions. If task is out of scope,

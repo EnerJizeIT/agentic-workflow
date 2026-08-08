@@ -151,9 +151,9 @@ async def awf_start(
     Returns:
         Dict with: run_mode ("background"|"foreground"|"noop"),
         run_id (PID for background, None otherwise), log_file,
-        exit_code (foreground only), message.
+        exit_code (foreground only), message, dashboard_opened (bool).
     """
-    return await _exec(
+    result = await _exec(
         api.start_pipeline,
         project_dir=_resolve_project_dir(project_dir),
         background=background,
@@ -162,6 +162,23 @@ async def awf_start(
         auto=auto,
         timeout=timeout,
     )
+    # SMO: deterministic dashboard opening — no supervisor instruction needed.
+    # Opens immediately after subprocess launch. Dashboard auto-refreshes 5s,
+    # user sees plan stage → agent stages → verify in real time.
+    if result.get("status") == "ok" and result.get("run_mode") == "background":
+        try:
+            import webbrowser
+
+            from awf.api.dashboard import generate_dashboard
+            pd = _resolve_project_dir(project_dir)
+            await asyncio.to_thread(generate_dashboard, pd)
+            dashboard_path = pd / ".agentic" / "dashboards" / "current.html"
+            if dashboard_path.is_file():
+                webbrowser.open(f"file://{dashboard_path}")
+                result["dashboard_opened"] = True
+        except Exception:
+            result["dashboard_opened"] = False
+    return result
 
 
 async def awf_continue(
