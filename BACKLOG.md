@@ -6,6 +6,76 @@
 
 ## Открытые задачи
 
+### N1 · [HIGH] Project-setup form: system-analyst → architector mapping bug
+
+**Проблема:** В dogfood-сессии пользователь выбрал «Аналитик и архитектор» в форме
+project-setup. Форма отправила `agent-architector` дважды, `agent-system-analyst`
+отсутствовал. Pipeline материализовался с дублем architector. Supervisor вручную
+восстанавливал system-analyst из git + правил config.yaml + pipeline.yaml.
+
+**Что сделать:** Диагностировать root cause:
+1. Проверить рендеринг формы — правильно ли маппятся выбранные роли на submit
+2. Проверить сериализацию submit → `apply_project_setup` → pipeline.yaml
+3. Проверить `scan_global_roles()` — все ли роли попадают в список выбора
+4. Добавить regression-тест: выбор 5 разных ролей → pipeline имеет 5 разных ролей
+
+**Файлы:** `agent_workflow_ui/.../render/project-setup.html.j2`,
+`agent_workflow_ui/.../apply_project_setup`, `awf/api/roles.py:scan_global_roles`,
+`awf/api/setup.py:apply_project_setup`.
+
+---
+
+### N2 · [MEDIUM] Worker log files слишком пустые для диагностики
+
+**Проблема:** Worker system-analyst отработал 15 сек (transient vllm сбой). Log-файл
+`.agentic/logs/awf-agent-system-analyst-TODO-0003.out` содержал 5 строк: header +
+2 noise строки. Нет вывода модели, нет stderr, нет tool calls. Supervisor потратил
+12 сообщений на forensic debug.
+
+**Что сделать:**
+1. `agent_stage.py:run_agent_stage` — передавать `--print-logs` в `opencode run`
+   (или хотя бы capture stderr в log-файл)
+2. Log-файл должен содержать полный output сессии opencode, не только header
+3. При transient сбое (exit 0 + пустой output) — логировать отдельно
+
+**Файлы:** `awf/agent_stage.py:79-118` (cmd construction + signal_watch),
+`awf/signal_watch.py` (stdout/stderr redirect to worker_log).
+
+---
+
+### N3 · [MEDIUM] Нет шаблона TODO для multi-stage pipeline
+
+**Проблема:** Supervisor 3 итерации писал TODO для pipeline из 5 ролей
+(system-analyst → architector → implementer → qa-review → project-auditor):
+1. Расписал микро-менеджемент всех 5 стадий (нарушение «TODO = задача 1-го агента»)
+2. Добавил skills прямо в TODO (бессмысленно — skills из role.md)
+3. Наконец понял: TODO = задача 1-й стадии + context о последующих
+
+Каждая итерация = kill pipeline → edit → restart → checkpoint approve.
+
+**Что сделать:** Добавить шаблон в supervisor.md для multi-stage pipeline:
+«TODO для 1-го агента должен содержать: (1) Goal для всей итерации (из Brief),
+(2) Конкретная задача для 1-й стадии, (3) Контекст: какие роли следуют и что они
+будут делать с результатом 1-й стадии».
+
+Пример шаблона для pipeline analyst → architector → developer:
+```
+## Context
+This iteration goes through: system-analyst (you) → architector → developer.
+You produce requirements. Architector designs from them. Developer implements.
+
+## Your task
+Analyze and document requirements for <feature>.
+
+## What follows you
+Architector will design modules from your requirements.
+Developer will implement from architect's design.
+```
+
+**Файлы:** `templates/roles/supervisor.md` (Step 4 — добавить multi-stage template).
+
+---
+
 ### S1 · [LOW] Supervisor: прямой вопрос вместо догадок (prompt injection)
 
 **Проблема:** В dogfood-сессии supervisor три итерации гадал «что такое
@@ -80,23 +150,21 @@ F4 (auto-retry transient failures) частично закрыл это — но
 ### R1 · [MEDIUM] Чистый init (runtime clean, config saved)
 
 **Проблема:** `awf init` с `force=false` ничего не чистит (осторожный дефолт).
-`force=true` сносит всё включая config. В dogfood после переинициализации
-сохранились мусорные файлы прошлых запусков. Нужен средний путь.
+`force=true` сносит всё включая config. В dogfood после ручного удаления `.agentic/`
+и re-init возник конфликт: git HEAD содержал старые pipeline/roles, init создал
+новые — несогласованное состояние.
 
 **Что сделать:** `awf init` без флагов = чистить runtime, сохранять config:
 - **Чистить всегда:** inbox, outbox, handoff, done, state, logs, context, dashboards, inputs
 - **Сохранять:** config.yaml, roles/*.md, pipelines/*.yaml, phases/plan.md
 - `awf init --hard` = полный сброс (текущий `force=true` behavior)
-- `awf init --force` = alias для `--hard` (backward compat)
+- Для re-init после ручного удаления: проверять git-tracked `.agentic/` файлы,
+  предупреждать о конфликте, предлагать `--hard`
 
-Переиспользовать логику из `cmd_reset.py` (mode=`tasks_only` близко, но нужно
-добавить clean state/logs/dashboards).
+Переиспользовать логику из `cmd_reset.py`.
 
-**Файлы:**
-- `awf/cmd_init.py:run()` — текущая логика `force` (всё-или-ничего)
-- `awf/api/setup.py:init_project()` — создание `.agentic/` структуры
-- `awf/cmd_reset.py` — reset-логика (переиспользовать)
-- `awf/paths.py` — какие директории runtime vs config
+**Файлы:** `awf/cmd_init.py:run()`, `awf/api/setup.py:init_project()`,
+`awf/cmd_reset.py`, `awf/paths.py`.
 
 ---
 
@@ -223,6 +291,15 @@ S2: deep-debug вместо простого теста; смешение сло
 S1/S2 естественно растворяются (каждый phase-prompt короче и сфокусированнее).
 
 ---
+
+### N4 · [LOW] config.yaml.bak — origin не исследован
+
+F2 (*.bak gitignore) закрыл cosmetic. Но источник `.bak` файлов не найден:
+`awf/api/setup.py:230` (backup config при записи), `setup.py:140` (default.yaml.bak),
+`opencode_agents.py:120` (.bak-{ts}). Нужно определить кто и зачем создаёт backup
+при каждом запуске стадии — если это worker's edit tool, шум будет в любом проекте.
+
+**Status:** low priority — gitignore маскирует. Investigate when touching setup.py.
 
 ### AUD-12 · [T3] Рефакторинг
 
