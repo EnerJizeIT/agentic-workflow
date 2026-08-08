@@ -6,6 +6,32 @@
 
 ## Открытые задачи
 
+### SMO · State-Machine Orchestration — завершён (.1-.6), .7 после dogfood
+
+**Status:** .1-.6 DONE. .7 parked (after dogfood).
+
+✅ `.1` **Foundation:** `awf/phase.py` — `detect_phase()` + `get_phase_prompt()`
+   + `advance_phase()`. Phase в state. 3 новых tool: `awf_current_step`,
+   `awf_set_goal`, `awf_confirm_normalized`. Backward compat: нет phase → full supervisor.md.
+
+✅ `.2` **Split supervisor.md:** `templates/roles/supervisor/_core.md` (~40 строк)
+   + `phase-{init,goal,form,normalize,brief,run,verify}.md` (each ~30-60 строк).
+   Старый `supervisor.md` сохранён для backward compat.
+
+✅ `.3` **Goal step:** `awf_set_goal(goal)` → stores in state → advances goal→form.
+
+✅ `.4` **Form step:** `phase-form.md` — supervisor recommends roles based on goal,
+   opens `awf_open_project_setup_form`.
+
+✅ `.5` **Normalize step:** `phase-normalize.md` — 3-part checklist.
+   `awf_confirm_normalized()` — gate, advances normalize→brief.
+
+✅ `.6` **Brief step:** `phase-brief.md` + existing R5 pipeline_engine detection.
+   Orchestrator writes phase at transitions (brief→run→verify→done).
+
+⬜ `.7` **Escape-hatch'и:** ПОСЛЕ dogfood. Собрать edge-cases с реальных сессий.
+   **НЕ проектировать upfront.**
+
 ### AUD-12 · [T3] Рефакторинг (закрытые пункты)
 
 ✅ `.1` — `_xdg_config_home` ×3 → consolidated в `awf.xdg`
