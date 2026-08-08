@@ -76,8 +76,10 @@ def update_gitignore(project_dir: Path) -> None:
     """
     gitignore_block = (
         ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n"
+        ".agentic/handoff/\n.agentic/state/\n"
         ".agentic/logs/\n.agentic/reports/\n.agentic/done/\n"
         ".agentic/inputs/\n.agentic/dashboards/\n"
+        "*.bak\n*.bak-*\n"
     )
     gitignore = project_dir / ".gitignore"
     if gitignore.exists():
@@ -85,6 +87,12 @@ def update_gitignore(project_dir: Path) -> None:
         if ".agentic/inbox/" not in content:
             gitignore.write_text(
                 content + "\n# Agentic workflow runtime files\n" + gitignore_block + "\n",
+                encoding="utf-8",
+            )
+        elif ".agentic/handoff/" not in content:
+            gitignore.write_text(
+                content + "\n# Agentic workflow runtime (updated)\n"
+                ".agentic/handoff/\n.agentic/state/\n*.bak\n*.bak-*\n",
                 encoding="utf-8",
             )
         elif ".agentic/inputs/" not in content:

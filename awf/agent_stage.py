@@ -156,14 +156,22 @@ def collect_handoff(
     ]
 
     has_output = False
+    done_has_body = False
+    if done_path.is_file():
+        body = done_path.read_text(encoding="utf-8").strip()
+        if body:
+            parts += ["## DONE summary (from worker)", "", body, ""]
+            has_output = True
+            done_has_body = True
+
     if progress.is_file():
         body = progress.read_text(encoding="utf-8").strip()
         if body:
             parts += ["## PROGRESS notes (from worker)", "", body, ""]
             has_output = True
-    else:
-        # DF5-5: PROGRESS file doesn't exist — worker didn't leave notes.
-        # (stale PROGRESS from previous stage was cleaned before agent run.)
+    elif not done_has_body:
+        # Only warn about missing PROGRESS if DONE summary is also absent.
+        # DONE carries the same info — warning when DONE exists is noise.
         parts += [
             "## ⚠️ Worker did not leave progress notes",
             "",
@@ -171,12 +179,6 @@ def collect_handoff(
             "The work may still be valid — inspect git diff and DONE report.",
             "",
         ]
-
-    if done_path.is_file():
-        body = done_path.read_text(encoding="utf-8").strip()
-        if body:
-            parts += ["## DONE summary (from worker)", "", body, ""]
-            has_output = True
 
     if not has_output:
         parts += [

@@ -160,27 +160,55 @@ def execute_agent_stage(
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
 
     prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
-    try:
-        _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                         prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout)
-    except (RuntimeError, TimeoutError) as e:
-        print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
-        _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-        return current_todo, stage_idx, 1
 
-    prefixes = expected_signal_prefixes(s_kind)
-    signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+    # F4: auto-retry transient failures (vllm cold-start, empty output <30s)
+    MAX_TRANSIENT_RETRIES = 2
+    TRANSIENT_THRESHOLD_SEC = 30
 
-    if not signal:
+    signal = None
+    for transient_retry in range(MAX_TRANSIENT_RETRIES + 1):
+        import time as _time
+        agent_start = _time.monotonic()
         try:
-            signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
-        except TimeoutError:
-            pass
+            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
+                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout)
+        except (RuntimeError, TimeoutError) as e:
+            print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+            return current_todo, stage_idx, 1
+        agent_elapsed = _time.monotonic() - agent_start
 
-    if not signal:
-        baseline_sha = _read_baseline_sha(project_dir, current_todo)
-        if baseline_sha and verify.attempt_auto_done(project_dir, current_todo, config, baseline_sha):
-            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+        prefixes = expected_signal_prefixes(s_kind)
+        signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+
+        if not signal:
+            try:
+                signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
+            except TimeoutError:
+                pass
+
+        if not signal:
+            baseline_sha = _read_baseline_sha(project_dir, current_todo)
+            if baseline_sha and verify.attempt_auto_done(project_dir, current_todo, config, baseline_sha):
+                signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+
+        if signal:
+            break
+
+        # F4: transient failure — worker exited too fast with no signal
+        if transient_retry < MAX_TRANSIENT_RETRIES and agent_elapsed < TRANSIENT_THRESHOLD_SEC:
+            print(
+                f"Worker exited in {agent_elapsed:.0f}s with no signal — "
+                f"transient failure? Retrying ({transient_retry + 1}/{MAX_TRANSIENT_RETRIES})...",
+                file=sys.stderr,
+            )
+            _log(logs_dir, f"F4: auto-retry {transient_retry + 1}/{MAX_TRANSIENT_RETRIES} "
+                f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal)")
+            from .signals import clean_stage_signals
+            clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+            continue
+
+        break
 
     if not signal:
         # Salvage path
