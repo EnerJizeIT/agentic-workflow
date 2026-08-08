@@ -60,10 +60,7 @@ def _extract_stage_info(
         # next_stage_role still needs pipeline.yaml lookup
         next_stage_role = _lookup_next_stage_role(project_dir, current_stage)
 
-        # last_signal: prefer state, fall back to regex if missing
-        if not last_signal:
-            _, _, last_signal, _, _, _, _ = _extract_stage_info_regex(project_dir)
-
+        # last_signal from state (None if missing — no regex fallback)
         return (
             current_stage,
             next_stage_role,
@@ -74,8 +71,10 @@ def _extract_stage_info(
             checkpoint_form_url,
         )
 
-    # ── Fallback: regex log parsing (pre-T4.1 behaviour) ──────────────
-    return _extract_stage_info_regex(project_dir, log_tail_text)
+    # AUD-12.5: regex fallback removed. State file is always written since T4.1.
+    # If state is missing (crash), supervisor gets None values and checks awf_status.
+    next_stage_role = _lookup_next_stage_role(project_dir, None)
+    return (None, next_stage_role, None, log_tail_text, False, None, None)
 
 
 def _lookup_next_stage_role(project_dir: Path, current_stage: str | None) -> str | None:
@@ -110,87 +109,6 @@ def _read_log_tail(log_file: Path, n: int) -> str | None:
         return ""
     tail = lines[-n:] if len(lines) > n else lines
     return "\n".join(tail)
-
-
-def _extract_stage_info_regex(
-    project_dir: Path,
-    log_tail_text: str | None = None,
-) -> tuple[str | None, str | None, str | None, str | None, bool, int | None, str | None]:
-    """Fallback: parse awf-start.out via regex (pre-T4.1 behaviour).
-
-    Kept for backward compatibility with pipelines started before T4.1
-    state writes were added. Prefer read_state() in new code.
-    """
-    log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
-    if log_tail_text is None:
-        log_tail_text = _read_log_tail(log_file, 30)
-    current_stage: str | None = None
-    last_signal: str | None = None
-    checkpoint_pending = False
-    checkpoint_port: int | None = None
-    checkpoint_form_url: str | None = None
-
-    if log_file.is_file():
-        try:
-            log_text = log_file.read_text(encoding="utf-8", errors="replace")
-            lines = log_text.splitlines()
-
-            import re
-
-            stage_pattern = re.compile(r"Stage\s+\d+/\d+:\s+(\S+)")
-            checkpoint_open_pattern = re.compile(
-                r"BD-36: checkpoint opened.*on port (\d+)", re.IGNORECASE
-            )
-            checkpoint_decision_pattern = re.compile(
-                r"BD-36: checkpoint (decision|rejected|timeout)", re.IGNORECASE
-            )
-            checkpoint_form_url_pattern = re.compile(r"BD-36: form_url=(\S+)")
-            checkpoint_opened = False
-            checkpoint_decided = False
-            for line in lines:
-                m = stage_pattern.search(line)
-                if m:
-                    current_stage = m.group(1)
-                    checkpoint_opened = False
-                    checkpoint_decided = False
-                    continue
-                if checkpoint_open_pattern.search(line):
-                    checkpoint_opened = True
-                    pm = checkpoint_open_pattern.search(line)
-                    if pm:
-                        try:
-                            checkpoint_port = int(pm.group(1))
-                        except ValueError:
-                            pass
-                elif checkpoint_decision_pattern.search(line):
-                    checkpoint_decided = True
-                fm = checkpoint_form_url_pattern.search(line)
-                if fm:
-                    checkpoint_form_url = fm.group(1)
-                for marker in ("=== stage:", "Pipeline stage:", "Entering stage:"):
-                    if marker in line:
-                        idx = line.find(marker) + len(marker)
-                        rest = line[idx:].strip().strip("=").strip()
-                        if rest:
-                            current_stage = rest.split()[0]
-                            break
-                line_lower = line.lower()
-                if "signal detected" in line_lower or "signal received" in line_lower or "signal:" in line_lower:
-                    for sig_marker in ("DONE-", "BLOCKED-", "REVIEW-", "TODO-", "ACK-"):
-                        if sig_marker in line:
-                            idx = line.rfind(sig_marker)
-                            rest = line[idx:].split()[0].rstrip(":.,")
-                            for ext in (".ready", ".md", ".yaml"):
-                                if rest.endswith(ext):
-                                    rest = rest[: -len(ext)]
-                            last_signal = rest
-                            break
-            checkpoint_pending = checkpoint_opened and not checkpoint_decided
-        except OSError:
-            pass
-
-    next_stage_role = _lookup_next_stage_role(project_dir, current_stage)
-    return current_stage, next_stage_role, last_signal, log_tail_text, checkpoint_pending, checkpoint_port, checkpoint_form_url
 
 
 def _compute_expected_action(

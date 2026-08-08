@@ -156,30 +156,18 @@ class TestExtractStageInfoPrefersStateFile:
         assert port == 12345
         assert url == "file:///tmp/form.html"
 
-    def test_regex_fallback_when_no_state_file(self, awf_project):
-        """No state file → regex parsing used (backward compat)."""
+    def test_no_state_file_returns_none(self, awf_project):
+        """AUD-12.5: No state file → None values (regex fallback removed)."""
         from awf.api.context import _extract_stage_info
 
-        # Write log but no state file
-        logs = awf_project / ".agentic" / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        (logs / "awf-start.out").write_text(
-            "  Stage 1/3: plan (supervisor :: plan)\n"
-            "BD-36: checkpoint opened on port 9999\n"
-            "BD-36: form_url=file:///tmp/x.html\n"
-        )
+        cur, _nxt, _sig, _lt, cp, _port, _url = _extract_stage_info(awf_project)
+        assert cur is None
+        assert cp is False
 
-        cur, _nxt, _sig, _lt, cp, port, url = _extract_stage_info(awf_project)
-        assert cur == "plan"  # from regex
-        assert cp is True  # from regex
-        assert port == 9999  # from regex
-        assert url == "file:///tmp/x.html"  # from regex
-
-    def test_stale_state_falls_back_to_regex(self, awf_project):
-        """Stale state file (>2h old) → regex fallback, not trusted."""
+    def test_stale_state_returns_none(self, awf_project):
+        """AUD-12.5: Stale state file → None values (regex fallback removed)."""
         from awf.api.context import _extract_stage_info
 
-        # Write stale state
         old_ts = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
         state_path = awf_project / ".agentic" / "state"
         state_path.mkdir(parents=True, exist_ok=True)
@@ -187,13 +175,5 @@ class TestExtractStageInfoPrefersStateFile:
             f"stage_name: stale-stage\nupdated_at: {old_ts}\n"
         )
 
-        # Also write fresh log
-        logs = awf_project / ".agentic" / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        (logs / "awf-start.out").write_text(
-            "  Stage 2/3: developer (developer :: execute)\n"
-        )
-
         cur, _nxt, _sig, _lt, _cp, _port, _url = _extract_stage_info(awf_project)
-        # Stale state NOT used → regex gives 'developer'
-        assert cur == "developer"
+        assert cur is None  # stale state NOT used, no regex fallback
