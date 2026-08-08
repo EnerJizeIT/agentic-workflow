@@ -12,17 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-
-def _xdg_config_home() -> Path:
-    """A9: respect XDG_CONFIG_HOME env var (was hardcoded ~/.config).
-
-    Local copy to avoid circular import with opencode_config.py.
-    """
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    if xdg:
-        return Path(xdg).expanduser()
-    return Path.home() / ".config"
-
+from awf.xdg import xdg_config_home  # AUD-12: consolidated (was local copy)
 
 if TYPE_CHECKING:
     # Avoid circular import: config.py imports nothing from state.py at module level,
@@ -51,9 +41,8 @@ class FormRegistry:
     crash/restart doesn't lose pending forms.
     """
 
-    # A9/A10: respect XDG_CONFIG_HOME (was hardcoded ~/.config).
-    # Uses local _xdg_config_home (no cross-package import to awf.xdg).
-    PERSIST_FILE = _xdg_config_home() / "awf" / "state" / "forms_registry.yaml"
+    # AUD-12: uses consolidated xdg_config_home from awf.xdg
+    PERSIST_FILE = xdg_config_home() / "awf" / "state" / "forms_registry.yaml"
     # QA-A: class-level default; instances read via property. Tests that
     # need to disable persistence set ``reg.persist_enabled = False`` on
     # the specific instance, not the class attribute (avoids test pollution
@@ -66,7 +55,6 @@ class FormRegistry:
         # QA-A fix: instance attribute shadows class default. Tests that
         # set reg.PERSIST_ENABLED = False now hit this instance attr.
         # Class attribute remains True for fresh instances.
-        import os
         if os.environ.get("AWF_DISABLE_FORM_PERSIST", ""):
             self._persist_enabled = False
         else:

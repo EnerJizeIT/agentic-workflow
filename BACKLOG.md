@@ -6,15 +6,6 @@
 
 ## Открытые задачи
 
-### N4 · [LOW] config.yaml.bak — origin не исследован
-
-F2 (*.bak gitignore) закрыл cosmetic. Но источник `.bak` файлов не найден:
-`awf/api/setup.py:230` (backup config при записи), `setup.py:140` (default.yaml.bak),
-`opencode_agents.py:120` (.bak-{ts}). Нужно определить кто и зачем создаёт backup
-при каждом запуске стадии — если это worker's edit tool, шум будет в любом проекте.
-
-**Status:** low priority — gitignore маскирует. Investigate when touching setup.py.
-
 ### AUD-12 · [T3] Рефакторинг
 
 - **`_xdg_config_home` ×3 копии** → consolidate в `awf.xdg`

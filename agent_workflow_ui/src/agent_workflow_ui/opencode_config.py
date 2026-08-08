@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from awf._atomic import atomic_write_text as _atomic_write_text
+from awf.xdg import xdg_config_home
 
 log = logging.getLogger(__name__)
 
@@ -25,15 +26,7 @@ def _atomic_write_role(path: Path, content: str) -> None:
     _atomic_write_text(path, content, encoding="utf-8")
 
 
-def _xdg_config_home() -> Path:
-    """A9: respect XDG_CONFIG_HOME env var (was hardcoded ~/.config)."""
-    xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    if xdg:
-        return Path(xdg).expanduser()
-    return Path.home() / ".config"
-
-
-GLOBAL_ROLES_DIR = _xdg_config_home() / "awf" / "roles"
+GLOBAL_ROLES_DIR = xdg_config_home() / "awf" / "roles"
 
 
 def read_opencode_models() -> list[str]:
@@ -190,7 +183,7 @@ def _compute_models() -> list[str]:
         pass
 
     # Fallback: parse opencode.json directly (fewer models, no internal providers)
-    cfg_path = _xdg_config_home() / "opencode" / "opencode.json"
+    cfg_path = xdg_config_home() / "opencode" / "opencode.json"
     if not cfg_path.exists():
         return []
 
@@ -325,7 +318,7 @@ def scan_global_skills() -> list[dict]:
 
     Skills are sorted alphabetically by title.
     """
-    skills_root = _xdg_config_home() / "opencode" / "skills"
+    skills_root = xdg_config_home() / "opencode" / "skills"
     if not skills_root.is_dir():
         return []
 
