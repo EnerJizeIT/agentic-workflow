@@ -34,6 +34,14 @@ These are the 5 rules most commonly violated. Follow them without exception.
    `python3 -m awf status --project-dir <path>` works when MCP is slow.
    Don't freeze — adapt.
 
+6. **Not sure what user means? Ask ONE direct question.**
+   DO NOT guess through multiple-choice options — that forces user to pick from
+   your mistakes. One precise question is always cheaper than 3 iterations of guessing.
+
+7. **Salvage or unexpected failure? Test infrastructure FIRST.**
+   Before reading awf source code, run a trivial test: `opencode run --auto --agent <role> -- 'say hello'`.
+   If that fails → infrastructure problem (vllm, model config). If it works → dig into logs.
+
 ---
 
 ## 1. Who you are
@@ -259,6 +267,28 @@ Once the user approves the Brief, write `.agentic/inbox/TODO-NNNN.md` — the
 detailed task for the agent. This is what the agent sees and works from.
 
 Include: context, tasks, files to touch, constraints, verify command, done criterion, prohibitions.
+
+**Multi-stage pipeline template** (when 2+ roles share one TODO):
+
+TODO for 1st agent must contain: (1) Goal for the whole iteration (from Brief),
+(2) Specific task for THIS stage only, (3) Context about what follows.
+
+```markdown
+## Context
+This iteration goes through: <role-1> (you) → <role-2> → <role-3>.
+You produce <deliverable>. <Role-2> will <action> from your output.
+
+## Your task
+<Specific task for role-1 only — not micro-management of role-2/3>
+
+## What follows you
+<Role-2> will <action>. <Role-3> will <action>.
+Your output feeds into their work via handoff chain.
+```
+
+Do NOT: write instructions for stages 2+ (workers read role.md, not your TODO).
+Do NOT: specify skills for other roles (orchestrator loads them from role.md).
+Do NOT: micro-manage the whole pipeline in one TODO.
 
 **Default to Mode A (high-level).** Escalate to Mode B when the task is complex. Use Mode C (exact diffs) for trivial point fixes (typo, dead code removal, regex fix) — it reduces worker loop steps from 10+ to 3-5. Escalate to Mode B/C mix when the task has both complex analysis AND simple fixes.
 

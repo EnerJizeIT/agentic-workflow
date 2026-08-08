@@ -6,25 +6,6 @@
 
 ## Открытые задачи
 
-### N1 · [HIGH] Project-setup form: system-analyst → architector mapping bug
-
-**Проблема:** В dogfood-сессии пользователь выбрал «Аналитик и архитектор» в форме
-project-setup. Форма отправила `agent-architector` дважды, `agent-system-analyst`
-отсутствовал. Pipeline материализовался с дублем architector. Supervisor вручную
-восстанавливал system-analyst из git + правил config.yaml + pipeline.yaml.
-
-**Что сделать:** Диагностировать root cause:
-1. Проверить рендеринг формы — правильно ли маппятся выбранные роли на submit
-2. Проверить сериализацию submit → `apply_project_setup` → pipeline.yaml
-3. Проверить `scan_global_roles()` — все ли роли попадают в список выбора
-4. Добавить regression-тест: выбор 5 разных ролей → pipeline имеет 5 разных ролей
-
-**Файлы:** `agent_workflow_ui/.../render/project-setup.html.j2`,
-`agent_workflow_ui/.../apply_project_setup`, `awf/api/roles.py:scan_global_roles`,
-`awf/api/setup.py:apply_project_setup`.
-
----
-
 ### N2 · [MEDIUM] Worker log files слишком пустые для диагностики
 
 **Проблема:** Worker system-analyst отработал 15 сек (transient vllm сбой). Log-файл
@@ -40,72 +21,6 @@ project-setup. Форма отправила `agent-architector` дважды, `
 
 **Файлы:** `awf/agent_stage.py:79-118` (cmd construction + signal_watch),
 `awf/signal_watch.py` (stdout/stderr redirect to worker_log).
-
----
-
-### N3 · [MEDIUM] Нет шаблона TODO для multi-stage pipeline
-
-**Проблема:** Supervisor 3 итерации писал TODO для pipeline из 5 ролей
-(system-analyst → architector → implementer → qa-review → project-auditor):
-1. Расписал микро-менеджемент всех 5 стадий (нарушение «TODO = задача 1-го агента»)
-2. Добавил skills прямо в TODO (бессмысленно — skills из role.md)
-3. Наконец понял: TODO = задача 1-й стадии + context о последующих
-
-Каждая итерация = kill pipeline → edit → restart → checkpoint approve.
-
-**Что сделать:** Добавить шаблон в supervisor.md для multi-stage pipeline:
-«TODO для 1-го агента должен содержать: (1) Goal для всей итерации (из Brief),
-(2) Конкретная задача для 1-й стадии, (3) Контекст: какие роли следуют и что они
-будут делать с результатом 1-й стадии».
-
-Пример шаблона для pipeline analyst → architector → developer:
-```
-## Context
-This iteration goes through: system-analyst (you) → architector → developer.
-You produce requirements. Architector designs from them. Developer implements.
-
-## Your task
-Analyze and document requirements for <feature>.
-
-## What follows you
-Architector will design modules from your requirements.
-Developer will implement from architect's design.
-```
-
-**Файлы:** `templates/roles/supervisor.md` (Step 4 — добавить multi-stage template).
-
----
-
-### S1 · [LOW] Supervisor: прямой вопрос вместо догадок (prompt injection)
-
-**Проблема:** В dogfood-сессии supervisor три итерации гадал «что такое
-нормализация скиллов», подсовывая пользователю multiple-choice варианты своих
-неверных интерпретаций. Пользователь был вынужден выбирать из ошибок supervisor,
-а не корректировать его понимание. Один прямой вопрос решил бы это за один шаг.
-
-**Что сделать:** Добавить правило в Quick Reference supervisor.md:
-«Не уверен в указании пользователя? Задай один прямой вопрос. Не гадай через
-варианты — это заставляет пользователя выбирать из твоих ошибок».
-
-**Файл:** `templates/roles/supervisor.md` (Quick Reference, правило #6 или в Step 0).
-
-**Почему важно:** Экономит итерации и токены. Для pet-проекта с диалоговым
-стилем — прямой вопрос всегда дешевле угадывания.
-
----
-
-### S2 · [LOW] Supervisor: простой тест раньше deep-debug (prompt injection)
-
-**Проблема:** На salvage (worker отработал 15 сек пусто) supervisor полез читать
-исходники `awf/agent_stage.py`, воспроизводить запуск с `--print-logs`. Пользователь
-сразу предположил «vllm не стартанул» — и был прав. Простой тест (запустить worker
-с тривиальным промптом, убедиться что инфраструктура жива) быстрее и продуктивнее.
-
-**Что сделать:** Добавить правило в supervisor.md:
-«Salvage или непонятный сбой? Сначала проверь инфраструктуру простым тестом
-(`opencode run --auto --agent <role> -- 'say hello'`). Потом разбирай логи и код».
-
-**Файл:** `templates/roles/supervisor.md` (раздел Error handling или Salvage).
 
 ---
 
