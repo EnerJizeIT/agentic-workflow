@@ -6,65 +6,223 @@
 
 ## Открытые задачи
 
-### R5 · [HIGH] Два слоя TODO: Increment Brief + Stage-1 TODO
+### S1 · [LOW] Supervisor: прямой вопрос вместо догадок (prompt injection)
 
-**Источник:** dogfood jira-epic-presenter, корневая ошибка сессии.
+**Проблема:** В dogfood-сессии supervisor три итерации гадал «что такое
+нормализация скиллов», подсовывая пользователю multiple-choice варианты своих
+неверных интерпретаций. Пользователь был вынужден выбирать из ошибок supervisor,
+а не корректировать его понимание. Один прямой вопрос решил бы это за один шаг.
 
-Один TODO смешивает два слоя: что показать пользователю (approve) и что
-скормить агенту (pipeline start). Разделить:
-- **BRIEF-NNNN.md** — цель инкремента + критерии успеха + что НЕ делаем. ~10-20 строк. Approve пользователем через форму.
-- **TODO-NNNN.md** — задача 1-й стадии + handoff-контракт. Для агента.
+**Что сделать:** Добавить правило в Quick Reference supervisor.md:
+«Не уверен в указании пользователя? Задай один прямой вопрос. Не гадай через
+варианты — это заставляет пользователя выбирать из твоих ошибок».
 
-Verify сверяет с Brief (contract), не с полным выводом pipeline.
-**Файлы:** `awf/todos.py`, `awf/api/dispatch.py`, `awf/supervisor.py:build_prompt`,
-`awf/api/planning.py` (переиспользовать pattern increment-planning-form).
+**Файл:** `templates/roles/supervisor.md` (Quick Reference, правило #6 или в Step 0).
 
-### R6 · [HIGH] Sleep mode (supervisor idle после pipeline start)
+**Почему важно:** Экономит итерации и токены. Для pet-проекта с диалоговым
+стилем — прямой вопрос всегда дешевле угадывания.
 
-Supervisor открывает dashboard → засыпает. Пользователь пишет при событиях
-(salvage/blocked/checkpoint/verify) или по завершении. Auto-poll убирается.
-**Файлы:** `awf.py:awf_wait_for_event`, `awf/api/wait_event.py`,
-`templates/roles/supervisor.md`, `awf/api/dashboard.py` (wake-индикатор).
+---
+
+### S2 · [LOW] Supervisor: простой тест раньше deep-debug (prompt injection)
+
+**Проблема:** На salvage (worker отработал 15 сек пусто) supervisor полез читать
+исходники `awf/agent_stage.py`, воспроизводить запуск с `--print-logs`. Пользователь
+сразу предположил «vllm не стартанул» — и был прав. Простой тест (запустить worker
+с тривиальным промптом, убедиться что инфраструктура жива) быстрее и продуктивнее.
+
+**Что сделать:** Добавить правило в supervisor.md:
+«Salvage или непонятный сбой? Сначала проверь инфраструктуру простым тестом
+(`opencode run --auto --agent <role> -- 'say hello'`). Потом разбирай логи и код».
+
+**Файл:** `templates/roles/supervisor.md` (раздел Error handling или Salvage).
+
+---
+
+### P1 · [LOW] Checkpoint skip после kill+start
+
+**Проблема:** После `awf_kill` + `awf_start` BD-36 checkpoint открывается заново на
+тот же план. Для `awf_continue` checkpoint опускается (правильно), но
+fresh-start-after-kill тоже мог бы пропускать если план не менялся. Три approve
+подряд на идентичный план — лишний friction.
+
+**Что сделать:** В `plan_checkpoint.py` проверять: если с момента последнего
+checkpoint-approve план (plan.md или TODO .md) не менялся (сравнение по mtime
+или hash) — пропустить checkpoint. Логировать skip.
+
+**Файлы:** `awf/plan_checkpoint.py` (`is_checkpoint_enabled` или новая функция
+`_should_skip_checkpoint`). Сохранять hash последнего approved плана в state.
+
+---
+
+### P2 · [LOW] Salvage UX — явный retry вместо kill+continue
+
+**Проблема:** В salvage supervisor не сразу понял что делать: работы нет → не ACK;
+но и не block. Пришлось `awf_kill` + `awf_continue(from_stage)`. Механизм salvage →
+retry мог бы быть прямее.
+
+F4 (auto-retry transient failures) частично закрыл это — но когда salvage всё-таки
+наступает, supervisor всё ещё должен убивать pipeline и перезапускать вручную.
+
+**Что сделать:** Добавить явную опцию retry в salvage-путь. Варианты:
+- (a) `awf_continue(from_stage)` с параметром `retry=True` — переигрывает стадию
+- (b) В salvage-prompt добавить инструкцию: «создай RETRY-TODO-NNNN.ready для
+      повтора стадии, или ACK/REVIEW для решения»
+- (c) Новый MCP tool `awf_retry_stage` — перезапускает текущую стадию
+
+Рекомендация: (b) — минимальное изменение, reuse signal-механизма.
+
+**Файлы:** `awf/pipeline_engine.py` (salvage branch), `awf/supervisor.py`
+(salvage prompt + signal detection), `templates/roles/supervisor.md` (salvage Step).
+
+---
 
 ### R1 · [MEDIUM] Чистый init (runtime clean, config saved)
 
-`awf init` должен чистить runtime (inbox/outbox/handoff/done/state/logs),
-сохранять config (config.yaml, roles/*.md, pipelines/*.yaml, phases/).
-Средний путь между `force=false` (ничего) и `force=true` (всё).
-`awf init --hard` для полного сброса.
-**Файлы:** `awf/cmd_init.py`, `awf/api/setup.py`, `awf/cmd_reset.py`, `awf/paths.py`.
+**Проблема:** `awf init` с `force=false` ничего не чистит (осторожный дефолт).
+`force=true` сносит всё включая config. В dogfood после переинициализации
+сохранились мусорные файлы прошлых запусков. Нужен средний путь.
 
-### R8 · [LOW] Verify по Brief (contract)
+**Что сделать:** `awf init` без флагов = чистить runtime, сохранять config:
+- **Чистить всегда:** inbox, outbox, handoff, done, state, logs, context, dashboards, inputs
+- **Сохранять:** config.yaml, roles/*.md, pipelines/*.yaml, phases/plan.md
+- `awf init --hard` = полный сброс (текущий `force=true` behavior)
+- `awf init --force` = alias для `--hard` (backward compat)
 
-Следует из R5. Verify сверяет: достигнута ли цель из Brief? Brief = contract.
-**Файлы:** `awf/verify.py`, `awf/supervisor.py:build_prompt` (verify kind).
+Переиспользовать логику из `cmd_reset.py` (mode=`tasks_only` близко, но нужно
+добавить clean state/logs/dashboards).
 
-### R2 · [LOW] Goal elicitation step
+**Файлы:**
+- `awf/cmd_init.py:run()` — текущая логика `force` (всё-или-ничего)
+- `awf/api/setup.py:init_project()` — создание `.agentic/` структуры
+- `awf/cmd_reset.py` — reset-логика (переиспользовать)
+- `awf/paths.py` — какие директории runtime vs config
 
-Supervisor спрашивает цель ПЕРЕД load_context. Изучает проект под цель,
-не вообще. Короткий диалог (1-3 вопроса) → рекомендация ролей.
-**Файлы:** `templates/roles/supervisor.md`, `awf/api/setup.py`.
+---
+
+### R8 · [LOW] Verify по Brief — полная имплементация
+
+**Проблема:** R5 добавил BRIEF-NNNN.md и verify snippet читает Brief как contract.
+Но verify prompt только упоминаает «check success criteria from the Brief» — нет
+структурированной сверки. Supervisor может проигнорировать Brief при verify.
+
+**Что сделать:**
+1. В `_SNIPPET_VERIFY` добавить: «Сверь каждый success criterion из Brief с
+   фактическим результатом. Отметь выполненные/невыполненные. Если хотя бы один
+   не выполнен → REVIEW с конкретикой».
+2. В `build_prompt(verify)` передавать Brief content inline (не только ссылку на
+   файл — supervisor может не открыть).
+3. Опционально: в `verify.py` добавить `check_brief_criteria()` — парсит Brief,
+   сравнивает с git diff / test results.
+
+**Файлы:** `awf/supervisor.py` (_SNIPPET_VERIFY, build_prompt verify kind),
+`awf/verify.py` (опционально).
+
+**Зависимость:** R5 (已完成 — BRIEF-NNNN.md существует).
+
+---
+
+### R2 · [LOW] Goal elicitation — цель перед load_context
+
+**Проблема:** Сейчас `awf_load_supervisor_context` даёт всё (vision, plan, status,
+git-diff) — это перегружает. Supervisor изучает проект «вообще», а не под
+конкретную задачу. В dogfood это привело к расфокусу — supervisor начал
+микро-менеджить все стадии вместо того, чтобы сфокусироваться на цели.
+
+**Что сделать:**
+1. Supervisor спрашивает цель ПЕРЕД `load_supervisor_context` (короткий диалог
+   1–3 вопроса).
+2. Под цель — фильтрованно: какие артефакты читать, какие роли рекомендовать.
+3. Цель сохраняется в `.agentic/state/goal.txt` или `BRIEF-NNNN.md`.
+4. Связка «цель → recommended roles»: анализ = system-analyst + qa-review;
+   разработка = developer + qa; ревью = project-auditor + qa-review.
+
+**Файлы:** `templates/roles/supervisor.md` (новый шаг перед Step 1),
+`awf/api/context.py:load_supervisor_context` (опциональный параметр `goal`).
+
+---
 
 ### R3 · [LOW] Форма с рекомендацией ролей (prefill)
 
-Project-setup форма предзаполняется рекомендациями supervisor'а (на основе
-цели + характера итерации). Сейчас форма пустая — пользователь выбирает вслепую.
-**Файлы:** `awf.py:awf_open_project_setup_form`, `awf/api/setup.py`.
+**Проблема:** Сейчас `awf_open_project_setup_form` auto-populates глобальными
+skills/roles, но без рекомендаций под цель. Пользователь выбирает роли «вслепую».
 
-### R4 · [LOW] Skills normalization tool
+**Что сделать:**
+1. Supervisor рекомендует роли исходя из цели (R2) + характера итерации.
+2. Форма project-setup **предзаполняется** рекомендацией: preselected roles,
+   suggested models, recommended pipeline template.
+3. Пользователь подтверждает/правит.
+4. Технически: `awf_open_project_setup_form` принимает параметр `recommended`
+   (dict: roles, models, pipeline). Шаблон формы рендерит preselected.
 
-3-частный checklist после формы: (а) адаптация под итерацию, (б) перекрытия
-зон (уже есть `awf_analyze_roles`), (в) handoff-контракты.
-Новый tool `awf_normalize_skills`.
-**Файлы:** `awf/cmd_analyze_roles.py`, `awf/api/roles.py`, `templates/roles/`.
+**Файлы:** `awf.py:awf_open_project_setup_form`, `awf/api/setup.py`,
+`agent_workflow_ui/.../render/project-setup.html.j2`.
 
-### R7 · [LOW] Phase-prompts (supervisor state machine)
+**Зависимость:** R2 (goal elicitation) — рекомендация ролей от цели.
 
-`supervisor.md` (510 строк) → разбить на phase-секции (init/goal/form/
-normalize/todo/run/verify). Tool `awf_supervisor_step` возвращает промт
-текущего шага по state.
-**Файлы:** `templates/roles/supervisor.md`, `awf/supervisor.py:build_prompt`,
-`awf/pipeline_state.py` (добавить поле `phase`).
+---
+
+### R4 · [LOW] Skills normalization (3-part checklist + tool)
+
+**Проблема:** После формы roles могут перекрываться (qa-review + project-auditor
+оба «verify»), быть не адаптированы под характер итерации (system-analyst для
+ревью без кода), и не иметь формализованных handoff-контрактов. В dogfood
+supervisor правивал role.md вручную — процесс не формализован.
+
+**Что сделать:** 3-частный checklist после формы:
+1. **Адаптация под итерацию.** Каждая роль: соответствует ли skill характеру
+   запуска? Если нет — секция адаптации в `role.md`.
+2. **Разруливание перекрытий.** `awf_analyze_roles` уже детектит — сделать
+   **обязательным шагом** после формы.
+3. **Handoff-контракты.** Каждая роль знает: что получает от предыдущей, что
+   передаёт следующей.
+
+Новый tool `awf_normalize_skills(iteration_type, pipeline)` — прогоняет checklist,
+выдаёт список правок role.md (с возможностью apply).
+
+**Файлы:** `awf/cmd_analyze_roles.py`, `awf/api/roles.py`, `templates/roles/`,
+новый tool в `awf.py`.
+
+---
+
+### R7 · [MEDIUM] Phase-prompts (supervisor state machine)
+
+**Корневая проблема:** supervisor.md — один системный промт на 500+ строк.
+Supervisor получает весь flow сразу и путается (S1: гадал вместо прямого вопроса;
+S2: deep-debug вместо простого теста; смешение слоёв TODO/role.md — до R5).
+Добавление правил (S1, S2) делает промт ещё длиннее — paradox.
+
+**Решение:** Modular phase-prompts — supervisor = state machine.
+На каждом шаге flow supervisor получает короткий промт (5-20 строк):
+- `init` — «изучи проект, спроси цель»
+- `goal` — «сформулируй цель, рекомендуй роли»
+- `form` — «открой форму, дождись submit»
+- `normalize` — «проверь role.md под итерацию»
+- `todo` — «напиши Brief → после approve → напиши TODO»
+- `run` — «открой dashboard → idle»
+- `verify` — «прочитай Brief, сверь с результатом, реши»
+
+Текущий шаг определяется полем `phase` в `.agentic/state/current.yaml`.
+
+Новый tool `awf_supervisor_step` — возвращает промт для текущего шага + что
+сделать. Supervisor не держит в голове весь flow, только актуальный шаг.
+
+**Почему важно:** Меньше промт → меньше путаницы → меньше LLM-ошибок → выше
+качество. Философия проекта: «детерминизм каркаса + мощь LLM». Phase-prompts =
+больше детерминизма в подаче инструкций.
+
+**Файлы:**
+- `templates/roles/supervisor.md` — разбить на phase-секции (или вынести в
+  отдельные template-файлы: `templates/phases/init.md`, `goal.md`, ...)
+- `awf/supervisor.py:build_prompt()` — phase-detection по state field
+- `awf/pipeline_state.py` — добавить поле `phase` (init/goal/form/normalize/todo/run/verify)
+- Новый tool в `awf.py`: `awf_supervisor_step` — читает `phase` из state,
+  возвращает промт для этого шага
+
+**Связь:** S1/S2 — quick fix до R7. R7 — архитектурное решение, после которого
+S1/S2 естественно растворяются (каждый phase-prompt короче и сфокусированнее).
+
+---
 
 ### AUD-12 · [T3] Рефакторинг
 
