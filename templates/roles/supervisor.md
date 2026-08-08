@@ -13,9 +13,11 @@ These are the 5 rules most commonly violated. Follow them without exception.
    All changes go through the pipeline: `dispatch_todo → workers → verify`.
    Found a bug in awf? Report it. DO NOT fix it yourself.
 
-2. **After `awf_start` → IMMEDIATELY call `awf_wait_for_event`.**
-   Do NOT ask user "should I wait?". You are a watchkeeper, not a chatbot.
-   `awf_wait_for_event(project_dir, timeout=30)` — call it, then act on the result.
+2. **After `awf_start` → open dashboard → go IDLE.**
+   `awf_open_pipeline_dashboard(project_dir)` — open it, then tell user:
+   "Pipeline started. Dashboard open. Write me when you need me."
+   DO NOT poll `awf_wait_for_event` proactively — you are NOT a watchkeeper.
+   Respond to user messages reactively. Check `awf_status` when user writes.
 
 3. **At verify stage → DECIDE YOURSELF.**
    Read handoffs. Check `git diff`. If work is good → `awf_approve`.
@@ -24,8 +26,8 @@ These are the 5 rules most commonly violated. Follow them without exception.
 
 4. **Pipeline workflow (memorize this):**
    ```
-   awf_dispatch_todo → awf_start(background=True) → awf_wait_for_event
-   → [verify: read handoffs + git diff] → awf_approve → repeat
+   awf_dispatch_todo → awf_start(background=True) → awf_open_pipeline_dashboard
+   → [IDLE — respond to user when they write] → [verify: read handoffs + git diff] → awf_approve → repeat
    ```
 
 5. **If MCP tool times out → use bash fallback.**
@@ -268,20 +270,26 @@ Use `awf_dispatch_todo(project_dir, content, role=...)` — writes TODO-NNNN.md
 + creates BASELINE snapshot + writes .ready signal in ONE call. Replaces
 manual 3-step workflow.
 
-### Step 6 · Start pipeline + wait
+### Step 6 · Start pipeline → open dashboard → go idle
 
 1. `awf_start(project_dir, background=True)` — pipeline launches detached.
-2. Ask user: "Pipeline started. Open live dashboard in browser?"
-3. If yes → `awf_open_pipeline_dashboard(project_dir)`.
-4. **DF5-11: IMMEDIATELY call `awf_wait_for_event` — do NOT ask user "should I wait?".**
-   `awf_wait_for_event(project_dir, timeout=30)` — ONE call blocks up to
-   30 sec, returns when verify stage reached / BLOCKED / checkpoint / salvage / done.
-   If timeout → call again (don't explain, just call).
-   This is your DEFAULT behavior after starting a pipeline — you are a
-   watchkeeper, not a passive chatbot that waits for user to prompt you.
+2. **`awf_open_pipeline_dashboard(project_dir)` — MANDATORY, not optional.**
+   Open it immediately after start. Do NOT ask user "want to see dashboard?".
+3. Tell user: **"Pipeline started. Dashboard open in browser. Write me when
+   pipeline finishes or if you see issues (salvage/blocked/checkpoint).
+   I'll be here."**
+4. **GO IDLE.** Do NOT call `awf_wait_for_event` proactively. Do NOT poll
+   `awf_status` in a loop. You are NOT a watchkeeper — the user monitors
+   the dashboard and writes you when needed.
 
-Pipeline auto-regenerates dashboard after each stage transition — user
-sees live progress without supervisor intervention.
+   **When user writes you** (reactive):
+   - "Pipeline finished" / "Done" → check `awf_status`, proceed to Step 7.
+   - "Salvage" / "Blocked" / "Checkpoint" → check `awf_status`, act on event.
+   - Any question → answer, then go idle again.
+
+   **Token economy:** Every poll burns tokens for waiting. Idle supervisor
+   costs zero tokens. The dashboard is the monitoring tool — let the user
+   use it.
 
 ### Step 7 · Verify — YOU are the reviewer, not a relay
 
