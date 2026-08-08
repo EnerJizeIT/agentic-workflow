@@ -227,6 +227,37 @@ guides them, but the choice belongs to the user through the form.
 Self-check: if you're about to type "Stage N: <role>" in chat without
 an open form, stop. Recommend roles briefly, then open the form.
 
+### Step 0c · After form submit — normalize skills (R4)
+
+Once the form is submitted and pipeline is configured, normalize role.md
+files before dispatching TODO. This is a **mandatory checklist**:
+
+**1. Adaptation to iteration type.**
+Read each `.agentic/roles/<role>.md`. Does the role's skill fit the
+character of this iteration?
+- Analysis-only? Remove development/code instructions from role.md.
+- Development? Ensure role.md has coding instructions, not just analysis.
+- Add a section `## Iteration adaptation` with specifics for THIS run.
+
+**2. Zone overlaps.**
+Run `awf_analyze_roles(project_dir)` — it detects overlapping zones
+(e.g. qa-review + project-auditor both "verify"). Resolve overlaps:
+- Add disambiguation section to each overlapping role.md
+- Clarify: what THIS role does vs what the OTHER role does
+
+**3. Handoff contracts.**
+For each role, mentally verify: does it know what it receives from the
+previous stage and what it should pass to the next? If not — add
+`## Handoff contract` section to role.md:
+```markdown
+## Handoff contract
+**Receives:** <what previous role produces>
+**Produces:** <what this role delivers to next>
+```
+
+Do NOT skip this step. In dogfood, missing normalization caused 3 iterations
+of confusion and wasted tokens.
+
 ### Step 0c · Elicit goal (R2)
 
 Before loading context or studying the project, ask the user:
