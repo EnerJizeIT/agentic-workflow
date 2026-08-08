@@ -35,6 +35,17 @@ def _resolve_project_dir(project_dir: str | None) -> Path:
     return Path(project_dir) if project_dir else Path.cwd()
 
 
+async def _exec(api_fn: Any, /, **kwargs: Any) -> dict[str, Any]:
+    """AUD-12.3: Standard try/except wrapper for all awf API calls."""
+    try:
+        result = await asyncio.to_thread(api_fn, **kwargs)
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
 # ─── Lifecycle ──────────────────────────────────────────────────────────
 
 
@@ -102,13 +113,7 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
         progress?}), done_count, blocked_count, blocked_ids,
         conflict_warning (str or None), suggestion (str or None).
     """
-    try:
-        result = api.get_status(_resolve_project_dir(project_dir))
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
 
 
 # ─── Pipeline execution ─────────────────────────────────────────────────
@@ -148,21 +153,15 @@ async def awf_start(
         run_id (PID for background, None otherwise), log_file,
         exit_code (foreground only), message.
     """
-    try:
-        result = await asyncio.to_thread(
-            api.start_pipeline,
-            _resolve_project_dir(project_dir),
-            background=background,
-            pipeline=pipeline,
-            from_stage=from_stage,
-            auto=auto,
-            timeout=timeout,
-        )
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(
+        api.start_pipeline,
+        project_dir=_resolve_project_dir(project_dir),
+        background=background,
+        pipeline=pipeline,
+        from_stage=from_stage,
+        auto=auto,
+        timeout=timeout,
+    )
 
 
 async def awf_continue(
@@ -185,20 +184,14 @@ async def awf_continue(
     Returns:
         Same shape as :func:`awf_start`.
     """
-    try:
-        result = await asyncio.to_thread(
-            api.continue_pipeline,
-            _resolve_project_dir(project_dir),
-            pipeline=pipeline,
-            from_stage=from_stage,
-            auto=auto,
-            timeout=timeout,
-        )
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(
+        api.continue_pipeline,
+        project_dir=_resolve_project_dir(project_dir),
+        pipeline=pipeline,
+        from_stage=from_stage,
+        auto=auto,
+        timeout=timeout,
+    )
 
 
 async def awf_retry_stage(
@@ -226,19 +219,13 @@ async def awf_retry_stage(
     Returns:
         Same shape as :func:`awf_start`.
     """
-    try:
-        result = await asyncio.to_thread(
-            api.retry_stage,
-            _resolve_project_dir(project_dir),
-            pipeline=pipeline,
-            auto=auto,
-            timeout=timeout,
-        )
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(
+        api.retry_stage,
+        project_dir=_resolve_project_dir(project_dir),
+        pipeline=pipeline,
+        auto=auto,
+        timeout=timeout,
+    )
 
 
 # ─── Baseline / rollback ────────────────────────────────────────────────
@@ -354,13 +341,7 @@ async def awf_report(project_dir: str | None = None) -> dict[str, Any]:
         {todo_id, status: "OK"|"BLK"|"..."}), done_count, blocked_count,
         git_diff (str), latest_test_log_tail (str or None).
     """
-    try:
-        result = api.get_report(_resolve_project_dir(project_dir))
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(api.get_report, project_dir=_resolve_project_dir(project_dir))
 
 
 # ─── Maintenance ────────────────────────────────────────────────────────
@@ -827,7 +808,6 @@ async def awf_check_model_config(
         return _err(e)
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
-
 
 # ─── Kill pipeline (SELF-2) ─────────────────────────────────────────────
 
