@@ -1490,6 +1490,23 @@ class TestHandoffChain:
         assert "NO OUTPUT FROM PREVIOUS STAGE" not in body
         assert "some work done" in body
 
+    def test_collect_handoff_done_without_progress_no_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """F3: DONE exists but no PROGRESS → no PROGRESS warning (DONE carries info)."""
+        proj = self._setup_project(tmp_path, monkeypatch)
+        (proj / ".agentic" / "outbox" / "DONE-TODO-0001.md").write_text("# Done\nWork complete")
+
+        monkeypatch.setattr(
+            "awf.signal_watch.subprocess.run",
+            lambda *a, **kw: None,
+        )
+
+        out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
+        body = out.read_text()
+        assert "Worker did not leave progress notes" not in body
+        assert "Work complete" in body
+
     def test_resolve_prev_handoffs_skips_supervisor_stages(self, tmp_path) -> None:
         """BD-15/19: supervisor stages don't produce handoffs — only agent roles.
         With todo_id, paths are role-todo.md."""
