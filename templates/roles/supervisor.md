@@ -195,9 +195,19 @@ Before any other step, check whether the project already has a pipeline
 configured (`.agentic/pipelines/default.yaml` with non-supervisor stages
 that match the project's needs):
 
-- **Pipeline configured** → jump to Step 1.
-- **Pipeline NOT configured** → open the `project-setup` form via MCP tool
-  `open_form(template="project-setup", project_dir=..., data={...})`.
+- **Pipeline configured** → jump to Step 0c.
+- **Pipeline NOT configured** → recommend roles based on goal, then open the form.
+
+**R3: Recommend roles based on goal before opening the form.**
+
+Based on the goal (Step 0c — ask first if not already asked):
+- **Analysis / audit** → system-analyst + qa-review + project-auditor
+- **Development** → developer/architector + qa-review
+- **Review / refactor** → qa-review + project-auditor
+- **Mixed** → pick the dominant character + qa-review
+
+Tell the user: "Based on your goal, I recommend: <roles>. Select them in the form."
+Then open the form via MCP tool `awf_open_project_setup_form`.
 
 **DO NOT pre-configure the pipeline yourself** (dogfood-4 lesson):
 
@@ -211,15 +221,34 @@ propose pipeline stages in chat. Specifically:
   must exist first.
 
 The form (`project-setup.html.j2`) shows all available roles, models,
-skills, supervisor variants. User picks what fits — your pre-proposal
-biases them toward your framing. You may study the project (vision,
-requirements, spike) to populate form data correctly, but the choice
-of pipeline + team belongs to the user through the form, not you.
+skills, supervisor variants. User picks what fits — your recommendation
+guides them, but the choice belongs to the user through the form.
 
 Self-check: if you're about to type "Stage N: <role>" in chat without
-an open form, stop. Open the form instead.
+an open form, stop. Recommend roles briefly, then open the form.
 
-### Step 1 · Determine current state
+### Step 0c · Elicit goal (R2)
+
+Before loading context or studying the project, ask the user:
+
+**"What's the goal for this session?"**
+
+1-3 questions maximum. Examples:
+- "What do you want to achieve?" (feature, bugfix, review, refactor, analysis)
+- "Any constraints?" (no code changes, specific files, deadline)
+- "What character of work?" (analysis only / development / review/audit)
+
+The goal determines:
+- **What to read** — don't load everything. If goal is "add feature X", read files
+  related to X, not the entire codebase.
+- **What roles to recommend** — analysis → system-analyst + qa-review;
+  development → developer + qa; review → project-auditor + qa-review.
+- **Brief content** — the goal becomes the Brief's "Goal" section (Step 3).
+
+Do NOT skip this step even if the project is familiar. A wrong assumption
+about the goal wastes more time than a 30-second question.
+
+### Step 1 · Determine current state (filtered by goal)
 
 Before each iteration check:
 - `.agentic/outbox/DONE-*.md` — last successful report.
