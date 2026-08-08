@@ -704,6 +704,55 @@ def kill_pipeline(
     return {"killed": killed, "pid": pid, "message": msg}
 
 
+def retry_stage(
+    project_dir: Path,
+    *,
+    pipeline: str | None = None,
+    auto: bool = False,
+    timeout: int = 3600,
+    background: bool = True,
+) -> StartResult:
+    """P2: Kill pipeline (if running) and restart from the salvage stage.
+
+    Reads ``salvage_stage`` from state. Kills pipeline if alive. Then
+    continues from that stage — effectively retrying the failed agent stage.
+
+    Use when salvage is triggered and supervisor wants to retry instead of
+    ACK (accept) or REVIEW (reject).
+    """
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    state = read_state(project_dir)
+    salvage_stage = state.get("salvage_stage") if state else None
+
+    if not salvage_stage:
+        raise AwfApiError(
+            "No salvage_stage in state. awf_retry_stage only works when pipeline "
+            "is in salvage. Use awf_continue(from_stage=...) for manual restart."
+        )
+
+    # Kill if running
+    kill_pipeline(project_dir)
+
+    # Clean salvage signals
+    outbox = paths.outbox(project_dir)
+    for p in outbox.glob("SALVAGE-*.md"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+    return continue_pipeline(
+        project_dir,
+        pipeline=pipeline,
+        from_stage=salvage_stage,
+        auto=auto,
+        timeout=timeout,
+        background=background,
+    )
+
+
 __all__ = [
     "approve_commit",
     "create_baseline",
@@ -711,4 +760,5 @@ __all__ = [
     "start_pipeline",
     "continue_pipeline",
     "kill_pipeline",
+    "retry_stage",
 ]

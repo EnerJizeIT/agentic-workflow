@@ -181,8 +181,9 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
 1. Read .agentic/inbox/SALVAGE-{todo_id}.md for details on what happened.
 2. Check git diff — did worker produce useful work?
 3. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
-4. If no → create .agentic/outbox/REVIEW-{todo_id}.md (reject with specifics)
-5. Do NOT git commit manually — pipeline auto-commits after ACK.
+4. If no → call awf_retry_stage(project_dir) to retry the stage
+5. If retry also fails → create .agentic/outbox/REVIEW-{todo_id}.md (reject)
+6. Do NOT git commit manually — pipeline auto-commits after ACK.
 """
 
 _STAGE_SNIPPETS = {

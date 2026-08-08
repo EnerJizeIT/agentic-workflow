@@ -201,6 +201,46 @@ async def awf_continue(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+async def awf_retry_stage(
+    project_dir: str | None = None,
+    *,
+    pipeline: str | None = None,
+    auto: bool = False,
+    timeout: int = 3600,
+) -> dict[str, Any]:
+    """Retry the current salvage stage — kill + continue in one call.
+
+    P2: When pipeline is in salvage, supervisor calls this instead of
+    manual kill + continue. Reads salvage_stage from state, kills pipeline,
+    cleans salvage signals, restarts from that stage.
+
+    Only works when state has salvage_stage (pipeline stopped on salvage).
+    For other restart scenarios, use ``awf_kill`` + ``awf_continue``.
+
+    Args:
+        project_dir: Project root (default: cwd).
+        pipeline: Pipeline name to run (default: from config.yaml).
+        auto: Skip interactive supervisor waits (CI mode).
+        timeout: Agent stage timeout in seconds (default: 3600).
+
+    Returns:
+        Same shape as :func:`awf_start`.
+    """
+    try:
+        result = await asyncio.to_thread(
+            api.retry_stage,
+            _resolve_project_dir(project_dir),
+            pipeline=pipeline,
+            auto=auto,
+            timeout=timeout,
+        )
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
 # ─── Baseline / rollback ────────────────────────────────────────────────
 
 
