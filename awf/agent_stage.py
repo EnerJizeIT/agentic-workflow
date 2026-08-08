@@ -78,6 +78,7 @@ def run_agent_stage(
 
     cmd = [
         "opencode", "run", "--auto",
+        "--print-logs",
         "--agent", agent_name,
         "--title", f"awf-{role}-{todo_id}",
         "--file", str(role_file),
