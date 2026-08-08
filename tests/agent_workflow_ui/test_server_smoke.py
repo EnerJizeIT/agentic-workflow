@@ -70,7 +70,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 24 tools are registered with correct names (5 UI + 19 awf)."""
+    """All 26 tools are registered with correct names (5 UI + 21 awf)."""
     server = create_server()
     tools = asyncio.run(server.list_tools())
 
@@ -87,6 +87,7 @@ def test_all_tools_registered():
         "awf_status",
         "awf_start",
         "awf_continue",
+        "awf_retry_stage",
         "awf_baseline",
         "awf_rollback",
         "awf_approve",

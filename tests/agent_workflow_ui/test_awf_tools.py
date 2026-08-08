@@ -81,11 +81,12 @@ class TestAwfInit:
         assert result["status"] == "error"
         assert "Not a git repository" in result["error"]
 
-    def test_already_initialized_without_force(self, git_project):
+    def test_already_initialized_cleans_runtime(self, git_project):
+        """R1: awf init without force cleans runtime, preserves config."""
         run(awf.awf_init(project_dir=str(git_project)))
         result = run(awf.awf_init(project_dir=str(git_project)))
-        assert result["status"] == "error"
-        assert "already exists" in result["error"]
+        assert result["status"] == "ok"
+        assert "cleaned" in result["next_action"].lower() or "preserved" in result["next_action"].lower()
 
     def test_force_overwrites(self, git_project):
         run(awf.awf_init(project_dir=str(git_project)))

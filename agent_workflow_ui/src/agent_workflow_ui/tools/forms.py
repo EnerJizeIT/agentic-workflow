@@ -139,29 +139,35 @@ async def open_form(
     form_id = registry.next_form_id()
     submit_url = f"http://127.0.0.1:{port}/submit/{form_id}"
 
-    # Scan global custom roles for supervisor variants + custom agents
-    supervisor_variants, custom_agents = scan_global_roles()
-    # BD-27: scan global skills (full content) — these are the primary source
-    # for team roles. User picks a skill, content goes straight into
-    # .agentic/roles/<role>.md — no mapping/guessing needed.
-    global_skills = scan_global_skills()
-    # BD-32: collect available models from opencode.json so the form can
-    # offer per-role model selection. Without this, dropdown was empty and
-    # chosen model was silently dropped (project-auditor got vllm/llm
-    # regardless of what user picked).
-    available_models = _collect_opencode_models()
-    recent_models = _collect_recent_models()
-
-    # UI-1: scan project-local roles (.agentic/roles/*.md) for "previously
-    # used in this project" dropdown section.
+    # AUD-12.2: lazy scans — only needed for project-setup template.
+    # Other templates (confirm, increment-planning) don't use roles/skills/models.
+    supervisor_variants: list[dict] = []
+    custom_agents: list[dict] = []
+    global_skills: list[dict] = []
+    available_models: list[str] = []
+    recent_models: list[str] = []
     project_roles: list[dict] = []
-    if project_dir_resolved:
-        roles_dir = project_dir_resolved / ".agentic" / "roles"
-        if roles_dir.is_dir():
-            for rf in sorted(roles_dir.glob("*.md")):
-                if rf.stem == "supervisor":
-                    continue  # supervisor is built-in, not a team role
-                project_roles.append({"id": rf.stem, "title": rf.stem})
+
+    if template == "project-setup":
+        # Scan global custom roles for supervisor variants + custom agents
+        supervisor_variants, custom_agents = scan_global_roles()
+        # BD-27: scan global skills (full content) — these are the primary source
+        # for team roles. User picks a skill, content goes straight into
+        # .agentic/roles/<role>.md — no mapping/guessing needed.
+        global_skills = scan_global_skills()
+        # BD-32: collect available models from opencode.json so the form can
+        # offer per-role model selection.
+        available_models = _collect_opencode_models()
+        recent_models = _collect_recent_models()
+
+        # UI-1: scan project-local roles (.agentic/roles/*.md)
+        if project_dir_resolved:
+            roles_dir = project_dir_resolved / ".agentic" / "roles"
+            if roles_dir.is_dir():
+                for rf in sorted(roles_dir.glob("*.md")):
+                    if rf.stem == "supervisor":
+                        continue
+                    project_roles.append({"id": rf.stem, "title": rf.stem})
 
     # Existing slugs for client-side conflict detection (JS confirm before overwrite)
     existing_supervisor_slugs = [sv["id"] for sv in supervisor_variants]
