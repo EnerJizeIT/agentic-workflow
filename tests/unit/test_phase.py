@@ -68,6 +68,7 @@ class TestDetectPhase:
     def test_stale_state_falls_through(self, tmp_path):
         """Stale state → detection by project state, not state phase."""
         from datetime import datetime, timedelta, timezone
+
         import yaml
         project = _setup_project(tmp_path)
         # Write stale state directly (write_state overwrites updated_at)
