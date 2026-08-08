@@ -131,6 +131,17 @@ def run_plan_checkpoint(
 
     todo_content = content_file.read_text(encoding="utf-8")
 
+    # P1: Skip checkpoint if content unchanged since last approval (kill+start loop)
+    import hashlib
+    content_hash = hashlib.sha256(todo_content.encode("utf-8")).hexdigest()[:16]
+    hash_file = project_dir / ".agentic" / "context" / "checkpoint-approved.hash"
+    if hash_file.is_file():
+        last_hash = hash_file.read_text(encoding="utf-8").strip()
+        if last_hash == content_hash:
+            _log(logs_dir, f"P1: checkpoint skipped — content unchanged (hash={content_hash})")
+            print("BD-36: Plan checkpoint skipped — same as last approved plan.")
+            return "approve"
+
     # П7: clean up stale temp HTML from previous (crashed) runs before
     # creating our own. Without this, user may see old forms from /tmp/.
     stale_count = _cleanup_stale_temp_html()
@@ -250,6 +261,14 @@ def run_plan_checkpoint(
             # (truncate-then-write). Survives crash mid-write.
             atomic_write_text(content_file, content)
             _log(logs_dir, f"BD-36: {content_label} {content_file.name} rewritten via edit")
+
+        # P1: Save content hash for skip-on-unchanged
+        if decision in ("approve", "edit"):
+            try:
+                hash_file.parent.mkdir(parents=True, exist_ok=True)
+                hash_file.write_text(content_hash + "\n", encoding="utf-8")
+            except OSError:
+                pass
 
         return decision
     finally:
