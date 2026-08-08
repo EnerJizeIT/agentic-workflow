@@ -148,24 +148,31 @@ _SNIPPET_ALWAYS = """\
 """
 
 _SNIPPET_PLAN = """\
-## Plan stage — your job right now
+## Plan stage — write Brief first, then TODO after approval
 1. Study project vision (above) + phases file (.agentic/phases/plan.md)
 2. Determine next uncompleted step toward goal
-3. Write .agentic/inbox/TODO-NNNN.md — use next sequential number (e.g. TODO-0005)
-4. Create signal: .agentic/inbox/TODO-NNNN.ready (same number)
-5. Workers are capable — give autonomy, don't over-specify
+3. Write .agentic/inbox/BRIEF-TODO-NNNN.md:
+   - Goal: what this increment achieves (1-3 sentences)
+   - Success criteria: testable conditions defining "done"
+   - Out of scope: what we explicitly don't do
+   - Verify: commands to check success
+4. Create signal: .agentic/inbox/BRIEF-TODO-NNNN.ready
+5. After user approves Brief in checkpoint form, write TODO-NNNN.md
+   (detailed task for agent) and create TODO-NNNN.ready
+6. Workers are capable — give autonomy, don't over-specify
 """
 
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
 1. Read ALL handoffs in .agentic/handoff/
-2. Run: git diff --stat — check what actually changed
-3. Read the actual code changes for correctness
-4. DECIDE YOURSELF (do NOT ask user):
-   - Work is good → create .agentic/inbox/ACK-{todo_id}.ready
+2. Read BRIEF-{todo_id}.md if it exists — this is the user-approved contract.
+   Check: does the work meet the success criteria from the Brief?
+3. Run: git diff --stat — check what actually changed
+4. Read the actual code changes for correctness
+5. DECIDE YOURSELF (do NOT ask user):
+   - Work meets Brief criteria → create .agentic/inbox/ACK-{todo_id}.ready
    - Work has issues → write .agentic/outbox/REVIEW-{todo_id}.md with specific fixes
-5. DO NOT relay "pipeline waits for your decision" to user — that's YOUR call.
-6. After approve → call awf_wait_for_event to confirm pipeline continued.
+6. DO NOT relay "pipeline waits for your decision" to user — that's YOUR call.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -175,8 +182,7 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
 2. Check git diff — did worker produce useful work?
 3. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
 4. If no → create .agentic/outbox/REVIEW-{todo_id}.md (reject with specifics)
-5. After ACK → call awf_wait_for_event to confirm pipeline continued.
-6. Do NOT git commit manually — pipeline auto-commits after ACK.
+5. Do NOT git commit manually — pipeline auto-commits after ACK.
 """
 
 _STAGE_SNIPPETS = {
@@ -431,6 +437,13 @@ def wait_for_supervisor_signal(
                 )
                 return sig
             if inbox.is_dir():
+                # R5: Brief signal first (two-phase plan: Brief → checkpoint → TODO)
+                briefs = sorted(inbox.glob("BRIEF-TODO-*.ready"))
+                if briefs:
+                    sig = briefs[0].name.replace(".ready", "")
+                    _log(logs_dir, f"R5: Brief signal detected: {sig}")
+                    return sig
+                # Backward compat: direct TODO signal (no Brief)
                 current = {p.name for p in inbox.glob("TODO-*.ready")}
                 new_ones = current - existing_todo_signals
                 if new_ones:
@@ -611,12 +624,30 @@ def run_supervisor_stage(
     print(f"Phases file: {phases_file}")
     print()
     if kind == "plan":
-        print("What to do (plan):")
-        print("  1. Study the project state and phases file")
-        print("  2. Determine the next step (or review existing TODO if present)")
-        print("  3. Write task to .agentic/inbox/TODO-NNNN.md")
-        print("  4. Create signal: .agentic/inbox/TODO-NNNN.ready")
-        print("     (baseline is created automatically by awf on next stage)")
+        inbox_path = paths.inbox(project_dir)
+        brief_exists = bool(todo_id) and (inbox_path / f"BRIEF-{todo_id}.md").is_file()
+        todo_exists = bool(todo_id) and (inbox_path / f"{todo_id}.md").is_file()
+
+        if brief_exists and not todo_exists:
+            # R5 Phase 2: Brief approved → write TODO for agent
+            print("What to do (write TODO from approved Brief):")
+            print(f"  1. Read BRIEF-{todo_id}.md (user-approved)")
+            print(f"  2. Write detailed agent task to .agentic/inbox/{todo_id}.md")
+            print("     Include: context, tasks, files, verify command, prohibitions")
+            print(f"  3. Create signal: .agentic/inbox/{todo_id}.ready")
+        else:
+            # R5 Phase 1: Write Brief for user approval
+            print("What to do (plan — write Brief):")
+            print("  1. Study the project state and phases file")
+            print("  2. Determine the next step (or review existing TODO if present)")
+            print("  3. Write .agentic/inbox/BRIEF-TODO-NNNN.md:")
+            print("     - Goal: what this increment achieves (1-3 sentences)")
+            print("     - Success criteria: testable conditions defining 'done'")
+            print("     - Out of scope: what we explicitly don't do")
+            print("     - Verify: commands to check success")
+            print("  4. Create signal: .agentic/inbox/BRIEF-TODO-NNNN.ready")
+            print("  5. After user approves Brief in checkpoint form,")
+            print("     write TODO-NNNN.md (detailed task for agent)")
     elif kind == "verify":
         print("What to do (verify):")
         print("  1. Read report from .agentic/outbox/")
@@ -669,11 +700,25 @@ def run_supervisor_via_subprocess(
     )
 
     if kind == "plan":
-        if phases_path.is_file():
-            extra_files.append(str(phases_path))
-        prompt = build_prompt(
-            "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
-        )
+        # R5: detect phase — Brief exists → write TODO; no Brief → write Brief
+        brief_exists = bool(todo_id) and (inbox / f"BRIEF-{todo_id}.md").is_file()
+        if brief_exists:
+            # Phase 2: Brief approved, write TODO for agent
+            brief_file = inbox / f"BRIEF-{todo_id}.md"
+            extra_files.append(str(brief_file))
+            prompt = (
+                f"Brief {todo_id} was approved by the user. Read BRIEF-{todo_id}.md "
+                f"and write a detailed TODO at .agentic/inbox/{todo_id}.md for the agent. "
+                "Include context, specific tasks, files to touch, verify commands, prohibitions. "
+                f"Then create the signal at .agentic/inbox/{todo_id}.ready."
+            )
+        else:
+            # Phase 1: write Brief
+            if phases_path.is_file():
+                extra_files.append(str(phases_path))
+            prompt = build_prompt(
+                "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+            )
     elif kind == "verify":
         if not todo_id:
             print("[auto mode] No todo_id for verify — skip.")

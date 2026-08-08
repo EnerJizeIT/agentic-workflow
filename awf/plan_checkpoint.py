@@ -115,18 +115,27 @@ def run_plan_checkpoint(
       - On ``"edit"``: rewrites ``.agentic/inbox/{todo_id}.md`` with user edits.
       - On ``"timeout"``: leaves TODO untouched, lets orchestrator decide.
     """
+    # R5: Prefer Brief content if available (user-facing), fall back to TODO
+    brief_md = project_dir / ".agentic" / "inbox" / f"BRIEF-{todo_id}.md"
     todo_md = project_dir / ".agentic" / "inbox" / f"{todo_id}.md"
-    if not todo_md.is_file():
-        _log(logs_dir, f"BD-36: no {todo_id}.md to preview — auto-approve")
+
+    if brief_md.is_file():
+        content_file = brief_md
+        content_label = "Brief"
+    elif todo_md.is_file():
+        content_file = todo_md
+        content_label = "TODO"
+    else:
+        _log(logs_dir, f"BD-36: no {todo_id}.md or BRIEF-{todo_id}.md to preview — auto-approve")
         return "approve"
+
+    todo_content = content_file.read_text(encoding="utf-8")
 
     # П7: clean up stale temp HTML from previous (crashed) runs before
     # creating our own. Without this, user may see old forms from /tmp/.
     stale_count = _cleanup_stale_temp_html()
     if stale_count:
         _log(logs_dir, f"П7: removed {stale_count} stale checkpoint HTML file(s)")
-
-    todo_content = todo_md.read_text(encoding="utf-8")
 
     plan_md = project_dir / ".agentic" / "phases" / "plan.md"
     plan_content = plan_md.read_text(encoding="utf-8") if plan_md.is_file() else ""
@@ -239,8 +248,8 @@ def run_plan_checkpoint(
                 return "approve"
             # BUG-2 fix: atomic_write_text (temp + rename) instead of write_text
             # (truncate-then-write). Survives crash mid-write.
-            atomic_write_text(todo_md, content)
-            _log(logs_dir, f"BD-36: {todo_id}.md rewritten via edit")
+            atomic_write_text(content_file, content)
+            _log(logs_dir, f"BD-36: {content_label} {content_file.name} rewritten via edit")
 
         return decision
     finally:

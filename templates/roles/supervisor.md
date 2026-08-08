@@ -226,20 +226,39 @@ Open the phases file and pick the **nearest unfinished step**. Do not skip ahead
 
 **Principle:** one TODO = one completed increment. The Worker is capable — an increment can include designing and implementing a feature across several files.
 
-### Step 3 · Create baseline snapshot
+### Step 3 · Write Increment Brief
 
-```bash
-awf baseline TODO-{NNNN}
+R5: Before writing the detailed TODO, write a **Brief** for user approval.
+The Brief is the user-facing contract — concise, human-readable.
+
+Write `.agentic/inbox/BRIEF-TODO-NNNN.md`:
+
+```markdown
+# Brief: <increment title>
+
+## Goal
+What this increment achieves (1-3 sentences).
+
+## Success criteria
+- Testable conditions that define "done"
+
+## Out of scope
+- What we explicitly don't do
+
+## Verify
+- Commands to check success
 ```
 
-### Step 4 · Prepare TODO
+Create signal: `.agentic/inbox/BRIEF-TODO-NNNN.ready`
 
-Write a TODO that describes **what to build** and **how to verify it**. Include:
+The checkpoint form will show this Brief to the user. They approve or edit it.
 
-- **Context:** What the project is, current state, relevant constraints.
-- **Tasks:** Each task with description, files to touch, constraints, verify command, done criterion.
-- **Prohibitions:** What NOT to do (adapted to the project).
-- **Architecture notes:** Public interfaces that must not change, new dependencies if any.
+### Step 4 · After Brief approval → write TODO for agent
+
+Once the user approves the Brief, write `.agentic/inbox/TODO-NNNN.md` — the
+detailed task for the agent. This is what the agent sees and works from.
+
+Include: context, tasks, files to touch, constraints, verify command, done criterion, prohibitions.
 
 **Default to Mode A (high-level).** Escalate to Mode B when the task is complex. Use Mode C (exact diffs) for trivial point fixes (typo, dead code removal, regex fix) — it reduces worker loop steps from 10+ to 3-5. Escalate to Mode B/C mix when the task has both complex analysis AND simple fixes.
 
@@ -248,21 +267,10 @@ Write a TODO that describes **what to build** and **how to verify it**. Include:
 1. Read `.agentic/roles/<next-stage-role>.md` — specifically the
    "Prohibitions" / "What NOT to do" / "Out of scope" sections.
 2. Confirm the TODO's work fits within that role's allowed scope.
-3. If task is **out of role's scope** (e.g. asking system-analyst to write
-   architecture code, asking developer to write requirements) — the worker
-   will correctly BLOCKED, wasting tokens and a pipeline cycle.
-4. Mitigation: either rephrase TODO to fit the role, or assign to a
-   different role whose prohibitions don't exclude this work, or split
-   the work into multiple TODOs across roles.
-
-Example: `agent-system-analyst` prohibits architecture/code work —
-its job is requirements. If the next pipeline stage is system-analyst
-but the actual work needed is "design TypeScript module structure",
-either:
-  (a) rephrase TODO to "elicit + document requirements for X" (fits role)
-  (b) use a different role whose scope includes architecture
-  (c) split: system-analyst writes requirements → developer/architect
-      implements.
+3. If task is **out of role's scope** — the worker will correctly BLOCKED,
+   wasting tokens and a pipeline cycle.
+4. Mitigation: rephrase TODO to fit the role, or assign to a different role,
+   or split the work into multiple TODOs across roles.
 
 ### Step 5 · Dispatch TODO (atomic)
 
