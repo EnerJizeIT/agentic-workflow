@@ -784,10 +784,31 @@ class TestInitProject:
         # No duplicate additions
         assert gitignore.count(".agentic/inbox/") == 1
 
-    def test_existing_agentic_without_force_raises(self, tmp_git_repo):
-        (tmp_git_repo / ".agentic").mkdir()
-        with pytest.raises(api.AwfApiError, match="already exists"):
-            api.init_project(tmp_git_repo, project_name="Test")
+    def test_existing_agentic_without_force_cleans_runtime(self, tmp_git_repo):
+        """R1: awf init without force cleans runtime, preserves config."""
+        agentic = tmp_git_repo / ".agentic"
+        # Create config layer
+        agentic.mkdir()
+        (agentic / "config.yaml").write_text("project:\n  name: Test\n")
+        (agentic / "roles").mkdir()
+        (agentic / "roles" / "worker.md").write_text("# Worker")
+        # Create runtime layer
+        (agentic / "inbox").mkdir()
+        (agentic / "inbox" / "TODO-0001.ready").write_text("")
+        (agentic / "outbox").mkdir()
+        (agentic / "outbox" / "DONE-TODO-0001.md").write_text("done")
+        (agentic / "logs").mkdir()
+        (agentic / "state").mkdir()
+
+        result = api.init_project(tmp_git_repo, project_name="Test")
+
+        # Runtime cleaned
+        assert not (agentic / "inbox").exists()
+        assert not (agentic / "outbox").exists()
+        assert not (agentic / "logs").exists()
+        # Config preserved
+        assert (agentic / "config.yaml").exists()
+        assert (agentic / "roles" / "worker.md").exists()
 
     def test_force_overwrites_existing(self, tmp_git_repo):
         (tmp_git_repo / ".agentic").mkdir()

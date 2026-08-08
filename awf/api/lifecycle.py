@@ -15,7 +15,6 @@ from .. import config as cfg_mod
 from .. import paths, todos
 from .._atomic import atomic_write_text
 from ._background import check_pipeline_running
-from ._errors import AwfApiError
 from ._helpers import read_file_text, require_agentic, require_git_repo
 from ._results import (
     InitResult,
@@ -27,6 +26,23 @@ from ._stack import derive_project_name, detect_stack
 from ._templates import _CONFIG_TEMPLATE, update_gitignore
 
 # ─── init_project ───────────────────────────────────────────────────────
+
+_RUNTIME_DIRS = [
+    "inbox", "outbox", "handoff", "done", "state",
+    "logs", "context", "dashboards", "inputs", "reports",
+]
+
+
+def _clean_runtime(project_dir: Path) -> list[str]:
+    """R1: Remove runtime directories, preserve config. Returns cleaned list."""
+    agentic = project_dir / ".agentic"
+    cleaned: list[str] = []
+    for name in _RUNTIME_DIRS:
+        d = agentic / name
+        if d.exists():
+            shutil.rmtree(d)
+            cleaned.append(name)
+    return cleaned
 
 
 def init_project(
@@ -55,8 +71,34 @@ def init_project(
 
     agentic = project_dir / ".agentic"
     if agentic.exists() and not force:
-        raise AwfApiError(
-            f".agentic/ already exists at {agentic}. Use force=True to overwrite."
+        # R1: Clean runtime dirs, preserve config.
+        cleaned = _clean_runtime(project_dir)
+        config = cfg_mod.load(project_dir)
+        project_name_val = config.get("project", {}).get("name", project_dir.name)
+        vision_path = paths.find_vision_file(project_dir)
+        phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
+        supervisor_md_path = project_dir / "templates" / "roles" / "supervisor.md"
+        supervisor_md = ""
+        if supervisor_md_path.is_file():
+            supervisor_md = supervisor_md_path.read_text(encoding="utf-8")
+        plan_md = ""
+        plan_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
+        if plan_path.is_file():
+            plan_md = plan_path.read_text(encoding="utf-8")
+        return InitResult(
+            project_name=project_name_val,
+            project_dir=str(project_dir),
+            stack="(preserved)",
+            vision_path=str(vision_path) if vision_path else None,
+            vision_excerpt="",
+            supervisor_md=supervisor_md,
+            plan_md=plan_md,
+            pipeline_configured=bool(config.get("default_pipeline")),
+            next_action=(
+                f"Runtime cleaned ({', '.join(cleaned)}). Config preserved. "
+                "Pipeline ready — use awf_dispatch_todo to start next iteration."
+            ),
+            warnings=[],
         )
 
     if project_name is None:

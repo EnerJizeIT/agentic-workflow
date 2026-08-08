@@ -30,10 +30,9 @@ def run(args: Any) -> int:
     project_dir_arg = getattr(args, "project_dir", ".")
 
     project_dir_path = Path(project_dir_arg).resolve()
-    agentic = project_dir_path / ".agentic"
-    if agentic.exists() and not force:
-        print("ERROR: .agentic/ already exists. Use --force to overwrite.")
-        return 1
+    # R1: awf init without force now cleans runtime + preserves config.
+    # Use --force / --hard for full overwrite.
+    # Error only if not a git repo.
 
     if not git_utils.is_git_repo(project_dir_path):
         print("ERROR: Not a git repository. Run 'git init' first.")
