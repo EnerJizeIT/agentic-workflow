@@ -6,13 +6,16 @@
 
 ## Открытые задачи
 
-### AUD-12 · [T3] Рефакторинг
+### AUD-12 · [T3] Рефакторинг (закрытые пункты)
 
-- **`_xdg_config_home` ×3 копии** → consolidate в `awf.xdg`
-- **`open_form` scans everything** → lazy по шаблону
-- **`awf.py` 850+ строк** → схлопнуть wrapper'ы через helper
-- **Circular import orchestrator↔pipeline_engine** → третий модуль
-- **`_extract_stage_info_regex` + `_detect_supervisor_signal`** → депрекация fallback'ов
+✅ `.1` — `_xdg_config_home` ×3 → consolidated в `awf.xdg`
+✅ `.2` — `open_form` scans → lazy (только project-setup)
+✅ `.3` — `awf.py` wrappers → `_exec` helper
+✅ `.5` — `_extract_stage_info_regex` → removed (90 строк)
+⬜ `.4` — **Deferred**: circular import orchestrator↔pipeline_engine.
+   Текущий lazy import pattern работает. 15 символов — тесная связь,
+   но не баг. Перенос в третий модуль = высокий риск без немедленной пользы.
+   Revisit when adding new module that needs shared handlers.
 
 ### BD-35 · Per-role contribution tracking
 **Status:** ждать real failure в dogfooding.
