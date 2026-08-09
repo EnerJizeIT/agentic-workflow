@@ -67,4 +67,5 @@ python -m pytest tests/                                            # тесты
 - [BACKLOG.md](BACKLOG.md) — открытые задачи
 - [vision/architecture.md](vision/architecture.md) — архитектура
 - [vision/agent-ui-plugin.md](vision/agent-ui-plugin.md) — product vision
+- [vision/supervisor-flow.md](vision/supervisor-flow.md) — модель работы supervisor (roadmap)
 - [protocols/communication.md](protocols/communication.md) — file bus protocol

@@ -270,6 +270,18 @@ class TestRollback:
         with pytest.raises(api.AwfApiError, match="invalid mode"):
             api.rollback(tmp_git_repo, "TODO-0001", mode="weird")
 
+    def test_path_traversal_rejected(self, tmp_git_repo):
+        """AUD-2026-08-09.2: todo_id with path separators must be rejected."""
+        (tmp_git_repo / ".agentic").mkdir()
+        with pytest.raises(api.AwfApiError, match="invalid todo_id"):
+            api.rollback(tmp_git_repo, "../../etc/passwd")
+
+    def test_malformed_todo_id_rejected(self, tmp_git_repo):
+        """AUD-2026-08-09.2: todo_id must match TODO-NNNN format."""
+        (tmp_git_repo / ".agentic").mkdir()
+        with pytest.raises(api.AwfApiError, match="invalid todo_id"):
+            api.rollback(tmp_git_repo, "TODO-abc")
+
 
 # ─── get_status ─────────────────────────────────────────────────────────
 

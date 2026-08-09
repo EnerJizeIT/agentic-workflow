@@ -7,6 +7,7 @@ detached subprocess via :func:`awf.api._background.start_in_background`.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -299,6 +300,10 @@ def rollback(
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
+    if not re.match(r"^TODO-\d{4,}$", todo_id):
+        raise AwfApiError(
+            f"invalid todo_id '{todo_id}', expected format TODO-NNNN"
+        )
     if mode not in ("hard", "soft", "dry-run"):
         raise AwfApiError(f"invalid mode '{mode}', expected hard/soft/dry-run")
 

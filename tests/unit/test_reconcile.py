@@ -65,10 +65,21 @@ class TestReconcileStalePID:
         assert state.get("pipeline_pid") == str(os.getpid())
 
     def test_no_state_noop(self, project):
-        """No state file → reconcile is noop."""
+        """No state file → reconcile is noop. Verify inbox/outbox unchanged."""
+        inbox = project / ".agentic/inbox"
+        outbox = project / ".agentic/outbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        outbox.mkdir(parents=True, exist_ok=True)
+        _make_todo(project, "TODO-0001")
+        inbox_files_before = set(p.name for p in inbox.iterdir())
+        outbox_files_before = set(p.name for p in outbox.iterdir())
+
         _reconcile(project)
-        # Should not crash
-        assert True
+
+        # AUD-2026-08-09.7: verify noop contract — nothing moved/deleted
+        assert read_state(project) is None
+        assert set(p.name for p in inbox.iterdir()) == inbox_files_before
+        assert set(p.name for p in outbox.iterdir()) == outbox_files_before
 
 
 class TestReconcileDedupSignals:

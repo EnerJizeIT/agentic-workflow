@@ -179,14 +179,6 @@ class TestFullPipelineHappyPath:
         assert final_state.get("phase") == "done"
 
 
-class TestFullPipelineBlocked:
-    """Worker writes BLOCKED → escalate retry.
-
-    Covered by e2e test_pipeline.py::test_pipeline_blocked_then_replan.
-    Integration-level mock blocked by commit_gate auto-approval interaction.
-    """
-    pass
-
 class TestFullPipelineReview:
     """Verify stage: supervisor writes REVIEW → pipeline stops."""
 
@@ -225,13 +217,6 @@ class TestFullPipelineReview:
         done_dir = project / ".agentic" / "done" / "TODO-0001"
         assert not done_dir.is_dir(), "TODO should NOT be archived after REVIEW"
 
-
-class TestFullPipelineSalvage:
-    """Worker doesn't signal → auto_done.
-
-    Covered by e2e test_pipeline.py::test_pipeline_orphan_auto_done.
-    """
-    pass
 
 class TestFullPipelineMultipleTodos:
     """Two sequential TODOs through the same pipeline."""

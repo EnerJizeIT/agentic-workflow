@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "EnerJize" }]
 dependencies = [
     "PyYAML>=6.0",
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]

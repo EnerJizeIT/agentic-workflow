@@ -283,7 +283,9 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
         except (ProcessLookupError, PermissionError, ValueError, TypeError, OSError):
             return ("dead", "blocked", "⚠️ Pipeline process dead", "✕", "Dead")
         except Exception:
-            pass
+            # AUD-2026-08-09.5: unknown error checking PID liveness → treat
+            # as dead rather than falling through to "running" (false green).
+            return ("dead", "blocked", "⚠️ Pipeline process dead", "✕", "Dead")
 
     checkpoint_pending = bool(state.get("checkpoint_pending", False))
     stage_kind = state.get("stage_kind", "")

@@ -106,14 +106,15 @@ def _files_changed_since_baseline(
         if candidate.exists():
             baseline_untracked_path = candidate
     if not baseline_untracked_path:
-        # Fallback: most recent .untracked file (best effort for old baselines)
-        context_dir = project_dir / ".agentic" / "context"
-        candidates = sorted(
-            context_dir.glob("BASELINE-*.untracked"),
-            key=lambda p: p.stat().st_mtime, reverse=True,
-        )
-        if candidates:
-            baseline_untracked_path = candidates[0]
+        # AUD-2026-08-09.3: no baseline for this todo_id → don't grab another
+        # TODO's baseline (would include wrong files). Log warning, include all
+        # untracked (safer than filtering with wrong data).
+        if todo_id:
+            print(
+                f"warning: no BASELINE-{todo_id}.untracked found, "
+                "including all untracked files in commit",
+                file=sys.stderr,
+            )
 
     if baseline_untracked_path and baseline_untracked_path.exists():
         try:
@@ -163,7 +164,21 @@ def _commit_specific_files(
             capture_output=True,
             text=True,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            # AUD-2026-08-09.4: commit failed (e.g. pre-commit hook rejection).
+            # Unstage to prevent next run from picking up stale staged files.
+            subprocess.run(
+                ["git", "reset"],
+                cwd=project_dir,
+                capture_output=True,
+            )
+            print(
+                f"git commit failed (rc={result.returncode}): "
+                f"{result.stderr.strip() or result.stdout.strip()}",
+                file=sys.stderr,
+            )
+            return False
+        return True
     except (subprocess.SubprocessError, OSError):
         return False
 
