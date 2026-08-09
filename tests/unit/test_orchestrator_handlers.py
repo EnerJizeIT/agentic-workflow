@@ -1,8 +1,8 @@
 """Tests for extracted transition handlers (_handle_next, _handle_escalate, _handle_rollback)."""
 from __future__ import annotations
 
-from awf.orchestrator import _handle_escalate, _handle_next, _handle_rollback
 from awf.pipeline import Stage
+from awf.pipeline_engine import _handle_escalate, _handle_next, _handle_rollback
 
 
 def _make_stage(name="implement", role="worker", max_retries=3):
@@ -16,8 +16,8 @@ class TestHandleNext:
 
     def test_advances_stage_idx(self, tmp_path, monkeypatch):
         """_handle_next returns stage_idx + 1."""
-        monkeypatch.setattr("awf.orchestrator._maybe_commit", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.orchestrator._read_baseline_sha", lambda *a: "")
+        monkeypatch.setattr("awf.pipeline_engine._maybe_commit", lambda *a, **kw: None)
+        monkeypatch.setattr("awf.pipeline_engine._read_baseline_sha", lambda *a: "")
         new_idx = _handle_next(
             project_dir=tmp_path, logs_dir=tmp_path,
             s_name="implement", current_todo="TODO-0001",
@@ -28,8 +28,8 @@ class TestHandleNext:
 
     def test_resets_retry_count(self, tmp_path, monkeypatch):
         """_handle_next resets retry_counts[stage_idx] to 0."""
-        monkeypatch.setattr("awf.orchestrator._maybe_commit", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.orchestrator._read_baseline_sha", lambda *a: "")
+        monkeypatch.setattr("awf.pipeline_engine._maybe_commit", lambda *a, **kw: None)
+        monkeypatch.setattr("awf.pipeline_engine._read_baseline_sha", lambda *a: "")
         retry_counts = [0, 2, 0]  # stage 1 had 2 retries
         _handle_next(
             project_dir=tmp_path, logs_dir=tmp_path,
@@ -56,8 +56,8 @@ class TestHandleEscalate:
 
     def test_increments_retry_count(self, tmp_path, monkeypatch):
         """Successful escalate increments retry_counts[stage_idx]."""
-        monkeypatch.setattr("awf.orchestrator._run_supervisor_stage", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.orchestrator._find_active_todo", lambda *a: "TODO-0002")
+        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: None)
+        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "TODO-0002")
         stage = _make_stage(max_retries=3)
         retry_counts = [0, 0, 0]
         idx, todo, exit_code = _handle_escalate(
@@ -75,8 +75,8 @@ class TestHandleEscalate:
 
     def test_exit_1_when_no_new_todo(self, tmp_path, monkeypatch):
         """If supervisor didn't create new TODO, exit 1."""
-        monkeypatch.setattr("awf.orchestrator._run_supervisor_stage", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.orchestrator._find_active_todo", lambda *a: "")
+        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: None)
+        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "")
         stage = _make_stage(max_retries=3)
         idx, todo, exit_code = _handle_escalate(
             project_dir=tmp_path, logs_dir=tmp_path,
@@ -91,8 +91,8 @@ class TestHandleRollback:
 
     def test_returns_target_idx(self, tmp_path, monkeypatch):
         """_handle_rollback returns target_idx."""
-        monkeypatch.setattr("awf.orchestrator._run_supervisor_stage", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.orchestrator._find_active_todo", lambda *a: "TODO-0003")
+        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: None)
+        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "TODO-0003")
         stages = [
             Stage(name="plan", role="supervisor", kind="plan"),
             Stage(name="implement", role="worker", kind="execute"),

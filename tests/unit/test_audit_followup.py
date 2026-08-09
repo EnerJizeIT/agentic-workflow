@@ -91,10 +91,10 @@ class TestM1RollbackEmptyCheck:
 
     def test_handle_rollback_returns_exit_1_on_no_new_todo(self, tmp_path, monkeypatch):
         """M1 fix: rollback without new TODO exits 1 (was returning empty string)."""
-        from awf.orchestrator import _handle_rollback
+        from awf.pipeline_engine import _handle_rollback
 
-        monkeypatch.setattr("awf.orchestrator._run_supervisor_stage", lambda *a, **kw: "")
-        monkeypatch.setattr("awf.orchestrator._find_active_todo", lambda *a: "")
+        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "")
 
         stages = [
             Stage(name="plan", role="supervisor", kind="plan"),

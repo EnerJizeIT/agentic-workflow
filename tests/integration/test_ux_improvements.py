@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 from awf import paths
-from awf.orchestrator import _ensure_baseline_sha
+from awf.pipeline_engine import _ensure_baseline_sha
 from awf.plan_checkpoint import _cleanup_stale_temp_html
 from awf.supervisor import build_prompt
 

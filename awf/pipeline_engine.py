@@ -1,43 +1,310 @@
-"""DAUD-7: Pipeline engine — extracted stage handlers.
+"""DAUD-7: Pipeline engine — stage handlers + transition logic.
 
 Separates "execute a stage" (side effects) from "decide what to do next"
-(transition logic). This makes run_pipeline() a thin dispatch loop and
-makes stage handlers independently testable.
+(transition logic). This makes run_pipeline() a thin dispatch loop.
 
-Architecture (DeepSeek audit recommendation):
-- run_pipeline(): setup + loop + dispatch (~80 lines)
-- execute_supervisor_stage(): plan/verify/salvage branches
+Architecture:
+- execute_supervisor_stage(): plan/verify branches
 - execute_agent_stage(): subprocess + signal + transition dispatch
+- _handle_next / _handle_escalate / _handle_rollback: transition handlers
 
-No event bus, no plugin registry, no strategy pattern.
-State machine on if/elif with dataclass — sufficient.
+No circular dependency on orchestrator — all shared helpers live here.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths, verify
+from . import paths, todos, verify
 from ._log import log as _log
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
 from .agent_stage import run_agent_stage as _run_agent_stage
 from .commit_gate import maybe_commit as _maybe_commit
-from .orchestrator import (
-    _ensure_baseline_sha,
-    _find_active_todo,
-    _handle_escalate,
-    _handle_next,
-    _handle_rollback,
-    _read_baseline_sha,
-    _run_plan_checkpoint_gate,
-    _write_salvage_prompt,
-)
 from .pipeline import Stage
 from .pipeline_state import write_state as _write_state
 from .plan_progress import mark_plan_step_done as _mark_plan_step_done
 from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
+
+# ─── shared helpers ─────────────────────────────────────────────────────
+
+
+def _find_stage_index(stages: list[Stage], name: str) -> int:
+    """Find stage index by name. Returns -1 if not found."""
+    for i, s in enumerate(stages):
+        if s.name == name:
+            return i
+    return -1
+
+
+def _find_active_todo(project_dir: Path) -> str:
+    """Find newest active TODO in inbox."""
+    return todos.newest_active(project_dir)
+
+
+def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
+    """Read baseline SHA from .agentic/context/BASELINE-{todo_id}.sha."""
+    if not todo_id:
+        return ""
+    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+    if not sha_file.is_file():
+        return ""
+    return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+
+
+def _ensure_baseline_sha(
+    project_dir: Path, todo_id: str, logs_dir: Path,
+) -> None:
+    """П3: auto-create baseline SHA file if missing.
+
+    Was: supervisor had to run `awf baseline TODO-NNNN` manually after
+    creating TODO.md (boilerplate). Now orchestrator ensures baseline
+    exists right before agent stage starts. If user/supervisor already
+    created one via `awf baseline` (richer status, tests log, etc.) —
+    we leave it alone.
+    """
+    from . import git_utils
+    from ._atomic import atomic_write_text
+
+    if not todo_id:
+        return
+    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+    if sha_file.exists():
+        return  # already created by `awf baseline` or previous run
+
+    if not git_utils.is_git_repo(project_dir):
+        _log(logs_dir, f"П3: skip baseline for {todo_id} — not a git repo")
+        return
+
+    try:
+        sha = git_utils.current_sha(project_dir)
+        atomic_write_text(sha_file, sha + "\n")
+        _log(logs_dir, f"П3: auto-created baseline {sha[:8]} for {todo_id}")
+    except Exception as e:
+        _log(logs_dir, f"П3: baseline creation failed for {todo_id}: {e}")
+
+
+# ─── transition handlers ────────────────────────────────────────────────
+
+
+def _handle_next(
+    project_dir: Path,
+    logs_dir: Path,
+    s_name: str,
+    current_todo: str,
+    action: str,
+    auto: bool,
+    retry_counts: list[int],
+    stage_idx: int,
+) -> int:
+    """Transition: next / commit_and_next / commit_and_report."""
+    baseline_sha = _read_baseline_sha(project_dir, current_todo)
+    _maybe_commit(s_name, current_todo, action, project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha)
+    print("Moving to next stage.")
+    retry_counts[stage_idx] = 0
+    return stage_idx + 1
+
+
+def _handle_escalate(
+    project_dir: Path,
+    logs_dir: Path,
+    s_name: str,
+    current_todo: str,
+    auto: bool,
+    stage: Stage,
+    retry_counts: list[int],
+    stage_idx: int,
+    pipeline_name: str | None = None,
+) -> tuple[int, str, int]:
+    """Transition: BLOCKED → supervisor replan + retry same stage.
+
+    Returns (new_stage_idx, new_current_todo, exit_code).
+    exit_code != 0 means pipeline should stop.
+    """
+    max_r = stage.max_retries
+    if retry_counts[stage_idx] >= max_r:
+        print(f"BLOCKED — max retries reached ({max_r}). Pipeline stopped.")
+        _log(logs_dir, f"Max retries reached for stage {s_name}")
+        return stage_idx, current_todo, 1
+
+    retry_counts[stage_idx] += 1
+    print(f"BLOCKED — escalating to supervisor (attempt {retry_counts[stage_idx]}/{max_r})")
+    _log(logs_dir, "Escalating to supervisor for retry")
+
+    replan_stage = Stage(name="replan", role="supervisor", kind="replan")
+    _run_supervisor_stage(
+        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+    )
+
+    new_todo = _find_active_todo(project_dir)
+    if not new_todo:
+        print("Supervisor did not create a new TODO. Stopping.")
+        return stage_idx, current_todo, 1
+    print(f"New TODO: {new_todo} — retrying stage '{s_name}'")
+    return stage_idx, new_todo, 0  # stay on same stage_idx
+
+
+def _handle_rollback(
+    project_dir: Path,
+    logs_dir: Path,
+    stages: list[Stage],
+    current_todo: str,
+    auto: bool,
+    target: str,
+    pipeline_name: str | None = None,
+) -> tuple[int, str, int]:
+    """Transition: rollback to a target stage + supervisor replan.
+
+    Returns (new_stage_idx, new_current_todo, exit_code).
+    """
+    target_idx = _find_stage_index(stages, target)
+    if target_idx < 0:
+        print(f"ERROR: Rollback target '{target}' not found in pipeline")
+        return -1, current_todo, 1
+
+    print(f"Rolling back to stage: {stages[target_idx].name}")
+    _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
+
+    replan_stage = Stage(name="replan", role="supervisor", kind="replan")
+    _run_supervisor_stage(
+        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+    )
+    new_todo = _find_active_todo(project_dir)
+    if not new_todo:
+        print("Rollback: supervisor did not create a new TODO. Stopping.", file=sys.stderr)
+        _log(logs_dir, "Rollback: no new TODO after replan — stopping")
+        return -1, current_todo, 1
+    return target_idx, new_todo, 0
+
+
+# ─── checkpoint + salvage ───────────────────────────────────────────────
+
+
+def _run_plan_checkpoint_gate(
+    current_todo: str,
+    project_dir: Path,
+    config: dict,
+    auto: bool,
+    logs_dir: Path,
+) -> int:
+    """BD-36: Plan checkpoint dispatch.
+
+    Runs after supervisor's plan stage. If checkpoint is enabled, opens
+    the HTML form and waits for user decision. Returns:
+
+      - ``0`` — checkpoint passed (approve / edit / timeout / disabled),
+                 pipeline should continue.
+      - ``1`` — checkpoint rejected (or other failure), pipeline must stop.
+    """
+    from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
+
+    if not is_checkpoint_enabled(config, auto):
+        return 0
+
+    decision = run_plan_checkpoint(current_todo, project_dir, config, logs_dir)
+
+    if decision == "reject":
+        print(
+            f"BD-36: Plan checkpoint rejected for {current_todo}. "
+            f"Pipeline stopped — supervisor will replan on next 'awf start'.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"BD-36: checkpoint rejected for {current_todo}")
+        return 1
+
+    if decision == "timeout":
+        print(
+            "BD-36: Plan checkpoint timed out — NO auto-approve. "
+            "Pipeline stopped. Re-run 'awf start' when ready to review.",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"BD-36: checkpoint timed out for {current_todo} — pipeline aborted "
+            "(user must re-run awf_start after manual review)",
+        )
+        return 1
+
+    # "approve" or "edit" → continue normally
+    _log(logs_dir, f"BD-36: checkpoint decision={decision}")
+    return 0
+
+
+def _write_salvage_prompt(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    baseline_sha: str | None,
+    logs_dir: Path,
+) -> None:
+    """DF5-4: Write a SALVAGE-{todo_id}.md file to inbox.
+
+    This file explains to the supervisor (in opencode) what happened:
+    - Worker ran but didn't produce a DONE/BLOCKED signal
+    - Git diff stat shows what work was left
+    - Supervisor needs to decide: ACK (accept), REVIEW (reject), or replan
+    """
+    from ._atomic import atomic_write_text
+
+    inbox = paths.inbox(project_dir)
+    salvage_file = inbox / f"SALVAGE-{todo_id}.md"
+
+    parts: list[str] = [
+        f"# Salvage needed: {stage_name} did not signal",
+        "",
+        f"**TODO:** {todo_id}",
+        f"**Stage:** {stage_name}",
+        f"**Time:** {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## What happened",
+        "",
+        f"The worker at stage `{stage_name}` completed its subprocess (exit 0) but",
+        f"did NOT create the DONE-{todo_id}.ready signal file in outbox.",
+        "This usually means the worker finished its task but forgot the",
+        "completion signal (common with smaller models / turn-budget limits).",
+        "",
+    ]
+
+    # Git diff stat
+    if baseline_sha:
+        try:
+            diff = subprocess.run(
+                ["git", "diff", "--stat", baseline_sha],
+                cwd=str(project_dir),
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+            diff_output = diff.stdout.strip() if diff.stdout else "(no changes)"
+        except (subprocess.TimeoutExpired, OSError):
+            diff_output = "(git diff failed)"
+        parts += [
+            "## Git diff (vs baseline)",
+            "",
+            "```",
+            diff_output,
+            "```",
+            "",
+        ]
+
+    parts += [
+        "## What to do",
+        "",
+        f"1. **Review the diff** — did `{stage_name}` produce useful work?",
+        f"2. **Check handoffs** — read `.agentic/handoff/{stage_name}-{todo_id}.md`",
+        "3. **Decide:**",
+        f"   - Work looks good → create `.agentic/inbox/ACK-{todo_id}.ready`",
+        f"   - Work is wrong → create `.agentic/outbox/REVIEW-{todo_id}.md` with feedback",
+        "   - Need to redo → create a new TODO and restart pipeline",
+        "",
+    ]
+
+    atomic_write_text(salvage_file, "\n".join(parts))
+    _log(logs_dir, f"DF5-4: salvage prompt written to {salvage_file}")
+
+
+# ─── stage execution ────────────────────────────────────────────────────
 
 
 def execute_supervisor_stage(

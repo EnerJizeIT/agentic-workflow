@@ -449,7 +449,7 @@ class TestCheckpointGateDispatch:
 
     def test_disabled_returns_zero(self, tmp_path, monkeypatch):
         """When checkpoint disabled (auto=True), gate returns 0 immediately."""
-        from awf.orchestrator import _run_plan_checkpoint_gate
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
 
@@ -472,7 +472,7 @@ class TestCheckpointGateDispatch:
 
     def test_reject_returns_one(self, tmp_path, monkeypatch):
         """User rejects → gate returns 1 (pipeline must stop)."""
-        from awf.orchestrator import _run_plan_checkpoint_gate
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
         monkeypatch.setattr(
@@ -494,7 +494,7 @@ class TestCheckpointGateDispatch:
 
     def test_approve_returns_zero(self, tmp_path, monkeypatch):
         """User approves → gate returns 0 (pipeline continues)."""
-        from awf.orchestrator import _run_plan_checkpoint_gate
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
         monkeypatch.setattr(
@@ -516,7 +516,7 @@ class TestCheckpointGateDispatch:
 
     def test_edit_returns_zero(self, tmp_path, monkeypatch):
         """User edits → gate returns 0 (pipeline continues with rewritten TODO)."""
-        from awf.orchestrator import _run_plan_checkpoint_gate
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
         monkeypatch.setattr(
@@ -548,7 +548,7 @@ class TestCheckpointGateDispatch:
         Fix: timeout → return 1 (abort). User must re-run awf_start after
         explicit review.
         """
-        from awf.orchestrator import _run_plan_checkpoint_gate
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
         monkeypatch.setattr(
@@ -578,7 +578,7 @@ class TestCheckpointGateDispatch:
 
     def test_env_override_disables_gate(self, tmp_path, monkeypatch):
         """AWF_PLAN_CHECKPOINT=false disables gate even when auto=False."""
-        from awf.orchestrator import _run_plan_checkpoint_gate
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
 
         project = self._make_project(tmp_path)
         monkeypatch.setenv("AWF_PLAN_CHECKPOINT", "false")
