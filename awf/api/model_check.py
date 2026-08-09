@@ -5,10 +5,105 @@ Prevents silent fallback to wrong model (dogfood issue: supervisor claimed
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
 from ._helpers import require_agentic
+
+
+def _load_opencode_config(
+    oc_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Parse opencode.json → (providers, agents).
+
+    Returns ({}, {}) if file missing or unreadable. Logs errors to stderr.
+    """
+    if not oc_path.exists():
+        return {}, {}
+    try:
+        import json
+
+        oc_data = json.loads(oc_path.read_text(encoding="utf-8"))
+        return (
+            oc_data.get("provider", {}) or {},
+            oc_data.get("agent", {}) or {},
+        )
+    except (json.JSONDecodeError, OSError) as e:
+        print(
+            f"model_check: cannot read opencode.json: {e}",
+            file=sys.stderr,
+        )
+        return {}, {}
+
+
+def _load_cli_models() -> set[str]:
+    """Get ALL available models from 'opencode models' CLI.
+
+    Covers internal providers (zai-coding-plan, openai) not in opencode.json.
+    Returns empty set on any error (including CLI not installed).
+    """
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return set()
+        models: set[str] = set()
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line and "/" in line and not line.startswith("["):
+                models.add(line)
+        return models
+    except (FileNotFoundError, OSError) as e:
+        print(f"model_check: 'opencode models' CLI unavailable: {e}", file=sys.stderr)
+        return set()
+    except Exception as e:
+        print(f"model_check: 'opencode models' failed: {e}", file=sys.stderr)
+        return set()
+
+
+def _load_recent_models(db_path: Path) -> set[str]:
+    """Read model IDs from opencode.db session history.
+
+    Returns empty set if db missing, unreadable, or no sessions.
+    """
+    if not db_path.is_file():
+        return set()
+    try:
+        import json
+        import sqlite3
+
+        conn = sqlite3.connect(str(db_path), timeout=3)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT model FROM session WHERE model IS NOT NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        models: set[str] = set()
+        for r in rows:
+            raw = r[0]
+            if not raw:
+                continue
+            # opencode.db stores model as JSON: {"id":"x","providerID":"y"}
+            try:
+                m = json.loads(raw)
+                pid = m.get("providerID", "")
+                mid = m.get("id", "")
+                if pid and mid:
+                    models.add(f"{pid}/{mid}")
+            except (json.JSONDecodeError, TypeError):
+                if isinstance(raw, str):
+                    models.add(raw)
+        return models
+    except Exception as e:
+        print(f"model_check: cannot read opencode.db: {e}", file=sys.stderr)
+        return set()
 
 
 def check_model_config(project_dir: Path) -> dict[str, Any]:
@@ -22,7 +117,7 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
-    import json
+    import os
 
     from .. import config as cfg_mod
     from .. import xdg
@@ -31,77 +126,16 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
     models_config = cfg_mod.get(config_data, "models", {}) or {}
 
     oc_path = xdg.opencode_config_file()
-    oc_providers: dict[str, Any] = {}
-    oc_agents: dict[str, Any] = {}
+    oc_providers, oc_agents = _load_opencode_config(oc_path)
+    cli_models = _load_cli_models()
 
-    if oc_path.exists():
-        try:
-            oc_data = json.loads(oc_path.read_text(encoding="utf-8"))
-            oc_providers = oc_data.get("provider", {}) or {}
-            oc_agents = oc_data.get("agent", {}) or {}
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Recent models from opencode.db — these may include internal opencode
-    # providers (zai-coding-plan, openai, anthropic) that don't require
-    # explicit config in opencode.json. If a model is in recent list,
-    # it was used successfully before → don't mark as invalid.
-    recent_models: set[str] = set()
-
-    # Also: get ALL available models from 'opencode models' CLI.
-    # This covers internal providers that don't appear in opencode.json.
-    # If a model is in this list, it's definitely valid.
-    cli_models: set[str] = set()
-    try:
-        import subprocess
-
-        result = subprocess.run(
-            ["opencode", "models"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if line and "/" in line and not line.startswith("["):
-                    cli_models.add(line)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
-
-    try:
-        import os
-        import sqlite3
-
-        data_home = os.environ.get("XDG_DATA_HOME", "").strip()
-        if data_home:
-            db_path = Path(data_home) / "opencode" / "opencode.db"
-        else:
-            db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-
-        if db_path.is_file():
-            conn = sqlite3.connect(str(db_path), timeout=3)
-            try:
-                rows = conn.execute(
-                    "SELECT DISTINCT model FROM session WHERE model IS NOT NULL"
-                ).fetchall()
-                for r in rows:
-                    raw = r[0]
-                    if not raw:
-                        continue
-                    # opencode.db stores model as JSON: {"id":"x","providerID":"y"}
-                    try:
-                        m = json.loads(raw)
-                        pid = m.get("providerID", "")
-                        mid = m.get("id", "")
-                        if pid and mid:
-                            recent_models.add(f"{pid}/{mid}")
-                    except (json.JSONDecodeError, TypeError):
-                        # Fallback: plain string model id
-                        if isinstance(raw, str):
-                            recent_models.add(raw)
-            finally:
-                conn.close()
-    except Exception:
-        pass
+    # Recent models from opencode.db
+    data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if data_home:
+        db_path = Path(data_home) / "opencode" / "opencode.db"
+    else:
+        db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+    recent_models = _load_recent_models(db_path)
 
     results: list[dict[str, Any]] = []
     warnings: list[str] = []

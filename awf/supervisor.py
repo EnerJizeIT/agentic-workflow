@@ -669,6 +669,103 @@ def run_supervisor_stage(
     )
 
 
+def _prepare_supervisor_stage(
+    kind: str,
+    todo_id: str,
+    project_dir: Path,
+    config: dict,
+    phases_file: str,
+    logs_dir: Path,
+    pipeline_name: str | None,
+) -> tuple[list[str], str] | None:
+    """Build extra_files + prompt for a supervisor stage kind.
+
+    Returns None to indicate the stage should be skipped.
+    Returns (extra_files, prompt) otherwise.
+    """
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    phases_path = (
+        project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
+    )
+
+    extra_files: list[str] = []
+    prompt = ""
+
+    if kind == "plan":
+        # R5: detect phase — Brief exists → write TODO; no Brief → write Brief
+        brief_exists = bool(todo_id) and (inbox / f"BRIEF-{todo_id}.md").is_file()
+        if brief_exists:
+            brief_file = inbox / f"BRIEF-{todo_id}.md"
+            extra_files.append(str(brief_file))
+            prompt = (
+                f"Brief {todo_id} was approved by the user. Read BRIEF-{todo_id}.md "
+                f"and write a detailed TODO at .agentic/inbox/{todo_id}.md for the agent. "
+                "Include context, specific tasks, files to touch, verify commands, prohibitions. "
+                f"Then create the signal at .agentic/inbox/{todo_id}.ready."
+            )
+        else:
+            if phases_path.is_file():
+                extra_files.append(str(phases_path))
+            prompt = build_prompt(
+                "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+            )
+
+    elif kind == "verify":
+        if not todo_id:
+            print("[auto mode] No todo_id for verify — skip.")
+            _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
+            return None
+        done_md = outbox / f"DONE-{todo_id}.md"
+        if done_md.is_file():
+            extra_files.append(str(done_md))
+        progress = outbox / f"PROGRESS-{todo_id}.md"
+        if progress.is_file():
+            extra_files.append(str(progress))
+        # BD-29 aggregate verify: forward ALL role handoffs.
+        handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+        if handoff_dir.is_dir():
+            for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
+                if hf.is_file():
+                    extra_files.append(str(hf))
+        # R8: inline Brief content so supervisor sees contract without opening file
+        brief_content = ""
+        brief_path = inbox / f"BRIEF-{todo_id}.md"
+        if brief_path.is_file():
+            brief_content = brief_path.read_text(encoding="utf-8")
+        prompt = build_prompt(
+            "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        )
+        if brief_content:
+            prompt += f"\n\n---\n## BRIEF (user-approved contract):\n{brief_content}\n---\n"
+
+    elif kind == "replan":
+        if not todo_id:
+            print("[auto mode] No todo_id for replan — skip.")
+            _log(logs_dir, "Supervisor replan auto-skipped (no todo_id)")
+            return None
+        blocked = outbox / f"BLOCKED-{todo_id}.md"
+        if blocked.is_file():
+            extra_files.append(str(blocked))
+        prompt = (
+            f"Worker reported BLOCKED on {todo_id}. Read the BLOCKED note, analyze the problem, "
+            "create a refined TODO at .agentic/inbox/TODO-NNNN.md (next sequential ID), "
+            "baseline it, and create the .ready signal."
+        )
+
+    elif kind == "salvage":
+        print("[auto mode] salvage not automated — skipping.")
+        _log(logs_dir, "Supervisor salvage auto-skipped (not automatable)")
+        return None
+
+    else:
+        print(f"[auto mode] Unknown kind {kind!r} — skipping.")
+        _log(logs_dir, f"Supervisor stage {kind} auto-skipped (unknown kind)")
+        return None
+
+    return extra_files, prompt
+
+
 def run_supervisor_via_subprocess(
     kind: str,
     todo_id: str,
@@ -695,83 +792,15 @@ def run_supervisor_via_subprocess(
         _log(logs_dir, f"Supervisor stage {kind} auto-skipped (no supervisor.md)")
         return ""
 
-    extra_files: list[str] = []
-    prompt = ""
+    prepared = _prepare_supervisor_stage(
+        kind, todo_id, project_dir, config, phases_file, logs_dir, pipeline_name
+    )
+    if prepared is None:
+        return ""
+    extra_files, prompt = prepared
 
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
-    phases_path = (
-        project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
-    )
-
-    if kind == "plan":
-        # R5: detect phase — Brief exists → write TODO; no Brief → write Brief
-        brief_exists = bool(todo_id) and (inbox / f"BRIEF-{todo_id}.md").is_file()
-        if brief_exists:
-            # Phase 2: Brief approved, write TODO for agent
-            brief_file = inbox / f"BRIEF-{todo_id}.md"
-            extra_files.append(str(brief_file))
-            prompt = (
-                f"Brief {todo_id} was approved by the user. Read BRIEF-{todo_id}.md "
-                f"and write a detailed TODO at .agentic/inbox/{todo_id}.md for the agent. "
-                "Include context, specific tasks, files to touch, verify commands, prohibitions. "
-                f"Then create the signal at .agentic/inbox/{todo_id}.ready."
-            )
-        else:
-            # Phase 1: write Brief
-            if phases_path.is_file():
-                extra_files.append(str(phases_path))
-            prompt = build_prompt(
-                "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
-            )
-    elif kind == "verify":
-        if not todo_id:
-            print("[auto mode] No todo_id for verify — skip.")
-            _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
-            return ""
-        done_md = outbox / f"DONE-{todo_id}.md"
-        if done_md.is_file():
-            extra_files.append(str(done_md))
-        progress = outbox / f"PROGRESS-{todo_id}.md"
-        if progress.is_file():
-            extra_files.append(str(progress))
-        # BD-29 aggregate verify: forward ALL role handoffs.
-        handoff_dir = paths.agentic_dir(project_dir) / "handoff"
-        if handoff_dir.is_dir():
-            for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
-                if hf.is_file():
-                    extra_files.append(str(hf))
-        # R8: inline Brief content so supervisor sees contract without opening file
-        brief_content = ""
-        brief_path = inbox / f"BRIEF-{todo_id}.md"
-        if brief_path.is_file():
-            brief_content = brief_path.read_text(encoding="utf-8")
-        prompt = build_prompt(
-            "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
-        )
-        if brief_content:
-            prompt += f"\n\n---\n## BRIEF (user-approved contract):\n{brief_content}\n---\n"
-    elif kind == "replan":
-        if not todo_id:
-            print("[auto mode] No todo_id for replan — skip.")
-            _log(logs_dir, "Supervisor replan auto-skipped (no todo_id)")
-            return ""
-        blocked = outbox / f"BLOCKED-{todo_id}.md"
-        if blocked.is_file():
-            extra_files.append(str(blocked))
-        prompt = (
-            f"Worker reported BLOCKED on {todo_id}. Read the BLOCKED note, analyze the problem, "
-            "create a refined TODO at .agentic/inbox/TODO-NNNN.md (next sequential ID), "
-            "baseline it, and create the .ready signal."
-        )
-    elif kind == "salvage":
-        print("[auto mode] salvage not automated — skipping.")
-        _log(logs_dir, "Supervisor salvage auto-skipped (not automatable)")
-        return ""
-    else:
-        print(f"[auto mode] Unknown kind {kind!r} — skipping.")
-        _log(logs_dir, f"Supervisor stage {kind} auto-skipped (unknown kind)")
-        return ""
 
     agent_name = get_agent_name(config, "supervisor")
     cmd = [
@@ -809,9 +838,6 @@ def run_supervisor_via_subprocess(
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
 
-    # Idea 1 fix: capture the exact signal file name from signal_watch so
-    # we don't have to re-glob the inbox (which can return a stale TODO
-    # if old/new TODO-*.ready share an mtime — auditor HIGH finding).
     signal_holder: dict[str, str] = {}
 
     result = run_subprocess_until_signal(
@@ -831,20 +857,12 @@ def run_supervisor_via_subprocess(
             f"Cmd: {' '.join(cmd)}"
         )
 
-    # Prefer the exact signal name captured by signal_watch (BD-22 snapshot
-    # confirms it's NEW, not stale). Fall back to mtime-based detection
-    # only if signal_watch didn't populate the holder (defensive).
     fired = signal_holder.get("signal", "")
     if fired:
-        # Strip suffix to get the signal ID:
-        #   "TODO-0042.ready" → "TODO-0042"
-        #   "ACK-TODO-0001.ready" → "ACK-TODO-0001"
         signal_name = fired.rsplit(".", 1)[0] if "." in fired else fired
         _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
         return signal_name
 
-    # Fallback: legacy mtime-based detection (still needed if caller didn't
-    # pass signal_holder or for non-watch_paths triggers).
     signal_name = _detect_supervisor_signal(kind, todo_id, inbox, outbox)
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
     return signal_name

@@ -14,62 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
-from . import paths, todos, verify
-from ._env import awf_subprocess_env as _awf_subprocess_env  # noqa: F401
-from ._log import log as _log  # noqa: F401
-from .agent_stage import (  # noqa: F401
-    collect_handoff as _collect_handoff,
-)
-from .agent_stage import (
-    resolve_prev_handoffs as _resolve_prev_handoffs,
-)
-from .agent_stage import (
-    run_agent_stage as _run_agent_stage,
-)
-from .commit_gate import maybe_commit as _maybe_commit  # noqa: F401
+from . import paths, todos
+from ._log import log as _log
+from .commit_gate import maybe_commit as _maybe_commit
 from .pipeline import Stage, load_stages, resolve_pipeline_file
 from .pipeline_state import clear_state, read_state, write_state
-from .plan_progress import (  # noqa: F401
-    extract_step_id_from_todo as _extract_step_id_from_todo,
-)
-from .plan_progress import (
-    mark_plan_step_done as _mark_plan_step_done,
-)
 from .plan_progress import (
     print_progress_report as _print_progress_report,
-)
-from .signal_watch import run_subprocess_until_signal as _run_subprocess_until_signal  # noqa: F401
-from .signals import (
-    expected_signal_prefixes,
-    read_signal_for_todo,
-    signal_type,
-    wait_for_signal,
-)
-from .supervisor import (  # noqa: F401
-    build_prompt as _build_prompt,
-)
-from .supervisor import (
-    get_agent_name as _get_agent_name,
-)
-from .supervisor import (
-    get_role_model as _get_role_model,
-)
-from .supervisor import (
-    global_roles_dir as _global_roles_dir,
-)
-from .supervisor import (
-    resolve_role_file as _resolve_role_file,
 )
 from .supervisor import (
     run_supervisor_stage as _run_supervisor_stage,
 )
-from .supervisor import (
-    run_supervisor_via_subprocess as _run_supervisor_via_subprocess,
-)
-from .supervisor import (
-    wait_for_supervisor_signal as _wait_for_supervisor_signal,
-)
-from .transitions import resolve_transition
 
 # T1.5: re-exports for white-box tests (from awf.orchestrator import _foo).
 # __all__ removed — ruff per-file-ignore (pyproject.toml) protects the

@@ -19,24 +19,24 @@ from pathlib import Path
 
 from . import paths, verify
 from ._log import log as _log
+from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
+from .agent_stage import run_agent_stage as _run_agent_stage
+from .commit_gate import maybe_commit as _maybe_commit
 from .orchestrator import (
-    Stage,
     _ensure_baseline_sha,
     _find_active_todo,
     _handle_escalate,
     _handle_next,
     _handle_rollback,
-    _mark_plan_step_done,
-    _maybe_commit,
     _read_baseline_sha,
-    _resolve_prev_handoffs,
-    _run_agent_stage,
     _run_plan_checkpoint_gate,
-    _run_supervisor_stage,
     _write_salvage_prompt,
 )
+from .pipeline import Stage
 from .pipeline_state import write_state as _write_state
+from .plan_progress import mark_plan_step_done as _mark_plan_step_done
 from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
+from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
 
 

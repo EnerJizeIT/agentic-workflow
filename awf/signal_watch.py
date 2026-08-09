@@ -11,6 +11,7 @@ hung process.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -20,6 +21,70 @@ from ._log import log as _log
 
 BD20_POLL_INTERVAL = 3
 BD20_HARD_TIMEOUT = 3600
+
+
+def _sort_key_by_numeric_id(name: str) -> tuple[int, str]:
+    """Sort signal filenames by embedded numeric ID.
+
+    TODO-0010 should come after TODO-0009, not before TODO-0002.
+    """
+    m = re.search(r"(\d+)", name)
+    return (int(m.group(1)) if m else 0, name)
+
+
+def _build_pre_snapshot(
+    watch_paths: list[Path],
+    watch_new_glob: tuple[Path, str] | None,
+    logs_dir: Path | None = None,
+) -> tuple[set[str], set[str]]:
+    """BD-22: snapshot watch_paths and glob files that exist before subprocess start.
+
+    Returns (pre_existing_paths, glob_snapshot) — both used to detect
+    only NEW appearances during subprocess execution.
+    """
+    pre_existing: set[str] = {str(p) for p in watch_paths if p.exists()}
+    if pre_existing and logs_dir:
+        _log(
+            logs_dir,
+            f"BD-22: ignoring {len(pre_existing)} stale watch_paths "
+            f"(exist before subprocess start)",
+        )
+
+    snapshot: set[str] = set()
+    if watch_new_glob is not None:
+        watch_dir, pattern = watch_new_glob
+        if watch_dir.is_dir():
+            snapshot = {p.name for p in watch_dir.glob(pattern)}
+
+    return pre_existing, snapshot
+
+
+def _detect_new_signal(
+    watch_paths: list[Path],
+    pre_existing: set[str],
+    watch_new_glob: tuple[Path, str] | None,
+    snapshot: set[str],
+) -> str | None:
+    """Check if a new signal file appeared since subprocess start.
+
+    Returns the signal filename if detected, None otherwise.
+    Checks concrete watch_paths first, then glob pattern.
+    """
+    # BD-22: a path counts as signal only if it was NOT in pre_existing
+    # snapshot (i.e., appeared DURING subprocess execution).
+    for p in watch_paths:
+        if str(p) not in pre_existing and p.exists():
+            return p.name
+
+    if watch_new_glob is not None:
+        watch_dir, pattern = watch_new_glob
+        if watch_dir.is_dir():
+            current = {p.name for p in watch_dir.glob(pattern)}
+            new_files = current - snapshot
+            if new_files:
+                return sorted(new_files, key=_sort_key_by_numeric_id)[0]
+
+    return None
 
 
 def run_subprocess_until_signal(
@@ -67,22 +132,8 @@ def run_subprocess_until_signal(
     # KAUD-4: handle hard_timeout=None (use default)
     if hard_timeout is None:
         hard_timeout = BD20_HARD_TIMEOUT
-    # BD-22: snapshot which watch_paths already exist at start (stale signals
-    # from previous runs). Only paths that DON'T exist at start, or that
-    # appear AFTER start, count as a valid signal.
-    pre_existing: set[str] = {str(p) for p in watch_paths if p.exists()}
-    if pre_existing and logs_dir:
-        _log(
-            logs_dir,
-            f"BD-22: ignoring {len(pre_existing)} stale watch_paths "
-            f"(exist before subprocess start)",
-        )
 
-    snapshot: set[str] = set()
-    if watch_new_glob is not None:
-        watch_dir, pattern = watch_new_glob
-        if watch_dir.is_dir():
-            snapshot = {p.name for p in watch_dir.glob(pattern)}
+    pre_existing, snapshot = _build_pre_snapshot(watch_paths, watch_new_glob, logs_dir)
 
     from ._env import _pdeathsig_preexec
     # KAUD-9: redirect worker stdout/stderr to log file instead of inheriting.
@@ -116,33 +167,12 @@ def run_subprocess_until_signal(
             now = time.monotonic()
 
             if signal_seen_at is None:
-                # BD-22: a path counts as signal only if it was NOT in pre_existing
-                # snapshot (i.e., appeared DURING subprocess execution).
-                fired_name: str | None = None
-                for p in watch_paths:
-                    if str(p) not in pre_existing and p.exists():
-                        triggered = True
-                        fired_name = p.name
-                        break
-                else:
-                    triggered = False
-                    if watch_new_glob is not None:
-                        watch_dir, pattern = watch_new_glob
-                        if watch_dir.is_dir():
-                            current = {p.name for p in watch_dir.glob(pattern)}
-                            new_files = current - snapshot
-                            if new_files:
-                                triggered = True
-                                # KAUD-7: sort by numeric ID, not lexicographic.
-                                # TODO-0010 should come after TODO-0009, not before TODO-0002.
-                                import re as _re
-                                def _sort_key(name: str) -> tuple:
-                                    m = _re.search(r"(\d+)", name)
-                                    return (int(m.group(1)) if m else 0, name)
-                                fired_name = sorted(new_files, key=_sort_key)[0]
-                if triggered:
+                fired_name = _detect_new_signal(
+                    watch_paths, pre_existing, watch_new_glob, snapshot,
+                )
+                if fired_name:
                     signal_seen_at = now
-                    if signal_holder is not None and fired_name:
+                    if signal_holder is not None:
                         signal_holder["signal"] = fired_name
                     if logs_dir:
                         _log(

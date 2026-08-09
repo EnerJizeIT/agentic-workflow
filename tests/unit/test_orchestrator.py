@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from awf._env import awf_subprocess_env as _awf_subprocess_env
 from awf.agent_stage import (
     collect_handoff as _collect_handoff,
 )
@@ -17,18 +18,30 @@ from awf.agent_stage import (
     run_agent_stage as _run_agent_stage,
 )
 from awf.commit_gate import maybe_commit as _maybe_commit
-from awf.orchestrator import _run_supervisor_stage
 from awf.pipeline import Stage
+from awf.signal_watch import run_subprocess_until_signal as _run_subprocess_until_signal
 from awf.supervisor import (
     global_roles_dir as _global_roles_dir,
 )
 from awf.supervisor import (
     resolve_role_file as _resolve_role_file,
 )
+from awf.supervisor import run_supervisor_stage as _run_supervisor_stage
+from awf.supervisor import wait_for_supervisor_signal as _wait_for_supervisor_signal
 
 # BD-18: subprocess.run return value for "success" mocks (legacy — kept for
 # any tests still using subprocess.run-style asserts).
 _OK_RESULT = subprocess.CompletedProcess(args=[], returncode=0)
+
+
+def _init_proj_dirs(proj: Path) -> None:
+    """AUD-2026-08-09: shared .agentic/ directory init — eliminates mkdir drift."""
+    agentic = proj / ".agentic"
+    (agentic / "roles").mkdir(parents=True)
+    (agentic / "inbox").mkdir(parents=True)
+    (agentic / "outbox").mkdir(parents=True)
+    (agentic / "context").mkdir(parents=True)
+    (agentic / "logs").mkdir(parents=True)
 
 
 class _FakePopen:
@@ -377,11 +390,9 @@ class TestRunAgentStageCmd:
     def _setup_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        (project_dir / ".agentic" / "roles").mkdir(parents=True)
+        _init_proj_dirs(project_dir)
         (project_dir / ".agentic" / "roles" / "worker.md").write_text("role content")
-        (project_dir / ".agentic" / "inbox").mkdir(parents=True)
         (project_dir / ".agentic" / "inbox" / "TODO-0001.md").write_text("task content")
-        (project_dir / ".agentic" / "logs").mkdir(parents=True)
         fake_home = tmp_path / "home"
         (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: fake_home)
@@ -458,15 +469,11 @@ class TestInteractiveSupervisorBD30:
     def _make_proj(self, tmp_path: Path) -> Path:
         proj = tmp_path / "proj"
         proj.mkdir()
-        (proj / ".agentic" / "roles").mkdir(parents=True)
+        _init_proj_dirs(proj)
         (proj / ".agentic" / "roles" / "supervisor.md").write_text("# supervisor")
-        (proj / ".agentic" / "inbox").mkdir(parents=True)
-        (proj / ".agentic" / "outbox").mkdir(parents=True)
-        (proj / ".agentic" / "context").mkdir(parents=True)
-        (proj / ".agentic" / "logs").mkdir(parents=True)
-        (proj / ".agentic" / "config.yaml").write_text("project:\n  name: test\n")
         (proj / ".agentic" / "phases").mkdir(parents=True)
         (proj / ".agentic" / "phases" / "plan.md").write_text("# Plan\n- [ ] Step 1\n")
+        (proj / ".agentic" / "config.yaml").write_text("project:\n  name: test\n")
         return proj
 
     def test_interactive_plan_does_not_spawn_subprocess(
@@ -583,7 +590,6 @@ class TestInteractiveSupervisorBD30:
         Before dogfood-1 fix: snapshot filtered ALL pre-existing TODOs →
         workflow 'create TODO then awf_start' hung forever.
         """
-        from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -622,7 +628,6 @@ class TestInteractiveSupervisorBD30:
         Fix: TODO is 'stale' only if it has matching DONE-<id>.ready in outbox.
         Active orphan (no DONE yet) = supervisor wants us to take it.
         """
-        from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -646,7 +651,6 @@ class TestInteractiveSupervisorBD30:
 
     def test_wait_for_supervisor_signal_orphans_prefer_newest(self, tmp_path: Path) -> None:
         """Multiple orphan TODOs (no DONE) → pick newest (highest NNNN)."""
-        from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -671,7 +675,6 @@ class TestInteractiveSupervisorBD30:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """BD-30: verify waits for ACK-{todo_id}.ready in inbox."""
-        from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -696,7 +699,6 @@ class TestInteractiveSupervisorBD30:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """BD-30: verify also accepts REVIEW-{todo_id}.md in outbox (rejection)."""
-        from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -726,7 +728,6 @@ class TestInteractiveSupervisorBD30:
         DONE-<id>.ready in outbox. Active orphan (no DONE) is picked up
         immediately — see test_wait_for_supervisor_signal_picks_up_active_orphan.
         """
-        from awf.orchestrator import _wait_for_supervisor_signal
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -803,16 +804,11 @@ class TestSupervisorViaSubprocess:
     def _make_proj(self, tmp_path: Path) -> Path:
         proj = tmp_path / "proj"
         proj.mkdir()
+        _init_proj_dirs(proj)
         agentic = proj / ".agentic"
-        (agentic / "roles").mkdir(parents=True)
         (agentic / "roles" / "supervisor.md").write_text("# Supervisor\nplan/verify")
         (agentic / "phases").mkdir()
         (agentic / "phases" / "plan.md").write_text("# Plan\nStep 1: do X")
-        (agentic / "inbox").mkdir()
-        (agentic / "outbox").mkdir()
-        (agentic / "context").mkdir()
-        (agentic / "logs").mkdir()
-        # minimal config.yaml
         (agentic / "config.yaml").write_text(
             "project:\n  name: test\n  root: .\n"
             "models:\n  supervisor:\n    description: current\n"
@@ -985,7 +981,6 @@ class TestRunSubprocessUntilSignal:
 
     def test_exits_naturally_with_zero(self, tmp_path, monkeypatch) -> None:
         """If subprocess exits naturally rc=0, return CompletedProcess(0)."""
-        from awf.orchestrator import _run_subprocess_until_signal
 
         _patch_subprocess_for_awf(monkeypatch)
         # _FakePopen.poll() returns 0 immediately
@@ -999,7 +994,6 @@ class TestRunSubprocessUntilSignal:
 
     def test_exits_naturally_nonzero_propagates(self, tmp_path, monkeypatch) -> None:
         """Natural non-zero exit propagates (no signal-watch interference)."""
-        from awf.orchestrator import _run_subprocess_until_signal
 
         monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FailingPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
@@ -1019,7 +1013,6 @@ class TestRunSubprocessUntilSignal:
         Subprocess writes DONE.ready mid-run, then exits naturally on next poll.
         No terminate() should be called — grace kill was removed.
         """
-        from awf.orchestrator import _run_subprocess_until_signal
 
         class _NaturalExitPopen(_FakePopen):
             """Popen that creates signal then exits naturally."""
@@ -1064,7 +1057,6 @@ class TestRunSubprocessUntilSignal:
         Without this snapshot, lingering ACK-{todo_id}.ready from a
         previous run kills supervisor verify in 10s without reading DONE.
         """
-        from awf.orchestrator import _run_subprocess_until_signal
 
         class _HangingPopen(_FakePopen):
             """Popen that never exits on its own."""
@@ -1110,7 +1102,6 @@ class TestRunSubprocessUntilSignal:
 
     def test_new_glob_signal_detected(self, tmp_path, monkeypatch) -> None:
         """BD-20: watch_new_glob detects new file appearing in directory."""
-        from awf.orchestrator import _run_subprocess_until_signal
 
         class _NaturalExitPopen(_FakePopen):
             terminated = False
@@ -1143,7 +1134,6 @@ class TestRunSubprocessUntilSignal:
     def test_hard_timeout_raises(self, tmp_path, monkeypatch) -> None:
         """BD-20: hard timeout raises TimeoutError if no signal ever appears."""
 
-        from awf.orchestrator import _run_subprocess_until_signal
 
         class _HangingPopen(_FakePopen):
             def poll(self):
@@ -1174,7 +1164,6 @@ class TestRunSubprocessUntilSignal:
         """BD-22: env includes OPENCODE_CONFIG_CONTENT with allow rules."""
         import json
 
-        from awf.orchestrator import _awf_subprocess_env
 
         env = _awf_subprocess_env()
         assert "OPENCODE_CONFIG_CONTENT" in env
@@ -1185,7 +1174,6 @@ class TestRunSubprocessUntilSignal:
 
     def test_popen_receives_awf_env_bd22(self, tmp_path, monkeypatch) -> None:
         """BD-22: Popen is called with env containing permission override."""
-        from awf.orchestrator import _run_subprocess_until_signal
 
         captured_env: dict = {}
 
@@ -1319,15 +1307,11 @@ class TestHandoffChain:
     def _setup_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
+        _init_proj_dirs(project_dir)
         agentic = project_dir / ".agentic"
-        (agentic / "roles").mkdir(parents=True)
         (agentic / "roles" / "worker.md").write_text("role")
         (agentic / "roles" / "developer.md").write_text("role")
-        (agentic / "inbox").mkdir(parents=True)
         (agentic / "inbox" / "TODO-0001.md").write_text("task")
-        (agentic / "outbox").mkdir(parents=True)
-        (agentic / "context").mkdir(parents=True)
-        (agentic / "logs").mkdir(parents=True)
         fake_home = tmp_path / "home"
         (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: fake_home)
@@ -1590,15 +1574,11 @@ class TestSupervisorReplan:
     def _make_proj(self, tmp_path: Path) -> Path:
         proj = tmp_path / "proj"
         proj.mkdir()
+        _init_proj_dirs(proj)
         agentic = proj / ".agentic"
-        (agentic / "roles").mkdir(parents=True)
         (agentic / "roles" / "supervisor.md").write_text("# Supervisor")
         (agentic / "phases").mkdir()
         (agentic / "phases" / "plan.md").write_text("# Plan")
-        (agentic / "inbox").mkdir()
-        (agentic / "outbox").mkdir()
-        (agentic / "context").mkdir()
-        (agentic / "logs").mkdir()
         (agentic / "config.yaml").write_text(
             "project:\n  name: test\n  root: .\n"
             "models:\n  supervisor:\n    description: current\n"

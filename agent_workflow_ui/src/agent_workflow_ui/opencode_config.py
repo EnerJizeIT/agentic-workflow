@@ -145,8 +145,9 @@ def read_available_models() -> list[str]:
             cfg = opencode_config_file()
             if cfg.is_file():
                 _MODELS_CONFIG_MTIME = cfg.stat().st_mtime
-        except Exception:
-            pass
+        except Exception as e:
+            import sys
+            print(f"read_available_models: cannot stat opencode.json: {e}", file=sys.stderr)
     return result
 
 

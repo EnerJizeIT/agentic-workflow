@@ -405,8 +405,9 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             import yaml
             data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
             stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
-    except Exception:
-        pass
+    except Exception as e:
+        import sys
+        print(f"dashboard: cannot read pipeline config: {e}", file=sys.stderr)
 
     # Determine current stage from state
     current_stage_idx = state.get("stage_idx") if state else -1
