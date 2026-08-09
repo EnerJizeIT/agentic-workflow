@@ -96,7 +96,8 @@
 
 ## Architecture notes
 
-- `tools/awf.py` — разбить по зонам или схлопнуть через helper (см. AUD-12)
+- `tools/awf.py` (~940 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
+- `plan_checkpoint.py` (201 строка, 21% coverage) — добавить покрытие при dogfood
 - `supervisor.py` — разделить `wait_for_supervisor_signal` до новых stage kind
 - Два HTTP-сервера: one-shot core + long-lived plugin
 - Event journal — `.agentic/state/journal.jsonl` для replay
