@@ -277,7 +277,13 @@
     <div class="stage-label {{ stage.status }}">{{ stage.name }}</div>
     {% if stage.model %}<div class="stage-role">{{ stage.model }}</div>{% endif %}
     {% if stage_timings and stage_timings.get(stage.name) %}
-    <div class="stage-duration">{{ stage_timings[stage.name] }}</div>
+    <div class="stage-duration"
+         {% if stage.status == 'current' and current_stage_epoch %}
+         data-stage-epoch="{{ current_stage_epoch }}"
+         {% endif %}
+    >{{ stage_timings[stage.name] }}</div>
+    {% elif stage.status == 'current' and current_stage_epoch %}
+    <div class="stage-duration" data-stage-epoch="{{ current_stage_epoch }}">0s</div>
     {% endif %}
   </div>
   {% if not loop.last %}
@@ -458,6 +464,21 @@ awf_tick();
 {% if not elapsed_frozen %}
 setInterval(awf_tick, 1000);
 {% endif %}
+
+// ─── Live per-stage timer (ticks for current running stage) ──────────
+function awf_tick_stage() {
+  const el = document.querySelector('.stage-duration[data-stage-epoch]');
+  if (!el) return;
+  const epoch = parseInt(el.dataset.stageEpoch || '0');
+  if (!epoch) return;
+  const elapsed = Math.floor(Date.now() / 1000) - epoch;
+  if (elapsed < 0) return;
+  const m = Math.floor(elapsed / 60);
+  const s = elapsed % 60;
+  el.textContent = m > 0 ? m + 'm ' + s + 's' : s + 's';
+}
+awf_tick_stage();
+setInterval(awf_tick_stage, 1000);
 
 // ─── Handoff details state persistence (survives location.reload) ────
 function awf_save_open_details() {

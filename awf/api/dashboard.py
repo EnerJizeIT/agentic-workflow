@@ -167,11 +167,12 @@ def _read_handoffs(project_dir: Path) -> list[dict[str, str]]:
     return handoffs
 
 
-def _extract_stage_timings(project_dir: Path) -> dict[str, str]:
+def _extract_stage_timings(project_dir: Path) -> tuple[dict[str, str], int]:
     """Extract per-stage durations from orchestrator.log.
 
-    Returns {stage_name: "Xm Ys"} for completed stages.
-    Current stage shows elapsed (ongoing).
+    Returns (timings_dict, current_stage_epoch).
+    - timings_dict: {stage_name: "Xm Ys"} for completed + current stages.
+    - current_stage_epoch: Unix epoch of current stage start (for live JS ticker).
     """
     import re as _re
     from datetime import datetime as _dt
@@ -179,12 +180,12 @@ def _extract_stage_timings(project_dir: Path) -> dict[str, str]:
 
     log_file = project_dir / ".agentic" / "logs" / "orchestrator.log"
     if not log_file.is_file():
-        return {}
+        return {}, 0
 
     try:
         log_text = log_file.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return {}
+        return {}, 0
 
     time_pat = _re.compile(r"\[(\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})Z)\]")
     stage_pat = _re.compile(r"Stage\s+\d+:\s+(\S+)")
@@ -196,17 +197,14 @@ def _extract_stage_timings(project_dir: Path) -> dict[str, str]:
         sm = stage_pat.search(line)
         if tm and sm:
             try:
-                h, mn, s = int(tm.group(2)), int(tm.group(3)), int(tm.group(4))
-                epoch = _dt(2026, 8, 5, h, mn, s, tzinfo=_tz.utc).timestamp()  # approximate
-                # Better: parse full ISO
                 dt = _dt.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
                 epoch = int(dt.timestamp())
                 transitions.append((epoch, sm.group(1)))
             except (ValueError, TypeError):
                 continue
 
-    if len(transitions) < 2:
-        return {}
+    if not transitions:
+        return {}, 0
 
     timings: dict[str, str] = {}
     for i in range(len(transitions) - 1):
@@ -225,7 +223,7 @@ def _extract_stage_timings(project_dir: Path) -> dict[str, str]:
         m, s = divmod(elapsed, 60)
         timings[last_name] = f"{m}m {s}s" if m > 0 else f"{s}s"
 
-    return timings
+    return timings, last_epoch
 
 
 def _read_tasks(project_dir: Path, todo_id: str | None) -> list[dict[str, str]]:
@@ -475,41 +473,50 @@ def generate_dashboard(project_dir: Path) -> Path | None:
                 completed_todos.append(d.name)
 
     # Per-stage timings from orchestrator.log
-    stage_timings = _extract_stage_timings(project_dir)
+    stage_timings, current_stage_epoch = _extract_stage_timings(project_dir)
 
-    # Elapsed time — track per-STAGE start, not pipeline start.
-    # User feedback: elapsed was infinite (counted from pipeline start forever).
-    # Now: counts from current stage start, freezes when not running.
+    # Elapsed time — from FIRST agent stage start to verify handoff.
+    # User feedback: per-stage reset was confusing. Now: one continuous
+    # timer from first agent launch, freezes when verify starts.
     elapsed_epoch = 0
     elapsed_frozen = False
     if state:
         status_for_elapsed, _, _, _, _ = _determine_status(state)
         if status_for_elapsed in ("running", "verify"):
-            # Find current stage start time from orchestrator.log
             log_file_elapsed = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
             if log_file_elapsed.is_file():
                 try:
                     log_text_elapsed = log_file_elapsed.read_text(encoding="utf-8", errors="replace")
                     time_pat_e = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-                    stage_pat_e = re.compile(r"Stage\s+\d+:\s+(\S+)")
-                    last_stage_ts = None
+                    # Match agent stages: "Stage N: name (role :: execute)"
+                    agent_stage_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
+                    # Match verify stage
+                    verify_stage_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
+                    first_agent_ts = None
+                    verify_ts = None
                     for line in log_text_elapsed.splitlines():
                         tm = time_pat_e.search(line)
-                        sm = stage_pat_e.search(line)
-                        if tm and sm:
-                            try:
-                                dt = datetime.strptime(
-                                    tm.group(1), "%Y-%m-%dT%H:%M:%SZ"
-                                ).replace(tzinfo=timezone.utc)
-                                last_stage_ts = dt
-                            except (ValueError, TypeError):
-                                continue
-                    if last_stage_ts:
-                        elapsed_epoch = int(last_stage_ts.timestamp())
+                        if not tm:
+                            continue
+                        try:
+                            dt = datetime.strptime(
+                                tm.group(1), "%Y-%m-%dT%H:%M:%SZ"
+                            ).replace(tzinfo=timezone.utc)
+                        except (ValueError, TypeError):
+                            continue
+                        if agent_stage_pat.search(line) and first_agent_ts is None:
+                            first_agent_ts = dt
+                        if verify_stage_pat.search(line):
+                            verify_ts = dt
+                    # Use first agent start; freeze at verify start if found
+                    if verify_ts:
+                        elapsed_epoch = int(first_agent_ts.timestamp()) if first_agent_ts else 0
+                        elapsed_frozen = True
+                    elif first_agent_ts:
+                        elapsed_epoch = int(first_agent_ts.timestamp())
                 except OSError:
                     pass
-        else:
-            # Pipeline done/idle/dead — freeze timer at last known value
+        elif status_for_elapsed in ("done", "idle", "dead"):
             elapsed_frozen = True
 
     elapsed = _format_elapsed(
@@ -557,6 +564,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             tasks_done=tasks_done,
             completed_todos=completed_todos,
             stage_timings=stage_timings,
+            current_stage_epoch=current_stage_epoch,
             worker_activity=_read_worker_activity(state),
         )
     except Exception as e:
