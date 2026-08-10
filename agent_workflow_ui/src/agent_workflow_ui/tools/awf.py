@@ -178,6 +178,12 @@ async def awf_start(
                 result["dashboard_opened"] = True
         except Exception:
             result["dashboard_opened"] = False
+    # SMO: explicit next_action — weak models need this to avoid polling.
+    if result.get("status") == "ok" and result.get("run_mode") == "background":
+        result["next_action"] = (
+            "GO IDLE. Dashboard already opened. Do NOT call awf_wait_for_event "
+            "or awf_status in a loop. Wait for the user to write you."
+        )
     return result
 
 

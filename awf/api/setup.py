@@ -425,6 +425,17 @@ def apply_project_setup(
         supervisor_instructions=supervisor_instructions,
     )
 
+    # SMO: advance phase form→normalize after successful materialization.
+    # Dogfood #4: supervisor had to call confirm_normalized TWICE because
+    # form submission didn't advance the phase.
+    if pipeline_path:
+        try:
+            from ..phase import advance_phase, detect_phase
+            if detect_phase(project_dir) == "form":
+                advance_phase(project_dir, setup_done=True)
+        except Exception:
+            pass  # phase advance is best-effort, not critical
+
     return ApplyProjectSetupResult(
         pipeline_file=str(pipeline_path) if pipeline_path else None,
         config_updated=config_updated or bool(context_message) or bool(supervisor_instructions),

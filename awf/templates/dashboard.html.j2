@@ -463,8 +463,11 @@ setInterval(awf_tick, 1000);
   {% endif %}
 
   // file:// protocol: fetch() is blocked by CORS → use location.reload()
+  // BUT pause refresh when user has open <details> (reading handoffs etc.)
   if (window.location.protocol === 'file:') {
     setInterval(function() {
+      // Don't reload if user is reading expanded content
+      if (document.querySelectorAll('details[open]').length > 0) return;
       location.reload();
     }, 5000);
     return;

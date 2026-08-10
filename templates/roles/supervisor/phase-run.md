@@ -1,20 +1,17 @@
 # Phase: run
 
-## Pipeline is running
+## Pipeline is running — YOU ARE IDLE
 
-You are IDLE. The user monitors the dashboard and writes you when needed.
+Dashboard auto-opens inside `awf_start`. Do NOT call `awf_open_pipeline_dashboard`.
 
-## Rules
-1. Do NOT poll `awf_wait_for_event` — you are NOT a watchkeeper.
-2. Do NOT call `awf_status` in a loop.
-3. Respond to user messages reactively.
+## ABSOLUTE RULES (violation = wasted tokens + annoyed user)
+1. **Do NOT call `awf_wait_for_event`.** It blocks 30s for nothing.
+2. **Do NOT call `awf_status` in a loop.** One check is enough, then stop.
+3. **Do NOT call any awf tool unless the user writes you first.**
+4. Tell user: "Pipeline running. Dashboard open. Write me when done or if issues."
+5. **STOP.** Do nothing else. Wait for user message.
 
 ## When user writes you
-- "Pipeline finished" / "Done" → check `awf_status`, proceed to verify.
-- "Salvage" / "Blocked" → check `awf_status`, act on event:
-  - Salvage: read SALVAGE-{todo}.md, check git diff. ACK or `awf_retry_stage`.
-  - Blocked: read BLOCKED-{todo}.md, resolve or adjust TODO.
+- "Pipeline finished" / "Done" / "verify" → check `awf_status` ONCE, proceed to verify.
+- "Salvage" / "Blocked" → check `awf_status`, act on event.
 - Any question → answer, then go idle again.
-
-## Token economy
-Every poll burns tokens for waiting. Idle supervisor costs zero tokens.
