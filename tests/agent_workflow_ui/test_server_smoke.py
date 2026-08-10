@@ -91,6 +91,7 @@ def test_all_tools_registered():
         "awf_baseline",
         "awf_rollback",
         "awf_approve",
+        "awf_reject",
         "awf_report",
         "awf_reset",
         "awf_add_role",

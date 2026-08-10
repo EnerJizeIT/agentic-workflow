@@ -38,6 +38,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_baseline, name="awf_baseline")
     mcp.add_tool(awf.awf_rollback, name="awf_rollback")
     mcp.add_tool(awf.awf_approve, name="awf_approve")
+    mcp.add_tool(awf.awf_reject, name="awf_reject")
     mcp.add_tool(awf.awf_report, name="awf_report")
     mcp.add_tool(awf.awf_reset, name="awf_reset")
     mcp.add_tool(awf.awf_add_role, name="awf_add_role")

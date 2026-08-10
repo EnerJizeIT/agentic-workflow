@@ -363,6 +363,64 @@ async def awf_approve(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+async def awf_reject(
+    todo_id: str,
+    reason: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Reject work at verify stage — creates REVIEW signal for replan.
+
+    Writes REVIEW-{todo_id}.md to outbox + creates signal. Pipeline
+    detects REVIEW → replan (supervisor writes new TODO).
+
+    Args:
+        todo_id: TODO identifier to reject.
+        reason: Why the work is rejected (what needs fixing).
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: todo_id, review_file, next_action.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    if not todo_id:
+        return {"status": "error", "error": "todo_id is required"}
+    if not _re.match(r"^TODO-\d{4,}$", todo_id):
+        return {"status": "error", "error": f"invalid todo_id '{todo_id}', expected TODO-NNNN"}
+    if not reason.strip():
+        return {"status": "error", "error": "reason is required"}
+
+    try:
+        pd = _resolve_project_dir(project_dir)
+        outbox = _Path(pd) / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+
+        review_file = outbox / f"REVIEW-{todo_id}.md"
+        review_file.write_text(
+            f"# REVIEW — {todo_id}\n\n## Reason\n{reason}\n",
+            encoding="utf-8",
+        )
+
+        # awf_kill to stop the waiting pipeline
+        try:
+            api.kill_pipeline(pd)
+        except Exception:
+            pass
+
+        return {
+            "status": "ok",
+            "todo_id": todo_id,
+            "review_file": str(review_file),
+            "next_action": (
+                f"{todo_id} rejected. Pipeline killed. "
+                "Fix the issues, then: awf_dispatch_todo → awf_start."
+            ),
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
 # ─── Reports ────────────────────────────────────────────────────────────
 
 
