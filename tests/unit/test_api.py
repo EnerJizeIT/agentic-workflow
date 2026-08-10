@@ -426,6 +426,10 @@ class TestPipelineRunningDetection:
         """PID file exists but log file missing → log_tail is None."""
         (tmp_git_repo / ".agentic").mkdir()
         (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
+        # P2: create state with a PID so log_tail logic actually runs,
+        # but don't create the log file — verify graceful None return.
+        from awf.pipeline_state import write_state
+        write_state(tmp_git_repo, pipeline_pid="99999", logs_dir=tmp_git_repo / ".agentic" / "logs")
         result = api.get_status(tmp_git_repo)
         assert result.log_tail is None
 
@@ -879,6 +883,14 @@ class TestResultAsDict:
             StartResult, AnalyzeRolesResult,
         ]:
             assert hasattr(cls, "as_dict"), f"{cls.__name__} missing as_dict()"
+        # P2: verify as_dict actually returns a non-empty dict (not just exists)
+        sample = BaselineResult(
+            todo_id="TODO-0001", sha="abc123", is_git_repo=True,
+            files_created=[], test_status="passed", test_log_excerpt="",
+        )
+        d = sample.as_dict()
+        assert isinstance(d, dict) and len(d) > 0, "as_dict() returned empty dict"
+        assert "todo_id" in d, "as_dict() missing expected field"
 
 
 # ─── start_pipeline / continue_pipeline ─────────────────────────────────
