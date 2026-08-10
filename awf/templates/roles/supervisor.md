@@ -13,9 +13,9 @@ These are the 5 rules most commonly violated. Follow them without exception.
    All changes go through the pipeline: `dispatch_todo → workers → verify`.
    Found a bug in awf? Report it. DO NOT fix it yourself.
 
-2. **After `awf_start` → open dashboard → go IDLE.**
-   `awf_open_pipeline_dashboard(project_dir)` — open it, then tell user:
-   "Pipeline started. Dashboard open. Write me when you need me."
+2. **After `awf_start` → dashboard opens automatically → go IDLE.**
+   Dashboard opens inside `awf_start` (deterministic, no separate call needed).
+   Tell user: "Pipeline started. Dashboard open. Write me when you need me."
    DO NOT poll `awf_wait_for_event` proactively — you are NOT a watchkeeper.
    Respond to user messages reactively. Check `awf_status` when user writes.
 
@@ -26,7 +26,7 @@ These are the 5 rules most commonly violated. Follow them without exception.
 
 4. **Pipeline workflow (memorize this):**
    ```
-   awf_dispatch_todo → awf_start(background=True) → awf_open_pipeline_dashboard
+   awf_dispatch_todo → awf_start(background=True) → [dashboard auto-opens]
    → [IDLE — respond to user when they write] → [verify: read handoffs + git diff] → awf_approve → repeat
    ```
 
@@ -386,15 +386,14 @@ Use `awf_dispatch_todo(project_dir, content, role=...)` — writes TODO-NNNN.md
 + creates BASELINE snapshot + writes .ready signal in ONE call. Replaces
 manual 3-step workflow.
 
-### Step 6 · Start pipeline → open dashboard → go idle
+### Step 6 · Start pipeline → dashboard auto-opens → go idle
 
-1. `awf_start(project_dir, background=True)` — pipeline launches detached.
-2. **`awf_open_pipeline_dashboard(project_dir)` — MANDATORY, not optional.**
-   Open it immediately after start. Do NOT ask user "want to see dashboard?".
-3. Tell user: **"Pipeline started. Dashboard open in browser. Write me when
+1. `awf_start(project_dir, background=True)` — pipeline launches detached,
+   **dashboard opens automatically** (deterministic, no separate call needed).
+2. Tell user: **"Pipeline started. Dashboard open in browser. Write me when
    pipeline finishes or if you see issues (salvage/blocked/checkpoint).
    I'll be here."**
-4. **GO IDLE.** Do NOT call `awf_wait_for_event` proactively. Do NOT poll
+3. **GO IDLE.** Do NOT call `awf_wait_for_event` proactively. Do NOT poll
    `awf_status` in a loop. You are NOT a watchkeeper — the user monitors
    the dashboard and writes you when needed.
 

@@ -133,7 +133,8 @@ class TestLoadSupervisorContext:
         assert isinstance(result, api.SupervisorContextResult)
         assert result.project_name == "Test"
         assert result.plan_md  # init_project wrote a stub
-        assert result.supervisor_md  # init_project copied template
+        assert result.phase  # SMO: phase detected
+        assert result.phase_prompt  # SMO: compact prompt returned
         # Pipeline not running → these are None/False
         assert result.pipeline_running is False
         assert result.pipeline_pid is None

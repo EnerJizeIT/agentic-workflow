@@ -84,7 +84,7 @@ def init_project(
             try:
                 from ..phase import detect_phase, get_phase_prompt
                 phase = detect_phase(project_dir)
-                supervisor_md = get_phase_prompt(phase)
+                supervisor_md = get_phase_prompt(phase, project_dir)
             except Exception:
                 supervisor_md = supervisor_md_path.read_text(encoding="utf-8")
         plan_md = ""
@@ -209,7 +209,7 @@ def init_project(
     try:
         from ..phase import detect_phase, get_phase_prompt
         phase = detect_phase(project_dir)
-        supervisor_md = get_phase_prompt(phase)
+        supervisor_md = get_phase_prompt(phase, project_dir)
     except Exception:
         supervisor_md = supervisor_md_full  # fallback to full on any error
 

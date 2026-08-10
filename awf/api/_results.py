@@ -210,6 +210,8 @@ class SupervisorContextResult:
     vision_excerpt: str
     plan_md: str
     supervisor_md: str
+    phase: str  # SMO: current phase (init/goal/form/normalize/brief/run/verify/done)
+    phase_prompt: str  # SMO: compact phase-specific instructions
     active_todos: list[dict[str, Any]]
     done_count: int
     blocked_count: int

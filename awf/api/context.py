@@ -332,8 +332,17 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
     plan_path = project_dir / ".agentic" / "phases" / "plan.md"
     plan_md = read_file_text(plan_path) if plan_path.is_file() else ""
 
-    supervisor_md_path = project_dir / ".agentic" / "roles" / "supervisor.md"
-    supervisor_md = read_file_text(supervisor_md_path) if supervisor_md_path.is_file() else ""
+    # SMO: detect phase + return compact prompt (not full 639-line supervisor.md).
+    # Dogfood finding: supervisor reads full supervisor.md and ignores phase system.
+    try:
+        from ..phase import detect_phase, get_phase_prompt
+        phase = detect_phase(project_dir)
+        phase_prompt = get_phase_prompt(phase, project_dir)
+    except Exception:
+        phase = "unknown"
+        phase_prompt = ""
+
+    supervisor_md = phase_prompt  # compact, not full
 
     # Status (active todos, done/blocked counts)
     status = get_status(project_dir)
@@ -389,6 +398,8 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         vision_excerpt=vision_excerpt,
         plan_md=plan_md,
         supervisor_md=supervisor_md,
+        phase=phase,
+        phase_prompt=phase_prompt,
         active_todos=status.active_todos,
         done_count=status.done_count,
         blocked_count=status.blocked_count,
