@@ -1005,7 +1005,7 @@ async def awf_confirm_normalized(
         )
         # SMO: next_action guides weak models
         _NEXT = {
-            "brief": "Изучи vision и план, напиши BRIEF-TODO-NNNN.md, создай .ready сигнал.",
+            "brief": "Изучи vision и BACKLOG, вызови awf_dispatch_todo с задачей.",
             "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
         }
         return {
