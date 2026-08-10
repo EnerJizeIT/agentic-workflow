@@ -508,8 +508,8 @@ document.querySelectorAll('details.handoff-item').forEach(d => {
 
 // ─── Smart refresh — file:// uses reload, http:// uses fetch ─────────
 (function() {
-  // If pipeline is done, don't auto-refresh
-  {% if status == 'done' %}
+  // If pipeline is done or at verify, don't auto-refresh
+  {% if status in ('done', 'verify') %}
   return;
   {% endif %}
 
@@ -566,6 +566,10 @@ document.querySelectorAll('details.handoff-item').forEach(d => {
 {% if status == 'done' %}
 <div class="footer done-notice">
   ✅ Pipeline complete — return to chat for supervisor verify
+</div>
+{% elif status == 'verify' %}
+<div class="footer">
+  🔍 Verify stage — refresh paused. Return to chat.
 </div>
 {% else %}
 <div class="footer">
