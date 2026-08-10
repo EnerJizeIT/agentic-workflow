@@ -80,7 +80,13 @@ def init_project(
         supervisor_md_path = project_dir / "templates" / "roles" / "supervisor.md"
         supervisor_md = ""
         if supervisor_md_path.is_file():
-            supervisor_md = supervisor_md_path.read_text(encoding="utf-8")
+            # SMO: compact phase prompt, not full supervisor.md
+            try:
+                from ..phase import detect_phase, get_phase_prompt
+                phase = detect_phase(project_dir)
+                supervisor_md = get_phase_prompt(phase)
+            except Exception:
+                supervisor_md = supervisor_md_path.read_text(encoding="utf-8")
         plan_md = ""
         plan_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
         if plan_path.is_file():
@@ -193,9 +199,19 @@ def init_project(
 
     update_gitignore(project_dir)
 
-    supervisor_md = read_file_text(supervisor_dest) if supervisor_dest.is_file() else ""
+    supervisor_md_full = read_file_text(supervisor_dest) if supervisor_dest.is_file() else ""
     plan_md = read_file_text(plan_path)
     vision_excerpt = read_file_text(vision_path, max_chars=4000) if vision_path else ""
+
+    # SMO: return compact phase prompt instead of full 639-line supervisor.md.
+    # Dogfood finding: supervisor reads full supervisor.md and ignores phase system.
+    # Compact prompt tells supervisor to call awf_current_step for phase guidance.
+    try:
+        from ..phase import detect_phase, get_phase_prompt
+        phase = detect_phase(project_dir)
+        supervisor_md = get_phase_prompt(phase)
+    except Exception:
+        supervisor_md = supervisor_md_full  # fallback to full on any error
 
     next_action = (
         "Открой project-setup форму (MCP tool open_form, template='project-setup') "

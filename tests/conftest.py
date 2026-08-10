@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+import webbrowser
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,10 @@ os.environ.setdefault("AWF_PLAN_CHECKPOINT", "false")
 # If a test reaches commit_gate without pre-created APPROVE file,
 # it would sleep for 30 minutes.
 os.environ.setdefault("AWF_APPROVE_TIMEOUT_SECONDS", "5")
+
+# Suppress webbrowser.open during tests (deterministic dashboard opening
+# would spawn browser windows on every test that triggers awf_start).
+webbrowser.open = lambda *a, **kw: True
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"

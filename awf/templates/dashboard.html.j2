@@ -145,12 +145,14 @@
     .card-body { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
     .card.expanded .card-body { max-height: 2000px; }
 
-    .handoff-item { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 12px; align-items: flex-start; }
+    .handoff-item { padding: 12px 20px; border-top: 1px solid var(--border); }
+    .handoff-item summary { cursor: pointer; display: flex; gap: 12px; align-items: flex-start; list-style: none; }
+    .handoff-item summary::-webkit-details-marker { display: none; }
     .handoff-role { font-family: var(--mono); font-size: 12px; color: var(--accent-purple); min-width: 130px; padding-top: 2px; }
     .handoff-content { flex: 1; }
     .handoff-file { font-family: var(--mono); font-size: 13px; color: var(--accent-cyan); margin-bottom: 4px; }
-    .handoff-preview { font-size: 12px; color: var(--text-muted); white-space: pre-wrap; max-height: 60px; overflow: hidden; position: relative; }
-    .handoff-preview::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 20px; background: linear-gradient(transparent, var(--bg-card)); }
+    .handoff-preview { font-size: 12px; color: var(--text-muted); white-space: pre-wrap; }
+    .handoff-full { font-size: 12px; color: var(--text); white-space: pre-wrap; padding: 10px 0 4px 0; border-top: 1px solid var(--border); margin-top: 8px; max-height: 400px; overflow-y: auto; font-family: var(--mono); }
 
     .events-stream { padding: 12px 20px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 13px; max-height: 400px; overflow-y: auto; }
     .event-line { display: flex; gap: 12px; padding: 3px 0; animation: slideIn 0.3s ease; }
@@ -218,7 +220,7 @@
     </div>
     {% if elapsed %}
     <div class="stat">
-      <div class="stat-value elapsed" id="elapsed-timer" data-epoch="{{ elapsed_epoch }}">{{ elapsed }}</div>
+      <div class="stat-value elapsed" id="elapsed-timer" data-epoch="{{ elapsed_epoch }}" data-frozen="{{ elapsed_frozen | default('false') }}">{{ elapsed }}</div>
       <div class="stat-label">Elapsed</div>
     </div>
     {% endif %}
@@ -313,7 +315,7 @@
     </div>
     <div class="card-body">
       <div class="events-stream">
-        {% for event in events %}
+        {% for event in events | reverse %}
         <div class="event-line">
           <span class="event-ts">{{ event.ts }}</span>
           <span class="event-msg {{ event.type }}">{{ event.msg }}</span>
@@ -334,15 +336,20 @@
     </div>
     <div class="card-body">
       {% for handoff in handoffs %}
-      <div class="handoff-item">
-        <div class="handoff-role">{{ handoff.role }}</div>
-        <div class="handoff-content">
-          <div class="handoff-file">{{ handoff.file }}</div>
-          {% if handoff.preview %}
-          <div class="handoff-preview">{{ handoff.preview }}</div>
-          {% endif %}
-        </div>
-      </div>
+      <details class="handoff-item">
+        <summary>
+          <div class="handoff-role">{{ handoff.role }}</div>
+          <div class="handoff-content">
+            <div class="handoff-file">{{ handoff.file }}</div>
+            {% if handoff.preview %}
+            <div class="handoff-preview">{{ handoff.preview }}</div>
+            {% endif %}
+          </div>
+        </summary>
+        {% if handoff.content and handoff.content|trim %}
+        <div class="handoff-full">{{ handoff.content }}</div>
+        {% endif %}
+      </details>
       {% endfor %}
     </div>
   </div>
@@ -432,6 +439,8 @@ function awf_toggle(card) {
 function awf_tick() {
   const el = document.getElementById('elapsed-timer');
   if (!el) return;
+  // Don't tick if frozen (pipeline done/idle/dead)
+  if (el.dataset.frozen === 'true') return;
   const epoch = parseInt(el.dataset.epoch || '0');
   if (!epoch) return;
   const now = Math.floor(Date.now() / 1000);
@@ -442,14 +451,26 @@ function awf_tick() {
   el.textContent = m > 0 ? m + 'm ' + s + 's' : s + 's';
 }
 awf_tick();
+{% if not elapsed_frozen %}
 setInterval(awf_tick, 1000);
+{% endif %}
 
-// ─── Smart refresh — preserve scroll + cards ─────────────────────────
+// ─── Smart refresh — file:// uses reload, http:// uses fetch ─────────
 (function() {
   // If pipeline is done, don't auto-refresh
   {% if status == 'done' %}
   return;
   {% endif %}
+
+  // file:// protocol: fetch() is blocked by CORS → use location.reload()
+  if (window.location.protocol === 'file:') {
+    setInterval(function() {
+      location.reload();
+    }, 5000);
+    return;
+  }
+
+  // http(s):// protocol: smart fetch-based refresh (preserves scroll/cards)
   setInterval(function() {
     fetch(window.location.href, { cache: 'no-store' })
       .then(r => r.text())

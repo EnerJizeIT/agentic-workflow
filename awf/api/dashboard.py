@@ -155,8 +155,14 @@ def _read_handoffs(project_dir: Path) -> list[dict[str, str]]:
             content = f.read_text(encoding="utf-8")
             preview = content[:200].strip()
         except OSError:
+            content = ""
             preview = ""
-        handoffs.append({"role": role, "file": f.name, "preview": preview})
+        handoffs.append({
+            "role": role,
+            "file": f.name,
+            "preview": preview,
+            "content": content,  # full content for <details> expansion
+        })
 
     return handoffs
 
@@ -471,22 +477,45 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     # Per-stage timings from orchestrator.log
     stage_timings = _extract_stage_timings(project_dir)
 
-    # Elapsed time — pass epoch for live JS ticker
-
+    # Elapsed time — track per-STAGE start, not pipeline start.
+    # User feedback: elapsed was infinite (counted from pipeline start forever).
+    # Now: counts from current stage start, freezes when not running.
     elapsed_epoch = 0
+    elapsed_frozen = False
     if state:
-        started = state.get("started_at") or state.get("updated_at")
-        if started:
-            try:
-                from datetime import datetime as _dt
-                # Parse ISO format: 2026-08-05T15:42:19.123456+00:00
-                dt = _dt.fromisoformat(started)
-                elapsed_epoch = int(dt.timestamp())
-            except (ValueError, TypeError):
-                pass
-    elapsed = _format_elapsed(state.get("started_at") if state else None)
-    if not elapsed and state:
-        elapsed = _format_elapsed(state.get("updated_at"))
+        status_for_elapsed, _, _, _, _ = _determine_status(state)
+        if status_for_elapsed in ("running", "verify"):
+            # Find current stage start time from orchestrator.log
+            log_file_elapsed = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+            if log_file_elapsed.is_file():
+                try:
+                    log_text_elapsed = log_file_elapsed.read_text(encoding="utf-8", errors="replace")
+                    time_pat_e = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
+                    stage_pat_e = re.compile(r"Stage\s+\d+:\s+(\S+)")
+                    last_stage_ts = None
+                    for line in log_text_elapsed.splitlines():
+                        tm = time_pat_e.search(line)
+                        sm = stage_pat_e.search(line)
+                        if tm and sm:
+                            try:
+                                dt = datetime.strptime(
+                                    tm.group(1), "%Y-%m-%dT%H:%M:%SZ"
+                                ).replace(tzinfo=timezone.utc)
+                                last_stage_ts = dt
+                            except (ValueError, TypeError):
+                                continue
+                    if last_stage_ts:
+                        elapsed_epoch = int(last_stage_ts.timestamp())
+                except OSError:
+                    pass
+        else:
+            # Pipeline done/idle/dead — freeze timer at last known value
+            elapsed_frozen = True
+
+    elapsed = _format_elapsed(
+        datetime.fromtimestamp(elapsed_epoch, tz=timezone.utc).isoformat()
+        if elapsed_epoch else None
+    )
 
     # Project name
     import yaml
@@ -509,6 +538,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             todo_summary="",
             elapsed=elapsed,
             elapsed_epoch=elapsed_epoch,
+            elapsed_frozen=elapsed_frozen,
             status=status,
             status_class=status_class,
             status_text=status_text,
