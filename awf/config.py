@@ -1,6 +1,7 @@
 """Read .agentic/config.yaml via PyYAML."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import yaml
@@ -11,8 +12,12 @@ def load(project_dir: str | Path = ".") -> dict:
     cfg = Path(project_dir).resolve() / ".agentic" / "config.yaml"
     if not cfg.exists():
         return {}
-    with cfg.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    try:
+        with cfg.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        print(f"ERROR: config.yaml is malformed: {e}", file=sys.stderr)
+        return {}
     return data if isinstance(data, dict) else {}
 
 

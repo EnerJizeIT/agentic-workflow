@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from jinja2 import ChoiceLoader, Environment, FileSystemLoader, select_autoescape
+from jinja2 import ChoiceLoader, Environment, FileSystemLoader
 
 from .frontmatter import parse_frontmatter
 
@@ -23,7 +23,7 @@ def create_env(templates_dirs: list[Path]) -> Environment:
     ])
     env = Environment(
         loader=loader,
-        autoescape=select_autoescape(["html", "htm", "html.j2"]),
+        autoescape=True,
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,

@@ -191,9 +191,10 @@ def maybe_commit(
     logs_dir: Path,
     auto: bool = False,
     baseline_sha: str = "",
-) -> None:
+) -> bool:
     """Auto-commit if policy is commit_and_next or commit_and_report.
 
+    Returns True if commit succeeded (or was skipped gracefully), False on failure.
     In auto mode, blocks waiting for APPROVE-TODO-NNNN.ready signal file
     before committing. This preserves supervisor approval gate.
 
@@ -202,12 +203,12 @@ def maybe_commit(
     Falls back to `git add -A` if no baseline (back-compat).
     """
     if policy not in ("commit_and_next", "commit_and_report"):
-        return
+        return True
 
     if not git_utils.is_git_repo(project_dir):
         print(f"Not a git repo — skipping auto-commit for '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"No git repo; auto-commit skipped at {stage_name}")
-        return
+        return True
 
     if auto:
         inbox = paths.inbox(project_dir)
@@ -242,7 +243,7 @@ def maybe_commit(
         if not changed:
             print(f"No changes since baseline — skip commit at '{stage_name}'.", file=sys.stderr)
             _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
-            return
+            return True
         committed = _commit_specific_files(project_dir, changed, f"awf({stage_name}): {todo_id}")
         _log(logs_dir, f"A1: committed {len(changed)} files (vs baseline {baseline_sha[:8]})")
     else:
@@ -258,6 +259,8 @@ def maybe_commit(
         print(f"Auto-committed: {todo_id} at '{stage_name}' ({sha}).", file=sys.stderr)
         print("Remember to push: git push origin HEAD", file=sys.stderr)
         _log(logs_dir, f"Auto-committed {todo_id} at {stage_name} ({sha})")
+        return True
     else:
-        print(f"No changes to auto-commit at '{stage_name}'.", file=sys.stderr)
-        _log(logs_dir, f"Nothing to auto-commit at {stage_name}")
+        print(f"Commit FAILED at '{stage_name}' — changes remain uncommitted.", file=sys.stderr)
+        _log(logs_dir, f"Commit failed at {stage_name} — changes left in working tree")
+        return False

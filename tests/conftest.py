@@ -1,6 +1,7 @@
 """Shared pytest fixtures for awf E2E tests."""
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,39 @@ def _isolate_xdg_env(monkeypatch):
         return _real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr("subprocess.run", _intercept_opencode_models)
+
+    # P0.3: also intercept subprocess.Popen to prevent real pipeline subprocess
+    # spawns in unit tests (test_api.py background tests). Returns a fake Popen
+    # that looks "already exited" so callers don't hang.
+    _real_popen = subprocess.Popen
+
+    class _FakePopen:
+        def __init__(self, cmd, *args, **kwargs):
+            self.pid = 99999
+            self.returncode = 0
+            self.stdout = None
+            self.stderr = None
+        def poll(self):
+            return 0
+        def wait(self, timeout=None):
+            return 0
+        def kill(self):
+            pass
+        def communicate(self, timeout=None):
+            return ("", "")
+        def terminate(self):
+            pass
+
+    def _intercept_popen(cmd, *args, **kwargs):
+        # Allow real Popen for tests that explicitly need it (they set
+        # monkeypatch.setattr back to _real_popen or use their own mock).
+        if isinstance(cmd, list) and len(cmd) >= 1:
+            cmd0 = str(cmd[0])
+            if cmd0 in ("python3", "python", sys.executable) and "orchestrator" in " ".join(str(c) for c in cmd):
+                return _FakePopen()
+        return _real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("subprocess.Popen", _intercept_popen)
 
     try:
         from agent_workflow_ui.opencode_config import _invalidate_models_cache

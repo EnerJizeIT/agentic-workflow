@@ -407,10 +407,18 @@ def execute_supervisor_stage(
         # Approved path: ACK or APPROVE signal
         print(f"Supervisor approved {current_todo} ({sup_signal or 'implicit'}).")
         baseline_sha = _read_baseline_sha(project_dir, current_todo)
-        _maybe_commit(
+        commit_ok = _maybe_commit(
             s_name, current_todo, stage.on_approved,
             project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
         )
+        if not commit_ok:
+            print(
+                f"Commit failed for {current_todo} — TODO NOT archived, "
+                f"changes left in working tree for manual review.",
+                file=sys.stderr,
+            )
+            _log(logs_dir, f"Commit failed at verify for {current_todo} — not archived")
+            return current_todo, 0, 1
         _mark_plan_step_done(project_dir, current_todo, logs_dir)
         from .todos import archive_todo
         archived = archive_todo(project_dir, current_todo)

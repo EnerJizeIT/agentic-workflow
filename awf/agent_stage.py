@@ -97,17 +97,15 @@ def run_agent_stage(
 
     cmd += ["--", prompt]
 
-    # BD-20: watch for DONE / BLOCKED signal in outbox.
-    # BD-21: watch BOTH `.ready` and `.md.ready` (LLMs sometimes append
-    # .ready to the .md filename).
+    # BD-20: watch for expected signal files in outbox.
+    # P1: watch ALL expected prefixes, not just DONE/BLOCKED — otherwise
+    # REVIEW-APPROVED, TEST-PASSED etc. signals aren't detected until
+    # subprocess exits, causing unnecessary delays.
     watch_paths: list[Path] = []
     if todo_id:
-        watch_paths = [
-            outbox / f"DONE-{todo_id}.ready",
-            outbox / f"DONE-{todo_id}.md.ready",
-            outbox / f"BLOCKED-{todo_id}.ready",
-            outbox / f"BLOCKED-{todo_id}.md.ready",
-        ]
+        for prefix in expected_signal_prefixes("execute"):
+            watch_paths.append(outbox / f"{prefix}-{todo_id}.ready")
+            watch_paths.append(outbox / f"{prefix}-{todo_id}.md.ready")
 
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal

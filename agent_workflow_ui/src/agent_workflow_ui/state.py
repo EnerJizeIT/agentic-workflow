@@ -30,6 +30,7 @@ class FormRecord:
     submitted_at: datetime | None = None
     cancelled_at: datetime | None = None
     expires_at: datetime | None = None
+    claimed_at: datetime | None = None
     data_keys: list = field(default_factory=list)
     project_dir: Path | None = None  # absolute path to awf project, set by agent
 
@@ -159,6 +160,7 @@ class FormRegistry:
             if record is None or record.status != "pending":
                 return False
             record.status = "submitting"  # intermediate state
+            record.claimed_at = datetime.now(timezone.utc)
             self._persist()
             return True
 
@@ -175,7 +177,24 @@ class FormRegistry:
 
     def list_pending(self) -> list[FormRecord]:
         with self._lock:
-            return [r for r in self._forms.values() if r.status == "pending"]
+            now = datetime.now(timezone.utc)
+            result = []
+            for r in self._forms.values():
+                if r.status == "pending":
+                    result.append(r)
+                elif r.status == "submitting":
+                    # P1: auto-revert stale "submitting" forms (crash recovery).
+                    # If a form has been in "submitting" for >10 minutes, the
+                    # process that claimed it likely crashed. Revert to pending.
+                    if r.claimed_at:
+                        age = (now - r.claimed_at).total_seconds()
+                    else:
+                        age = 600  # no timestamp → assume stale
+                    if age > 600:
+                        r.status = "pending"
+                        self._persist()
+                        result.append(r)
+            return result
 
     def next_form_id(self) -> str:
         """Generate a globally unique form_id.

@@ -211,6 +211,8 @@ class SubmitHandler(BaseHTTPRequestHandler):
         # on success.
         try:
             _atomic_write_yaml(target, payload)
+            import os as _os
+            _os.chmod(target, 0o600)
         except OSError as e:
             self.registry.update_status(form_id, "pending")
             log.error("Failed to write submit file %s: %s", target, e)

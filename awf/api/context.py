@@ -356,6 +356,7 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     git_diff_stat = diff_result.stdout if diff_result.returncode == 0 else ""
 

@@ -69,12 +69,11 @@ def awf_subprocess_env() -> dict[str, str]:
     })
     merged["permission"] = merged_permissions
 
-    # KA2-7: guard against E2BIG (Linux env var limit ~128KB).
-    # If merged config is too large (many providers/models/agents), strip
-    # to permissions only — that's the only part awf actually overrides.
-    config_json = json.dumps(merged)
-    if len(config_json) > 100_000:
-        config_json = json.dumps({"permission": merged_permissions})
+    # P1 security: only serialize permission overrides to env — never API keys,
+    # providers, or other sensitive fields from opencode.json. Workers only
+    # need the permission overrides; everything else is loaded by opencode
+    # itself from the real config file.
+    config_json = json.dumps({"permission": merged_permissions})
     env["OPENCODE_CONFIG_CONTENT"] = config_json
 
     # BD-25: strip server env vars

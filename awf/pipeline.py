@@ -12,6 +12,7 @@ carry an `action:` field — it's read but ignored. kind always wins.
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -84,8 +85,12 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     import yaml
 
     p = Path(pipeline_file)
-    with p.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    try:
+        with p.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        print(f"ERROR: pipeline file {p.name} is malformed: {e}", file=sys.stderr)
+        return []
 
     raw_stages = (data or {}).get("stages") or []
     result: list[Stage] = []

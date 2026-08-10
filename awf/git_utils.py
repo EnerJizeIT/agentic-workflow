@@ -9,7 +9,7 @@ def _git(cwd: Path, *args: str, check: bool = True) -> str:
     """Run a git command and return stdout."""
     result = subprocess.run(
         ["git"] + list(args),
-        cwd=cwd, capture_output=True, text=True, check=False,
+        cwd=cwd, capture_output=True, text=True, check=False, timeout=30,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")

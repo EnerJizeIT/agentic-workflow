@@ -469,6 +469,7 @@ def get_report(project_dir: Path) -> ReportResult:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     git_diff = diff_result.stdout if diff_result.returncode == 0 else ""
 

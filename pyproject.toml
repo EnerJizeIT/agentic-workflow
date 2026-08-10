@@ -7,7 +7,7 @@ name = "awf"
 version = "0.4.0"
 description = "Agentic Workflow Framework — declarative multi-agent pipeline"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "EnerJize" }]
 dependencies = [
