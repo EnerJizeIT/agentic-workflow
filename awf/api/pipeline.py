@@ -466,18 +466,9 @@ def start_pipeline(
                 ),
             )
 
-        # Dogfood-8: warn supervisor about BD-36 checkpoint
-        msg = (
-            f"awf start running in background (PID {pid}). "
-            f"NEXT: call awf_wait_for_event(project_dir, timeout=30) to monitor progress."
-        )
-        if checkpoint_active:
-            msg += (
-                ". BD-36 checkpoint ENABLED — after plan stage, HTML form opens "
-                "in user's browser. Poll awf_status in 2-3 sec to get "
-                "checkpoint_form_url, then tell user to approve. DO NOT call "
-                "awf_approve (that's for verify stage only)."
-            )
+        # SMO: message tells supervisor to GO IDLE (not poll).
+        # Dogfood #4: old message said "call awf_wait_for_event" → model polled.
+        msg = f"awf start running in background (PID {pid}). GO IDLE — wait for user."
         return StartResult(
             run_mode="background",
             run_id=pid,
@@ -621,7 +612,7 @@ def continue_pipeline(
         )
         if from_stage:
             msg += f", resuming from stage '{from_stage}'"
-        msg += ". NEXT: call awf_wait_for_event(project_dir, timeout=30) to monitor progress."
+        msg += ". GO IDLE — wait for user."
         return StartResult(
             run_mode="background",
             run_id=pid,

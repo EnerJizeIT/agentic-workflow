@@ -343,7 +343,13 @@ async def awf_approve(
     """
     try:
         result = api.approve_commit(_resolve_project_dir(project_dir), todo_id)
-        return _ok(result)
+        response = _ok(result)
+        # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat)
+        response["next_action"] = (
+            f"{todo_id} approved. Pipeline will commit and continue. "
+            "DO NOT call awf_approve again. Wait for user to write you."
+        )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -523,7 +529,12 @@ async def awf_dispatch_todo(
             role=role,
             todo_id=todo_id,
         )
-        return _ok(result)
+        response = _ok(result)
+        # SMO: next_action guides weak models
+        response["next_action"] = (
+            f"{result.todo_id} dispatched. Call awf_start(background=True) to launch pipeline."
+        )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
