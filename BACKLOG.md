@@ -97,11 +97,8 @@ injection (non-issue without shell=True).
 ✅ `.9` **Submitting forms stuck** — TTL auto-revert after 10min.
 ✅ `.10` **inputs/*.yaml chmod** — 0o600 after write.
 ✅ `.11` **Subprocess timeouts** — git_utils, context, lifecycle (30s).
-⬜ `.12` **[HIGH] Frontmatter regex greedy/lazy** — `frontmatter.py:33`.
-   `^---\s*\n(.*?)\n---\s*\n(.*)$` с DOTALL — `---` в body (e.g. `<hr>`) ломает parse.
-   Fix: non-greedy на закрывающий `---` или anchor на start-of-line.
-⬜ `.13` **[HIGH] HTTP unicode в form_id** — `http_endpoint.py:49-58`.
-   `_is_valid_form_id` не проверяет ASCII-only. Fix: `form_id.isascii()`.
+✅ `.12` **Frontmatter regex** — `[ \t]*` вместо `\s*` (precise delimiter).
+✅ `.13` **HTTP unicode form_id** — `isascii()` check added.
 ⬜ `.14` **[HIGH] PID reuse TOCTOU** — `pipeline.py:58-65`. Между `os.kill(pid,0)`
    и `/proc/<pid>/cmdline` PID может быть переиспользован → awf_kill убивает не тот.
    P2 на pet-проекте (требует rapid PID cycling).
@@ -122,11 +119,9 @@ injection (non-issue without shell=True).
 ⬜ `.24` **[MED] CSRF token** — `http_endpoint.py:94` no Origin/Referer → True.
 ⬜ `.25` **[MED] pipeline_state Disk I/O inside lock** — YAML serialize blocks
    thread pool. (Low priority для pet-проекта.)
-⬜ `.26` **[MED] agent_stage handoff by mtime** — rapid retry (same second) →
-   nondeterministic order → stale handoff. Fix: sort by name.
-⬜ `.27` **[MED] plan_checkpoint TOCTOU port race** — между _find_free_port и bind.
-   Fix: port 0 (OS assigns).
-⬜ `.28` **[MED] forms.py template whitelist** — LLM может передать любой путь.
+✅ `.26` **agent_stage handoff** — sort by numeric ID, not mtime.
+✅ `.27` **plan_checkpoint TOCTOU** — port=0, OS assigns free port.
+✅ `.28` **forms.py template whitelist** — project-setup, increment-planning, ack.
 ⬜ `.29` **[MED] test_audit_followup TOCTOU** — 4 теста in-memory only, не file-based.
 ⬜ `.30` **[MED] test_verify.py edge cases** — partial failure, timeout, exit codes.
 ⬜ `.31` **[MED] Integration no full pipeline flow** — init→dispatch→start→verify→commit.
@@ -140,12 +135,12 @@ injection (non-issue without shell=True).
 ✅ `.35` **commit_gate APPROVE_TIMEOUT** — lazy _get_approve_timeout().
 ✅ `.36` **transitions unknown signal** — escalate (was dead-end stop).
 ✅ `.37` **Test quality** — as_dict content check, log_tail proper test.
-⬜ `.38` **[LOW] _background.py log file handle** — closed before Popen on some OS.
-⬜ `.39` **[LOW] config.py get() null vs missing** — возвращает default для обоих.
-⬜ `.40` **[LOW] plan_progress.py regex** — `\bStep\s+(\d+)\b` matches random text.
-⬜ `.41` **[LOW] setup.py backup overwritten** — нет history backups.
-⬜ `.42` **[LOW] test_signals whitespace .md** — утверждает incorrect behavior.
-⬜ `.43` **[LOW] Duplicate test** — test_hard_timeout_raises × 2 (different files).
+ℹ️ `.38` **Accepted** — with-block close is standard pattern, child fd inherited at fork.
+✅ `.39` **FIXED** — distinguishes null vs missing key.
+✅ `.40` **FIXED** — requires markdown context (bold, checkbox, start-of-line).
+✅ `.41` **FIXED** — timestamped backups, keep last 3.
+✅ `.42` **FIXED** — reject whitespace-only .md (was accepted).
+✅ `.43` **FIXED** — duplicate removed.
 ℹ️ `.44` **_atomic.py cross-filesystem** — accepted (mkstemp(dir=...) гарантирует same FS).
 ℹ️ `.45` **cmd_baseline depends on git binary** — by design (git is prerequisite).
 
