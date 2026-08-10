@@ -113,6 +113,45 @@ def dispatch_todo(
             f"{md_path.name} already exists in inbox. Use a different todo_id "
             "or remove the existing file first."
         )
+
+    # Pre-dispatch check: grep code for key identifiers from TODO content.
+    # Warns if patterns already exist in codebase (task may be already done).
+    pre_check_warnings: list[str] = []
+    try:
+        import re as _re
+        # Extract identifiers: backtick-quoted, camelCase, snake_case
+        identifiers = set()
+        for m in _re.finditer(r'`([a-zA-Z_][a-zA-Z0-9_]{2,})`', content):
+            identifiers.add(m.group(1))
+        for m in _re.finditer(r'\b([a-z][a-zA-Z0-9]*_[a-z][a-zA-Z0-9_]*)\b', content):
+            identifiers.add(m.group(1))
+        identifiers.discard("todo")  # too generic
+
+        if identifiers:
+            import subprocess as _sp
+            for ident in list(identifiers)[:5]:  # check max 5
+                try:
+                    result = _sp.run(
+                        ["grep", "-rl", "--include=*.ts", "--include=*.js",
+                         "--include=*.py", "--include=*.go", "--include=*.rs",
+                         "--include=*.java", "--include=*.rb",
+                         "-d", "skip",
+                         ident, str(project_dir)],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    # Filter out .agentic/ matches
+                    matches = [line for line in result.stdout.strip().splitlines()
+                               if ".agentic/" not in line and "node_modules/" not in line]
+                    if matches:
+                        pre_check_warnings.append(
+                            f"'{ident}' already found in {len(matches)} file(s). "
+                            f"Task may be already implemented — verify before running pipeline."
+                        )
+                except (OSError, _sp.SubprocessError):
+                    pass
+    except Exception:
+        pass  # pre-check is best-effort, never blocks dispatch
+
     atomic_write_text(md_path, body)
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status)
@@ -136,6 +175,7 @@ def dispatch_todo(
             f".agentic/inbox/{todo_id}.ready",
             *baseline.files_created,
         ],
+        pre_check_warnings=pre_check_warnings,
     )
 
 

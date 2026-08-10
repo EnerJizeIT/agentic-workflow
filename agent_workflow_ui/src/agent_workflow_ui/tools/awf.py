@@ -633,10 +633,19 @@ async def awf_dispatch_todo(
             todo_id=todo_id,
         )
         response = _ok(result)
-        # SMO: next_action guides weak models
-        response["next_action"] = (
-            f"{result.todo_id} dispatched. Call awf_start(background=True) to launch pipeline."
-        )
+        # SMO: next_action + pre-check warnings guide weak models
+        warnings = getattr(result, "pre_check_warnings", None) or []
+        if warnings:
+            response["pre_check_warnings"] = warnings
+            response["next_action"] = (
+                f"{result.todo_id} dispatched. ⚠️ Pre-check: "
+                f"{len(warnings)} pattern(s) already in code. "
+                "Verify task is needed BEFORE calling awf_start."
+            )
+        else:
+            response["next_action"] = (
+                f"{result.todo_id} dispatched. Call awf_start(background=True) to launch pipeline."
+            )
         return response
     except api.AwfApiError as e:
         return _err(e)

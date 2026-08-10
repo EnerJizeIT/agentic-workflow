@@ -191,6 +191,7 @@ class DispatchTodoResult:
     baseline_sha: str
     role_hint: str | None
     files_written: list[str]
+    pre_check_warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
