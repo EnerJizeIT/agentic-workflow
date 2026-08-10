@@ -35,7 +35,7 @@ class TestBaselineShellSafety:
         """test_cmd from config runs via shlex.split, not shell=True."""
         proj = self._setup(tmp_path)
         monkeypatch.chdir(proj)
-        args = type("Args", (), {"todo_id": "T1"})()
+        args = type("Args", (), {"todo_id": "TODO-0001"})()
 
         with patch("awf.api.pipeline.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
@@ -60,7 +60,7 @@ class TestBaselineShellSafety:
         )
         monkeypatch.chdir(proj)
 
-        args = type("Args", (), {"todo_id": "T2"})()
+        args = type("Args", (), {"todo_id": "TODO-0002"})()
 
         with patch("awf.api.pipeline.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
@@ -84,7 +84,7 @@ class TestBaselineShellSafety:
         )
         monkeypatch.chdir(proj)
 
-        args = type("Args", (), {"todo_id": "T3"})()
+        args = type("Args", (), {"todo_id": "TODO-0003"})()
 
         with patch("awf.api.pipeline.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
@@ -101,7 +101,7 @@ class TestBaselineShellSafety:
         """Hardcoded python --version uses list form, not shell."""
         proj = self._setup(tmp_path)
         monkeypatch.chdir(proj)
-        args = type("Args", (), {"todo_id": "T4"})()
+        args = type("Args", (), {"todo_id": "TODO-0004"})()
 
         with patch("awf.api.pipeline.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
@@ -149,7 +149,7 @@ class TestBaselineTimeout:
 
         proj = self._setup(tmp_path)
         monkeypatch.chdir(proj)
-        args = type("Args", (), {"todo_id": "TTO"})()
+        args = type("Args", (), {"todo_id": "TODO-0008"})()
 
         real_run = subprocess.run
         call_count = {"n": 0}
@@ -169,14 +169,14 @@ class TestBaselineTimeout:
         # Baseline returns 0 even on test failure (baseline itself succeeded).
         assert result == 0
         # test_status should be 'failed' (logged timeout), not 'passed'.
-        tests_log = (proj / ".agentic" / "context" / "BASELINE-TTO.tests.log").read_text()
+        tests_log = (proj / ".agentic" / "context" / "BASELINE-TODO-0008.tests.log").read_text()
         assert "timed out" in tests_log.lower()
 
     def test_timeout_kwarg_passed_to_subprocess(self, tmp_path: Path, monkeypatch) -> None:
         """Verify timeout= kwarg is actually passed for test_cmd and pip list."""
         proj = self._setup(tmp_path)
         monkeypatch.chdir(proj)
-        args = type("Args", (), {"todo_id": "TTK"})()
+        args = type("Args", (), {"todo_id": "TODO-0007"})()
 
         captured_timeouts = []
         original_run = subprocess.run

@@ -265,7 +265,7 @@ class TestMaybeCommitBD8:
         monkeypatch.setattr("time.time", fake_time)
         monkeypatch.setattr("time.sleep", fake_sleep)
         monkeypatch.setattr(
-            "awf.commit_gate.APPROVE_TIMEOUT_SECONDS", 0
+            "awf.commit_gate._get_approve_timeout", lambda: 0
         )
 
         with pytest.raises(TimeoutError) as exc_info:
@@ -295,7 +295,7 @@ class TestMaybeCommitBD8:
 
         # Set 1-second timeout via module constant
         monkeypatch.setattr(
-            "awf.commit_gate.APPROVE_TIMEOUT_SECONDS", 1
+            "awf.commit_gate._get_approve_timeout", lambda: 1
         )
         monkeypatch.setattr(
             "awf.commit_gate.APPROVE_POLL_INTERVAL", 1
@@ -374,7 +374,7 @@ class TestMaybeCommitBD8:
         _t = [0.0]
         monkeypatch.setattr("time.time", lambda: _t[0])
         monkeypatch.setattr("time.sleep", lambda d: _t.__setitem__(0, _t[0] + d))
-        monkeypatch.setattr("awf.commit_gate.APPROVE_TIMEOUT_SECONDS", 0)
+        monkeypatch.setattr("awf.commit_gate._get_approve_timeout", lambda: 0)
 
         with pytest.raises(TimeoutError) as exc_info:
             _maybe_commit(

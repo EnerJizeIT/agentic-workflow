@@ -377,6 +377,7 @@ def execute_supervisor_stage(
             return current_todo, 0, 1
         print(f"Active TODO: {current_todo}")
         _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="brief")
+        return current_todo, 1, 0  # next stage
 
     if s_kind == "verify":
         _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="verify")

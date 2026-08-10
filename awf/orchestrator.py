@@ -58,10 +58,15 @@ def run_pipeline(args: Any) -> int:
     auto = getattr(args, "auto", False)
     # KAUD-4: read --timeout from CLI args, pass to agent stages
     cli_timeout = getattr(args, "timeout", None)
-    agent_hard_timeout = int(cli_timeout) if cli_timeout else None
+    try:
+        agent_hard_timeout = int(cli_timeout) if cli_timeout else None
+    except (ValueError, TypeError):
+        print(f"WARNING: invalid timeout '{cli_timeout}' — ignoring.", file=sys.stderr)
+        agent_hard_timeout = None
     # KA2-6: also forward to supervisor stages via env var (covers all
     # supervisor calls: primary, escalate, rollback, salvage — without
     # threading timeout through 5+ function signatures).
+    _prev_timeout = os.environ.get("AWF_SUPERVISOR_TIMEOUT")
     if agent_hard_timeout:
         os.environ["AWF_SUPERVISOR_TIMEOUT"] = str(agent_hard_timeout)
 
@@ -161,4 +166,10 @@ def run_pipeline(args: Any) -> int:
     prev_state = read_state(project_dir) or {}
     clear_state(project_dir, logs_dir=logs_dir)
     write_state(project_dir, phase="done", goal=prev_state.get("goal"))
+    # P2: restore env var (don't leak AWF_SUPERVISOR_TIMEOUT to caller)
+    if agent_hard_timeout:
+        if _prev_timeout is not None:
+            os.environ["AWF_SUPERVISOR_TIMEOUT"] = _prev_timeout
+        else:
+            os.environ.pop("AWF_SUPERVISOR_TIMEOUT", None)
     return 0

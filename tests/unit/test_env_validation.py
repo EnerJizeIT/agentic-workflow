@@ -42,7 +42,7 @@ class TestCommitGateEnvValidation:
         monkeypatch.setenv("AWF_APPROVE_TIMEOUT_SECONDS", "not-a-number")
         # Re-import the module from scratch — if import crashes, test fails.
         importlib.reload(commit_gate)
-        assert commit_gate.APPROVE_TIMEOUT_SECONDS == 1800
+        assert commit_gate._get_approve_timeout() == 1800
 
 
 class TestSupervisorEnvValidation:

@@ -109,6 +109,10 @@ async def open_form(
         }
 
     data = dict(data) if data else {}
+    # P2: deep copy to prevent LLM mutation of nested objects from affecting
+    # template context after open_form returns.
+    import copy
+    data = copy.deepcopy(data)
     # BD-6: extract project_dir so submit paths resolve to the project,
     # not cwd (which is $HOME when opencode launches MCP subprocess).
     # Explicit `project_dir` parameter is canonical (cleaner contract than

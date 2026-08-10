@@ -41,13 +41,14 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
         # vs escalate = "create new TODO").
         return ("escalate", "")
 
-    # Unknown signal — print loudly (M8 fix: log.warning may not be visible
-    # without basicConfig; also print to stderr).
+    # Unknown signal — treat as blocked so supervisor gets salvage context
+    # (P3: was "stop" which left no recovery path for the supervisor).
     msg = (
-        f"Unknown signal type {sig_type!r} at stage {stage.name!r} — stopping. "
+        f"Unknown signal type {sig_type!r} at stage {stage.name!r} — treating as blocked. "
         f"Expected one of: done, blocked, approved, rejected, passed, failed."
     )
     import sys
     print(f"WARNING: {msg}", file=sys.stderr)
     log.warning("%s", msg)
-    return ("stop", "")
+    # Escalate to supervisor — same as blocked, gives recovery path
+    return ("escalate", "")

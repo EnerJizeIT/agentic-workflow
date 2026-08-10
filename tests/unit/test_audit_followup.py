@@ -263,7 +263,7 @@ class TestM8UnknownSignalPrint:
 
         stage = Stage(name="test", role="worker", kind="execute")
         action, target = resolve_transition(stage, "bogus-signal-type")
-        assert action == "stop"
+        assert action == "escalate"  # P3: escalate for recovery, not dead-end stop
         captured = capsys.readouterr()
         assert "WARNING" in captured.err or "bogus-signal-type" in captured.err
 

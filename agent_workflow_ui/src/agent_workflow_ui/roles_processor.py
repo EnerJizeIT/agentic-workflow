@@ -42,10 +42,18 @@ def _project_roles_dir(project_dir: Path | None = None) -> Path | None:
 
 def _copy_to_project(global_path: Path, filename: str, project_dir: Path | None = None) -> None:
     """Copy a role file from global store to project .agentic/roles/."""
+    # P2: validate filename — prevent path traversal (consistent with _delete_from_project)
+    if "/" in filename or "\\" in filename or filename in (".", ".."):
+        log.warning("Rejected _copy_to_project with suspicious filename: %r", filename)
+        return
     proj = _project_roles_dir(project_dir)
     if proj is None:
         return
     dest = proj / filename
+    # Verify resolved path stays within roles dir (symlink escape check)
+    if not dest.resolve().is_relative_to(proj.resolve()):
+        log.warning("Rejected _copy_to_project: path escapes: %s", dest)
+        return
     shutil.copy2(global_path, dest)
     log.info("Copied role %s to project %s", filename, proj)
 

@@ -33,7 +33,13 @@ def _safe_int_env(name: str, default: int) -> int:
         return default
 
 
-APPROVE_TIMEOUT_SECONDS: int = _safe_int_env("AWF_APPROVE_TIMEOUT_SECONDS", 1800)
+def _get_approve_timeout() -> int:
+    """P3: lazy evaluation — reads env at call time, not import time.
+
+    Allows tests to set AWF_APPROVE_TIMEOUT_SECONDS via monkeypatch
+    without restarting Python.
+    """
+    return _safe_int_env("AWF_APPROVE_TIMEOUT_SECONDS", 1800)
 
 
 def _files_changed_since_baseline(
@@ -223,11 +229,11 @@ def maybe_commit(
         _log(logs_dir, f"Auto-mode: waiting for APPROVE or ACK signal for {todo_id}")
 
         # H1 fix: time.monotonic() not time.time() — NTP-immune.
-        deadline = time.monotonic() + APPROVE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + _get_approve_timeout()
         while not approve_signal.exists() and not ack_signal.exists():
             if time.monotonic() > deadline:
                 print(
-                    f"ERROR: APPROVE/ACK signal not received within {APPROVE_TIMEOUT_SECONDS}s. "
+                    f"ERROR: APPROVE/ACK signal not received within {_get_approve_timeout()}s. "
                     f"Pipeline aborting.",
                     file=sys.stderr,
                 )

@@ -169,6 +169,8 @@ def approve_commit(project_dir: Path, todo_id: str) -> ApproveResult:
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
+    if not re.match(r"^TODO-\d{4,}$", todo_id):
+        raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
     inbox = paths.inbox(project_dir)
@@ -189,6 +191,8 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
+    if not re.match(r"^TODO-\d{4,}$", todo_id):
+        raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 

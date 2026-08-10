@@ -147,6 +147,9 @@ def run_subprocess_until_signal(
                 log_name = f"{arg}.out"
                 break
         worker_log = open(logs_dir / log_name, "w", encoding="utf-8")  # noqa: SIM115
+        # P2: restrict worker log permissions (may contain sensitive output)
+        import os as _os
+        _os.chmod(logs_dir / log_name, 0o600)
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=env or awf_subprocess_env(),

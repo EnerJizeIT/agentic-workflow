@@ -73,7 +73,11 @@ class FormRegistry:
         self._persist_enabled = bool(value)
 
     def _load_persisted(self) -> None:
-        """A10: load registry from disk on startup (if exists)."""
+        """A10: load registry from disk on startup (if exists).
+
+        P2: filter out expired/submitted/cancelled forms on load — prevents
+        memory growth across restarts.
+        """
         if not self._persist_enabled:
             return
         if not self.PERSIST_FILE.is_file():
@@ -83,16 +87,32 @@ class FormRegistry:
             data = yaml.safe_load(self.PERSIST_FILE.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
+            now = datetime.now(timezone.utc)
             for form_id, rec_dict in data.items():
                 if not isinstance(rec_dict, dict):
                     continue
+                # P2: skip terminal/expired forms
+                status = rec_dict.get("status", "pending")
+                if status in ("submitted", "cancelled"):
+                    continue
+                if status == "expired":
+                    continue
+                expires = rec_dict.get("expires_at")
+                if expires:
+                    try:
+                        exp_dt = datetime.fromisoformat(expires)
+                        if exp_dt < now:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 try:
                     record = FormRecord(
                         form_id=form_id,
                         template=rec_dict.get("template", ""),
                         opened_at=datetime.fromisoformat(rec_dict["opened_at"]) if rec_dict.get("opened_at") else datetime.now(timezone.utc),
-                        status=rec_dict.get("status", "pending"),
+                        status=status,
                         expires_at=datetime.fromisoformat(rec_dict["expires_at"]) if rec_dict.get("expires_at") else None,
+                        claimed_at=datetime.fromisoformat(rec_dict["claimed_at"]) if rec_dict.get("claimed_at") else None,
                         project_dir=Path(rec_dict["project_dir"]) if rec_dict.get("project_dir") else None,
                     )
                     self._forms[form_id] = record
@@ -114,6 +134,7 @@ class FormRegistry:
                     "opened_at": record.opened_at.isoformat() if record.opened_at else None,
                     "status": record.status,
                     "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+                    "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
                     "project_dir": str(record.project_dir) if record.project_dir else None,
                 }
             _atomic_write_text(self.PERSIST_FILE, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))

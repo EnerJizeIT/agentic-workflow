@@ -31,9 +31,6 @@ def short_id(todo_id: str) -> str:
     return todo_id.split("-", 1)[1] if todo_id.startswith("TODO-") else todo_id
 
 
-_short_id = short_id  # backward-compat alias
-
-
 def find_signal_file(directory: Path, prefix: str, todo_id: str, suffix: str = "") -> Path | None:
     """H2/H3 fix: find a signal file in canonical OR legacy short form.
 
@@ -43,7 +40,7 @@ def find_signal_file(directory: Path, prefix: str, todo_id: str, suffix: str = "
 
     Returns the Path if found, None otherwise.
     """
-    short = _short_id(todo_id)
+    short = short_id(todo_id)
     for candidate_id in (todo_id, short):
         path = directory / f"{prefix}-{candidate_id}{suffix}"
         if path.exists():
@@ -95,7 +92,7 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
     returns None — caller treats it as "no signal yet" and the auto-DONE /
     salvage paths can still trigger.
     """
-    short = _short_id(todo_id)
+    short = short_id(todo_id)
     candidates: list[tuple[float, str]] = []  # (mtime, signal_name)
 
     for prefix in prefixes:
@@ -123,7 +120,7 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
 
 def clean_stage_signals(outbox: Path, todo_id: str, *prefixes: str) -> None:
     """Remove stale signals this action would produce, preserving earlier-stage ones."""
-    short = _short_id(todo_id)
+    short = short_id(todo_id)
     for prefix in prefixes:
         for candidate_id in (todo_id, short):
             for ext in (".ready", ".md"):

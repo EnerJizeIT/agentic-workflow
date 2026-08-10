@@ -181,7 +181,7 @@ class TestApproveTimeout:
         from awf import commit_gate
 
         # Fast timeout for the test
-        monkeypatch.setattr(commit_gate, "APPROVE_TIMEOUT_SECONDS", 1)
+        monkeypatch.setattr(commit_gate, "_get_approve_timeout", lambda: 1)
         monkeypatch.setattr(commit_gate, "APPROVE_POLL_INTERVAL", 0)
 
         # Pretend we're in a git repo (skip is_git_repo check)
@@ -209,7 +209,7 @@ class TestApproveTimeout:
         actual commit via is_git_repo=False after the loop)."""
         from awf import commit_gate
 
-        monkeypatch.setattr(commit_gate, "APPROVE_TIMEOUT_SECONDS", 5)
+        monkeypatch.setattr(commit_gate, "_get_approve_timeout", lambda: 5)
         monkeypatch.setattr(commit_gate, "APPROVE_POLL_INTERVAL", 0)
 
         monkeypatch.setattr(commit_gate.git_utils, "is_git_repo", lambda *_: True)

@@ -72,10 +72,11 @@ class TestResolveTransition:
         action, target = resolve_transition(stage, "blocked")
         assert (action, target) == ("rollback", "plan")
 
-    def test_unknown_signal_stops(self) -> None:
+    def test_unknown_signal_escalates(self) -> None:
+        """P3: unknown signal escalates to supervisor (recovery path, not dead-end stop)."""
         stage = Stage(name="x", role="r")
         action, target = resolve_transition(stage, "unknown")
-        assert (action, target) == ("stop", "")
+        assert (action, target) == ("escalate", "")
 
     def test_unknown_signal_logs_warning(self, caplog) -> None:
         """Unknown signal type should emit a warning log for diagnostics."""
