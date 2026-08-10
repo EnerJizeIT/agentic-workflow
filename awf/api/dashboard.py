@@ -139,31 +139,43 @@ def _parse_log_events(log_text: str, max_events: int = 30) -> list[dict[str, str
     return events[-max_events:]
 
 
-def _read_handoffs(project_dir: Path) -> list[dict[str, str]]:
-    """Read handoff files from .agentic/handoff/."""
+def _read_handoffs(project_dir: Path, stage_order: list[str] | None = None) -> list[dict[str, str]]:
+    """Read handoff files from .agentic/handoff/, sorted by pipeline order."""
     handoff_dir = project_dir / ".agentic" / "handoff"
     if not handoff_dir.is_dir():
         return []
 
+    # Build role → sort index from pipeline stages
+    role_order: dict[str, int] = {}
+    if stage_order:
+        for i, name in enumerate(stage_order):
+            role_order[name] = i
+
     handoffs: list[dict[str, str]] = []
     for f in sorted(handoff_dir.glob("*.md")):
-        # Filename format: {role}-{todo_id}.md
         name = f.stem
         parts = name.split("-", 1)
         role = parts[0] if parts else name
         try:
             content = f.read_text(encoding="utf-8")
-            preview = content[:200].strip()
         except OSError:
             content = ""
-            preview = ""
+        # Render markdown to HTML
+        try:
+            import markdown as _md
+            content_html = _md.markdown(content, extensions=["fenced_code"])
+        except Exception:
+            content_html = f"<pre>{content}</pre>"
+
         handoffs.append({
             "role": role,
             "file": f.name,
-            "preview": preview,
-            "content": content,  # full content for <details> expansion
+            "preview": content[:200].strip(),
+            "content_html": content_html,
         })
 
+    # Sort by pipeline order (roles not in pipeline go last, alphabetically)
+    handoffs.sort(key=lambda h: (role_order.get(h["role"], 999), h["role"]))
     return handoffs
 
 
@@ -456,8 +468,9 @@ def generate_dashboard(project_dir: Path) -> Path | None:
         except OSError:
             pass
 
-    # Handoffs
-    handoffs = _read_handoffs(project_dir)
+    # Handoffs (sorted by pipeline order)
+    stage_names = [s["name"] for s in stages] if stages else []
+    handoffs = _read_handoffs(project_dir, stage_order=stage_names)
 
     # Tasks
     todo_id = state.get("todo_id") if state else None
@@ -482,7 +495,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     elapsed_frozen = False
     if state:
         status_for_elapsed, _, _, _, _ = _determine_status(state)
-        if status_for_elapsed in ("running", "verify"):
+        if status_for_elapsed == "running":
             log_file_elapsed = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
             if log_file_elapsed.is_file():
                 try:
