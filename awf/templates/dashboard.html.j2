@@ -184,14 +184,25 @@ body { background: var(--bg); color: var(--text); font-family: system-ui,-apple-
 <script>
 // ─── State polling ──────────────────────────────────────────────────
 let _prevStatus = '{{ status }}';
+let _fetchErrors = 0;
 
 async function poll() {
   try {
     const res = await fetch('/api/state', { cache: 'no-store' });
     if (!res.ok) return;
+    _fetchErrors = 0;
     const s = await res.json();
     updateAll(s);
-  } catch(e) { /* server might be restarting */ }
+  } catch(e) {
+    _fetchErrors++;
+    if (_fetchErrors === 3) {
+      // Server likely dead (pipeline exited)
+      const badge = document.getElementById('status-badge');
+      badge.textContent = 'Pipeline exited';
+      badge.className = 'status-badge done';
+      document.getElementById('status-dot').className = 'status-dot done';
+    }
+  }
 }
 
 function updateAll(s) {
