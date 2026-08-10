@@ -77,20 +77,34 @@ def init_project(
         project_name_val = config.get("project", {}).get("name", project_dir.name)
         vision_path = paths.find_vision_file(project_dir)
         phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
-        supervisor_md_path = project_dir / "templates" / "roles" / "supervisor.md"
-        supervisor_md = ""
-        if supervisor_md_path.is_file():
-            # SMO: compact phase prompt, not full supervisor.md
-            try:
-                from ..phase import detect_phase, get_phase_prompt
-                phase = detect_phase(project_dir)
-                supervisor_md = get_phase_prompt(phase, project_dir)
-            except Exception:
-                supervisor_md = supervisor_md_path.read_text(encoding="utf-8")
+        supervisor_md_path = project_dir / ".agentic" / "roles" / "supervisor.md"
         plan_md = ""
         plan_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
         if plan_path.is_file():
             plan_md = plan_path.read_text(encoding="utf-8")
+        # SMO: detect phase for compact prompt + next_action
+        try:
+            from ..phase import detect_phase, get_phase_prompt
+            phase_r1 = detect_phase(project_dir)
+            supervisor_md = get_phase_prompt(phase_r1, project_dir)
+        except Exception:
+            phase_r1 = "goal"
+            supervisor_md = supervisor_md_path.read_text(encoding="utf-8") if supervisor_md_path.is_file() else ""
+
+        _NEXT_ACTIONS_R1 = {
+            "goal": "Спроси пользователя о цели сессии. После ответа — awf_set_goal.",
+            "form": "Открой project-setup форму через awf_open_project_setup_form.",
+            "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
+            "brief": "Напиши BRIEF-TODO-NNNN.md для user approval.",
+            "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
+            "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
+            "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
+        }
+        next_action_r1 = _NEXT_ACTIONS_R1.get(
+            phase_r1,
+            f"Runtime cleaned ({', '.join(cleaned)}). Config preserved. "
+            "Pipeline ready — use awf_dispatch_todo to start next iteration.",
+        )
         return InitResult(
             project_name=project_name_val,
             project_dir=str(project_dir),
@@ -100,10 +114,7 @@ def init_project(
             supervisor_md=supervisor_md,
             plan_md=plan_md,
             pipeline_configured=bool(config.get("default_pipeline")),
-            next_action=(
-                f"Runtime cleaned ({', '.join(cleaned)}). Config preserved. "
-                "Pipeline ready — use awf_dispatch_todo to start next iteration."
-            ),
+            next_action=next_action_r1,
             warnings=[],
         )
 
@@ -211,12 +222,29 @@ def init_project(
         phase = detect_phase(project_dir)
         supervisor_md = get_phase_prompt(phase, project_dir)
     except Exception:
+        phase = "goal"
         supervisor_md = supervisor_md_full  # fallback to full on any error
 
-    next_action = (
-        "Открой project-setup форму (MCP tool open_form, template='project-setup') "
-        "для выбора pipeline и ролей. После submit — awf start."
-    )
+    # SMO: next_action must match the detected phase — not hardcoded.
+    # Dogfood #2: weak model followed next_action ("open form") instead of
+    # phase prompt ("ask for goal"). Now both fields say the same thing.
+    _NEXT_ACTIONS = {
+        "goal": (
+            "Спроси пользователя: «Какая цель на эту сессию?» "
+            "(фича, багфик, аудит, рефакторинг). После ответа — awf_set_goal."
+        ),
+        "form": "Открой project-setup форму через awf_open_project_setup_form.",
+        "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
+        "brief": "Изучи vision и план, напиши BRIEF-TODO-NNNN.md для user approval.",
+        "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
+        "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
+        "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
+        "init": (
+            "Спроси пользователя: «Какая цель на эту сессию?» "
+            "(фича, багфик, аудит, рефакторинг). После ответа — awf_set_goal."
+        ),
+    }
+    next_action = _NEXT_ACTIONS.get(phase, _NEXT_ACTIONS["goal"])
 
     return InitResult(
         project_name=project_name,

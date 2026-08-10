@@ -848,7 +848,7 @@ class TestInitProject:
     def test_pipeline_configured_false_on_fresh_init(self, tmp_git_repo):
         result = api.init_project(tmp_git_repo, project_name="Test")
         assert result.pipeline_configured is False
-        assert "project-setup" in result.next_action
+        assert "awf_set_goal" in result.next_action or "цель" in result.next_action
 
     def test_as_dict_serializable(self, tmp_git_repo):
         """Result.as_dict() must produce JSON-serializable dict for MCP response."""
