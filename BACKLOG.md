@@ -75,6 +75,30 @@
    (обновлён ранее). Coupling acknowledged, не блокирует.
 ℹ️ `.15` **pytest-timeout** — pytest-timeout установлен, warning исчез.
 
+### QA-2026-08-10 · QA Roundtable audit
+
+**Source:** QA roundtable (Bug Hunter + Edge Case + Test Coverage + Security).
+P0+P1 закрыты. Оставшиеся P2/P3:
+
+⬜ `.1` **[P2] CSRF token** — `http_endpoint.py:94` `return True` для no Origin/Referer.
+   Добавить CSRF-токен в форму или mandatory Origin header.
+⬜ `.2` **[P2] threading.Thread cleanup** — `test_signals.py:246`, `test_plan_checkpoint.py`
+   3 места. Daemon threads без join → мутируют FS следующих тестов при падении.
+⬜ `.3` **[P2] AWF_SUPERVISOR_TIMEOUT leak** — `orchestrator.py:66` set without cleanup.
+   В foreground утекает в subsequent subprocess'ы.
+⬜ `.4` **[P2] pipeline_state Disk I/O inside lock** — YAML serialize blocks thread pool.
+⬜ `.5` **[P2] forms.py shallow copy data** — nested mutable shared between caller и template.
+⬜ `.6` **[P2] plan_checkpoint TOCTOU port race** — между _find_free_port и bind.
+⬜ `.7` **[P2] roles_processor _copy_to_project без path validation** — symlink escape.
+⬜ `.8` **[P2] todo_id validation inconsistent** — rollback имеет regex, baseline/approve нет.
+⬜ `.9` **[P2] signal_watch worker log без chmod** — sensitive output читается всеми users.
+⬜ `.10` **[P2] Coverage критических путей** — verify.py 14%, plan_checkpoint.py 21%,
+   wait_event.py 22%, context.py 34%, setup.py 39%.
+⬜ `.11` **[P3] orchestrator int(cli_timeout) crash** — non-numeric `"1h"`.
+⬜ `.12` **[P3] commit_gate APPROVE_TIMEOUT at import time** — не configurable без restart.
+⬜ `.13` **[P3] config.py get() — null vs missing key** — возвращает default для обоих.
+⬜ `.14` **[P3] Test quality** — несколько тестов проверяют не то (see audit P2 section).
+
 ### BD-35 · Per-role contribution tracking
 **Status:** ждать real failure в dogfooding.
 
