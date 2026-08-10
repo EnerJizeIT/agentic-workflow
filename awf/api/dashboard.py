@@ -48,11 +48,26 @@ ROLE_VISUALS: dict[str, dict[str, str]] = {
 
 def _role_visual(role_name: str) -> dict[str, str]:
     """Get icon+color+label for a role name."""
-    return ROLE_VISUALS.get(role_name, {
-        "icon": "🤖",
-        "color": "#858585",
-        "label": role_name.replace("agent-", "").replace("-", " ").title(),
-    })
+    if role_name in ROLE_VISUALS:
+        return ROLE_VISUALS[role_name]
+    # Fallback: derive icon from role keywords
+    name_lower = (role_name or "").lower()
+    _KEYWORD_ICONS = [
+        ("test", "🧪", "#4ec9b0"), ("security", "🛡️", "#c586c0"),
+        ("review", "👁️", "#dcdcaa"), ("debug", "🐛", "#f14c4c"),
+        ("implement", "🔧", "#ce9178"), ("develop", "🔧", "#ce9178"),
+        ("analy", "🔍", "#4fc1ff"), ("architect", "📐", "#c586c0"),
+        ("audit", "🔬", "#dcdcaa"), ("refactor", "♻️", "#4fc1ff"),
+        ("sql", "🗃️", "#4ec9b0"), ("perf", "⚡", "#ce9178"),
+        ("dep", "📦", "#569cd6"), ("doc", "📄", "#858585"),
+    ]
+    for keyword, icon, color in _KEYWORD_ICONS:
+        if keyword in name_lower:
+            label = role_name.replace("agent-", "").replace("-", " ").title()
+            return {"icon": icon, "color": color, "label": label}
+    # Final fallback: letter avatar
+    letter = (role_name or "?")[0].upper()
+    return {"icon": letter, "color": "#858585", "label": role_name.replace("agent-", "").replace("-", " ").title()}
 
 
 def _get_template() -> Any:
@@ -807,13 +822,15 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     handoff_chat = []
     for h in handoffs:
         rv = _role_visual(h["role"])
+        # Timing: look up by role name in stage_timings
+        duration = stage_timings_dict.get(h["role"], "") or stage_timings_dict.get(h.get("file", "").split("-")[0], "")
         handoff_chat.append({
             "role": h["role"],
             "icon": rv["icon"],
             "color": rv["color"],
             "label": rv["label"],
             "content_html": h.get("content_html", ""),
-            "duration": stage_timings_dict.get(h["role"] or h["file"].split("-")[0], ""),
+            "duration": duration,
         })
 
     # TODO content

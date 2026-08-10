@@ -1,4 +1,4 @@
-{# Dashboard v2 — two-panel layout, live polling via HTTP server #}
+{# Dashboard v2.1 — stable chat, chain visualization, polished design #}
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -7,32 +7,37 @@
 <title>awf · {{ project_name }} · {{ todo_id }}</title>
 <style>
 :root {
-  --bg: #0d1117; --bg-card: #161b22; --bg-hover: #1c2128;
+  --bg: #0d1117; --bg-card: #161b22; --bg-hover: #1c2128; --bg-deep: #010409;
   --text: #e6edf3; --text-muted: #8b949e; --text-dim: #484f58;
   --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; --red: #f85149;
   --purple: #bc8cff; --orange: #db6d28; --cyan: #39c5cf;
-  --border: #30363d; --radius: 10px; --mono: 'SF Mono','JetBrains Mono',monospace;
-  --shadow: 0 2px 8px rgba(0,0,0,0.3);
+  --border: #30363d; --border-subtle: #21262d;
+  --radius: 10px; --radius-sm: 6px;
+  --mono: 'SF Mono','JetBrains Mono','Cascadia Code',monospace;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md: 0 3px 12px rgba(0,0,0,0.4);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: system-ui,-apple-system,sans-serif; font-size: 14px; height: 100vh; overflow: hidden; }
+body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-apple-system,'Segoe UI',sans-serif; font-size: 14px; height: 100vh; overflow: hidden; }
 
 /* ─── Top bar ─── */
-.topbar { display: flex; align-items: center; gap: 20px; padding: 12px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border); }
-.topbar-project { font-size: 16px; font-weight: 600; white-space: nowrap; }
-.topbar-timeline { display: flex; align-items: center; gap: 6px; flex: 1; overflow-x: auto; }
-.todo-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-family: var(--mono); white-space: nowrap; cursor: pointer; transition: all 0.2s; }
-.todo-pill.approved { background: rgba(63,185,80,0.1); color: var(--green); border: 1px solid rgba(63,185,80,0.2); }
-.todo-pill.rejected { background: rgba(248,81,73,0.1); color: var(--red); border: 1px solid rgba(248,81,73,0.2); }
-.todo-pill.running { background: rgba(88,166,255,0.1); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); animation: pulse 2s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+.topbar { display: flex; align-items: center; gap: 20px; padding: 10px 24px; background: var(--bg-card); border-bottom: 1px solid var(--border); box-shadow: var(--shadow-sm); z-index: 10; }
+.topbar-project { font-size: 15px; font-weight: 600; white-space: nowrap; letter-spacing: -0.3px; }
+.topbar-timeline { display: flex; align-items: center; gap: 4px; flex: 1; overflow-x: auto; scrollbar-width: thin; }
+.topbar-timeline::-webkit-scrollbar { height: 3px; }
+.todo-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-family: var(--mono); white-space: nowrap; cursor: default; transition: transform 0.15s; }
+.todo-pill:hover { transform: scale(1.05); }
+.todo-pill.approved { background: rgba(63,185,80,0.08); color: var(--green); border: 1px solid rgba(63,185,80,0.15); }
+.todo-pill.rejected { background: rgba(248,81,73,0.08); color: var(--red); border: 1px solid rgba(248,81,73,0.15); }
+.todo-pill.running { background: rgba(88,166,255,0.08); color: var(--accent); border: 1px solid rgba(88,166,255,0.2); }
+.todo-pill.running::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: blink 1.5s infinite; }
 .todo-sep { color: var(--text-dim); font-size: 10px; }
 .topbar-status { display: flex; align-items: center; gap: 8px; }
-.status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; }
-.status-badge.running { background: rgba(63,185,80,0.1); color: var(--green); }
-.status-badge.verify { background: rgba(210,153,34,0.1); color: var(--yellow); }
-.status-badge.done, .status-badge.idle { background: rgba(88,166,255,0.1); color: var(--accent); }
-.status-badge.dead, .status-badge.blocked { background: rgba(248,81,73,0.1); color: var(--red); }
+.status-badge { padding: 4px 14px; border-radius: 20px; font-size: 12px; font-weight: 500; }
+.status-badge.running { background: rgba(63,185,80,0.08); color: var(--green); }
+.status-badge.verify { background: rgba(210,153,34,0.08); color: var(--yellow); }
+.status-badge.done, .status-badge.idle { background: rgba(88,166,255,0.08); color: var(--accent); }
+.status-badge.dead, .status-badge.blocked { background: rgba(248,81,73,0.08); color: var(--red); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.running { background: var(--green); animation: blink 1.5s infinite; }
 .status-dot.verify { background: var(--yellow); }
@@ -41,93 +46,100 @@ body { background: var(--bg); color: var(--text); font-family: system-ui,-apple-
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 /* ─── Main layout ─── */
-.main { display: flex; height: calc(100vh - 53px); }
-.sidebar { width: 300px; min-width: 300px; background: var(--bg-card); border-right: 1px solid var(--border); padding: 20px; overflow-y: auto; }
-.content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.main { display: flex; height: calc(100vh - 49px); }
+.sidebar { width: 280px; min-width: 280px; background: var(--bg-card); border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+.content { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg-deep); }
 
-/* ─── Sidebar: pipeline stages ─── */
-.sidebar-section { margin-bottom: 20px; }
-.sidebar-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 10px; }
-.stage-list { display: flex; flex-direction: column; gap: 4px; }
-.stage-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius); transition: background 0.2s; }
+/* ─── Sidebar ─── */
+.sb-section { margin-bottom: 16px; }
+.sb-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 8px; font-weight: 600; }
+
+/* Stages */
+.stage-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--radius-sm); transition: background 0.2s; }
 .stage-row.current { background: var(--bg-hover); }
-.stage-icon { font-size: 18px; width: 28px; text-align: center; }
-.stage-info { flex: 1; }
-.stage-name { font-size: 13px; font-weight: 500; }
-.stage-status { font-size: 11px; color: var(--text-muted); }
-.stage-status.done { color: var(--green); }
-.stage-status.current { color: var(--accent); }
-.stage-duration { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.stage-icon { font-size: 16px; width: 24px; text-align: center; flex-shrink: 0; }
+.stage-info { flex: 1; min-width: 0; }
+.stage-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-meta { font-size: 10px; color: var(--text-dim); }
+.stage-meta.done { color: var(--green); }
+.stage-meta.current { color: var(--accent); }
+.stage-dur { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 
-/* Progress bar */
-.progress-wrap { margin: 12px 0; }
-.progress-bar { height: 6px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--accent)); border-radius: 3px; transition: width 0.5s ease; }
-.progress-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; font-family: var(--mono); }
+/* Progress */
+.progress-bar { height: 4px; background: var(--border-subtle); border-radius: 2px; overflow: hidden; margin: 8px 0 4px; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--accent)); border-radius: 2px; transition: width 0.5s; }
+.progress-label { font-size: 10px; color: var(--text-dim); font-family: var(--mono); }
 
-/* Worker card */
-.worker-card { background: var(--bg-hover); border-radius: var(--radius); padding: 12px; }
-.worker-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+/* Elapsed */
+.elapsed-card { text-align: center; padding: 8px; background: var(--bg-hover); border-radius: var(--radius-sm); }
+.elapsed-value { font-size: 24px; font-family: var(--mono); font-weight: 700; color: var(--yellow); line-height: 1.2; }
+.elapsed-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+
+/* Worker */
+.worker-card { background: var(--bg-hover); border-radius: var(--radius-sm); padding: 10px; }
+.worker-row { display: flex; justify-content: space-between; font-size: 11px; padding: 1px 0; }
 .worker-label { color: var(--text-muted); }
-.worker-value { font-family: var(--mono); }
-.worker-line { font-size: 12px; color: var(--cyan); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.worker-line::before { content: '▸ '; color: var(--text-dim); }
+.worker-val { font-family: var(--mono); }
+.worker-line { font-size: 11px; color: var(--cyan); margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-subtle); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); }
 
-/* Elapsed timer */
-.elapsed-card { text-align: center; padding: 12px; }
-.elapsed-value { font-size: 28px; font-family: var(--mono); font-weight: 600; color: var(--yellow); }
-.elapsed-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-top: 2px; }
+/* Next */
+.next-card { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg-hover); border-radius: var(--radius-sm); font-size: 11px; color: var(--text-muted); }
 
-/* ─── Content area: tabs ─── */
-.tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border); background: var(--bg-card); }
-.tab-btn { padding: 10px 16px; font-size: 13px; font-weight: 500; color: var(--text-muted); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.2s; }
+/* ─── Content tabs ─── */
+.tabs { display: flex; gap: 2px; padding: 0 16px; border-bottom: 1px solid var(--border); background: var(--bg-card); }
+.tab-btn { padding: 10px 16px; font-size: 13px; font-weight: 500; color: var(--text-muted); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; transition: all 0.15s; }
 .tab-btn:hover { color: var(--text); }
 .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-.tab-pane { flex: 1; overflow-y: auto; padding: 20px; }
+.tab-pane { flex: 1; overflow-y: auto; padding: 20px 24px; scrollbar-width: thin; }
+.tab-pane::-webkit-scrollbar { width: 6px; }
+.tab-pane::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-/* ─── Chat-style handoffs ─── */
-.chat-msg { display: flex; gap: 12px; margin-bottom: 16px; animation: fadeIn 0.4s ease; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.chat-avatar { font-size: 24px; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* ─── Chat messages ─── */
+.chat-msg { display: flex; gap: 12px; margin-bottom: 4px; animation: fadeIn 0.3s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.chat-avatar { font-size: 20px; width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .chat-body { flex: 1; min-width: 0; }
-.chat-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.chat-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .chat-name { font-weight: 600; font-size: 13px; }
-.chat-time { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
-.chat-content { background: var(--bg-card); border-radius: 0 var(--radius) var(--radius) var(--radius); padding: 14px 16px; border-left: 3px solid var(--border); }
-.chat-content h1, .chat-content h2, .chat-content h3 { margin: 10px 0 6px; }
-.chat-content h1 { font-size: 16px; } .chat-content h2 { font-size: 15px; } .chat-content h3 { font-size: 14px; }
-.chat-content ul, .chat-content ol { padding-left: 20px; margin: 4px 0; }
-.chat-content li { margin: 2px 0; }
-.chat-content code { background: var(--bg-hover); padding: 2px 6px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
-.chat-content pre { background: var(--bg-hover); padding: 10px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.chat-dur { font-size: 11px; font-family: var(--mono); color: var(--text-muted); background: var(--bg-hover); padding: 1px 6px; border-radius: 8px; }
+.chat-dur.live { color: var(--accent); }
+.chat-content { background: var(--bg-card); border-radius: 0 var(--radius-sm) var(--radius-sm) var(--radius-sm); padding: 12px 14px; border-left: 3px solid; }
+.chat-content h1, .chat-content h2, .chat-content h3 { margin: 8px 0 4px; }
+.chat-content h1 { font-size: 15px; } .chat-content h2 { font-size: 14px; } .chat-content h3 { font-size: 13px; }
+.chat-content ul, .chat-content ol { padding-left: 18px; margin: 4px 0; }
+.chat-content li { margin: 2px 0; font-size: 13px; }
+.chat-content code { background: var(--bg-deep); padding: 2px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
+.chat-content pre { background: var(--bg-deep); padding: 10px; border-radius: var(--radius-sm); overflow-x: auto; margin: 6px 0; }
 .chat-content pre code { background: none; padding: 0; }
 .chat-content strong { color: var(--yellow); }
+.chat-content p { margin: 4px 0; font-size: 13px; line-height: 1.5; }
+
+/* Chain link between messages */
+.chat-chain { display: flex; align-items: center; gap: 6px; padding: 2px 0 2px 48px; font-size: 10px; color: var(--text-dim); }
+.chat-chain-arrow { font-size: 14px; }
 
 /* ─── TODO content ─── */
-.todo-content { max-width: 800px; }
-.todo-content h1 { font-size: 20px; margin-bottom: 12px; }
-.todo-content h2 { font-size: 16px; margin: 16px 0 8px; color: var(--accent); }
-.todo-content h3 { font-size: 14px; margin: 12px 0 6px; }
-.todo-content ul, .todo-content ol { padding-left: 24px; margin: 8px 0; }
-.todo-content li { margin: 4px 0; line-height: 1.6; }
-.todo-content code { background: var(--bg-hover); padding: 2px 6px; border-radius: 3px; font-family: var(--mono); }
-.todo-content pre { background: var(--bg-hover); padding: 12px; border-radius: var(--radius); overflow-x: auto; }
+.todo-content { max-width: 800px; line-height: 1.6; }
+.todo-content h1 { font-size: 18px; margin-bottom: 8px; }
+.todo-content h2 { font-size: 15px; margin: 14px 0 6px; color: var(--accent); }
+.todo-content h3 { font-size: 13px; margin: 10px 0 4px; }
+.todo-content ul, .todo-content ol { padding-left: 22px; margin: 6px 0; }
+.todo-content li { margin: 3px 0; }
+.todo-content code { background: var(--bg-card); padding: 2px 5px; border-radius: 3px; font-family: var(--mono); }
+.todo-content pre { background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; }
 .todo-content strong { color: var(--yellow); }
 
 /* ─── Events ─── */
-.event-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(48,54,61,0.5); }
-.event-ts { font-family: var(--mono); font-size: 11px; color: var(--text-dim); min-width: 70px; }
-.event-icon { font-size: 14px; }
-.event-text { flex: 1; font-size: 13px; }
+.event-row { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
+.event-ts { font-family: var(--mono); font-size: 10px; color: var(--text-dim); min-width: 65px; }
+.event-icon { font-size: 12px; }
+.event-text { flex: 1; font-size: 12px; }
 .event-text.done { color: var(--green); }
 .event-text.start { color: var(--accent); }
 .event-text.warn { color: var(--yellow); }
 
-/* ─── Next stage preview ─── */
-.next-preview { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-hover); border-radius: var(--radius); font-size: 12px; color: var(--text-muted); }
-
-/* ─── Empty state ─── */
-.empty { text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px; }
+/* Empty */
+.empty { text-align: center; padding: 48px; color: var(--text-dim); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -142,33 +154,29 @@ body { background: var(--bg); color: var(--text); font-family: system-ui,-apple-
 </div>
 
 <div class="main">
-  <!-- Left sidebar: pipeline -->
   <div class="sidebar">
-    <div class="sidebar-section">
-      <div class="sidebar-title">Pipeline</div>
-      <div class="stage-list" id="stage-list"></div>
-    </div>
-    <div class="progress-wrap">
+    <div class="sb-section">
+      <div class="sb-title">Pipeline</div>
+      <div id="stage-list"></div>
       <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
-      <div class="progress-label" id="progress-label">0/0</div>
+      <div class="progress-label" id="progress-label"></div>
     </div>
-    <div class="sidebar-section">
+    <div class="sb-section">
       <div class="elapsed-card">
         <div class="elapsed-value" id="elapsed-timer" data-epoch="{{ elapsed_epoch }}" data-frozen="{{ elapsed_frozen | default('false') }}">{{ elapsed }}</div>
         <div class="elapsed-label">Elapsed</div>
       </div>
     </div>
-    <div class="sidebar-section" id="worker-section" style="display:none">
-      <div class="sidebar-title">Worker</div>
+    <div class="sb-section" id="worker-section" style="display:none">
+      <div class="sb-title">Worker</div>
       <div class="worker-card" id="worker-card"></div>
     </div>
-    <div class="sidebar-section" id="next-section" style="display:none">
-      <div class="sidebar-title">Next</div>
-      <div class="next-preview" id="next-preview"></div>
+    <div class="sb-section" id="next-section" style="display:none">
+      <div class="sb-title">Next</div>
+      <div class="next-card" id="next-preview"></div>
     </div>
   </div>
 
-  <!-- Right content: tabs -->
   <div class="content">
     <div class="tabs">
       <button class="tab-btn active" data-tab="chat" onclick="switchTab('chat')">💬 Agent Chat</button>
@@ -182,10 +190,13 @@ body { background: var(--bg); color: var(--text); font-family: system-ui,-apple-
 </div>
 
 <script>
-// ─── State polling ──────────────────────────────────────────────────
-let _prevStatus = '{{ status }}';
+// ─── State ──────────────────────────────────────────────────────────
 let _fetchErrors = 0;
+let _renderedChatKeys = [];
+let _lastTodoHtml = '';
+let _notified = false;
 
+// ─── Polling ────────────────────────────────────────────────────────
 async function poll() {
   try {
     const res = await fetch('/api/state', { cache: 'no-store' });
@@ -196,10 +207,8 @@ async function poll() {
   } catch(e) {
     _fetchErrors++;
     if (_fetchErrors === 3) {
-      // Server likely dead (pipeline exited)
-      const badge = document.getElementById('status-badge');
-      badge.textContent = 'Pipeline exited';
-      badge.className = 'status-badge done';
+      document.getElementById('status-badge').textContent = 'Pipeline exited';
+      document.getElementById('status-badge').className = 'status-badge done';
       document.getElementById('status-dot').className = 'status-dot done';
     }
   }
@@ -217,123 +226,144 @@ function updateAll(s) {
 
 // ─── Topbar ─────────────────────────────────────────────────────────
 function updateTopbar(s) {
-  document.getElementById('project-name').textContent = s.project_name;
-  // Status
+  document.getElementById('project-name').textContent = s.project_name || '';
   const dot = document.getElementById('status-dot');
   const badge = document.getElementById('status-badge');
   dot.className = 'status-dot ' + s.status;
   badge.className = 'status-badge ' + s.status;
   badge.textContent = s.status_text || s.status;
-  // TODO timeline
+
   const tl = document.getElementById('todo-timeline');
   if (s.todo_timeline && s.todo_timeline.length > 0) {
-    tl.innerHTML = s.todo_timeline.map((t, i) => {
+    let html = '';
+    s.todo_timeline.forEach((t, i) => {
       const icon = t.status === 'approved' ? '✅' : t.status === 'rejected' ? '❌' : '🔄';
       const sep = i < s.todo_timeline.length - 1 ? '<span class="todo-sep">─</span>' : '';
-      return '<span class="todo-pill ' + t.status + '" title="' + (t.commit_sha || '') + '">' + icon + ' ' + t.id + '</span>' + sep;
-    }).join('');
-  } else {
-    tl.innerHTML = '';
+      html += '<span class="todo-pill ' + t.status + '" title="' + (t.commit_sha || '') + '">' + icon + ' ' + t.id + '</span>' + sep;
+    });
+    tl.innerHTML = html;
   }
 }
 
 // ─── Sidebar ────────────────────────────────────────────────────────
 function updateSidebar(s) {
-  // Stages
   const list = document.getElementById('stage-list');
   list.innerHTML = (s.stages || []).map(st => {
     const cls = 'stage-row ' + (st.status === 'current' ? 'current' : '');
-    const statusIcon = st.status === 'done' ? '✓' : st.status === 'current' ? '●' : '·';
-    const statusCls = 'stage-status ' + st.status;
-    const dur = st.duration ? '<div class="stage-duration">' + st.duration + '</div>' : '';
+    const statusIcon = st.status === 'done' ? '✓' : st.status === 'current' ? '●' : '○';
+    const statusText = st.status === 'done' ? 'done' : st.status === 'current' ? 'running' : 'pending';
     return '<div class="' + cls + '">'
       + '<div class="stage-icon">' + st.icon + '</div>'
       + '<div class="stage-info"><div class="stage-name">' + st.label + '</div>'
-      + '<div class="' + statusCls + '">' + statusIcon + ' ' + st.status + '</div></div>'
-      + dur + '</div>';
+      + '<div class="stage-meta ' + st.status + '">' + statusIcon + ' ' + statusText + '</div></div>'
+      + '</div>';
   }).join('');
 
-  // Progress
   const pct = s.stages_total > 0 ? (s.stages_done / s.stages_total * 100) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
   document.getElementById('progress-label').textContent = s.stages_done + '/' + s.stages_total + ' stages';
 
-  // Worker
   const ws = document.getElementById('worker-section');
   if (s.worker && s.worker.active) {
     ws.style.display = 'block';
-    let html = '<div class="worker-row"><span class="worker-label">PID</span><span class="worker-value">' + s.worker.worker_pid + '</span></div>'
-      + '<div class="worker-row"><span class="worker-label">State</span><span class="worker-value">' + s.worker.state + '</span></div>'
-      + '<div class="worker-row"><span class="worker-label">CPU</span><span class="worker-value">' + s.worker.cpu_seconds + 's</span></div>';
-    if (s.worker.last_line) {
-      html += '<div class="worker-line">' + escapeHtml(s.worker.last_line) + '</div>';
-    }
+    let html = '<div class="worker-row"><span class="worker-label">PID</span><span class="worker-val">' + s.worker.worker_pid + '</span></div>'
+      + '<div class="worker-row"><span class="worker-label">State</span><span class="worker-val">' + s.worker.state + '</span></div>'
+      + '<div class="worker-row"><span class="worker-label">CPU</span><span class="worker-val">' + (s.worker.cpu_seconds || 0) + 's</span></div>';
+    if (s.worker.last_line) html += '<div class="worker-line">▸ ' + escapeHtml(s.worker.last_line) + '</div>';
     document.getElementById('worker-card').innerHTML = html;
-  } else {
-    ws.style.display = 'none';
-  }
+  } else { ws.style.display = 'none'; }
 
-  // Next stage
   const ns = document.getElementById('next-section');
   if (s.next_stage) {
     ns.style.display = 'block';
     document.getElementById('next-preview').innerHTML =
-      '<span style="font-size:16px">' + s.next_stage.icon + '</span>'
+      '<span style="font-size:14px">' + s.next_stage.icon + '</span>'
       + '<span>Next: <strong style="color:' + s.next_stage.color + '">' + s.next_stage.label + '</strong></span>';
-  } else {
-    ns.style.display = 'none';
-  }
+  } else { ns.style.display = 'none'; }
 }
 
-// ─── Chat handoffs ──────────────────────────────────────────────────
+// ─── Chat (append-only, no flickering) ──────────────────────────────
 function updateChat(s) {
   const pane = document.getElementById('pane-chat');
-  if (!s.handoffs || s.handoffs.length === 0) {
-    pane.innerHTML = '<div class="empty">🤝 Agent handoffs появятся здесь по мере выполнения</div>';
+  const handoffs = s.handoffs || [];
+
+  if (handoffs.length === 0) {
+    if (_renderedChatKeys.length > 0) {
+      pane.innerHTML = '<div class="empty">🤝 Agent handoffs появятся здесь по мере выполнения</div>';
+      _renderedChatKeys = [];
+    } else if (pane.innerHTML === '') {
+      pane.innerHTML = '<div class="empty">🤝 Agent handoffs появятся здесь по мере выполнения</div>';
+    }
     return;
   }
-  pane.innerHTML = s.handoffs.map(h => {
-    return '<div class="chat-msg">'
+
+  // Build current keys
+  const currentKeys = handoffs.map(h => h.role + '|' + (h.duration || ''));
+  const keysJoined = currentKeys.join('||');
+
+  // Only re-render if handoff set changed (new handoff or duration update)
+  if (keysJoined === _renderedChatKeys.join('||')) return;
+
+  // Full re-render only when set changes
+  _renderedChatKeys = currentKeys;
+  let html = '';
+  handoffs.forEach((h, i) => {
+    const nextH = i < handoffs.length - 1 ? handoffs[i + 1] : null;
+    const durCls = h.duration ? 'chat-dur' : 'chat-dur live';
+    const durText = h.duration || (i === handoffs.length - 1 && s.status === 'running' ? '...' : '');
+
+    html += '<div class="chat-msg">'
       + '<div class="chat-avatar" style="background:' + h.color + '22">' + h.icon + '</div>'
       + '<div class="chat-body">'
       + '<div class="chat-header">'
       + '<span class="chat-name" style="color:' + h.color + '">' + h.label + '</span>'
-      + (h.duration ? '<span class="chat-time">' + h.duration + '</span>' : '')
+      + (durText ? '<span class="' + durCls + '">' + durText + '</span>' : '')
       + '</div>'
       + '<div class="chat-content" style="border-left-color:' + h.color + '">' + h.content_html + '</div>'
       + '</div></div>';
-  }).join('');
-  // Auto-scroll to bottom
+
+    // Chain link to next agent
+    if (nextH) {
+      html += '<div class="chat-chain"><span class="chat-chain-arrow">↓</span> передал → ' + nextH.icon + ' ' + nextH.label + '</div>';
+    }
+  });
+  pane.innerHTML = html;
   pane.scrollTop = pane.scrollHeight;
 }
 
 // ─── TODO content ───────────────────────────────────────────────────
 function updateTodo(s) {
   const pane = document.getElementById('pane-todo');
-  if (!s.todo_content_html) {
-    pane.innerHTML = '<div class="empty">📝 Задача появится здесь после dispatch</div>';
+  const html = s.todo_content_html || '';
+  if (html === _lastTodoHtml) return; // no change
+  _lastTodoHtml = html;
+  if (!html) {
+    pane.innerHTML = '<div class="empty">📝 Задача появится после dispatch</div>';
   } else {
-    pane.innerHTML = '<div class="todo-content">' + s.todo_content_html + '</div>';
+    pane.innerHTML = '<div class="todo-content">' + html + '</div>';
   }
 }
 
 // ─── Events ─────────────────────────────────────────────────────────
+let _lastEventsHash = '';
 function updateEvents(s) {
   const pane = document.getElementById('pane-events');
-  if (!s.events || s.events.length === 0) {
-    pane.innerHTML = '<div class="empty">📊 События появятся по мере работы pipeline</div>';
+  const events = s.events || [];
+  const hash = events.map(e => e.ts + e.msg).join('|');
+  if (hash === _lastEventsHash) return;
+  _lastEventsHash = hash;
+
+  if (events.length === 0) {
+    pane.innerHTML = '<div class="empty">📊 События появятся по мере работы</div>';
     return;
   }
-  pane.innerHTML = [...s.events].reverse().map(e => {
-    return '<div class="event-row">'
-      + '<span class="event-ts">' + e.ts + '</span>'
-      + '<span class="event-icon">' + (e.type === 'done' ? '✅' : e.type === 'start' ? '▶' : e.type === 'warn' ? '⚠️' : '•') + '</span>'
-      + '<span class="event-text ' + e.type + '">' + escapeHtml(e.msg) + '</span>'
-      + '</div>';
+  pane.innerHTML = [...events].reverse().map(e => {
+    const icon = e.type === 'done' ? '✅' : e.type === 'start' ? '▶' : e.type === 'warn' ? '⚠️' : '•';
+    return '<div class="event-row"><span class="event-ts">' + e.ts + '</span><span class="event-icon">' + icon + '</span><span class="event-text ' + e.type + '">' + escapeHtml(e.msg) + '</span></div>';
   }).join('');
 }
 
-// ─── Elapsed timer ──────────────────────────────────────────────────
+// ─── Elapsed ────────────────────────────────────────────────────────
 function updateElapsed(s) {
   const el = document.getElementById('elapsed-timer');
   el.dataset.epoch = s.elapsed_epoch || 0;
@@ -341,7 +371,6 @@ function updateElapsed(s) {
   if (s.elapsed_str) el.textContent = s.elapsed_str;
   tickElapsed();
 }
-
 function tickElapsed() {
   const el = document.getElementById('elapsed-timer');
   if (!el || el.dataset.frozen === 'true') return;
@@ -349,8 +378,7 @@ function tickElapsed() {
   if (!epoch) return;
   const elapsed = Math.floor(Date.now() / 1000) - epoch;
   if (elapsed < 0) return;
-  const m = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
+  const m = Math.floor(elapsed / 60), sec = elapsed % 60;
   el.textContent = m > 0 ? m + 'm ' + sec + 's' : sec + 's';
 }
 tickElapsed();
@@ -364,39 +392,29 @@ function switchTab(name) {
   if (pane) pane.style.display = 'block';
 }
 
-// ─── Browser notification on verify ─────────────────────────────────
-let _notified = false;
+// ─── Notifications ──────────────────────────────────────────────────
 function checkNotification(s) {
   if (s.status === 'verify' && !_notified) {
     _notified = true;
-    if (Notification.permission === 'granted') {
-      new Notification('awf: Pipeline at verify', {
-        body: s.todo_id + ' — ready for review',
-        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">🔍</text></svg>'
-      });
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('awf: Pipeline at verify', { body: (s.todo_id || '') + ' — ready for review' });
     }
   }
   if (s.status !== 'verify') _notified = false;
 }
-// Request permission on load
 if ('Notification' in window && Notification.permission === 'default') {
   Notification.requestPermission();
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
 function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+  const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
 }
 
-// ─── Start polling ──────────────────────────────────────────────────
-// Initial render from server-side state (first paint, no 3s wait)
+// ─── Init + Poll ────────────────────────────────────────────────────
 const INITIAL_STATE = {{ initial_state_json | safe }};
 updateAll(INITIAL_STATE);
-// Then poll for live updates
 setInterval(poll, 3000);
 </script>
-
 </body>
 </html>
