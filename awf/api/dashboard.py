@@ -27,6 +27,33 @@ DASHBOARD_FILE = "current.html"
 _TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "dashboard.html.j2"
 _template_cache: Any = None
 
+# Role visual identity — icons + colors for dashboard
+ROLE_VISUALS: dict[str, dict[str, str]] = {
+    "supervisor": {"icon": "📋", "color": "#569cd6", "label": "Supervisor"},
+    "agent-system-analyst": {"icon": "🔍", "color": "#4fc1ff", "label": "Analyst"},
+    "agent-architector": {"icon": "📐", "color": "#c586c0", "label": "Architector"},
+    "agent-implementer": {"icon": "🔧", "color": "#ce9178", "label": "Implementer"},
+    "agent-qa-review": {"icon": "✅", "color": "#4ec9b0", "label": "QA Review"},
+    "agent-project-auditor": {"icon": "🔬", "color": "#dcdcaa", "label": "Auditor"},
+    "agent-debugger": {"icon": "🐛", "color": "#f14c4c", "label": "Debugger"},
+    "agent-test-automator": {"icon": "🧪", "color": "#4ec9b0", "label": "Test Auto"},
+    "agent-security-auditor": {"icon": "🛡️", "color": "#c586c0", "label": "Security"},
+    "agent-refactoring-specialist": {"icon": "♻️", "color": "#4fc1ff", "label": "Refactor"},
+    "agent-code-reviewer": {"icon": "👁️", "color": "#dcdcaa", "label": "Reviewer"},
+    "agent-performance-engineer": {"icon": "⚡", "color": "#ce9178", "label": "Perf"},
+    "agent-dependency-manager": {"icon": "📦", "color": "#569cd6", "label": "Deps"},
+    "agent-sql-pro": {"icon": "🗃️", "color": "#4ec9b0", "label": "SQL"},
+}
+
+
+def _role_visual(role_name: str) -> dict[str, str]:
+    """Get icon+color+label for a role name."""
+    return ROLE_VISUALS.get(role_name, {
+        "icon": "🤖",
+        "color": "#858585",
+        "label": role_name.replace("agent-", "").replace("-", " ").title(),
+    })
+
 
 def _get_template() -> Any:
     """Load Jinja2 template (cached)."""
@@ -549,6 +576,14 @@ def generate_dashboard(project_dir: Path) -> Path | None:
         except (yaml.YAMLError, OSError):
             pass
 
+    # Build initial state JSON for client-side first paint (v2 template)
+    import json as _json
+    try:
+        initial_state = generate_state_dict(project_dir)
+        initial_state_json = _json.dumps(initial_state, ensure_ascii=False)
+    except Exception:
+        initial_state_json = "{}"
+
     # Render template
     try:
         template = _get_template()
@@ -579,6 +614,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
             stage_timings=stage_timings,
             current_stage_epoch=current_stage_epoch,
             worker_activity=_read_worker_activity(state),
+            initial_state_json=initial_state_json,
         )
     except Exception as e:
         import traceback as _tb
@@ -605,4 +641,247 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     return output_path
 
 
-__all__ = ["generate_dashboard"]
+__all__ = ["generate_dashboard", "generate_state_dict", "ROLE_VISUALS"]
+
+
+def _read_todo_content(project_dir: Path, todo_id: str | None) -> str:
+    """Read current TODO content as rendered HTML."""
+    if not todo_id:
+        return ""
+    inbox = paths.inbox(project_dir)
+    for fname in [f"{todo_id}.md", "TODO-content.md"]:
+        f = inbox / fname
+        if f.is_file():
+            try:
+                raw = f.read_text(encoding="utf-8")
+                import markdown as _md
+                return _md.markdown(raw, extensions=["fenced_code"])
+            except Exception:
+                return ""
+    return ""
+
+
+def _read_worker_last_line(project_dir: Path) -> str:
+    """Read last meaningful line from worker output log."""
+    logs_dir = project_dir / ".agentic" / "logs"
+    for log_name in logs_dir.glob("agent-*.out"):
+        try:
+            lines = log_name.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if line and not line.startswith("[") and len(line) > 10:
+                    return line[:200]
+        except OSError:
+            continue
+    return ""
+
+
+def _build_todo_timeline(project_dir: Path, current_todo: str | None) -> list[dict]:
+    """Build TODO timeline from done/ directory + current state."""
+    timeline = []
+    done_dir = paths.done_dir(project_dir)
+    if done_dir.is_dir():
+        for d in sorted(done_dir.iterdir()):
+            if d.is_dir():
+                # Try to get commit SHA and duration
+                sha = ""
+                try:
+                    sha_file = d / "BASELINE.sha"
+                    if sha_file.is_file():
+                        sha = sha_file.read_text().strip()[:8]
+                except OSError:
+                    pass
+                timeline.append({
+                    "id": d.name,
+                    "status": "approved",
+                    "commit_sha": sha,
+                })
+    if current_todo and current_todo not in [t["id"] for t in timeline]:
+        timeline.append({"id": current_todo, "status": "running", "commit_sha": ""})
+    return timeline
+
+
+def generate_state_dict(project_dir: Path) -> dict[str, Any]:
+    """Generate full dashboard state as dict (for /api/state JSON endpoint).
+
+    This is the data backbone — the HTML template and JS both consume it.
+    Called by dashboard HTTP server every 3 seconds for live updates.
+    """
+    project_dir = Path(project_dir).resolve()
+    state = read_state(project_dir)
+
+    # Pipeline stages
+    stages_raw: list[dict[str, Any]] = []
+    try:
+        from ..pipeline import resolve_pipeline_file
+        pipeline_file = resolve_pipeline_file(project_dir)
+        if pipeline_file.is_file():
+            import yaml
+            data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+            stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
+    except Exception:
+        pass
+
+    current_stage_idx = state.get("stage_idx", -1) if state else -1
+    stage_names = []
+    stages = []
+    for i, s in enumerate(stages_raw):
+        if not isinstance(s, dict):
+            continue
+        name = s.get("name", f"stage-{i}")
+        role = s.get("role", name)
+        kind = s.get("kind", "")
+        stage_names.append(name)
+        rv = _role_visual(role) if role != "supervisor" else _role_visual("supervisor")
+        if i < (current_stage_idx or 0):
+            st = "done"
+        elif i == current_stage_idx:
+            st = "current"
+        else:
+            st = "pending"
+        stages.append({
+            "name": name, "role": role, "kind": kind,
+            "icon": rv["icon"], "color": rv["color"], "label": rv["label"],
+            "status": st,
+        })
+
+    # Status
+    status, status_class, status_text, status_icon, status_label = _determine_status(state)
+
+    # Elapsed (from first agent stage, freeze on verify)
+    elapsed_epoch, elapsed_frozen, elapsed_str = 0, False, ""
+    if state and status == "running":
+        log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+        if log_file.is_file():
+            try:
+                log_text = log_file.read_text(encoding="utf-8", errors="replace")
+                agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
+                time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
+                for line in log_text.splitlines():
+                    tm = time_pat.search(line)
+                    if tm and agent_pat.search(line):
+                        dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                        if not elapsed_epoch:
+                            elapsed_epoch = int(dt.timestamp())
+            except (OSError, ValueError):
+                pass
+    elif state and status in ("verify", "done", "idle", "dead"):
+        elapsed_frozen = True
+        # Compute frozen elapsed from log
+        log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+        if log_file.is_file():
+            try:
+                log_text = log_file.read_text(encoding="utf-8", errors="replace")
+                agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
+                verify_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
+                time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
+                first_agent = None
+                verify_ts = None
+                for line in log_text.splitlines():
+                    tm = time_pat.search(line)
+                    if not tm:
+                        continue
+                    dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                    if agent_pat.search(line) and first_agent is None:
+                        first_agent = dt
+                    if verify_pat.search(line):
+                        verify_ts = dt
+                if first_agent and verify_ts:
+                    elapsed_epoch = int(first_agent.timestamp())
+                    elapsed_str = _format_elapsed_from_seconds(int(verify_ts.timestamp() - elapsed_epoch))
+                elif first_agent:
+                    elapsed_epoch = int(first_agent.timestamp())
+            except (OSError, ValueError):
+                pass
+
+    if not elapsed_str and elapsed_epoch:
+        elapsed_str = _format_elapsed(
+            datetime.fromtimestamp(elapsed_epoch, tz=timezone.utc).isoformat()
+        )
+
+    # Per-stage timings
+    stage_timings_dict, current_stage_epoch = _extract_stage_timings(project_dir)
+
+    # Handoffs (chat-style, pipeline order, rendered markdown)
+    handoffs = _read_handoffs(project_dir, stage_order=stage_names)
+    handoff_chat = []
+    for h in handoffs:
+        rv = _role_visual(h["role"])
+        handoff_chat.append({
+            "role": h["role"],
+            "icon": rv["icon"],
+            "color": rv["color"],
+            "label": rv["label"],
+            "content_html": h.get("content_html", ""),
+            "duration": stage_timings_dict.get(h["role"] or h["file"].split("-")[0], ""),
+        })
+
+    # TODO content
+    todo_id = state.get("todo_id") if state else None
+    todo_content_html = _read_todo_content(project_dir, todo_id)
+
+    # TODO timeline
+    todo_timeline = _build_todo_timeline(project_dir, todo_id)
+
+    # Worker status
+    worker = _read_worker_activity(state)
+    if worker and worker.get("active"):
+        worker["last_line"] = _read_worker_last_line(project_dir)
+
+    # Events
+    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+    events = []
+    if log_file.is_file():
+        try:
+            events = _parse_log_events(log_file.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            pass
+
+    # Project name
+    import yaml as _yaml
+    config_file = paths.config_file(project_dir)
+    project_name = "Project"
+    if config_file.is_file():
+        try:
+            config = _yaml.safe_load(config_file.read_text(encoding="utf-8"))
+            project_name = (config or {}).get("project", {}).get("name", "Project")
+        except Exception:
+            pass
+
+    # Next stage preview
+    next_stage = None
+    if current_stage_idx is not None and 0 <= current_stage_idx < len(stages) - 1:
+        ns = stages[current_stage_idx + 1]
+        next_stage = {"icon": ns["icon"], "label": ns["label"], "color": ns["color"]}
+
+    return {
+        "project_name": project_name,
+        "todo_id": todo_id or "",
+        "todo_content_html": todo_content_html,
+        "status": status,
+        "status_text": status_text,
+        "status_icon": status_icon,
+        "stages": stages,
+        "stages_done": sum(1 for s in stages if s["status"] == "done"),
+        "stages_total": len(stages),
+        "next_stage": next_stage,
+        "elapsed_epoch": elapsed_epoch,
+        "elapsed_frozen": elapsed_frozen,
+        "elapsed_str": elapsed_str,
+        "handoffs": handoff_chat,
+        "todo_timeline": todo_timeline,
+        "worker": worker,
+        "events": events[-30:] if events else [],
+        "pipeline_running": status in ("running", "verify"),
+    }
+
+
+def _format_elapsed_from_seconds(seconds: int) -> str:
+    """Format seconds → 'Xm Ys' or 'Ys'."""
+    if seconds < 60:
+        return f"{seconds}s"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m"

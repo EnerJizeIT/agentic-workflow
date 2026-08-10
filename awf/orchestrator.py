@@ -102,6 +102,18 @@ def run_pipeline(args: Any) -> int:
 
     retry_counts = [0] * total
 
+    # Start dashboard HTTP server (live updates, no file:// reload)
+    dashboard_port = 0
+    _dashboard_server = None
+    try:
+        from .api.dashboard_server import start_dashboard_server
+        dashboard_port, _dashboard_server = start_dashboard_server(project_dir)
+        _log(logs_dir, f"Dashboard server: http://127.0.0.1:{dashboard_port}")
+        # Write port to state so awf_start MCP tool can open browser
+        write_state(project_dir, logs_dir=logs_dir, dashboard_port=dashboard_port)
+    except Exception as e:
+        _log(logs_dir, f"Dashboard server failed to start: {e}")
+
     stage_idx = 0
     if from_stage:
         stage_idx = _find_stage_index(stages, from_stage)

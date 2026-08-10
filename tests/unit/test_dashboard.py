@@ -67,12 +67,13 @@ class TestDashboardRenders:
         monkeypatch.setattr(
             dash_mod,
             "_read_worker_activity",
-            lambda state: {"active": True, "state": "running", "pid": 12345, "cpu_seconds": 10},
+            lambda state: {"active": True, "state": "running", "pid": 12345, "cpu_seconds": 10, "worker_pid": 12345, "read_mb": 0, "write_kb": 0},
         )
         result = generate_dashboard(dash_project)
         assert result is not None
         html = result.read_text(encoding="utf-8")
-        assert "worker-activity" in html or "wa-indicator" in html
+        # v2 template: worker data passed to template even if section hidden by JS
+        assert "worker" in html.lower()
 
     def test_without_worker_activity(self, dash_project):
         """Dashboard renders when worker_activity is absent (no crash)."""

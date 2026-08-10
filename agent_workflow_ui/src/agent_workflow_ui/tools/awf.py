@@ -162,20 +162,40 @@ async def awf_start(
         auto=auto,
         timeout=timeout,
     )
-    # SMO: deterministic dashboard opening — no supervisor instruction needed.
-    # Opens immediately after subprocess launch. Dashboard auto-refreshes 5s,
-    # user sees plan stage → agent stages → verify in real time.
+    # SMO: deterministic dashboard opening — HTTP server started by orchestrator.
+    # Opens HTTP URL (not file://) for smooth live updates via /api/state polling.
     if result.get("status") == "ok" and result.get("run_mode") == "background":
         try:
+            import time as _time
             import webbrowser
 
-            from awf.api.dashboard import generate_dashboard
             pd = _resolve_project_dir(project_dir)
-            await asyncio.to_thread(generate_dashboard, pd)
-            dashboard_path = pd / ".agentic" / "dashboards" / "current.html"
-            if dashboard_path.is_file():
-                webbrowser.open(f"file://{dashboard_path}")
+            # Wait briefly for orchestrator to start dashboard server
+            dashboard_url = None
+            for _ in range(10):
+                _time.sleep(0.5)
+                try:
+                    from awf.pipeline_state import read_state
+                    st = read_state(pd)
+                    port = st.get("dashboard_port") if st else None
+                    if port:
+                        dashboard_url = f"http://127.0.0.1:{port}"
+                        break
+                except Exception:
+                    continue
+
+            if dashboard_url:
+                webbrowser.open(dashboard_url)
                 result["dashboard_opened"] = True
+                result["dashboard_url"] = dashboard_url
+            else:
+                # Fallback: generate static HTML + open file://
+                from awf.api.dashboard import generate_dashboard
+                await asyncio.to_thread(generate_dashboard, pd)
+                dashboard_path = pd / ".agentic" / "dashboards" / "current.html"
+                if dashboard_path.is_file():
+                    webbrowser.open(f"file://{dashboard_path}")
+                    result["dashboard_opened"] = True
         except Exception:
             result["dashboard_opened"] = False
     # SMO: explicit next_action — weak models need this to avoid polling.
