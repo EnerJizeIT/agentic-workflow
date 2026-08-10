@@ -375,10 +375,30 @@ def get_status(project_dir: Path) -> StatusResult:
 
     suggestion: str | None = None
     if not active_ids and blocked_count == 0:
-        suggestion = (
-            "No active tasks. Supervisor should create the next TODO, "
-            "then run: awf start"
-        )
+        # SMO: suggestion must be phase-aware — don't suggest "create TODO"
+        # during early phases (goal/form/normalize/brief).
+        try:
+            from ..phase import detect_phase
+            current_phase = detect_phase(project_dir)
+        except Exception:
+            current_phase = "unknown"
+
+        _PHASE_SUGGESTIONS = {
+            "goal": "Спроси пользователя о цели сессии → awf_set_goal.",
+            "form": "Открой project-setup форму → awf_open_project_setup_form.",
+            "normalize": "Выполни normalize checklist → awf_confirm_normalized.",
+            "brief": "Напиши BRIEF-TODO-NNNN.md → .ready сигнал.",
+            "init": "Спроси пользователя о цели сессии → awf_set_goal.",
+        }
+        if current_phase in _PHASE_SUGGESTIONS:
+            suggestion = _PHASE_SUGGESTIONS[current_phase]
+        elif current_phase in ("run", "verify", "done"):
+            suggestion = (
+                "No active tasks. Supervisor should create the next TODO, "
+                "then run: awf start"
+            )
+        else:
+            suggestion = "No active tasks. Check awf_current_step for guidance."
 
     pipeline_running, pipeline_pid, log_tail = check_pipeline_running(project_dir)
 

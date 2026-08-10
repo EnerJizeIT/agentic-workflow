@@ -917,7 +917,16 @@ async def awf_set_goal(
         new_phase = await asyncio.to_thread(
             advance_phase, pd, goal=goal
         )
-        return {"status": "ok", "phase": new_phase, "goal": goal}
+        # SMO: next_action guides weak models — don't let them guess
+        _NEXT = {
+            "form": "Открой project-setup форму через awf_open_project_setup_form.",
+            "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
+            "brief": "Напиши BRIEF-TODO-NNNN.md для user approval.",
+        }
+        return {
+            "status": "ok", "phase": new_phase, "goal": goal,
+            "next_action": _NEXT.get(new_phase, f"Phase: {new_phase}"),
+        }
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
@@ -944,6 +953,14 @@ async def awf_confirm_normalized(
         new_phase = await asyncio.to_thread(
             advance_phase, pd, normalized=True
         )
-        return {"status": "ok", "phase": new_phase}
+        # SMO: next_action guides weak models
+        _NEXT = {
+            "brief": "Изучи vision и план, напиши BRIEF-TODO-NNNN.md, создай .ready сигнал.",
+            "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
+        }
+        return {
+            "status": "ok", "phase": new_phase,
+            "next_action": _NEXT.get(new_phase, f"Phase: {new_phase}"),
+        }
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}

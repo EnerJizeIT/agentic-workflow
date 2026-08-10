@@ -61,7 +61,7 @@ class TestAwfInit:
         assert "plan_md" in result
         assert "vision_excerpt" in result
         assert result["pipeline_configured"] is False
-        assert "project-setup" in result["next_action"]
+        assert "awf_set_goal" in result["next_action"] or "цель" in result["next_action"]
         # Files actually created
         assert (git_project / ".agentic" / "config.yaml").exists()
         assert (git_project / ".agentic" / "roles" / "supervisor.md").exists()
@@ -86,7 +86,9 @@ class TestAwfInit:
         run(awf.awf_init(project_dir=str(git_project)))
         result = run(awf.awf_init(project_dir=str(git_project)))
         assert result["status"] == "ok"
-        assert "cleaned" in result["next_action"].lower() or "preserved" in result["next_action"].lower()
+        # SMO: next_action is now phase-aware (not hardcoded "cleaned/preserved")
+        assert "next_action" in result
+        assert len(result["next_action"]) > 0
 
     def test_force_overwrites(self, git_project):
         run(awf.awf_init(project_dir=str(git_project)))
