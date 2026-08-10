@@ -195,9 +195,14 @@ def _read_handoffs(project_dir: Path, stage_order: list[str] | None = None) -> l
 
     handoffs: list[dict[str, str]] = []
     for f in sorted(handoff_dir.glob("*.md")):
-        name = f.stem
-        parts = name.split("-", 1)
-        role = parts[0] if parts else name
+        name = f.stem  # e.g. agent-system-analyst-TODO-0001
+        # Role extraction: split on -TODO- (role names contain dashes)
+        if "-TODO-" in name:
+            role = name.split("-TODO-")[0]
+        elif "-BRIEF-" in name:
+            role = name.split("-BRIEF-")[0]
+        else:
+            role = name.rsplit("-", 1)[0] if "-" in name else name
         try:
             content = f.read_text(encoding="utf-8")
         except OSError:
