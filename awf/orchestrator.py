@@ -109,8 +109,10 @@ def run_pipeline(args: Any) -> int:
         from .api.dashboard_server import start_dashboard_server
         dashboard_port, _dashboard_server = start_dashboard_server(project_dir)
         _log(logs_dir, f"Dashboard server: http://127.0.0.1:{dashboard_port}")
-        # Write port to state so awf_start MCP tool can open browser
-        write_state(project_dir, logs_dir=logs_dir, dashboard_port=dashboard_port)
+        # Write port to separate file (survives state overwrites in stage loop)
+        port_file = paths.agentic_dir(project_dir) / "state" / "dashboard_port"
+        port_file.parent.mkdir(parents=True, exist_ok=True)
+        port_file.write_text(str(dashboard_port), encoding="utf-8")
     except Exception as e:
         _log(logs_dir, f"Dashboard server failed to start: {e}")
 

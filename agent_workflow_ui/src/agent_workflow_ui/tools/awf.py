@@ -172,17 +172,16 @@ async def awf_start(
             pd = _resolve_project_dir(project_dir)
             # Wait briefly for orchestrator to start dashboard server
             dashboard_url = None
+            port_file = pd / ".agentic" / "state" / "dashboard_port"
             for _ in range(10):
                 _time.sleep(0.5)
-                try:
-                    from awf.pipeline_state import read_state
-                    st = read_state(pd)
-                    port = st.get("dashboard_port") if st else None
-                    if port:
+                if port_file.is_file():
+                    try:
+                        port = int(port_file.read_text().strip())
                         dashboard_url = f"http://127.0.0.1:{port}"
                         break
-                except Exception:
-                    continue
+                    except (ValueError, OSError):
+                        continue
 
             if dashboard_url:
                 webbrowser.open(dashboard_url)
