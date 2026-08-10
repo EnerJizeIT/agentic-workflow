@@ -145,9 +145,13 @@
     .card-body { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
     .card.expanded .card-body { max-height: 2000px; }
 
-    .handoff-item { padding: 12px 20px; border-top: 1px solid var(--border); }
+    .handoff-item { padding: 12px 20px; border-top: 1px solid var(--border); border-left: 3px solid transparent; transition: background 0.15s, border-color 0.15s; }
     .handoff-item summary { cursor: pointer; display: flex; gap: 12px; align-items: flex-start; list-style: none; }
     .handoff-item summary::-webkit-details-marker { display: none; }
+    .handoff-item summary::after { content: '▸ подробнее'; font-size: 10px; color: var(--text-dim); margin-left: auto; white-space: nowrap; transition: transform 0.2s; }
+    .handoff-item[open] summary::after { content: '▴ свернуть'; }
+    .handoff-item:hover { background: var(--bg-card-hover); }
+    .handoff-item[open] { background: var(--bg-card-hover); border-left-color: var(--accent); }
     .handoff-role { font-family: var(--mono); font-size: 12px; color: var(--accent-purple); min-width: 130px; padding-top: 2px; }
     .handoff-content { flex: 1; }
     .handoff-file { font-family: var(--mono); font-size: 13px; color: var(--accent-cyan); margin-bottom: 4px; }
@@ -455,6 +459,32 @@ awf_tick();
 setInterval(awf_tick, 1000);
 {% endif %}
 
+// ─── Handoff details state persistence (survives location.reload) ────
+function awf_save_open_details() {
+  try {
+    const open = [];
+    document.querySelectorAll('details.handoff-item[open]').forEach(d => {
+      const id = d.querySelector('.handoff-file');
+      if (id) open.push(id.textContent.trim());
+    });
+    localStorage.setItem('awf-open-details', JSON.stringify(open));
+  } catch(e) {}
+}
+function awf_restore_open_details() {
+  try {
+    const open = JSON.parse(localStorage.getItem('awf-open-details') || '[]');
+    document.querySelectorAll('details.handoff-item').forEach(d => {
+      const id = d.querySelector('.handoff-file');
+      if (id && open.includes(id.textContent.trim())) d.setAttribute('open', '');
+    });
+  } catch(e) {}
+}
+awf_restore_open_details();
+// Save on every toggle (immediate, survives next reload)
+document.querySelectorAll('details.handoff-item').forEach(d => {
+  d.addEventListener('toggle', awf_save_open_details);
+});
+
 // ─── Smart refresh — file:// uses reload, http:// uses fetch ─────────
 (function() {
   // If pipeline is done, don't auto-refresh
@@ -463,11 +493,10 @@ setInterval(awf_tick, 1000);
   {% endif %}
 
   // file:// protocol: fetch() is blocked by CORS → use location.reload()
-  // BUT pause refresh when user has open <details> (reading handoffs etc.)
+  // Open <details> state is preserved via localStorage (no pause needed).
   if (window.location.protocol === 'file:') {
     setInterval(function() {
-      // Don't reload if user is reading expanded content
-      if (document.querySelectorAll('details[open]').length > 0) return;
+      awf_save_open_details();
       location.reload();
     }, 5000);
     return;
