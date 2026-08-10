@@ -1,41 +1,38 @@
 # Phase: brief
 
 ## Your task
-Write Increment Brief for user approval, then write TODO for agent.
+Study project context, write TODO for agent, dispatch + start pipeline.
 
-## Step 1: Write Brief
+## Step 1: Study project
 
-Write `.agentic/inbox/BRIEF-TODO-NNNN.md`:
+Read vision document and BACKLOG. Understand what already exists.
+Decide what THIS increment accomplishes (based on session goal + increment plan).
+
+## Step 2: Write TODO content
+
+Prepare a TODO for the FIRST agent stage. Structure:
 
 ```markdown
-# Brief: <increment title>
+# TODO-NNNN — <title>
 
 ## Goal
-What this increment achieves (1-3 sentences). Based on session goal.
+What this increment achieves (1-3 sentences).
 
-## Success criteria
-- Testable conditions that define "done"
+## Tasks
+- [ ] Specific, testable task 1
+- [ ] Specific, testable task 2
 
-## Out of scope
-- What we explicitly don't do
+## Context
+<What the agent needs to know about existing code/architecture>
 
 ## Verify
-- Commands to check success
+- `<command>` — must pass after changes
 ```
 
-Create signal: `.agentic/inbox/BRIEF-TODO-NNNN.ready`
-
-## Step 2: After Brief approval → write TODO
-
-Once user approves Brief (checkpoint form), write `.agentic/inbox/TODO-NNNN.md` —
-detailed task for the FIRST agent stage only.
-
-Include: context, tasks, files, constraints, verify command, prohibitions.
-
-**Multi-stage template** (when 2+ roles share one TODO):
+**Multi-stage pipeline** (when 2+ roles share one TODO):
 ```markdown
 ## Context
-This iteration goes through: <role-1> (you) → <role-2> → <role-3>.
+This iteration goes through: <role-1> → <role-2> → <role-3>.
 
 ## Your task
 <Specific task for role-1 only>
@@ -51,8 +48,8 @@ Do NOT: micro-manage the whole pipeline in one TODO.
 
 1. `awf_dispatch_todo(project_dir, content=<TODO content>, role=<first role>)`
 2. `awf_start(project_dir, background=True)` — dashboard opens automatically.
-3. Go IDLE. User monitors dashboard.
+3. GO IDLE. User monitors dashboard.
 
-## Before writing TODO — verify role scope
+## Before dispatch — verify role scope
 Read `.agentic/roles/<next-role>.md` prohibitions. If task is out of scope,
 rephrase or split into multiple TODOs.
