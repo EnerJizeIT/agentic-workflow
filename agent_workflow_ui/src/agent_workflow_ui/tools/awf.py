@@ -207,7 +207,7 @@ async def awf_continue(
     Returns:
         Same shape as :func:`awf_start`.
     """
-    return await _exec(
+    result = await _exec(
         api.continue_pipeline,
         project_dir=_resolve_project_dir(project_dir),
         pipeline=pipeline,
@@ -215,6 +215,9 @@ async def awf_continue(
         auto=auto,
         timeout=timeout,
     )
+    if isinstance(result, dict) and result.get("run_mode") == "background":
+        result["next_action"] = "Pipeline resumed. GO IDLE — wait for user."
+    return result
 
 
 async def awf_retry_stage(
@@ -242,13 +245,16 @@ async def awf_retry_stage(
     Returns:
         Same shape as :func:`awf_start`.
     """
-    return await _exec(
+    result = await _exec(
         api.retry_stage,
         project_dir=_resolve_project_dir(project_dir),
         pipeline=pipeline,
         auto=auto,
         timeout=timeout,
     )
+    if isinstance(result, dict) and result.get("run_mode") == "background":
+        result["next_action"] = "Stage retried. GO IDLE — wait for user."
+    return result
 
 
 # ─── Baseline / rollback ────────────────────────────────────────────────
@@ -482,7 +488,9 @@ async def awf_analyze_roles(
             _resolve_project_dir(project_dir),
             dry_run=dry_run,
         )
-        return _ok(result)
+        response = _ok(result)
+        response["next_action"] = "Roles analyzed. Call awf_confirm_normalized to advance to brief phase."
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -575,7 +583,20 @@ async def awf_load_supervisor_context(
         result = await asyncio.to_thread(
             api.load_supervisor_context, _resolve_project_dir(project_dir)
         )
-        return _ok(result)
+        response = _ok(result)
+        # SMO: next_action from detected phase
+        phase = result.phase if hasattr(result, 'phase') else 'unknown'
+        _PHASE_NEXT = {
+            "goal": "Ask user for goal → awf_set_goal.",
+            "form": "Open project-setup form → awf_open_project_setup_form.",
+            "normalize": "Run awf_analyze_roles → awf_confirm_normalized.",
+            "brief": "Write BRIEF-TODO-NNNN.md → .ready signal.",
+            "run": "Pipeline running. GO IDLE — wait for user.",
+            "verify": "Read handoffs + git diff → awf_approve.",
+            "done": "Pipeline complete. Ask user for next step.",
+        }
+        response["next_action"] = _PHASE_NEXT.get(phase, f"Phase: {phase}. Check awf_current_step.")
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -803,7 +824,19 @@ async def awf_wait_for_event(
             _resolve_project_dir(project_dir),
             timeout=timeout,
         )
-        return _ok(result)
+        response = _ok(result)
+        # SMO: next_action per event_type — weak models need explicit guidance
+        et = result.get("event_type", "timeout") if isinstance(result, dict) else "timeout"
+        _EVENT_ACTIONS = {
+            "verify": "Pipeline at verify. Read handoffs + git diff → awf_approve.",
+            "blocked": "Worker blocked. Read BLOCKED note → replan or adjust TODO.",
+            "checkpoint": "Checkpoint form opened in browser. Tell user to approve.",
+            "done": "Pipeline complete. Ask user for next step.",
+            "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
+            "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
+        }
+        response["next_action"] = _EVENT_ACTIONS.get(et, "Check awf_status, then wait for user.")
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
