@@ -388,9 +388,9 @@ async def awf_approve(
         response = _ok(result)
         # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat)
         response["next_action"] = (
-            f"{todo_id} approved and committed. Pipeline will EXIT after commit. "
-            "For next TODO: awf_dispatch_todo → awf_start. "
-            "DO NOT call awf_approve again."
+            f"{todo_id} approved and committed. Pipeline exited. "
+            "Wait for user to decide next step. "
+            "DO NOT dispatch next TODO without user asking."
         )
         return response
     except api.AwfApiError as e:

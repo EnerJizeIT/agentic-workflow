@@ -116,7 +116,12 @@ def dispatch_todo(
     atomic_write_text(md_path, body)
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status)
-    baseline = create_baseline(project_dir, todo_id)
+    try:
+        baseline = create_baseline(project_dir, todo_id)
+    except Exception:
+        # Rollback: remove TODO .md if baseline fails (prevents orphan TODO)
+        md_path.unlink(missing_ok=True)
+        raise
 
     # Step 3: dispatch signal
     ready_path = inbox / f"{todo_id}.ready"
