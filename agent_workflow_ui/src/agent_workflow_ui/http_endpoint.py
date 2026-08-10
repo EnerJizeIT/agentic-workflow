@@ -52,6 +52,9 @@ def _is_valid_form_id(form_id: str) -> bool:
     """
     if not form_id.startswith("FORM-") or not (6 < len(form_id) < 100):
         return False
+    # P1: ASCII-only (prevents unicode filenames in inputs_dir)
+    if not form_id.isascii():
+        return False
     # Legit IDs are FORM-<alphanumeric/hyphen> only.
     if "/" in form_id or "\\" in form_id or ".." in form_id:
         return False

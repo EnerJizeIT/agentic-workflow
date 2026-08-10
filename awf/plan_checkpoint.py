@@ -151,12 +151,11 @@ def run_plan_checkpoint(
     plan_md = project_dir / ".agentic" / "phases" / "plan.md"
     plan_content = plan_md.read_text(encoding="utf-8") if plan_md.is_file() else ""
 
-    port = _find_free_port()
+    port = 0  # P2: let OS assign free port — eliminates TOCTOU race entirely
     decision_holder: dict[str, str] = {}
     edited_holder: dict[str, str] = {}
 
-    # DAUD-2: TOCTOU race — port may be taken between _find_free_port and bind.
-    # Retry with new ports if OSError occurs.
+    # DAUD-2: port=0 → OS picks free port at bind() time, no race window.
     server = None
     for attempt in range(3):
         try:
@@ -170,13 +169,13 @@ def run_plan_checkpoint(
             if attempt < 2:
                 import time as _time
                 _time.sleep(0.5)
-                port = _find_free_port()
             else:
                 raise
 
     html_path = ""
+    actual_port = server.server_address[1]  # P2: OS-assigned port (was port=0)
     try:
-        html_body = _render_html(todo_id, todo_content, plan_content, port)
+        html_body = _render_html(todo_id, todo_content, plan_content, actual_port)
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".html",
@@ -192,7 +191,7 @@ def run_plan_checkpoint(
         print(f"  BD-36: Plan Checkpoint — {todo_id}")
         print("=" * 60)
         print(f"  Form:   file://{html_path}")
-        print(f"  Server: http://127.0.0.1:{port}")
+        print(f"  Server: http://127.0.0.1:{actual_port}")
         print(f"  Timeout: {timeout}s (pipeline aborts on expiry — re-run awf_start to retry)")
         print("=" * 60)
         try:

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from awf import xdg
 from awf._env import awf_subprocess_env
 from awf._log import log as _log
@@ -164,21 +162,5 @@ class TestRunSubprocessUntilSignal:
         )
         assert result.returncode == 0
 
-    def test_hard_timeout_raises(self, tmp_path, monkeypatch):
-        class _Hanging:
-            def __init__(self, *a, **kw):
-                self.pid = 1
-            def poll(self):
-                return None
-            def kill(self):
-                pass
-            def wait(self, timeout=None):
-                return None
-
-        monkeypatch.setattr("subprocess.Popen", _Hanging)
-        monkeypatch.setattr("time.sleep", lambda *_: None)
-        with pytest.raises(TimeoutError):
-            run_subprocess_until_signal(
-                cmd=["x"], cwd=tmp_path, watch_paths=[], logs_dir=None,
-                hard_timeout=0,  # immediate timeout
-            )
+    # P3: duplicate of test_audit_followup.py::test_hard_timeout_kills_hung_process
+    # — removed. That test has better coverage (checks kill() was called).

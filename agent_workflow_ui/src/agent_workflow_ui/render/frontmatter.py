@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n(.*)$", re.DOTALL)
 
 
 def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:

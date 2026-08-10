@@ -227,9 +227,20 @@ def update_config_role_mapping(
     if not changed:
         return False
 
+    # P3: keep latest backup as .bak + timestamped copy for history
     backup = config_path.with_suffix(".yaml.bak")
     try:
-        backup.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
+        old_content = config_path.read_text(encoding="utf-8")
+        backup.write_text(old_content, encoding="utf-8")
+        # Also write timestamped backup (keep last 3)
+        from datetime import datetime as _dt
+        ts_backup = config_path.with_name(
+            f"config.yaml.{_dt.now().strftime('%Y%m%d%H%M%S')}.bak"
+        )
+        ts_backup.write_text(old_content, encoding="utf-8")
+        old_baks = sorted(config_path.parent.glob("config.yaml.*.bak"))
+        for old in old_baks[:-3]:
+            old.unlink(missing_ok=True)
     except OSError as e:
         log.warning("BD-12: backup failed: %s", e)
 

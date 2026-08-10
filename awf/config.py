@@ -22,11 +22,15 @@ def load(project_dir: str | Path = ".") -> dict:
 
 
 def get(config: dict, dotted_key: str, default=None):
-    """Navigate a dotted path inside *config*, returning *default* on miss."""
+    """Navigate a dotted path inside *config*, returning *default* on miss.
+
+    P3: distinguishes "key = null" from "key missing" — returns None if the key
+    exists with value None, returns default only if the key doesn't exist.
+    """
     cur = config
     for part in dotted_key.split("."):
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
         else:
             return default
-    return default if cur is None else cur
+    return cur  # P3: return actual value (including None), not default

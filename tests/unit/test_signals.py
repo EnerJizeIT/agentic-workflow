@@ -176,14 +176,18 @@ class TestReadSignalForTodo:
         result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
         assert result == "DONE-TODO-0001"
 
-    def test_ready_with_whitespace_only_md_accepted(self, tmp_path: Path) -> None:
-        """.ready + .md with only whitespace → st_size > 0, so accepted."""
+    def test_ready_with_whitespace_only_md_rejected(self, tmp_path: Path) -> None:
+        """P3: .ready + .md with only whitespace → should be rejected (same as empty).
+
+        Whitespace-only .md has st_size > 0 but no real content. This is a
+        signal quality issue — worker created a placeholder .md without content.
+        """
         outbox = tmp_path / "outbox"
         outbox.mkdir()
         (outbox / "DONE-TODO-0001.ready").write_text("")
         (outbox / "DONE-TODO-0001.md").write_text("   \n  \n")
         result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
-        assert result == "DONE-TODO-0001"
+        assert result is None  # whitespace-only .md = no real signal
 
     def test_empty_md_falls_through_to_next_prefix(self, tmp_path: Path) -> None:
         """When DONE has empty .md but BLOCKED has .ready, BLOCKED should be found."""

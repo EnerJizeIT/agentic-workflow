@@ -34,9 +34,10 @@ def extract_step_id_from_todo(todo_path: Path) -> int | None:
     if m:
         return int(m.group(1))
 
-    # Then 'Step N' anywhere in the first 20 lines (header area)
+    # P3: 'Step N' in header area — require markdown context (start of line,
+    # bold, checkbox, or "Phase:" prefix) to avoid matching random prose.
     head = "\n".join(text.splitlines()[:20])
-    matches = re.findall(r"\bStep\s+(\d+)\b", head)
+    matches = re.findall(r"(?:^|\*\*|-\s*\[\s*[xX ]?\s*\]|Phase:.*?)(?:\s*)Step\s+(\d+)", head, re.MULTILINE)
     if matches:
         return int(matches[0])
 

@@ -100,6 +100,17 @@ async def open_form(
     env = get_jinja_env()
     port = get_http_port()
 
+    # P2: template whitelist — defense in depth against LLM passing arbitrary paths
+    _ALLOWED_TEMPLATES = {"project-setup", "increment-planning", "ack"}
+    if template not in _ALLOWED_TEMPLATES:
+        log.warning("Rejected open_form with non-whitelisted template: %r", template)
+        return {
+            "form_id": "",
+            "browser_opened": False,
+            "submit_url": "",
+            "error": f"Unknown template '{template}'. Available: {', '.join(sorted(_ALLOWED_TEMPLATES))}",
+        }
+
     if port is None:
         return {
             "form_id": "",

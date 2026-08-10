@@ -259,9 +259,15 @@ def resolve_prev_handoffs(
         if todo_id:
             result.append(handoff_dir / f"{st.role}-{todo_id}.md")
         else:
+            # P2: sort by name (numeric ID) instead of mtime — deterministic
+            # even when rapid retry creates files in the same second.
+            import re
+            def _sort_key(p: Path) -> tuple[int, str]:
+                m = re.search(r"(\d+)", p.name)
+                return (int(m.group(1)) if m else 0, p.name)
             candidates = sorted(
-                handoff_dir.glob(f"{st.role}-*.md"),
-                key=lambda p: p.stat().st_mtime,
+                handoff_dir.glob(f"{st.role}- *.md".replace(" ", "")),
+                key=_sort_key,
                 reverse=True,
             )
             if candidates:
