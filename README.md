@@ -102,6 +102,7 @@ Live HTTP dashboard opens automatically when pipeline starts:
 
 ## Documentation
 
+- [USAGE.md](USAGE.md) — usage scenarios and tool reference
 - [Architecture](vision/architecture.md) — components, data flow, design decisions
 - [Product Vision](vision/agent-ui-plugin.md) — competitive advantages, dogfood results
 - [Supervisor Flow (SMO)](vision/supervisor-flow.md) — phase system, next_action pattern

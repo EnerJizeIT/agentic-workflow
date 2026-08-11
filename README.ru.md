@@ -102,6 +102,7 @@ Dashboard (live /api/state polling)
 
 ## Документация
 
+- [USAGE.ru.md](USAGE.ru.md) — сценарии использования и справочник tools
 - [Архитектура](vision/architecture.md) — компоненты, потоки данных, design decisions
 - [Product Vision](vision/agent-ui-plugin.md) — конкурентные преимущества, dogfood-результаты
 - [Supervisor Flow (SMO)](vision/supervisor-flow.md) — фазовая система, паттерн next_action
