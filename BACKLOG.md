@@ -163,7 +163,77 @@ injection (non-issue without shell=True).
 
 ---
 
-## Architecture notes
+### ТИРАЖ-2026-08-11 · Подготовка к публикации (4 reviewer: Claude Code, DeepSeek, Qwen, Kimi)
+
+#### Quick wins — делаем сейчас
+
+⬜ `.1` **Удалить `qa-audit-*.md` из root** — мусорный файл, подрывает впечатление.
+   Добавить `qa-audit-*` в .gitignore.
+
+⬜ `.2` **Починить badges** — `tests` badge ведёт на `#`. Заменить на shields.io
+   CI badge: `https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml/badge.svg`.
+
+⬜ `.3` **Дополнить pyproject.toml metadata** — classifiers, keywords, project.urls
+   (Homepage, Repository, Issues). Для PyPI и поиска.
+
+⬜ `.4` **Requirements/Compatibility секция в README** — Python 3.10+, opencode,
+   OS (Linux tested, macOS probably, Windows unknown), модели (model-agnostic,
+   tested Qwen vLLM, должно работать с Claude/GPT).
+
+⬜ `.5` **Quick Start секция в README** — 5-минутный блок: install → configure →
+   first pipeline. Один copy-paste блок.
+
+⬜ `.6` **Troubleshooting секция в USAGE** — pipeline завис (как сбросить state),
+   порт занят, orphan TODO, commit failed.
+
+⬜ `.7` **Limitations секция в USAGE** — средние затраты токенов (~2M per session),
+   pipeline depth tested (5 stages), single-machine (не distributed).
+
+⬜ `.8` **Comparison table в README** — awf vs Aider vs Claude Code vs Devin.
+   Планирование, human-in-the-loop, кастомные пайплайны, MCP-native, self-hosted.
+
+⬜ `.9` **Пример pipeline.yaml + role в USAGE** — показать как создать кастомный
+   пайплайн (1 stage, 3 stages, 5 stages) + пример файла роли.
+
+⬜ `.10` **"Dogfood" → "Real-world results"** — жаргон, не все поймут. Везде в README.
+
+⬜ `.11` **GitHub topics/tags** — `opencode`, `mcp`, `ai-agent`, `pipeline`,
+   `multi-agent`, `orchestrator`, `developer-tools`.
+
+⬜ `.12` **ASCII → Mermaid диаграммы** — GitHub рендерит нативно. В README и
+   architecture.md.
+
+⬜ `.13` **CONTRIBUTING.md** — dev setup, тесты, линтеры, PR process, стиль коммитов.
+
+⬜ `.14` **CHANGELOG.md** — Keep a Changelog формат. Начать с v1.0.0.
+
+⬜ `.15` **GitHub Release v1.0.0** — description: SMO, 29 tools, dashboard v2,
+   6 dogfood sessions.
+
+⬜ `.16` **SECURITY.md** — базовая политика (для pet-проекта).
+
+⬜ `.17` **Issue templates** — `.github/ISSUE_TEMPLATE/`: bug_report, feature_request.
+
+#### Нужно внешнее resource
+
+⬜ `.18` **Скриншоты/GIF dashboard в README** — нужен реальный pipeline run.
+   3-4 скриншота: chat handoffs, TODO timeline, events, worker status.
+
+⬜ `.19` **PyPI публикация** — `pip install awf agent-workflow-ui`. build + twine.
+   Пока GitHub install — приемлемо для showcase.
+
+⬜ `.20` **Демо-видео (2-3 мин)** — полный цикл от init до approve.
+
+#### Отклонено / отложено
+
+ℹ️ `.21` **GitHub Pages / ReadTheDocs** — отдельный effort, текущих .md файлов
+   достаточно для начала.
+ℹ️ `.22` **Docker образ** — интересная идея, но opencode требует локального
+   окружения. Не приоритет.
+ℹ️ `.23` **Экосистемная расширяемость (standalone, другие агенты)** —
+   aspirational. Сейчас: "The missing orchestration layer for opencode".
+ℹ️ `.24` **Английский как основной** — уже сделано. README.md (EN) primary,
+   README.ru.md (RU) secondary.
 
 - `tools/awf.py` (~940 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
 - `plan_checkpoint.py` (201 строка, 21% coverage) — добавить покрытие при dogfood
