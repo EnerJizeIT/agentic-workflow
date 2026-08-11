@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awf"
-version = "0.4.0"
+version = "1.0.0"
 description = "Agentic Workflow Framework — declarative multi-agent pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,7 +37,7 @@ timeout_method = "signal"
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"  # awf-core requires >=3.9; plugin requires >=3.10 (separate dist)
+target-version = "py310"
 
 [tool.ruff.lint]
 # F: pyflakes (real bugs)
