@@ -197,8 +197,9 @@ injection (non-issue without shell=True).
 
 ⬜ `.10` **"Dogfood" → "Real-world results"** — жаргон, не все поймут. Везде в README.
 
-⬜ `.11` **GitHub topics/tags** — `opencode`, `mcp`, `ai-agent`, `pipeline`,
-   `multi-agent`, `orchestrator`, `developer-tools`.
+⬜ `.11` **GitHub topics/tags + social preview** — `opencode`, `mcp`, `ai-agent`,
+   `pipeline`, `multi-agent`, `orchestrator`, `developer-tools`. + social preview
+   image (Settings → Social preview).
 
 ⬜ `.12` **ASCII → Mermaid диаграммы** — GitHub рендерит нативно. В README и
    architecture.md.
@@ -214,25 +215,29 @@ injection (non-issue without shell=True).
 
 ⬜ `.17` **Issue templates** — `.github/ISSUE_TEMPLATE/`: bug_report, feature_request.
 
+⬜ `.18` **Roadmap секция в README** — краткий список (3-5 пунктов) что планируется.
+   Упомянули Qwen + Kimi. Отдельно от BACKLOG.md (который — полный список).
+   Например: SMO.7 escape-hatch'и, coverage critical paths, PyPI, GitHub Pages.
+
 #### Нужно внешнее resource
 
-⬜ `.18` **Скриншоты/GIF dashboard в README** — нужен реальный pipeline run.
+⬜ `.19` **Скриншоты/GIF dashboard в README** — нужен реальный pipeline run.
    3-4 скриншота: chat handoffs, TODO timeline, events, worker status.
 
-⬜ `.19` **PyPI публикация** — `pip install awf agent-workflow-ui`. build + twine.
+⬜ `.20` **PyPI публикация** — `pip install awf agent-workflow-ui`. build + twine.
    Пока GitHub install — приемлемо для showcase.
 
-⬜ `.20` **Демо-видео (2-3 мин)** — полный цикл от init до approve.
+⬜ `.21` **Демо-видео (2-3 мин)** — полный цикл от init до approve.
 
 #### Отклонено / отложено
 
-ℹ️ `.21` **GitHub Pages / ReadTheDocs** — отдельный effort, текущих .md файлов
+ℹ️ `.22` **GitHub Pages / ReadTheDocs** — отдельный effort, текущих .md файлов
    достаточно для начала.
-ℹ️ `.22` **Docker образ** — интересная идея, но opencode требует локального
+ℹ️ `.23` **Docker образ** — интересная идея, но opencode требует локального
    окружения. Не приоритет.
-ℹ️ `.23` **Экосистемная расширяемость (standalone, другие агенты)** —
+ℹ️ `.24` **Экосистемная расширяемость (standalone, другие агенты)** —
    aspirational. Сейчас: "The missing orchestration layer for opencode".
-ℹ️ `.24` **Английский как основной** — уже сделано. README.md (EN) primary,
+ℹ️ `.25` **Английский как основной** — уже сделано. README.md (EN) primary,
    README.ru.md (RU) secondary.
 
 - `tools/awf.py` (~940 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
