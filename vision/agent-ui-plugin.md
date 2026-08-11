@@ -1,10 +1,10 @@
 # Product Vision
 
-**Версия:** 0.7 · **Дата:** 2026-08-06
+**Версия:** 1.0 · **Дата:** 2026-08-11
 
 ## Что
 
-`agent-workflow-ui` — MCP plugin для opencode. Даёт supervisor-агенту 24 typed MCP tools для управления pipeline без shell-команд.
+`agent-workflow-ui` — MCP plugin для opencode. Даёт supervisor-агенту 29 typed MCP tools для управления pipeline без shell-команд.
 
 ## Почему
 
@@ -18,21 +18,31 @@ Pet-проекты где пользователь хочет делегиров
 
 **UI (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates` — HTML-формы в браузере.
 
-**Workflow (19):** полный lifecycle — init, dispatch, start, wait, status, kill, approve, rollback, report, reset, dashboard, model validation.
+**Workflow (24):** полный lifecycle — init, goal, dispatch, start, wait, status, kill, retry, approve, reject, rollback, report, reset, dashboard, model validation, phase management.
+
+Все workflow tools возвращают `next_action` — компактную инструкцию для supervisor.
 
 ## Конкурентные преимущества
 
-- Pipeline с ролями (analyst → architect → implementer → QA → audit)
-- Plan checkpoint — preview TODO перед запуском агентов
-- Dashboard — live мониторинг pipeline
-- TODO lifecycle — архивирование, reconcile, crash recovery
-- Salvage path — recovery когда worker не просигналил
+- **SMO (State-Machine Orchestration):** awf ведёт supervisor по фазам (init→goal→form→normalize→brief→run→verify→done) через compact prompts + next_action. Даже слабые модели (Qwen vllm) проходят полный flow без ошибок.
+- **Pipeline с ролями:** любой набор (analyst → architect → implementer → QA → audit, или 1 stage, или 10 — пользователь выбирает).
+- **Dashboard v2:** HTTP server с live polling. Chat-style handoffs с chain visualization. TODO content. TODO timeline. Worker status. Browser notifications.
+- **Pre-dispatch check:** grep кода перед запуском pipeline — warning если задача уже реализована.
+- **Approve/Reject:** симметричная пара tools для verify.
+- **TODO lifecycle:** архивирование, reconcile, crash recovery, rollback.
 
 ## Архитектура
 
 Plugin зависит от `awf` Python-пакета. Все workflow tools — thin async wrappers над `awf.api.*()`. Бизнес-логика в `awf`, не в plugin.
 
 См. [architecture.md](architecture.md) для деталей.
+
+## Dogfood-результаты (6 сессий)
+
+6 dogfood-сессий на jira-epic-presenter (Qwen vllm):
+- Dogfood #5: 4 TODO + 1 reject, ноль polling, 1× approve каждый
+- Dogfood #6: 3 TODO, pre-check показал уже выполненные задачи
+- Полный SMO flow работает end-to-end на слабой модели
 
 ## Future scenarios
 
