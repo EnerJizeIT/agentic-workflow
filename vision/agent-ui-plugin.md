@@ -37,11 +37,11 @@ Plugin зависит от `awf` Python-пакета. Все workflow tools — 
 
 См. [architecture.md](architecture.md) для деталей.
 
-## Dogfood-результаты (6 сессий)
+## Real-world-результаты (6 сессий)
 
-6 dogfood-сессий на jira-epic-presenter (Qwen vllm):
-- Dogfood #5: 4 TODO + 1 reject, ноль polling, 1× approve каждый
-- Dogfood #6: 3 TODO, pre-check показал уже выполненные задачи
+6 real-world-сессий на jira-epic-presenter (Qwen vllm):
+- Real-world #5: 4 TODO + 1 reject, ноль polling, 1× approve каждый
+- Real-world #6: 3 TODO, pre-check показал уже выполненные задачи
 - Полный SMO flow работает end-to-end на слабой модели
 
 ## Future scenarios

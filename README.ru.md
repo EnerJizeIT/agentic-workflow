@@ -2,7 +2,7 @@
 
 [![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![tests](https://img.shields.io/badge/tests-1000%2B-brightgreen.svg)](#)
+[![tests](https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml/badge.svg)](https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml)
 
 > **Оркестратор мульти-агентных пайплайнов для opencode. План → разработка → проверка → коммит — через типизированные MCP tools, не через bash.**
 
@@ -109,7 +109,7 @@ Dashboard (live /api/state polling)
 - [BACKLOG](BACKLOG.md) — открытые задачи
 - [README.md](README.md) — English README
 
-## Dogfood-результаты
+## Real-world результаты
 
 6 dogfood-сессий на jira-epic-presenter (Qwen vLLM):
 - Полный SMO flow: init → goal → form → normalize → brief → run → verify

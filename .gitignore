@@ -28,8 +28,8 @@ htmlcov/
 *.swp
 .DS_Store
 
-# Skill artifacts (agent-project-auditor, agent-qa-review leave reports
-# in repo root). They are local analysis output, not source of truth.
+# Skill artifacts
 QA_REPORT.md
 QA_AUDIT_REPORT.md
 *_AUDIT.md
+qa-audit-*.md

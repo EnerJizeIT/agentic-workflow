@@ -5,16 +5,32 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "awf"
 version = "1.0.0"
-description = "Agentic Workflow Framework — declarative multi-agent pipeline"
+description = "Agentic Workflow Framework — declarative multi-agent pipeline orchestrator for opencode"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "EnerJize" }]
+keywords = ["opencode", "mcp", "ai-agent", "pipeline", "multi-agent", "orchestrator", "workflow"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "PyYAML>=6.0",
     "jinja2>=3.1",
     "markdown>=3.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/EnerJizeIT/agentic-workflow"
+Repository = "https://github.com/EnerJizeIT/agentic-workflow"
+Issues = "https://github.com/EnerJizeIT/agentic-workflow/issues"
 
 [project.optional-dependencies]
 dev = [

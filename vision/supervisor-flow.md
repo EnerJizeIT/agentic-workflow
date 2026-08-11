@@ -10,7 +10,7 @@ State-Machine Orchestration: awf ведёт supervisor-агента через �
 
 ## Статус: РЕАЛИЗОВАН
 
-SMO полностью реализован и протестирован в 6 dogfood-сессиях. Compact prompts +
+SMO полностью реализован и протестирован в 6 real-world-сессиях. Compact prompts +
 next_action работают на слабых моделях (Qwen vllm).
 
 ## Фазы
@@ -45,7 +45,7 @@ awf_reject → "Fix issues → dispatch_todo → awf_start."
 ```
 
 Слабые модели (Qwen) следуют next_action, игнорируя длинные промты. Проверено
-в 6 dogfood-сессиях.
+в 6 real-world-сессиях.
 
 ## Принципы
 

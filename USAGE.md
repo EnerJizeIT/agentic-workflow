@@ -132,6 +132,81 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 └── state/dashboard_port     # Dashboard HTTP server port
 ```
 
+## Custom pipelines
+
+You design the pipeline in the setup form. Any roles, any depth. Examples:
+
+**Single worker (fast, for small fixes):**
+```yaml
+# .agentic/pipelines/default.yaml
+stages:
+  - name: implementer
+    role: agent-implementer
+    kind: execute
+    on_done: commit_and_next
+```
+
+**Full quality chain (for features):**
+```yaml
+stages:
+  - name: analyst
+    role: agent-system-analyst
+    kind: execute
+  - name: architector
+    role: agent-architector
+    kind: execute
+  - name: implementer
+    role: agent-implementer
+    kind: execute
+  - name: qa-review
+    role: agent-qa-review
+    kind: execute
+  - name: auditor
+    role: agent-project-auditor
+    kind: execute
+    on_done: commit_and_next
+```
+
+**Custom role file** (`.agentic/roles/my-custom-role.md`):
+```markdown
+# My Custom Role
+
+## Responsibility
+Review database migrations for safety.
+
+## Actions
+- Read migration files
+- Check for destructive operations (DROP, TRUNCATE)
+- Verify rollback script exists
+
+## Prohibitions
+- Do not modify application code
+- Do not create new migrations
+```
+
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| **Pipeline stuck** | `awf_kill` → `awf_continue` to resume |
+| **Orphan TODO in inbox** | `awf_reset(orphans=True)` or `awf_init` (R1 cleans runtime) |
+| **Dashboard port taken** | Port is auto-assigned (random). If stuck: delete `.agentic/state/dashboard_port` |
+| **Commit failed (pre-commit hook)** | TODO is NOT archived. Fix hook issue, then `awf_approve` again |
+| **Worker didn't signal** | Salvage path triggers automatically. Supervisor reads SALVAGE prompt and decides |
+| **Phase stuck** | `awf_init` (force=True) resets to goal phase. Or `awf_current_step` to check |
+| **Wrong roles after setup** | `awf_analyze_roles` to re-check overlaps, `awf_confirm_normalized` to advance |
+
+To **hard reset** everything: delete `.agentic/` directory, run `awf_init(force=True)`.
+
+## Limitations
+
+- **Token usage:** ~2M input tokens per session (4 TODOs). Supervisor reads vision, BACKLOG, source files.
+- **Pipeline depth:** tested up to 5 agent stages. More stages = longer runs, more tokens.
+- **Single-machine:** not distributed. Orchestrator, workers, dashboard all run locally.
+- **Linux-first:** `PR_SET_PDEATHSIG` for worker cleanup is Linux-only. macOS should work. Windows untested.
+- **One TODO at a time:** pipeline processes one TODO per run. Dispatch next + `awf_start` for the next.
+- **No streaming:** dashboard polls every 3 seconds (not WebSocket/SSE).
+
 ## All tools (reference)
 
 ### Lifecycle
