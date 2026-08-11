@@ -10,12 +10,27 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "EnerJize" }]
+keywords = ["opencode", "mcp", "ai-agent", "pipeline", "dashboard", "forms"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "mcp>=1.0",
     "jinja2>=3.1",
     "pyyaml>=6.0",
-    "awf>=0.4.0",
+    "awf>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/EnerJizeIT/agentic-workflow"
+Repository = "https://github.com/EnerJizeIT/agentic-workflow"
+Issues = "https://github.com/EnerJizeIT/agentic-workflow/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -29,6 +44,9 @@ agent-workflow-ui = "agent_workflow_ui.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["agent_workflow_ui*"]
+
+[tool.setuptools.package-data]
+agent_workflow_ui = ["render/default_templates/*.j2", "SKILL.md"]
 
 [tool.ruff]
 line-length = 100
