@@ -1,119 +1,121 @@
-# agentic-workflow
+# Agentic Workflow (awf)
 
-Pipeline-оркестратор для AI-агентов в opencode. Два пакета: `awf` (Python core) + `agent-workflow-ui` (MCP plugin).
+[![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![tests](https://img.shields.io/badge/tests-1000%2B-brightgreen.svg)](#)
 
-## Что это
+> **Multi-agent pipeline orchestrator for opencode. Plan → build → verify → commit — through typed MCP tools, not bash.**
 
-Supervisor (LLM) планирует → worker-агенты выполняют → supervisor проверяет → коммит. Pipeline управляется через MCP tools — без shell-команд.
+## The problem it solves
 
-```
-User → opencode (supervisor LLM)
-           ↓ MCP tools (29 typed tools)
-     agent-workflow-ui plugin
-           ↓ Python import
-     awf orchestrator → opencode run (worker agents)
-           ↓ HTTP server
-     Dashboard (live polling, chat handoffs)
-```
+AI coding agents are powerful but chaotic. They jump straight to code without planning, skip review, leave bugs. You watch helplessly as tokens burn.
 
-## Структура
+**awf** adds structure: a supervisor agent plans the work, worker agents execute through a pipeline (analyst → architect → implementer → QA → audit), and you approve each result before it commits. All through natural language — *"start working on the backlog"*, *"verify and approve"*, *"reject — the DOMParser fix is missing"*.
 
-```
-awf/                           # Python core
-├── api/                       # Public API
-│   ├── dashboard.py           # Dashboard generation + state JSON
-│   ├── dashboard_server.py    # HTTP server (live polling)
-│   ├── lifecycle.py           # init, status, report
-│   ├── pipeline.py            # start, continue, kill, retry, approve, reject
-│   ├── dispatch.py            # TODO dispatch + pre-check grep
-│   ├── setup.py               # Project setup materialization
-│   └── context.py             # Supervisor context aggregate
-├── orchestrator.py            # Pipeline dispatch loop (thin entry point)
-├── pipeline_engine.py         # Stage handlers + transition logic
-├── phase.py                   # SMO: detect_phase, get_phase_prompt, advance_phase
-├── supervisor.py              # Supervisor prompts + signals
-├── agent_stage.py             # Worker spawn + handoff collection
-├── signal_watch.py            # File-based signal detection
-├── signals.py                 # Signal classification + file detection
-├── transitions.py             # Signal → action resolution
-├── plan_checkpoint.py         # BD-36 checkpoint (HTML form)
-├── commit_gate.py             # Auto-commit isolation
-├── verify.py                  # Test/lint verification
-├── pipeline_state.py          # State persistence
-├── todos.py                   # TODO lifecycle
-└── templates/                 # Jinja2 (dashboard v2, supervisor phases)
-agent_workflow_ui/             # MCP plugin
-├── src/agent_workflow_ui/
-│   ├── server.py              # MCP server (29 tools)
-│   ├── tools/awf.py           # 24 awf wrappers + next_action guidance
-│   ├── tools/forms.py         # 5 UI wrappers
-│   ├── http_endpoint.py       # HTML form server
-│   ├── opencode_config.py     # Model discovery
-│   ├── roles_processor.py     # Role setup materialization
-│   ├── state.py               # Form state persistence
-│   └── render/                # Template engine (Jinja2 + frontmatter)
-templates/roles/supervisor/    # Phase templates (_core, phase-{init,goal,form,normalize,brief,run,verify})
-tests/                         # unit + integration + e2e (1000+ tests)
+You stay in control. The agent stays on rails.
+
+## Features
+
+- 🎯 **State-Machine Orchestration (SMO)** — awf guides the supervisor through phases: `init → goal → form → normalize → brief → run → verify → done`. Every tool returns a `next_action` hint — even weak models (Qwen vLLM) follow the full flow without getting lost.
+- 🔧 **29 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
+- 📊 **Live Dashboard** — HTTP server with real-time polling. Chat-style agent handoffs, TODO content, TODO timeline, worker status, browser notifications. No page reloads.
+- 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. Analyst → architect → implementer → QA → audit, or just a single worker. You choose in the setup form.
+- ✅ **Approve / Reject** — symmetric verify tools. Approve commits and archives. Reject kills the pipeline and asks for fixes.
+- 🔍 **Pre-dispatch check** — before launching a pipeline, awf greps your codebase for keywords from the TODO. Warning if the task might already be done.
+- 🔄 **Crash recovery** — salvage path when workers don't signal, orphan TODO cleanup, state reconciliation on startup.
+- 📋 **Increment planning** — decomposition variants (vertical, horizontal, risk-first) presented as an HTML form for user choice.
+
+## Installation
+
+```bash
+pip install -e .
+pip install -e ./agent_workflow_ui
 ```
 
-## 29 MCP tools
+Add to `~/.config/opencode/opencode.json`:
 
-**UI (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates`
+```json
+{
+  "mcp": {
+    "agent-workflow-ui": {
+      "type": "local",
+      "command": ["python3", "-m", "agent_workflow_ui"],
+      "enabled": true
+    }
+  }
+}
+```
 
-**Workflow (24):**
-- **Lifecycle:** `awf_init`, `awf_status`, `awf_report`, `awf_reset`
-- **Pipeline:** `awf_start`, `awf_continue`, `awf_kill`, `awf_retry_stage`
-- **TODO:** `awf_dispatch_todo` (pre-check grep), `awf_baseline`, `awf_rollback`
-- **Verify:** `awf_approve`, `awf_reject`, `awf_wait_for_event`
-- **SMO:** `awf_current_step`, `awf_set_goal`, `awf_confirm_normalized`
-- **Setup:** `awf_open_project_setup_form`, `awf_open_increment_planning_form`
-- **Context:** `awf_load_supervisor_context`, `awf_open_pipeline_dashboard`
-- **Roles:** `awf_add_role`, `awf_analyze_roles`
-- **Config:** `awf_check_model_config`
+Restart opencode.
 
-Все workflow tools возвращают `next_action` — компактную инструкцию для supervisor (даже слабые модели следуют за ней).
+## Usage
 
-## SMO (State-Machine Orchestration)
+Talk in natural language — the supervisor agent calls the right tools:
 
-Awf ведёт supervisor по фазам через детерминированные переходы:
+| You say | What happens |
+|---|---|
+| *"Initialize awf in my project"* | Creates `.agentic/`, detects stack, asks for your goal |
+| *"Develop the MVP"* | Opens setup form → configures pipeline → plans first TODO |
+| *"Verify"* | Supervisor reads handoffs, checks git diff, approves or rejects |
+| *"Reject — the cache is missing"* | Pipeline killed, new TODO dispatched with fix instructions |
+
+### SMO Flow
 
 ```
 init → goal → form → normalize → brief → run → verify → done
+  │       │       │         │         │       │       │
+  awf     user    form      roles     TODO    agents  approve/
+  sets    sets    creates   analyzed  dispatch+  work  reject
+  up      goal    pipeline  +confirmed  start
 ```
 
-Каждая фаза: compact prompt (~50 строк) + phase-aware `next_action` в каждом tool result. Supervisor не читает 600-строчный промт — он идёт за `next_action`.
+Every phase: compact prompt (~50 lines) + `next_action` in every tool result.
 
-## Установка
+## Architecture
 
-Editable-only (`-e`). Wheel-дистрибуция не поддерживается — package-data и пути к шаблонам рассчитаны на исходную структуру каталогов.
-
-```bash
-pip install -e ".[dev]"
-pip install -e "./agent_workflow_ui[dev]"
+```
+opencode (supervisor LLM)
+  ↕ MCP stdio (29 typed tools)
+agent-workflow-ui plugin
+  ↕ Python import
+awf orchestrator
+  ↕ subprocess
+opencode run (worker agents)
+  ↕ HTTP daemon thread
+Dashboard (live /api/state polling)
 ```
 
-## Команды
+Two packages:
+- **`awf`** — Python core. Pipeline engine, phase state machine, signals, commit gate, dashboard server.
+- **`agent_workflow_ui`** — MCP plugin. Thin async wrappers + `next_action` guidance + HTML forms.
 
-```bash
-ruff check awf/ tests/ agent_workflow_ui/src/agent_workflow_ui/   # lint
-python -m pytest tests/                                            # тесты
-```
+## Dashboard
 
-## Dashboard v2
+Live HTTP dashboard opens automatically when pipeline starts:
 
-HTTP server на случайном порту (стартует оркестратором):
-- `GET /` — HTML dashboard
-- `GET /api/state` — JSON (stages, handoffs, TODO content, worker, events)
-- JS polling каждые 3с — **без перезагрузки страницы**
-- Two-panel layout: pipeline sidebar + content tabs (chat / TODO / events)
-- Chat-style handoffs с chain visualization
-- TODO timeline
-- Browser notification на verify
+- **Two-panel layout** — pipeline sidebar (stages, progress, worker) + content tabs
+- **💬 Agent Chat** — handoffs as conversation messages with chain visualization (`↓ передал → 🔧 Implementer`)
+- **📝 Задача** — full TODO content in rendered markdown
+- **📊 События** — meaningful events, newest first
+- **TODO timeline** — `[✅ TODO-0001] ─ [✅ TODO-0002] ─ [🔄 TODO-0003]`
+- **Browser notification** when pipeline reaches verify
 
-## Документы
+## Documentation
 
-- [BACKLOG.md](BACKLOG.md) — открытые задачи
-- [vision/architecture.md](vision/architecture.md) — архитектура
-- [vision/agent-ui-plugin.md](vision/agent-ui-plugin.md) — product vision
-- [vision/supervisor-flow.md](vision/supervisor-flow.md) — SMO flow (implemented)
-- [protocols/communication.md](protocols/communication.md) — file bus protocol
+- [Architecture](vision/architecture.md) — components, data flow, design decisions
+- [Product Vision](vision/agent-ui-plugin.md) — competitive advantages, dogfood results
+- [Supervisor Flow (SMO)](vision/supervisor-flow.md) — phase system, next_action pattern
+- [BACKLOG](BACKLOG.md) — open tasks
+- [README.ru.md](README.ru.md) — Russian README
+
+## Dogfood results
+
+6 dogfood sessions on jira-epic-presenter (Qwen vLLM):
+- Full SMO flow end-to-end: init → goal → form → normalize → brief → run → verify
+- 4 TODOs per session, 1× approve (no loops), zero polling
+- Reject flow tested: supervisor found missing work, rejected, re-dispatched with fix
+- Pre-dispatch check caught already-implemented tasks
+
+## License
+
+MIT — see [LICENSE](LICENSE).
