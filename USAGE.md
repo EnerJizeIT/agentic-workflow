@@ -6,7 +6,7 @@
 
 Structure your AI coding sessions: plan → build → verify → commit. A supervisor agent orchestrates worker agents through a pipeline, and you approve each result.
 
-- **Never ship unreviewed code** — every change goes through analyst → architect → implementer → QA → audit (or any pipeline you choose).
+- **Never ship unreviewed code** — every change goes through a pipeline you design: any roles, any depth. From a single worker to a full analyst → architect → implementer → QA → audit chain.
 - **Stay in control** — approve or reject each TODO. Reject sends the work back with fix instructions.
 - **Watch in real-time** — live dashboard with agent handoffs, TODO content, worker status.
 - Works **through chat**: just say what you want — the supervisor calls the right tool.

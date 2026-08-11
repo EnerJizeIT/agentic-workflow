@@ -10,7 +10,7 @@
 
 AI coding agents are powerful but chaotic. They jump straight to code without planning, skip review, leave bugs. You watch helplessly as tokens burn.
 
-**awf** adds structure: a supervisor agent plans the work, worker agents execute through a pipeline (analyst → architect → implementer → QA → audit), and you approve each result before it commits. All through natural language — *"start working on the backlog"*, *"verify and approve"*, *"reject — the DOMParser fix is missing"*.
+**awf** adds structure: a supervisor agent plans the work, worker agents execute through a pipeline you design (any roles, any depth — from a single worker to a multi-stage chain), and you approve each result before it commits. All through natural language — *"start working on the backlog"*, *"verify and approve"*, *"reject — the DOMParser fix is missing"*.
 
 You stay in control. The agent stays on rails.
 
