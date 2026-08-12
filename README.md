@@ -3,6 +3,7 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![tests](https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml/badge.svg)](https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/awf.svg)](https://pypi.org/project/awf/)
 
 > **Multi-agent pipeline orchestrator for opencode. Plan → build → verify → commit — through typed MCP tools, not bash.**
 
@@ -18,8 +19,7 @@ You stay in control. The agent stays on rails.
 
 ```bash
 # 1. Install
-pip install -e .
-pip install -e ./agent_workflow_ui
+pip install awf agent-workflow-ui
 
 # 2. Configure opencode — add to ~/.config/opencode/opencode.json:
 # {
