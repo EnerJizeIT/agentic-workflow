@@ -7,6 +7,7 @@ Thanks for your interest in contributing to agentic-workflow!
 ```bash
 git clone https://github.com/EnerJizeIT/agentic-workflow.git
 cd agentic-workflow
+# Editable install for development (both packages)
 pip install -e ".[dev]"
 pip install -e "./agent_workflow_ui[dev]"
 ```

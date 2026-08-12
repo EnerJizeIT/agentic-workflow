@@ -5,7 +5,7 @@ MCP plugin для opencode. 29 typed tools (5 UI + 24 workflow).
 ## Установка
 
 ```bash
-pip install -e ".[dev]"
+pip install agent-workflow-ui
 ```
 
 Plugin автоматически регистрируется в opencode через `awf init`.

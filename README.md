@@ -137,7 +137,7 @@ Live HTTP dashboard opens automatically when pipeline starts:
 
 - **SMO escape-hatch'и** — manual phase jumps, interruptions (from real session edge cases)
 - **Coverage** — critical paths (verify, plan_checkpoint, context)
-- **PyPI** — `pip install awf agent-workflow-ui` (no git clone needed)
+- ✅ ~~**PyPI**~~ — `pip install awf agent-workflow-ui` (done!)
 - **Dashboard v3** — stage timing bars, session summary, sound notifications
 - **Standalone mode** — awf without opencode (API-only)
 

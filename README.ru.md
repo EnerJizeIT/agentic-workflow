@@ -3,6 +3,7 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![tests](https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml/badge.svg)](https://github.com/EnerJizeIT/agentic-workflow/actions/workflows/test.yml)
+[![PyPI](https://img.shields.io/pypi/v/awf.svg)](https://pypi.org/project/awf/)
 
 > **Оркестратор мульти-агентных пайплайнов для opencode. План → разработка → проверка → коммит — через типизированные MCP tools, не через bash.**
 
@@ -28,25 +29,24 @@ AI-агенты для кода мощные, но хаотичные. Прыг�
 ## Установка
 
 ```bash
-pip install -e .
-pip install -e ./agent_workflow_ui
+# 1. Установка
+pip install awf agent-workflow-ui
+
+# 2. Настройка opencode — добавь в ~/.config/opencode/opencode.json:
+# {
+#   "mcp": {
+#     "agent-workflow-ui": {
+#       "type": "local",
+#       "command": ["python3", "-m", "agent_workflow_ui"],
+#       "enabled": true
+#     }
+#   }
+# }
+
+# 3. Запуск — просто поговори с opencode:
+# "Инициализируй awf в проекте"
+# "Разработай MVP по бэклогу"
 ```
-
-Добавь в `~/.config/opencode/opencode.json`:
-
-```json
-{
-  "mcp": {
-    "agent-workflow-ui": {
-      "type": "local",
-      "command": ["python3", "-m", "agent_workflow_ui"],
-      "enabled": true
-    }
-  }
-}
-```
-
-Перезапусти opencode.
 
 ## Использование
 
@@ -104,10 +104,20 @@ Dashboard (live /api/state polling)
 
 - [USAGE.ru.md](USAGE.ru.md) — сценарии использования и справочник tools
 - [Архитектура](vision/architecture.md) — компоненты, потоки данных, design decisions
-- [Product Vision](vision/agent-ui-plugin.md) — конкурентные преимущества, dogfood-результаты
+- [Product Vision](vision/agent-ui-plugin.md) — конкурентные преимущества
 - [Supervisor Flow (SMO)](vision/supervisor-flow.md) — фазовая система, паттерн next_action
+- [CHANGELOG.md](CHANGELOG.md) — история версий
+- [CONTRIBUTING.md](CONTRIBUTING.md) — как контрибьютить
 - [BACKLOG](BACKLOG.md) — открытые задачи
 - [README.md](README.md) — English README
+
+## Roadmap
+
+- **SMO escape-hatch'и** — ручные переходы между фазами, прерывания (edge cases с реальных сессий)
+- **Coverage** — критические пути (verify, plan_checkpoint, context)
+- ✅ ~~**PyPI**~~ — `pip install awf agent-workflow-ui` (готово!)
+- **Dashboard v3** — timing bars по агентам, session summary, sound notifications
+- **Standalone mode** — awf без opencode (только API)
 
 ## Real-world результаты
 
