@@ -52,13 +52,14 @@ class TestLoadStages:
         assert stages[1].max_retries == 3
 
     def test_simple_plan_default_policies(self, tmp_pipeline_file) -> None:
-        """Stage without explicit policies gets defaults."""
+        """Stage without explicit policies gets defaults (NEG-2: escalate, not
+        a phantom rollback target)."""
         tmp_path, _ = tmp_pipeline_file
         stages = load_stages(tmp_path / ".agentic" / "pipelines" / "simple.yaml")
         plan = stages[0]
         assert plan.on_blocked == "escalate"
         assert plan.on_approved == "next"
-        assert plan.on_rejected == "rollback_to:implement"
+        assert plan.on_rejected == "escalate"
         assert plan.max_retries == 1
 
     def test_full_review_stage(self, tmp_pipeline_file) -> None:
@@ -99,9 +100,11 @@ class TestLoadStages:
         assert s.description == ""
         assert s.on_blocked == "escalate"
         assert s.on_approved == "next"
-        assert s.on_rejected == "rollback_to:implement"
+        # NEG-2: escalate is the only safe default — a fixed stage name
+        # ('implement') does not exist in role-named generated pipelines.
+        assert s.on_rejected == "escalate"
         assert s.on_passed == "next"
-        assert s.on_failed == "rollback_to:implement"
+        assert s.on_failed == "escalate"
         assert s.max_retries == 1
 
 

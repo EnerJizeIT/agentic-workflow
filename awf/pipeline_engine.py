@@ -241,6 +241,7 @@ def _write_salvage_prompt(
     baseline_sha: str | None,
     logs_dir: Path,
     attempt: int = 1,
+    auto_retries: int = 0,
 ) -> None:
     """DF5-4: Write a SALVAGE-{todo_id}.md file to inbox.
 
@@ -248,9 +249,10 @@ def _write_salvage_prompt(
     - Worker ran but didn't produce a DONE/BLOCKED signal
     - Git diff stat shows what work was left
     - Supervisor needs to decide: ACK (accept), REVIEW (reject), or replan
-    - Dogfood-11: on repeat salvages (attempt >= 2) an escalation block tells
-      the supervisor not to retry the same scope, but to split the task /
-      require incremental writes / change the stage model instead.
+    - Dogfood-11: escalates when the stage is not converging — repeat
+      salvages OR an exhausted automatic-retry budget (``auto_retries``) —
+      telling the supervisor not to retry the same scope, but to split the
+      task / require incremental writes / change the stage model instead.
     """
     from ._atomic import atomic_write_text
 
@@ -276,11 +278,24 @@ def _write_salvage_prompt(
         "",
     ]
 
-    if attempt >= 2:
+    if auto_retries:
         parts += [
-            f"## ⚠️ ATTEMPT {attempt}: do NOT retry the same scope",
+            f"Automatic continue-pushes after the silent exits: {auto_retries} "
+            f"(all ended without a signal).",
             "",
-            f"This stage already ended without a signal {attempt - 1} time(s) in a row.",
+        ]
+
+    if attempt >= 2 or auto_retries >= 2:
+        header = (
+            f"## ⚠️ ATTEMPT {attempt}: do NOT retry the same scope"
+            if attempt >= 2
+            else "## ⚠️ do NOT retry the same scope"
+        )
+        parts += [
+            header,
+            "",
+            f"Evidence: salvage rounds in a row: {attempt}; automatic "
+            f"continue-pushes: {auto_retries} — nothing converged.",
             "Restarting the same TODO as-is will very likely fail the same way.",
             "Change ONE of these before retrying:",
             "",
@@ -328,6 +343,28 @@ def _write_salvage_prompt(
 
     atomic_write_text(salvage_file, "\n".join(parts))
     _log(logs_dir, f"DF5-4: salvage prompt written to {salvage_file}")
+
+
+def _silent_retry_note(attempt: int, todo_id: str) -> str:
+    """F7 (dogfood-11): push text for a stage retried after a silent exit.
+
+    Weak models end the opencode loop with a text answer (or get cut off by
+    their output-token limit mid-reply) instead of writing code and
+    signalling. This note is appended to the retried prompt: no re-research,
+    act now, finish with the signal.
+    """
+    return (
+        f"## ⚠️ RETRY {attempt}: previous attempt ended WITHOUT code and WITHOUT a signal\n"
+        f"The stage restarted because the previous run produced no file changes and no\n"
+        f"DONE/BLOCKED signal — that attempt FAILED. Do not re-read documents, do not\n"
+        f"re-plan, do not answer with a summary. Write the required files NOW:\n"
+        f"create a file skeleton first, then fill in one function or section per step.\n"
+        f"Finish by creating the signal file:\n"
+        f"  touch .agentic/outbox/DONE-{todo_id}.ready\n"
+        f"If a reply is getting long, stop and act with tools — long text replies get\n"
+        f"cut off by the output limit and count as failure. If you truly cannot proceed,\n"
+        f"create the BLOCKED signal instead of ending with plain text.\n"
+    )
 
 
 # ─── stage execution ────────────────────────────────────────────────────
@@ -493,17 +530,24 @@ def execute_agent_stage(
 
     prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
 
-    # F4: auto-retry transient failures (vllm cold-start, empty output <30s)
-    MAX_TRANSIENT_RETRIES = 2
+    # F4: auto-retry transient failures (vllm cold-start, empty output <30s).
+    # F7 (dogfood-11): also retry SILENT EXITS — worker exited without a signal
+    # AND without work evidence (empty diff). Weak models either answer with
+    # text instead of code, or get truncated by their output-token limit
+    # mid-reply; both end the opencode loop cleanly. Push the stage to
+    # continue with a retry note before falling back to salvage.
+    MAX_SILENT_RETRIES = 2
     TRANSIENT_THRESHOLD_SEC = 30
 
     signal = None
-    for transient_retry in range(MAX_TRANSIENT_RETRIES + 1):
+    for attempt_no in range(MAX_SILENT_RETRIES + 1):
         import time as _time
         agent_start = _time.monotonic()
+        retry_note = _silent_retry_note(attempt_no, current_todo) if attempt_no else None
         try:
             _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout)
+                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
+                             retry_note=retry_note, attempt=attempt_no + 1)
         except (RuntimeError, TimeoutError) as e:
             print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
             _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
@@ -527,15 +571,29 @@ def execute_agent_stage(
         if signal:
             break
 
-        # F4: transient failure — worker exited too fast with no signal
-        if transient_retry < MAX_TRANSIENT_RETRIES and agent_elapsed < TRANSIENT_THRESHOLD_SEC:
+        # dogfood-11: no signal — retry only when the worker left NO work
+        # evidence. With work present, salvage lets the supervisor ACK it;
+        # a rerun could overwrite or duplicate usable changes.
+        worker_has_work = bool(baseline_sha) and verify.detect_work_evidence(
+            project_dir, baseline_sha, current_todo,
+        )
+        if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
+            # TOCTOU guard (dogfood-11): a signal may have landed between the
+            # wait timeout above and this cleanup (e.g. the worker wrote DONE
+            # right at the boundary). Re-read before wiping anything — a
+            # valid signal must never be deleted by the retry cleanup.
+            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+            if signal:
+                break
+            transient = agent_elapsed < TRANSIENT_THRESHOLD_SEC
+            kind_hint = "fast exit (transient?)" if transient else "no code, no signal"
             print(
-                f"Worker exited in {agent_elapsed:.0f}s with no signal — "
-                f"transient failure? Retrying ({transient_retry + 1}/{MAX_TRANSIENT_RETRIES})...",
+                f"Worker exited in {agent_elapsed:.0f}s with no signal ({kind_hint}) — "
+                f"retrying with a continue-push ({attempt_no + 1}/{MAX_SILENT_RETRIES})...",
                 file=sys.stderr,
             )
-            _log(logs_dir, f"F4: auto-retry {transient_retry + 1}/{MAX_TRANSIENT_RETRIES} "
-                f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal)")
+            _log(logs_dir, f"F4/F7: auto-retry {attempt_no + 1}/{MAX_SILENT_RETRIES} "
+                f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
             from .signals import clean_stage_signals
             clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
             continue
@@ -558,7 +616,8 @@ def execute_agent_stage(
             attempt = 1
 
         _write_salvage_prompt(
-            project_dir, current_todo, s_name, baseline_sha, logs_dir, attempt=attempt,
+            project_dir, current_todo, s_name, baseline_sha, logs_dir,
+            attempt=attempt, auto_retries=attempt_no,
         )
         _ws(
             project_dir,
@@ -611,6 +670,22 @@ def execute_agent_stage(
         return new_todo, new_idx, exit_code
 
     elif action == "rollback":
+        if _find_stage_index(stages, target) < 0:
+            # NEG-2 (dogfood-11): a rollback target that doesn't exist (typo,
+            # or a pipeline generated with the old default) must not hard-stop
+            # the pipeline — escalate to the supervisor instead, same recovery
+            # path as BLOCKED. The loader warns about such targets up front.
+            print(
+                f"WARNING: rollback target '{target}' not found in pipeline — "
+                f"escalating to supervisor instead.",
+                file=sys.stderr,
+            )
+            _log(logs_dir, f"Rollback target {target!r} not found; escalating to supervisor")
+            new_idx, new_todo, exit_code = _handle_escalate(
+                project_dir, logs_dir, s_name, current_todo, auto, stage,
+                retry_counts, stage_idx, pipeline_name,
+            )
+            return new_todo, new_idx, exit_code
         new_idx, new_todo, exit_code = _handle_rollback(
             project_dir, logs_dir, stages, current_todo, auto, target, pipeline_name,
         )

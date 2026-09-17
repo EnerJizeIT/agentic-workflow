@@ -241,14 +241,24 @@ class TestSalvageEscalation:
         assert "output-token" in text
 
     def test_repeat_salvage_counter_and_escalation(self, tmp_path, monkeypatch):
-        """Two silent exits → salvage_count=2 and the note escalates."""
+        """Two silent exits → salvage_count=2 and the note escalates.
+
+        F7 (dogfood-11): each execute call now auto-retries a silent exit
+        (no signal, no work evidence) twice with a retry note before the
+        salvage path — so the worker runs 3 times per call.
+        """
         project = tmp_path / "proj"
         (project / ".agentic" / "outbox").mkdir(parents=True)
 
+        retry_notes: list = []
+
+        def mock_agent(stage, todo_id, project_dir, config, logs_dir, **kw):
+            retry_notes.append(kw.get("retry_note"))
+
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
@@ -256,10 +266,9 @@ class TestSalvageEscalation:
         from awf import verify
         monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
 
-        # elapsed >= 30s → not a transient failure → straight to salvage
         import time as _time_mod
-        ticks = iter([100.0, 200.0, 300.0, 400.0, 500.0, 600.0])
-        monkeypatch.setattr(_time_mod, "monotonic", lambda: next(ticks, 999.0))
+        ticks = iter(float(i) for i in range(60))
+        monkeypatch.setattr(_time_mod, "monotonic", lambda: next(ticks))
 
         stages = _make_stages()
         for _ in range(2):
@@ -274,8 +283,83 @@ class TestSalvageEscalation:
         state = read_state(project)
         assert state.get("salvage_count") == 2
 
+        # Per execute call: 3 worker runs (original + 2 retries), retry notes
+        # only on the retries — and the budget resets for the second call.
+        assert len(retry_notes) == 6
+        assert retry_notes[0] is None
+        assert "RETRY 1" in retry_notes[1]
+        assert "RETRY 2" in retry_notes[2]
+        assert retry_notes[3] is None
+
         text = (
             project / ".agentic" / "inbox" / "SALVAGE-TODO-0001.md"
         ).read_text(encoding="utf-8")
         assert "**Attempt:** 2" in text
         assert "do NOT retry the same scope" in text
+
+    def test_no_retry_when_work_present(self, tmp_path, monkeypatch):
+        """Worker left changes (diff) → straight to salvage, no rerun.
+
+        Retrying over existing work could overwrite or duplicate it; the
+        supervisor ACK path handles partial work better.
+        """
+        project = tmp_path / "proj"
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+
+        calls = {"n": 0}
+
+        def mock_agent(stage, todo_id, project_dir, config, logs_dir, **kw):
+            calls["n"] += 1
+
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
+        monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+
+        from awf import verify
+        monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
+        monkeypatch.setattr(verify, "detect_work_evidence", lambda *a, **kw: True)
+
+        import time as _time_mod
+        monkeypatch.setattr(_time_mod, "monotonic", lambda: 500.0)
+
+        stages = _make_stages()
+        pipeline_engine.execute_agent_stage(
+            stage=stages[1], current_todo="TODO-0001", project_dir=project,
+            config={}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+            retry_counts=[0, 0, 0], auto=False, agent_hard_timeout=None,
+            pipeline_name=None,
+        )
+
+        assert calls["n"] == 1  # no retry — work evidence stops the loop
+        from awf.pipeline_state import read_state
+        assert read_state(project).get("salvage_count") == 1
+
+    def test_silent_retry_note_content(self):
+        note = pipeline_engine._silent_retry_note(2, "TODO-0042")
+        assert "RETRY 2" in note
+        assert "TODO-0042" in note
+        assert "DONE-TODO-0042.ready" in note
+        assert "BLOCKED" in note
+        assert "no file changes" in note
+
+    def test_exhausted_auto_retries_escalates_on_first_salvage(self, tmp_git_repo):
+        """F7: 2 failed continue-pushes → escalate even on salvage #1.
+
+        The supervisor must not blindly rerun what the machine already
+        retried twice.
+        """
+        pipeline_engine._write_salvage_prompt(
+            tmp_git_repo, "TODO-0001", "agent-implementer", None,
+            tmp_git_repo / ".agentic" / "logs", attempt=1, auto_retries=2,
+        )
+        text = (
+            tmp_git_repo / ".agentic" / "inbox" / "SALVAGE-TODO-0001.md"
+        ).read_text(encoding="utf-8")
+        assert "**Attempt:** 1" in text
+        assert "Automatic continue-pushes after the silent exits: 2" in text
+        assert "do NOT retry the same scope" in text
+        assert "Split the task" in text

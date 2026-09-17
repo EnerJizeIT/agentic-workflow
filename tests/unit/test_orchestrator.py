@@ -238,8 +238,12 @@ class TestMaybeCommitBD8:
             project_dir, logs_dir, auto=True,
         )
 
-        # Polling should have seen the signal on first check
-        assert len(sleep_calls) == 0
+        # Polling should have seen the signal on first check.
+        # NEG-3: patching global time.sleep also records CPython's
+        # subprocess busy-wait internals (tiny values while git runs) —
+        # assert on the poll interval itself, not on "no sleeps at all".
+        from awf.commit_gate import APPROVE_POLL_INTERVAL
+        assert APPROVE_POLL_INTERVAL not in sleep_calls
         result = project_dir.joinpath(".git").joinpath("HEAD").read_text().strip()
         assert "refs/heads/master" in result or "refs/heads/main" in result
 
@@ -349,8 +353,13 @@ class TestMaybeCommitBD8:
             project_dir, logs_dir, auto=True,
         )
 
-        # Should not have polled (signal detected on first check)
-        assert sleep_calls == []
+        # Should not have polled (signal detected on first check).
+        # NEG-3: the global time.sleep patch also records CPython's
+        # subprocess busy-wait internals (tiny sleep values while git
+        # runs, capped at 50ms) — under load that made this test flaky.
+        # Assert on the poll interval itself instead.
+        from awf.commit_gate import APPROVE_POLL_INTERVAL
+        assert APPROVE_POLL_INTERVAL not in sleep_calls
         # Commit happened — file.txt no longer in `git status`
         import subprocess
         status = subprocess.run(
@@ -1425,7 +1434,12 @@ class TestHandoffChain:
     def test_collect_handoff_no_output_marker_when_both_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When PROGRESS and DONE both missing, handoff includes NO OUTPUT marker."""
+        """Handoff v2: no notes + no changes → neutral fact section.
+
+        The old text guessed causes ("worker crashed...") and told the NEXT
+        WORKER to escalate via BLOCKED — a supervisor instruction in a
+        worker's input. Now: facts only, no audience mismatch.
+        """
         proj = self._setup_project(tmp_path, monkeypatch)
 
         monkeypatch.setattr(
@@ -1435,13 +1449,16 @@ class TestHandoffChain:
 
         out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
         body = out.read_text()
-        assert "NO OUTPUT FROM PREVIOUS STAGE" in body
-        assert "worker crashed" in body or "crashed" in body.lower()
+        assert "No worker notes and no file changes" in body
+        assert "Treat its work as absent" in body
+        # No supervisor-directed instructions in a worker-facing file.
+        assert "escalate via BLOCKED" not in body
+        assert "Likely causes" not in body
 
     def test_collect_handoff_no_output_marker_when_both_empty(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When PROGRESS and DONE both exist but are empty, NO OUTPUT marker appears."""
+        """When PROGRESS and DONE both exist but are empty, the neutral marker appears."""
         proj = self._setup_project(tmp_path, monkeypatch)
         (proj / ".agentic" / "outbox" / "PROGRESS-TODO-0001.md").write_text("")
         (proj / ".agentic" / "outbox" / "DONE-TODO-0001.md").write_text("")
@@ -1453,7 +1470,7 @@ class TestHandoffChain:
 
         out = _collect_handoff("worker", "TODO-0001", proj, proj / ".agentic" / "logs")
         body = out.read_text()
-        assert "NO OUTPUT FROM PREVIOUS STAGE" in body
+        assert "No worker notes and no file changes" in body
         assert "PROGRESS notes" not in body
         assert "DONE summary" not in body
 

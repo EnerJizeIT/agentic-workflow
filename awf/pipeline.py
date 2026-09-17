@@ -33,9 +33,9 @@ class Stage:
     description: str = ""
     on_blocked: str = "escalate"
     on_approved: str = "next"
-    on_rejected: str = "rollback_to:implement"
+    on_rejected: str = "escalate"
     on_passed: str = "next"
-    on_failed: str = "rollback_to:implement"
+    on_failed: str = "escalate"
     max_retries: int = 1
     # Computed at load time — not in YAML.
     kind: str = "execute"  # "plan" | "execute" | "verify"
@@ -44,9 +44,16 @@ class Stage:
 _DEFAULTS: dict[str, Any] = {
     "on_blocked": "escalate",
     "on_approved": "next",
-    "on_rejected": "rollback_to:implement",
+    # NEG-2 (dogfood-11): the old default was ``rollback_to:implement`` — a
+    # fixed stage name that form-generated pipelines never have (their stages
+    # are role-named, e.g. ``agent-implementer``). Any rejection then hit
+    # "Rollback target 'implement' not found" and hard-stopped the pipeline.
+    # Escalating is the safe default: the supervisor gets the rejection and
+    # replans. Authors who want a rollback set ``rollback_to:<stage-name>``
+    # explicitly (validated with a warning at load).
+    "on_rejected": "escalate",
     "on_passed": "next",
-    "on_failed": "rollback_to:implement",
+    "on_failed": "escalate",
     "max_retries": 1,
 }
 
@@ -113,6 +120,22 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         kwargs["kind"] = _compute_kind(dict_index, total)
         result.append(Stage(**kwargs))
         dict_index += 1
+
+    # NEG-2 (dogfood-11): rollback targets must exist. Warn at load time
+    # instead of discovering a broken target mid-run (the transition then
+    # escalates instead of hard-stopping).
+    stage_names = {st.name for st in result}
+    for st in result:
+        for policy in (st.on_blocked, st.on_rejected, st.on_failed):
+            if policy.startswith("rollback_to:"):
+                rb_target = policy.split(":", 1)[1]
+                if rb_target not in stage_names:
+                    print(
+                        f"WARNING: stage '{st.name}' rolls back to '{rb_target}' which "
+                        f"is not a stage in this pipeline — a rejection will escalate "
+                        f"to the supervisor instead.",
+                        file=sys.stderr,
+                    )
 
     return result
 

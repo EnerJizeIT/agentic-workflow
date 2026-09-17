@@ -98,6 +98,10 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
                 role=role,
                 description=f"{role} executes the TODO",
                 on_blocked="escalate",
+                # NEG-2 (dogfood-11): explicit safe policies — the implicit
+                # default used to point at a non-existent 'implement' stage.
+                on_rejected="escalate",
+                on_failed="escalate",
                 max_retries=3,
             )
         )

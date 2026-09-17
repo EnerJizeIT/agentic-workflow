@@ -997,3 +997,36 @@ class TestContinuePipeline:
         assert result.run_mode == "foreground"
         assert result.exit_code == 1
         assert "crashed" in result.message
+
+
+class TestLogTailDedup:
+    """dogfood-11 (B5): repeated retry warnings must not flood the log tail."""
+
+    def test_consecutive_duplicates_collapsed(self, tmp_path):
+        from awf.api._helpers import read_log_tail
+
+        log = tmp_path / "x.log"
+        log.write_text(
+            "start\n"
+            "WARNING: no signal\n"
+            "WARNING: no signal\n"
+            "WARNING: no signal\n"
+            "done\n",
+            encoding="utf-8",
+        )
+        tail = read_log_tail(log, 20)
+        assert tail.count("WARNING: no signal") == 1
+        assert "WARNING: no signal  (×3)" in tail
+        assert "start" in tail and "done" in tail
+
+    def test_non_consecutive_duplicates_kept(self, tmp_path):
+        from awf.api._helpers import read_log_tail
+
+        log = tmp_path / "x.log"
+        log.write_text("a\nb\na\n", encoding="utf-8")
+        assert read_log_tail(log, 20) == "a\nb\na"
+
+    def test_missing_file_returns_none(self, tmp_path):
+        from awf.api._helpers import read_log_tail
+
+        assert read_log_tail(tmp_path / "nope.log", 5) is None

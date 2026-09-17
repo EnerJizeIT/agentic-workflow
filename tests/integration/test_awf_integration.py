@@ -427,3 +427,36 @@ class _NullFile:
 
     def __exit__(self, *exc):
         return False
+
+
+# ── dogfood-11: worker log append (B4) ───────────────────────────────────────
+
+
+class TestWorkerLogAppend:
+    """Retried stages must APPEND to the worker log, not overwrite it.
+
+    Before: ``open(..., "w")`` erased the previous run's output, so
+    post-mortems of a five-retry stage lost every earlier answer.
+    """
+
+    def test_two_runs_append_with_markers(self, tmp_path):
+        from awf.signal_watch import run_subprocess_until_signal
+
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+
+        for i in (1, 2):
+            run_subprocess_until_signal(
+                cmd=["bash", "-c", f"echo payload-run-{i}"],
+                cwd=tmp_path,
+                watch_paths=[],
+                logs_dir=logs_dir,
+                hard_timeout=30,
+            )
+
+        log = (logs_dir / "worker-output.out").read_text(encoding="utf-8")
+        # Both runs' output survives (append semantics).
+        assert "payload-run-1" in log
+        assert "payload-run-2" in log
+        # Run boundaries are marked for forensics.
+        assert log.count("===== awf run ") == 2

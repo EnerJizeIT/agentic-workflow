@@ -53,9 +53,12 @@ class TestResolveTransition:
         assert (action, target) == ("rollback", "implement")
 
     def test_failed_default_escalate(self) -> None:
+        """NEG-2: the default for 'failed' is escalate — the old default
+        (rollback_to:implement) pointed at a stage that generated pipelines
+        don't have."""
         stage = Stage(name="t", role="tester", )
         action, target = resolve_transition(stage, "failed")
-        assert (action, target) == ("rollback", "implement")
+        assert (action, target) == ("escalate", "")
 
     def test_blocked_escalate(self) -> None:
         stage = Stage(name="i", role="w", on_blocked="escalate")

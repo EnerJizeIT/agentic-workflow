@@ -146,9 +146,17 @@ def run_subprocess_until_signal(
             if "agent-" in str(arg) and ".md" not in str(arg):
                 log_name = f"{arg}.out"
                 break
-        worker_log = open(logs_dir / log_name, "w", encoding="utf-8")  # noqa: SIM115
-        # P2: restrict worker log permissions (may contain sensitive output)
+        # dogfood-11: APPEND instead of overwrite — a retried stage used to
+        # erase the previous run's log, so post-mortems lost what the worker
+        # actually wrote. Marker line delimits runs for forensics.
         import os as _os
+        worker_log = open(logs_dir / log_name, "a", encoding="utf-8")  # noqa: SIM115
+        worker_log.write(
+            f"\n===== awf run {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+            f"(pid {_os.getpid()}) =====\n"
+        )
+        worker_log.flush()
+        # P2: restrict worker log permissions (may contain sensitive output)
         _os.chmod(logs_dir / log_name, 0o600)
     try:
         proc = subprocess.Popen(

@@ -211,6 +211,35 @@ class TestSalvageInStatus:
         assert result.expected_action is not None
         assert "Salvage" in result.expected_action or "salvage" in result.expected_action.lower()
 
+    def test_status_salvage_overrides_worker_running_action(self, project):
+        """B5 (dogfood-11): salvage + ALIVE orchestrator → salvage action.
+
+        The orchestrator process being alive (waiting for the supervisor)
+        used to yield "worker stage running — auto-transition on worker
+        DONE. Do NOT intervene", contradicting salvage_needed: true.
+        """
+        import os
+
+        logs = project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
+        write_state(
+            project,
+            salvage_needed=True,
+            salvage_stage="agent-implementer",
+            salvage_count=3,
+            stage_name="agent-implementer",
+            stage_kind="execute",
+            todo_id="TODO-0001",
+            pipeline_pid=os.getpid(),
+        )
+
+        result = get_status(project)
+        assert result.pipeline_running is True
+        assert "Salvage" in result.expected_action
+        assert "attempt 3" in result.expected_action
+        assert "worker stage running" not in result.expected_action.lower()
+
     def test_status_salvage_serializable(self, project):
         """StatusResult with salvage fields is JSON-serializable."""
         import json

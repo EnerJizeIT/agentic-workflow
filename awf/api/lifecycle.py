@@ -447,6 +447,7 @@ def get_status(project_dir: Path) -> StatusResult:
     if _state:
         salvage_needed = bool(_state.get("salvage_needed", False))
         salvage_stage = _state.get("salvage_stage")
+        salvage_attempt = _state.get("salvage_count") or 1
         # If state exists but pipeline not detected as running, enrich
         # stage info from state (crash recovery)
         if not pipeline_running:
@@ -454,8 +455,16 @@ def get_status(project_dir: Path) -> StatusResult:
             if not current_stage_name:
                 current_stage_name = _state.get("stage_name")
             current_stage_kind = _compute_stage_kind(project_dir, current_stage_name)
-            if salvage_needed:
-                expected_action = "Salvage: worker didn't signal. Review git diff, then ACK or REVIEW."
+        if salvage_needed:
+            # B5 (dogfood-11): salvage overrides the computed action even when
+            # the orchestrator process is alive — it waits for the supervisor,
+            # it is NOT running a worker. The old text ("worker stage running —
+            # auto-transition on worker DONE. Do NOT intervene") contradicted
+            # salvage_needed: true.
+            expected_action = (
+                f"Salvage (attempt {salvage_attempt}): worker didn't signal. "
+                f"Review git diff, then ACK, retry, or split the task."
+            )
 
     return StatusResult(
         project_name=project_name,

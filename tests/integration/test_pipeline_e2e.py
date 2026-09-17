@@ -126,7 +126,7 @@ def _mock_stages(monkeypatch, project: Path):
             return f"ACK-{todo_id}"
         return f"ACK-{todo_id}"
 
-    def mock_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, hard_timeout=None):
+    def mock_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, hard_timeout=None, retry_note=None, attempt=1):
         calls["agent"].append((stage.name, todo_id))
         _write_done(project, todo_id)
 

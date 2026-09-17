@@ -5,6 +5,8 @@ Extracted from orchestrator.py (A6 refactor).
 from __future__ import annotations
 
 import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import paths
@@ -28,6 +30,8 @@ def run_agent_stage(
     logs_dir: Path,
     prev_handoffs: list[Path] | None = None,
     hard_timeout: int | None = None,
+    retry_note: str | None = None,
+    attempt: int = 1,
 ) -> None:
     """Spawn opencode run for an agent stage.
 
@@ -37,6 +41,12 @@ def run_agent_stage(
     BD-15: ``prev_handoffs`` is a list of handoff .md files from previous
     pipeline stages (in pipeline order). Each is passed to the agent as
     ``--file`` so the agent sees what previous roles did.
+
+    dogfood-11: ``retry_note`` is appended to the prompt when the stage is
+    being retried after a silent exit (worker answered with text / hit its
+    output-token limit) — pushes it to act instead of re-researching.
+    ``attempt`` is the 1-based worker run number for this stage entry and
+    lands in the handoff facts.
     """
     role = stage.role
     kind = stage.kind
@@ -54,6 +64,9 @@ def run_agent_stage(
     todo_file = inbox / f"{todo_id}.md"
 
     prompt = build_prompt(kind, todo_id, project_dir=project_dir)
+    if retry_note:
+        prompt = prompt + "\n\n" + retry_note
+        _log(logs_dir, f"dogfood-11: retry note appended to {role} prompt")
 
     print(f"Running agent: {agent_name}")
     print(f"Role file: {role_file}")
@@ -110,11 +123,13 @@ def run_agent_stage(
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
 
+    agent_start = time.monotonic()
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         env=awf_subprocess_env(),
         hard_timeout=hard_timeout,
     )
+    agent_elapsed = time.monotonic() - agent_start
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:
         raise RuntimeError(
@@ -122,7 +137,10 @@ def run_agent_stage(
             f"Cmd: {' '.join(cmd)}"
         )
 
-    collect_handoff(role, todo_id, project_dir, logs_dir)
+    collect_handoff(
+        role, todo_id, project_dir, logs_dir,
+        exit_code=result.returncode, duration_sec=agent_elapsed, attempt=attempt,
+    )
 
 
 def collect_handoff(
@@ -130,11 +148,18 @@ def collect_handoff(
     todo_id: str,
     project_dir: Path,
     logs_dir: Path,
+    exit_code: int | None = None,
+    duration_sec: float | None = None,
+    attempt: int = 1,
 ) -> Path:
     """BD-15/19: gather PROGRESS/DONE + git diff summary into handoff .md.
 
     BD-19: filename is ``<role>-<todo_id>.md`` so retry on the same role
     doesn't overwrite the previous attempt's handoff.
+
+    Handoff v2 (dogfood-11): the file is a *fact sheet* for the NEXT WORKER —
+    run metadata, signal/notes presence, changes vs baseline — instead of
+    alarm prose addressed to the supervisor (that lives in the SALVAGE note).
     """
     handoff_dir = paths.agentic_dir(project_dir) / "handoff"
     handoff_dir.mkdir(parents=True, exist_ok=True)
@@ -145,71 +170,123 @@ def collect_handoff(
     from .signals import find_signal_file
     done_path = find_signal_file(outbox, "DONE", todo_id, ".md") or (outbox / f"DONE-{todo_id}.md")
 
+    progress_body = ""
+    if progress.is_file():
+        progress_body = progress.read_text(encoding="utf-8").strip()
+    done_body = ""
+    if done_path.is_file():
+        done_body = done_path.read_text(encoding="utf-8").strip()
+
+    def _signal(prefix: str, suffix: str) -> str:
+        return "yes" if (outbox / f"{prefix}-{todo_id}{suffix}").is_file() else "no"
+
+    # Changes vs baseline — a deterministic fact used both in the fact block
+    # and in the diff section below.
+    context_dir = paths.context_dir(project_dir)
+    sha_file = context_dir / f"BASELINE-{todo_id}.sha"
+    base_sha = ""
+    if sha_file.is_file():
+        base_sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+    diff_stat_text = ""
+    changed_files: list[str] | None = None
+    if base_sha:
+        try:
+            diff = subprocess.run(
+                ["git", "diff", "--stat", base_sha],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if diff is not None:
+                diff_stat_text = (getattr(diff, "stdout", "") or "").strip()
+        except (subprocess.TimeoutExpired, OSError) as e:
+            _log(logs_dir, f"handoff git-diff failed: {e}")
+        try:
+            names = subprocess.run(
+                ["git", "diff", "--name-only", base_sha],
+                cwd=str(project_dir),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if names is not None:
+                changed_files = [
+                    line.strip()
+                    for line in (getattr(names, "stdout", "") or "").splitlines()
+                    if line.strip()
+                ]
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    if not base_sha:
+        changes_fact = "- changes vs baseline: no baseline recorded"
+    elif changed_files is None:
+        changes_fact = "- changes vs baseline: unknown (git diff failed)"
+    elif changed_files:
+        listed = ", ".join(f"`{p}`" for p in changed_files[:5])
+        more = f" … +{len(changed_files) - 5}" if len(changed_files) > 5 else ""
+        changes_fact = f"- changes vs baseline: {len(changed_files)} file(s) — {listed}{more}"
+    else:
+        changes_fact = "- changes vs baseline: none"
+
+    facts: list[str] = [
+        "## Run facts",
+        "",
+        f"- generated: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        f"- stage role: `{role}`",
+        f"- worker run: {attempt}",
+    ]
+    if exit_code is not None:
+        facts.append(f"- worker exit code: {exit_code}")
+    if duration_sec is not None:
+        facts.append(f"- worker duration: {duration_sec:.0f}s")
+    facts += [
+        f"- signals: DONE={_signal('DONE', '.ready')}, "
+        f"BLOCKED={_signal('BLOCKED', '.ready')}, "
+        f"REVIEW={'yes' if (outbox / f'REVIEW-{todo_id}.md').is_file() else 'no'}",
+        f"- worker notes: PROGRESS={'present' if progress_body else 'absent'}, "
+        f"DONE-report={'present' if done_body else 'absent'}",
+        changes_fact,
+    ]
+
     parts: list[str] = [
         f"# Handoff from `{role}` (TODO {todo_id})",
         "",
-        "**Generated:** by awf orchestrator (BD-15)",
-        f"**Stage role:** {role}",
-        f"**TODO:** {todo_id}",
+        *facts,
         "",
     ]
 
-    has_output = False
-    done_has_body = False
-    if done_path.is_file():
-        body = done_path.read_text(encoding="utf-8").strip()
-        if body:
-            parts += ["## DONE summary (from worker)", "", body, ""]
-            has_output = True
-            done_has_body = True
+    if done_body:
+        parts += ["## DONE summary (from worker)", "", done_body, ""]
 
-    if progress.is_file():
-        body = progress.read_text(encoding="utf-8").strip()
-        if body:
-            parts += ["## PROGRESS notes (from worker)", "", body, ""]
-            has_output = True
-    elif not done_has_body:
-        # Only warn about missing PROGRESS if DONE summary is also absent.
-        # DONE carries the same info — warning when DONE exists is noise.
-        parts += [
-            "## ⚠️ Worker did not leave progress notes",
-            "",
-            f"Role `{role}` did not write PROGRESS-{todo_id}.md.",
-            "The work may still be valid — inspect git diff and DONE report.",
-            "",
-        ]
+    if progress_body:
+        parts += ["## PROGRESS notes (from worker)", "", progress_body, ""]
+    elif not done_body:
+        # No notes from the worker. What that MEANS depends on the changes
+        # fact — never guess a cause at the next worker (handoff v2).
+        if changed_files:
+            parts += [
+                "## ⚠️ No worker notes",
+                "",
+                f"Role `{role}` left no PROGRESS-{todo_id}.md and no DONE-{todo_id}.md",
+                "summary. The file changes listed below are the only evidence of",
+                "its work — inspect them directly.",
+                "",
+            ]
+        else:
+            parts += [
+                "## ⚠️ No worker notes and no file changes",
+                "",
+                f"Role `{role}` left no notes and no changes vs baseline.",
+                "Treat its work as absent — proceed from the TODO as written.",
+                "",
+            ]
 
-    if not has_output:
-        parts += [
-            "## ⚠️ NO OUTPUT FROM PREVIOUS STAGE",
-            "",
-            f"Role `{role}` did not write PROGRESS-{todo_id}.md or DONE-{todo_id}.md.",
-            "Likely causes: worker crashed, hit turn-budget, or signalled",
-            "BLOCKED without leaving notes. Treat prior stage work as",
-            "unverified — inspect `git diff` against baseline before",
-            "proceeding. If this is unexpected, escalate via BLOCKED signal.",
-            "",
-        ]
-
-    # Git diff summary vs baseline
-    context_dir = paths.context_dir(project_dir)
-    sha_file = context_dir / f"BASELINE-{todo_id}.sha"
-    if sha_file.is_file():
-        base_sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
-        if base_sha:
-            try:
-                diff = subprocess.run(
-                    ["git", "diff", "--stat", base_sha],
-                    cwd=str(project_dir),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=10,
-                )
-                if diff is not None and getattr(diff, "stdout", "").strip():
-                    parts += ["## Git diff summary (vs baseline)", "", "```", diff.stdout.strip(), "```", ""]
-            except (subprocess.TimeoutExpired, OSError) as e:
-                _log(logs_dir, f"handoff git-diff failed: {e}")
+    if diff_stat_text:
+        parts += ["## Git diff summary (vs baseline)", "", "```", diff_stat_text, "```", ""]
 
     try:
         last = subprocess.run(

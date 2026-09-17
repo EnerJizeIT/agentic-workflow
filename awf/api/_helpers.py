@@ -49,7 +49,12 @@ def read_file_text(path: Path, max_chars: int | None = None) -> str:
 
 
 def read_log_tail(log_file: Path, n: int) -> str | None:
-    """Read last N lines of a log file. Returns None if file is absent."""
+    """Read last N lines of a log file. Returns None if file is absent.
+
+    dogfood-11: consecutive duplicate lines are collapsed to ``line  (×N)`` —
+    retry loops repeat the same warning verbatim and flood the tail that the
+    supervisor reads.
+    """
     if not log_file.is_file():
         return None
     try:
@@ -60,7 +65,14 @@ def read_log_tail(log_file: Path, n: int) -> str | None:
     if not lines:
         return ""
     tail = lines[-n:] if len(lines) > n else lines
-    return "\n".join(tail)
+    collapsed: list[tuple[str, int]] = []
+    for line in tail:
+        if collapsed and collapsed[-1][0] == line:
+            collapsed[-1] = (line, collapsed[-1][1] + 1)
+        else:
+            collapsed.append((line, 1))
+    out = [f"{line}  (×{count})" if count > 1 else line for line, count in collapsed]
+    return "\n".join(out)
 
 
 __all__ = [
