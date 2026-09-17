@@ -441,6 +441,31 @@ class TestAwfOpenProjectSetupForm:
         assert result["status"] == "ok"
 
 
+class TestApiParity:
+    """Every ``api.<name>`` call in the plugin must exist on ``awf.api``.
+
+    Regression (dogfood-11): ``awf_retry_stage`` called ``api.retry_stage``
+    which lived in ``awf.api.pipeline`` but was never re-exported from
+    ``awf/api/__init__.py`` — the tool crashed with AttributeError at
+    runtime. Existing tests missed it: the smoke test checked tool *names*
+    only, and unit tests imported the function from the submodule directly.
+    """
+
+    def test_every_api_call_exists_on_awf_api(self):
+        import inspect
+        import re
+
+        src = inspect.getsource(awf)
+        names = sorted(set(re.findall(r"(?<![\w.])api\.(\w+)", src)))
+        assert names, "no api.<name> calls found — regex or module source changed"
+        missing = [n for n in names if not hasattr(api, n)]
+        assert not missing, (
+            f"tools/awf.py calls awf.api.{missing}, but awf/api/__init__.py "
+            f"does not export it — add the name to the submodule import block "
+            f"and to __all__"
+        )
+
+
 class TestToolRegistration:
     def test_all_11_tools_exist_as_callables(self):
         """All 11 awf_* tools must be exposed as async callables."""

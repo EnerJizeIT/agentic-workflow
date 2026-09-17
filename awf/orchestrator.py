@@ -144,6 +144,10 @@ def run_pipeline(args: Any) -> int:
             project_dir, logs_dir=logs_dir, stage_idx=stage_idx,
             stage_name=s_name, stage_kind=s_kind, stage_role=s_role,
             todo_id=current_todo, pipeline_pid=os.getpid(),
+            # dogfood-11: a new stage start means any previous salvage was
+            # resolved (ACK/retry) — clear the flag, or the dashboard would
+            # keep showing "Salvage" forever (write_state merges fields).
+            salvage_needed=False, salvage_stage=None,
         )
         from .api.dashboard import generate_dashboard
         generate_dashboard(project_dir)

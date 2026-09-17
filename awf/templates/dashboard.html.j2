@@ -38,11 +38,13 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .status-badge.verify { background: rgba(210,153,34,0.08); color: var(--yellow); }
 .status-badge.done, .status-badge.idle { background: rgba(88,166,255,0.08); color: var(--accent); }
 .status-badge.dead, .status-badge.blocked { background: rgba(248,81,73,0.08); color: var(--red); }
+.status-badge.salvage { background: rgba(210,153,34,0.08); color: var(--yellow); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.running { background: var(--green); animation: blink 1.5s infinite; }
 .status-dot.verify { background: var(--yellow); }
 .status-dot.done, .status-dot.idle { background: var(--accent); }
 .status-dot.dead, .status-dot.blocked { background: var(--red); animation: blink 0.5s infinite; }
+.status-dot.salvage { background: var(--yellow); animation: blink 1.5s infinite; }
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 /* ─── Main layout ─── */
@@ -195,6 +197,7 @@ let _fetchErrors = 0;
 let _renderedChatKeys = [];
 let _lastTodoHtml = '';
 let _notified = false;
+let _notified_salvage = false;
 
 // ─── Polling ────────────────────────────────────────────────────────
 async function poll() {
@@ -400,7 +403,14 @@ function checkNotification(s) {
       new Notification('awf: Pipeline at verify', { body: (s.todo_id || '') + ' — ready for review' });
     }
   }
+  if (s.status === 'salvage' && !_notified_salvage) {
+    _notified_salvage = true;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('awf: Salvage needed', { body: (s.salvage_stage || 'worker') + ' did not signal — decision needed' });
+    }
+  }
   if (s.status !== 'verify') _notified = false;
+  if (s.status !== 'salvage') _notified_salvage = false;
 }
 if ('Notification' in window && Notification.permission === 'default') {
   Notification.requestPermission();

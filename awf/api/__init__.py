@@ -67,6 +67,7 @@ from .pipeline import (
     continue_pipeline,
     create_baseline,
     kill_pipeline,
+    retry_stage,
     rollback,
     start_pipeline,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "create_baseline",
     "rollback",
     "approve_commit",
+    "retry_stage",
     # Roles
     "add_role",
     "analyze_roles",

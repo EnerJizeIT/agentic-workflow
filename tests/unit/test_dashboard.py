@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 
 from awf import api
-from awf.api.dashboard import generate_dashboard
-from awf.pipeline_state import write_state
+from awf.api.dashboard import generate_dashboard, generate_state_dict
+from awf.pipeline_state import read_state, write_state
 
 
 @pytest.fixture
@@ -146,3 +146,53 @@ class TestDashboardJinjaTemplate:
         )
         assert len(html) > 0
         assert "<html" in html.lower() or "<!DOCTYPE" in html
+
+
+class TestSalvageStatus:
+    """dogfood-11: dashboard must show salvage instead of "Pipeline running".
+
+    A worker that exits without a signal puts the orchestrator into salvage
+    wait. The state file carried ``salvage_needed: true`` but the dashboard
+    ignored it — users stared at a green "running" badge while the pipeline
+    was stuck waiting for a supervisor decision.
+    """
+
+    def test_determine_status_salvage(self, dash_project):
+        from awf.api.dashboard import _determine_status
+
+        write_state(dash_project, salvage_needed=True, salvage_stage="agent-implementer")
+        state = read_state(dash_project)
+        status, _cls, text, _icon, label = _determine_status(state)
+        assert status == "salvage"
+        assert "agent-implementer" in text
+        assert label == "Salvage"
+
+    def test_state_dict_reports_salvage(self, dash_project):
+        write_state(dash_project, salvage_needed=True, salvage_stage="agent-implementer")
+        d = generate_state_dict(dash_project)
+        assert d["status"] == "salvage"
+        assert d["salvage_needed"] is True
+        assert d["salvage_stage"] == "agent-implementer"
+
+    def test_state_dict_reports_running_without_salvage(self, dash_project):
+        d = generate_state_dict(dash_project)
+        assert d["status"] == "running"
+        assert d["salvage_needed"] is False
+        assert d["salvage_stage"] is None
+
+    def test_stage_start_write_clears_stale_salvage(self, dash_project):
+        """Orchestrator's stage-start write must clear resolved salvage flags.
+
+        ``write_state`` merges fields — without an explicit False/None the
+        flag would stick forever after the first salvage.
+        """
+        write_state(dash_project, salvage_needed=True, salvage_stage="agent-implementer")
+        write_state(
+            dash_project,
+            stage_name="agent-qa-review",
+            salvage_needed=False,
+            salvage_stage=None,
+        )
+        state = read_state(dash_project)
+        assert state.get("salvage_needed") is False
+        assert state.get("salvage_stage") is None

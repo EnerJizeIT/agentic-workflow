@@ -351,11 +351,22 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
             return ("dead", "blocked", "⚠️ Pipeline process dead", "✕", "Dead")
 
     checkpoint_pending = bool(state.get("checkpoint_pending", False))
+    salvage_needed = bool(state.get("salvage_needed", False))
     stage_kind = state.get("stage_kind", "")
     last_signal = state.get("last_signal", "")
 
     if checkpoint_pending:
         return ("checkpoint", "checkpoint", "Checkpoint pending", "⏸", "Paused")
+    if salvage_needed:
+        # dogfood-11: worker exited without a signal — orchestrator waits for
+        # the supervisor's ACK/retry. Previously this showed "Pipeline running",
+        # so users staring at the dashboard had no idea the pipeline was stuck.
+        stage = state.get("salvage_stage") or "?"
+        return (
+            "salvage", "blocked",
+            f"Salvage: {stage} didn't signal — decision needed",
+            "🔧", "Salvage",
+        )
     if last_signal and last_signal.startswith("BLOCKED"):
         return ("blocked", "blocked", "Blocked", "⚠", "Blocked")
     if stage_kind == "verify":
@@ -576,7 +587,7 @@ def generate_dashboard(project_dir: Path) -> Path | None:
                         elapsed_epoch = int(first_agent_ts.timestamp())
                 except OSError:
                     pass
-        elif status_for_elapsed in ("done", "idle", "dead"):
+        elif status_for_elapsed in ("done", "idle", "dead", "salvage"):
             elapsed_frozen = True
 
     elapsed = _format_elapsed(
@@ -785,7 +796,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
                             elapsed_epoch = int(dt.timestamp())
             except (OSError, ValueError):
                 pass
-    elif state and status in ("verify", "done", "idle", "dead"):
+    elif state and status in ("verify", "done", "idle", "dead", "salvage"):
         elapsed_frozen = True
         # Compute frozen elapsed from log
         log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
@@ -883,6 +894,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "status": status,
         "status_text": status_text,
         "status_icon": status_icon,
+        "salvage_needed": bool(state.get("salvage_needed", False)) if state else False,
+        "salvage_stage": state.get("salvage_stage") if state else None,
         "stages": stages,
         "stages_done": sum(1 for s in stages if s["status"] == "done"),
         "stages_total": len(stages),
