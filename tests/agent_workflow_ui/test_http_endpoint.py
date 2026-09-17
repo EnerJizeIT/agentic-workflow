@@ -405,3 +405,59 @@ class TestCSRFOriginNullFromFile:
         """No Origin, no Referer (curl, non-browser) → accepted (backward compat)."""
         from agent_workflow_ui.http_endpoint import _is_origin_allowed
         assert _is_origin_allowed(origin="", referer="")
+
+
+class TestBuildPlanMdFromVariant:
+    """Dogfood-7: increment-planning submit renders the chosen variant to plan.md."""
+
+    def test_full_variant_rendered(self):
+        from agent_workflow_ui.http_endpoint import _build_plan_md_from_variant
+
+        selected = {
+            "id": "A",
+            "title": "Vertical slice",
+            "strategy": "vertical",
+            "description": "Each increment delivers user-visible value.",
+            "estimated_todos": 3,
+            "estimated_time": "2 weeks",
+            "increments": [
+                {"name": "I1: storyboard", "goal": "storyboard only", "artefacts": ["storyboard.md"]},
+                {"goal": "jira integration"},
+            ],
+            "pros": ["fast feedback"],
+            "cons": ["refactor overhead"],
+        }
+        variants = [selected, {"id": "B", "title": "Horizontal"}]
+
+        md = _build_plan_md_from_variant(selected, variants)
+
+        assert md.startswith("# Plan: Vertical slice")
+        assert "**Strategy:** vertical" in md
+        assert "Each increment delivers user-visible value." in md
+        assert "_Estimated: ~3 TODOs, ~2 weeks_" in md
+        assert "### 1. I1: storyboard" in md
+        assert "**Artefacts:** storyboard.md" in md
+        assert "### 2. Increment 2" in md
+        assert "**Pros:**" in md and "- fast feedback" in md
+        assert "**Cons:**" in md and "- refactor overhead" in md
+        assert "## Other variants considered" in md
+        assert "**B**: Horizontal" in md
+
+    def test_minimal_variant_defaults(self):
+        from agent_workflow_ui.http_endpoint import _build_plan_md_from_variant
+
+        md = _build_plan_md_from_variant({}, [])
+
+        assert "# Plan: Untitled plan" in md
+        assert "## Increments" in md
+        assert "Estimated" not in md
+        assert "Trade-offs" not in md
+        assert "Other variants" not in md
+
+    def test_pros_without_cons(self):
+        from agent_workflow_ui.http_endpoint import _build_plan_md_from_variant
+
+        md = _build_plan_md_from_variant({"pros": ["speed"]}, [])
+        assert "**Pros:**" in md
+        assert "- speed" in md
+        assert "**Cons:**" not in md

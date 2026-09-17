@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -215,3 +215,93 @@ def test_atomic_write_text_creates_parent_dirs(tmp_path: Path) -> None:
     target = tmp_path / "a" / "b" / "c" / "file.txt"
     _atomic_write_text(target, "content")
     assert target.read_text() == "content"
+
+
+# ── A10: disk persistence ───────────────────────────────────────────────────
+
+
+class TestFormRegistryPersistence:
+    """A10/P2: load-persist roundtrip, terminal/expired filtering, garbage."""
+
+    def test_persist_and_load_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        registry = FormRegistry()
+        registry.add(
+            FormRecord(
+                form_id="FORM-A",
+                template="project-setup",
+                opened_at=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+                project_dir=tmp_path,
+            )
+        )
+        assert (tmp_path / "reg.yaml").is_file()
+
+        reloaded = FormRegistry()  # __init__ → _load_persisted
+        record = reloaded.get("FORM-A")
+        assert record is not None
+        assert record.template == "project-setup"
+        assert record.project_dir == tmp_path
+        assert record.expires_at is not None
+
+    def test_load_filters_terminal_and_expired(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+        import yaml
+
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        now = datetime.now(timezone.utc)
+        past = (now - timedelta(days=1)).isoformat()
+        data = {
+            "F-pending": {"template": "t", "opened_at": now.isoformat(), "status": "pending"},
+            "F-submitted": {"template": "t", "opened_at": now.isoformat(), "status": "submitted"},
+            "F-cancelled": {"template": "t", "opened_at": now.isoformat(), "status": "cancelled"},
+            "F-expired-status": {"template": "t", "opened_at": now.isoformat(), "status": "expired"},
+            "F-expired-date": {
+                "template": "t", "opened_at": now.isoformat(),
+                "status": "pending", "expires_at": past,
+            },
+            "F-bad-record": "not-a-dict",
+            "F-bad-date": {"template": "t", "opened_at": "garbage", "status": "pending"},
+        }
+        (tmp_path / "reg.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+        registry = FormRegistry()
+        assert registry.get("F-pending") is not None
+        for form_id in (
+            "F-submitted", "F-cancelled", "F-expired-status",
+            "F-expired-date", "F-bad-record", "F-bad-date",
+        ):
+            assert registry.get(form_id) is None, form_id
+
+    def test_load_tolerates_corrupt_yaml(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        (tmp_path / "reg.yaml").write_text("::: not yaml :::\n", encoding="utf-8")
+        registry = FormRegistry()  # must not raise
+        assert registry.list_pending() == []
+
+    def test_load_non_dict_root(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        (tmp_path / "reg.yaml").write_text("- a\n- b\n", encoding="utf-8")
+        registry = FormRegistry()
+        assert registry.list_pending() == []
+
+    def test_env_disables_persistence(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        monkeypatch.setenv("AWF_DISABLE_FORM_PERSIST", "1")
+        registry = FormRegistry()
+        assert registry.persist_enabled is False
+
+        registry.add(
+            FormRecord(
+                form_id="FORM-B",
+                template="t",
+                opened_at=datetime.now(timezone.utc),
+            )
+        )
+        assert not (tmp_path / "reg.yaml").exists()  # nothing written
+
+        registry.persist_enabled = True
+        assert registry.persist_enabled is True
