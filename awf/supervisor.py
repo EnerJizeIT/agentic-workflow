@@ -188,6 +188,12 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
 4. If no → call awf_retry_stage(project_dir) to retry the stage
 5. If retry also fails → create .agentic/outbox/REVIEW-{todo_id}.md (reject)
 6. Do NOT git commit manually — pipeline auto-commits after ACK.
+
+If the diff is EMPTY and this is a REPEAT salvage (see "ATTEMPT" in the
+SALVAGE file): do NOT retry the same scope again. Split the work into
+smaller TODOs (one file / one function per TODO) and require incremental
+writes — a model with a limited output budget cannot finish a big task
+in a single reply.
 """
 
 _STAGE_SNIPPETS = {
@@ -259,11 +265,16 @@ def build_prompt(
     elif kind == "salvage":
         base = (
             f"You are the supervisor. The worker at a previous stage ran but did NOT create "
-            f"DONE-{todo_id}.ready. This is a SALVAGE situation — the worker likely finished "
-            f"the work but forgot the signal. Review what was done: check `git diff --stat` "
-            f"against baseline in .agentic/context/BASELINE-{todo_id}.sha. "
-            f"If the work is acceptable, create .agentic/inbox/ACK-{todo_id}.ready. "
-            f"If not, create .agentic/outbox/REVIEW-{todo_id}.md."
+            f"DONE-{todo_id}.ready. This is a SALVAGE situation. Two common causes: "
+            f"(1) the worker finished but forgot the signal — git diff then shows work; "
+            f"(2) the worker hit its output-token limit mid-reply (truncated → no tool call → "
+            f"clean exit) — git diff is then EMPTY and no progress notes exist. "
+            f"Read .agentic/inbox/SALVAGE-{todo_id}.md FIRST: it lists what happened and, "
+            f"for repeat salvages, what to change before retrying. "
+            f"If the work in `git diff --stat` (baseline .agentic/context/BASELINE-{todo_id}.sha) "
+            f"is acceptable → create .agentic/inbox/ACK-{todo_id}.ready. "
+            f"If not → create .agentic/outbox/REVIEW-{todo_id}.md with feedback — do NOT just "
+            f"retry the same scope when the diff is empty."
         )
     else:
         # execute (default) — no context/instructions for agent stages.
@@ -276,6 +287,15 @@ def build_prompt(
             f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready\n"
             f"  🚫 Blocked? → touch .agentic/outbox/BLOCKED-{todo_id}.ready\n\n"
             f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n\n"
+            f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
+            f"Your reply has a limited token budget. Work in small pieces:\n"
+            f"- Write code straight into files (write/edit tools). NEVER draft whole\n"
+            f"  files inside your reasoning or reply text.\n"
+            f"- Create the file skeleton first, then fill in one function or section\n"
+            f"  per step.\n"
+            f"- One file per step. Keep replies short — no long explanations.\n"
+            f"- If a reply is growing large, STOP, save what you have, and continue\n"
+            f"  in the next step.\n\n"
             f"## Task\n"
             f"Execute your part of {todo_id} according to your role/skill instructions. "
             f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
@@ -576,6 +596,10 @@ def print_interactive_supervisor_instructions(
         print("  - replan: create a new refined TODO-NNNN.md + .ready signal")
         print("  - salvage: review the current state and either ACK or REVIEW")
         print()
+        if kind == "salvage":
+            print(f"Salvage details: read {inbox}/SALVAGE-{todo_id}.md — it lists what")
+            print("happened and, for repeat attempts, what to change before retrying.")
+            print()
         print(f"SIGNAL TO CREATE: {inbox}/TODO-NNNN.ready (for replan)")
         print(f"  or: {inbox}/ACK-{todo_id}.ready (for salvage ACK)")
 

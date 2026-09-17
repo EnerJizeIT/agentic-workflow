@@ -23,6 +23,7 @@ from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
 from .agent_stage import run_agent_stage as _run_agent_stage
 from .commit_gate import maybe_commit as _maybe_commit
 from .pipeline import Stage
+from .pipeline_state import read_state
 from .pipeline_state import write_state as _write_state
 from .plan_progress import mark_plan_step_done as _mark_plan_step_done
 from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
@@ -239,6 +240,7 @@ def _write_salvage_prompt(
     stage_name: str,
     baseline_sha: str | None,
     logs_dir: Path,
+    attempt: int = 1,
 ) -> None:
     """DF5-4: Write a SALVAGE-{todo_id}.md file to inbox.
 
@@ -246,6 +248,9 @@ def _write_salvage_prompt(
     - Worker ran but didn't produce a DONE/BLOCKED signal
     - Git diff stat shows what work was left
     - Supervisor needs to decide: ACK (accept), REVIEW (reject), or replan
+    - Dogfood-11: on repeat salvages (attempt >= 2) an escalation block tells
+      the supervisor not to retry the same scope, but to split the task /
+      require incremental writes / change the stage model instead.
     """
     from ._atomic import atomic_write_text
 
@@ -257,16 +262,37 @@ def _write_salvage_prompt(
         "",
         f"**TODO:** {todo_id}",
         f"**Stage:** {stage_name}",
+        f"**Attempt:** {attempt} (consecutive silent exits at this stage)",
         f"**Time:** {datetime.now(timezone.utc).isoformat()}",
         "",
         "## What happened",
         "",
         f"The worker at stage `{stage_name}` completed its subprocess (exit 0) but",
         f"did NOT create the DONE-{todo_id}.ready signal file in outbox.",
-        "This usually means the worker finished its task but forgot the",
-        "completion signal (common with smaller models / turn-budget limits).",
+        "Two common causes: (1) the worker finished but forgot the signal —",
+        "then the git diff below shows work; (2) the worker hit its output-token",
+        "limit mid-reply — the reply was truncated, no tool call was made, and",
+        "the process exited cleanly. Empty diff + no progress notes = likely (2).",
         "",
     ]
+
+    if attempt >= 2:
+        parts += [
+            f"## ⚠️ ATTEMPT {attempt}: do NOT retry the same scope",
+            "",
+            f"This stage already ended without a signal {attempt - 1} time(s) in a row.",
+            "Restarting the same TODO as-is will very likely fail the same way.",
+            "Change ONE of these before retrying:",
+            "",
+            "1. **Split the task** — one TODO per file (or per function/section).",
+            "   Small scoped tasks are the universal fix for models with a limited",
+            "   output budget.",
+            "2. **Require incremental writes** in the TODO — \"create file X, then",
+            "   add function Y\", so the worker never needs one huge reply.",
+            "3. **Change the stage model** — pick a model without a tight output",
+            "   limit, or reduce its reasoning/verbosity if configurable.",
+            "",
+        ]
 
     # Git diff stat
     if baseline_sha:
@@ -522,8 +548,23 @@ def execute_agent_stage(
         print(f"WARNING: No signal after agent stage '{s_name}'.", file=sys.stderr)
         _log(logs_dir, f"No signal after {s_name} — salvage path")
 
-        _write_salvage_prompt(project_dir, current_todo, s_name, baseline_sha, logs_dir)
-        _ws(project_dir, salvage_needed=True, salvage_stage=s_name, logs_dir=logs_dir)
+        # Dogfood-11: count consecutive silent exits for this stage. A repeat
+        # salvage means retrying the same scope won't help — the SALVAGE note
+        # escalates to task splitting / incremental writes instead.
+        prev_state = read_state(project_dir) or {}
+        try:
+            attempt = int(prev_state.get("salvage_count", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempt = 1
+
+        _write_salvage_prompt(
+            project_dir, current_todo, s_name, baseline_sha, logs_dir, attempt=attempt,
+        )
+        _ws(
+            project_dir,
+            salvage_needed=True, salvage_stage=s_name, salvage_count=attempt,
+            logs_dir=logs_dir,
+        )
 
         if auto:
             if baseline_sha and verify.detect_work_evidence(project_dir, baseline_sha, current_todo):
@@ -550,6 +591,8 @@ def execute_agent_stage(
     # Signal received — classify and dispatch transition
     sig_type = signal_type(signal)
     print(f"Signal classified as: {sig_type}")
+    # Dogfood-11: stage resolved — reset the consecutive-salvage counter.
+    _write_state(project_dir, salvage_count=0, logs_dir=logs_dir)
 
     action, target = resolve_transition(stage, sig_type)
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")

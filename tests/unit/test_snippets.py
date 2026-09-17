@@ -53,6 +53,13 @@ class TestSnippetContent:
     def test_salvage_has_ack(self):
         assert "ACK" in _SNIPPET_SALVAGE
 
+    def test_salvage_has_repeat_escalation(self):
+        """dogfood-11: repeat salvage → split the task, don't blind-retry."""
+        assert "REPEAT salvage" in _SNIPPET_SALVAGE
+        lower = _SNIPPET_SALVAGE.lower()
+        assert "split the work" in lower
+        assert "output budget" in lower
+
     def test_snippets_are_concise(self):
         """Each snippet should be under 30 lines (focused, not a wall of text)."""
         for name, snippet in [("always", _SNIPPET_ALWAYS), ("plan", _SNIPPET_PLAN),
@@ -130,6 +137,14 @@ class TestBuildPromptInjection:
         assert "Critical rules" not in prompt
         # But signal contract IS there (DF5-1)
         assert "DONE-TODO-0001.ready" in prompt
+
+    def test_execute_prompt_has_output_discipline(self):
+        """dogfood-11: every worker prompt teaches incremental file writes."""
+        prompt = build_prompt("execute", "TODO-0001")
+        assert "OUTPUT DISCIPLINE" in prompt
+        assert "write/edit tools" in prompt
+        assert "skeleton first" in prompt
+        assert "STOP, save what you have" in prompt
 
     def test_snippet_at_end_of_prompt(self):
         """Stage-specific snippet should be towards the END of the prompt (recency bias)."""

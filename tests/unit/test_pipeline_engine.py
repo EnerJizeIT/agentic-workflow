@@ -222,3 +222,60 @@ class TestE2BIGGuard:
         # If config was huge, it should have been stripped
         # (actual size depends on real opencode.json — just verify no crash)
         assert isinstance(config_content, str)
+
+
+class TestSalvageEscalation:
+    """Dogfood-11: repeat silent exits escalate to task splitting, not blind retry."""
+
+    def test_first_salvage_note_has_no_escalation(self, tmp_git_repo):
+        pipeline_engine._write_salvage_prompt(
+            tmp_git_repo, "TODO-0001", "agent-implementer", None,
+            tmp_git_repo / ".agentic" / "logs",
+        )
+        text = (
+            tmp_git_repo / ".agentic" / "inbox" / "SALVAGE-TODO-0001.md"
+        ).read_text(encoding="utf-8")
+        assert "**Attempt:** 1" in text
+        assert "do NOT retry the same scope" not in text
+        # The output-limit diagnosis hint is present from the first salvage.
+        assert "output-token" in text
+
+    def test_repeat_salvage_counter_and_escalation(self, tmp_path, monkeypatch):
+        """Two silent exits → salvage_count=2 and the note escalates."""
+        project = tmp_path / "proj"
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+
+        monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+
+        from awf import verify
+        monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
+
+        # elapsed >= 30s → not a transient failure → straight to salvage
+        import time as _time_mod
+        ticks = iter([100.0, 200.0, 300.0, 400.0, 500.0, 600.0])
+        monkeypatch.setattr(_time_mod, "monotonic", lambda: next(ticks, 999.0))
+
+        stages = _make_stages()
+        for _ in range(2):
+            pipeline_engine.execute_agent_stage(
+                stage=stages[1], current_todo="TODO-0001", project_dir=project,
+                config={}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+                retry_counts=[0, 0, 0], auto=False, agent_hard_timeout=None,
+                pipeline_name=None,
+            )
+
+        from awf.pipeline_state import read_state
+        state = read_state(project)
+        assert state.get("salvage_count") == 2
+
+        text = (
+            project / ".agentic" / "inbox" / "SALVAGE-TODO-0001.md"
+        ).read_text(encoding="utf-8")
+        assert "**Attempt:** 2" in text
+        assert "do NOT retry the same scope" in text
