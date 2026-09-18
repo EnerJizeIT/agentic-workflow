@@ -156,3 +156,28 @@ class TestIsArchived:
 
     def test_false_for_nonexistent_todo(self, project):
         assert is_archived(project, "TODO-9999") is False
+
+
+class TestArchiveLegacyHandoffs:
+    """Day-3 dashboard review: legacy agent-written handoff names get archived."""
+
+    def test_moves_legacy_final_handoff(self, project):
+        _setup_todo(project, "TODO-0001")
+        handoff = project / ".agentic" / "handoff"
+        (handoff / "agent-qa-review-TODO-0001-final.md").write_text("# final\n")
+
+        result = archive_todo(project, "TODO-0001")
+
+        assert (result / "handoff" / "agent-qa-review-TODO-0001-final.md").is_file()
+        assert not (handoff / "agent-qa-review-TODO-0001-final.md").exists()
+
+    def test_does_not_touch_other_todo(self, project):
+        _setup_todo(project, "TODO-0001")
+        handoff = project / ".agentic" / "handoff"
+        (handoff / "agent-x-TODO-0002.md").write_text("# other\n")
+        (handoff / "agent-x-TODO-00010.md").write_text("# ten\n")
+
+        archive_todo(project, "TODO-0001")
+
+        assert (handoff / "agent-x-TODO-0002.md").exists()
+        assert (handoff / "agent-x-TODO-00010.md").exists()

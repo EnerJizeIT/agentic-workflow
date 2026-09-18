@@ -43,7 +43,9 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            # Day-3: no Access-Control-Allow-Origin — the dashboard page is
+            # served from this same origin; a wildcard let ANY web page read
+            # the pipeline state from localhost.
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:

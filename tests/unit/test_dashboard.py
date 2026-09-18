@@ -224,3 +224,177 @@ class TestTodoDiffStat:
     def test_no_baseline_yields_empty(self, dash_project):
         d = generate_state_dict(dash_project)
         assert d["todo_diff_stat"] == ""
+
+
+class TestHandoffChat:
+    """Day-3 dashboard review: the chat shows ONLY the current TODO's handoffs."""
+
+    def _write(self, proj, name, content="# H\n\nbody\n", mtime=None):
+        import os
+
+        d = proj / ".agentic" / "handoff"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / name
+        f.write_text(content, encoding="utf-8")
+        if mtime is not None:
+            os.utime(f, (mtime, mtime))
+        return f
+
+    def test_old_todo_handoffs_excluded(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        self._write(proj, "agent-qa-review-TODO-0001.md")
+        self._write(proj, "agent-implementer-TODO-0002.md")
+
+        handoffs = _read_handoffs(
+            proj, stage_order=["agent-implementer"], todo_id="TODO-0002",
+        )
+
+        assert [h["file"] for h in handoffs] == ["agent-implementer-TODO-0002.md"]
+
+    def test_legacy_final_variant_included(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        self._write(proj, "agent-qa-review-TODO-0002-final.md")
+
+        handoffs = _read_handoffs(proj, todo_id="TODO-0002")
+
+        assert len(handoffs) == 1
+        assert handoffs[0]["role"] == "agent-qa-review"
+
+    def test_idless_files_ignored(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        self._write(proj, "agent-implementer.md")  # legacy convention
+
+        assert _read_handoffs(proj, todo_id="TODO-0002") == []
+
+    def test_no_todo_id_returns_empty(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        self._write(proj, "agent-x-TODO-0001.md")
+
+        assert _read_handoffs(proj, todo_id=None) == []
+
+    def test_dedupe_prefers_canonical_name(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        self._write(proj, "agent-qa-review-TODO-0002-final.md", mtime=2_000_000)
+        self._write(proj, "agent-qa-review-TODO-0002.md", mtime=1_000_000)
+
+        handoffs = _read_handoffs(proj, todo_id="TODO-0002")
+
+        assert len(handoffs) == 1
+        assert handoffs[0]["file"] == "agent-qa-review-TODO-0002.md"
+
+    def test_rev_changes_with_content(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        f = self._write(proj, "agent-x-TODO-0002.md")
+        rev1 = _read_handoffs(proj, todo_id="TODO-0002")[0]["rev"]
+
+        f.write_text("# H\n\nnew body entirely\n", encoding="utf-8")
+        rev2 = _read_handoffs(proj, todo_id="TODO-0002")[0]["rev"]
+
+        assert rev1 != rev2
+
+    def test_raw_html_escaped(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        proj = tmp_git_repo
+        self._write(proj, "agent-x-TODO-0002.md", content="# T\n\n<script>alert(1)</script>\n")
+
+        html = _read_handoffs(proj, todo_id="TODO-0002")[0]["content_html"]
+
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+
+class TestContentEscaping:
+    """Day-3: LLM-written content must not inject markup into the dashboard."""
+
+    def test_todo_raw_html_escaped(self, dash_project):
+        from awf.api.dashboard import _read_todo_content
+
+        inbox = dash_project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text(
+            "# T\n\n<script>alert(1)</script>\n", encoding="utf-8",
+        )
+
+        html = _read_todo_content(dash_project, "TODO-0001")
+
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+    def test_script_tag_escaped_in_embedded_state(self, dash_project):
+        from awf import run_state
+
+        proj = dash_project
+        run_state.write_run(
+            proj, active=True, queue=["TODO-0001"], index=1,
+            current="evil</script><script>alert(1)</script>",
+        )
+
+        out = generate_dashboard(proj)
+        html = out.read_text(encoding="utf-8")
+
+        assert "</script><script>alert(1)" not in html
+        assert "\\u003c/script" in html
+
+
+class TestTimelineCommitShas:
+    def test_verify_commit_sha_in_timeline(self, dash_project):
+        import subprocess
+
+        from awf.api.dashboard import _build_todo_timeline
+
+        proj = dash_project
+        (proj / "x.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "awf(verify): TODO-0001"], cwd=proj, check=True,
+        )
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=proj,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        (proj / ".agentic" / "done" / "TODO-0001").mkdir(parents=True)
+
+        timeline = _build_todo_timeline(proj, None)
+
+        assert timeline[0]["id"] == "TODO-0001"
+        assert timeline[0]["commit_sha"] == sha
+
+
+class TestDashboardPort:
+    def test_second_server_binds_same_port(self, tmp_git_repo):
+        from awf.api.dashboard_server import start_dashboard_server
+
+        port1, server1 = start_dashboard_server(tmp_git_repo)
+        server1.shutdown()
+        server1.server_close()
+
+        port2, server2 = start_dashboard_server(tmp_git_repo, port=port1)
+        try:
+            assert port2 == port1
+        finally:
+            server2.shutdown()
+            server2.server_close()
+
+    def test_busy_port_raises(self, tmp_git_repo):
+        from awf.api.dashboard_server import start_dashboard_server
+
+        port1, server1 = start_dashboard_server(tmp_git_repo)
+        try:
+            with pytest.raises(OSError):
+                start_dashboard_server(tmp_git_repo, port=port1)
+        finally:
+            server1.shutdown()
+            server1.server_close()

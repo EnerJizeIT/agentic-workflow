@@ -139,7 +139,13 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     # Move handoff files to done/{id}/handoff/
     handoff_p = project_dir / ".agentic" / "handoff"
     if handoff_p.is_dir():
-        for hf in handoff_p.glob(f"*-{todo_id}.md"):
+        # Day-3 (dashboard review): also catch the legacy naming agents used —
+        # '{role}-{todo}-final.md'. Two exact globs on purpose: a single
+        # '*-{todo}*.md' would swallow TODO-00010 when archiving TODO-0001.
+        candidates = set(handoff_p.glob(f"*-{todo_id}.md")) | set(
+            handoff_p.glob(f"*-{todo_id}-*.md")
+        )
+        for hf in sorted(candidates):
             handoff_dest = dest / "handoff"
             handoff_dest.mkdir(exist_ok=True)
             shutil.move(str(hf), str(handoff_dest / hf.name))

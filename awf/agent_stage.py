@@ -307,7 +307,11 @@ def collect_handoff(
         "",
         "- Read this handoff first. The TODO file declares the goal; this file shows what's done.",
         "- Pick up where this role left off. Do NOT redo work already done.",
-        "- Write your own handoff at `.agentic/handoff/<your-role>.md` when finished.",
+        (
+            f"- Write your notes to `.agentic/outbox/PROGRESS-{todo_id}.md` (and the "
+            f"DONE report) — awf assembles the handoff from them automatically. "
+            f"Do NOT create extra files in .agentic/handoff/."
+        ),
         "",
     ]
 

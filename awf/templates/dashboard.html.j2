@@ -318,8 +318,9 @@ function updateChat(s) {
     return;
   }
 
-  // Build current keys
-  const currentKeys = handoffs.map(h => h.role + '|' + (h.duration || ''));
+  // Build current keys — role + rev (mtime+size): content rewrites and TODO
+  // switches with equal durations must still re-render.
+  const currentKeys = handoffs.map(h => h.role + '|' + (h.rev || h.duration || ''));
   const keysJoined = currentKeys.join('||');
 
   // Only re-render if handoff set changed (new handoff or duration update)

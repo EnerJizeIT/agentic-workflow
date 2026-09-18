@@ -107,10 +107,25 @@ def run_pipeline(args: Any) -> int:
     _dashboard_server = None
     try:
         from .api.dashboard_server import start_dashboard_server
-        dashboard_port, _dashboard_server = start_dashboard_server(project_dir)
+
+        # Day-3 (dashboard review): reuse the previous port so an already-open
+        # browser tab survives restarts (retry_stage/continue/kill+continue).
+        # If the old port is still busy, fall back to a random one.
+        port_file = paths.agentic_dir(project_dir) / "state" / "dashboard_port"
+        prev_port = 0
+        try:
+            if port_file.is_file():
+                prev_port = int(port_file.read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            prev_port = 0
+        try:
+            dashboard_port, _dashboard_server = start_dashboard_server(
+                project_dir, port=prev_port
+            )
+        except OSError:
+            dashboard_port, _dashboard_server = start_dashboard_server(project_dir)
         _log(logs_dir, f"Dashboard server: http://127.0.0.1:{dashboard_port}")
         # Write port to separate file (survives state overwrites in stage loop)
-        port_file = paths.agentic_dir(project_dir) / "state" / "dashboard_port"
         port_file.parent.mkdir(parents=True, exist_ok=True)
         port_file.write_text(str(dashboard_port), encoding="utf-8")
     except Exception as e:

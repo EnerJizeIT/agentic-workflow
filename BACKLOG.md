@@ -278,6 +278,37 @@ TODO не виден `newest_active`, CLI рано печатал «No active TO
 **Тесты:** +17 негативных сценариев (`tests/negative/test_escalation_recovery.py`,
 `TestAutoDoneScope` в `test_worker_failure_matrix.py`). Всего 1221, ruff чист.
 
+### DAY3-2026-09-18 · Ревью дашборда (волна 1)
+
+**Source:** разбор кода + реальный проект topic-trainer (папка `handoff/`).
+
+✅ **1. Чат-свалка handoff'ов.** `_read_handoffs` читал весь каталог: файлы
+   старых TODO и легаси-имена агентов показывались как текущие. Причины: awf
+   сам учил агентов писать `{role}.md` (`agent_stage.py`), агенты писали
+   `-final`-варианты, архивация брала только `*-{todo}.md`. Фикс: инструкция
+   переведена на PROGRESS/DONE-заметки (handoff собирает awf), архивация
+   ловит `*-{todo}.md` и `*-{todo}-*.md` двумя точными глобами, дашборд
+   фильтрует по текущему TODO и дедуплицирует роли (канон побеждает).
+✅ **2. Чат не обновлялся** при перезаписи handoff'а или смене TODO с теми же
+   длительностями. Ключ перерисовки теперь `role|rev` (mtime + размер).
+✅ **3. Порт переживает рестарт:** оркестратор переиспользует прежний порт из
+   `state/dashboard_port` (fallback на случайный, если занят) — старая вкладка
+   оживает сама вместо «Pipeline exited».
+✅ **4. Timeline: реальные commit sha** одним `git log` (поиск
+   `awf(verify): TODO-NNNN`); раньше искался несуществующий
+   `done/{id}/BASELINE.sha` — tooltip'ы были всегда пустыми.
+✅ **5. XSS:** markdown-исходники (TODO/handoff) экранируются до рендера;
+   `<` в embedded INITIAL_STATE JSON экранируется (`\u003c`).
+✅ **6. CORS `*` снят** с `/api/state` (страница отдаётся с того же origin).
+
+⬜ **Волна 2 (не сделано):** `elapsed_frozen` True/true; initial paint до 3с
+старый (HTML регенерится по стадиям); notifications без жеста; автоскролл
+чата; `poll()` глотает HTTP 500; worker PID «первый ребёнок»; времена стадий
+по имени vs handoff по роли; структурный рефактор
+`generate_dashboard`/`generate_state_dict` к одному источнику состояния.
+
+---
+
 ### SPEC A-run · Автономный забег (v1) — сделан
 
 **Source:** `awf-autonomous-run-spec.md` (супервизор topic-trainer). Владелец

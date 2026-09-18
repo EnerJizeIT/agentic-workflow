@@ -181,10 +181,24 @@ def _parse_log_events(log_text: str, max_events: int = 30) -> list[dict[str, str
     return events[-max_events:]
 
 
-def _read_handoffs(project_dir: Path, stage_order: list[str] | None = None) -> list[dict[str, str]]:
-    """Read handoff files from .agentic/handoff/, sorted by pipeline order."""
+def _read_handoffs(
+    project_dir: Path,
+    stage_order: list[str] | None = None,
+    todo_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Read the CURRENT TODO's handoffs from .agentic/handoff/.
+
+    Day-3 (dashboard review): the directory used to be read wholesale — old
+    TODOs' files and agent-written legacy names leaked into the chat as if
+    they were current. Now:
+    - only files matching ``*-{todo_id}.md`` / ``*-{todo_id}-*.md`` count
+      (no todo_id → nothing);
+    - one entry per role: the canonical ``{role}-{todo}.md`` wins, otherwise
+      the newest file by mtime;
+    - ``rev`` (mtime + size) tells the client when to re-render.
+    """
     handoff_dir = project_dir / ".agentic" / "handoff"
-    if not handoff_dir.is_dir():
+    if not handoff_dir.is_dir() or not todo_id:
         return []
 
     # Build role → sort index from pipeline stages
@@ -193,32 +207,65 @@ def _read_handoffs(project_dir: Path, stage_order: list[str] | None = None) -> l
         for i, name in enumerate(stage_order):
             role_order[name] = i
 
+    # Two exact globs on purpose: a single '*-{todo}*.md' would swallow
+    # TODO-00010 when the current TODO is TODO-0001.
+    candidates = set(handoff_dir.glob(f"*-{todo_id}.md")) | set(
+        handoff_dir.glob(f"*-{todo_id}-*.md")
+    )
+
+    def _role_of(name: str) -> str:
+        stem = Path(name).stem
+        if f"-{todo_id}" in stem:
+            return stem.split(f"-{todo_id}")[0]
+        if "-TODO-" in stem:
+            return stem.split("-TODO-")[0]
+        return stem.rsplit("-", 1)[0] if "-" in stem else stem
+
+    # One entry per role: canonical name wins, otherwise newest mtime.
+    best: dict[str, Path] = {}
+    for p in sorted(candidates):
+        role = _role_of(p.name)
+        current = best.get(role)
+        if current is None:
+            best[role] = p
+            continue
+        cur_exact = current.name == f"{role}-{todo_id}.md"
+        new_exact = p.name == f"{role}-{todo_id}.md"
+        if new_exact and not cur_exact:
+            best[role] = p
+        elif new_exact == cur_exact:
+            try:
+                if p.stat().st_mtime > current.stat().st_mtime:
+                    best[role] = p
+            except OSError:
+                pass
+
     handoffs: list[dict[str, str]] = []
-    for f in sorted(handoff_dir.glob("*.md")):
-        name = f.stem  # e.g. agent-system-analyst-TODO-0001
-        # Role extraction: split on -TODO- (role names contain dashes)
-        if "-TODO-" in name:
-            role = name.split("-TODO-")[0]
-        elif "-BRIEF-" in name:
-            role = name.split("-BRIEF-")[0]
-        else:
-            role = name.rsplit("-", 1)[0] if "-" in name else name
+    for role in best:
+        f = best[role]
         try:
             content = f.read_text(encoding="utf-8")
+            mtime = f.stat().st_mtime_ns
         except OSError:
             content = ""
-        # Render markdown to HTML
+            mtime = 0
+        # Day-3: escape raw HTML before markdown — handoffs are written by
+        # LLM workers; markup must not survive into the dashboard.
+        import html as _html
+
         try:
             import markdown as _md
-            content_html = _md.markdown(content, extensions=["fenced_code"])
+
+            content_html = _md.markdown(_html.escape(content), extensions=["fenced_code"])
         except Exception:
-            content_html = f"<pre>{content}</pre>"
+            content_html = f"<pre>{_html.escape(content)}</pre>"
 
         handoffs.append({
             "role": role,
             "file": f.name,
             "preview": content[:200].strip(),
             "content_html": content_html,
+            "rev": f"{mtime}-{len(content)}",
         })
 
     # Sort by pipeline order (roles not in pipeline go last, alphabetically)
@@ -528,10 +575,10 @@ def generate_dashboard(project_dir: Path) -> Path | None:
 
     # Handoffs (sorted by pipeline order)
     stage_names = [s["name"] for s in stages] if stages else []
-    handoffs = _read_handoffs(project_dir, stage_order=stage_names)
+    todo_id = state.get("todo_id") if state else None
+    handoffs = _read_handoffs(project_dir, stage_order=stage_names, todo_id=todo_id)
 
     # Tasks
-    todo_id = state.get("todo_id") if state else None
     tasks = _read_tasks(project_dir, todo_id)
     tasks_done = sum(1 for t in tasks if t["status"] == "done")
 
@@ -611,7 +658,11 @@ def generate_dashboard(project_dir: Path) -> Path | None:
     import json as _json
     try:
         initial_state = generate_state_dict(project_dir)
-        initial_state_json = _json.dumps(initial_state, ensure_ascii=False)
+        # Day-3 (XSS): json.dumps does not escape '<' — a '</script>' inside
+        # any string (e.g. a handoff) would break out of the script tag.
+        initial_state_json = _json.dumps(initial_state, ensure_ascii=False).replace(
+            "<", "\\u003c"
+        )
     except Exception:
         initial_state_json = "{}"
 
@@ -684,9 +735,16 @@ def _read_todo_content(project_dir: Path, todo_id: str | None) -> str:
         f = inbox / fname
         if f.is_file():
             try:
-                raw = f.read_text(encoding="utf-8")
+                import html as _html
+
                 import markdown as _md
-                return _md.markdown(raw, extensions=["fenced_code"])
+
+                raw = f.read_text(encoding="utf-8")
+                # Day-3: escape raw HTML before markdown — TODO bodies are
+                # LLM-written and must not inject markup into the dashboard.
+                return _md.markdown(
+                    _html.escape(raw), extensions=["fenced_code"]
+                )
             except Exception:
                 return ""
     return ""
@@ -730,25 +788,42 @@ def _read_worker_last_line(project_dir: Path) -> str:
     return ""
 
 
+def _verify_commit_shas(project_dir: Path) -> dict[str, str]:
+    """Map TODO id → short sha of its ``awf(verify): TODO-NNNN`` commit.
+
+    Day-3 (dashboard review): the old code looked for
+    ``done/{id}/BASELINE.sha`` which archive_todo never creates — the pill
+    tooltips were silently empty. One ``git log`` call per poll, not N.
+    """
+    from .. import git_utils
+
+    try:
+        out = git_utils.git_stdout(
+            project_dir, "log", "--format=%h %s", "-n", "300", check=False
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return {}
+    mapping: dict[str, str] = {}
+    for line in out.splitlines():
+        sha, _, subject = line.partition(" ")
+        m = re.search(r"awf\(verify\):\s*(TODO-\d+)", subject)
+        if m and m.group(1) not in mapping:
+            mapping[m.group(1)] = sha
+    return mapping
+
+
 def _build_todo_timeline(project_dir: Path, current_todo: str | None) -> list[dict]:
     """Build TODO timeline from done/ directory + current state."""
     timeline = []
+    commit_shas = _verify_commit_shas(project_dir)
     done_dir = paths.done_dir(project_dir)
     if done_dir.is_dir():
         for d in sorted(done_dir.iterdir()):
             if d.is_dir():
-                # Try to get commit SHA and duration
-                sha = ""
-                try:
-                    sha_file = d / "BASELINE.sha"
-                    if sha_file.is_file():
-                        sha = sha_file.read_text().strip()[:8]
-                except OSError:
-                    pass
                 timeline.append({
                     "id": d.name,
                     "status": "approved",
-                    "commit_sha": sha,
+                    "commit_sha": commit_shas.get(d.name, ""),
                 })
     if current_todo and current_todo not in [t["id"] for t in timeline]:
         timeline.append({"id": current_todo, "status": "running", "commit_sha": ""})
@@ -857,7 +932,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     stage_timings_dict, current_stage_epoch = _extract_stage_timings(project_dir)
 
     # Handoffs (chat-style, pipeline order, rendered markdown)
-    handoffs = _read_handoffs(project_dir, stage_order=stage_names)
+    todo_id = state.get("todo_id") if state else None
+    handoffs = _read_handoffs(project_dir, stage_order=stage_names, todo_id=todo_id)
     handoff_chat = []
     for h in handoffs:
         rv = _role_visual(h["role"])
@@ -870,10 +946,10 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "label": rv["label"],
             "content_html": h.get("content_html", ""),
             "duration": duration,
+            "rev": h.get("rev", ""),
         })
 
     # TODO content
-    todo_id = state.get("todo_id") if state else None
     todo_content_html = _read_todo_content(project_dir, todo_id)
     todo_diff_stat = _read_todo_diff_stat(project_dir, todo_id)
 
