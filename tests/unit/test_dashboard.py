@@ -398,3 +398,37 @@ class TestDashboardPort:
         finally:
             server1.shutdown()
             server1.server_close()
+
+
+class TestWorkerPidPick:
+    """Day-3: prefer the real worker over transient orchestrator helpers."""
+
+    def test_prefers_opencode_child(self):
+        from awf.api.dashboard import _pick_worker_pid
+
+        cmdlines = {"100": b"git status\x00", "200": b"opencode run --agent worker\x00"}
+        picked = _pick_worker_pid(
+            ["100", "200"], read_cmdline=lambda p: cmdlines.get(p, b""),
+        )
+        assert picked == "200"
+
+    def test_falls_back_to_first(self):
+        from awf.api.dashboard import _pick_worker_pid
+
+        assert _pick_worker_pid(["100", "200"], read_cmdline=lambda p: b"git") == "100"
+
+
+class TestInitialContextFromState:
+    """Day-3: Jinja context derives from generate_state_dict (single source)."""
+
+    def test_salvage_status_in_initial_html(self, dash_project):
+        write_state(
+            dash_project, salvage_needed=True, salvage_stage="agent-x",
+            stage_name="agent-x", stage_kind="execute", todo_id="TODO-0001",
+        )
+
+        out = generate_dashboard(dash_project)
+        html = out.read_text(encoding="utf-8")
+
+        assert "status-badge salvage" in html
+        assert 'data-frozen="true"' in html

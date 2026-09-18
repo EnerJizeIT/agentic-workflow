@@ -140,6 +140,7 @@ def run_agent_stage(
     collect_handoff(
         role, todo_id, project_dir, logs_dir,
         exit_code=result.returncode, duration_sec=agent_elapsed, attempt=attempt,
+        stage_name=stage.name,
     )
 
 
@@ -151,6 +152,7 @@ def collect_handoff(
     exit_code: int | None = None,
     duration_sec: float | None = None,
     attempt: int = 1,
+    stage_name: str = "",
 ) -> Path:
     """BD-15/19: gather PROGRESS/DONE + git diff summary into handoff .md.
 
@@ -315,7 +317,10 @@ def collect_handoff(
         "",
     ]
 
-    out_file = handoff_dir / f"{role}-{todo_id}.md"
+    # Day-3 (dashboard review): key by STAGE name, not role — two QA stages
+    # share the role 'agent-qa-review' and used to overwrite each other's
+    # handoff (and borrow the wrong stage duration in the chat).
+    out_file = handoff_dir / f"{stage_name or role}-{todo_id}.md"
     # QA-C: handoff write atomic (was direct write_text — inconsistent with
     # rest of codebase which uses atomic_write_text for crash safety).
     atomic_write_text(out_file, "\n".join(parts))
@@ -338,7 +343,12 @@ def resolve_prev_handoffs(
         if st.role == "supervisor":
             continue
         if todo_id:
-            result.append(handoff_dir / f"{st.role}-{todo_id}.md")
+            primary = handoff_dir / f"{st.name}-{todo_id}.md"
+            legacy = handoff_dir / f"{st.role}-{todo_id}.md"
+            if not primary.is_file() and legacy.is_file():
+                result.append(legacy)  # in-flight runs from before the rename
+            else:
+                result.append(primary)
         else:
             # P2: sort by name (numeric ID) instead of mtime — deterministic
             # even when rapid retry creates files in the same second.

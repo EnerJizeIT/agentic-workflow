@@ -424,6 +424,30 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
     return ("running", "running", "Pipeline running", "●", "Running")
 
 
+def _pick_worker_pid(pids: list[str], read_cmdline: Any = None) -> str:
+    """Prefer the real worker (cmdline contains 'opencode') over helpers.
+
+    Day-3 (dashboard review): ``child_pids[0]`` could be a short-lived helper
+    spawned by the orchestrator itself (git/ps) — the panel then showed a
+    dead or foreign PID. Falls back to the first child.
+    """
+    if read_cmdline is None:
+
+        def read_cmdline(pid: str) -> bytes:  # type: ignore[misc]
+            try:
+                return Path(f"/proc/{pid}/cmdline").read_bytes()
+            except OSError:
+                return b""
+
+    for pid in pids:
+        try:
+            if b"opencode" in (read_cmdline(pid) or b""):
+                return pid
+        except OSError:
+            continue
+    return pids[0]
+
+
 def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
     """Read worker subprocess activity from /proc (Linux only).
 
@@ -449,7 +473,7 @@ def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
         if not child_pids:
             return {"active": False, "reason": "No child process — worker not running"}
 
-        worker_pid = child_pids[0]
+        worker_pid = _pick_worker_pid(child_pids)
 
         # Read /proc/<pid>/stat for CPU + state
         stat_path = Path(f"/proc/{worker_pid}/stat")
@@ -502,160 +526,20 @@ def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
 def generate_dashboard(project_dir: Path) -> Path | None:
     """Generate dashboard HTML to ``.agentic/dashboards/current.html``.
 
-    Reads:
-    - Pipeline state from ``.agentic/state/current.yaml`` (T4.1)
-    - Pipeline stages from ``.agentic/pipelines/default.yaml``
-    - Events from ``.agentic/logs/awf-start.out``
-    - Handoffs from ``.agentic/handoff/``
-    - Task progress from ``.agentic/outbox/PROGRESS-{todo_id}.md``
-
-    Renders Jinja2 template → writes HTML atomically.
+    Day-3 (dashboard review): the Jinja context is derived from a SINGLE
+    source — :func:`generate_state_dict` — instead of independently
+    recomputing status/elapsed/handoffs (the two used to diverge). The
+    template needs only a few primitives for the first paint; the live view
+    is driven by ``/api/state``.
 
     Returns:
         Path to generated HTML file, or None if template rendering failed.
     """
-    project_dir = Path(project_dir).resolve()
-    state = read_state(project_dir)
-
-    # Read pipeline.yaml for stages (AUD-3: use canonical path)
-    stages_raw: list[dict[str, Any]] = []
-    try:
-        from ..pipeline import resolve_pipeline_file
-        pipeline_file = resolve_pipeline_file(project_dir)
-        if pipeline_file.is_file():
-            import yaml
-            data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-            stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
-    except Exception as e:
-        import sys
-        print(f"dashboard: cannot read pipeline config: {e}", file=sys.stderr)
-
-    # Determine current stage from state
-    current_stage_idx = state.get("stage_idx") if state else -1
-
-    # Build stage display data
-    stages: list[dict[str, str]] = []
-    for i, s in enumerate(stages_raw):
-        if not isinstance(s, dict):
-            continue
-        name = s.get("name", f"stage-{i}")
-        model = s.get("model", "")
-        if i < (current_stage_idx or 0):
-            status = "done"
-        elif i == current_stage_idx:
-            status = "current"
-        else:
-            status = "pending"
-        stages.append({"name": name, "model": model, "status": status})
-
-    stages_done = sum(1 for s in stages if s["status"] == "done")
-    stages_total = len(stages)
-
-    # Status
-    status, status_class, status_text, status_icon, status_label = _determine_status(state)
-
-    # If pipeline state cleared (pipeline not running) → mark all as done/idle
-    if not state and not stages:
-        status = "idle"
-        status_class = "done"
-        status_text = "No active pipeline"
-        status_icon = "○"
-        status_label = "Status"
-
-    # Events from log
-    # Events — read orchestrator.log (has timestamps, unlike awf-start.out)
-    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    events: list[dict[str, str]] = []
-    if log_file.is_file():
-        try:
-            log_text = log_file.read_text(encoding="utf-8", errors="replace")
-            events = _parse_log_events(log_text)
-        except OSError:
-            pass
-
-    # Handoffs (sorted by pipeline order)
-    stage_names = [s["name"] for s in stages] if stages else []
-    todo_id = state.get("todo_id") if state else None
-    handoffs = _read_handoffs(project_dir, stage_order=stage_names, todo_id=todo_id)
-
-    # Tasks
-    tasks = _read_tasks(project_dir, todo_id)
-    tasks_done = sum(1 for t in tasks if t["status"] == "done")
-
-    # DF6-4: completed TODOs from done/ directory
-    done_directory = paths.done_dir(project_dir)
-    completed_todos = []
-    if done_directory.is_dir():
-        for d in sorted(done_directory.iterdir()):
-            if d.is_dir():
-                completed_todos.append(d.name)
-
-    # Per-stage timings from orchestrator.log
-    stage_timings, current_stage_epoch = _extract_stage_timings(project_dir)
-
-    # Elapsed time — from FIRST agent stage start to verify handoff.
-    # User feedback: per-stage reset was confusing. Now: one continuous
-    # timer from first agent launch, freezes when verify starts.
-    elapsed_epoch = 0
-    elapsed_frozen = False
-    if state:
-        status_for_elapsed, _, _, _, _ = _determine_status(state)
-        if status_for_elapsed == "running":
-            log_file_elapsed = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-            if log_file_elapsed.is_file():
-                try:
-                    log_text_elapsed = log_file_elapsed.read_text(encoding="utf-8", errors="replace")
-                    time_pat_e = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-                    # Match agent stages: "Stage N: name (role :: execute)"
-                    agent_stage_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
-                    # Match verify stage
-                    verify_stage_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
-                    first_agent_ts = None
-                    verify_ts = None
-                    for line in log_text_elapsed.splitlines():
-                        tm = time_pat_e.search(line)
-                        if not tm:
-                            continue
-                        try:
-                            dt = datetime.strptime(
-                                tm.group(1), "%Y-%m-%dT%H:%M:%SZ"
-                            ).replace(tzinfo=timezone.utc)
-                        except (ValueError, TypeError):
-                            continue
-                        if agent_stage_pat.search(line) and first_agent_ts is None:
-                            first_agent_ts = dt
-                        if verify_stage_pat.search(line):
-                            verify_ts = dt
-                    # Use first agent start; freeze at verify start if found
-                    if verify_ts:
-                        elapsed_epoch = int(first_agent_ts.timestamp()) if first_agent_ts else 0
-                        elapsed_frozen = True
-                    elif first_agent_ts:
-                        elapsed_epoch = int(first_agent_ts.timestamp())
-                except OSError:
-                    pass
-        elif status_for_elapsed in ("done", "idle", "dead", "salvage"):
-            elapsed_frozen = True
-
-    elapsed = _format_elapsed(
-        datetime.fromtimestamp(elapsed_epoch, tz=timezone.utc).isoformat()
-        if elapsed_epoch else None
-    )
-
-    # Project name
-    import yaml
-
-    config_file = paths.config_file(project_dir)
-    project_name = "Project"
-    if config_file.is_file():
-        try:
-            config = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-            project_name = (config or {}).get("project", {}).get("name", "Project")
-        except (yaml.YAMLError, OSError):
-            pass
-
-    # Build initial state JSON for client-side first paint (v2 template)
     import json as _json
+    import sys
+
+    project_dir = Path(project_dir).resolve()
+
     try:
         initial_state = generate_state_dict(project_dir)
         # Day-3 (XSS): json.dumps does not escape '<' — a '</script>' inside
@@ -663,51 +547,36 @@ def generate_dashboard(project_dir: Path) -> Path | None:
         initial_state_json = _json.dumps(initial_state, ensure_ascii=False).replace(
             "<", "\\u003c"
         )
-    except Exception:
+    except Exception as e:
+        print(f"dashboard: state generation failed: {e}", file=sys.stderr)
+        initial_state = {}
         initial_state_json = "{}"
 
-    # Render template
     try:
         template = _get_template()
         html = template.render(
-            project_name=project_name,
-            todo_id=todo_id or "",
-            todo_summary="",
-            elapsed=elapsed,
-            elapsed_epoch=elapsed_epoch,
-            elapsed_frozen=elapsed_frozen,
-            status=status,
-            status_class=status_class,
-            status_text=status_text,
-            status_icon=status_icon,
-            status_label=status_label,
-            stages=stages,
-            stages_done=stages_done,
-            stages_total=stages_total,
-            checkpoint_pending=bool(state.get("checkpoint_pending", False)) if state else False,
-            checkpoint_form_url=state.get("checkpoint_form_url") if state else None,
-            salvage_needed=bool(state.get("salvage_needed", False)) if state else False,
-            salvage_stage=state.get("salvage_stage") if state else None,
-            events=events,
-            handoffs=handoffs,
-            tasks=tasks,
-            tasks_done=tasks_done,
-            completed_todos=completed_todos,
-            stage_timings=stage_timings,
-            current_stage_epoch=current_stage_epoch,
-            worker_activity=_read_worker_activity(state),
+            project_name=initial_state.get("project_name") or "Project",
+            todo_id=initial_state.get("todo_id") or "",
+            status=initial_state.get("status") or "idle",
+            status_text=initial_state.get("status_text") or "",
+            elapsed=initial_state.get("elapsed_str") or "",
+            elapsed_epoch=initial_state.get("elapsed_epoch") or 0,
+            elapsed_frozen=bool(initial_state.get("elapsed_frozen", False)),
             initial_state_json=initial_state_json,
         )
     except Exception as e:
         import traceback as _tb
 
         from .._log import log as _log
+
         logs_dir = project_dir / ".agentic" / "logs"
         _log(logs_dir, f"Dashboard generation failed: {e}")
         err_path = project_dir / ".agentic" / DASHBOARD_DIR / "error.txt"
         try:
             err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(f"{type(e).__name__}: {e}\n\n{_tb.format_exc()}", encoding="utf-8")
+            err_path.write_text(
+                f"{type(e).__name__}: {e}\n\n{_tb.format_exc()}", encoding="utf-8"
+            )
         except OSError:
             pass
         return None

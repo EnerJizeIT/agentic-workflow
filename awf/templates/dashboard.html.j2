@@ -170,7 +170,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
     </div>
     <div class="sb-section">
       <div class="elapsed-card">
-        <div class="elapsed-value" id="elapsed-timer" data-epoch="{{ elapsed_epoch }}" data-frozen="{{ elapsed_frozen | default('false') }}">{{ elapsed }}</div>
+        <div class="elapsed-value" id="elapsed-timer" data-epoch="{{ elapsed_epoch }}" data-frozen="{{ 'true' if elapsed_frozen else 'false' }}">{{ elapsed }}</div>
         <div class="elapsed-label">Elapsed</div>
       </div>
     </div>
@@ -208,7 +208,7 @@ let _notified_salvage = false;
 async function poll() {
   try {
     const res = await fetch('/api/state', { cache: 'no-store' });
-    if (!res.ok) return;
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     _fetchErrors = 0;
     const s = await res.json();
     updateAll(s);
@@ -349,8 +349,9 @@ function updateChat(s) {
       html += '<div class="chat-chain"><span class="chat-chain-arrow">↓</span> передал → ' + nextH.icon + ' ' + nextH.label + '</div>';
     }
   });
+  const nearBottom = (pane.scrollHeight - pane.scrollTop - pane.clientHeight) < 80;
   pane.innerHTML = html;
-  pane.scrollTop = pane.scrollHeight;
+  if (nearBottom) pane.scrollTop = pane.scrollHeight;
 }
 
 // ─── TODO content ───────────────────────────────────────────────────
@@ -439,9 +440,17 @@ function checkNotification(s) {
   if (s.status !== 'verify') _notified = false;
   if (s.status !== 'salvage') _notified_salvage = false;
 }
-if ('Notification' in window && Notification.permission === 'default') {
-  Notification.requestPermission();
+// Day-3: browsers silently deny permission prompts without a user gesture —
+// ask on the first click/tap instead of on load.
+function _askNotifyOnce() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+  document.removeEventListener('click', _askNotifyOnce);
+  document.removeEventListener('keydown', _askNotifyOnce);
 }
+document.addEventListener('click', _askNotifyOnce);
+document.addEventListener('keydown', _askNotifyOnce);
 
 // ─── Helpers ────────────────────────────────────────────────────────
 function escapeHtml(s) {
@@ -451,6 +460,7 @@ function escapeHtml(s) {
 // ─── Init + Poll ────────────────────────────────────────────────────
 const INITIAL_STATE = {{ initial_state_json | safe }};
 updateAll(INITIAL_STATE);
+poll();  // Day-3: refresh immediately — the embedded snapshot can be a stage old
 setInterval(poll, 3000);
 </script>
 </body>

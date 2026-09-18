@@ -102,3 +102,56 @@ def test_no_supervisor_directed_text(tmp_path, monkeypatch):
     assert "supervisor" not in body
     assert "escalate" not in body
     assert "salvage" not in body
+
+
+def test_stage_scoped_filename(tmp_path, monkeypatch):
+    """Day-3: handoff keyed by STAGE name — two QA stages stop overwriting."""
+    proj = _project(tmp_path)
+    _stub_git(monkeypatch, [])
+
+    out = collect_handoff(
+        "agent-qa-review", "TODO-0002", proj, proj / ".agentic" / "logs",
+        stage_name="agent-qa-review-final",
+    )
+
+    assert out.name == "agent-qa-review-final-TODO-0002.md"
+
+
+def test_resolve_prev_handoffs_prefers_stage_name(tmp_path):
+    from awf.agent_stage import resolve_prev_handoffs
+    from awf.pipeline import Stage
+
+    proj = _project(tmp_path)
+    h = proj / ".agentic" / "handoff"
+    h.mkdir(parents=True, exist_ok=True)
+    (h / "agent-qa-review-final-TODO-0002.md").write_text("new\n", encoding="utf-8")
+    (h / "agent-qa-review-TODO-0002.md").write_text("legacy\n", encoding="utf-8")
+
+    stages = [
+        Stage(name="agent-qa-review-final", role="agent-qa-review", kind="execute"),
+        Stage(name="agent-implementer", role="agent-implementer", kind="execute"),
+    ]
+
+    got = resolve_prev_handoffs(stages, 1, proj, todo_id="TODO-0002")
+
+    assert [p.name for p in got] == ["agent-qa-review-final-TODO-0002.md"]
+
+
+def test_resolve_prev_handoffs_legacy_fallback(tmp_path):
+    """In-flight runs from before the rename still forward their handoff."""
+    from awf.agent_stage import resolve_prev_handoffs
+    from awf.pipeline import Stage
+
+    proj = _project(tmp_path)
+    h = proj / ".agentic" / "handoff"
+    h.mkdir(parents=True, exist_ok=True)
+    (h / "agent-qa-review-TODO-0002.md").write_text("legacy\n", encoding="utf-8")
+
+    stages = [
+        Stage(name="agent-qa-review-final", role="agent-qa-review", kind="execute"),
+        Stage(name="agent-implementer", role="agent-implementer", kind="execute"),
+    ]
+
+    got = resolve_prev_handoffs(stages, 1, proj, todo_id="TODO-0002")
+
+    assert [p.name for p in got] == ["agent-qa-review-TODO-0002.md"]

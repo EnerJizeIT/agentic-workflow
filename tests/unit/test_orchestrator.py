@@ -1510,7 +1510,10 @@ class TestHandoffChain:
 
     def test_resolve_prev_handoffs_skips_supervisor_stages(self, tmp_path) -> None:
         """BD-15/19: supervisor stages don't produce handoffs — only agent roles.
-        With todo_id, paths are role-todo.md."""
+
+        Day-3: paths are keyed by STAGE name; legacy role-named files still
+        resolve through the fallback.
+        """
         proj = tmp_path / "proj"
         proj.mkdir()
         (proj / ".agentic").mkdir()
@@ -1523,8 +1526,14 @@ class TestHandoffChain:
         ]
         # Current stage is index 4 (qa). Previous agent stages = analyst, dev.
         prev = _resolve_prev_handoffs(stages, 4, proj, todo_id="TODO-0042")
-        prev_names = [p.name for p in prev]
-        assert prev_names == ["analyst-TODO-0042.md", "dev-TODO-0042.md"]
+        assert [p.name for p in prev] == ["r1-TODO-0042.md", "r2-TODO-0042.md"]
+
+        # In-flight legacy run: a role-named file resolves via fallback.
+        handoff_dir = proj / ".agentic" / "handoff"
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+        (handoff_dir / "analyst-TODO-0042.md").write_text("legacy\n", encoding="utf-8")
+        prev = _resolve_prev_handoffs(stages, 4, proj, todo_id="TODO-0042")
+        assert [p.name for p in prev] == ["analyst-TODO-0042.md", "r2-TODO-0042.md"]
 
     def test_resolve_prev_handoffs_empty_for_first_agent_stage(self, tmp_path) -> None:
         """First agent stage has no prior handoffs."""
