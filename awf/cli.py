@@ -36,7 +36,8 @@ def _print_top_level_help() -> int:
         "  --auto               Skip supervisor interactive waits\n"
         "  --background         (start only) Run detached via setsid — writes\n"
         "                       to .agentic/logs/awf-start.out\n"
-        "  --timeout <seconds>  Agent timeout (default: 3600)"
+        "  --timeout <seconds>  Agent timeout (default: 3600)\n"
+        "  --ack <TODO-NNNN>    (continue only) Accept a BLOCKED TODO and resume"
     )
     return 0
 
@@ -113,6 +114,14 @@ def _dispatch_subcommand(argv):
 
     p_continue = sub.add_parser("continue", help="Resume an interrupted pipeline")
     _add_start_args(p_continue)
+    p_continue.add_argument(
+        "--ack",
+        default="",
+        help=(
+            "Resolve a BLOCKED TODO: writes ACK-{todo}.ready and resumes "
+            "from the blocked stage (e.g. --ack TODO-0009)"
+        ),
+    )
 
     # New commands (Wave 4c)
     p_init = sub.add_parser("init", help="Initialize .agentic/ skeleton in current project")

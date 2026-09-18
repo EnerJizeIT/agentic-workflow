@@ -233,6 +233,53 @@ REVIEW-REJECTED / TEST-FAILED → «Rollback target 'implement' not found» →
 
 ---
 
+### NEG-2026-09-18 · День 2: сигналы, auto-DONE, восстановление после BLOCKED
+
+**Source:** `awf-bug-report-day2-signals.md` (TODO-0009, topic-trainer).
+
+✅ **DAY2-1 · Auto-DONE на чужом диффе (критично).** Реальный механизм
+инцидента: `attempt_auto_done` видел НЕПУСТОЙ дифф (2 строки, оставленные
+QA-стадией) и «работа + verify зелёный» → синтезировал DONE для стадии,
+чей воркер не написал ни строки. Пайплайн «прошёл» стадию реализации
+с пустым результатом. Версия репорта про «старый сигнал» не подтвердилась:
+файл стадии 1 чистился при старте стадии 2.
+
+Фикс: `verify.work_fingerprint` — хэш `git diff <baseline>` + untracked
+(минус baseline-снапшот). Снимок на входе в стадию, сравнение после
+прогона: auto-DONE и F7-ретрай смотрят только на работу ЭТОЙ стадии.
+Плюс `NEG-4`: потребление `.ready` на переходе (`DONE.ready` удаляется,
+`DONE.md` остаётся как улика) — одно имя больше не валидно для всех
+последующих стадий.
+
+✅ **DAY2-2 · Replan-ожидание самоудовлетворялось (критично).**
+Orphan-pickup (UX «создал TODO → awf start») работал и в replan: мгновенно
+«завершал» ожидание тем самым TODO, который ретраился, а `_find_active_todo`
+его отфильтровывал (BLOCKED) → «Supervisor did not create a new TODO.
+Stopping.» за секунду. ACK супервизора потом читать было некому.
+
+Фикс: для replan принимаются только сигналы, СОЗДАННЫЕ ПОСЛЕ эскалации
+(mtime), плюс ACK/APPROVE текущего TODO. `_handle_escalate` по ACK:
+`_unblock_todo` (BLOCKED → `.agentic/context/`) и ретрай той же стадии.
+
+✅ **DAY2-3 · `awf continue` не оживлял blocked TODO.** Закрытый ACK/BLOCKED
+TODO не виден `newest_active`, CLI рано печатал «No active TODO found»,
+а `--from-stage` и ACK-файл не помогали. Плюс ACK, написанный после смерти
+процесса, был тупиком.
+
+Фикс: `continue` резолвит pending-закрытие — потребляет ACK/APPROVE
+(только когда TODO реально закрыт: APPROVE живого verify не трогается),
+переносит BLOCKED в context/, резюмирует с `state.stage_name`. Без ответа —
+внятная инструкция вместо тупика. Новый флаг: `awf continue --ack TODO-NNNN`
+(api + CLI + MCP `awf_continue(ack=...)`). Убран преждевременный CLI-пречек.
+
+✅ **DAY2-4 · `awf_retry_stage` сломан** — уже исправлен вчера (fbe61b7);
+проверено в живом окружении плагина: `awf.api.retry_stage` доступен.
+
+**Тесты:** +17 негативных сценариев (`tests/negative/test_escalation_recovery.py`,
+`TestAutoDoneScope` в `test_worker_failure_matrix.py`). Всего 1221, ruff чист.
+
+---
+
 ## Future scenarios
 
 | Сценарий | Что | Сложность |

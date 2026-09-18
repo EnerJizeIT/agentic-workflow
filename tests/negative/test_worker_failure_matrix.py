@@ -190,10 +190,10 @@ class TestSignalRaceFamily:
         """TOCTOU guard: DONE written between the wait timeout and the retry
         cleanup must be honored — not deleted by clean_stage_signals.
 
-        Repro: detect_work_evidence (called right before cleanup) writes the
-        signal as a side effect. Without a re-read before cleaning, the valid
-        DONE gets wiped, the stage reruns needlessly, and a later crash would
-        lose the signal entirely.
+        Repro: the post-run work fingerprint (computed right before cleanup)
+        writes the signal as a side effect. Without a re-read before cleaning,
+        the valid DONE gets wiped, the stage reruns needlessly, and a later
+        crash would lose the signal entirely.
         """
         outbox = project / ".agentic" / "outbox"
 
@@ -201,17 +201,20 @@ class TestSignalRaceFamily:
 
         from awf import verify
 
-        def race_window(*a, **kw):
-            (outbox / "DONE-TODO-0001.ready").write_text("", encoding="utf-8")
-            return False  # "no work evidence" — awf heads into the retry branch
+        calls = {"n": 0}
 
-        monkeypatch.setattr(verify, "detect_work_evidence", race_window)
+        def race_window(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:  # post-run fingerprint — at the race boundary
+                (outbox / "DONE-TODO-0001.ready").write_text("", encoding="utf-8")
+            return "same-fp"  # "no stage work" — awf heads into the retry branch
+
+        monkeypatch.setattr(verify, "work_fingerprint", race_window)
 
         result = _run_stage(project, tmp_path)
 
         assert journal["runs"] == 1, "signal must be honored, not retried"
         assert result[2] == 0
-        assert (outbox / "DONE-TODO-0001.ready").exists()
         assert not _state(project).get("salvage_needed")
 
 
@@ -245,3 +248,92 @@ class TestRollbackFallbackFamily:
         assert result[2] == 0, "pipeline must survive a bad rollback target"
         err = capsys.readouterr().err
         assert "rollback target 'ghost' not found" in err
+
+
+class TestAutoDoneScope:
+    """NEG-4 (day-2 B1): auto-DONE must only fire on THIS stage's work.
+
+    Real incident: QA edited 2 lines in s16 → the implementer ran, wrote
+    nothing, and exited silently → ``attempt_auto_done`` saw a non-empty
+    diff (someone else's), ran verify (green — the QA lines didn't break
+    anything), synthesized DONE, and the pipeline "transitioned on done"
+    with zero implementation.
+    """
+
+    def _git_repo(self, tmp_path):
+        import subprocess
+
+        project = tmp_path / "repo"
+        project.mkdir()
+        for cmd in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "t@t.t"],
+            ["git", "config", "user.name", "tester"],
+        ):
+            subprocess.run(cmd, cwd=project, check=True)
+        (project / "README.md").write_text("init\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=project, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=project, check=True)
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+        (project / ".agentic" / "context").mkdir(parents=True)
+        (project / ".agentic" / "logs").mkdir(parents=True)
+        return project
+
+    def test_foreign_diff_does_not_auto_done(self, tmp_path, monkeypatch):
+        """Earlier stage's diff + silent worker → retries → salvage, no DONE."""
+        from awf import verify
+
+        real_auto_done = verify.attempt_auto_done  # captured before harness mock
+
+        project = self._git_repo(tmp_path)
+        (project / "README.md").write_text("qa was here\n", encoding="utf-8")  # foreign
+
+        from awf.git_utils import current_sha
+        sha = current_sha(project)
+
+        journal = _mock_pipeline(monkeypatch, lambda run_no, kw: None, baseline_sha=sha)
+        monkeypatch.setattr(verify, "attempt_auto_done", real_auto_done)
+
+        result = _run_stage(project, tmp_path)
+
+        assert journal["runs"] == 3, "silent exit must retry — not auto-DONE"
+        assert result[2] == 1
+        assert not (project / ".agentic" / "outbox" / "DONE-TODO-0001.ready").exists()
+        assert _state(project).get("salvage_count") == 1
+
+    def test_own_work_enables_auto_done(self, tmp_path, monkeypatch):
+        """Worker writes the change itself → auto-DONE still works."""
+        from awf import verify
+
+        real_auto_done = verify.attempt_auto_done
+
+        project = self._git_repo(tmp_path)
+        from awf.git_utils import current_sha
+        sha = current_sha(project)
+
+        def behavior(run_no, kw):
+            (project / "README.md").write_text("worker was here\n", encoding="utf-8")
+
+        journal = _mock_pipeline(monkeypatch, behavior, baseline_sha=sha)
+        monkeypatch.setattr(verify, "attempt_auto_done", real_auto_done)
+
+        result = _run_stage(project, tmp_path)
+
+        assert journal["runs"] == 1
+        assert result[2] == 0, "own work + verify pass → auto-DONE → transition"
+
+    def test_signal_consumed_on_transition(self, project, tmp_path, monkeypatch):
+        """NEG-4: the fired .ready is consumed — later stages can't re-read it."""
+        def behavior(run_no, kw):
+            outbox = project / ".agentic" / "outbox"
+            (outbox / "DONE-TODO-0001.ready").write_text("", encoding="utf-8")
+            (outbox / "DONE-TODO-0001.md").write_text("# Done\n", encoding="utf-8")
+
+        journal = _mock_pipeline(monkeypatch, behavior)
+        result = _run_stage(project, tmp_path)
+
+        assert journal["runs"] == 1
+        assert result[2] == 0
+        outbox = project / ".agentic" / "outbox"
+        assert not (outbox / "DONE-TODO-0001.ready").exists(), "signal must be consumed"
+        assert (outbox / "DONE-TODO-0001.md").exists(), "report stays as evidence"

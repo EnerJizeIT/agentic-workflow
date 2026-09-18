@@ -66,6 +66,56 @@ def detect_work_evidence(
     return bool(untracked)
 
 
+def work_fingerprint(
+    project_dir: str | Path,
+    baseline_sha: str,
+    todo_id: str = "",
+) -> str:
+    """NEG-4 (day-2 B1): hash of the working tree vs baseline.
+
+    ``detect_work_evidence`` answers "is there ANY work?" — a pre-existing
+    diff left by an EARLIER stage makes it True. That let ``attempt_auto_done``
+    synthesize a DONE for a stage whose worker wrote nothing: the implementer
+    exited silently, the QA stage's own 2-line diff counted as evidence, and
+    the pipeline "transitioned on done" with an empty implementation.
+
+    Fix: callers snapshot this fingerprint at stage entry and compare at
+    stage end. A changed fingerprint means THIS stage produced changes.
+
+    Hash covers ``git diff <baseline>`` text plus untracked files (minus
+    pre-existing ones recorded in ``BASELINE-{todo}.untracked``). Returns
+    ``""`` when the baseline is missing, the dir is not a git repo, or git
+    fails — callers treat ``""`` as "unknown", which fails closed for both
+    the auto-DONE gate and the retry decision.
+    """
+    import hashlib
+
+    cwd = Path(project_dir)
+    if not baseline_sha or not git_utils.is_git_repo(cwd):
+        return ""
+    try:
+        diff_text = git_utils.git_stdout(cwd, "diff", baseline_sha, check=False)
+        untracked = git_utils.untracked_files(cwd)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return ""
+
+    if todo_id:
+        snapshot = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
+        if snapshot.exists():
+            try:
+                pre_existing = {
+                    line.strip()
+                    for line in snapshot.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                }
+                untracked = [f for f in untracked if f not in pre_existing]
+            except OSError:
+                pass
+
+    payload = diff_text + "\n--untracked--\n" + "\n".join(sorted(untracked))
+    return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
+
+
 def run_verify_commands(
     config: dict,
     project_dir: str | Path | None = None,

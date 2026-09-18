@@ -46,6 +46,32 @@ def _find_active_todo(project_dir: Path) -> str:
     return todos.newest_active(project_dir)
 
 
+def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
+    """Day-2 B2: clear the BLOCKED closure so the TODO counts as active again.
+
+    Moves ``BLOCKED-{todo}.{ready,md}`` (canonical + legacy short form) from
+    outbox to ``.agentic/context/`` as evidence — mirrors the manual recovery
+    the user had to perform before this existed.
+    """
+    from .signals import short_id
+
+    outbox = paths.outbox(project_dir)
+    ctx = paths.context_dir(project_dir)
+    ctx.mkdir(parents=True, exist_ok=True)
+    moved = False
+    for candidate_id in {todo_id, short_id(todo_id)}:
+        for ext in (".ready", ".md"):
+            src = outbox / f"BLOCKED-{candidate_id}{ext}"
+            if src.exists():
+                try:
+                    src.replace(ctx / src.name)
+                    moved = True
+                except OSError:
+                    pass
+    if moved:
+        _log(logs_dir, f"Day-2 B2: BLOCKED closure moved to context/ for {todo_id}")
+
+
 def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     """Read baseline SHA from .agentic/context/BASELINE-{todo_id}.sha."""
     if not todo_id:
@@ -136,13 +162,21 @@ def _handle_escalate(
     _log(logs_dir, "Escalating to supervisor for retry")
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    _run_supervisor_stage(
+    sup_signal = _run_supervisor_stage(
         replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
     )
 
+    # Day-2 B2: ACK/APPROVE from the supervisor means "accept the current
+    # state, keep going". Clear the BLOCKED closure (TODO becomes active
+    # again) and retry the same stage with the same TODO.
+    if isinstance(sup_signal, str) and sup_signal.startswith(("ACK-", "APPROVE-")):
+        _unblock_todo(project_dir, current_todo, logs_dir)
+        print(f"Supervisor accepted the blocked state — retrying stage '{s_name}'")
+        return stage_idx, current_todo, 0
+
     new_todo = _find_active_todo(project_dir)
     if not new_todo:
-        print("Supervisor did not create a new TODO. Stopping.")
+        print("Supervisor did not create a new TODO and left no ACK. Stopping.")
         return stage_idx, current_todo, 1
     print(f"New TODO: {new_todo} — retrying stage '{s_name}'")
     return stage_idx, new_todo, 0  # stay on same stage_idx
@@ -530,6 +564,17 @@ def execute_agent_stage(
 
     prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
 
+    # NEG-4 (day-2 B1): stage-scoped work evidence. A pre-existing diff from an
+    # earlier stage must not count as THIS stage's work — otherwise
+    # attempt_auto_done synthesizes a false DONE for a worker that wrote
+    # nothing. Snapshot the fingerprint before the first attempt.
+    stage_baseline_sha = _read_baseline_sha(project_dir, current_todo)
+    stage_start_fingerprint = (
+        verify.work_fingerprint(project_dir, stage_baseline_sha, current_todo)
+        if stage_baseline_sha
+        else ""
+    )
+
     # F4: auto-retry transient failures (vllm cold-start, empty output <30s).
     # F7 (dogfood-11): also retry SILENT EXITS — worker exited without a signal
     # AND without work evidence (empty diff). Weak models either answer with
@@ -563,9 +608,17 @@ def execute_agent_stage(
             except TimeoutError:
                 pass
 
+        # NEG-4: did THIS stage entry produce changes? (not a foreign diff
+        # left over from an earlier stage)
+        stage_produced_work = bool(stage_start_fingerprint) and (
+            verify.work_fingerprint(project_dir, stage_baseline_sha, current_todo)
+            != stage_start_fingerprint
+        )
+
         if not signal:
-            baseline_sha = _read_baseline_sha(project_dir, current_todo)
-            if baseline_sha and verify.attempt_auto_done(project_dir, current_todo, config, baseline_sha):
+            if stage_produced_work and verify.attempt_auto_done(
+                project_dir, current_todo, config, stage_baseline_sha
+            ):
                 signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
         if signal:
@@ -574,9 +627,7 @@ def execute_agent_stage(
         # dogfood-11: no signal — retry only when the worker left NO work
         # evidence. With work present, salvage lets the supervisor ACK it;
         # a rerun could overwrite or duplicate usable changes.
-        worker_has_work = bool(baseline_sha) and verify.detect_work_evidence(
-            project_dir, baseline_sha, current_todo,
-        )
+        worker_has_work = stage_produced_work
         if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
             # TOCTOU guard (dogfood-11): a signal may have landed between the
             # wait timeout above and this cleanup (e.g. the worker wrote DONE
@@ -602,7 +653,7 @@ def execute_agent_stage(
 
     if not signal:
         # Salvage path
-        baseline_sha = _read_baseline_sha(project_dir, current_todo)
+        baseline_sha = stage_baseline_sha
         print(f"WARNING: No signal after agent stage '{s_name}'.", file=sys.stderr)
         _log(logs_dir, f"No signal after {s_name} — salvage path")
 
@@ -652,6 +703,16 @@ def execute_agent_stage(
     print(f"Signal classified as: {sig_type}")
     # Dogfood-11: stage resolved — reset the consecutive-salvage counter.
     _write_state(project_dir, salvage_count=0, logs_dir=logs_dir)
+
+    # NEG-4 (day-2 B1): consume the fired .ready signal now that the stage is
+    # resolved. The same filename used to stay valid for every later stage —
+    # a stale DONE could satisfy the next transition. Keep the .md report as
+    # evidence for the handoff.
+    for consumed_suffix in (".ready", ".md.ready"):
+        try:
+            (outbox / f"{signal}{consumed_suffix}").unlink()
+        except FileNotFoundError:
+            pass
 
     action, target = resolve_transition(stage, sig_type)
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")

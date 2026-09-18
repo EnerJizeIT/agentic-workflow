@@ -213,6 +213,7 @@ async def awf_continue(
     from_stage: str | None = None,
     auto: bool = False,
     timeout: int = 3600,
+    ack: str = "",
 ) -> dict[str, Any]:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -222,6 +223,11 @@ async def awf_continue(
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
         timeout: Agent stage timeout in seconds (default: 3600).
+        ack: Accept a BLOCKED TODO and resume (e.g. "TODO-0009"). Writes
+            ACK-{todo}.ready and clears the BLOCKED closure — the supervisor's
+            answer survives process death. Without it, a pending ACK/APPROVE
+            is still picked up; a blocked TODO with no answer returns a clear
+            instruction instead of "No active TODO found".
 
     Returns:
         Same shape as :func:`awf_start`.
@@ -233,6 +239,7 @@ async def awf_continue(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        ack=ack,
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
         # Open dashboard (same as awf_start)

@@ -447,11 +447,12 @@ def wait_for_supervisor_signal(
 
     deadline_log_interval = 60
     start = time.monotonic()
+    wall_start = time.time()  # for mtime comparisons (replan signals)
     deadline = start + timeout
     last_log = start
 
     while True:
-        if kind in ("plan", "replan"):
+        if kind == "plan":
             # Dogfood-1: active orphan TODOs (no DONE) picked up immediately.
             if active_orphan_signals:
                 sig = active_orphan_signals.pop(0).replace(".ready", "")
@@ -476,7 +477,7 @@ def wait_for_supervisor_signal(
                     _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig}")
                     return sig
 
-        if kind in ("verify", "salvage") and todo_id:
+        if kind in ("verify", "salvage", "replan") and todo_id:
             for sig_path in (
                 inbox / f"ACK-{todo_id}.ready",
                 inbox / f"APPROVE-{todo_id}.ready",
@@ -488,6 +489,24 @@ def wait_for_supervisor_signal(
             if review.exists():
                 _log(logs_dir, f"BD-30: interactive supervisor signal detected: REVIEW-{todo_id}.md")
                 return f"REVIEW-{todo_id}"
+
+        if kind == "replan" and inbox.is_dir():
+            # Day-2 B2: the replan supervisor answers AFTER the escalation —
+            # accept only TODO signals created since the wait started. The old
+            # orphan-pickup instantly "completed" the wait with the very TODO
+            # being retried (its .ready pre-dated the escalation), and the
+            # pipeline stopped as if the supervisor had answered nothing.
+            for todo_sig in sorted(inbox.glob("TODO-*.ready")):
+                try:
+                    if todo_sig.stat().st_mtime > wall_start:
+                        sig = todo_sig.stem
+                        _log(
+                            logs_dir,
+                            f"BD-30: replan signal detected: {sig} (created after escalation)",
+                        )
+                        return sig
+                except OSError:
+                    continue
 
         now = time.monotonic()
         if now - last_log >= deadline_log_interval:

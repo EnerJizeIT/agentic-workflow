@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import api, todos
+from . import api
 
 
 def run(args: Any) -> int:
@@ -21,12 +21,13 @@ def run(args: Any) -> int:
     background = command == "start" and getattr(args, "background", False)
 
     if command == "continue":
-        current_todo = todos.newest_active(project_dir)
-        if not current_todo:
-            print("No active TODO found.")
-            return 0
-        print("=== Agentic Workflow: Continuing Pipeline ===")
-        print(f"Resuming with: {current_todo}")
+        # Day-2 B3: no early "No active TODO found" pre-check here — the api
+        # resolves active/blocked/pending-ACK cases and returns a message.
+        header = "=== Agentic Workflow: Continuing Pipeline ==="
+        ack = getattr(args, "ack", "") or ""
+        if ack:
+            header = f"=== Agentic Workflow: Continuing Pipeline (ACK {ack}) ==="
+        print(header)
 
     try:
         if command == "continue":
@@ -36,6 +37,7 @@ def run(args: Any) -> int:
                 from_stage=getattr(args, "from_stage", None),
                 auto=getattr(args, "auto", False),
                 timeout=getattr(args, "timeout", 3600),
+                ack=ack,
             )
         else:
             result = api.start_pipeline(

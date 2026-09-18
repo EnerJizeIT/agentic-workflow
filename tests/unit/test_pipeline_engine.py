@@ -301,7 +301,8 @@ class TestSalvageEscalation:
         """Worker left changes (diff) → straight to salvage, no rerun.
 
         Retrying over existing work could overwrite or duplicate it; the
-        supervisor ACK path handles partial work better.
+        supervisor ACK path handles partial work better. NEG-4: the check is
+        stage-scoped — a fingerprint taken at stage entry vs after the run.
         """
         project = tmp_path / "proj"
         (project / ".agentic" / "outbox").mkdir(parents=True)
@@ -321,7 +322,9 @@ class TestSalvageEscalation:
 
         from awf import verify
         monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
-        monkeypatch.setattr(verify, "detect_work_evidence", lambda *a, **kw: True)
+        # Stage entry fingerprint ≠ post-run fingerprint → the stage made changes.
+        fps = iter(["fp-entry", "fp-after-run"])
+        monkeypatch.setattr(verify, "work_fingerprint", lambda *a, **kw: next(fps, "fp-after-run"))
 
         import time as _time_mod
         monkeypatch.setattr(_time_mod, "monotonic", lambda: 500.0)

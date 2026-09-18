@@ -159,6 +159,100 @@ def _reconcile(project_dir: Path) -> None:
     if cleaned and logs_dir.is_dir():
         _log(logs_dir, f"DF6-2 reconcile: {'; '.join(cleaned)}")
 
+
+def _newest_blocked_todo(project_dir: Path) -> str:
+    """Day-2 B3: newest TODO closed by BLOCKED (no DONE). ``""`` if none."""
+    from ..signals import short_id
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    if not inbox.is_dir():
+        return ""
+    candidates: list[tuple[int, str]] = []
+    for ready in inbox.glob("TODO-*.ready"):
+        todo_id = ready.stem
+        md = inbox / f"{todo_id}.md"
+        if not md.is_file() or md.stat().st_size == 0:
+            continue
+        short = short_id(todo_id)
+        blocked = any((outbox / f"BLOCKED-{cid}.ready").exists() for cid in (todo_id, short))
+        done = any((outbox / f"DONE-{cid}.ready").exists() for cid in (todo_id, short))
+        if blocked and not done:
+            try:
+                num = int(short)
+            except ValueError:
+                num = 0
+            candidates.append((num, todo_id))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _todo_closed(project_dir: Path, todo_id: str) -> bool:
+    """True when closure signals (DONE/BLOCKED/ACK) mark the TODO closed."""
+    return todos.is_closed(paths.inbox(project_dir), paths.outbox(project_dir), todo_id)
+
+
+def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str, str]:
+    """Day-2 B3: resume a TODO that is closed by a pending ACK/APPROVE.
+
+    An ACK/APPROVE in the inbox means the supervisor already answered, but
+    the orchestrator may have died before consuming it (interactive waits
+    live only as long as the process). ``todos.is_closed`` then hides the
+    TODO from ``newest_active`` and ``awf continue`` dead-ends.
+
+    Consumes the signal, clears a BLOCKED closure if present, and returns
+    ``(todo_id, note)``. With ``todo_id`` set, only that TODO's signals are
+    considered — an APPROVE saved for a live verify stage is never touched
+    (that path finds the TODO active and skips this resolver entirely).
+
+    Returns ``("", "")`` when there is nothing to resume.
+    """
+    from ..signals import short_id
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    if not inbox.is_dir():
+        return "", ""
+
+    def _todo_for_signal(stem: str) -> str:
+        candidate = stem.split("-", 1)[1] if "-" in stem else ""
+        if candidate.startswith("TODO-"):
+            return candidate
+        # legacy short form: ACK-0009.ready → TODO-0009
+        for ready in inbox.glob("TODO-*.ready"):
+            if short_id(ready.stem) == candidate:
+                return ready.stem
+        return ""
+
+    signals = sorted(inbox.glob("ACK-*.ready")) + sorted(inbox.glob("APPROVE-*.ready"))
+    for sig_path in signals:
+        target = _todo_for_signal(sig_path.stem)
+        if not target:
+            continue
+        if todo_id and target != todo_id:
+            continue
+        md = inbox / f"{target}.md"
+        if not md.is_file() or md.stat().st_size == 0:
+            continue
+        short = short_id(target)
+        if any((outbox / f"DONE-{cid}.ready").exists() for cid in (target, short)):
+            continue  # completed cycle — leave the signal for the archive flow
+        try:
+            sig_path.unlink()
+        except OSError:
+            continue
+        note = f"consumed {sig_path.name}"
+        if any((outbox / f"BLOCKED-{cid}.ready").exists() for cid in (target, short)):
+            from ..pipeline_engine import _unblock_todo
+
+            _unblock_todo(project_dir, target, paths.agentic_dir(project_dir) / "logs")
+            note += ", BLOCKED cleared"
+        return target, note
+    return "", ""
+
+
 # ─── approve_commit ─────────────────────────────────────────────────────
 
 
@@ -531,6 +625,7 @@ def continue_pipeline(
     auto: bool = False,
     timeout: int = 3600,
     background: bool = True,
+    ack: str = "",
 ) -> StartResult:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -542,9 +637,29 @@ def continue_pipeline(
     ``background=True`` (default) launches a detached subprocess — same
     infrastructure as ``start_pipeline``. Without this, MCP tool would
     block the event loop for the entire pipeline duration.
+
+    Day-2 B3: interactive supervisor answers must survive process death.
+    An ``ACK``/``APPROVE`` sitting in the inbox (written after the process
+    died) is consumed here and the TODO is resumed — previously such a TODO
+    was "closed" by the signal and `awf continue` answered "No active TODO
+    found". ``ack="TODO-NNNN"`` writes the ACK for a blocked TODO before
+    resuming (no manual ``touch`` needed).
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    if ack and not re.match(r"^TODO-\d{4,}$", ack):
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=0,
+            message=f"Invalid TODO id for --ack: {ack!r} (expected TODO-NNNN).",
+        )
+    if ack:
+        ack_inbox = paths.inbox(project_dir)
+        ack_inbox.mkdir(parents=True, exist_ok=True)
+        (ack_inbox / f"ACK-{ack}.ready").touch()
 
     # DF6-2: reconcile state before continuing
     _reconcile(project_dir)
@@ -567,7 +682,56 @@ def continue_pipeline(
     state_todo_id = state.get("todo_id") if state else None
 
     current_todo = state_todo_id or todos.newest_active(project_dir)
+    resolution_note = ""
+
+    # Day-2 B3: a pending supervisor answer (ACK/APPROVE) must resume the TODO
+    # it belongs to — even when closure signals hide it from newest_active().
+    # Consume the answer, clear a BLOCKED closure, then resume.
+    if current_todo:
+        if _todo_closed(project_dir, current_todo):
+            resolved, note = _resolve_pending_closure(project_dir, todo_id=current_todo)
+            if resolved:
+                resolution_note = note
+            else:
+                blocked_todo = _newest_blocked_todo(project_dir)
+                if blocked_todo:
+                    return StartResult(
+                        run_mode="noop",
+                        run_id=None,
+                        log_file=None,
+                        exit_code=0,
+                        message=(
+                            f"TODO {blocked_todo} is BLOCKED — no supervisor answer yet. "
+                            f"Accept it with `awf continue --ack {blocked_todo}` (or write "
+                            f".agentic/inbox/ACK-{blocked_todo}.ready); replan by creating or "
+                            f"refreshing TODO-*.ready, then run awf continue again."
+                        ),
+                    )
+                return StartResult(
+                    run_mode="noop",
+                    run_id=None,
+                    log_file=None,
+                    exit_code=0,
+                    message=f"TODO {current_todo} is closed — nothing to resume.",
+                )
+        # Active TODO — resume as-is; a pending APPROVE belongs to the commit gate.
+    else:
+        current_todo, resolution_note = _resolve_pending_closure(project_dir)
     if not current_todo:
+        blocked_todo = _newest_blocked_todo(project_dir)
+        if blocked_todo:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=(
+                    f"TODO {blocked_todo} is BLOCKED — no supervisor answer yet. "
+                    f"Accept it with `awf continue --ack {blocked_todo}` (or write "
+                    f".agentic/inbox/ACK-{blocked_todo}.ready); replan by creating or "
+                    f"refreshing TODO-*.ready, then run awf continue again."
+                ),
+            )
         return StartResult(
             run_mode="noop",
             run_id=None,
@@ -612,6 +776,8 @@ def continue_pipeline(
         )
         if from_stage:
             msg += f", resuming from stage '{from_stage}'"
+        if resolution_note:
+            msg += f" ({resolution_note})"
         msg += ". GO IDLE — wait for user."
         return StartResult(
             run_mode="background",
