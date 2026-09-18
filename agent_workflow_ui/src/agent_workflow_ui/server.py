@@ -62,5 +62,10 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_current_step, name="awf_current_step")
     mcp.add_tool(awf.awf_set_goal, name="awf_set_goal")
     mcp.add_tool(awf.awf_confirm_normalized, name="awf_confirm_normalized")
+    # SPEC A-run: autonomous run (забег)
+    mcp.add_tool(awf.awf_run_start, name="awf_run_start")
+    mcp.add_tool(awf.awf_run_status, name="awf_run_status")
+    mcp.add_tool(awf.awf_run_next, name="awf_run_next")
+    mcp.add_tool(awf.awf_run_finish, name="awf_run_finish")
 
     return mcp

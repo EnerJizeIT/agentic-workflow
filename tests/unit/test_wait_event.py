@@ -141,3 +141,102 @@ class TestWaitForEvent:
         assert snap["stage_kind"] == "verify"
         assert snap["todo_id"] == "TODO-0001"
         assert snap["last_signal"] == "DONE-TODO-0001"
+
+
+class TestSuggestedTimeout:
+    """SPEC A-run: the wait size is suggested from measured stage durations."""
+
+    def test_suggestion_from_stage_history(self, awf_project):
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import _suggest_timeout
+
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=12 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        suggested = _suggest_timeout(awf_project)
+
+        assert 60 <= suggested <= 300
+        assert suggested == 240  # 12 min stage → wake ~3x per stage
+
+    def test_suggestion_default_without_log(self, awf_project):
+        from awf.api.wait_event import _suggest_timeout
+
+        assert _suggest_timeout(awf_project) == 180
+
+    def test_timeout_event_carries_suggestion(self, awf_project):
+        write_state(
+            awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2,
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+        assert result.event_type == "timeout"
+        assert result.suggested_timeout >= 60
+
+
+class TestActionableOnly:
+    """actionable_only suppresses stage_changed noise in the run loop."""
+
+    def test_stage_changed_suppressed(self, awf_project, monkeypatch):
+        import threading
+        import time as _time
+
+        write_state(awf_project, stage_name="stage-a", stage_kind="execute", stage_idx=1)
+
+        def flip_later():
+            _time.sleep(0.4)
+            write_state(awf_project, stage_name="stage-b", stage_kind="execute", stage_idx=2)
+
+        threading.Thread(target=flip_later, daemon=True).start()
+
+        result = api.wait_for_event(
+            awf_project, timeout=2, poll_interval=1, actionable_only=True,
+        )
+
+        # The transition happened but must not wake the caller.
+        assert result.event_type == "timeout"
+
+    def test_stage_changed_returned_by_default(self, awf_project):
+        import threading
+        import time as _time
+
+        write_state(awf_project, stage_name="stage-a", stage_kind="execute", stage_idx=1)
+
+        def flip_later():
+            _time.sleep(0.4)
+            write_state(awf_project, stage_name="stage-b", stage_kind="execute", stage_idx=2)
+
+        threading.Thread(target=flip_later, daemon=True).start()
+
+        result = api.wait_for_event(awf_project, timeout=3, poll_interval=1)
+
+        assert result.event_type == "stage_changed"
+        assert result.suggested_timeout >= 60
+
+
+class TestVerifyPayload:
+    def test_verify_snapshot_carries_diff_stat(self, awf_project):
+        import subprocess
+
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=awf_project,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        ctx = awf_project / ".agentic" / "context"
+        ctx.mkdir(parents=True, exist_ok=True)
+        (ctx / "BASELINE-TODO-0001.sha").write_text(sha + "\n", encoding="utf-8")
+        (awf_project / "README.md").write_text("changed by the stage\n", encoding="utf-8")
+        write_state(
+            awf_project, stage_name="verify", stage_kind="verify",
+            stage_idx=5, todo_id="TODO-0001",
+        )
+
+        result = api.wait_for_event(awf_project, timeout=1)
+
+        assert result.event_type == "verify"
+        assert "README.md" in result.state_snapshot.get("diff_stat", "")

@@ -25,11 +25,51 @@ from ._helpers import require_agentic
 from ._results import WaitEventResult
 
 
+def _suggest_timeout(project_dir: Path, *, default: int = 180) -> int:
+    """SPEC A-run: size the next wait from measured stage durations.
+
+    Consecutive ``Stage N/M:`` lines in orchestrator.log give the duration of
+    the previous stage. Median of the last few, divided by 3 (wake ~3x per
+    stage), clamped to [60, 300] seconds. Falls back to ``default`` when the
+    log is missing or has too little history.
+    """
+    import re
+    from datetime import datetime
+
+    from .. import paths
+
+    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+    if not log_file.is_file():
+        return default
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return default
+
+    stage_re = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\] Stage \d+/\d+:")
+    stamps = []
+    for m in stage_re.finditer(text):
+        try:
+            stamps.append(datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            continue
+    if len(stamps) < 2:
+        return default
+    deltas = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:])]
+    deltas = [d for d in deltas if 0 < d < 3600][-5:]
+    if not deltas:
+        return default
+    deltas.sort()
+    median = deltas[len(deltas) // 2]
+    return max(60, min(300, int(median / 3)))
+
+
 def wait_for_event(
     project_dir: Path,
     *,
     timeout: int = 30,
     poll_interval: int = 3,
+    actionable_only: bool = False,
 ) -> WaitEventResult:
     """Block until pipeline event or timeout.
 
@@ -42,11 +82,17 @@ def wait_for_event(
     - State file cleared (pipeline exited) → event_type ``done``
     - Timeout reached → event_type ``timeout``
 
+    SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous
+    result's ``suggested_timeout`` (computed from measured stage durations).
+    The call runs in a worker thread, so long waits do NOT freeze other MCP
+    tools — the old "single-thread limit" note was stale.
+
     Args:
         project_dir: awf project root.
-        timeout: max seconds to block (default 30 — under MCP plugin
-            single-thread limit; longer values freeze ALL other MCP tools).
+        timeout: max seconds to block (default 30 — reactive mode).
         poll_interval: seconds between state checks (default 3).
+        actionable_only: suppress ``stage_changed`` returns — only events
+            that need supervisor action end the wait. Keeps a run loop quiet.
 
     Returns:
         WaitEventResult with event_type + current state snapshot.
@@ -57,6 +103,7 @@ def wait_for_event(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    suggested = _suggest_timeout(project_dir)
     deadline = time.monotonic() + timeout
     prev_state: dict[str, Any] | None = read_state(project_dir)
 
@@ -68,7 +115,7 @@ def wait_for_event(
         )
 
     # Check current state for immediate events
-    result = _check_for_event(prev_state)
+    result = _check_for_event(prev_state, project_dir)
     if result:
         return result
 
@@ -85,7 +132,7 @@ def wait_for_event(
 
         # Check for actionable events FIRST (verify/blocked/checkpoint/salvage).
         # These require supervisor action and must not be masked by stage_changed.
-        result = _check_for_event(current_state)
+        result = _check_for_event(current_state, project_dir)
         if result:
             return result
 
@@ -94,7 +141,7 @@ def wait_for_event(
         # verify/blocked events that happen to coincide with a stage transition.
         prev_stage = prev_state.get("stage_name") if prev_state else None
         curr_stage = current_state.get("stage_name")
-        if prev_stage and curr_stage and prev_stage != curr_stage:
+        if prev_stage and curr_stage and prev_stage != curr_stage and not actionable_only:
             return WaitEventResult(
                 event_type="stage_changed",
                 message=(
@@ -102,6 +149,7 @@ def wait_for_event(
                     f"Previous stage completed. Poll again to wait for next event."
                 ),
                 state_snapshot=_state_to_dict(current_state),
+                suggested_timeout=suggested,
             )
 
         prev_state = current_state
@@ -112,10 +160,11 @@ def wait_for_event(
         event_type="timeout",
         message=f"No event within {timeout}s. Current stage: {final_state.get('stage_name', '?')}. Poll again.",
         state_snapshot=_state_to_dict(final_state),
+        suggested_timeout=suggested,
     )
 
 
-def _check_for_event(state: dict[str, Any]) -> WaitEventResult | None:
+def _check_for_event(state: dict[str, Any], project_dir: Path | None = None) -> WaitEventResult | None:
     """Check if current state has an interesting event. Return result or None."""
     stage_kind = state.get("stage_kind", "")
     last_signal = state.get("last_signal", "")
@@ -155,6 +204,17 @@ def _check_for_event(state: dict[str, Any]) -> WaitEventResult | None:
         )
 
     if stage_kind == "verify":
+        snapshot = _state_to_dict(state)
+        # SPEC A-run (second tier): the verify callback carries the diff-stat —
+        # the supervisor sees the shape of the change before opening it.
+        todo_id = str(state.get("todo_id") or "")
+        if project_dir and todo_id:
+            try:
+                from ..verify import diff_stat_for_todo
+
+                snapshot["diff_stat"] = diff_stat_for_todo(project_dir, todo_id)
+            except Exception:
+                snapshot["diff_stat"] = ""
         return WaitEventResult(
             event_type="verify",
             message=(
@@ -162,7 +222,7 @@ def _check_for_event(state: dict[str, Any]) -> WaitEventResult | None:
                 "(outbox/DONE-*.md), check git diff, verify quality. "
                 "Then awf_approve or write REVIEW-*.md."
             ),
-            state_snapshot=_state_to_dict(state),
+            state_snapshot=snapshot,
         )
 
     return None

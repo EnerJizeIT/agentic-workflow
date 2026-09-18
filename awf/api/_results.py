@@ -59,6 +59,8 @@ class StatusResult:
     # DF5-4: salvage state (worker didn't signal)
     salvage_needed: bool = False
     salvage_stage: str | None = None
+    # SPEC A-run: autonomous run state (active run only; None otherwise)
+    run_state: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,6 +101,22 @@ class ApproveResult:
 
     todo_id: str
     signal_file: str
+    evidence_file: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RejectResult:
+    """Result of :func:`awf.api.reject_commit` (SPEC A-run.5 accounting)."""
+
+    todo_id: str
+    review_file: str
+    rejects: int = 0
+    run_stopped: bool = False
+    report_file: str = ""
+    message: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -262,6 +280,81 @@ class WaitEventResult:
     event_type: str
     message: str
     state_snapshot: dict[str, Any] = field(default_factory=dict)
+    # SPEC A-run: recommended wait size for the next call (median stage/3,
+    # clamped [60, 300]); 0 when not computed for this event type.
+    suggested_timeout: int = 0
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+# ─── Autonomous run (забег) — SPEC A-run v1 ─────────────────────────────
+
+
+@dataclass
+class RunStartResult:
+    """Result of :func:`awf.api.run_start`."""
+
+    active: bool
+    queue: list[str]
+    position: str
+    budget_minutes: int
+    stop_flags: dict[str, list[str]]
+    message: str
+    next_action: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RunStatusResult:
+    """Result of :func:`awf.api.run_status`."""
+
+    active: bool
+    position: str
+    queue: list[str]
+    index: int
+    current: str
+    completed: list[str]
+    rejects: dict[str, int]
+    stop_flags: dict[str, list[str]]
+    budget_minutes: int
+    budget_left_minutes: int
+    elapsed_minutes: int
+    stop_reason: str
+    report_file: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RunNextResult:
+    """Result of :func:`awf.api.run_next`."""
+
+    action: str  # started | finished | stopped | refused
+    todo_id: str
+    message: str
+    run_mode: str = ""
+    run_id: int | None = None
+    log_file: str = ""
+    report_file: str = ""
+    next_action: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RunFinishResult:
+    """Result of :func:`awf.api.run_finish`."""
+
+    active: bool
+    reason: str
+    report_file: str
+    message: str
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -273,6 +366,7 @@ __all__ = [
     "BaselineResult",
     "RollbackResult",
     "ApproveResult",
+    "RejectResult",
     "ReportResult",
     "ResetResult",
     "AddRoleResult",
@@ -283,4 +377,8 @@ __all__ = [
     "SupervisorContextResult",
     "ApplyIncrementPlanResult",
     "WaitEventResult",
+    "RunStartResult",
+    "RunStatusResult",
+    "RunNextResult",
+    "RunFinishResult",
 ]

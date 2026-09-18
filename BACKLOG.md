@@ -278,6 +278,31 @@ TODO не виден `newest_active`, CLI рано печатал «No active TO
 **Тесты:** +17 негативных сценариев (`tests/negative/test_escalation_recovery.py`,
 `TestAutoDoneScope` в `test_worker_failure_matrix.py`). Всего 1221, ruff чист.
 
+### SPEC A-run · Автономный забег (v1) — сделан
+
+**Source:** `awf-autonomous-run-spec.md` (супервизор topic-trainer). Владелец
+выбрал вариант (а): супервизор-чат в цикле ожидания, awf даёт механику.
+
+✅ **A-run.1** — состояние забега `.agentic/state/run.yaml` (`awf/run_state.py`),
+   `awf_run_start/status/next/finish` (api + MCP), статус в `awf_status.run_state`,
+   чип «🏃 забег 2/3 · ~40м» в дашборде.
+✅ **A-run.2** — цикл через `awf_wait_for_event`: `suggested_timeout` (медиана
+   длительностей стадий / 3, кламп [60,300]), `actionable_only` (не будить на
+   stage_changed), next_action забега в каждом событии; verify-payload несёт
+   diff-stat против baseline.
+✅ **A-run.3/A-run.8** — evidence-gate: в забеге `awf_approve` без evidence
+   отклоняется; evidence → `RUN-EVIDENCE-{todo}.md`, отчёт ссылается на него.
+✅ **A-run.4** — механические гейты: queue exhausted, бюджет, stop-флаги
+   (манифест очереди), два reject'а, `rollback(hard)` в забеге запрещён.
+✅ **A-run.5** — reject-счётчик: второй отказ по TODO останавливает забег.
+✅ **A-run.6** — `RUN-REPORT-{ts}.md` в outbox: очередь, завершённые, отказы,
+   дневник вердиктов, health (salvage-события).
+✅ **A-run.7** — состояние переживает смерть процесса (run.yaml, awf_run_status).
+⬜ Не сделано сознательно: «вероятность мусора» в callback (эвристика);
+   авто-стоп «verify красный дважды» (перекрыт reject-лимитом и stop-флагами).
+
+---
+
 ✅ **SPEC-2026-09-18 · Спека супервизора topic-trainer — взятое в работу.**
 - **D9**: дизамбигуация ролей обновляется автоматически после сборки
   пайплайна (`apply_project_setup` → `analyze_roles_core`); тесты: первое

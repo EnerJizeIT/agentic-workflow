@@ -300,6 +300,108 @@ async def awf_retry_stage(
     return result
 
 
+# ─── Autonomous run (забег) — SPEC A-run v1 ─────────────────────────────
+
+
+async def awf_run_start(
+    project_dir: str | None = None,
+    *,
+    queue: list[str] | None = None,
+    budget_minutes: int = 0,
+    stop_flags_json: str = "",
+) -> dict[str, Any]:
+    """Start an autonomous run: a queue of TODOs with mechanical gates.
+
+    The supervisor chat drives the loop; awf keeps the state and enforces
+    the stop-list (queue/budget/stop-flags/rejects). The owner is pinged
+    only on stop conditions or at the end.
+
+    Args:
+        project_dir: Project root (default: cwd).
+        queue: Ordered TODO ids to run, e.g. ["TODO-0010", "TODO-0011"].
+        budget_minutes: Optional time budget (0 = unlimited).
+        stop_flags_json: Optional JSON map of TODO id → [reason], e.g.
+            '{"TODO-0012": ["phase-boundary", "external-audit"]}'. awf refuses
+            to auto-continue past a flagged item — the run stops there.
+
+    Returns:
+        Dict with: active, queue, position, budget, stop_flags, next_action.
+    """
+    import json as _json
+
+    flags: dict[str, list[str]] = {}
+    if stop_flags_json.strip():
+        try:
+            parsed = _json.loads(stop_flags_json)
+            if isinstance(parsed, dict):
+                flags = {str(k): list(v) for k, v in parsed.items()}
+        except (_json.JSONDecodeError, TypeError):
+            return {"status": "error", "error": "stop_flags_json is not valid JSON."}
+    return await _exec(
+        api.run_start,
+        project_dir=_resolve_project_dir(project_dir),
+        queue=queue or [],
+        budget_minutes=budget_minutes,
+        stop_flags=flags,
+    )
+
+
+async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
+    """Current run (забег) state: position, budget left, rejects, stop reason."""
+    return await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
+
+
+async def awf_run_next(
+    project_dir: str | None = None,
+    *,
+    from_stage: str | None = None,
+    timeout: int = 3600,
+) -> dict[str, Any]:
+    """Launch the next queue item, or stop when a gate fires.
+
+    Refused when the TODO file is missing (write it first), the previous TODO
+    is not finished, or no run is active. Stopped (with a report) on queue
+    exhausted / budget / stop flag / two rejections.
+
+    Returns:
+        Dict with: action (started/finished/stopped/refused), todo_id, message,
+        run_mode, run_id, log_file, report_file, next_action.
+    """
+    result = await asyncio.to_thread(
+        api.run_next,
+        _resolve_project_dir(project_dir),
+        from_stage=from_stage,
+        background=True,
+        timeout=timeout,
+    )
+    response = _ok(result)
+    if response.get("action") == "started":
+        try:
+            import time as _time
+            pd = _resolve_project_dir(project_dir)
+            _time.sleep(1)
+            dash = await _open_dashboard_browser(pd)
+            response["dashboard_opened"] = dash["opened"]
+        except Exception:
+            pass
+    return response
+
+
+async def awf_run_finish(
+    project_dir: str | None = None,
+    *,
+    reason: str = "finished by supervisor",
+    summary: str = "",
+) -> dict[str, Any]:
+    """Close the run: write RUN-REPORT-{ts}.md to outbox and mark inactive."""
+    return await _exec(
+        api.run_finish,
+        project_dir=_resolve_project_dir(project_dir),
+        reason=reason,
+        summary=summary,
+    )
+
+
 # ─── Baseline / rollback ────────────────────────────────────────────────
 
 
@@ -376,6 +478,8 @@ async def awf_rollback(
 async def awf_approve(
     todo_id: str,
     project_dir: str | None = None,
+    *,
+    evidence: str = "",
 ) -> dict[str, Any]:
     """Approve auto-commit for a TODO in --auto mode.
 
@@ -386,12 +490,18 @@ async def awf_approve(
     Args:
         todo_id: TODO identifier to approve.
         project_dir: Project root (default: cwd).
+        evidence: SPEC A-run — in run (забег) mode this is REQUIRED: the
+            commands you actually ran and your verdict, e.g.
+            "pytest -q → 348 passed; ruff → clean; diff checked; verdict: approve".
+            Stored to .agentic/context/RUN-EVIDENCE-{todo}.md for owner audit.
 
     Returns:
         Dict with: todo_id, signal_file (path to APPROVE-*.ready).
     """
     try:
-        result = api.approve_commit(_resolve_project_dir(project_dir), todo_id)
+        result = api.approve_commit(
+            _resolve_project_dir(project_dir), todo_id, evidence=evidence
+        )
         response = _ok(result)
         # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat)
         response["next_action"] = (
@@ -425,7 +535,6 @@ async def awf_reject(
         Dict with: todo_id, review_file, next_action.
     """
     import re as _re
-    from pathlib import Path as _Path
 
     if not todo_id:
         return {"status": "error", "error": "todo_id is required"}
@@ -436,14 +545,7 @@ async def awf_reject(
 
     try:
         pd = _resolve_project_dir(project_dir)
-        outbox = _Path(pd) / ".agentic" / "outbox"
-        outbox.mkdir(parents=True, exist_ok=True)
-
-        review_file = outbox / f"REVIEW-{todo_id}.md"
-        review_file.write_text(
-            f"# REVIEW — {todo_id}\n\n## Reason\n{reason}\n",
-            encoding="utf-8",
-        )
+        result = api.reject_commit(pd, todo_id, reason)
 
         # awf_kill to stop the waiting pipeline
         try:
@@ -451,15 +553,27 @@ async def awf_reject(
         except Exception:
             pass
 
+        if result.run_stopped:
+            next_action = (
+                f"{todo_id} rejected twice — RUN STOPPED. Report: {result.report_file}. "
+                "Notify the owner and wait for instructions."
+            )
+        else:
+            next_action = (
+                f"{result.message} Pipeline killed. Address the cause, then continue "
+                "(run mode: awf_retry_stage or awf_run_next)."
+            )
         return {
             "status": "ok",
             "todo_id": todo_id,
-            "review_file": str(review_file),
-            "next_action": (
-                f"{todo_id} rejected. Pipeline killed. "
-                "Fix the issues, then: awf_dispatch_todo → awf_start."
-            ),
+            "review_file": result.review_file,
+            "rejects": result.rejects,
+            "run_stopped": result.run_stopped,
+            "report_file": result.report_file,
+            "next_action": next_action,
         }
+    except api.AwfApiError as e:
+        return _err(e)
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
@@ -896,6 +1010,7 @@ async def awf_open_pipeline_dashboard(
 async def awf_wait_for_event(
     project_dir: str | None = None,
     timeout: int = 30,
+    actionable_only: bool = False,
 ) -> dict[str, Any]:
     """Check for pipeline events (reactive, NOT for proactive polling).
 
@@ -905,6 +1020,11 @@ async def awf_wait_for_event(
     (e.g. "pipeline finished", "salvage", "blocked") to get structured
     event details before acting.
 
+    SPEC A-run (забег): inside an active run the supervisor DOES wait in a
+    loop. Call it with ``actionable_only=True`` and ``timeout`` from the
+    previous result's ``suggested_timeout`` (awf sizes it from measured stage
+    durations — sleep in chunks instead of hammering every 30s).
+
     Returns immediately when:
 
     - ``verify`` — pipeline reached verify stage (supervisor must act)
@@ -912,32 +1032,66 @@ async def awf_wait_for_event(
     - ``checkpoint`` — BD-36 checkpoint form opened (tell user)
     - ``done`` — pipeline completed (state file cleared)
     - ``timeout`` — no event within timeout
+    - ``stage_changed`` — stage transition (suppressed by actionable_only)
 
     Args:
         project_dir: Project root (default: cwd).
-        timeout: Max seconds to block (default 30 — MCP plugin single-thread limit).
+        timeout: Max seconds to block (default 30 — reactive mode). In a run
+            loop pass suggested_timeout: the call runs in a worker thread,
+            long waits do NOT freeze other MCP tools.
+        actionable_only: Only events needing supervisor action end the wait.
 
     Returns:
         Dict with: event_type (verify/blocked/checkpoint/done/timeout/idle),
-        message (instruction for supervisor), state_snapshot.
+        message (instruction for supervisor), state_snapshot,
+        suggested_timeout (recommended wait size for the next call).
     """
     try:
         result = await asyncio.to_thread(
             api.wait_for_event,
             _resolve_project_dir(project_dir),
             timeout=timeout,
+            actionable_only=actionable_only,
         )
         response = _ok(result)
-        # SMO: next_action per event_type — weak models need explicit guidance
         et = result.get("event_type", "timeout") if isinstance(result, dict) else "timeout"
-        _EVENT_ACTIONS = {
-            "verify": "Pipeline at verify. Read handoffs + git diff → awf_approve.",
-            "blocked": "Worker blocked. Read BLOCKED note → replan or adjust TODO.",
-            "checkpoint": "Checkpoint form opened in browser. Tell user to approve.",
-            "done": "Pipeline complete. Ask user for next step.",
-            "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
-            "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
-        }
+        suggested = response.get("suggested_timeout") or 180
+
+        # SPEC A-run: inside an active run the supervisor keeps waiting;
+        # outside it stays idle (R6 reactive mode).
+        run_active = False
+        try:
+            brief = api.run_brief(_resolve_project_dir(project_dir))
+            run_active = bool(brief and brief.get("active"))
+        except Exception:
+            pass
+
+        if run_active:
+            _EVENT_ACTIONS = {
+                "verify": "Pipeline at verify. Run your own probes → awf_approve(evidence=...) or awf_reject.",
+                "blocked": "Worker blocked. Read BLOCKED note → fix context and awf_retry_stage, or stop with awf_run_finish.",
+                "checkpoint": "Checkpoint form opened. Tell the user (the run is paused until they submit).",
+                "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage / ACK / split the TODO.",
+                "done": "Pipeline exited. Approved iteration → awf_run_next; failure → handle per the report.",
+                "stage_changed": (
+                    f"Stage changed — no action needed. Keep waiting: "
+                    f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
+                ),
+                "timeout": (
+                    f"No event yet. Continue the run loop: "
+                    f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
+                ),
+                "idle": "Pipeline not running. Check awf_status → awf_run_next or awf_run_finish.",
+            }
+        else:
+            _EVENT_ACTIONS = {
+                "verify": "Pipeline at verify. Read handoffs + git diff → awf_approve.",
+                "blocked": "Worker blocked. Read BLOCKED note → replan or adjust TODO.",
+                "checkpoint": "Checkpoint form opened in browser. Tell user to approve.",
+                "done": "Pipeline complete. Ask user for next step.",
+                "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
+                "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
+            }
         response["next_action"] = _EVENT_ACTIONS.get(et, "Check awf_status, then wait for user.")
         return response
     except api.AwfApiError as e:

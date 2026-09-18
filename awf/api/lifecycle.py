@@ -336,6 +336,13 @@ def _count_done_blocked(inbox: Path, outbox: Path, done: Path | None = None) -> 
     return done_count, blocked_count, blocked_ids
 
 
+def _run_brief(project_dir: Path) -> dict | None:
+    """SPEC A-run: compact run state for the status payload (None when none)."""
+    from .run import run_brief
+
+    return run_brief(project_dir)
+
+
 def get_status(project_dir: Path) -> StatusResult:
     """Get current workflow state — active TODOs, progress, blocked, conflicts."""
     project_dir = Path(project_dir).resolve()
@@ -487,6 +494,7 @@ def get_status(project_dir: Path) -> StatusResult:
         checkpoint_form_url=checkpoint_form_url,
         salvage_needed=salvage_needed,
         salvage_stage=salvage_stage,
+        run_state=_run_brief(project_dir),
     )
 
 

@@ -114,6 +114,11 @@ def test_all_tools_registered():
         "awf_current_step",
         "awf_set_goal",
         "awf_confirm_normalized",
+        # SPEC A-run: autonomous run (забег)
+        "awf_run_start",
+        "awf_run_status",
+        "awf_run_next",
+        "awf_run_finish",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

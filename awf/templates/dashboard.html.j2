@@ -39,6 +39,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .status-badge.done, .status-badge.idle { background: rgba(88,166,255,0.08); color: var(--accent); }
 .status-badge.dead, .status-badge.blocked { background: rgba(248,81,73,0.08); color: var(--red); }
 .status-badge.salvage { background: rgba(210,153,34,0.08); color: var(--yellow); }
+.run-chip { padding: 3px 12px; border-radius: 20px; font-size: 12px; background: rgba(88,166,255,0.08); color: var(--accent); white-space: nowrap; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.running { background: var(--green); animation: blink 1.5s infinite; }
 .status-dot.verify { background: var(--yellow); }
@@ -152,6 +153,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 <div class="topbar">
   <div class="topbar-project" id="project-name">{{ project_name }}</div>
   <div class="topbar-timeline" id="todo-timeline"></div>
+  <span class="run-chip" id="run-chip" style="display:none"></span>
   <div class="topbar-status" id="status-area">
     <div class="status-dot {{ status }}" id="status-dot"></div>
     <div class="status-badge {{ status }}" id="status-badge">{{ status_text }}</div>
@@ -238,6 +240,19 @@ function updateTopbar(s) {
   dot.className = 'status-dot ' + s.status;
   badge.className = 'status-badge ' + s.status;
   badge.textContent = s.status_text || s.status;
+
+  // SPEC A-run: autonomous run chip
+  const runChip = document.getElementById('run-chip');
+  const run = s.run || null;
+  if (run && run.active) {
+    let label = '🏃 забег ' + (run.position || '?');
+    if (run.current) label += ' · ' + run.current;
+    if (run.budget_left_minutes) label += ' · ~' + run.budget_left_minutes + 'м';
+    runChip.textContent = label;
+    runChip.style.display = '';
+  } else {
+    runChip.style.display = 'none';
+  }
 
   const tl = document.getElementById('todo-timeline');
   if (s.todo_timeline && s.todo_timeline.length > 0) {

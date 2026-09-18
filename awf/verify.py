@@ -250,3 +250,28 @@ def attempt_auto_done(
     )
     (outbox / f"DONE-{todo_id}.ready").touch()
     return True
+
+
+def diff_stat_for_todo(project_dir: str | Path, todo_id: str) -> str:
+    """SPEC A-run: ``git diff --stat`` against BASELINE-{todo}.sha.
+
+    One place for the supervisor (verify callback payload, dashboard) instead
+    of a manual diff. Returns ``""`` when there is no baseline / not a git
+    repo / git fails.
+    """
+    if not todo_id:
+        return ""
+    cwd = Path(project_dir)
+    sha_file = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.sha"
+    if not sha_file.is_file():
+        return ""
+    try:
+        sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+    except OSError:
+        return ""
+    if not sha:
+        return ""
+    try:
+        return git_utils.diff_stat(cwd, sha).strip()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return ""

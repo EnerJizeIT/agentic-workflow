@@ -692,6 +692,16 @@ def _read_todo_content(project_dir: Path, todo_id: str | None) -> str:
     return ""
 
 
+def _run_brief_for_dashboard(project_dir: Path) -> dict | None:
+    """SPEC A-run: run state for the topbar chip (None when no run)."""
+    try:
+        from .run import run_brief
+
+        return run_brief(project_dir)
+    except Exception:
+        return None
+
+
 def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
     """Day-2 spec: `git diff --stat` against the TODO baseline.
 
@@ -700,21 +710,9 @@ def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
     """
     if not todo_id:
         return ""
-    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
-    if not sha_file.is_file():
-        return ""
-    try:
-        sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
-    except OSError:
-        return ""
-    if not sha:
-        return ""
-    try:
-        from .. import git_utils
+    from ..verify import diff_stat_for_todo
 
-        return git_utils.diff_stat(project_dir, sha).strip()
-    except (OSError, RuntimeError, subprocess.TimeoutExpired):
-        return ""
+    return diff_stat_for_todo(project_dir, todo_id)
 
 
 def _read_worker_last_line(project_dir: Path) -> str:
@@ -918,6 +916,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "todo_id": todo_id or "",
         "todo_content_html": todo_content_html,
         "todo_diff_stat": todo_diff_stat,
+        "run": _run_brief_for_dashboard(project_dir),
         "status": status,
         "status_text": status_text,
         "status_icon": status_icon,

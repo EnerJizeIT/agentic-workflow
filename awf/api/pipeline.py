@@ -22,7 +22,13 @@ from ..pipeline_state import read_state
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import require_agentic
-from ._results import ApproveResult, BaselineResult, RollbackResult, StartResult
+from ._results import (
+    ApproveResult,
+    BaselineResult,
+    RejectResult,
+    RollbackResult,
+    StartResult,
+)
 
 
 def _is_pipeline_running(project_dir: Path) -> int | None:
@@ -296,8 +302,14 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
 # ─── approve_commit ─────────────────────────────────────────────────────
 
 
-def approve_commit(project_dir: Path, todo_id: str) -> ApproveResult:
+def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
+
+    SPEC A-run.3/A-run.8: in run (забег) mode the approve MUST carry the
+    supervisor's independent-verification evidence — commands actually run
+    and the verdict. It is stored to
+    ``.agentic/context/RUN-EVIDENCE-{todo_id}.md`` so the owner can audit
+    the approver. Outside a run the parameter is optional.
 
     Requires ``.agentic/`` (consistency with other api functions).
     """
@@ -307,11 +319,111 @@ def approve_commit(project_dir: Path, todo_id: str) -> ApproveResult:
         raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    from ..run_state import read_run
+
+    run = read_run(project_dir)
+    run_active = bool(run and run.get("active"))
+    evidence_file = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
+
+    if evidence.strip():
+        atomic_write_text(
+            evidence_file,
+            f"# Run evidence — {todo_id}\n\n"
+            f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
+            f"{evidence.strip()}\n",
+        )
+    elif run_active and not evidence_file.is_file():
+        raise AwfApiError(
+            "Run mode requires independent-verification evidence. Pass the "
+            "commands you actually ran and the verdict via evidence=..., e.g. "
+            "evidence='pytest -q → 348 passed; ruff check → clean; verdict: approve'."
+        )
+
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
     signal = inbox / f"APPROVE-{todo_id}.ready"
     signal.touch()
-    return ApproveResult(todo_id=todo_id, signal_file=str(signal))
+
+    # SPEC A-run (second tier): record the verdict in the run diary.
+    if run_active:
+        from .. import run_state as _run_state
+
+        outcomes = dict((run or {}).get("outcomes") or {})
+        outcomes[todo_id] = {"verdict": "approved"}
+        _run_state.write_run(project_dir, outcomes=outcomes)
+
+    return ApproveResult(
+        todo_id=todo_id,
+        signal_file=str(signal),
+        evidence_file=str(evidence_file) if evidence.strip() else "",
+    )
+
+
+def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
+    """Reject work at verify — write REVIEW-{todo}.md; count in run mode.
+
+    SPEC A-run.5: inside an active run the rejection increments
+    ``rejects[todo]`` and is recorded in the run diary (``outcomes``).
+    The SECOND rejection stops the run automatically with a report — the
+    task itself needs the owner, another retry won't help. Outside a run
+    this is just the REVIEW file (legacy behavior).
+    """
+    if not todo_id:
+        raise AwfApiError("todo_id is required")
+    if not re.match(r"^TODO-\d{4,}$", todo_id):
+        raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
+    if not reason or not reason.strip():
+        raise AwfApiError("reason is required (what to fix)")
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    outbox = paths.outbox(project_dir)
+    outbox.mkdir(parents=True, exist_ok=True)
+    review_file = outbox / f"REVIEW-{todo_id}.md"
+    atomic_write_text(
+        review_file, f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n"
+    )
+
+    from .. import run_state as _run_state
+
+    run = _run_state.read_run(project_dir)
+    rejects = 0
+    run_stopped = False
+    report_file = ""
+    message = f"{todo_id} rejected — REVIEW written."
+    if run and run.get("active"):
+        rejects_map = dict(run.get("rejects") or {})
+        rejects = int(rejects_map.get(todo_id, 0) or 0) + 1
+        rejects_map[todo_id] = rejects
+        outcomes = dict(run.get("outcomes") or {})
+        outcomes[todo_id] = {
+            "verdict": "rejected",
+            "reason": reason.strip(),
+            "rejects": rejects,
+        }
+        _run_state.write_run(project_dir, rejects=rejects_map, outcomes=outcomes)
+        message = f"{todo_id} rejected (rejection #{rejects} in this run)."
+        if rejects >= 2:
+            from .run import stop_run
+
+            stopped = stop_run(
+                project_dir,
+                _run_state.read_run(project_dir) or run,
+                f"{todo_id} rejected twice — the task needs the owner",
+            )
+            run_stopped = True
+            report_file = stopped.report_file
+            message += " Run STOPPED: two rejections — the task needs the owner."
+
+    return RejectResult(
+        todo_id=todo_id,
+        review_file=str(review_file),
+        rejects=rejects,
+        run_stopped=run_stopped,
+        report_file=report_file,
+        message=message,
+    )
 
 
 # ─── create_baseline ────────────────────────────────────────────────────
@@ -446,6 +558,20 @@ def rollback(
         raise AwfApiError(f"invalid mode '{mode}', expected hard/soft/dry-run")
 
     project_dir = Path(project_dir).resolve()
+
+    # SPEC A-run.4 (stop-list): destructive rollback is an owner decision.
+    # While a run is active, `hard` is refused — stop the run first.
+    if mode == "hard":
+        from .. import run_state as _run_state
+
+        run = _run_state.read_run(project_dir)
+        if run and run.get("active"):
+            raise AwfApiError(
+                "Run is active — rollback(hard) is a stop-list item (owner decision). "
+                "Stop the run first (awf_run_finish) and ask the owner, or use mode='soft' "
+                "to keep a way back."
+            )
+
     require_agentic(project_dir)
     context_dir = paths.context_dir(project_dir)
     inbox = paths.inbox(project_dir)

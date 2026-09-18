@@ -67,12 +67,14 @@ from .pipeline import (
     continue_pipeline,
     create_baseline,
     kill_pipeline,
+    reject_commit,
     retry_stage,
     rollback,
     start_pipeline,
 )
 from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
+from .run import run_brief, run_finish, run_next, run_start, run_status
 from .setup import apply_project_setup
 from .wait_event import wait_for_event
 
@@ -85,6 +87,7 @@ __all__ = [
     "BaselineResult",
     "RollbackResult",
     "ApproveResult",
+    "RejectResult",
     "ReportResult",
     "ResetResult",
     "AddRoleResult",
@@ -95,6 +98,10 @@ __all__ = [
     "SupervisorContextResult",
     "ApplyIncrementPlanResult",
     "WaitEventResult",
+    "RunStartResult",
+    "RunStatusResult",
+    "RunNextResult",
+    "RunFinishResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -112,7 +119,14 @@ __all__ = [
     "create_baseline",
     "rollback",
     "approve_commit",
+    "reject_commit",
     "retry_stage",
+    # Autonomous run (забег)
+    "run_start",
+    "run_status",
+    "run_next",
+    "run_finish",
+    "run_brief",
     # Roles
     "add_role",
     "analyze_roles",
