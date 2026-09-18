@@ -196,3 +196,31 @@ class TestSalvageStatus:
         state = read_state(dash_project)
         assert state.get("salvage_needed") is False
         assert state.get("salvage_stage") is None
+
+
+class TestTodoDiffStat:
+    """Day-2 spec: diff-stat vs baseline in /api/state — one place for verify."""
+
+    def test_diff_stat_reported(self, tmp_git_repo):
+        import subprocess
+
+        proj = tmp_git_repo
+        (proj / ".agentic" / "context").mkdir(parents=True, exist_ok=True)
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=proj, capture_output=True, text=True,
+        ).stdout.strip()
+        (proj / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
+            sha + "\n", encoding="utf-8",
+        )
+        (proj / "README.md").write_text("changed by the stage\n", encoding="utf-8")
+        write_state(
+            proj, todo_id="TODO-0001", stage_name="agent-implementer", stage_kind="execute",
+        )
+
+        d = generate_state_dict(proj)
+
+        assert "README.md" in d["todo_diff_stat"]
+
+    def test_no_baseline_yields_empty(self, dash_project):
+        d = generate_state_dict(dash_project)
+        assert d["todo_diff_stat"] == ""

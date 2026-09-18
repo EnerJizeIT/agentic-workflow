@@ -207,3 +207,19 @@ class TestContinueWithBlocked:
 
         assert result.run_mode == "background"
         assert (proj / ".agentic" / "inbox" / "APPROVE-TODO-0009.ready").exists()
+
+    def test_pending_review_is_reported(self, tmp_path):
+        """A REVIEW left behind must be visible in the answer, not a silent stop."""
+        import awf.api.pipeline as api_pipeline
+
+        proj = _project(tmp_path)
+        _todo(proj)
+        _blocked(proj)
+        (proj / ".agentic" / "outbox" / "REVIEW-TODO-0009.md").write_text(
+            "rejected: redo X\n", encoding="utf-8",
+        )
+
+        result = api_pipeline.continue_pipeline(proj, background=False)
+
+        assert result.run_mode == "noop"
+        assert "REVIEW for TODO-0009" in result.message

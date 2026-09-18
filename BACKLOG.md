@@ -278,6 +278,23 @@ TODO не виден `newest_active`, CLI рано печатал «No active TO
 **Тесты:** +17 негативных сценариев (`tests/negative/test_escalation_recovery.py`,
 `TestAutoDoneScope` в `test_worker_failure_matrix.py`). Всего 1221, ruff чист.
 
+✅ **SPEC-2026-09-18 · Спека супервизора topic-trainer — взятое в работу.**
+- **D9**: дизамбигуация ролей обновляется автоматически после сборки
+  пайплайна (`apply_project_setup` → `analyze_roles_core`); тесты: первое
+  наполнение + пересборка со сменой позиций (FIRST/LAST agent).
+- **Валидация ролей** при загрузке `pipeline.yaml`: warning, если роль
+  не резолвится в .md (project/global) или пустая — опечатка больше не
+  даёт «стадию без роли» молча.
+- **Бонус-находка**: кастомные роли с заглавных/пробелов («Auditor»,
+  «My Agent») сохранялись как slug-файлы (`auditor.md`), а в пайплайн
+  писались сырыми — рантайм бы упал на «role file not found». Сборка
+  пайплайна теперь slug-нормализует роли.
+- **Dashboard**: `todo_diff_stat` (`git diff --stat` vs baseline) в
+  `/api/state` и в панели «Задача» — одно место вместо ручного diff.
+- **`continue` и REVIEW**: лежащий REVIEW-файл больше не тупик — в ответе
+  подсказка «REVIEW для TODO-NNNN ждёт: доработай TODO / `--ack`».
+- D8 (роли ≠ стадии пайплайна) — отложено решением владельца.
+
 ---
 
 ## Future scenarios

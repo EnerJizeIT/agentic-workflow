@@ -194,6 +194,46 @@ def _todo_closed(project_dir: Path, todo_id: str) -> bool:
     return todos.is_closed(paths.inbox(project_dir), paths.outbox(project_dir), todo_id)
 
 
+def _pending_review_todo(project_dir: Path) -> str:
+    """Day-2 review follow-up: newest TODO with a supervisor REVIEW and no DONE.
+
+    ``REVIEW-{todo}.md`` in the outbox means the supervisor rejected the work —
+    if the process died before it was consumed, the answer would otherwise be a
+    silent dead-end. Returns ``""`` when there is no pending review.
+    """
+    from ..signals import short_id
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    if not inbox.is_dir():
+        return ""
+    candidates: list[tuple[int, str]] = []
+    for review in outbox.glob("REVIEW-*.md"):
+        candidate = review.stem.split("-", 1)[1] if "-" in review.stem else ""
+        todo_id = candidate if candidate.startswith("TODO-") else ""
+        if not todo_id:
+            for ready in inbox.glob("TODO-*.ready"):
+                if short_id(ready.stem) == candidate:
+                    todo_id = ready.stem
+                    break
+        if not todo_id:
+            continue
+        md = inbox / f"{todo_id}.md"
+        if not md.is_file() or md.stat().st_size == 0:
+            continue
+        if (outbox / f"DONE-{todo_id}.ready").exists():
+            continue  # cycle completed — the review is stale
+        try:
+            num = int(short_id(todo_id))
+        except ValueError:
+            num = 0
+        candidates.append((num, todo_id))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str, str]:
     """Day-2 B3: resume a TODO that is closed by a pending ACK/APPROVE.
 
@@ -684,6 +724,32 @@ def continue_pipeline(
     current_todo = state_todo_id or todos.newest_active(project_dir)
     resolution_note = ""
 
+    # Day-2 review follow-up: a REVIEW left by the supervisor (the process died
+    # before anyone consumed it) must be visible in the answer, not a silent stop.
+    review_todo = _pending_review_todo(project_dir)
+    review_hint = ""
+    if review_todo:
+        review_hint = (
+            f" REVIEW for {review_todo} is waiting in the outbox — refine the TODO, "
+            f"then resume with `awf continue --ack {review_todo}` "
+            f"(or refresh {review_todo}.ready for a replan)."
+        )
+
+    def _blocked_result(todo: str) -> StartResult:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=0,
+            message=(
+                f"TODO {todo} is BLOCKED — no supervisor answer yet. "
+                f"Accept it with `awf continue --ack {todo}` (or write "
+                f".agentic/inbox/ACK-{todo}.ready); replan by creating or "
+                f"refreshing TODO-*.ready, then run awf continue again."
+                + review_hint
+            ),
+        )
+
     # Day-2 B3: a pending supervisor answer (ACK/APPROVE) must resume the TODO
     # it belongs to — even when closure signals hide it from newest_active().
     # Consume the answer, clear a BLOCKED closure, then resume.
@@ -695,24 +761,13 @@ def continue_pipeline(
             else:
                 blocked_todo = _newest_blocked_todo(project_dir)
                 if blocked_todo:
-                    return StartResult(
-                        run_mode="noop",
-                        run_id=None,
-                        log_file=None,
-                        exit_code=0,
-                        message=(
-                            f"TODO {blocked_todo} is BLOCKED — no supervisor answer yet. "
-                            f"Accept it with `awf continue --ack {blocked_todo}` (or write "
-                            f".agentic/inbox/ACK-{blocked_todo}.ready); replan by creating or "
-                            f"refreshing TODO-*.ready, then run awf continue again."
-                        ),
-                    )
+                    return _blocked_result(blocked_todo)
                 return StartResult(
                     run_mode="noop",
                     run_id=None,
                     log_file=None,
                     exit_code=0,
-                    message=f"TODO {current_todo} is closed — nothing to resume.",
+                    message=f"TODO {current_todo} is closed — nothing to resume." + review_hint,
                 )
         # Active TODO — resume as-is; a pending APPROVE belongs to the commit gate.
     else:
@@ -720,24 +775,13 @@ def continue_pipeline(
     if not current_todo:
         blocked_todo = _newest_blocked_todo(project_dir)
         if blocked_todo:
-            return StartResult(
-                run_mode="noop",
-                run_id=None,
-                log_file=None,
-                exit_code=0,
-                message=(
-                    f"TODO {blocked_todo} is BLOCKED — no supervisor answer yet. "
-                    f"Accept it with `awf continue --ack {blocked_todo}` (or write "
-                    f".agentic/inbox/ACK-{blocked_todo}.ready); replan by creating or "
-                    f"refreshing TODO-*.ready, then run awf continue again."
-                ),
-            )
+            return _blocked_result(blocked_todo)
         return StartResult(
             run_mode="noop",
             run_id=None,
             log_file=None,
             exit_code=0,
-            message="No active TODO found.",
+            message="No active TODO found." + review_hint,
         )
 
     # DF5-2: read pipeline state to determine resume point.

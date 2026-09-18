@@ -226,4 +226,44 @@ class TestRollbackTargetValidation:
         )
 
         load_stages(pipes / "good.yaml")
-        assert capsys.readouterr().err == ""
+        err = capsys.readouterr().err
+        # No rollback-target warning for a target that exists. (Role-file
+        # warnings may appear — this fixture has no role .md files.)
+        assert "rolls back" not in err
+
+    def test_loader_warns_on_unknown_role(self, tmp_path, capsys):
+        """Day-2 spec: a typo'd role used to give a silent 'stage without role'."""
+        from awf.pipeline import load_stages
+
+        pipes = tmp_path / ".agentic" / "pipelines"
+        pipes.mkdir(parents=True)
+        (pipes / "typo.yaml").write_text(
+            "stages:\n"
+            '  - name: plan\n    role: supervisor\n'
+            '  - name: impl\n    role: no-such-role-agent\n'
+            '  - name: verify\n    role: supervisor\n',
+            encoding="utf-8",
+        )
+
+        load_stages(pipes / "typo.yaml")
+        err = capsys.readouterr().err
+        assert "no-such-role-agent" in err
+        assert "no role file" in err
+
+    def test_loader_warns_on_empty_role(self, tmp_path, capsys):
+        from awf.pipeline import load_stages
+
+        pipes = tmp_path / ".agentic" / "pipelines"
+        pipes.mkdir(parents=True)
+        (pipes / "norole.yaml").write_text(
+            "stages:\n"
+            '  - name: plan\n    role: supervisor\n'
+            '  - name: mystery\n'
+            '  - name: verify\n    role: supervisor\n',
+            encoding="utf-8",
+        )
+
+        load_stages(pipes / "norole.yaml")
+        err = capsys.readouterr().err
+        assert "mystery" in err
+        assert "no role" in err

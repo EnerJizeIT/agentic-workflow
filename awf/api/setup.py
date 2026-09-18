@@ -46,6 +46,21 @@ def _stage_yaml(name: str, role: str, **extra: Any) -> dict[str, Any]:
     return stage
 
 
+def _slugify_role(name: str) -> str:
+    """Day-2 spec: normalize a role name to its saved file slug.
+
+    Custom roles are saved by the plugin as ``auditor.md`` (lowercased,
+    non-alphanumerics dashed) — a pipeline stage carrying the raw "Auditor"
+    would fail at runtime ("role file not found"). Mirrors the ASCII subset
+    of the plugin's ``_slugify``; falls back to the raw name when nothing
+    usable remains (the pipeline loader warns about the mismatch).
+    """
+    import re as _re
+
+    slug = _re.sub(r"[^a-z0-9_-]", "-", name.strip().lower()).strip("-")
+    return slug or name.strip()
+
+
 def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build ordered pipeline stages from team selection.
 
@@ -65,7 +80,7 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
             (empty pipeline would be plan→verify with no work — useless).
     """
     valid_roles = [
-        str(m.get("agent") or m.get("role") or "").strip()
+        _slugify_role(str(m.get("agent") or m.get("role") or ""))
         for m in team_order
     ]
     valid_roles = [r for r in valid_roles if r]
@@ -85,7 +100,7 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
 
     seen_roles: set[str] = set()
     for member in team_order:
-        role = str(member.get("agent") or member.get("role") or "").strip()
+        role = _slugify_role(str(member.get("agent") or member.get("role") or ""))
         if not role:
             continue
         if role in seen_roles:
@@ -428,6 +443,17 @@ def apply_project_setup(
         context_message=context_message,
         supervisor_instructions=supervisor_instructions,
     )
+
+    # D9 (topic-trainer spec): a rebuilt pipeline shifts stage positions, but
+    # the BD-31 disambiguation addenda in role files still say "position 2/3".
+    # Refresh them right after materialization — idempotent, best-effort.
+    if pipeline_path:
+        try:
+            from .roles import analyze_roles_core
+
+            analyze_roles_core(project_dir, dry_run=False)
+        except Exception as e:  # noqa: BLE001 — analysis must not fail setup
+            log.warning("apply_project_setup: role disambiguation refresh skipped: %s", e)
 
     # SMO: advance phase form→normalize after successful materialization.
     # Dogfood #4: supervisor had to call confirm_normalized TWICE because

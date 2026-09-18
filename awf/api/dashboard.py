@@ -692,6 +692,31 @@ def _read_todo_content(project_dir: Path, todo_id: str | None) -> str:
     return ""
 
 
+def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
+    """Day-2 spec: `git diff --stat` against the TODO baseline.
+
+    One place for the supervisor instead of a manual diff on verify.
+    Returns ``""`` when there is no baseline / not a git repo / git fails.
+    """
+    if not todo_id:
+        return ""
+    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+    if not sha_file.is_file():
+        return ""
+    try:
+        sha = sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+    except OSError:
+        return ""
+    if not sha:
+        return ""
+    try:
+        from .. import git_utils
+
+        return git_utils.diff_stat(project_dir, sha).strip()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return ""
+
+
 def _read_worker_last_line(project_dir: Path) -> str:
     """Read last meaningful line from worker output log."""
     logs_dir = project_dir / ".agentic" / "logs"
@@ -852,6 +877,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # TODO content
     todo_id = state.get("todo_id") if state else None
     todo_content_html = _read_todo_content(project_dir, todo_id)
+    todo_diff_stat = _read_todo_diff_stat(project_dir, todo_id)
 
     # TODO timeline
     todo_timeline = _build_todo_timeline(project_dir, todo_id)
@@ -891,6 +917,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "project_name": project_name,
         "todo_id": todo_id or "",
         "todo_content_html": todo_content_html,
+        "todo_diff_stat": todo_diff_stat,
         "status": status,
         "status_text": status_text,
         "status_icon": status_icon,

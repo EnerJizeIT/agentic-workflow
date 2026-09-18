@@ -137,6 +137,30 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
                         file=sys.stderr,
                     )
 
+    # Day-2 spec (second tier): stage roles must resolve to a role .md
+    # (project .agentic/roles/ or the global awf roles dir). A typo used to
+    # produce a stage that fails only at runtime with an opaque error.
+    project_dir = p.parent.parent.parent  # <project>/.agentic/pipelines/x.yaml
+    from .supervisor import resolve_role_file  # lazy — avoids import cycle
+
+    for st in result:
+        role = st.role or ""
+        if not role:
+            print(
+                f"WARNING: stage '{st.name}' has no role — it will fail at runtime.",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            resolve_role_file(role, project_dir)
+        except RuntimeError:
+            print(
+                f"WARNING: stage '{st.name}' uses role '{role}' but no role file "
+                f"was found (project .agentic/roles/ or global awf roles) — the "
+                f"stage will fail at runtime.",
+                file=sys.stderr,
+            )
+
     return result
 
 

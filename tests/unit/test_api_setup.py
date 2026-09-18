@@ -320,3 +320,73 @@ class TestApplyProjectSetup:
         )
         d = result.as_dict()
         json.dumps(d)  # must not raise
+
+
+# ─── D9: role disambiguation refresh on pipeline rebuild ────────────────────
+
+
+class TestDisambiguationRefresh:
+    """D9 (topic-trainer spec): rebuilding the pipeline must refresh BD-31 markers.
+
+    The addenda embed stage positions ("position 2/3"); after a form rebuild
+    the positions shift and stale markers used to linger until someone
+    remembered to re-run awf_analyze_roles.
+    """
+
+    def _roles(self, project, names=("developer", "qa")):
+        roles = project / ".agentic" / "roles"
+        roles.mkdir(parents=True, exist_ok=True)
+        for n in names:
+            (roles / f"{n}.md").write_text(f"# {n}\n\nRole body.\n", encoding="utf-8")
+
+    def test_markers_written_by_apply_project_setup(self, awf_project):
+        self._roles(awf_project)
+        api.setup.apply_project_setup(
+            awf_project, team=[{"agent": "developer"}, {"agent": "qa"}]
+        )
+        dev = (awf_project / ".agentic" / "roles" / "developer.md").read_text(encoding="utf-8")
+        assert "BD-31" in dev
+        assert "FIRST agent" in dev
+
+    def test_rebuild_refreshes_positions(self, awf_project):
+        self._roles(awf_project)
+        api.setup.apply_project_setup(
+            awf_project, team=[{"agent": "developer"}, {"agent": "qa"}]
+        )
+        dev_path = awf_project / ".agentic" / "roles" / "developer.md"
+        assert "FIRST agent" in dev_path.read_text(encoding="utf-8")
+
+        # Rebuild with the roles swapped → developer is now LAST.
+        api.setup.apply_project_setup(
+            awf_project, team=[{"agent": "qa"}, {"agent": "developer"}]
+        )
+        dev = dev_path.read_text(encoding="utf-8")
+        assert "LAST agent" in dev
+        assert "FIRST agent" not in dev
+
+
+class TestRoleSlugify:
+    """Day-2 spec: stage roles must match the saved role-file slugs.
+
+    The plugin saves custom roles as ``auditor.md`` / ``my-agent.md``; a
+    pipeline carrying the raw "Auditor" fails at runtime with an opaque
+    "role file not found".
+    """
+
+    def test_custom_role_slugified(self):
+        stages = api.setup.build_pipeline_stages(
+            [{"agent": "Auditor"}, {"agent": "My Agent"}]
+        )
+        roles = [s["role"] for s in stages]
+        assert "auditor" in roles
+        assert "my-agent" in roles
+
+    def test_lowercase_roles_unchanged(self):
+        stages = api.setup.build_pipeline_stages([{"agent": "agent-qa-review"}])
+        assert "agent-qa-review" in [s["role"] for s in stages]
+
+    def test_cyrillic_falls_back_to_raw(self):
+        """Cyrillic is transliterated by the plugin; the loader warns if not."""
+        from awf.api.setup import _slugify_role
+
+        assert _slugify_role("Аудитор") == "Аудитор"

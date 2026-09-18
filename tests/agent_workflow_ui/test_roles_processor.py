@@ -497,7 +497,11 @@ def test_bd6_saves_with_explicit_project_dir(isolated_roles_dir, reset_project_d
     assert saved == 1
     assert (isolated_roles_dir / "auditor.md").exists()
     assert (proj / ".agentic" / "roles" / "auditor.md").exists()
-    assert (proj / ".agentic" / "roles" / "auditor.md").read_text() == "# Auditor\nCheck code."
+    content = (proj / ".agentic" / "roles" / "auditor.md").read_text()
+    assert content.startswith("# Auditor\nCheck code.")
+    # D9: process_role_saves → apply_project_setup refreshes the BD-31
+    # disambiguation addendum after (re)building the pipeline.
+    assert "BD-31" in content
 
 
 def test_bd6_saves_supervisor_with_explicit_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):

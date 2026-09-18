@@ -130,6 +130,9 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .todo-content code { background: var(--bg-card); padding: 2px 5px; border-radius: 3px; font-family: var(--mono); }
 .todo-content pre { background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; }
 .todo-content strong { color: var(--yellow); }
+.todo-diff { margin-bottom: 16px; }
+.todo-diff-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.todo-diff pre { background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; font-family: var(--mono); font-size: 12px; color: var(--text); }
 
 /* ─── Events ─── */
 .event-row { display: flex; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
@@ -338,13 +341,21 @@ function updateChat(s) {
 function updateTodo(s) {
   const pane = document.getElementById('pane-todo');
   const html = s.todo_content_html || '';
-  if (html === _lastTodoHtml) return; // no change
-  _lastTodoHtml = html;
-  if (!html) {
-    pane.innerHTML = '<div class="empty">📝 Задача появится после dispatch</div>';
-  } else {
-    pane.innerHTML = '<div class="todo-content">' + html + '</div>';
+  const diffStat = s.todo_diff_stat || '';
+  const combined = diffStat + '|' + html;
+  if (combined === _lastTodoHtml) return; // no change
+  _lastTodoHtml = combined;
+
+  let out = '';
+  if (diffStat) {
+    const esc = diffStat.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    out += '<div class="todo-diff"><div class="todo-diff-title">Изменения vs baseline</div>'
+         + '<pre>' + esc + '</pre></div>';
   }
+  out += html
+    ? '<div class="todo-content">' + html + '</div>'
+    : '<div class="empty">📝 Задача появится после dispatch</div>';
+  pane.innerHTML = out;
 }
 
 // ─── Events ─────────────────────────────────────────────────────────
