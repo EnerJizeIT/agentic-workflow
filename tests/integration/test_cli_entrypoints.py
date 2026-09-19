@@ -220,3 +220,59 @@ class TestAnalyzeRolesEntrypoint:
         out = capsys.readouterr().out
         assert rc == 0, out
         assert "ROLE ANALYSIS" in out or "developer" in out
+
+
+class TestInitDryRunCli:
+    """AUD07-07: dry-run is a pure read — no prompts, no writes, honest message."""
+
+    def test_non_interactive_dry_run_preserves_runtime(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="DryRun")
+        (repo / ".agentic" / "context" / "marker.md").write_text(
+            "marker\n", encoding="utf-8"
+        )
+        capsys.readouterr()
+
+        rc = cli.main(["init", "--dry-run", "--non-interactive", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert (repo / ".agentic" / "context" / "marker.md").is_file(), (
+            "dry-run deleted runtime data"
+        )
+        assert "No files written" in out
+
+    def test_interactive_dry_run_asks_no_prompts(self, tmp_path, monkeypatch, capsys):
+        repo = _git_repo(tmp_path)
+
+        def fail_input(prompt=""):
+            raise AssertionError(f"dry-run must not prompt, but asked: {prompt!r}")
+
+        monkeypatch.setattr("builtins.input", fail_input)
+        capsys.readouterr()
+
+        rc = cli.main(["init", "--dry-run", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "DRY RUN" in out
+        assert not (repo / ".agentic").exists(), "dry-run must not create .agentic/"
+
+    def test_blank_project_name_falls_back_to_dir_name(self, tmp_path, monkeypatch, capsys):
+        repo = _git_repo(tmp_path)
+        # name=blank, 4 commands=blank, then decline any follow-up offers
+        answers = iter(["", "", "", "", "", "n", "n", "n"])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+        monkeypatch.setattr(
+            "awf.cmd_init.opencode_config_file",
+            lambda: tmp_path / "nope" / "opencode.json",
+        )
+        capsys.readouterr()
+
+        rc = cli.main(["init", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        cfg_text = (repo / ".agentic" / "config.yaml").read_text(encoding="utf-8")
+        assert "name: ''" not in cfg_text, "blank prompt answer leaked into config"
+        assert "name: 'Repo'" in cfg_text, "expected name derived from dir name 'repo'"

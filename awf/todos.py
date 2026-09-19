@@ -152,9 +152,13 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
             moved_anything = True
 
     if not moved_anything:
-        # P2: clean up empty dest dir (use rmtree for safety — rmdir fails
-        # on non-empty, which can happen if race creates files mid-archive)
-        shutil.rmtree(dest, ignore_errors=True)
+        # AUD01-01: delete dest only if EMPTY. rmtree (regression badf05e)
+        # wiped a previously assembled archive on a no-op re-call. rmdir
+        # fails on non-empty — that failure is the safety guard.
+        try:
+            dest.rmdir()
+        except OSError:
+            pass
         return None
 
     return dest

@@ -46,7 +46,9 @@ def run(args: Any) -> int:
             print(f"ERROR: {e}")
             return 1
         if dry_run:
-            print("[DRY RUN] Would create .agentic/ skeleton")
+            # AUD07-07: dry-run writes nothing — the old "Would create" message
+            # lied when .agentic/ already existed (R1 branch).
+            print("[DRY RUN] No files written — .agentic/ left as-is.")
             return 0
         print(f"Created .agentic/ skeleton for: {result.project_name}")
         print(f"  Stack: {result.stack}")
@@ -57,6 +59,18 @@ def run(args: Any) -> int:
 
     print("=== Agentic Workflow Init ===")
     print()
+
+    if dry_run:
+        # AUD07-07: dry-run writes nothing and must not ask a single prompt —
+        # the five input() calls used to run before this check and blocked
+        # on stdin (or swallowed real answers) on `awf init --dry-run`.
+        print("[DRY RUN] Would create:")
+        print("  .agentic/config.yaml (models added by project-setup form)")
+        print("  .agentic/roles/supervisor.md")
+        print("  .agentic/phases/plan.md (stub)")
+        print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
+        print("[DRY RUN] No files written.")
+        return 0
 
     # Interactive prompts — order MUST match lib/init.sh for E2E compatibility
     # Use project_dir_path instead of cwd for git checks (MCP-6 compat).
@@ -73,20 +87,14 @@ def run(args: Any) -> int:
     # (BD-32). Removed the dead prompt — was misleading users.
     worker_model = ""  # kept for opencode_agents.propose() below (legacy compat)
 
-    if dry_run:
-        print("[DRY RUN] Would create:")
-        print("  .agentic/config.yaml (models added by project-setup form)")
-        print("  .agentic/roles/supervisor.md")
-        print("  .agentic/phases/plan.md (stub)")
-        print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
-        return 0
-
     # Delegate skeleton creation to api.init_project
     try:
         result = api.init_project(
             project_dir=project_dir_path,
             force=force,
-            project_name=project_name,
+            # AUD07-07: blank answer → None → api derives name from dir name
+            # (an empty string used to land in config.yaml as `name: ''`).
+            project_name=project_name or None,
             test_cmd=test_cmd,
             lint_cmd=lint_cmd,
             typecheck_cmd=typecheck_cmd,

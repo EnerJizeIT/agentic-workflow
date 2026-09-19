@@ -73,6 +73,23 @@ def init_project(
 
     agentic = project_dir / ".agentic"
     if agentic.exists() and not force:
+        if dry_run:
+            # AUD05-01: dry-run is a pure read — return BEFORE _clean_runtime.
+            config = cfg_mod.load(project_dir)
+            project_name_val = config.get("project", {}).get("name", project_dir.name)
+            vision_path = paths.find_vision_file(project_dir)
+            return InitResult(
+                project_name=project_name_val,
+                project_dir=str(project_dir),
+                stack="(preserved)",
+                vision_path=str(vision_path) if vision_path else None,
+                vision_excerpt="",
+                supervisor_md="",
+                plan_md="",
+                pipeline_configured=bool(config.get("default_pipeline")),
+                next_action="[dry-run] .agentic/ already exists — nothing written, runtime untouched.",
+                warnings=[],
+            )
         # R1: Clean runtime dirs, preserve config.
         cleaned = _clean_runtime(project_dir)
         config = cfg_mod.load(project_dir)
