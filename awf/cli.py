@@ -106,6 +106,11 @@ def _dispatch_subcommand(argv):
     p_start = sub.add_parser("start", help="Start the pipeline from the beginning")
     _add_start_args(p_start)
     p_start.add_argument(
+        "--todo",
+        default="",
+        help="Pin the pipeline to a specific TODO id (e.g. TODO-0015)",
+    )
+    p_start.add_argument(
         "--background",
         action="store_true",
         help="Run detached (setsid) — don't block the terminal. Writes to "
@@ -114,6 +119,17 @@ def _dispatch_subcommand(argv):
 
     p_continue = sub.add_parser("continue", help="Resume an interrupted pipeline")
     _add_start_args(p_continue)
+    p_restore = sub.add_parser(
+        "restore", help="Restore an archived TODO from done/{id}/ to the inbox"
+    )
+    p_restore.add_argument("todo_id", help="TODO id (e.g. TODO-0015)")
+    p_restore.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -210,6 +226,9 @@ def _dispatch_subcommand(argv):
 
     args = parser.parse_args(argv)
 
+    if args.command == "restore":
+        from . import cmd_restore
+        return cmd_restore.run(args)
     if args.command == "status":
         return cmd_status.run(args)
     if args.command in ("start", "continue"):

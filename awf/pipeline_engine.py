@@ -467,7 +467,9 @@ def execute_supervisor_stage(
             if rc != 0:
                 return current_todo, 0, rc
 
-        current_todo = _find_active_todo(project_dir)
+        # NEG-2026-09-19 R1: keep the pinned TODO if the caller supplied one
+        # (run queue); fall back to "newest active" only when unpinned.
+        current_todo = current_todo or _find_active_todo(project_dir)
         if not current_todo:
             print("No active TODO found. Create one first, then continue.")
             _log(logs_dir, "No active TODO after supervisor stage")

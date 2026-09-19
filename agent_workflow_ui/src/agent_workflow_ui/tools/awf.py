@@ -309,6 +309,8 @@ async def awf_run_start(
     queue: list[str] | None = None,
     budget_minutes: int = 0,
     stop_flags_json: str = "",
+    note: str = "",
+    force: bool = False,
 ) -> dict[str, Any]:
     """Start an autonomous run: a queue of TODOs with mechanical gates.
 
@@ -323,6 +325,10 @@ async def awf_run_start(
         stop_flags_json: Optional JSON map of TODO id → [reason], e.g.
             '{"TODO-0012": ["phase-boundary", "external-audit"]}'. awf refuses
             to auto-continue past a flagged item — the run stops there.
+        note: R5 — one-line "what is happening now" for the owner's dashboard.
+            Keep it fresh with awf_run_note on every stage change.
+        force: Replace an already-active run state (recovery from a stale or
+            wrong-directory run). Without it a second run_start is refused.
 
     Returns:
         Dict with: active, queue, position, budget, stop_flags, next_action.
@@ -337,12 +343,56 @@ async def awf_run_start(
                 flags = {str(k): list(v) for k, v in parsed.items()}
         except (_json.JSONDecodeError, TypeError):
             return {"status": "error", "error": "stop_flags_json is not valid JSON."}
-    return await _exec(
+    result = await _exec(
         api.run_start,
         project_dir=_resolve_project_dir(project_dir),
         queue=queue or [],
         budget_minutes=budget_minutes,
         stop_flags=flags,
+        note=note,
+        force=force,
+    )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            "Write each TODO before its turn, then awf_run_next. Keep the run "
+            "note fresh with awf_run_note(text=...) at every stage change — "
+            "it is what the owner sees on the dashboard."
+        )
+    return result
+
+
+async def awf_run_note(
+    project_dir: str | None = None,
+    *,
+    text: str = "",
+) -> dict[str, Any]:
+    """R5: set the run's live description ("что сейчас делается").
+
+    The supervisor owns this text; the dashboard renders it under the run
+    chip and in the Итерация tab, so the owner sees whether the run is alive
+    without asking. Update it on every stage change.
+    """
+    return await _exec(
+        api.run_note,
+        project_dir=_resolve_project_dir(project_dir),
+        text=text,
+    )
+
+
+async def awf_restore(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Restore an archived TODO from done/{id}/ back to the inbox (active).
+
+    Safety net (NEG-2026-09-19 R2a): manual recovery for a TODO that was
+    archived without work. TODO.md returns, .ready is re-created, handoff
+    files move back; PROGRESS/DONE history stays in done/.
+    """
+    return await _exec(
+        api.restore_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
     )
 
 
@@ -1034,18 +1084,30 @@ async def awf_wait_for_event(
     - ``timeout`` — no event within timeout
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
 
+    R3 (NEG-2026-09-19): the MCP transport cuts long tool calls (JSON-RPC
+    -32001) — the default client timeout is ~60s. This wrapper clamps the
+    wait to MAX_WAIT (600s). For longer single waits set the MCP server
+    timeout in opencode.json::
+
+        "mcp": {"agent-workflow-ui": {..., "timeout": 600000}}
+
     Args:
         project_dir: Project root (default: cwd).
-        timeout: Max seconds to block (default 30 — reactive mode). In a run
-            loop pass suggested_timeout: the call runs in a worker thread,
-            long waits do NOT freeze other MCP tools.
+        timeout: Max seconds to block (default 30 — reactive mode; clamped
+            to 600). In a run loop pass suggested_timeout: the call runs in
+            a worker thread, long waits do NOT freeze other MCP tools.
         actionable_only: Only events needing supervisor action end the wait.
 
     Returns:
         Dict with: event_type (verify/blocked/checkpoint/done/timeout/idle),
         message (instruction for supervisor), state_snapshot,
-        suggested_timeout (recommended wait size for the next call).
+        suggested_timeout (recommended wait size for the next call),
+        timeout_clamped (true when the requested timeout exceeded the cap).
     """
+    MAX_WAIT = 600
+    requested = int(timeout or 0)
+    timeout = max(1, min(requested, MAX_WAIT))
+    clamped = requested > MAX_WAIT
     try:
         result = await asyncio.to_thread(
             api.wait_for_event,
@@ -1054,6 +1116,9 @@ async def awf_wait_for_event(
             actionable_only=actionable_only,
         )
         response = _ok(result)
+        if clamped:
+            response["timeout_clamped"] = True
+            response["timeout_requested"] = requested
         et = result.get("event_type", "timeout") if isinstance(result, dict) else "timeout"
         suggested = response.get("suggested_timeout") or 180
 

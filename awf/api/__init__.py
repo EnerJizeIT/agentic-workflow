@@ -60,6 +60,7 @@ from .lifecycle import (
     list_orphans,
     remove_orphans,
     reset_runtime,
+    restore_todo,
 )
 from .model_check import check_model_config
 from .pipeline import (
@@ -74,7 +75,7 @@ from .pipeline import (
 )
 from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
-from .run import run_brief, run_finish, run_next, run_start, run_status
+from .run import run_brief, run_finish, run_next, run_note, run_start, run_status
 from .setup import apply_project_setup
 from .wait_event import wait_for_event
 
@@ -102,6 +103,7 @@ __all__ = [
     "RunStatusResult",
     "RunNextResult",
     "RunFinishResult",
+    "RestoreResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -121,12 +123,14 @@ __all__ = [
     "approve_commit",
     "reject_commit",
     "retry_stage",
+    "restore_todo",
     # Autonomous run (забег)
     "run_start",
     "run_status",
     "run_next",
     "run_finish",
     "run_brief",
+    "run_note",
     # Roles
     "add_role",
     "analyze_roles",

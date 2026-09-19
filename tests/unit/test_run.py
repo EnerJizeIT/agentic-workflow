@@ -304,3 +304,104 @@ class TestReportHealth:
 
         report = Path(result.report_file).read_text(encoding="utf-8")
         assert "Salvage events:** 2" in report
+
+
+class TestRunNote:
+    """R5: the run carries a live note for the owner's dashboard."""
+
+    def test_start_stores_note_and_brief_carries_it(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"], note="D1a: пишем схемы")
+
+        state = run_state.read_run(proj)
+        assert state["note"] == "D1a: пишем схемы"
+        assert api.run_brief(proj)["note"] == "D1a: пишем схемы"
+
+    def test_run_note_updates(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+
+        result = api.run_note(proj, "стадия implementer, ~10 мин")
+
+        assert result.active is True
+        assert run_state.read_run(proj)["note"] == "стадия implementer, ~10 мин"
+
+    def test_run_note_without_run_raises(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        with pytest.raises(api.AwfApiError, match="No active run"):
+            api.run_note(proj, "x")
+
+
+class TestRunStartSafety:
+    """A1/A6: ghost-proof start — path validation, force replace, path echo."""
+
+    def test_message_contains_project_path(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        result = api.run_start(proj, queue=["TODO-0001"])
+        assert str(proj) in result.message
+
+    def test_project_root_stored(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+        assert run_state.read_run(proj)["project_root"] == str(proj)
+
+    def test_active_run_refused_with_age(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+        with pytest.raises(api.AwfApiError, match="force=true"):
+            api.run_start(proj, queue=["TODO-0002"])
+
+    def test_force_replaces_active_run(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+
+        result = api.run_start(proj, queue=["TODO-0002"], force=True)
+
+        assert "previous run replaced" in result.message
+        assert run_state.read_run(proj)["queue"] == ["TODO-0002"]
+
+
+class TestRestoreApi:
+    """A CLI-level check for the restore safety net (API roundtrip in negative)."""
+
+    def test_cmd_restore_calls_api(self, tmp_git_repo, monkeypatch, capsys):
+        from awf import cmd_restore
+
+        proj = _project(tmp_git_repo)
+        called = {}
+
+        def fake_restore(project_dir, todo_id):
+            called["args"] = (str(project_dir), todo_id)
+
+            class _R:
+                message = "TODO-0015 restored"
+
+            return _R()
+
+        monkeypatch.setattr(api, "restore_todo", fake_restore)
+
+        class _Args:
+            project_dir = str(proj)
+            todo_id = "TODO-0015"
+
+        rc = cmd_restore.run(_Args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert called["args"] == (str(proj), "TODO-0015")
+        assert "restored" in out
+
+    def test_cmd_restore_failure_returns_1(self, tmp_git_repo, monkeypatch, capsys):
+        from awf import cmd_restore
+
+        proj = _project(tmp_git_repo)
+
+        def boom(project_dir, todo_id):
+            raise api.AwfApiError("No archived TODO at done/TODO-9999")
+
+        monkeypatch.setattr(api, "restore_todo", boom)
+
+        class _Args:
+            project_dir = str(proj)
+            todo_id = "TODO-9999"
+
+        assert cmd_restore.run(_Args()) == 1

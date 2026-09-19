@@ -15,11 +15,13 @@ from .. import config as cfg_mod
 from .. import paths, todos
 from .._atomic import atomic_write_text
 from ._background import check_pipeline_running
+from ._errors import AwfApiError
 from ._helpers import read_file_text, require_agentic, require_git_repo
 from ._results import (
     InitResult,
     ReportResult,
     ResetResult,
+    RestoreResult,
     StatusResult,
 )
 from ._stack import derive_project_name, detect_stack
@@ -341,6 +343,64 @@ def _run_brief(project_dir: Path) -> dict | None:
     from .run import run_brief
 
     return run_brief(project_dir)
+
+
+def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
+    """Bring an archived TODO back from done/{id}/ to the inbox (active again).
+
+    NEG-2026-09-19 R2a safety net: the manual recovery path for TODOs
+    archived without work. Restores TODO.md and re-creates .ready; handoff
+    files move back too. PROGRESS/DONE reports stay in done/ as history.
+    """
+    import re as _re
+    import shutil
+
+    if not _re.match(r"^TODO-\d{4,}$", todo_id or ""):
+        raise AwfApiError(f"invalid todo_id {todo_id!r}, expected TODO-NNNN")
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    done_dir = paths.done_dir(project_dir) / todo_id
+    if not done_dir.is_dir():
+        raise AwfApiError(f"No archived TODO at done/{todo_id} — nothing to restore.")
+    md = done_dir / "TODO.md"
+    if not md.is_file():
+        raise AwfApiError(f"done/{todo_id}/ has no TODO.md — nothing to restore.")
+
+    inbox = paths.inbox(project_dir)
+    inbox.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(md), str(inbox / f"{todo_id}.md"))
+    (inbox / f"{todo_id}.ready").touch()
+
+    restored_handoffs = 0
+    handoff_src = done_dir / "handoff"
+    if handoff_src.is_dir():
+        handoff_dst = paths.agentic_dir(project_dir) / "handoff"
+        handoff_dst.mkdir(parents=True, exist_ok=True)
+        for f in sorted(handoff_src.iterdir()):
+            if f.is_file():
+                shutil.move(str(f), str(handoff_dst / f.name))
+                restored_handoffs += 1
+        try:
+            handoff_src.rmdir()
+        except OSError:
+            pass
+
+    remaining = sorted(p.name for p in done_dir.iterdir())
+    if not remaining:
+        try:
+            done_dir.rmdir()
+        except OSError:
+            pass
+
+    return RestoreResult(
+        todo_id=todo_id,
+        message=(
+            f"{todo_id} restored to inbox (active)."
+            + (f" Handoffs restored: {restored_handoffs}." if restored_handoffs else "")
+            + (f" History kept in done/{todo_id}/: {', '.join(remaining)}." if remaining else "")
+        ),
+    )
 
 
 def get_status(project_dir: Path) -> StatusResult:

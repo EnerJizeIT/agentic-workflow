@@ -4,7 +4,7 @@ Covers:
 - Stale PID cleanup: state file with dead PID → cleared
 - Stale PID: live PID → preserved
 - ACK+APPROVE dedup: both present → ACK removed, APPROVE kept
-- Multiple TODOs: newest kept, older archived as superseded
+- Multiple TODOs: WARN ONLY, never archived (NEG-2026-09-19 R2)
 - Single TODO: preserved (no archival)
 - No state: noop
 """
@@ -110,18 +110,21 @@ class TestReconcileDedupSignals:
 
 
 class TestReconcileMultipleTodos:
-    """DF6-2 step 3: multiple active TODOs → keep newest, archive rest."""
+    """DF6-2 step 3 (NEG-2026-09-19 R2): multiple active TODOs are legitimate
+    — a run queue pre-readies them. Reconcile must NEVER archive; it logs a
+    warning and leaves everything in place."""
 
-    def test_supersedes_older_todo(self, project):
-        """Two TODOs: newer kept, older archived."""
+    def test_older_todo_left_alone(self, project):
+        """Two TODOs: both stay in inbox with their ready signals."""
         _make_todo(project, "TODO-0001", age_seconds=60)
         _make_todo(project, "TODO-0002", age_seconds=0)
         _reconcile(project)
-        assert is_archived(project, "TODO-0001") is True
+        assert is_archived(project, "TODO-0001") is False
         assert is_archived(project, "TODO-0002") is False
         inbox = project / ".agentic/inbox"
+        assert (inbox / "TODO-0001.md").exists()
+        assert (inbox / "TODO-0001.ready").exists()
         assert (inbox / "TODO-0002.md").exists()
-        assert not (inbox / "TODO-0001.md").exists()
 
     def test_single_todo_preserved(self, project):
         """One TODO → not archived."""
@@ -131,14 +134,13 @@ class TestReconcileMultipleTodos:
         inbox = project / ".agentic/inbox"
         assert (inbox / "TODO-0001.md").exists()
 
-    def test_three_todos_keep_newest(self, project):
+    def test_three_todos_all_kept(self, project):
         _make_todo(project, "TODO-0001", age_seconds=120)
         _make_todo(project, "TODO-0002", age_seconds=60)
         _make_todo(project, "TODO-0003", age_seconds=0)
         _reconcile(project)
-        assert is_archived(project, "TODO-0001") is True
-        assert is_archived(project, "TODO-0002") is True
-        assert is_archived(project, "TODO-0003") is False
+        for tid in ("TODO-0001", "TODO-0002", "TODO-0003"):
+            assert is_archived(project, tid) is False
 
 
 class TestReconcileCombined:
@@ -164,6 +166,6 @@ class TestReconcileCombined:
         assert state is None or "pipeline_pid" not in state
         # ACK removed
         assert not (inbox / "ACK-TODO-0001.ready").exists()
-        # Old TODO archived
-        assert is_archived(project, "TODO-0001") is True
+        # Both TODOs stay untouched (R2: reconcile never archives)
+        assert is_archived(project, "TODO-0001") is False
         assert is_archived(project, "TODO-0002") is False

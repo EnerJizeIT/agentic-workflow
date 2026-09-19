@@ -348,6 +348,17 @@ class RunNextResult:
 
 
 @dataclass
+class RestoreResult:
+    """Result of :func:`awf.api.restore_todo` (NEG-2026-09-19 R2a safety net)."""
+
+    todo_id: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RunFinishResult:
     """Result of :func:`awf.api.run_finish`."""
 
@@ -381,4 +392,5 @@ __all__ = [
     "RunStatusResult",
     "RunNextResult",
     "RunFinishResult",
+    "RestoreResult",
 ]

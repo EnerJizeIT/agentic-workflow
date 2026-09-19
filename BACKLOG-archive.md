@@ -1624,3 +1624,31 @@ permission-профиль, канон в промпте). Всего 1287+, ruff
    Например: SMO.7 escape-hatch'и, coverage critical paths, PyPI, GitHub Pages.
 
 
+---
+
+## 🗄 2026-09-19 · A-run safety (NEG-2026-09-19)
+
+Bugs from the first real run (`awf-bug-report-arun-home.md`) — all fixed
+red-first in `tests/negative/test_run_queue_safety.py` (11 tests).
+
+✅ **R1** — queue order: the pipeline picked "newest active TODO"; now
+   `start_pipeline(todo_id=)` / `awf_run_next` pin the queue item end-to-end.
+✅ **R2/R2a** — `_reconcile` archived queued TODOs (with their `.ready`) at
+   pipeline start; reconcile is now warn-only and never archives — archiving
+   is exclusively the verify/approve flow's right.
+✅ **A1** — ghost run in `$HOME/.agentic`: `run_*` refuse a dir without
+   `.agentic/config.yaml`, echo the path; the start message carries the root.
+✅ **A2** — "missing or empty" now names the exact path it looked in.
+✅ **A3/R4** — position shows the RUNNING item (1/4, not 2/4).
+✅ **A4/R3** — `wait_for_event` clamps the transport-unsafe timeout (≤600s)
+   and flags `timeout_clamped`; opencode.json MCP entry got `"timeout": 600000`.
+✅ **A5/R5** — run note: `awf_run_start(note=)` / `awf_run_note`; rendered in
+   the run chip and the Итерация tab.
+✅ **A6** — `run_start(force=true)` replaces a stale/wrong-dir run;
+   `project_root` stored in run state.
+✅ **Safety net** — `awf_restore` / `awf restore TODO-NNNN` brings an archived
+   TODO back (md + ready + handoffs).
+✅ **Coverage** — core awf had NO CI floor; gate added (≥80%, now 83%).
+   CLI entry points got real smoke tests (cmd_init was 0%).
+⬜ Открыто: heartbeat для wait_for_event (R3-в), CLI `awf run`, покрытие
+   cmd_analyze_roles/cmd_approve.

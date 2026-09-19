@@ -75,12 +75,19 @@ def elapsed_minutes(state: dict) -> float:
 
 
 def position(state: dict) -> str:
-    """Human position like ``2/3`` (the item about to run / total)."""
+    """Human position like ``1/3`` — the RUNNING item's number.
+
+    NEG-2026-09-19 R4: ``run_next`` advances ``index`` at LAUNCH, so
+    ``index + 1`` showed the NEXT item (2/4 while the first was running).
+    When ``current`` is set, the running item is ``index``; between items
+    (no current) the next-to-run is ``index + 1``.
+    """
     queue = state.get("queue") or []
     total = len(queue)
     if not total:
         return "0/0"
     idx = int(state.get("index", 0) or 0)
-    if idx >= total:
-        return f"{total}/{total}"
-    return f"{idx + 1}/{total}"
+    current = str(state.get("current") or "")
+    shown = idx if current else idx + 1
+    shown = max(1, min(shown, total))
+    return f"{shown}/{total}"

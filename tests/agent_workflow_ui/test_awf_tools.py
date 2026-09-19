@@ -498,3 +498,53 @@ class TestToolRegistration:
             assert mcp is not None
         except Exception as e:
             pytest.fail(f"create_server failed: {e}")
+
+
+class TestWaitForEventClamp:
+    """R3 (NEG-2026-09-19): the MCP transport cuts long calls — clamp them."""
+
+    def test_timeout_clamped_and_flagged(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            captured["timeout"] = timeout
+            captured["actionable_only"] = actionable_only
+
+            class _R:
+                def as_dict(self):
+                    return {"event_type": "timeout", "message": "no event",
+                            "state_snapshot": {}, "suggested_timeout": 120}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+
+        result = asyncio.run(
+            awf.awf_wait_for_event(project_dir="/tmp", timeout=9999, actionable_only=True)
+        )
+
+        assert captured["timeout"] == 600, "must clamp to the transport-safe cap"
+        assert result["timeout_clamped"] is True
+        assert result["timeout_requested"] == 9999
+
+    def test_short_timeout_untouched(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            captured["timeout"] = timeout
+
+            class _R:
+                def as_dict(self):
+                    return {"event_type": "timeout", "message": "x",
+                            "state_snapshot": {}, "suggested_timeout": 60}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=55))
+
+        assert captured["timeout"] == 55
+        assert "timeout_clamped" not in result

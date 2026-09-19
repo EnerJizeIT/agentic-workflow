@@ -37,6 +37,7 @@ class PipelineArgs:
     from_stage: str | None = None
     auto: bool = False
     timeout: int = 3600
+    todo_id: str = ""
 
 
 def start_in_background(
@@ -46,6 +47,7 @@ def start_in_background(
     from_stage: str | None,
     auto: bool,
     timeout: int,
+    todo_id: str = "",
 ) -> tuple[int, Path, Path]:
     """Launch ``awf start`` detached, return ``(pid, log_file, pid_file)``.
 
@@ -70,6 +72,8 @@ def start_in_background(
         child_argv += ["--pipeline", pipeline]
     if from_stage:
         child_argv += ["--from-stage", from_stage]
+    if todo_id:
+        child_argv += ["--todo", todo_id]
     if auto:
         child_argv.append("--auto")
     child_argv += ["--timeout", str(timeout)]

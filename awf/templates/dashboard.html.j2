@@ -143,6 +143,8 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .verify-banner { display: none; margin: 0; padding: 12px 16px; text-align: center; font-size: 14px; font-weight: 600; color: var(--yellow); background: rgba(210,153,34,0.10); border-top: 1px solid rgba(210,153,34,0.35); border-bottom: 1px solid rgba(210,153,34,0.35); animation: vb-pulse 1.6s ease-in-out infinite; }
 @keyframes vb-pulse { 0%, 100% { background: rgba(210,153,34,0.08); } 50% { background: rgba(210,153,34,0.22); } }
 .elapsed-total { font-size: 18px; color: var(--text-dim); margin-top: 8px; }
+.run-note { font-size: 13px; line-height: 1.5; padding: 10px 14px; margin-bottom: 12px; border-radius: var(--radius-sm); background: rgba(88,166,255,0.08); color: var(--text); }
+.run-note-title { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--accent); margin-bottom: 4px; }
 .todo-summary { font-size: 14px; line-height: 1.6; padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); background: var(--bg-card); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
 .todo-full summary { cursor: pointer; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
 .todo-full[open] summary { color: var(--text); }
@@ -282,7 +284,9 @@ function updateTopbar(s) {
     let label = '🏃 забег ' + (run.position || '?');
     if (run.current) label += ' · ' + run.current;
     if (run.budget_left_minutes) label += ' · ~' + run.budget_left_minutes + 'м';
-    runChip.textContent = label;
+    if (run.note) label += ' — ' + run.note;
+    runChip.textContent = label.length > 120 ? label.slice(0, 119) + '…' : label;
+    runChip.title = run.note || '';
     runChip.style.display = '';
   } else {
     runChip.style.display = 'none';
@@ -409,11 +413,17 @@ function updateTodo(s) {
   const html = s.todo_content_html || '';
   const diffStat = s.todo_diff_stat || '';
   const summary = s.todo_summary || '';
-  const combined = summary + '§' + diffStat + '|' + html;
+  const runNote = (s.run && s.run.active) ? (s.run.note || '') : '';
+  const combined = runNote + '§' + summary + '§' + diffStat + '|' + html;
   if (combined === _lastTodoHtml) return; // no change
   _lastTodoHtml = combined;
 
   let out = '';
+  const run = s.run || null;
+  if (run && run.active && run.note) {
+    out += '<div class="run-note"><span class="run-note-title">Сейчас в итерации</span>'
+         + escapeHtml(run.note) + '</div>';
+  }
   if (summary) {
     out += '<div class="todo-summary">' + escapeHtml(summary) + '</div>';
   }

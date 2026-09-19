@@ -139,7 +139,9 @@ def run_pipeline(args: Any) -> int:
             return 1
         _log(logs_dir, f"Starting from stage: {from_stage} (index {stage_idx})")
 
-    current_todo = ""
+    # NEG-2026-09-19 R1: a pinned TODO (run queue item) wins over the
+    # "newest active" heuristic — queue order must be honored.
+    current_todo = str(getattr(args, "todo_id", "") or "")
 
     while 0 <= stage_idx < total:
         stage = stages[stage_idx]

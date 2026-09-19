@@ -43,6 +43,19 @@ jobs:
         run: |
           python -m pytest tests/ -v
 
+      - name: Core coverage gate (≥80%)
+        # NEG-2026-09-19: the core awf package had NO coverage floor — the
+        # run/reconcile data-destruction incident shipped untested code paths
+        # (cmd_init 0%, dashboard_server 36%, run queue untested). Measured
+        # 81% when the gate was introduced; keep it from sliding back.
+        # Note: subprocess-executed modules (cmd_*.py) are conservatively low
+        # here; direct-call smoke tests cover the entry points instead.
+        run: |
+          python -m pytest tests/unit tests/negative tests/integration tests/e2e \
+            --cov=awf \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+
       - name: Plugin coverage gate (≥80%)
         # Combined awf+plugin coverage is misleading because pytest-cov doesn't
         # track subprocess execution in E2E tests (awf-core cmd_*.py modules).

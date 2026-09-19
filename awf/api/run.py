@@ -19,7 +19,6 @@ from pathlib import Path
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
 from ._errors import AwfApiError
-from ._helpers import require_agentic
 from ._results import (
     RunFinishResult,
     RunNextResult,
@@ -28,6 +27,29 @@ from ._results import (
 )
 
 _TODO_RE = re.compile(r"^TODO-\d{4,}$")
+
+
+def _require_run_project(project_dir: Path) -> Path:
+    """run_* safety: a real project root has .agentic/ AND config.yaml.
+
+    NEG-2026-09-19 A1: ``run_start`` without ``project_dir`` used the MCP
+    subprocess cwd ($HOME), where a bare ``.agentic/`` from old experiments
+    existed — a ghost run was recorded there and every later message was
+    misleading. Refuse loudly, with the path, before writing anything.
+    """
+    project_dir = Path(project_dir).resolve()
+    agentic = project_dir / ".agentic"
+    if not agentic.is_dir():
+        raise AwfApiError(
+            f"Not an awf project: {project_dir} has no .agentic/ — run 'awf init' first."
+        )
+    if not (agentic / "config.yaml").is_file():
+        raise AwfApiError(
+            f"Not an awf project root: {project_dir} (no .agentic/config.yaml). "
+            f"Pass project_dir explicitly — the default is the MCP process cwd, "
+            f"which is usually not your project."
+        )
+    return project_dir
 
 
 def _validate_queue(queue: list[str] | None) -> list[str]:
@@ -55,6 +77,7 @@ def run_brief(project_dir: Path) -> dict | None:
     return {
         "active": bool(state.get("active")),
         "position": run_state.position(state),
+        "note": str(state.get("note") or ""),
         "current": state.get("current", ""),
         "completed": list(state.get("completed") or []),
         "budget_minutes": budget,
@@ -70,6 +93,8 @@ def run_start(
     queue: list[str] | None = None,
     budget_minutes: int = 0,
     stop_flags: dict[str, list[str]] | None = None,
+    note: str = "",
+    force: bool = False,
 ) -> RunStartResult:
     """Start an autonomous run: record the queue and the mechanical gates.
 
@@ -78,21 +103,24 @@ def run_start(
     items awf must never auto-continue past (phase boundaries, external
     audits, owner-decision tasks).
     """
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
+    project_dir = _require_run_project(project_dir)
     ids = _validate_queue(queue)
 
     existing = run_state.read_run(project_dir)
-    if existing and existing.get("active"):
+    if existing and existing.get("active") and not force:
+        age = int(run_state.elapsed_minutes(existing))
         raise AwfApiError(
             f"Run already active ({run_state.position(existing)}, current "
-            f"{existing.get('current') or '—'}). Finish it with awf_run_finish first."
+            f"{existing.get('current') or '—'}, started {age} min ago). "
+            f"Finish it with awf_run_finish, or pass force=true to replace it."
         )
 
     flags = {str(k): list(v) for k, v in (stop_flags or {}).items() if k}
+    replaced = bool(existing and existing.get("active") and force)
     state = run_state.write_run(
         project_dir,
         active=True,
+        project_root=str(project_dir),
         queue=ids,
         index=0,
         current="",
@@ -104,16 +132,21 @@ def run_start(
         started_at=run_state.now_iso(),
         stop_reason="",
         report_file="",
+        note=note.strip(),
     )
 
     budget_note = f", budget {int(budget_minutes)} min" if budget_minutes else ""
+    replace_note = " (previous run replaced)" if replaced else ""
     return RunStartResult(
         active=True,
         queue=ids,
         position=run_state.position(state),
         budget_minutes=int(budget_minutes or 0),
         stop_flags=flags,
-        message=f"Run started: {len(ids)} TODO(s){budget_note} — {', '.join(ids)}",
+        message=(
+            f"Run started in {project_dir}{replace_note}: {len(ids)} TODO(s)"
+            f"{budget_note} — {', '.join(ids)}"
+        ),
         next_action=(
             f"Write the first TODO (inbox/{ids[0]}.md if missing), then call "
             f"awf_run_next to launch it. Loop: awf_wait_for_event → on verify run "
@@ -123,10 +156,24 @@ def run_start(
     )
 
 
+def run_note(project_dir: Path, text: str) -> RunStatusResult:
+    """Set the run's live description (R5): what the current stage is doing.
+
+    The supervisor owns this text — awf renders it on the dashboard so the
+    owner can see whether the run is alive without asking. Returns the
+    refreshed status.
+    """
+    project_dir = _require_run_project(project_dir)
+    state = run_state.read_run(project_dir)
+    if not state or not state.get("active"):
+        raise AwfApiError("No active run — nothing to annotate. Start one with awf_run_start.")
+    run_state.write_run(project_dir, note=str(text).strip())
+    return run_status(project_dir)
+
+
 def run_status(project_dir: Path) -> RunStatusResult:
     """Current run state (or an inactive summary when no run exists)."""
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
+    project_dir = _require_run_project(project_dir)
     state = run_state.read_run(project_dir) or {}
     active = bool(state.get("active"))
     budget = int(state.get("budget_minutes", 0) or 0)
@@ -289,8 +336,7 @@ def run_next(
     TODO not archived → refused; TODO file missing → refused (the supervisor
     must write it first).
     """
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
+    project_dir = _require_run_project(project_dir)
 
     state = run_state.read_run(project_dir)
     if not state or not state.get("active"):
@@ -344,7 +390,7 @@ def run_next(
         return RunNextResult(
             action="refused",
             todo_id=next_id,
-            message=f"{next_id}.md is missing or empty in inbox.",
+            message=f"{next_id}.md is missing or empty — looked in {todo_md}",
             next_action=(
                 f"Write .agentic/inbox/{next_id}.md (the task for this queue item), "
                 f"then call awf_run_next again."
@@ -376,6 +422,7 @@ def run_next(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        todo_id=next_id,  # NEG-2026-09-19 R1: queue order is pinned, not "newest active"
     )
 
     if result.run_mode in ("noop", "error"):
@@ -410,8 +457,7 @@ def run_finish(
     summary: str = "",
 ) -> RunFinishResult:
     """Close the run: write the report and mark it inactive."""
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
+    project_dir = _require_run_project(project_dir)
     state = run_state.read_run(project_dir)
     if not state:
         return RunFinishResult(

@@ -67,5 +67,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_run_status, name="awf_run_status")
     mcp.add_tool(awf.awf_run_next, name="awf_run_next")
     mcp.add_tool(awf.awf_run_finish, name="awf_run_finish")
+    mcp.add_tool(awf.awf_run_note, name="awf_run_note")
+    mcp.add_tool(awf.awf_restore, name="awf_restore")
 
     return mcp

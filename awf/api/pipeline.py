@@ -98,7 +98,10 @@ def _reconcile(project_dir: Path) -> None:
     Ensures consistent state by cleaning up:
     1. Stale pipeline PID in state file → clear state.
     2. Duplicate ACK+APPROVE signals → remove older one.
-    3. Multiple active TODOs → keep newest, archive rest as superseded.
+    3. Multiple active TODOs → WARN ONLY, never archive (NEG-2026-09-19 R2:
+       a run queue legitimately pre-readies several TODOs; the old
+       auto-archive moved them to done/ with their .ready and the engine
+       then ran the wrong one).
 
     Note: does NOT auto-archive TODOs based on ACK/APPROVE presence —
     that's done by orchestrator verify stage (DF6-1). Tests pre-create
@@ -106,7 +109,7 @@ def _reconcile(project_dir: Path) -> None:
     """
     import os
 
-    from .. import paths, todos
+    from .. import paths
     from .._log import log as _log
     from ..pipeline_state import read_state
 
@@ -145,22 +148,14 @@ def _reconcile(project_dir: Path) -> None:
                 ack.unlink()
                 cleaned.append(f"dedup: removed ACK-{todo_id} (APPROVE exists)")
 
-    # 3. Multiple active TODOs → keep newest, archive rest
-    # AUD-4: sort by TODO number, not mtime (editing TODO-0005 after creating
-    # TODO-0007 would make mtime newer and archive the wrong one).
+    # 3. Multiple active TODOs → WARN ONLY (NEG-2026-09-19 R2).
+    # Destructive cleanup is never right here: a run queue pre-readies all of
+    # its items, and archives belong to the verify/approve flow only.
     if inbox.is_dir():
-        def _todo_num(p: Path) -> int:
-            import re
-            m = re.search(r"TODO-(\d+)", p.name)
-            return int(m.group(1)) if m else 0
-
-        active = sorted(inbox.glob("TODO-*.ready"), key=_todo_num, reverse=True)
+        active = sorted(inbox.glob("TODO-*.ready"))
         if len(active) > 1:
-            for old_ready in active[1:]:
-                todo_id = old_ready.stem
-                result = todos.archive_todo(project_dir, todo_id)
-                if result:
-                    cleaned.append(f"superseded {todo_id} (newer TODO exists)")
+            names = ", ".join(p.stem for p in active)
+            cleaned.append(f"multiple active TODOs (left as-is): {names}")
 
     if cleaned and logs_dir.is_dir():
         _log(logs_dir, f"DF6-2 reconcile: {'; '.join(cleaned)}")
@@ -643,8 +638,13 @@ def start_pipeline(
     from_stage: str | None = None,
     auto: bool = False,
     timeout: int = 3600,
+    todo_id: str = "",
 ) -> StartResult:
     """Start the pipeline from the beginning.
+
+    ``todo_id`` pins the pipeline to a specific TODO (NEG-2026-09-19 R1):
+    without it the engine picks the "newest active" TODO, which breaks run
+    queues with dependencies.
 
     ``background=True`` launches a detached subprocess and returns immediately
     with a PID. Otherwise runs synchronously and returns the final exit code.
@@ -663,7 +663,7 @@ def start_pipeline(
     # Only for background mode (production supervisor flow). Foreground
     # mode is used by tests/CI — skip guard there.
     if background and not from_stage:
-        active = todos.newest_active(project_dir)
+        active = todo_id or todos.newest_active(project_dir)
         if not active:
             return StartResult(
                 run_mode="noop",
@@ -704,6 +704,7 @@ def start_pipeline(
             from_stage=from_stage,
             auto=auto,
             timeout=timeout,
+            todo_id=todo_id,
         )
 
         # DF5-10: wait briefly, then check if child died immediately.
@@ -763,6 +764,7 @@ def start_pipeline(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        todo_id=todo_id,
     )
     try:
         exit_code = run_pipeline(args)

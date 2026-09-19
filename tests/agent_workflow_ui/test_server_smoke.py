@@ -119,6 +119,8 @@ def test_all_tools_registered():
         "awf_run_status",
         "awf_run_next",
         "awf_run_finish",
+        "awf_run_note",
+        "awf_restore",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

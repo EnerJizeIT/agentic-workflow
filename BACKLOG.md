@@ -22,8 +22,10 @@
    P2 на pet-проекте (требует rapid PID cycling).
 ⬜ `.15` **[HIGH] threading.Thread cleanup** — `test_signals.py:246`, 3 места в
    `test_plan_checkpoint.py`. Daemon threads без join. Fix: `thread.join(timeout=...)`.
-⬜ `.16` **[HIGH] Entry points coverage** — cmd_init.py 0%, cmd_status.py 10%,
-   cmd_analyze_roles.py 0%, cmd_approve.py 0%.
+⬜ `.16` **[HIGH] Entry points coverage** — частично закрыто (NEG-2026-09-19:
+   cmd_init/cmd_status/cmd_start/cmd_restore покрыты реальными CLI smoke-тестами,
+   `tests/integration/test_cli_entrypoints.py`). Остались: cmd_analyze_roles 0%,
+   cmd_approve 0%, cmd_reset 36%, cmd_rollback 48%.
 
 ⬜ `.24` **[MED] CSRF token** — `http_endpoint.py:94` no Origin/Referer → True.
 ⬜ `.25` **[MED] pipeline_state Disk I/O inside lock** — YAML serialize blocks
@@ -109,3 +111,5 @@
 - Два HTTP-сервера: one-shot core + long-lived plugin
 - Event journal — `.agentic/state/journal.jsonl` для replay
 - Model discovery consolidation — `awf` как единственный владелец знания об opencode-окружении
+- wait_for_event heartbeat (вариант «в» из R3): редкие сообщения «очередь + стадия + ETA» вместо тишины
+- CLI `awf run` (start/next/status) — паритет управления забегом в bash

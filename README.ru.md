@@ -38,7 +38,8 @@ pip install awf agent-workflow-ui
 #     "agent-workflow-ui": {
 #       "type": "local",
 #       "command": ["python3", "-m", "agent_workflow_ui"],
-#       "enabled": true
+#       "enabled": true,
+#       "timeout": 600000
 #     }
 #   }
 # }
