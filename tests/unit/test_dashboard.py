@@ -732,3 +732,74 @@ class TestCheckpointEvents:
         assert msgs.count("⏸ Checkpoint auto-approved") == 1
         assert msgs.count("⏸ Checkpoint opened — needs user") == 1
         assert len(msgs) == 2  # "still waiting" polling line is skipped
+
+
+class TestTotalElapsed:
+    """Day-5: total across iterations next to the current-iteration timer."""
+
+    def _log(self, proj, text):
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "orchestrator.log").write_text(text + "\n", encoding="utf-8")
+
+    def test_two_closed_plus_open(self, dash_project):
+        from datetime import datetime, timezone
+
+        from awf.api.dashboard import _total_elapsed
+
+        self._log(dash_project, "\n".join([
+            "[2026-09-18T10:00:00Z] Pipeline started with 5 stages: a",
+            "[2026-09-18T10:10:00Z] Pipeline complete",
+            "[2026-09-18T11:00:00Z] Pipeline started with 5 stages: a",
+            "[2026-09-18T11:05:00Z] Pipeline complete",
+            "[2026-09-19T12:00:00Z] Pipeline started with 5 stages: a",
+        ]))
+
+        closed, running, start = _total_elapsed(dash_project)
+
+        assert closed == 600 + 300
+        assert running is True
+        assert start == int(datetime(2026, 9, 19, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+
+    def test_all_closed(self, dash_project):
+        from awf.api.dashboard import _total_elapsed
+
+        self._log(dash_project, "\n".join([
+            "[2026-09-18T10:00:00Z] Pipeline started with 5 stages: a",
+            "[2026-09-18T10:10:00Z] Pipeline complete",
+        ]))
+
+        closed, running, start = _total_elapsed(dash_project)
+
+        assert closed == 600
+        assert running is False
+        assert start == 0
+
+    def test_state_dict_carries_total(self, dash_project):
+        self._log(dash_project, "\n".join([
+            "[2026-09-18T10:00:00Z] Pipeline started with 5 stages: a",
+            "[2026-09-18T10:10:00Z] Pipeline complete",
+        ]))
+        write_state(dash_project, stage_name="x", stage_kind="execute", todo_id="TODO-0001")
+
+        d = generate_state_dict(dash_project)
+
+        assert d["total_elapsed_sec"] == 600
+        assert d["total_running"] is False
+
+
+class TestSummarySkipsHtmlComment:
+    def test_html_comment_skipped(self, dash_project):
+        from awf.api.dashboard import _read_todo_summary
+
+        inbox = dash_project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text(
+            "<!-- role_hint: agent-spec-writer -->\n"
+            "# TODO-0001 — заголовок\n\n"
+            "## EXECUTE NOW\n\n"
+            "Пайплайн: делаем X и закрываем Y.\n",
+            encoding="utf-8",
+        )
+
+        assert _read_todo_summary(dash_project, "TODO-0001") == "Пайплайн: делаем X и закрываем Y."

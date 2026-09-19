@@ -761,6 +761,50 @@ def _stage_spans(project_dir: Path) -> dict[str, dict[str, int]]:
     return spans
 
 
+def _total_elapsed(project_dir: Path) -> tuple[int, bool, int]:
+    """(closed_seconds, running, open_run_start_epoch) across ALL runs.
+
+    Day-5 (owner): the board needs BOTH the current iteration timer and the
+    total across iterations. Runs are delimited by 'Pipeline started' /
+    'Pipeline complete' lines in the (multi-run) orchestrator log.
+    """
+    log = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+    if not log.is_file():
+        return 0, False, 0
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0, False, 0
+
+    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
+    closed_seconds = 0
+    open_start: datetime | None = None
+    for line in text.splitlines():
+        is_start = "Pipeline started" in line
+        is_complete = "Pipeline complete" in line
+        if not (is_start or is_complete):
+            continue
+        tm = time_pat.search(line)
+        if not tm:
+            continue
+        try:
+            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+        if is_start:
+            if open_start is not None:  # previous run never completed — close it here
+                closed_seconds += int((dt - open_start).total_seconds())
+            open_start = dt
+        elif is_complete and open_start is not None:
+            closed_seconds += int((dt - open_start).total_seconds())
+            open_start = None
+    return closed_seconds, open_start is not None, (
+        int(open_start.timestamp()) if open_start else 0
+    )
+
+
 def _read_todo_summary(project_dir: Path, todo_id: str | None, limit: int = 400) -> str:
     """Day-4 UX: one-paragraph human summary of the TODO.
 
@@ -792,7 +836,7 @@ def _read_todo_summary(project_dir: Path, todo_id: str | None, limit: int = 400)
             if para:
                 break
             continue
-        if s.startswith(("#", "```", "|", "> ", "**TODO", "- [")):
+        if s.startswith(("#", "<!--", "-->", "```", "|", "> ", "**TODO", "- [")):
             if para:
                 break
             continue
@@ -947,6 +991,9 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     else:
         elapsed_epoch, elapsed_frozen, elapsed_str = 0, False, ""
 
+    # Total across iterations (closed runs + the open one, if any)
+    total_closed_sec, total_running, total_open_start = _total_elapsed(project_dir)
+
     if not elapsed_str and elapsed_epoch and not elapsed_frozen:
         elapsed_str = _format_elapsed(
             datetime.fromtimestamp(elapsed_epoch, tz=timezone.utc).isoformat()
@@ -1064,6 +1111,9 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "elapsed_epoch": elapsed_epoch,
         "elapsed_frozen": elapsed_frozen,
         "elapsed_str": elapsed_str,
+        "total_elapsed_sec": total_closed_sec,
+        "total_running": total_running,
+        "total_run_started_epoch": total_open_start,
         "handoffs": handoff_chat,
         "todo_timeline": todo_timeline,
         "worker": worker,
