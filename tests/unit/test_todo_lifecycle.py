@@ -102,12 +102,26 @@ class TestArchiveTodo:
         assert not list(handoff.glob("*-TODO-0001.md"))
 
     def test_idempotent(self, project):
-        """Calling twice doesn't crash."""
+        """Calling twice doesn't crash AND doesn't destroy the archive.
+
+        AUD12-02: the second call used to hit ``not moved_anything`` and
+        rmtree the whole ``done/TODO-0001/`` dir — history loss on a no-op.
+        """
         _setup_todo(project, "TODO-0001")
         first = archive_todo(project, "TODO-0001")
-        second = archive_todo(project, "TODO-0001")
         assert first is not None
+        archived = sorted(p.name for p in first.rglob("*") if p.is_file())
+        todo_md_content = (first / "TODO.md").read_text(encoding="utf-8")
+
+        second = archive_todo(project, "TODO-0001")
         assert second is None  # nothing to archive second time
+
+        for name in ("TODO.md", "DONE.md", "PROGRESS.md"):
+            assert (first / name).is_file(), f"{name} destroyed by second archive call"
+        for name in ("worker-TODO-0001.md", "reviewer-TODO-0001.md"):
+            assert (first / "handoff" / name).is_file(), f"handoff/{name} destroyed by second archive call"
+        assert sorted(p.name for p in first.rglob("*") if p.is_file()) == archived
+        assert (first / "TODO.md").read_text(encoding="utf-8") == todo_md_content
 
     def test_returns_none_when_nothing_to_archive(self, project):
         result = archive_todo(project, "TODO-9999")
