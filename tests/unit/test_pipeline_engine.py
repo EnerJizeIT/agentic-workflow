@@ -192,6 +192,40 @@ class TestP2RetryStage:
         with pytest.raises(AwfApiError, match="salvage_stage"):
             retry_stage(tmp_git_repo)
 
+    def test_retry_stage_cleans_salvage_from_inbox(self, tmp_git_repo, monkeypatch):
+        """AUD04-08: SALVAGE notes are written to the INBOX — the retry
+        cleanup must delete them from the inbox (the old outbox glob was a
+        no-op that left every note behind)."""
+        import awf.api.pipeline as api_pipeline
+        from awf.pipeline_state import write_state
+
+        inbox = tmp_git_repo / ".agentic" / "inbox"
+        outbox = tmp_git_repo / ".agentic" / "outbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        outbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "SALVAGE-TODO-0001.md").write_text("# salvage note\n", encoding="utf-8")
+
+        write_state(tmp_git_repo, salvage_stage="implement")
+
+        monkeypatch.setattr(
+            api_pipeline, "kill_pipeline", lambda *a, **kw: {"killed": False}
+        )
+        captured: dict = {}
+
+        def fake_continue(project_dir, **kw):
+            captured.update(kw)
+            return "started"
+
+        monkeypatch.setattr(api_pipeline, "continue_pipeline", fake_continue)
+
+        api_pipeline.retry_stage(tmp_git_repo, background=False)
+
+        assert not (inbox / "SALVAGE-TODO-0001.md").exists(), (
+            "retry_stage left the inbox SALVAGE note behind — the old outbox "
+            "glob never sees it"
+        )
+        assert captured.get("from_stage") == "implement"
+
 
 class TestE2BIGGuard:
     """KA2-7: _env.py guards against env var size overflow."""
@@ -271,7 +305,16 @@ class TestSalvageEscalation:
         monkeypatch.setattr(_time_mod, "monotonic", lambda: next(ticks))
 
         stages = _make_stages()
-        for _ in range(2):
+        for run in range(2):
+            if run == 1:
+                # AUD04-08: simulate the retry_stage kill between attempts —
+                # the documented salvage recovery path (kill + continue).
+                # The counter must survive, or the escalation below never
+                # happens in the real flow.
+                from awf.api.pipeline import kill_pipeline
+                from awf.pipeline_state import write_state
+                write_state(project, pipeline_pid=2**31)  # dead pid
+                kill_pipeline(project)
             pipeline_engine.execute_agent_stage(
                 stage=stages[1], current_todo="TODO-0001", project_dir=project,
                 config={}, logs_dir=tmp_path, stages=stages, stage_idx=1,
@@ -281,7 +324,10 @@ class TestSalvageEscalation:
 
         from awf.pipeline_state import read_state
         state = read_state(project)
-        assert state.get("salvage_count") == 2
+        assert state.get("salvage_count") == 2, (
+            "the kill wiped the salvage counter — the retry cycle restarts "
+            "at Attempt 1 forever"
+        )
 
         # Per execute call: 3 worker runs (original + 2 retries), retry notes
         # only on the retries — and the budget resets for the second call.
@@ -296,6 +342,155 @@ class TestSalvageEscalation:
         ).read_text(encoding="utf-8")
         assert "**Attempt:** 2" in text
         assert "do NOT retry the same scope" in text
+
+    @staticmethod
+    def _mock_silent_project(project, monkeypatch):
+        """Shared mocks: silent worker, no auto-done, no signals."""
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+        from awf import verify
+        monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
+        import time as _time_mod
+        monkeypatch.setattr(_time_mod, "monotonic", lambda: 100.0)
+
+    def test_salvage_count_is_per_stage_and_todo(self, tmp_path, monkeypatch):
+        """AUD02-07: the counter is per (TODO, stage).
+
+        A first failure of a NEW stage (or a NEW TODO) must start at
+        attempt=1 — it must not inherit a stale count from another stage's
+        failure and escalate as "ATTEMPT 2" on its very first silent exit.
+        """
+        todo_id, other_todo = "TODO-0001", "TODO-0002"
+        project = tmp_path / "proj"
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+        self._mock_silent_project(project, monkeypatch)
+
+        stage_a = Stage(name="stage-a", role="worker", kind="execute")
+        stage_b = Stage(name="stage-b", role="worker", kind="execute")
+        stages = [stage_a, stage_b]
+
+        # First silent exit at stage-a / TODO-0001 → attempt 1
+        pipeline_engine.execute_agent_stage(
+            stage=stage_a, current_todo=todo_id, project_dir=project,
+            config={}, logs_dir=tmp_path, stages=stages, stage_idx=0,
+            retry_counts=[0, 0], auto=False, agent_hard_timeout=None,
+        )
+        # NEW stage, same TODO → must restart at attempt 1
+        pipeline_engine.execute_agent_stage(
+            stage=stage_b, current_todo=todo_id, project_dir=project,
+            config={}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+            retry_counts=[0, 0], auto=False, agent_hard_timeout=None,
+        )
+        text_b = (
+            project / ".agentic" / "inbox" / f"SALVAGE-{todo_id}.md"
+        ).read_text(encoding="utf-8")
+        assert "**Attempt:** 1" in text_b, (
+            "first failure of a NEW stage must be attempt 1, "
+            "not inherit the previous stage's counter"
+        )
+        # no repeat-salvage escalation header (the attempt-N warning). The
+        # generic auto-retry-exhausted hint may still appear — that is the
+        # F7 budget, not the salvage counter.
+        assert "## ⚠️ ATTEMPT" not in text_b
+
+        # NEW TODO, first stage → must also restart at attempt 1
+        inbox = project / ".agentic" / "inbox"
+        (inbox / f"{other_todo}.md").write_text("# task\n", encoding="utf-8")
+        (inbox / f"{other_todo}.ready").write_text("", encoding="utf-8")
+        pipeline_engine.execute_agent_stage(
+            stage=stage_a, current_todo=other_todo, project_dir=project,
+            config={}, logs_dir=tmp_path, stages=stages, stage_idx=0,
+            retry_counts=[0, 0], auto=False, agent_hard_timeout=None,
+        )
+        text_other = (
+            inbox / f"SALVAGE-{other_todo}.md"
+        ).read_text(encoding="utf-8")
+        assert "**Attempt:** 1" in text_other, (
+            "first failure of a NEW TODO must be attempt 1"
+        )
+
+    def test_salvage_supervisor_timeout_stops_cleanly(self, tmp_path, monkeypatch):
+        """AUD04-05: a supervisor salvage timeout must stop the pipeline
+        (rc=1, logged), not escape as an uncaught TimeoutError traceback."""
+        project = tmp_path / "proj"
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+        self._mock_silent_project(project, monkeypatch)
+
+        def boom(*a, **kw):
+            raise TimeoutError("Supervisor salvage signal not received within 5s")
+
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", boom)
+
+        stages = _make_stages()
+        todo, idx, rc = pipeline_engine.execute_agent_stage(
+            stage=stages[1], current_todo="TODO-0001", project_dir=project,
+            config={}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+            retry_counts=[0, 0, 0], auto=False, agent_hard_timeout=None,
+        )
+        assert rc == 1, "salvage timeout must stop the pipeline, not crash"
+        assert todo == "TODO-0001"
+
+    def test_commit_gate_timeout_stops_pipeline(self, tmp_path, monkeypatch):
+        """AUD04-05: an APPROVE-gate timeout on the agent-stage commit path
+        must stop the pipeline (rc=1), not escape as an uncaught
+        TimeoutError traceback."""
+        project = tmp_path / "proj"
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True)
+        (outbox / "DONE-TODO-0001.md").write_text("# done\n", encoding="utf-8")
+        (outbox / "DONE-TODO-0001.ready").write_text("", encoding="utf-8")
+
+        self._mock_silent_project(project, monkeypatch)
+
+        def boom(*a, **kw):
+            raise TimeoutError("APPROVE/ACK signal not received for TODO-0001")
+
+        monkeypatch.setattr(pipeline_engine, "_maybe_commit", boom)
+
+        stage = Stage(
+            name="implement", role="worker", kind="execute",
+            on_approved="commit_and_next",
+        )
+        stages = [
+            Stage(name="plan", role="supervisor", kind="plan"),
+            stage,
+            Stage(name="verify", role="supervisor", kind="verify"),
+        ]
+        todo, idx, rc = pipeline_engine.execute_agent_stage(
+            stage=stage, current_todo="TODO-0001", project_dir=project,
+            config={}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+            retry_counts=[0, 0, 0], auto=False, agent_hard_timeout=None,
+        )
+        assert rc == 1, "commit-gate timeout must stop the pipeline, not crash"
+
+    def test_verify_commit_gate_timeout_stops_cleanly(self, tmp_path, monkeypatch):
+        """AUD04-05: an APPROVE-gate timeout on the verify commit path must
+        stop the pipeline (rc=1), not escape as an uncaught TimeoutError."""
+        project = tmp_path / "proj"
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage",
+                            lambda *a, **kw: "ACK-TODO-0001")
+        monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a: "")
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+
+        def boom(*a, **kw):
+            raise TimeoutError("APPROVE/ACK signal not received for TODO-0001")
+
+        monkeypatch.setattr(pipeline_engine, "_maybe_commit", boom)
+
+        stage = Stage(name="verify", role="supervisor", kind="verify",
+                      on_approved="commit_and_next")
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=stage, current_todo="TODO-0001", auto=False,
+            project_dir=project, config={}, logs_dir=tmp_path,
+        )
+        assert rc == 1, "verify commit-gate timeout must stop the pipeline"
 
     def test_no_retry_when_work_present(self, tmp_path, monkeypatch):
         """Worker left changes (diff) → straight to salvage, no rerun.

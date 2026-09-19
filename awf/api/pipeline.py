@@ -1000,6 +1000,31 @@ def continue_pipeline(
     )
 
 
+def _clear_state_keep_salvage(project_dir: Path) -> None:
+    """AUD04-08: clear pipeline state but keep the salvage counter.
+
+    The salvage retry cycle (silent exit → salvage → retry_stage → kill →
+    continue) is the documented recovery path. Wiping the counter on kill
+    made the dogfood-11 escalation ("do NOT retry the same scope", attempt
+    >= 2) unreachable — every retry restarted at "Attempt 1". Mirrors
+    _reconcile, which preserves state keys it does not own.
+    """
+    from ..pipeline_state import clear_state, read_state, write_state
+
+    state = read_state(project_dir) or {}
+    try:
+        count = int(state.get("salvage_count", 0) or 0)
+    except (TypeError, ValueError):
+        count = 0
+    clear_state(project_dir)
+    if count > 0:
+        write_state(
+            project_dir,
+            salvage_count=count,
+            salvage_count_key=state.get("salvage_count_key"),
+        )
+
+
 def kill_pipeline(
     project_dir: Path,
 ) -> dict:
@@ -1018,9 +1043,8 @@ def kill_pipeline(
     pid = _is_pipeline_running(project_dir)
 
     if not pid:
-        # Clear stale state if any
-        from ..pipeline_state import clear_state
-        clear_state(project_dir)
+        # Clear stale state if any (AUD04-08: salvage counter survives)
+        _clear_state_keep_salvage(project_dir)
         return {"killed": False, "pid": None, "message": "No running pipeline found."}
 
     killed = False
@@ -1047,9 +1071,8 @@ def kill_pipeline(
     except OSError:
         pass
 
-    # Clear state
-    from ..pipeline_state import clear_state
-    clear_state(project_dir)
+    # Clear state (AUD04-08: salvage counter survives the kill)
+    _clear_state_keep_salvage(project_dir)
 
     msg = f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
     return {"killed": killed, "pid": pid, "message": msg}
@@ -1086,9 +1109,10 @@ def retry_stage(
     # Kill if running
     kill_pipeline(project_dir)
 
-    # Clean salvage signals
-    outbox = paths.outbox(project_dir)
-    for p in outbox.glob("SALVAGE-*.md"):
+    # Clean salvage signals (AUD04-08: they are written to the INBOX — the
+    # old outbox glob was a no-op that left every note behind)
+    inbox = paths.inbox(project_dir)
+    for p in inbox.glob("SALVAGE-*.md"):
         try:
             p.unlink()
         except OSError:

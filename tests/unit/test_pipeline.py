@@ -106,6 +106,28 @@ class TestLoadStages:
         assert s.on_passed == "next"
         assert s.on_failed == "escalate"
         assert s.max_retries == 1
+        assert s.max_rollbacks == 3
+
+    def test_invalid_policy_word_warns_at_load(self, tmp_path, capsys) -> None:
+        """AUD04-02: an unknown policy word must warn at load time instead of
+        being silently reinterpreted by the resolver (typos like
+        'on_blocked: halt' used to behave as 'escalate' with no hint)."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "    on_blocked: halt\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipe)
+        err = capsys.readouterr().err
+        assert "on_blocked" in err and "halt" in err, (
+            f"invalid policy word must be flagged at load, got stderr:\n{err}"
+        )
+        # the value is still loaded verbatim — the resolver fallback applies
+        assert stages[1].on_blocked == "halt"
 
 
 class TestResolvePipelineFile:

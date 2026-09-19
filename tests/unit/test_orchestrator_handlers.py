@@ -86,6 +86,25 @@ class TestHandleEscalate:
         )
         assert exit_code == 1
 
+    def test_replan_timeout_stops_cleanly(self, tmp_path, monkeypatch):
+        """AUD04-05: a supervisor replan timeout on the escalate path must
+        stop the pipeline (rc=1, logged) — not escape as an uncaught
+        TimeoutError traceback that leaves the state dirty."""
+        def boom(*a, **kw):
+            raise TimeoutError("Supervisor replan signal not received within 5s")
+
+        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", boom)
+        stage = _make_stage(max_retries=3)
+        idx, todo, exit_code = _handle_escalate(
+            project_dir=tmp_path, logs_dir=tmp_path,
+            s_name="implement", current_todo="TODO-0001",
+            auto=False, stage=stage,
+            retry_counts=[0, 0, 0], stage_idx=1,
+        )
+        assert exit_code == 1, "replan timeout must stop the pipeline, not crash"
+        assert idx == 1
+        assert todo == "TODO-0001"
+
 
 class TestHandleRollback:
 
@@ -115,6 +134,26 @@ class TestHandleRollback:
             auto=False, target="nonexistent",
         )
         assert exit_code == 1
+
+    def test_replan_timeout_stops_cleanly(self, tmp_path, monkeypatch):
+        """AUD04-05: a supervisor replan timeout on the rollback path must
+        stop the pipeline (rc=1, logged) — not escape as an uncaught
+        TimeoutError traceback."""
+        def boom(*a, **kw):
+            raise TimeoutError("Supervisor replan signal not received within 5s")
+
+        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", boom)
+        stages = [
+            Stage(name="plan", role="supervisor", kind="plan"),
+            Stage(name="implement", role="worker", kind="execute"),
+            Stage(name="verify", role="supervisor", kind="verify"),
+        ]
+        idx, todo, exit_code = _handle_rollback(
+            project_dir=tmp_path, logs_dir=tmp_path,
+            stages=stages, current_todo="TODO-0001",
+            auto=False, target="implement",
+        )
+        assert exit_code == 1, "rollback replan timeout must stop, not crash"
 
 
 class TestPipelineEngineUnpacking:

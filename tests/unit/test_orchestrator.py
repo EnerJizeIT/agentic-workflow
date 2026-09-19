@@ -659,7 +659,13 @@ class TestInteractiveSupervisorBD30:
         )
 
     def test_wait_for_supervisor_signal_orphans_prefer_newest(self, tmp_path: Path) -> None:
-        """Multiple orphan TODOs (no DONE) → pick newest (highest NNNN)."""
+        """Multiple orphan TODOs (no DONE) → pick newest (highest NNNN).
+
+        AUD04-09: the engine executes the NEWEST active TODO
+        (_find_active_todo → list_active_todos, highest first) — the wait
+        must return the same id, or the plan-stage log announces a different
+        task than the one actually run.
+        """
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -676,8 +682,9 @@ class TestInteractiveSupervisorBD30:
             kind="plan", todo_id="", project_dir=proj, logs_dir=logs,
             timeout=5,
         )
-        assert result == "TODO-0001", (
-            f"Should pick lowest NNNN first (sorted). Got: {result}"
+        assert result == "TODO-0003", (
+            f"Should pick the NEWEST orphan (the one the engine will run). "
+            f"Got: {result}"
         )
 
     def test_wait_for_supervisor_signal_detects_ack_for_verify(

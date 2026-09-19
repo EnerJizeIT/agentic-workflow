@@ -461,8 +461,11 @@ def wait_for_supervisor_signal(
     while True:
         if kind == "plan":
             # Dogfood-1: active orphan TODOs (no DONE) picked up immediately.
+            # AUD04-09: the NEWEST orphan (list is sorted ascending, so the
+            # last element) — the engine executes the newest active TODO
+            # (_find_active_todo), so the logged id must match the one run.
             if active_orphan_signals:
-                sig = active_orphan_signals.pop(0).replace(".ready", "")
+                sig = active_orphan_signals.pop(-1).replace(".ready", "")
                 _log(
                     logs_dir,
                     f"BD-30/dogfood-1: picked up active orphan TODO signal: {sig} "

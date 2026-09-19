@@ -37,6 +37,9 @@ class Stage:
     on_passed: str = "next"
     on_failed: str = "escalate"
     max_retries: int = 1
+    # AUD03-01: separate budget for rollback transitions (the escalate budget
+    # is max_retries; rollbacks used to be unbounded).
+    max_rollbacks: int = 3
     # Computed at load time — not in YAML.
     kind: str = "execute"  # "plan" | "execute" | "verify"
 
@@ -55,11 +58,24 @@ _DEFAULTS: dict[str, Any] = {
     "on_passed": "next",
     "on_failed": "escalate",
     "max_retries": 1,
+    "max_rollbacks": 3,
 }
 
 _POLICY_KEYS = [
     "on_blocked", "on_approved", "on_rejected", "on_passed", "on_failed",
 ]
+
+# AUD04-02: allowed plain words per policy key (rollback_to:<stage> is
+# checked separately). The resolver used to silently reinterpret unknown
+# words (on_approved/on_passed → "next", on_rejected/on_failed → "escalate"),
+# which hid typos — now the loader warns.
+_POLICY_ALLOWED = {
+    "on_blocked": {"escalate", "stop"},
+    "on_approved": {"next", "commit_and_next", "commit_and_report"},
+    "on_rejected": {"escalate", "replan"},
+    "on_passed": {"next", "commit_and_next", "commit_and_report"},
+    "on_failed": {"escalate", "replan"},
+}
 
 
 def _compute_kind(position: int, total: int) -> str:
@@ -117,6 +133,11 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             kwargs["max_retries"] = int(mr)
         except (ValueError, TypeError):
             kwargs["max_retries"] = _DEFAULTS["max_retries"]
+        mrb = s.get("max_rollbacks", _DEFAULTS["max_rollbacks"])
+        try:
+            kwargs["max_rollbacks"] = int(mrb)
+        except (ValueError, TypeError):
+            kwargs["max_rollbacks"] = _DEFAULTS["max_rollbacks"]
         kwargs["kind"] = _compute_kind(dict_index, total)
         result.append(Stage(**kwargs))
         dict_index += 1
@@ -136,6 +157,24 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
                         f"to the supervisor instead.",
                         file=sys.stderr,
                     )
+
+    # AUD04-02: unknown policy words used to be silently reinterpreted by the
+    # resolver (on_approved/on_passed → "next", on_rejected/on_failed →
+    # "escalate"), which hid typos like "on_blocked: halt". Warn at load time.
+    for st in result:
+        for pk in _POLICY_KEYS:
+            value = getattr(st, pk)
+            if not isinstance(value, str) or not value:
+                continue
+            if value.startswith("rollback_to:"):
+                continue  # target existence checked above
+            if value not in _POLICY_ALLOWED[pk]:
+                print(
+                    f"WARNING: stage '{st.name}' has {pk}={value!r} — expected one of: "
+                    f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}. The transition resolver "
+                    f"will fall back to the default policy for {pk}.",
+                    file=sys.stderr,
+                )
 
     # Day-2 spec (second tier): stage roles must resolve to a role .md
     # (project .agentic/roles/ or the global awf roles dir). A typo used to

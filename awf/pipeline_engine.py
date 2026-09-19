@@ -162,9 +162,18 @@ def _handle_escalate(
     _log(logs_dir, "Escalating to supervisor for retry")
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    sup_signal = _run_supervisor_stage(
-        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
-    )
+    # AUD04-05: a replan timeout/crash on this path used to escape as a raw
+    # traceback (dirty state, dashboard stuck on "running") — same class of
+    # event as the main supervisor stage, same clean stop.
+    try:
+        sup_signal = _run_supervisor_stage(
+            replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+        )
+    except (RuntimeError, TimeoutError) as e:
+        print("ERROR: supervisor replan after BLOCKED crashed. Pipeline stopped.", file=sys.stderr)
+        print(f"  Details: {e}", file=sys.stderr)
+        _log(logs_dir, f"Pipeline stopped at stage {s_name}: escalate replan crashed: {e}")
+        return stage_idx, current_todo, 1
 
     # Day-2 B2: ACK/APPROVE from the supervisor means "accept the current
     # state, keep going". Clear the BLOCKED closure (TODO becomes active
@@ -190,8 +199,14 @@ def _handle_rollback(
     auto: bool,
     target: str,
     pipeline_name: str | None = None,
+    source: str = "",
 ) -> tuple[int, str, int]:
     """Transition: rollback to a target stage + supervisor replan.
+
+    AUD03-01: rollbacks are budgeted per (TODO, source->target) in the
+    pipeline state — a systematic reject/failed signal used to loop
+    rollback->replan->stage forever (and self-rollback looped in place).
+    Exhaustion stops the pipeline so the supervisor decides.
 
     Returns (new_stage_idx, new_current_todo, exit_code).
     """
@@ -200,13 +215,49 @@ def _handle_rollback(
         print(f"ERROR: Rollback target '{target}' not found in pipeline")
         return -1, current_todo, 1
 
-    print(f"Rolling back to stage: {stages[target_idx].name}")
-    _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
+    # AUD03-01: rollback budget. The key is per (TODO, source->target), so a
+    # replanned TODO or a different rollback route gets a fresh budget.
+    prev_state = read_state(project_dir) or {}
+    counts = prev_state.get("rollback_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    rb_key = f"{current_todo}:{source}->{target}"
+    try:
+        rb_count = int(counts.get(rb_key, 0) or 0)
+    except (TypeError, ValueError):
+        rb_count = 0
+    limit = stages[target_idx].max_rollbacks
+    if rb_count >= limit:
+        print(
+            f"Rollback budget exhausted ({limit}) for {current_todo} "
+            f"({source or '?'} -> {target}). Escalating to supervisor. "
+            f"Pipeline stopped.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"Rollback budget exhausted for {rb_key} — pipeline stopped")
+        return -1, current_todo, 1
+
+    counts[rb_key] = rb_count + 1
+    _write_state(project_dir, rollback_counts=counts, logs_dir=logs_dir)
+    print(f"Rolling back to stage: {stages[target_idx].name} (rollback {rb_count + 1}/{limit})")
+    _log(
+        logs_dir,
+        f"Rollback to stage {stages[target_idx].name} (index {target_idx}, {rb_count + 1}/{limit})",
+    )
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    _run_supervisor_stage(
-        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
-    )
+    # AUD04-05: same clean stop as the main supervisor stage — a replan
+    # timeout/crash must not escape as a raw traceback.
+    try:
+        _run_supervisor_stage(
+            replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+        )
+    except (RuntimeError, TimeoutError) as e:
+        print("ERROR: supervisor replan after rollback crashed. Pipeline stopped.", file=sys.stderr)
+        print(f"  Details: {e}", file=sys.stderr)
+        _log(logs_dir, f"Pipeline stopped at stage {source or target}: rollback replan crashed: {e}")
+        return -1, current_todo, 1
+
     new_todo = _find_active_todo(project_dir)
     if not new_todo:
         print("Rollback: supervisor did not create a new TODO. Stopping.", file=sys.stderr)
@@ -516,10 +567,18 @@ def execute_supervisor_stage(
         # Approved path: ACK or APPROVE signal
         print(f"Supervisor approved {current_todo} ({sup_signal or 'implicit'}).")
         baseline_sha = _read_baseline_sha(project_dir, current_todo)
-        commit_ok = _maybe_commit(
-            s_name, current_todo, stage.on_approved,
-            project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
-        )
+        # AUD04-05: the commit gate can time out (APPROVE wait) — treat it as
+        # a failed commit (clean stop) instead of a raw traceback.
+        try:
+            commit_ok = _maybe_commit(
+                s_name, current_todo, stage.on_approved,
+                project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(f"ERROR: commit gate for {current_todo} crashed. Pipeline stopped.", file=sys.stderr)
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
+            commit_ok = False
         if not commit_ok:
             print(
                 f"Commit failed for {current_todo} — TODO NOT archived, "
@@ -671,11 +730,16 @@ def execute_agent_stage(
         # Dogfood-11: count consecutive silent exits for this stage. A repeat
         # salvage means retrying the same scope won't help — the SALVAGE note
         # escalates to task splitting / incremental writes instead.
+        # AUD02-07: the count is per (TODO, stage) — a different stage or TODO
+        # starts fresh at 1 instead of inheriting a stale counter ("ATTEMPT 2"
+        # on the first failure of a brand-new stage).
         prev_state = read_state(project_dir) or {}
         try:
-            attempt = int(prev_state.get("salvage_count", 0) or 0) + 1
+            prev_count = int(prev_state.get("salvage_count", 0) or 0)
         except (TypeError, ValueError):
-            attempt = 1
+            prev_count = 0
+        salvage_key = f"{current_todo}:{s_name}"
+        attempt = prev_count + 1 if prev_state.get("salvage_count_key") == salvage_key else 1
 
         _write_salvage_prompt(
             project_dir, current_todo, s_name, baseline_sha, logs_dir,
@@ -684,6 +748,10 @@ def execute_agent_stage(
         _ws(
             project_dir,
             salvage_needed=True, salvage_stage=s_name, salvage_count=attempt,
+            # AUD04-08: identity of the counted (TODO, stage) — written by the
+            # engine, cleared by no one on stage start, so the count survives
+            # kill+continue (the retry cycle) and the dashboard flag reset.
+            salvage_count_key=salvage_key,
             # AUD02-01: the worker produced no signal — clear any stale one,
             # so readers never attribute a previous stage's signal to this run.
             last_signal=None,
@@ -700,10 +768,19 @@ def execute_agent_stage(
             return current_todo, stage_idx, 1
 
         salvage_stage = Stage(name="salvage", role="supervisor", kind="salvage")
-        _run_supervisor_stage(
-            salvage_stage, current_todo, auto=False,
-            project_dir=project_dir, logs_dir=logs_dir, pipeline_name=pipeline_name
-        )
+        # AUD04-05: a salvage wait timeout used to escape as a raw traceback
+        # mid-background-run — same class of event as the main supervisor
+        # stage, same clean stop.
+        try:
+            _run_supervisor_stage(
+                salvage_stage, current_todo, auto=False,
+                project_dir=project_dir, logs_dir=logs_dir, pipeline_name=pipeline_name
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print("ERROR: supervisor salvage crashed. Pipeline stopped.", file=sys.stderr)
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: salvage crashed: {e}")
+            return current_todo, stage_idx, 1
         signal = read_signal_for_todo(outbox, current_todo, *prefixes)
         if not signal:
             print("No signal after supervisor salvage. Stopping.", file=sys.stderr)
@@ -718,7 +795,10 @@ def execute_agent_stage(
     # Dogfood-11: stage resolved — reset the consecutive-salvage counter.
     # AUD02-01: record the signal — readers (wait_for_event blocked-wake-up,
     # dashboard banner, context REVIEW-restart hint) all key off this field.
-    _write_state(project_dir, salvage_count=0, last_signal=signal, logs_dir=logs_dir)
+    _write_state(
+        project_dir, salvage_count=0, salvage_count_key=None,
+        last_signal=signal, logs_dir=logs_dir,
+    )
 
     # NEG-4 (day-2 B1): consume the fired .ready signal now that the stage is
     # resolved. The same filename used to stay valid for every later stage —
@@ -734,9 +814,17 @@ def execute_agent_stage(
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
 
     if action in ("next", "commit_and_next", "commit_and_report"):
-        new_idx = _handle_next(
-            project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
-        )
+        # AUD04-05: the commit gate can time out (APPROVE wait) — stop
+        # cleanly instead of letting the TimeoutError traceback out.
+        try:
+            new_idx = _handle_next(
+                project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(f"ERROR: commit gate at '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
+            return current_todo, stage_idx, 1
         return current_todo, new_idx, 0
 
     elif action == "escalate":
@@ -765,13 +853,16 @@ def execute_agent_stage(
             return new_todo, new_idx, exit_code
         new_idx, new_todo, exit_code = _handle_rollback(
             project_dir, logs_dir, stages, current_todo, auto, target, pipeline_name,
+            source=s_name,
         )
         return new_todo, new_idx, exit_code
 
     elif action == "stop":
         print("Pipeline stopped by policy.")
         _log(logs_dir, f"Pipeline stopped by policy at stage {s_name}")
-        return current_todo, stage_idx, 0
+        # AUD04-02: rc=1 so the orchestrator exits — rc=0 with the same
+        # stage_idx used to re-run this stage forever (the BLOCKED-stop loop).
+        return current_todo, stage_idx, 1
 
     else:
         print(f"Unknown transition: {action}")
