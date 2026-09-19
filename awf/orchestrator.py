@@ -165,6 +165,10 @@ def run_pipeline(args: Any) -> int:
             # resolved (ACK/retry) — clear the flag, or the dashboard would
             # keep showing "Salvage" forever (write_state merges fields).
             salvage_needed=False, salvage_stage=None,
+            # AUD02-01: same for the previous stage's signal — a stale
+            # BLOCKED would re-trigger the blocked wake-up during a retried
+            # stage before the worker emits its own signal.
+            last_signal=None,
         )
         from .api.dashboard import generate_dashboard
         generate_dashboard(project_dir)

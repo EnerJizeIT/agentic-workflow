@@ -16,6 +16,17 @@ from agent_workflow_ui.tools import awf
 
 from awf import api
 
+# AUD12-13 / test infra: import mcp at COLLECTION time, not inside a test.
+# The autouse conftest fixture replaces subprocess.Popen with a function, and
+# mcp evaluates a `subprocess.Popen[bytes]` annotation at class-creation —
+# importing inside a test body therefore crashes on a patched Popen.
+# (Same pattern as test_server_smoke.py.)
+try:
+    import mcp.server.fastmcp  # noqa: F401
+    _MCP_AVAILABLE = True
+except Exception:
+    _MCP_AVAILABLE = False
+
 
 @pytest.fixture
 def git_project(tmp_path):
@@ -489,7 +500,8 @@ class TestToolRegistration:
         (verified by test_all_11_tools_exist_as_callables); this test only
         verifies FastMCP registration wiring.
         """
-        pytest.importorskip("mcp.server.fastmcp")
+        if not _MCP_AVAILABLE:
+            pytest.skip("mcp package unavailable")
         from agent_workflow_ui.server import create_server
         # FastMCP servers can be created without running them
         # This test verifies imports + registration succeed
@@ -548,3 +560,39 @@ class TestWaitForEventClamp:
 
         assert captured["timeout"] == 55
         assert "timeout_clamped" not in result
+
+    @staticmethod
+    def _fake_wait_with(event_type: str):
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            class _R:
+                def as_dict(self):
+                    return {"event_type": event_type, "message": "x",
+                            "state_snapshot": {}, "suggested_timeout": 120}
+
+            return _R()
+
+        return fake_wait
+
+    def test_verify_event_gets_verify_next_action(self, monkeypatch):
+        """AUD08-01 regression: a verify event must get the approve
+        instruction, not the stuck 'timeout' one (dataclass vs dict bug)."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("verify"))
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "verify"
+        assert "awf_approve" in result["next_action"]
+        assert "Continue the run loop" not in result["next_action"]
+
+    def test_blocked_event_gets_blocked_next_action(self, monkeypatch):
+        """AUD08-01 regression: a blocked event must get the unblock
+        instruction, not the stuck 'timeout' one."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("blocked"))
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "blocked"
+        assert "Worker blocked" in result["next_action"]
+        assert "Continue the run loop" not in result["next_action"]

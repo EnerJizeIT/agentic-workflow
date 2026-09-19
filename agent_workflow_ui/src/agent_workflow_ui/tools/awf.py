@@ -1119,7 +1119,11 @@ async def awf_wait_for_event(
         if clamped:
             response["timeout_clamped"] = True
             response["timeout_requested"] = requested
-        et = result.get("event_type", "timeout") if isinstance(result, dict) else "timeout"
+        # AUD08-01: wait_for_event returns a WaitEventResult dataclass, not a
+        # dict — the old isinstance(result, dict) check was always False, so
+        # next_action was stuck on the timeout instruction. _ok() already
+        # carries event_type via as_dict().
+        et = response.get("event_type") or "timeout"
         suggested = response.get("suggested_timeout") or 180
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;

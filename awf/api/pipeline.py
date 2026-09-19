@@ -933,6 +933,9 @@ def continue_pipeline(
             from_stage=from_stage,
             auto=auto,
             timeout=timeout,
+            # AUD04-01: pin the resolved TODO — resuming from verify with an
+            # empty todo_id skips the ACK/APPROVE check and hangs until timeout.
+            todo_id=current_todo,
         )
         child_alive = _verify_child_alive(pid, log_file)
         if not child_alive:
@@ -975,6 +978,8 @@ def continue_pipeline(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        # AUD04-01: pin the resolved TODO (same reason as the background branch).
+        todo_id=current_todo,
     )
     try:
         exit_code = run_pipeline(args)

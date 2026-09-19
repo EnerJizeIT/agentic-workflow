@@ -36,8 +36,13 @@ class TestWaitForEvent:
         assert "VERIFY" in result.message
         assert result.state_snapshot["stage_kind"] == "verify"
 
-    def test_blocked_event_returns_immediately(self, awf_project):
-        """When last_signal starts with BLOCKED → returns 'blocked'."""
+    def test_blocked_event_reads_last_signal_from_state(self, awf_project):
+        """Reader contract: a last_signal that starts with BLOCKED → 'blocked'.
+
+        The key is written by the ENGINE (pipeline_engine.execute_agent_stage)
+        — the end-to-end test below pins that; this test only checks that the
+        reader branch works when the key is present.
+        """
         write_state(
             awf_project,
             stage_name="developer",
@@ -47,6 +52,42 @@ class TestWaitForEvent:
         result = api.wait_for_event(awf_project, timeout=1)
         assert result.event_type == "blocked"
         assert "BLOCKED-TODO-0001" in result.message
+
+    def test_blocked_worker_end_to_end(self, awf_project, monkeypatch):
+        """AUD02-01 end-to-end: BLOCKED worker → the ENGINE writes last_signal
+        into state (the test does not write it) → wait_for_event returns
+        'blocked' within one cycle."""
+        import awf.pipeline_engine as engine
+        from awf.pipeline import Stage
+        from awf.pipeline_state import read_state
+
+        outbox = awf_project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+
+        def fake_agent(stage, todo_id, project_dir, config, logs_dir, **kw):
+            (outbox / f"BLOCKED-{todo_id}.md").write_text("cannot proceed\n", encoding="utf-8")
+            (outbox / f"BLOCKED-{todo_id}.ready").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(engine, "_run_agent_stage", fake_agent)
+        monkeypatch.setattr(engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+        monkeypatch.setattr(engine, "_read_baseline_sha", lambda *a, **kw: "")
+        monkeypatch.setattr(engine, "wait_for_signal", lambda *a, **kw: None)
+
+        stage = Stage(name="impl", role="developer", kind="execute", on_blocked="stop")
+        engine.execute_agent_stage(
+            stage, "TODO-0001", awf_project, {}, awf_project / ".agentic" / "logs",
+            [stage], 0, [0], True, None,
+        )
+
+        state = read_state(awf_project)
+        assert state is not None
+        assert state.get("last_signal") == "BLOCKED-TODO-0001", (
+            "the engine must populate last_signal itself — the wake-up reads it from state"
+        )
+
+        result = api.wait_for_event(awf_project, timeout=1)
+        assert result.event_type == "blocked"
 
     def test_checkpoint_event_returns_immediately(self, awf_project):
         """When checkpoint_pending=True → returns 'checkpoint'."""

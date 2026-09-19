@@ -407,13 +407,6 @@ def run_next(
 
     (paths.inbox(project_dir) / f"{next_id}.ready").touch()
 
-    completed = list(state.get("completed") or [])
-    if index > 0 and queue[index - 1] not in completed:
-        completed.append(queue[index - 1])
-    run_state.write_run(
-        project_dir, index=index + 1, current=next_id, completed=completed,
-    )
-
     from .pipeline import start_pipeline
 
     result = start_pipeline(
@@ -426,12 +419,23 @@ def run_next(
     )
 
     if result.run_mode in ("noop", "error"):
+        # AUD02-02: the launch failed — the run position stays put, so the
+        # retry targets the same item instead of skipping it (and the
+        # unlaunched TODO is not counted as completed).
         return RunNextResult(
             action="refused",
             todo_id=next_id,
             message=f"Launch failed: {result.message}",
             next_action="Investigate the pipeline state (awf_status), then retry awf_run_next.",
         )
+
+    # AUD02-02: advance the run position only AFTER a successful launch.
+    completed = list(state.get("completed") or [])
+    if index > 0 and queue[index - 1] not in completed:
+        completed.append(queue[index - 1])
+    run_state.write_run(
+        project_dir, index=index + 1, current=next_id, completed=completed,
+    )
 
     return RunNextResult(
         action="started",

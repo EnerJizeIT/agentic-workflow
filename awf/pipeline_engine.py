@@ -479,7 +479,16 @@ def execute_supervisor_stage(
         return current_todo, 1, 0  # next stage
 
     if s_kind == "verify":
-        _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="verify")
+        # AUD02-01: persist the supervisor's decision — after a REVIEW exit the
+        # context consumer reads last_signal to tell the supervisor to write
+        # the next TODO (REVIEW-restart branch in api/context.py).
+        _write_state(
+            project_dir,
+            todo_id=current_todo,
+            logs_dir=logs_dir,
+            phase="verify",
+            **({"last_signal": sup_signal} if sup_signal else {}),
+        )
         if not sup_signal:
             print(f"ERROR: verify stage produced no supervisor signal for {current_todo}.", file=sys.stderr)
             _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
@@ -675,6 +684,9 @@ def execute_agent_stage(
         _ws(
             project_dir,
             salvage_needed=True, salvage_stage=s_name, salvage_count=attempt,
+            # AUD02-01: the worker produced no signal — clear any stale one,
+            # so readers never attribute a previous stage's signal to this run.
+            last_signal=None,
             logs_dir=logs_dir,
         )
 
@@ -704,7 +716,9 @@ def execute_agent_stage(
     sig_type = signal_type(signal)
     print(f"Signal classified as: {sig_type}")
     # Dogfood-11: stage resolved — reset the consecutive-salvage counter.
-    _write_state(project_dir, salvage_count=0, logs_dir=logs_dir)
+    # AUD02-01: record the signal — readers (wait_for_event blocked-wake-up,
+    # dashboard banner, context REVIEW-restart hint) all key off this field.
+    _write_state(project_dir, salvage_count=0, last_signal=signal, logs_dir=logs_dir)
 
     # NEG-4 (day-2 B1): consume the fired .ready signal now that the stage is
     # resolved. The same filename used to stay valid for every later stage —
