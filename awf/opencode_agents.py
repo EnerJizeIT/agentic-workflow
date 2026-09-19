@@ -45,6 +45,45 @@ class Proposal:
         return f"{prefix}:"
 
 
+# SPEC-2 (N1): a headless worker that hits an "ask" prompt has no one to
+# answer — the run dead-ends. Allow the sanctioned temp locations and deny
+# the rest with instant feedback instead of a hanging question.
+SANCTIONED_EXTERNAL_PATTERNS: dict[str, str] = {
+    "/tmp/opencode/**": "allow",
+    "/tmp/pytest-*": "allow",
+    "/tmp/pytest-*/**": "allow",
+}
+
+
+def _ensure_worker_permission(agent_def: dict) -> bool:
+    """Merge sanctioned external_directory patterns into a worker agent def.
+
+    Returns True when the definition changed. Existing entries are preserved:
+    a plain "ask"/"deny" becomes the ``*`` default of the pattern map, an
+    existing map only gains the missing sanctioned patterns.
+    """
+    perm = agent_def.get("permission")
+    if not isinstance(perm, dict):
+        perm = {}
+        agent_def["permission"] = perm
+    ext = perm.get("external_directory")
+    if isinstance(ext, str):
+        if ext == "allow":
+            return False  # already permissive — nothing to add
+        ext = {"*": ext}
+        perm["external_directory"] = ext
+    elif not isinstance(ext, dict):
+        ext = {"*": "deny"}
+        perm["external_directory"] = ext
+
+    changed = False
+    for pattern, action in SANCTIONED_EXTERNAL_PATTERNS.items():
+        if pattern not in ext:
+            ext[pattern] = action
+            changed = True
+    return changed
+
+
 def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
     """Inspect opencode.json and return what would change.
 
@@ -85,8 +124,19 @@ def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
         cur = agents.get(r)
         if cur is None:
             to_add.append(r)
-        elif isinstance(cur, dict) and model and cur.get("model") != model:
-            to_update.append(f"{r}: model {cur.get('model')!r} -> {model!r}")
+        elif isinstance(cur, dict):
+            details: list[str] = []
+            if model and cur.get("model") != model:
+                details.append(f"model {cur.get('model')!r} -> {model!r}")
+            if r == "worker":
+                probe = json.loads(json.dumps(cur))  # deep copy, probe only
+                if _ensure_worker_permission(probe):
+                    details.append(
+                        "+ external_directory allow-patterns "
+                        "(/tmp/opencode, /tmp/pytest-*)"
+                    )
+            if details:
+                to_update.append(f"{r}: " + "; ".join(details))
 
     if not to_add and not to_update:
         return Proposal(
@@ -131,15 +181,23 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
     updated: list[str] = []
     for r in roles:
         cur = agents.get(r)
-        agent_def: dict = {"description": f"awf {r} agent"}
-        if model:
-            agent_def["model"] = model
         if cur is None:
+            agent_def: dict = {"description": f"awf {r} agent"}
+            if model:
+                agent_def["model"] = model
+            if r == "worker":
+                _ensure_worker_permission(agent_def)
             agents[r] = agent_def
             added.append(r)
-        elif isinstance(cur, dict) and model and cur.get("model") != model:
-            cur["model"] = model
-            updated.append(r)
+        elif isinstance(cur, dict):
+            changed = False
+            if model and cur.get("model") != model:
+                cur["model"] = model
+                changed = True
+            if r == "worker" and _ensure_worker_permission(cur):
+                changed = True
+            if changed:
+                updated.append(r)
 
     if added or updated:
         # T2.6 fix: atomic write — crash mid-write no longer corrupts

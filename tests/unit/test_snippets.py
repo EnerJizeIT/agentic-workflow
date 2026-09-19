@@ -177,3 +177,13 @@ class TestGetSalvageSnippet:
     def test_todo_id_substitution(self):
         result = get_salvage_snippet("TODO-0099")
         assert "TODO-0099" in result
+
+
+class TestWorkspaceDiscipline:
+    """SPEC-2: temp-path canon and live-run policy in every worker prompt."""
+
+    def test_execute_prompt_has_workspace_discipline(self):
+        prompt = build_prompt("execute", "TODO-0001")
+        assert "WORKSPACE DISCIPLINE" in prompt
+        assert "/tmp/opencode" in prompt
+        assert "Live runs of external processes" in prompt

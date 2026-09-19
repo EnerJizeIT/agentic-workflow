@@ -130,6 +130,21 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .todo-content li { margin: 3px 0; }
 .todo-content code { background: var(--bg-card); padding: 2px 5px; border-radius: 3px; font-family: var(--mono); }
 .todo-content pre { background: var(--bg-card); padding: 12px; border-radius: var(--radius-sm); overflow-x: auto; }
+.chat-time { flex: 1; text-align: right; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+.chat-live { margin-left: 8px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
+.chat-msg.active .chat-content.chat-typing { display: flex; align-items: center; gap: 2px; }
+.chat-msg.active .chat-content.chat-typing .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--text-dim); margin-right: 3px; animation: typing 1.2s infinite; }
+.chat-msg.active .chat-content.chat-typing .dot:nth-child(2) { animation-delay: .2s; }
+.chat-msg.active .chat-content.chat-typing .dot:nth-child(3) { animation-delay: .4s; margin-right: 10px; }
+.chat-line { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-awaiting { color: var(--yellow); font-weight: 500; }
+.chat-msg.verify { outline: 1px solid rgba(210,153,34,0.5); outline-offset: 2px; border-radius: 8px; }
+@keyframes typing { 0%, 60%, 100% { opacity: .25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+.verify-banner { display: none; margin: 0; padding: 12px 16px; text-align: center; font-size: 14px; font-weight: 600; color: var(--yellow); background: rgba(210,153,34,0.10); border-top: 1px solid rgba(210,153,34,0.35); border-bottom: 1px solid rgba(210,153,34,0.35); animation: vb-pulse 1.6s ease-in-out infinite; }
+@keyframes vb-pulse { 0%, 100% { background: rgba(210,153,34,0.08); } 50% { background: rgba(210,153,34,0.22); } }
+.todo-summary { font-size: 14px; line-height: 1.6; padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); background: var(--bg-card); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.todo-full summary { cursor: pointer; font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+.todo-full[open] summary { color: var(--text); }
 .todo-content strong { color: var(--yellow); }
 .todo-diff { margin-bottom: 16px; }
 .todo-diff-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
@@ -160,6 +175,10 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
   </div>
 </div>
 
+<div class="verify-banner" id="verify-banner">
+  <span>⏸</span> VERIFY — пайплайн ждёт решения супервизора по <span id="verify-banner-todo"></span>
+</div>
+
 <div class="main">
   <div class="sidebar">
     <div class="sb-section">
@@ -187,7 +206,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
   <div class="content">
     <div class="tabs">
       <button class="tab-btn active" data-tab="chat" onclick="switchTab('chat')">💬 Agent Chat</button>
-      <button class="tab-btn" data-tab="todo" onclick="switchTab('todo')">📝 Задача</button>
+      <button class="tab-btn" data-tab="todo" onclick="switchTab('todo')">🎯 Итерация</button>
       <button class="tab-btn" data-tab="events" onclick="switchTab('events')">📊 События</button>
     </div>
     <div class="tab-pane" id="pane-chat"></div>
@@ -241,6 +260,18 @@ function updateTopbar(s) {
   badge.className = 'status-badge ' + s.status;
   badge.textContent = s.status_text || s.status;
 
+  // W4.4: the verify stage must be impossible to miss
+  const vb = document.getElementById('verify-banner');
+  if (vb) {
+    if (s.status === 'verify') {
+      const vt = document.getElementById('verify-banner-todo');
+      if (vt) vt.textContent = s.todo_id || '';
+      vb.style.display = '';
+    } else {
+      vb.style.display = 'none';
+    }
+  }
+
   // SPEC A-run: autonomous run chip
   const runChip = document.getElementById('run-chip');
   const run = s.run || null;
@@ -289,7 +320,9 @@ function updateSidebar(s) {
     ws.style.display = 'block';
     let html = '<div class="worker-row"><span class="worker-label">PID</span><span class="worker-val">' + s.worker.worker_pid + '</span></div>'
       + '<div class="worker-row"><span class="worker-label">State</span><span class="worker-val">' + s.worker.state + '</span></div>'
-      + '<div class="worker-row"><span class="worker-label">CPU</span><span class="worker-val">' + (s.worker.cpu_seconds || 0) + 's</span></div>';
+      + '<div class="worker-row"><span class="worker-label">CPU</span><span class="worker-val">' + (s.worker.cpu_seconds || 0) + 's</span></div>'
+      + (s.worker.read_mb !== undefined ? '<div class="worker-row"><span class="worker-label">Read</span><span class="worker-val">' + s.worker.read_mb + ' MB</span></div>' : '')
+      + (s.worker.write_kb !== undefined ? '<div class="worker-row"><span class="worker-label">Write</span><span class="worker-val">' + (s.worker.write_kb > 1024 ? (s.worker.write_kb / 1024).toFixed(1) + ' MB' : s.worker.write_kb + ' KB') + '</span></div>' : '');
     if (s.worker.last_line) html += '<div class="worker-line">▸ ' + escapeHtml(s.worker.last_line) + '</div>';
     document.getElementById('worker-card').innerHTML = html;
   } else { ws.style.display = 'none'; }
@@ -309,49 +342,61 @@ function updateChat(s) {
   const handoffs = s.handoffs || [];
 
   if (handoffs.length === 0) {
-    if (_renderedChatKeys.length > 0) {
+    if (_renderedChatKeys.length > 0 || pane.innerHTML === '') {
       pane.innerHTML = '<div class="empty">🤝 Agent handoffs появятся здесь по мере выполнения</div>';
       _renderedChatKeys = [];
-    } else if (pane.innerHTML === '') {
-      pane.innerHTML = '<div class="empty">🤝 Agent handoffs появятся здесь по мере выполнения</div>';
     }
     return;
   }
 
-  // Build current keys — role + rev (mtime+size): content rewrites and TODO
-  // switches with equal durations must still re-render.
-  const currentKeys = handoffs.map(h => h.role + '|' + (h.rev || h.duration || ''));
-  const keysJoined = currentKeys.join('||');
-
-  // Only re-render if handoff set changed (new handoff or duration update)
-  if (keysJoined === _renderedChatKeys.join('||')) return;
-
-  // Full re-render only when set changes
+  // Re-render keyed by role+rev — stable while a stage works (Day-4: the
+  // active entry carries a live timer and must NOT churn on every poll).
+  const currentKeys = handoffs.map(h => h.role + '|' + (h.rev || ''));
+  if (currentKeys.join('||') === _renderedChatKeys.join('||')) return;
   _renderedChatKeys = currentKeys;
-  let html = '';
-  handoffs.forEach((h, i) => {
-    const nextH = i < handoffs.length - 1 ? handoffs[i + 1] : null;
-    const durCls = h.duration ? 'chat-dur' : 'chat-dur live';
-    const durText = h.duration || (i === handoffs.length - 1 && s.status === 'running' ? '...' : '');
 
-    html += '<div class="chat-msg">'
+  let html = '';
+  handoffs.forEach((h, i) => {           // newest first (server order)
+    const older = i + 1 < handoffs.length ? handoffs[i + 1] : null;
+    const cls = 'chat-msg' + (h.active ? ' active' : '') + (h.is_verify ? ' verify' : '');
+
+    let times = '';
+    if (h.started_at) {
+      times = h.started_at + (h.active ? ' → …' : (h.ended_at ? ' → ' + h.ended_at : ''));
+    }
+    if (h.duration) times += (times ? ' · ' : '') + h.duration;
+
+    html += '<div class="' + cls + '">'
       + '<div class="chat-avatar" style="background:' + h.color + '22">' + h.icon + '</div>'
       + '<div class="chat-body">'
       + '<div class="chat-header">'
       + '<span class="chat-name" style="color:' + h.color + '">' + h.label + '</span>'
-      + (durText ? '<span class="' + durCls + '">' + durText + '</span>' : '')
-      + '</div>'
-      + '<div class="chat-content" style="border-left-color:' + h.color + '">' + h.content_html + '</div>'
-      + '</div></div>';
+      + (times ? '<span class="chat-time">' + times + '</span>' : '')
+      + (h.active && !h.awaiting ? '<span class="chat-live" id="chat-active-timer" data-start="' + (h.started_epoch || 0) + '"></span>' : '')
+      + '</div>';
 
-    // Chain link to next agent
-    if (nextH) {
-      html += '<div class="chat-chain"><span class="chat-chain-arrow">↓</span> передал → ' + nextH.icon + ' ' + nextH.label + '</div>';
+    if (h.active) {
+      if (h.awaiting) {
+        html += '<div class="chat-content chat-awaiting">⏸ ждёт решения супервизора — APPROVE / REVIEW</div>';
+      } else {
+        html += '<div class="chat-content chat-typing">'
+          + '<span class="dot"></span><span class="dot"></span><span class="dot"></span>'
+          + (h.line ? '<span class="chat-line">' + escapeHtml(h.line) + '</span>' : '')
+          + '</div>';
+      }
+    } else {
+      html += '<div class="chat-content" style="border-left-color:' + h.color + '">' + h.content_html + '</div>';
+    }
+    html += '</div></div>';
+
+    if (older) {
+      html += '<div class="chat-chain"><span class="chat-chain-arrow">↑</span> эстафета от ' + older.icon + ' ' + older.label + '</div>';
     }
   });
-  const nearBottom = (pane.scrollHeight - pane.scrollTop - pane.clientHeight) < 80;
+
+  const nearTop = pane.scrollTop < 80;
   pane.innerHTML = html;
-  if (nearBottom) pane.scrollTop = pane.scrollHeight;
+  if (nearTop) pane.scrollTop = 0;
 }
 
 // ─── TODO content ───────────────────────────────────────────────────
@@ -359,18 +404,23 @@ function updateTodo(s) {
   const pane = document.getElementById('pane-todo');
   const html = s.todo_content_html || '';
   const diffStat = s.todo_diff_stat || '';
-  const combined = diffStat + '|' + html;
+  const summary = s.todo_summary || '';
+  const combined = summary + '§' + diffStat + '|' + html;
   if (combined === _lastTodoHtml) return; // no change
   _lastTodoHtml = combined;
 
   let out = '';
+  if (summary) {
+    out += '<div class="todo-summary">' + escapeHtml(summary) + '</div>';
+  }
   if (diffStat) {
     const esc = diffStat.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     out += '<div class="todo-diff"><div class="todo-diff-title">Изменения vs baseline</div>'
          + '<pre>' + esc + '</pre></div>';
   }
   out += html
-    ? '<div class="todo-content">' + html + '</div>'
+    ? '<details class="todo-full"><summary>Полный текст задачи (для агентов)</summary>'
+      + '<div class="todo-content">' + html + '</div></details>'
     : '<div class="empty">📝 Задача появится после dispatch</div>';
   pane.innerHTML = out;
 }
@@ -402,15 +452,32 @@ function updateElapsed(s) {
   if (s.elapsed_str) el.textContent = s.elapsed_str;
   tickElapsed();
 }
+function fmtElapsed(sec) {
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + 'm ' + s + 's';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ' + (m % 60) + 'm';
+  const d = Math.floor(h / 24);
+  return d + 'd ' + (h % 24) + 'h ' + (m % 60) + 'm';
+}
 function tickElapsed() {
   const el = document.getElementById('elapsed-timer');
-  if (!el || el.dataset.frozen === 'true') return;
-  const epoch = parseInt(el.dataset.epoch || '0');
-  if (!epoch) return;
-  const elapsed = Math.floor(Date.now() / 1000) - epoch;
-  if (elapsed < 0) return;
-  const m = Math.floor(elapsed / 60), sec = elapsed % 60;
-  el.textContent = m > 0 ? m + 'm ' + sec + 's' : sec + 's';
+  if (el && el.dataset.frozen !== 'true') {
+    const epoch = parseInt(el.dataset.epoch || '0');
+    if (epoch) {
+      const sec = Math.floor(Date.now() / 1000) - epoch;
+      if (sec >= 0) el.textContent = fmtElapsed(sec);
+    }
+  }
+  const ce = document.getElementById('chat-active-timer');
+  if (ce) {
+    const epoch = parseInt(ce.dataset.start || '0');
+    if (epoch) {
+      const sec = Math.floor(Date.now() / 1000) - epoch;
+      if (sec >= 0) ce.textContent = fmtElapsed(sec);
+    }
+  }
 }
 tickElapsed();
 setInterval(tickElapsed, 1000);

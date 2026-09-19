@@ -324,3 +324,70 @@ class TestAttemptAutoDone:
         result = verify.attempt_auto_done(tmp_git_repo, "TODO-0007", cfg, sha)
         assert result is True
         assert (outbox / "DONE-TODO-0007.ready").exists()
+
+
+class TestDiffStatForTodo:
+    """Day-4 live fix: `git diff` is blind to new files — verify must see them."""
+
+    def _repo(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "repo"
+        proj.mkdir()
+        for cmd in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "t@t.t"],
+            ["git", "config", "user.name", "tester"],
+        ):
+            subprocess.run(cmd, cwd=proj, check=True)
+        (proj / "README.md").write_text("init\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        return proj
+
+    def _baseline(self, proj: Path, sha: str | None = None) -> str:
+        from awf.git_utils import current_sha
+
+        sha = sha or current_sha(proj)
+        ctx = proj / ".agentic" / "context"
+        ctx.mkdir(parents=True, exist_ok=True)
+        (ctx / "BASELINE-TODO-0001.sha").write_text(sha + "\n", encoding="utf-8")
+        return sha
+
+    def test_untracked_files_listed(self, tmp_path):
+        proj = self._repo(tmp_path)
+        self._baseline(proj)
+        (proj / "scripts").mkdir()
+        (proj / "scripts" / "run.sh").write_text("echo\n", encoding="utf-8")
+
+        text = verify.diff_stat_for_todo(proj, "TODO-0001")
+
+        assert "new (untracked) files:" in text
+        assert "scripts/" in text
+
+    def test_tracked_and_untracked_together(self, tmp_path):
+        proj = self._repo(tmp_path)
+        self._baseline(proj)
+        (proj / "README.md").write_text("changed\n", encoding="utf-8")
+        (proj / "new_file.py").write_text("x = 1\n", encoding="utf-8")
+
+        text = verify.diff_stat_for_todo(proj, "TODO-0001")
+
+        assert "README.md" in text          # tracked diff
+        assert "new_file.py" in text        # untracked section
+
+    def test_pre_existing_untracked_excluded(self, tmp_path):
+        proj = self._repo(tmp_path)
+        self._baseline(proj)
+        # Snapshot records a file that existed BEFORE the task
+        ctx = proj / ".agentic" / "context"
+        (ctx / "BASELINE-TODO-0001.untracked").write_text("old.txt\n", encoding="utf-8")
+        (proj / "old.txt").write_text("old\n", encoding="utf-8")
+        (proj / "fresh.py").write_text("x\n", encoding="utf-8")
+
+        text = verify.diff_stat_for_todo(proj, "TODO-0001")
+
+        assert "fresh.py" in text
+        assert "old.txt" not in text
+
+    def test_no_baseline_empty(self, tmp_path):
+        proj = self._repo(tmp_path)
+        assert verify.diff_stat_for_todo(proj, "TODO-0001") == ""

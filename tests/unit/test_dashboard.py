@@ -432,3 +432,303 @@ class TestInitialContextFromState:
 
         assert "status-badge salvage" in html
         assert 'data-frozen="true"' in html
+
+
+class TestRunScopedElapsed:
+    """Day-4 live fix: elapsed counts the CURRENT run, not the whole log."""
+
+    def _log(self, proj, text: str):
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "orchestrator.log").write_text(text + "\n", encoding="utf-8")
+
+    def test_running_ignores_previous_runs(self, dash_project):
+        from datetime import datetime, timezone
+
+        old_run = "\n".join([
+            "[2026-09-15T10:00:00Z] Pipeline started with 5 stages: a b",
+            "[2026-09-15T10:00:01Z] Stage 1: agent-impl (agent-impl :: execute)",
+            "[2026-09-15T10:30:00Z] Stage 4: verify (supervisor :: verify)",
+        ])
+        new_run = "\n".join([
+            "[2026-09-19T05:16:07Z] Pipeline started with 5 stages: plan agent-spec-writer",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+            "[2026-09-19T05:16:20Z] Stage 1: agent-spec-writer (agent-spec-writer :: execute)",
+        ])
+        self._log(dash_project, old_run + "\n" + new_run)
+        write_state(
+            dash_project, stage_name="agent-spec-writer", stage_kind="execute",
+            stage_idx=1, todo_id="TODO-0013",
+        )
+
+        d = generate_state_dict(dash_project)
+
+        expected = int(
+            datetime(2026, 9, 19, 5, 16, 20, tzinfo=timezone.utc).timestamp()
+        )
+        assert d["elapsed_epoch"] == expected
+        assert d["elapsed_frozen"] is False
+
+    def test_running_during_plan_uses_run_start(self, dash_project):
+        from datetime import datetime, timezone
+
+        self._log(dash_project, "\n".join([
+            "[2026-09-15T10:00:01Z] Stage 1: old (old :: execute)",
+            "[2026-09-19T05:16:07Z] Pipeline started with 5 stages: plan x",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+        ]))
+        write_state(
+            dash_project, stage_name="plan", stage_kind="plan", stage_idx=0,
+            todo_id="TODO-0013",
+        )
+
+        d = generate_state_dict(dash_project)
+
+        expected = int(
+            datetime(2026, 9, 19, 5, 16, 7, tzinfo=timezone.utc).timestamp()
+        )
+        assert d["elapsed_epoch"] == expected
+
+    def test_frozen_span_scoped_to_run(self, dash_project):
+        from datetime import datetime, timezone
+
+        self._log(dash_project, "\n".join([
+            "[2026-09-15T10:00:00Z] Pipeline started with 5 stages: a b",
+            "[2026-09-15T10:00:01Z] Stage 1: old (old :: execute)",
+            "[2026-09-15T10:30:00Z] Stage 4: verify (supervisor :: verify)",
+            "[2026-09-19T05:00:00Z] Pipeline started with 5 stages: plan x",
+            "[2026-09-19T05:01:00Z] Stage 1: x (x :: execute)",
+            "[2026-09-19T05:06:00Z] Stage 4: verify (supervisor :: verify)",
+        ]))
+        write_state(
+            dash_project, stage_name="verify", stage_kind="verify", stage_idx=4,
+            todo_id="TODO-0013",
+        )
+
+        d = generate_state_dict(dash_project)
+
+        expected_epoch = int(
+            datetime(2026, 9, 19, 5, 1, 0, tzinfo=timezone.utc).timestamp()
+        )
+        assert d["elapsed_epoch"] == expected_epoch
+        assert d["elapsed_frozen"] is True
+        assert d["elapsed_str"] == "5m 0s"
+
+
+class TestWorkerLastLine:
+    """Day-4 live fix: the log glob must match awf-agent-*.out."""
+
+    def _log(self, proj, name: str, text: str, mtime: float = 0):
+        import os
+
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        f = logs / name
+        f.write_text(text, encoding="utf-8")
+        if mtime:
+            os.utime(f, (mtime, mtime))
+        return f
+
+    def test_prefers_current_todo_log(self, dash_project):
+        from awf.api.dashboard import _read_worker_last_line
+
+        self._log(
+            dash_project, "awf-agent-x-TODO-0002.out",
+            "timestamp=2026-09-19T05:00:00Z message=loop step=5\n", mtime=2_000_000,
+        )
+        self._log(
+            dash_project, "awf-agent-y-TODO-0001.out",
+            "\x1b[0mRead src/foo.py\n", mtime=1_000_000,
+        )
+
+        assert _read_worker_last_line(dash_project, "TODO-0001") == "Read src/foo.py"
+
+    def test_touching_file_fallback(self, dash_project):
+        from awf.api.dashboard import _read_worker_last_line
+
+        self._log(
+            dash_project, "awf-agent-y-TODO-0001.out",
+            'timestamp=2026-09-19T05:16:07Z level=INFO message="touching file" file="/x/y/foo.py"\n',
+        )
+
+        assert _read_worker_last_line(dash_project, "TODO-0001") == "touching foo.py"
+
+    def test_no_logs_returns_empty(self, dash_project):
+        from awf.api.dashboard import _read_worker_last_line
+
+        assert _read_worker_last_line(dash_project, "TODO-0001") == ""
+
+
+class TestElapsedFormat:
+    """W4.1: one unified dd hh mm format everywhere."""
+
+    def test_formats(self):
+        from awf.api.dashboard import _format_elapsed_from_seconds as f
+
+        assert f(9) == "9s"
+        assert f(90) == "1m 30s"
+        assert f(3600 + 60) == "1h 1m"
+        assert f(86400 + 3600 + 60) == "1d 1h 1m"
+
+
+class TestStageSpans:
+    """W4.2: run-scoped start/end epochs for chat entries."""
+
+    def _log(self, proj, text):
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "orchestrator.log").write_text(text + "\n", encoding="utf-8")
+
+    def test_scoped_to_last_run(self, dash_project):
+        from awf.api.dashboard import _stage_spans
+
+        self._log(dash_project, "\n".join([
+            "[2026-09-15T10:00:00Z] Pipeline started with 5 stages: a b",
+            "[2026-09-15T10:00:01Z] Stage 1: old (old :: execute)",
+            "[2026-09-19T05:16:07Z] Pipeline started with 5 stages: plan x",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+            "[2026-09-19T05:17:00Z] Stage 1: x (x :: execute)",
+        ]))
+
+        spans = _stage_spans(dash_project)
+
+        assert "old" not in spans
+        assert spans["x"]["start"] > spans["plan"]["start"]
+        assert spans["x"]["end"] is None  # still running
+
+
+class TestChatEntries:
+    """W4.2/W4.3: active entry on top, completed newest-first with times."""
+
+    def _setup(self, dash_project, stage_name="agent-implementer", stage_kind="execute"):
+        proj = dash_project
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "orchestrator.log").write_text("\n".join([
+            "[2026-09-19T05:16:07Z] Pipeline started with 5 stages: plan a b",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+            "[2026-09-19T05:17:00Z] Stage 1: agent-spec-writer (agent-spec-writer :: execute)",
+            "[2026-09-19T05:22:00Z] Stage 2: agent-implementer (agent-implementer :: execute)",
+        ]) + "\n", encoding="utf-8")
+        (proj / ".agentic" / "handoff").mkdir(parents=True, exist_ok=True)
+        (proj / ".agentic" / "handoff" / "agent-spec-writer-TODO-0001.md").write_text(
+            "# H\n\ndone\n", encoding="utf-8",
+        )
+        (logs / "awf-agent-implementer-TODO-0001.out").write_text(
+            "\x1b[0mRead src/foo.py\n", encoding="utf-8",
+        )
+        write_state(
+            proj, stage_name=stage_name, stage_kind=stage_kind, stage_idx=2,
+            todo_id="TODO-0001",
+        )
+
+    def test_active_entry_on_top_with_timer_and_line(self, dash_project, monkeypatch):
+        from datetime import datetime, timezone
+
+        self._setup(dash_project)
+        monkeypatch.setattr(
+            "awf.api.dashboard._read_worker_activity",
+            lambda state: {"active": True, "worker_pid": 1, "state": "running", "cpu_seconds": 1},
+        )
+        d = generate_state_dict(dash_project)
+
+        active = d["handoffs"][0]
+        assert active["active"] is True
+        assert active["role"] == "agent-implementer"
+        assert active["started_epoch"] == int(
+            datetime(2026, 9, 19, 5, 22, 0, tzinfo=timezone.utc).timestamp()
+        )
+        assert active["line"] == "Read src/foo.py"
+        assert active["awaiting"] is False
+
+    def test_completed_entry_has_times_and_duration(self, dash_project):
+        from datetime import datetime, timezone
+
+        self._setup(dash_project)
+        d = generate_state_dict(dash_project)
+
+        done = d["handoffs"][1]
+        assert done["role"] == "agent-spec-writer"
+        assert done["active"] is False
+        assert done["started_epoch"] == int(
+            datetime(2026, 9, 19, 5, 17, 0, tzinfo=timezone.utc).timestamp()
+        )
+        assert done["duration"] == "5m 0s"
+        assert done["started_at"] and done["ended_at"]
+
+    def test_verify_entry_is_flagged(self, dash_project):
+        self._setup(dash_project, stage_name="verify", stage_kind="verify")
+        d = generate_state_dict(dash_project)
+
+        active = d["handoffs"][0]
+        assert active["is_verify"] is True
+        assert active["awaiting"] is True
+
+
+class TestTodoSummary:
+    """W4.5: one human paragraph, full text stays under <details>."""
+
+    def test_extracts_first_paragraph(self, dash_project):
+        from awf.api.dashboard import _read_todo_summary
+
+        inbox = dash_project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text(
+            "---\ntags: x\n---\n"
+            "# TODO-0001: B7\n\n"
+            "## Контекст\n\n"
+            "Сделать экспорт отчёта в CSV по кнопке.\n"
+            "Он должен работать офлайн.\n\n"
+            "## Детали\n\nвторой абзац\n",
+            encoding="utf-8",
+        )
+
+        summary = _read_todo_summary(dash_project, "TODO-0001")
+
+        assert summary == "Сделать экспорт отчёта в CSV по кнопке. Он должен работать офлайн."
+
+    def test_caps_long_text(self, dash_project):
+        from awf.api.dashboard import _read_todo_summary
+
+        inbox = dash_project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text("# T\n\n" + "длинно " * 200, encoding="utf-8")
+
+        summary = _read_todo_summary(dash_project, "TODO-0001")
+
+        assert len(summary) <= 400
+        assert summary.endswith("…")
+
+    def test_no_todo(self, dash_project):
+        from awf.api.dashboard import _read_todo_summary
+
+        assert _read_todo_summary(dash_project, "TODO-9999") == ""
+
+    def test_in_state_dict(self, dash_project):
+        inbox = dash_project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text("# T\n\nКороткая суть задачи.\n", encoding="utf-8")
+        write_state(dash_project, todo_id="TODO-0001", stage_name="x", stage_kind="execute")
+
+        d = generate_state_dict(dash_project)
+
+        assert d["todo_summary"] == "Короткая суть задачи."
+
+
+class TestCheckpointEvents:
+    """W4.8: auto-approved checkpoints must not look like they need a human."""
+
+    def test_wording(self):
+        from awf.api.dashboard import _parse_log_events
+
+        log = "\n".join([
+            "[2026-09-19T05:16:07Z] BD-36: checkpoint decision=approve",
+            "[2026-09-19T05:16:08Z] BD-36: checkpoint opened waiting for user input",
+            "[2026-09-19T05:16:09Z] BD-36: checkpoint still waiting for user",
+        ])
+        events = _parse_log_events(log)
+        msgs = [e["msg"] for e in events]
+
+        assert msgs.count("⏸ Checkpoint auto-approved") == 1
+        assert msgs.count("⏸ Checkpoint opened — needs user") == 1
+        assert len(msgs) == 2  # "still waiting" polling line is skipped

@@ -97,16 +97,7 @@ def _format_elapsed(started_at: str | None) -> str:
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
         delta = datetime.now(timezone.utc) - ts
-        total_seconds = int(delta.total_seconds())
-        if total_seconds < 60:
-            return f"{total_seconds}s"
-        minutes = total_seconds // 60
-        seconds = total_seconds % 60
-        if minutes < 60:
-            return f"{minutes}m {seconds}s"
-        hours = minutes // 60
-        minutes = minutes % 60
-        return f"{hours}h {minutes}m"
+        return _format_elapsed_from_seconds(int(delta.total_seconds()))
     except (ValueError, TypeError):
         return ""
 
@@ -148,9 +139,16 @@ def _parse_log_events(log_text: str, max_events: int = 30) -> list[dict[str, str
             events.append({"ts": ts_short, "msg": f"📨 {msg[:80]}", "type": "info"})
             continue
 
-        # Checkpoint
+        # Checkpoint (Day-4: an auto-approved checkpoint is NOT "opened")
         if "BD-36" in msg and "checkpoint" in msg.lower():
-            events.append({"ts": ts_short, "msg": "⏸ Checkpoint opened", "type": "info"})
+            if "decision=approve" in msg or "auto-approve" in msg:
+                events.append({"ts": ts_short, "msg": "⏸ Checkpoint auto-approved", "type": "info"})
+            elif "still waiting" in msg.lower():
+                pass  # polling noise — invisible
+            elif "decision" in msg:
+                events.append({"ts": ts_short, "msg": "⏸ Checkpoint decision recorded", "type": "info"})
+            else:
+                events.append({"ts": ts_short, "msg": "⏸ Checkpoint opened — needs user", "type": "warn"})
             continue
 
         # Pipeline complete
@@ -478,7 +476,9 @@ def _read_worker_activity(state: dict[str, Any] | None) -> dict[str, Any]:
         # Read /proc/<pid>/stat for CPU + state
         stat_path = Path(f"/proc/{worker_pid}/stat")
         if not stat_path.is_file():
-            return {"active": False, "reason": f"PID {worker_pid} not in /proc"}
+            # Day-4: the "child" was a transient helper (our own ps/git call) —
+            # "PID X not in /proc" confused more than helped.
+            return {"active": False, "reason": "No worker running"}
 
         stat_raw = stat_path.read_text()
         # stat format: pid (comm) state ...
@@ -642,18 +642,210 @@ def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
     return diff_stat_for_todo(project_dir, todo_id)
 
 
-def _read_worker_last_line(project_dir: Path) -> str:
-    """Read last meaningful line from worker output log."""
+def _scoped_log_text(project_dir: Path) -> tuple[datetime | None, str]:
+    """Log text of the CURRENT run only (after the last 'Pipeline started').
+
+    Day-4 (live review): orchestrator.log accumulates across restarts and
+    TODOs — the elapsed timer picked the first agent line of the WHOLE log
+    and showed 47h on a one-minute-old run.
+    """
+    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+    if not log_file.is_file():
+        return None, ""
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, ""
+
+    marker = None
+    for m in re.finditer(
+        r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]\s*Pipeline started", text,
+    ):
+        marker = m
+    if marker is None:
+        return None, text
+    try:
+        start = datetime.strptime(marker.group(1), "%Y-%m-%dT%H:%M:%S").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        start = None
+    return start, text[marker.start():]
+
+
+def _run_elapsed(
+    project_dir: Path, status: str,
+) -> tuple[int, bool, str]:
+    """(elapsed_epoch, elapsed_frozen, elapsed_str) for the CURRENT run.
+
+    Running → epoch is the run's first agent stage (fallback: run start) and
+    the string grows with wall time. Frozen statuses → span between the first
+    agent line and the verify line of the scoped run.
+    """
+    scoped_start, text = _scoped_log_text(project_dir)
+
+    agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
+    verify_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
+    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
+
+    first_agent = None
+    verify_ts = None
+    for line in text.splitlines():
+        tm = time_pat.search(line)
+        if not tm:
+            continue
+        try:
+            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+        if agent_pat.search(line) and first_agent is None:
+            first_agent = dt
+        if verify_pat.search(line):
+            verify_ts = dt
+
+    if status == "running":
+        epoch = int(first_agent.timestamp()) if first_agent else (
+            int(scoped_start.timestamp()) if scoped_start else 0
+        )
+        return epoch, False, ""
+
+    # Frozen statuses
+    if first_agent and verify_ts:
+        epoch = int(first_agent.timestamp())
+        return epoch, True, _format_elapsed_from_seconds(
+            int(verify_ts.timestamp() - epoch)
+        )
+    if first_agent:
+        return int(first_agent.timestamp()), True, ""
+    return 0, True, ""
+
+
+def _fmt_clock(epoch: int | None) -> str:
+    """Epoch → local 'HH:MM:SS' for the chat entry times."""
+    if not epoch:
+        return ""
+    try:
+        return datetime.fromtimestamp(int(epoch)).astimezone().strftime("%H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _stage_spans(project_dir: Path) -> dict[str, dict[str, int]]:
+    """Run-scoped {stage_name: {"start": epoch, "end": epoch|None}}.
+
+    Day-4: built from the CURRENT run only (see ``_scoped_log_text``);
+    ``end=None`` means the stage is still running.
+    """
+    _, text = _scoped_log_text(project_dir)
+    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
+    stage_pat = re.compile(r"Stage\s+\d+:\s+(\S+)")
+    transitions: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        tm = time_pat.search(line)
+        sm = stage_pat.search(line)
+        if not (tm and sm):
+            continue
+        try:
+            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+        transitions.append((int(dt.timestamp()), sm.group(1)))
+    spans: dict[str, dict[str, int]] = {}
+    for i, (ts, name) in enumerate(transitions):
+        end = transitions[i + 1][0] if i + 1 < len(transitions) else None
+        spans[name] = {"start": ts, "end": end}
+    return spans
+
+
+def _read_todo_summary(project_dir: Path, todo_id: str | None, limit: int = 400) -> str:
+    """Day-4 UX: one-paragraph human summary of the TODO.
+
+    The TODO file is written for the AGENT; the user needs the gist. Takes
+    the first non-heading paragraph after the title, strips markdown marks.
+    """
+    if not todo_id:
+        return ""
+    f = paths.inbox(project_dir) / f"{todo_id}.md"
+    if not f.is_file():
+        return ""
+    try:
+        text = f.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+    lines = text.splitlines()
+    i = 0
+    if i < len(lines) and lines[i].strip() == "---":  # skip front-matter
+        i += 1
+        while i < len(lines) and lines[i].strip() != "---":
+            i += 1
+        i += 1
+
+    para: list[str] = []
+    for line in lines[i:]:
+        s = line.strip()
+        if not s:
+            if para:
+                break
+            continue
+        if s.startswith(("#", "```", "|", "> ", "**TODO", "- [")):
+            if para:
+                break
+            continue
+        para.append(s)
+    if not para:
+        return ""
+    joined = re.sub(r"[*_`]+", "", " ".join(para)).strip()
+    if len(joined) > limit:
+        joined = joined[: limit - 1].rstrip() + "…"
+    return joined
+
+
+def _read_worker_last_line(project_dir: Path, todo_id: str | None = None) -> str:
+    """Last meaningful line from the CURRENT worker's log.
+
+    Day-4 (live review): the glob used 'agent-*.out' while awf writes
+    'awf-agent-*.out' — the worker panel's last line was always empty.
+    """
+    import re as _re
+
     logs_dir = project_dir / ".agentic" / "logs"
-    for log_name in logs_dir.glob("agent-*.out"):
+    candidates: list[Path] = []
+    if todo_id:
+        candidates = sorted(
+            logs_dir.glob(f"awf-agent-*-{todo_id}.out"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+    if not candidates:
+        try:
+            candidates = sorted(
+                logs_dir.glob("awf-agent-*.out"),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+        except OSError:
+            candidates = []
+
+    ansi = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    for log_name in candidates[:1]:
         try:
             lines = log_name.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-            for line in reversed(lines):
-                line = line.strip()
-                if line and not line.startswith("[") and len(line) > 10:
-                    return line[:200]
         except OSError:
             continue
+        for line in reversed(lines):
+            clean = ansi.sub("", line).strip()
+            if not clean or len(clean) < 3:
+                continue
+            if clean.startswith("timestamp="):
+                # opencode structured log — surface the file being touched
+                m = _re.search(r'message="touching file" file="([^"]+)"', clean)
+                if m:
+                    return f"touching {Path(m.group(1)).name}"
+                continue
+            return clean[:200]
     return ""
 
 
@@ -746,68 +938,62 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # Status
     status, status_class, status_text, status_icon, status_label = _determine_status(state)
 
-    # Elapsed (from first agent stage, freeze on verify)
-    elapsed_epoch, elapsed_frozen, elapsed_str = 0, False, ""
+    # Elapsed — scoped to the CURRENT run (Day-4 live fix: the timer used to
+    # pick the first agent line of the whole multi-run log — 47h on a fresh run)
     if state and status == "running":
-        log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-        if log_file.is_file():
-            try:
-                log_text = log_file.read_text(encoding="utf-8", errors="replace")
-                agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
-                time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-                for line in log_text.splitlines():
-                    tm = time_pat.search(line)
-                    if tm and agent_pat.search(line):
-                        dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                        if not elapsed_epoch:
-                            elapsed_epoch = int(dt.timestamp())
-            except (OSError, ValueError):
-                pass
+        elapsed_epoch, elapsed_frozen, elapsed_str = _run_elapsed(project_dir, "running")
     elif state and status in ("verify", "done", "idle", "dead", "salvage"):
-        elapsed_frozen = True
-        # Compute frozen elapsed from log
-        log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-        if log_file.is_file():
-            try:
-                log_text = log_file.read_text(encoding="utf-8", errors="replace")
-                agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
-                verify_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
-                time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-                first_agent = None
-                verify_ts = None
-                for line in log_text.splitlines():
-                    tm = time_pat.search(line)
-                    if not tm:
-                        continue
-                    dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                    if agent_pat.search(line) and first_agent is None:
-                        first_agent = dt
-                    if verify_pat.search(line):
-                        verify_ts = dt
-                if first_agent and verify_ts:
-                    elapsed_epoch = int(first_agent.timestamp())
-                    elapsed_str = _format_elapsed_from_seconds(int(verify_ts.timestamp() - elapsed_epoch))
-                elif first_agent:
-                    elapsed_epoch = int(first_agent.timestamp())
-            except (OSError, ValueError):
-                pass
+        elapsed_epoch, elapsed_frozen, elapsed_str = _run_elapsed(project_dir, status)
+    else:
+        elapsed_epoch, elapsed_frozen, elapsed_str = 0, False, ""
 
-    if not elapsed_str and elapsed_epoch:
+    if not elapsed_str and elapsed_epoch and not elapsed_frozen:
         elapsed_str = _format_elapsed(
             datetime.fromtimestamp(elapsed_epoch, tz=timezone.utc).isoformat()
         )
 
-    # Per-stage timings
-    stage_timings_dict, current_stage_epoch = _extract_stage_timings(project_dir)
-
-    # Handoffs (chat-style, pipeline order, rendered markdown)
+    # TODO id + worker status (needed by the chat and the todo pane)
     todo_id = state.get("todo_id") if state else None
+    worker = _read_worker_activity(state)
+    if worker and worker.get("active"):
+        worker["last_line"] = _read_worker_last_line(project_dir, todo_id)
+
+    # Stage spans of the CURRENT run — start/end times for the chat entries
+    spans = _stage_spans(project_dir)
+    stage_kind_now = str(state.get("stage_kind", "") or "") if state else ""
+    current_stage = str(state.get("stage_name", "") or "") if state else ""
+
+    # Handoffs (chat-style, NEWEST FIRST) + the active stage entry on top
     handoffs = _read_handoffs(project_dir, stage_order=stage_names, todo_id=todo_id)
-    handoff_chat = []
-    for h in handoffs:
+    handoff_chat: list[dict[str, Any]] = []
+
+    if current_stage and status in ("running", "verify"):
+        rv = _role_visual(current_stage)
+        span = spans.get(current_stage) or {}
+        handoff_chat.append({
+            "role": current_stage,
+            "icon": rv["icon"],
+            "color": rv["color"],
+            "label": rv["label"],
+            "content_html": "",
+            "duration": "",
+            "rev": f"active|{current_stage}|{span.get('start', 0)}",
+            "started_at": _fmt_clock(span.get("start")),
+            "ended_at": "",
+            "started_epoch": int(span.get("start") or 0),
+            "active": True,
+            "awaiting": stage_kind_now == "verify",
+            "is_verify": stage_kind_now == "verify",
+            "line": (worker or {}).get("last_line", "") if stage_kind_now != "verify" else "",
+        })
+
+    for h in reversed(handoffs):  # newest first for display
         rv = _role_visual(h["role"])
-        # Timing: look up by role name in stage_timings
-        duration = stage_timings_dict.get(h["role"], "") or stage_timings_dict.get(h.get("file", "").split("-")[0], "")
+        span = spans.get(h["role"]) or {}
+        started, ended = span.get("start"), span.get("end")
+        duration = ""
+        if started and ended:
+            duration = _format_elapsed_from_seconds(int(ended - started))
         handoff_chat.append({
             "role": h["role"],
             "icon": rv["icon"],
@@ -816,19 +1002,22 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "content_html": h.get("content_html", ""),
             "duration": duration,
             "rev": h.get("rev", ""),
+            "started_at": _fmt_clock(started),
+            "ended_at": _fmt_clock(ended),
+            "started_epoch": int(started or 0),
+            "active": False,
+            "awaiting": False,
+            "is_verify": False,
+            "line": "",
         })
 
     # TODO content
     todo_content_html = _read_todo_content(project_dir, todo_id)
+    todo_summary = _read_todo_summary(project_dir, todo_id)
     todo_diff_stat = _read_todo_diff_stat(project_dir, todo_id)
 
     # TODO timeline
     todo_timeline = _build_todo_timeline(project_dir, todo_id)
-
-    # Worker status
-    worker = _read_worker_activity(state)
-    if worker and worker.get("active"):
-        worker["last_line"] = _read_worker_last_line(project_dir)
 
     # Events
     log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
@@ -860,6 +1049,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "project_name": project_name,
         "todo_id": todo_id or "",
         "todo_content_html": todo_content_html,
+        "todo_summary": todo_summary,
         "todo_diff_stat": todo_diff_stat,
         "run": _run_brief_for_dashboard(project_dir),
         "status": status,
@@ -883,11 +1073,18 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
 
 
 def _format_elapsed_from_seconds(seconds: int) -> str:
-    """Format seconds → 'Xm Ys' or 'Ys'."""
+    """Format seconds → unified 'Xd Xh Xm' / 'Xh Xm' / 'Xm Ys' / 'Ys'.
+
+    Day-4: one formatter for every elapsed display (the JS ticker used to
+    show '2865m' while the server showed '47h' — now both say '1d 23h 45m').
+    """
     if seconds < 60:
         return f"{seconds}s"
     m, s = divmod(seconds, 60)
     if m < 60:
         return f"{m}m {s}s"
     h, m = divmod(m, 60)
-    return f"{h}h {m}m"
+    if h < 24:
+        return f"{h}h {m}m"
+    d, h = divmod(h, 24)
+    return f"{d}d {h}h {m}m"

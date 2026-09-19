@@ -272,6 +272,26 @@ def diff_stat_for_todo(project_dir: str | Path, todo_id: str) -> str:
     if not sha:
         return ""
     try:
-        return git_utils.diff_stat(cwd, sha).strip()
+        base_text = git_utils.diff_stat(cwd, sha).strip()
+        untracked = git_utils.untracked_files(cwd)
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
         return ""
+
+    # Day-4 live fix: `git diff` is blind to NEW files — a verify supervisor
+    # saw "README.md +3" while scripts/ and tests/test_smoke_c3.py existed.
+    snapshot = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
+    if snapshot.is_file():
+        try:
+            pre_existing = {
+                line.strip()
+                for line in snapshot.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+            untracked = [f for f in untracked if f not in pre_existing]
+        except OSError:
+            pass
+    if untracked:
+        listed = "\n".join(f"  {f}" for f in sorted(untracked)[:20])
+        extra = f"new (untracked) files:\n{listed}"
+        return f"{base_text}\n\n{extra}" if base_text else extra
+    return base_text
