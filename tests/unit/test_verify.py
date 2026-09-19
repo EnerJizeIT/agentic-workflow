@@ -391,3 +391,46 @@ class TestDiffStatForTodo:
     def test_no_baseline_empty(self, tmp_path):
         proj = self._repo(tmp_path)
         assert verify.diff_stat_for_todo(proj, "TODO-0001") == ""
+
+
+class TestRunVerifyCommandsEdges:
+    """QA .30 (NEG-2026-09-19): partial failure, short-circuit, missing binary."""
+
+    def _log(self, tmp_path):
+        return tmp_path / ".agentic" / "outbox" / "TEST-RESULTS-TODO-0001.log"
+
+    def test_partial_failure_stops_and_logs(self, tmp_path):
+        cfg = {"verification": {
+            "test_cmd": "echo VERIFY-ALPHA-OK",
+            "lint_cmd": "false",
+            "typecheck_cmd": "echo SHOULD-NOT-RUN",
+        }}
+
+        ok = verify.run_verify_commands(cfg, tmp_path, todo_id="TODO-0001")
+
+        assert ok is False
+        log = self._log(tmp_path).read_text(encoding="utf-8")
+        assert "VERIFY-ALPHA-OK" in log
+        assert "SHOULD-NOT-RUN" not in log, "commands after the first failure must be skipped"
+
+    def test_all_pass_true_and_logs_every_command(self, tmp_path):
+        cfg = {"verification": {
+            "test_cmd": "echo VERIFY-ALPHA-OK",
+            "lint_cmd": "echo VERIFY-BRAVO-OK",
+        }}
+
+        ok = verify.run_verify_commands(cfg, tmp_path, todo_id="TODO-0001")
+
+        assert ok is True
+        log = self._log(tmp_path).read_text(encoding="utf-8")
+        assert "VERIFY-ALPHA-OK" in log
+        assert "VERIFY-BRAVO-OK" in log
+
+    def test_missing_binary_aborts_with_reason(self, tmp_path):
+        cfg = {"verification": {"test_cmd": "definitely-not-a-real-binary-xyz"}}
+
+        ok = verify.run_verify_commands(cfg, tmp_path, todo_id="TODO-0001")
+
+        assert ok is False
+        log = self._log(tmp_path).read_text(encoding="utf-8")
+        assert "ABORTED" in log

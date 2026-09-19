@@ -1652,3 +1652,24 @@ red-first in `tests/negative/test_run_queue_safety.py` (11 tests).
    CLI entry points got real smoke tests (cmd_init was 0%).
 ⬜ Открыто: heartbeat для wait_for_event (R3-в), CLI `awf run`, покрытие
    cmd_analyze_roles/cmd_approve.
+
+
+---
+
+## 🗄 2026-09-19 · QA-долг закрыт (NEG-2026-09-19)
+
+✅ **QA .14 PID reuse TOCTOU** — identity-проверка ПЕРВОЙ (`_read_pid_cmdline`),
+   liveness второй; unsafe-фолбэк «assume ours» убран. Тесты:
+   `TestPidReuseDefense`.
+✅ **QA .15 threading cleanup** — единственный оставшийся поток в
+   `test_signals.py` уже с `join(timeout=2)`; в `test_plan_checkpoint.py`
+   потоков нет (пункт был устаревшим).
+✅ **QA .25 Disk I/O under lock** — `FormRegistry`: сериализация под локом
+   (`_serialize`), запись ПОСЛЕ (`_write_payload`); тест проверяет
+   `lock.locked() is False` во время записи.
+✅ **QA .29 in-memory only** — добавлены file-based тесты claim/finalize с
+   проверкой персистентности по файлу.
+✅ **QA .30 verify edge cases** — partial failure со short-circuit, all-pass,
+   missing binary (ABORTED в логе).
+✅ **QA .31 full pipeline flow** — покрыт e2e (`test_pipeline_e2e.py`
+   happy path: plan → worker → verify → commit → archive) + CLI smoke.

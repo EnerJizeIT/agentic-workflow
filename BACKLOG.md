@@ -17,22 +17,12 @@
 
 **Status:** закрытые пункты — в архиве; ниже только то, что осталось.
 
-⬜ `.14` **[HIGH] PID reuse TOCTOU** — `pipeline.py:58-65`. Между `os.kill(pid,0)`
-   и `/proc/<pid>/cmdline` PID может быть переиспользован → awf_kill убивает не тот.
-   P2 на pet-проекте (требует rapid PID cycling).
-⬜ `.15` **[HIGH] threading.Thread cleanup** — `test_signals.py:246`, 3 места в
-   `test_plan_checkpoint.py`. Daemon threads без join. Fix: `thread.join(timeout=...)`.
-⬜ `.16` **[HIGH] Entry points coverage** — частично закрыто (NEG-2026-09-19:
-   cmd_init/cmd_status/cmd_start/cmd_restore покрыты реальными CLI smoke-тестами,
-   `tests/integration/test_cli_entrypoints.py`). Остались: cmd_analyze_roles 0%,
-   cmd_approve 0%, cmd_reset 36%, cmd_rollback 48%.
+⬜ `.16` **[HIGH] Entry points coverage** — большая часть закрыта (NEG-2026-09-19:
+   cmd_init/status/start/restore/approve/rollback/reset/analyze-roles покрыты
+   реальными CLI smoke-тестами, `tests/integration/test_cli_entrypoints.py`).
+   Остались: cmd_add_role, cmd_baseline, cmd_report.
 
 ⬜ `.24` **[MED] CSRF token** — `http_endpoint.py:94` no Origin/Referer → True.
-⬜ `.25` **[MED] pipeline_state Disk I/O inside lock** — YAML serialize blocks
-   thread pool. (Low priority для pet-проекта.)
-⬜ `.29` **[MED] test_audit_followup TOCTOU** — 4 теста in-memory only, не file-based.
-⬜ `.30` **[MED] test_verify.py edge cases** — partial failure, timeout, exit codes.
-⬜ `.31` **[MED] Integration no full pipeline flow** — init→dispatch→start→verify→commit.
 ⬜ `.32` **Coverage критических путей** — verify.py 14%, plan_checkpoint.py 21%,
    wait_event.py 22%, _stack.py 27%, context.py 34%, setup.py 39%.
 

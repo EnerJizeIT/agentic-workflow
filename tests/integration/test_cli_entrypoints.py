@@ -114,3 +114,109 @@ class TestDashboardServerReal:
         finally:
             server.shutdown()
             server.server_close()
+
+
+class TestApproveEntrypoint:
+    def test_approve_creates_signal(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliApprove")
+        capsys.readouterr()
+
+        rc = cli.main(["approve", "TODO-0001", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert (repo / ".agentic" / "inbox" / "APPROVE-TODO-0001.ready").is_file()
+
+    def test_approve_invalid_id_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliApprove")
+        capsys.readouterr()
+
+        rc = cli.main(["approve", "not-a-todo", "--project-dir", str(repo)])
+
+        assert rc == 1
+
+
+class TestRollbackEntrypoint:
+    def test_dry_run_after_baseline(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRollback")
+        api.create_baseline(repo, "TODO-0001")
+        capsys.readouterr()
+
+        rc = cli.main(["rollback", "TODO-0001", "--dry-run", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "Rolling back" in out or "baseline" in out
+
+    def test_missing_baseline_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRollback")
+        capsys.readouterr()
+
+        rc = cli.main(["rollback", "TODO-0001", "--dry-run", "--project-dir", str(repo)])
+
+        assert rc == 1
+
+
+class TestResetEntrypoint:
+    def test_tasks_only_reset(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliReset")
+        (repo / ".agentic" / "inbox" / "TODO-0001.md").write_text("# T\n", encoding="utf-8")
+        capsys.readouterr()
+
+        rc = cli.main(["reset", "--tasks-only", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "Reset complete" in out or "reset" in out.lower()
+
+    def test_orphans_none_is_graceful(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliReset")
+        capsys.readouterr()
+
+        rc = cli.main(["reset", "--orphans", "--force", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "No orphans" in out or "orphan" in out.lower()
+
+
+class TestAnalyzeRolesEntrypoint:
+    def test_no_roles_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliAnalyze")
+        capsys.readouterr()
+
+        rc = cli.main(["analyze-roles", "--dry-run", "--project-dir", str(repo)])
+
+        assert rc == 1
+
+    def test_with_roles_reports(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliAnalyze")
+        roles = repo / ".agentic" / "roles"
+        roles.mkdir(parents=True, exist_ok=True)
+        (roles / "developer.md").write_text("# Developer\n", encoding="utf-8")
+        (roles / "tester.md").write_text("# Tester\n", encoding="utf-8")
+        pipes = repo / ".agentic" / "pipelines"
+        pipes.mkdir(parents=True, exist_ok=True)
+        (pipes / "default.yaml").write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: developer\n    role: developer\n    kind: execute\n"
+            "  - name: tester\n    role: tester\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            encoding="utf-8",
+        )
+        capsys.readouterr()
+
+        rc = cli.main(["analyze-roles", "--dry-run", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "ROLE ANALYSIS" in out or "developer" in out

@@ -305,3 +305,47 @@ class TestFormRegistryPersistence:
 
         registry.persist_enabled = True
         assert registry.persist_enabled is True
+
+
+class TestPersistOutsideLock:
+    """QA .25: disk I/O must happen AFTER the registry lock is released."""
+
+    def test_write_happens_outside_lock(self, tmp_path: Path, monkeypatch) -> None:
+        import agent_workflow_ui.state as state_mod
+
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+        registry = FormRegistry()
+
+        lock_states: list[bool] = []
+        orig = state_mod._atomic_write_text
+
+        def spy(path, text, **kw):
+            lock_states.append(registry._lock.locked())
+            return orig(path, text, **kw)
+
+        monkeypatch.setattr(state_mod, "_atomic_write_text", spy)
+        registry.add(
+            FormRecord(form_id="FORM-L", template="t", opened_at=datetime.now(timezone.utc))
+        )
+
+        assert lock_states == [False], "disk write must not hold the registry lock"
+        assert (tmp_path / "reg.yaml").is_file()
+
+    def test_claim_and_finalize_still_persist(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+        monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+        registry = FormRegistry()
+        registry.add(
+            FormRecord(form_id="FORM-C", template="t", opened_at=datetime.now(timezone.utc))
+        )
+
+        assert registry.claim_for_submit("FORM-C") is True
+        registry.finalize_submit("FORM-C")
+
+        # Persistence is verified on disk: a reloaded registry intentionally
+        # filters terminal (submitted) records, so check the file directly.
+        import yaml
+
+        data = yaml.safe_load((tmp_path / "reg.yaml").read_text(encoding="utf-8"))
+        assert data["FORM-C"]["status"] == "submitted"

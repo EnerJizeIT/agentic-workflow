@@ -254,3 +254,46 @@ class TestSalvageInStatus:
         result = get_status(project)
         d = result.as_dict()
         json.dumps(d)  # should not raise
+
+
+class TestPidReuseDefense:
+    """QA .14 (NEG-2026-09-19): identity check BEFORE liveness.
+
+    The old order (os.kill → /proc read, with an 'assume ours' fallback when
+    the read failed) let a reused PID pass as our pipeline. Now the cmdline
+    check is the first gate and an unreadable /proc means 'not ours'.
+    """
+
+    def test_unreadable_cmdline_is_not_our_pipeline(self, project, monkeypatch):
+        import os
+
+        from awf.api import pipeline as api_pipeline
+
+        write_state(project, pipeline_pid=os.getpid())
+        monkeypatch.setattr(api_pipeline, "_read_pid_cmdline", lambda pid: None)
+
+        assert api_pipeline._is_pipeline_running(project) is None
+
+    def test_foreign_cmdline_is_not_our_pipeline(self, project, monkeypatch):
+        import os
+
+        from awf.api import pipeline as api_pipeline
+
+        write_state(project, pipeline_pid=os.getpid())
+        monkeypatch.setattr(
+            api_pipeline, "_read_pid_cmdline", lambda pid: "nginx: worker process\x00",
+        )
+
+        assert api_pipeline._is_pipeline_running(project) is None
+
+    def test_alive_own_pipeline_returned(self, project, monkeypatch):
+        import os
+
+        from awf.api import pipeline as api_pipeline
+
+        write_state(project, pipeline_pid=os.getpid())
+        monkeypatch.setattr(
+            api_pipeline, "_read_pid_cmdline", lambda pid: "python\x00-m\x00awf\x00start",
+        )
+
+        assert api_pipeline._is_pipeline_running(project) == os.getpid()

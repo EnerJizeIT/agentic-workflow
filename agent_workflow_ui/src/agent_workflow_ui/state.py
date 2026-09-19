@@ -121,30 +121,43 @@ class FormRegistry:
         except (OSError, yaml.YAMLError):
             pass
 
-    def _persist(self) -> None:
-        """A10: write registry to disk atomically."""
+    def _serialize(self) -> str | None:
+        """A10 + QA .25: snapshot the registry as YAML text.
+
+        Call this INSIDE the lock (cheap, CPU-only) and hand the payload to
+        :meth:`_write_payload` AFTER releasing it — disk I/O must not block
+        the lock while a form request waits.
+        """
         if not self._persist_enabled:
+            return None
+        import yaml
+
+        data = {}
+        for form_id, record in self._forms.items():
+            data[form_id] = {
+                "template": record.template,
+                "opened_at": record.opened_at.isoformat() if record.opened_at else None,
+                "status": record.status,
+                "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+                "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
+                "project_dir": str(record.project_dir) if record.project_dir else None,
+            }
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+    def _write_payload(self, payload: str | None) -> None:
+        """QA .25: atomic disk write, called OUTSIDE the lock."""
+        if payload is None:
             return
         try:
-            import yaml
-            data = {}
-            for form_id, record in self._forms.items():
-                data[form_id] = {
-                    "template": record.template,
-                    "opened_at": record.opened_at.isoformat() if record.opened_at else None,
-                    "status": record.status,
-                    "expires_at": record.expires_at.isoformat() if record.expires_at else None,
-                    "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
-                    "project_dir": str(record.project_dir) if record.project_dir else None,
-                }
-            _atomic_write_text(self.PERSIST_FILE, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+            _atomic_write_text(self.PERSIST_FILE, payload)
         except OSError:
             pass
 
     def add(self, record: FormRecord) -> None:
         with self._lock:
             self._forms[record.form_id] = record
-            self._persist()
+            payload = self._serialize()
+        self._write_payload(payload)
 
     def get(self, form_id: str) -> FormRecord | None:
         with self._lock:
@@ -161,8 +174,9 @@ class FormRegistry:
                 record.submitted_at = now
             elif status == "cancelled":
                 record.cancelled_at = now
-            self._persist()
-            return record
+            payload = self._serialize()
+        self._write_payload(payload)
+        return record
 
     def claim_for_submit(self, form_id: str) -> bool:
         """H4 fix: atomic check-and-set for TOCTOU race protection.
@@ -182,8 +196,9 @@ class FormRegistry:
                 return False
             record.status = "submitting"  # intermediate state
             record.claimed_at = datetime.now(timezone.utc)
-            self._persist()
-            return True
+            payload = self._serialize()
+        self._write_payload(payload)
+        return True
 
     def finalize_submit(self, form_id: str) -> FormRecord | None:
         """H4 fix: mark form as submitted after caller wrote the file."""
@@ -193,10 +208,12 @@ class FormRegistry:
                 return None
             record.status = "submitted"
             record.submitted_at = datetime.now(timezone.utc)
-            self._persist()
-            return record
+            payload = self._serialize()
+        self._write_payload(payload)
+        return record
 
     def list_pending(self) -> list[FormRecord]:
+        payload = None
         with self._lock:
             now = datetime.now(timezone.utc)
             result = []
@@ -213,9 +230,10 @@ class FormRegistry:
                         age = 600  # no timestamp → assume stale
                     if age > 600:
                         r.status = "pending"
-                        self._persist()
+                        payload = self._serialize()  # QA .25: write outside lock
                         result.append(r)
-            return result
+        self._write_payload(payload)
+        return result
 
     def next_form_id(self) -> str:
         """Generate a globally unique form_id.

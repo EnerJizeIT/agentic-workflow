@@ -31,6 +31,17 @@ from ._results import (
 )
 
 
+def _read_pid_cmdline(pid: int) -> str | None:
+    """Read /proc/<pid>/cmdline; None when the process is gone/unreadable.
+
+    Extracted as a seam for tests (PID-reuse race, QA .14).
+    """
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def _is_pipeline_running(project_dir: Path) -> int | None:
     """DF5-6: Check if a pipeline subprocess is still alive.
 
@@ -52,23 +63,20 @@ def _is_pipeline_running(project_dir: Path) -> int | None:
         pid_int = int(pid)
     except (ValueError, TypeError):
         return None
+
+    # QA .14 (NEG-2026-09-19): identity check FIRST, liveness second.
+    # The old order (kill → cmdline read, with an "assume ours" fallback)
+    # let a reused PID pass as our pipeline when /proc was unreadable.
+    cmdline = _read_pid_cmdline(pid_int)
+    if cmdline is None:
+        return None  # dead or unreadable — never assume it is ours
+    if "awf" not in cmdline and "python" not in cmdline.lower():
+        return None  # PID reused by an unrelated process
+
     try:
         os.kill(pid_int, 0)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         return None
-    except OSError:
-        return None
-
-    # QA-4: PID reuse defense — verify the process is actually an awf pipeline.
-    # On Linux, /proc/<pid>/cmdline contains the process command line.
-    cmdline_path = Path(f"/proc/{pid_int}/cmdline")
-    if cmdline_path.exists():
-        try:
-            cmdline = cmdline_path.read_bytes().decode("utf-8", errors="replace")
-            if "awf" not in cmdline and "python" not in cmdline.lower():
-                return None  # PID reused by unrelated process
-        except OSError:
-            pass  # Can't read — assume it's ours (best effort)
 
     return pid_int
 
