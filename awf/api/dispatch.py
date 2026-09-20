@@ -88,6 +88,14 @@ def dispatch_todo(
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
 
+    # U3: optional unit-contract block at the top of the TODO (--- yaml ---)
+    # is validated here, before anything is written. No block = no-op.
+    from ..unit_contract import parse_todo_contract
+    try:
+        _contract, unknown_keys = parse_todo_contract(content)
+    except ValueError as e:
+        raise AwfApiError(f"TODO contract block: {e}") from None
+
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
@@ -184,6 +192,12 @@ def dispatch_todo(
                     pass
     except Exception:
         pass  # pre-check is best-effort, never blocks dispatch
+
+    # U3: unknown keys in the contract block are a typo risk — warn, don't fail.
+    for key in unknown_keys:
+        pre_check_warnings.append(
+            f"contract block: unknown key '{key}' — known keys: verify, gates, prove_red"
+        )
 
     # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the
     # placeholder — the id is already claimed, no one else can take it).

@@ -6,6 +6,9 @@
 инструкций, тесты, линт. Новый гейт подключаешь только после того, как он
 поймал твоё scratch-нарушение (красный → зелёный).
 
+Контракт юнита (опциональный блок verify/gates/prove_red в TODO +
+`DONE-<id>.json`): формат в `docs/unit-contract.md`.
+
 ## Safety invariants (инцидент 2026-09-20)
 
 - Guard `proc.pid > 1` в `awf/_proc.py` и tripwire `_forbid_session_kill`

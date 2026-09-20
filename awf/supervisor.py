@@ -156,6 +156,7 @@ _SNIPPET_PLAN = """\
    - Tasks: specific, testable steps for the first agent stage
    - Context: what the agent needs to know about existing code
    - Verify: commands to check success
+   - Optional: TODO может нести машиночитаемый блок в самом верху (--- / ---, ключи verify/gates/prove_red) — валидируется при dispatch, формат: docs/unit-contract.md
 4. Create signal: .agentic/inbox/TODO-NNNN.ready
 5. The checkpoint form shows this TODO to the user — approve, edit, or reject
 6. Workers are capable — give autonomy, don't over-specify
@@ -285,7 +286,8 @@ def build_prompt(
             f"Pipeline BLOCKS until you create the signal file. This is non-negotiable.\n\n"
             f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready\n"
             f"  🚫 Blocked? → touch .agentic/outbox/BLOCKED-{todo_id}.ready\n\n"
-            f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n\n"
+            f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n"
+            f"Optional machine facts for the next role: .agentic/outbox/DONE-{todo_id}.json (keys: files_changed, tests_run, gates, notes — format in docs/unit-contract.md).\n\n"
             f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
             f"Your reply has a limited token budget. Work in small pieces:\n"
             f"- Write code straight into files (write/edit tools). NEVER draft whole\n"

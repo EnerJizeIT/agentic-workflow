@@ -207,6 +207,9 @@ def collect_handoff(
     if done_path.is_file():
         done_body = done_path.read_text(encoding="utf-8").strip()
 
+    from .unit_contract import collect_done_facts
+    done_json_fact, machine_facts_lines = collect_done_facts(outbox, todo_id, logs_dir)
+
     def _signal(prefix: str, suffix: str) -> str:
         return "yes" if (outbox / f"{prefix}-{todo_id}{suffix}").is_file() else "no"
 
@@ -278,7 +281,7 @@ def collect_handoff(
         f"BLOCKED={_signal('BLOCKED', '.ready')}, "
         f"REVIEW={'yes' if (outbox / f'REVIEW-{todo_id}.md').is_file() else 'no'}",
         f"- worker notes: PROGRESS={'present' if progress_body else 'absent'}, "
-        f"DONE-report={'present' if done_body else 'absent'}",
+        f"DONE-report={'present' if done_body else 'absent'}{done_json_fact}",
         changes_fact,
     ]
 
@@ -291,6 +294,9 @@ def collect_handoff(
 
     if done_body:
         parts += ["## DONE summary (from worker)", "", done_body, ""]
+
+    if machine_facts_lines:
+        parts += ["## Machine facts (DONE.json)", "", *machine_facts_lines, ""]
 
     if progress_body:
         parts += ["## PROGRESS notes (from worker)", "", progress_body, ""]
