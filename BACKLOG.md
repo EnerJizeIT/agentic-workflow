@@ -22,6 +22,15 @@
 ⬜ **`run_next` foreground-ветка** — двигает позицию и при неудачном foreground-запуске
    (не только noop/error); из плагина недостижимо (`background=True` всегда). Реоткрыть,
    если появится foreground-вызов. Детали: `.agentic/done/TODO-0003/handoff/agent-qa-review-TODO-0003.md`.
+⬜ **Rollback-вызовы git без timeout** — `awf/api/pipeline.py` (`git diff`/`git reset` в
+   rollback-пути): единственная открытая позиция контракта `docs/contracts/subprocess-timeouts.md`
+   (зафиксирована честно, не спрятана). Закрыть в аудит-хвосте (FU-19).
+⬜ **CI-дубль** — `test.yml` (main) и `ci.yml` (все ветки) сосуществуют: на main-пушах
+   прогоняются оба. Консолидировать при вливании (U7b).
+⬜ **Actions Node20** — `checkout@v4`/`setup-python@v5` deprecated (Node 20 → 24):
+   бампнуть версии при следующем касании CI.
+⬜ **Сканер timeout-контракта и алиасы** — AST-чекер ловит `subprocess.run`/`_sp.run`,
+   но не алиас (`import subprocess as _s`). Расширить правило (refine).
 
 ### SMO · State-Machine Orchestration
 
