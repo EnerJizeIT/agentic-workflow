@@ -14,7 +14,8 @@ def _capture_run(monkeypatch, tmp_path):
     captured: dict = {}
 
     def fake_run(cmd, cwd, watch_paths=None, watch_new_glob=None,
-                 logs_dir=None, hard_timeout=None, env=None, signal_holder=None):
+                 logs_dir=None, hard_timeout=None, env=None, signal_holder=None,
+                 **kwargs):
         captured["cmd"] = cmd
 
         class _R:

@@ -712,3 +712,257 @@ class TestVerifyDecisionConsumption:
         assert not review.exists(), (
             "stale REVIEW survived — a fresh cycle would re-replan on it"
         )
+
+
+class TestU6bNetRetry:
+    """U6b: network failure in the worker log → backoff-retry, state counter."""
+
+    NET_LOG = "opencode run failed\nerror: Cannot connect to API.\n"
+
+    def _setup(self, tmp_path, monkeypatch, log_text, on_run, config=None,
+               start_offset=0):
+        project = tmp_path / "proj"
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True)
+        log_file = tmp_path / "worker.out"
+        log_file.write_text(log_text, encoding="utf-8")
+
+        call_count = {"n": 0}
+
+        def mock_agent(stage, todo_id, project_dir, cfg, logs_dir, **kw):
+            call_count["n"] += 1
+            holder = kw.get("log_holder")
+            if holder is not None:
+                holder["log_path"] = str(log_file)
+                holder["log_start_offset"] = start_offset
+            on_run(call_count["n"], todo_id, outbox)
+
+        import time as _time_mod
+        monkeypatch.setattr(_time_mod, "monotonic", lambda: 100.0)
+
+        # NOTE: time.sleep is faked here, so the stage entry must not spawn
+        # REAL subprocesses — Popen._wait's internal polling would spin on
+        # the fake sleep until the child (git) exits. work_fingerprint and
+        # _write_salvage_prompt are the only real-git call sites on this path.
+        sleeps: list[float] = []
+        monkeypatch.setattr("time.sleep", lambda dt: sleeps.append(dt))
+
+        state_calls: list[dict] = []
+
+        import awf.pipeline_state as pipeline_state_mod
+
+        def fake_write_state(project_dir, *, logs_dir=None, **fields):
+            state_calls.append(dict(fields))
+
+        log_lines: list[str] = []
+        monkeypatch.setattr(pipeline_engine, "_log", lambda d, msg: log_lines.append(msg))
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
+        monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
+        monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_state_mod, "write_state", fake_write_state)
+        from awf import signals as sig_module
+        monkeypatch.setattr(sig_module, "clean_stage_signals", lambda *a, **kw: None)
+        from awf import verify
+        monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
+        monkeypatch.setattr(verify, "work_fingerprint", lambda *a, **kw: "")
+
+        def run():
+            stages = _make_stages()
+            return pipeline_engine.execute_agent_stage(
+                stage=stages[1], current_todo="TODO-0001", project_dir=project,
+                config=config or {}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+                retry_counts=[0, 0, 0], auto=False, agent_hard_timeout=None,
+                pipeline_name=None,
+            )
+
+        return run, call_count, sleeps, state_calls, log_lines, project
+
+    def test_network_death_retries_with_backoff_and_succeeds(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Log with network marker + no signal → net retry (counter grows,
+        30s backoff), stage succeeds on the next net round."""
+
+        def on_run(n, todo_id, outbox):
+            if n >= 2:
+                (outbox / f"DONE-{todo_id}.md").write_text("# Done\n")
+                (outbox / f"DONE-{todo_id}.ready").write_text("")
+
+        run, calls, sleeps, state_calls, _logs, project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, on_run,
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 0
+        assert calls["n"] == 2  # dead first run + successful net-retry run
+        assert sleeps == [30.0]  # first backoff
+        assert any(
+            f.get("net_retry_count") == 1 and f.get("net_retry_key") == "TODO-0001:worker"
+            for f in state_calls
+        ), f"counter not written to state: {state_calls}"
+        # stage resolved → counter reset in the persisted state
+        from awf.pipeline_state import read_state
+        final = read_state(project) or {}
+        assert final.get("net_retry_count") == 0
+        assert final.get("net_retry_key") is None
+
+    def test_non_network_death_keeps_old_behavior(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """No network marker → no net retry: the silent-retry path handles it."""
+
+        def on_run(n, todo_id, outbox):
+            if n >= 2:
+                (outbox / f"DONE-{todo_id}.md").write_text("# Done\n")
+                (outbox / f"DONE-{todo_id}.ready").write_text("")
+
+        run, calls, sleeps, state_calls, _logs, _project = self._setup(
+            tmp_path, monkeypatch, "worker crashed: internal assertion\n", on_run,
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 0
+        assert calls["n"] == 2  # silent retry, like before U6b
+        assert 30.0 not in sleeps  # no net backoff
+        assert not any("net_retry_count" in f for f in state_calls)
+
+    def test_network_retries_exhausted_goes_to_failure_path(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Endpoint stays dead past the limit → no more retries, failure path."""
+
+        def on_run(n, todo_id, outbox):
+            pass  # never a signal
+
+        run, calls, sleeps, state_calls, log_lines, _project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, on_run,
+            config={"automation": {"net_retry_limit": 1}},
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        todo, _idx, rc = run()
+
+        assert rc == 1  # failure path (salvage produced no signal)
+        assert calls["n"] == 2  # 1 original + 1 net retry (limit 1)
+        assert sleeps == [30.0]  # exactly one backoff
+        assert any(f.get("net_retry_count") == 1 for f in state_calls)
+        assert any("network retries exhausted" in line for line in log_lines)
+
+    # ── QA TODO-0017: append-mode log + persisted counter ─────────────────
+
+    def test_stale_marker_from_previous_run_not_counted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A network marker left by an EARLIER append-run (before this run's
+        start offset) must not classify this run's non-network death — the
+        old behavior burned the net budget on the wrong retry class."""
+
+        def on_run(n, todo_id, outbox):
+            if n >= 2:
+                (outbox / f"DONE-{todo_id}.md").write_text("# Done\n")
+                (outbox / f"DONE-{todo_id}.ready").write_text("")
+
+        stale = "error: Cannot connect to API.\n"
+        current = "worker crashed: internal assertion\n"
+        run, calls, sleeps, state_calls, _logs, _project = self._setup(
+            tmp_path, monkeypatch, stale + current, on_run,
+            start_offset=len(stale.encode("utf-8")),
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 0
+        assert calls["n"] == 2  # plain silent retry — no work, no signal
+        assert 30.0 not in sleeps  # no net backoff
+        assert not any("net_retry_count" in f for f in state_calls)
+
+    def test_marker_after_offset_still_counted(self, tmp_path, monkeypatch) -> None:
+        """Control: a marker written AFTER the start offset is this run's —
+        the offset must not hide a genuine network failure."""
+
+        def on_run(n, todo_id, outbox):
+            pass  # never a signal
+
+        stale = "earlier run noise\n"
+        current = "connect ECONNREFUSED 127.0.0.1:8000\n"
+        run, calls, sleeps, _state, _logs, _project = self._setup(
+            tmp_path, monkeypatch, stale + current, on_run,
+            config={"automation": {"net_retry_limit": 1}},
+            start_offset=len(stale.encode("utf-8")),
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        assert calls["n"] == 2  # original + 1 net retry (limit 1)
+        assert sleeps == [30.0]  # net backoff did happen
+
+    def test_persisted_counter_survives_restart(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A pipeline killed mid net-backoff restarts this stage: the
+        persisted counter for the same (TODO, stage) must be inherited —
+        a fresh 0 here would silently double the retry budget."""
+
+        def on_run(n, todo_id, outbox):
+            pass  # never a signal — the endpoint is still dead
+
+        run, calls, sleeps, state_calls, _logs, project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, on_run,
+            config={"automation": {"net_retry_limit": 3}},
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        # Simulate the kill during the first backoff: state still holds the
+        # counter the previous (killed) stage entry wrote.
+        state_file = project / ".agentic" / "state" / "current.yaml"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            "net_retry_count: 1\nnet_retry_key: TODO-0001:worker\n",
+            encoding="utf-8",
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        # inherited 1 → this entry spends retries 2 and 3 (60s + 120s)
+        assert sleeps == [60.0, 120.0]
+        assert calls["n"] == 3
+        assert any(f.get("net_retry_count") == 2 for f in state_calls)
+
+    def test_persisted_counter_other_key_reset(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A persisted counter from a DIFFERENT (TODO, stage) must not leak
+        into this fresh stage — it starts at 0 (AUD02-07 key check)."""
+
+        def on_run(n, todo_id, outbox):
+            pass  # never a signal
+
+        run, calls, sleeps, _state, _logs, project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, on_run,
+            config={"automation": {"net_retry_limit": 3}},
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        state_file = project / ".agentic" / "state" / "current.yaml"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            "net_retry_count: 2\nnet_retry_key: TODO-9999:other-stage\n",
+            encoding="utf-8",
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        assert sleeps[0] == 30.0  # fresh budget — first backoff
+        assert calls["n"] == 4  # original + all 3 retries

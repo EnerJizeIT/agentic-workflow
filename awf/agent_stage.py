@@ -32,6 +32,7 @@ def run_agent_stage(
     hard_timeout: int | None = None,
     retry_note: str | None = None,
     attempt: int = 1,
+    log_holder: dict[str, str] | None = None,
 ) -> None:
     """Spawn opencode run for an agent stage.
 
@@ -47,6 +48,10 @@ def run_agent_stage(
     output-token limit) — pushes it to act instead of re-researching.
     ``attempt`` is the 1-based worker run number for this stage entry and
     lands in the handoff facts.
+
+    U6b: ``log_holder`` (optional dict) is populated with
+    ``{"log_path": ...}`` — the worker log file the run appends to. The
+    caller (execute_agent_stage) reads its tail to classify network deaths.
     """
     role = stage.role
     kind = stage.kind
@@ -121,14 +126,24 @@ def run_agent_stage(
             watch_paths.append(outbox / f"{prefix}-{todo_id}.ready")
             watch_paths.append(outbox / f"{prefix}-{todo_id}.md.ready")
 
+    from . import _net
+    from . import config as cfg_mod
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
 
+    if log_holder is None:
+        log_holder = {}
     agent_start = time.monotonic()
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         env=awf_subprocess_env(),
         hard_timeout=hard_timeout,
+        log_holder=log_holder,
+        # U6a/U6c: automation.* settings, defaults from _net when absent.
+        preflight_timeout=cfg_mod.get(config, "automation.preflight_timeout_seconds",
+                                      _net.PREFLIGHT_TIMEOUT_DEFAULT),
+        no_output_timeout=cfg_mod.get(config, "automation.no_output_timeout_seconds",
+                                      _net.NO_OUTPUT_TIMEOUT_DEFAULT),
     )
     agent_elapsed = time.monotonic() - agent_start
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")

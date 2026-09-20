@@ -16,12 +16,48 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import _proc
+from . import _net, _proc
 from ._env import awf_subprocess_env
 from ._log import log as _log
 
 BD20_POLL_INTERVAL = 3
 BD20_HARD_TIMEOUT = 3600
+# U6a: preflight backoff — 5s first check interval, doubling, 30s cap.
+PREFLIGHT_POLL_START = 5.0
+PREFLIGHT_POLL_CAP = 30.0
+
+
+def _wait_for_endpoint(url: str, budget: float, logs_dir: Path | None) -> None:
+    """U6a: block until the model endpoint answers, within ``budget`` seconds.
+
+    Checks immediately, then re-checks with backoff (5 → 10 → 20 → 30s cap).
+    Raises TimeoutError when the budget is spent — the caller must NOT spawn
+    the worker (spending a worker's context on a dead endpoint is what lost
+    three runs in one day).
+    """
+    deadline = time.monotonic() + budget
+    poll = PREFLIGHT_POLL_START
+    check = 0
+    while True:
+        check += 1
+        if _net.endpoint_reachable(url):
+            if check > 1 and logs_dir:
+                _log(logs_dir, f"U6a: endpoint {url} reachable after {check} checks")
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if logs_dir:
+            _log(
+                logs_dir,
+                f"U6a: endpoint {url} unreachable (check {check}) — "
+                f"next check in {min(poll, remaining):.0f}s",
+            )
+        time.sleep(min(poll, remaining))
+        poll = min(poll * 2, PREFLIGHT_POLL_CAP)
+    raise TimeoutError(
+        f"Model endpoint {url} unreachable for {budget:.0f}s — worker not started"
+    )
 
 
 def _sort_key_by_numeric_id(name: str) -> tuple[int, str]:
@@ -97,6 +133,10 @@ def run_subprocess_until_signal(
     hard_timeout: int = BD20_HARD_TIMEOUT,
     env: dict[str, str] | None = None,
     signal_holder: dict[str, str] | None = None,
+    log_holder: dict[str, str] | None = None,
+    preflight_timeout: float | None = None,
+    no_output_timeout: float | None = None,
+    opencode_config: str | Path | None = None,
 ) -> subprocess.CompletedProcess:
     """BD-20: run subprocess, watch for signal files, wait for natural exit.
 
@@ -128,18 +168,50 @@ def run_subprocess_until_signal(
             avoid re-globbing the inbox and picking a stale TODO by mtime
             (auditor HIGH finding on supervisor.py:496). Backward-compatible:
             callers that don't pass it get the original behavior.
+        log_holder: optional dict populated with ``{"log_path": ...}`` —
+            the worker log file this run appends to. Lets callers inspect
+            the log after the fact (U6b network-failure classification).
+        preflight_timeout: U6a — seconds to wait for the model endpoint
+            (from ``--model provider/id`` in ``cmd``) before spawning.
+            None → :data:`_net.PREFLIGHT_TIMEOUT_DEFAULT` (600). 0 → skip.
+        no_output_timeout: U6c — watchdog: kill the worker when its log
+            is not updated for this many seconds. None → :data:`_net.
+            NO_OUTPUT_TIMEOUT_DEFAULT` (900). 0 → disabled.
+        opencode_config: path to opencode.json for preflight provider
+            lookup. None → the XDG opencode.json.
     """
     watch_paths = watch_paths or []
     # KAUD-4: handle hard_timeout=None (use default)
     if hard_timeout is None:
         hard_timeout = BD20_HARD_TIMEOUT
+    if preflight_timeout is None:
+        preflight_timeout = _net.PREFLIGHT_TIMEOUT_DEFAULT
+    if no_output_timeout is None:
+        no_output_timeout = _net.NO_OUTPUT_TIMEOUT_DEFAULT
 
     pre_existing, snapshot = _build_pre_snapshot(watch_paths, watch_new_glob, logs_dir)
+
+    # U6a: preflight BEFORE any spawn — a dead model endpoint must not burn
+    # a worker's context. Skipped when the cmd has no --model, the provider
+    # is unknown, or the provider has no baseURL (cloud).
+    if preflight_timeout > 0:
+        model_spec = _net.parse_model_from_cmd(cmd)
+        if model_spec:
+            if opencode_config:
+                oc_path = Path(opencode_config)
+            else:
+                from . import xdg
+
+                oc_path = xdg.opencode_config_file()
+            endpoint_url = _net.model_endpoint_url(model_spec, oc_path)
+            if endpoint_url:
+                _wait_for_endpoint(endpoint_url, preflight_timeout, logs_dir)
 
     from ._env import _pdeathsig_preexec
     # KAUD-9: redirect worker stdout/stderr to log file instead of inheriting.
     # Prevents mixing worker output with awf-start.out.
     worker_log = None
+    log_path: Path | None = None
     if logs_dir and logs_dir.is_dir():
         # Derive a log file name from the command (role name)
         log_name = "worker-output.out"
@@ -167,6 +239,12 @@ def run_subprocess_until_signal(
         worker_log.flush()
         # P2: restrict worker log permissions (may contain sensitive output)
         _os.chmod(log_path, 0o600)
+        if log_holder is not None:
+            log_holder["log_path"] = str(log_path)
+            # U6b: byte offset of this run's first byte. The log is
+            # append-mode, so classification of THIS run's death must start
+            # here — an earlier run's network marker is not this run's failure.
+            log_holder["log_start_offset"] = _os.fstat(worker_log.fileno()).st_size
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=env or awf_subprocess_env(),
@@ -202,6 +280,35 @@ def run_subprocess_until_signal(
                             logs_dir,
                             f"BD-20: signal detected ({fired_name}), waiting for "
                             f"natural exit (pid={proc.pid})",
+                        )
+
+            # U6c: watchdog — a worker that stops producing output is hung.
+            # Kill the tree well before the hard timeout, but never after a
+            # signal has been seen (the worker is logically done and may
+            # still be flushing buffers — the hard timeout covers that case).
+            if (
+                signal_seen_at is None
+                and worker_log is not None
+                and no_output_timeout > 0
+            ):
+                try:
+                    mtime = log_path.stat().st_mtime
+                except OSError:
+                    mtime = None
+                if mtime is not None:
+                    silent_for = time.time() - mtime
+                    if silent_for > no_output_timeout:
+                        if logs_dir:
+                            _log(
+                                logs_dir,
+                                f"U6c: worker silent for {silent_for / 60:.0f} min — "
+                                f"killing process tree (pid={proc.pid})",
+                            )
+                        _proc.kill_process_tree(proc)
+                        raise TimeoutError(
+                            f"Worker produced no output for "
+                            f"{silent_for / 60:.0f} min (watchdog) — "
+                            "process tree killed"
                         )
 
             if now >= deadline:

@@ -915,6 +915,11 @@ def run_supervisor_via_subprocess(
         logs_dir=logs_dir,
         env=awf_subprocess_env(),
         signal_holder=signal_holder,
+        # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
+        # be legitimately long-silent (verify waits), so no watchdog; no
+        # preflight either — keep the supervisor flow exactly as before.
+        preflight_timeout=0,
+        no_output_timeout=0,
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")

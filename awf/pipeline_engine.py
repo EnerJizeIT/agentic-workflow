@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config as cfg_mod
 from . import paths, todos, verify
 from ._log import log as _log
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
@@ -39,6 +40,15 @@ def _find_stage_index(stages: list[Stage], name: str) -> int:
         if s.name == name:
             return i
     return -1
+
+
+def _cfg_int(config: dict, dotted_key: str, default: int) -> int:
+    """automation.* config value as int — ``default`` on miss or bad type."""
+    val = cfg_mod.get(config, dotted_key, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
 
 
 def _find_active_todo(project_dir: Path) -> str:
@@ -674,71 +684,150 @@ def execute_agent_stage(
     MAX_SILENT_RETRIES = 2
     TRANSIENT_THRESHOLD_SEC = 30
 
-    signal = None
-    for attempt_no in range(MAX_SILENT_RETRIES + 1):
-        import time as _time
-        agent_start = _time.monotonic()
-        retry_note = _silent_retry_note(attempt_no, current_todo) if attempt_no else None
+    # U6b: network retry budget. The counter lives in state keyed by
+    # (TODO, stage) — same pattern as salvage_count_key: a different stage
+    # or TODO starts fresh instead of inheriting a stale count.
+    from . import _net
+
+    net_key = f"{current_todo}:{s_name}"
+    net_limit = _cfg_int(config, "automation.net_retry_limit", _net.NET_RETRY_LIMIT_DEFAULT)
+
+    # U6b: the counter survives kill+continue like salvage_count (AUD02-07) —
+    # a pipeline killed mid net-backoff restarts this stage and must NOT get a
+    # fresh budget. Same (TODO, stage) key → inherit; other key/absent → 0.
+    _prev_net_state = read_state(project_dir) or {}
+    if _prev_net_state.get("net_retry_key") != net_key:
+        net_retries = 0
+    else:
         try:
-            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
-                             retry_note=retry_note, attempt=attempt_no + 1)
-        except (RuntimeError, TimeoutError) as e:
-            print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
-            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-            return current_todo, stage_idx, 1
-        agent_elapsed = _time.monotonic() - agent_start
+            net_retries = int(_prev_net_state.get("net_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            net_retries = 0
 
-        prefixes = expected_signal_prefixes(s_kind)
-        signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-
-        if not signal:
+    log_holder: dict[str, str] = {}
+    signal = None
+    worker_run = 0  # cumulative worker run number (handoff fact "worker run")
+    for _net_round in range(net_limit + 1):
+        net_retry_scheduled = False
+        for attempt_no in range(MAX_SILENT_RETRIES + 1):
+            import time as _time
+            agent_start = _time.monotonic()
+            retry_note = _silent_retry_note(attempt_no, current_todo) if attempt_no else None
+            worker_run += 1
             try:
-                signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
-            except TimeoutError:
-                pass
+                _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
+                                 prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
+                                 retry_note=retry_note, attempt=worker_run,
+                                 log_holder=log_holder)
+            except (RuntimeError, TimeoutError) as e:
+                print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
+                _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+                return current_todo, stage_idx, 1
+            agent_elapsed = _time.monotonic() - agent_start
 
-        # NEG-4: did THIS stage entry produce changes? (not a foreign diff
-        # left over from an earlier stage)
-        stage_produced_work = bool(stage_start_fingerprint) and (
-            verify.work_fingerprint(project_dir, stage_baseline_sha, current_todo)
-            != stage_start_fingerprint
-        )
+            prefixes = expected_signal_prefixes(s_kind)
+            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
-        if not signal:
-            if stage_produced_work and verify.attempt_auto_done(
-                project_dir, current_todo, config, stage_baseline_sha
-            ):
+            if not signal:
+                try:
+                    signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
+                except TimeoutError:
+                    pass
+
+            # NEG-4: did THIS stage entry produce changes? (not a foreign diff
+            # left over from an earlier stage)
+            stage_produced_work = bool(stage_start_fingerprint) and (
+                verify.work_fingerprint(project_dir, stage_baseline_sha, current_todo)
+                != stage_start_fingerprint
+            )
+
+            if not signal:
+                if stage_produced_work and verify.attempt_auto_done(
+                    project_dir, current_todo, config, stage_baseline_sha
+                ):
+                    signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+
+            if signal:
+                break
+
+            # U6b: worker died without a signal — classify the death BEFORE
+            # the silent retry: a dead model endpoint is not fixed by a
+            # continue-push, it gets its own backoff-retry budget (30/60/120s).
+            log_path_str = log_holder.get("log_path", "")
+            # From this run's start offset — the append-mode log may still
+            # hold an earlier run's network marker (QA TODO-0017).
+            _run_offset = int(log_holder.get("log_start_offset") or 0)
+            tail = _net.read_log_tail(Path(log_path_str), start_offset=_run_offset) if log_path_str else ""
+            if _net.is_network_failure(tail):
+                if net_retries < net_limit:
+                    net_retries += 1
+                    backoff = _net.NET_RETRY_BACKOFFS[
+                        min(net_retries - 1, len(_net.NET_RETRY_BACKOFFS) - 1)
+                    ]
+                    _ws(
+                        project_dir,
+                        net_retry_count=net_retries, net_retry_key=net_key,
+                        logs_dir=logs_dir,
+                    )
+                    print(
+                        f"U6b: worker log shows a network failure — retrying "
+                        f"'{s_name}' in {backoff:.0f}s "
+                        f"(net retry {net_retries}/{net_limit})...",
+                        file=sys.stderr,
+                    )
+                    _log(
+                        logs_dir,
+                        f"U6b: network failure on {s_name} — backoff "
+                        f"{backoff:.0f}s (net retry {net_retries}/{net_limit})",
+                    )
+                    from .signals import clean_stage_signals
+                    clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                    _time.sleep(backoff)
+                    net_retry_scheduled = True
+                else:
+                    print(
+                        f"U6b: network retries exhausted ({net_limit}/{net_limit}) "
+                        f"on '{s_name}' — no more retries",
+                        file=sys.stderr,
+                    )
+                    _log(
+                        logs_dir,
+                        f"U6b: network retries exhausted on {s_name} "
+                        f"(limit {net_limit}) — proceeding to failure path",
+                    )
+                break  # scheduled → next net round; exhausted → failure path
+
+            # dogfood-11: no signal — retry only when the worker left NO work
+            # evidence. With work present, salvage lets the supervisor ACK it;
+            # a rerun could overwrite or duplicate usable changes.
+            worker_has_work = stage_produced_work
+            if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
+                # TOCTOU guard (dogfood-11): a signal may have landed between the
+                # wait timeout above and this cleanup (e.g. the worker wrote DONE
+                # right at the boundary). Re-read before wiping anything — a
+                # valid signal must never be deleted by the retry cleanup.
                 signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+                if signal:
+                    break
+                transient = agent_elapsed < TRANSIENT_THRESHOLD_SEC
+                kind_hint = "fast exit (transient?)" if transient else "no code, no signal"
+                print(
+                    f"Worker exited in {agent_elapsed:.0f}s with no signal ({kind_hint}) — "
+                    f"retrying with a continue-push ({attempt_no + 1}/{MAX_SILENT_RETRIES})...",
+                    file=sys.stderr,
+                )
+                _log(logs_dir, f"F4/F7: auto-retry {attempt_no + 1}/{MAX_SILENT_RETRIES} "
+                    f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
+                from .signals import clean_stage_signals
+                clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                continue
+
+            break
 
         if signal:
             break
-
-        # dogfood-11: no signal — retry only when the worker left NO work
-        # evidence. With work present, salvage lets the supervisor ACK it;
-        # a rerun could overwrite or duplicate usable changes.
-        worker_has_work = stage_produced_work
-        if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
-            # TOCTOU guard (dogfood-11): a signal may have landed between the
-            # wait timeout above and this cleanup (e.g. the worker wrote DONE
-            # right at the boundary). Re-read before wiping anything — a
-            # valid signal must never be deleted by the retry cleanup.
-            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-            if signal:
-                break
-            transient = agent_elapsed < TRANSIENT_THRESHOLD_SEC
-            kind_hint = "fast exit (transient?)" if transient else "no code, no signal"
-            print(
-                f"Worker exited in {agent_elapsed:.0f}s with no signal ({kind_hint}) — "
-                f"retrying with a continue-push ({attempt_no + 1}/{MAX_SILENT_RETRIES})...",
-                file=sys.stderr,
-            )
-            _log(logs_dir, f"F4/F7: auto-retry {attempt_no + 1}/{MAX_SILENT_RETRIES} "
-                f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
-            from .signals import clean_stage_signals
-            clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
-            continue
-
+        if net_retry_scheduled:
+            continue  # next net round — the endpoint had a chance to recover
         break
 
     if not signal:
@@ -817,6 +906,7 @@ def execute_agent_stage(
     # dashboard banner, context REVIEW-restart hint) all key off this field.
     _write_state(
         project_dir, salvage_count=0, salvage_count_key=None,
+        net_retry_count=0, net_retry_key=None,
         last_signal=signal, logs_dir=logs_dir,
     )
 
