@@ -35,14 +35,42 @@ class FormRecord:
     project_dir: Path | None = None  # absolute path to awf project, set by agent
 
 
+# AUD09-05: a "submitting" claim older than this (or without claimed_at)
+# means the claiming process crashed between claim and finalize. The claim
+# is re-taken instead of 409'ing forever.
+STALE_CLAIM_SECONDS = 600
+
+
+def _is_stale_claim(record: FormRecord) -> bool:
+    """AUD09-05: stale = older than STALE_CLAIM_SECONDS, or no claimed_at
+    at all (legacy/corrupt persisted record). The old `age = 600` +
+    `if age > 600` combination made the no-timestamp branch dead code."""
+    if record.claimed_at is None:
+        return True
+    return (datetime.now(timezone.utc) - record.claimed_at).total_seconds() >= STALE_CLAIM_SECONDS
+
+
 class FormRegistry:
     """Thread-safe registry of forms opened in current plugin session.
 
-    A10: persists to .agentic/state/forms_registry.yaml so MCP subprocess
-    crash/restart doesn't lose pending forms.
+    A10: persists forms so MCP subprocess crash/restart doesn't lose
+    pending forms.
+
+    AUD09-04: persistence is PER-FORM files
+    (``<state>/forms/FORM-*.yaml``, one record per file, atomic rename).
+    The old design wrote the WHOLE registry snapshot on every mutation —
+    with two parallel MCP processes that was last-write-wins and forms
+    opened in one session vanished from the other. Per-form files are
+    independent: each process only ever writes its own record.
+
+    ``PERSIST_FILE`` (legacy whole-registry snapshot) is kept as a
+    read-only fallback for installs that predate the split; on first load
+    its records are back-filled as per-form files and it is ignored from
+    then on.
     """
 
     # AUD-12: uses consolidated xdg_config_home from awf.xdg
+    # AUD09-04: legacy whole-registry snapshot — read-only fallback now.
     PERSIST_FILE = xdg_config_home() / "awf" / "state" / "forms_registry.yaml"
     # QA-A: class-level default; instances read via property. Tests that
     # need to disable persistence set ``reg.persist_enabled = False`` on
@@ -72,92 +100,144 @@ class FormRegistry:
     def persist_enabled(self, value: bool) -> None:
         self._persist_enabled = bool(value)
 
-    def _load_persisted(self) -> None:
-        """A10: load registry from disk on startup (if exists).
+    @property
+    def persist_dir(self) -> Path:
+        """AUD09-04: per-form record files live in ``<state>/forms/``."""
+        return self.PERSIST_FILE.parent / "forms"
 
-        P2: filter out expired/submitted/cancelled forms on load — prevents
-        memory growth across restarts.
+    def _record_payload(self, record: FormRecord) -> dict:
+        """Snapshot a record's fields as a plain dict.
+
+        Call this INSIDE the lock (CPU-only) and hand the payload to the
+        disk writers AFTER releasing it — disk I/O must not block the lock
+        while a form request waits (QA .25).
         """
+        return {
+            "template": record.template,
+            "opened_at": record.opened_at.isoformat() if record.opened_at else None,
+            "status": record.status,
+            "expires_at": record.expires_at.isoformat() if record.expires_at else None,
+            "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
+            "project_dir": str(record.project_dir) if record.project_dir else None,
+        }
+
+    def _write_form_file(self, form_id: str, payload: dict) -> None:
+        """AUD09-04: atomically write ONE record's file, outside the lock."""
+        if payload is None or not self._persist_enabled:
+            return
+        # form_id becomes a filename — refuse anything that could escape
+        # persist_dir (server-generated IDs are already safe; belt).
+        if not form_id or not form_id.isascii() or "/" in form_id or "\\" in form_id:
+            return
+        import yaml
+
+        try:
+            _atomic_write_text(
+                self.persist_dir / f"{form_id}.yaml",
+                yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            )
+        except OSError:
+            pass
+
+    def _remove_form_file(self, form_id: str) -> None:
+        """AUD09-04: drop a record's file (terminal states), outside the lock."""
         if not self._persist_enabled:
             return
-        if not self.PERSIST_FILE.is_file():
-            return
+        try:
+            (self.persist_dir / f"{form_id}.yaml").unlink()
+        except OSError:
+            pass
+
+    def _record_from_dict(self, form_id: str, rec_dict: dict) -> FormRecord | None:
+        """Parse + filter one persisted record dict.
+
+        P2: terminal (submitted/cancelled/expired) and date-expired forms
+        are skipped — prevents memory/disk growth across restarts.
+        Returns None when the record is filtered out or unparseable.
+        """
+        status = rec_dict.get("status", "pending")
+        if status in ("submitted", "cancelled", "expired"):
+            return None
+        expires = rec_dict.get("expires_at")
+        if expires:
+            try:
+                if datetime.fromisoformat(expires) < datetime.now(timezone.utc):
+                    return None
+            except (ValueError, TypeError):
+                pass
+        try:
+            return FormRecord(
+                form_id=form_id,
+                template=rec_dict.get("template", ""),
+                opened_at=datetime.fromisoformat(rec_dict["opened_at"]) if rec_dict.get("opened_at") else datetime.now(timezone.utc),
+                status=status,
+                expires_at=datetime.fromisoformat(rec_dict["expires_at"]) if rec_dict.get("expires_at") else None,
+                claimed_at=datetime.fromisoformat(rec_dict["claimed_at"]) if rec_dict.get("claimed_at") else None,
+                project_dir=Path(rec_dict["project_dir"]) if rec_dict.get("project_dir") else None,
+            )
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    def _parse_record_file(self, path: Path) -> FormRecord | None:
+        try:
+            import yaml
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        return self._record_from_dict(path.stem, data)
+
+    def _parse_legacy_file(self) -> list[FormRecord]:
+        """Read the pre-AUD09-04 whole-registry snapshot (fallback)."""
         try:
             import yaml
             data = yaml.safe_load(self.PERSIST_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return
-            now = datetime.now(timezone.utc)
-            for form_id, rec_dict in data.items():
-                if not isinstance(rec_dict, dict):
-                    continue
-                # P2: skip terminal/expired forms
-                status = rec_dict.get("status", "pending")
-                if status in ("submitted", "cancelled"):
-                    continue
-                if status == "expired":
-                    continue
-                expires = rec_dict.get("expires_at")
-                if expires:
-                    try:
-                        exp_dt = datetime.fromisoformat(expires)
-                        if exp_dt < now:
-                            continue
-                    except (ValueError, TypeError):
-                        pass
-                try:
-                    record = FormRecord(
-                        form_id=form_id,
-                        template=rec_dict.get("template", ""),
-                        opened_at=datetime.fromisoformat(rec_dict["opened_at"]) if rec_dict.get("opened_at") else datetime.now(timezone.utc),
-                        status=status,
-                        expires_at=datetime.fromisoformat(rec_dict["expires_at"]) if rec_dict.get("expires_at") else None,
-                        claimed_at=datetime.fromisoformat(rec_dict["claimed_at"]) if rec_dict.get("claimed_at") else None,
-                        project_dir=Path(rec_dict["project_dir"]) if rec_dict.get("project_dir") else None,
-                    )
-                    self._forms[form_id] = record
-                except (KeyError, ValueError, TypeError):
-                    continue
         except (OSError, yaml.YAMLError):
-            pass
+            return []
+        if not isinstance(data, dict):
+            return []
+        records = []
+        for form_id, rec_dict in data.items():
+            if not isinstance(rec_dict, dict):
+                continue
+            record = self._record_from_dict(form_id, rec_dict)
+            if record is not None:
+                records.append(record)
+        return records
 
-    def _serialize(self) -> str | None:
-        """A10 + QA .25: snapshot the registry as YAML text.
+    def _load_persisted(self) -> None:
+        """A10 + AUD09-04: load registry from disk on startup (if exists).
 
-        Call this INSIDE the lock (cheap, CPU-only) and hand the payload to
-        :meth:`_write_payload` AFTER releasing it — disk I/O must not block
-        the lock while a form request waits.
+        Per-form files are canonical (no cross-process overwrite). The
+        legacy whole-registry file is a one-time fallback: its surviving
+        records are loaded AND back-filled as per-form files, so the next
+        start reads only the per-form directory.
         """
         if not self._persist_enabled:
-            return None
-        import yaml
-
-        data = {}
-        for form_id, record in self._forms.items():
-            data[form_id] = {
-                "template": record.template,
-                "opened_at": record.opened_at.isoformat() if record.opened_at else None,
-                "status": record.status,
-                "expires_at": record.expires_at.isoformat() if record.expires_at else None,
-                "claimed_at": record.claimed_at.isoformat() if record.claimed_at else None,
-                "project_dir": str(record.project_dir) if record.project_dir else None,
-            }
-        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-
-    def _write_payload(self, payload: str | None) -> None:
-        """QA .25: atomic disk write, called OUTSIDE the lock."""
-        if payload is None:
             return
-        try:
-            _atomic_write_text(self.PERSIST_FILE, payload)
-        except OSError:
-            pass
+        records: list[FormRecord] = []
+        backfill: list[tuple[str, dict]] = []
+        if self.persist_dir.is_dir():
+            for path in sorted(self.persist_dir.glob("*.yaml")):
+                record = self._parse_record_file(path)
+                if record is not None:
+                    records.append(record)
+        if not records and self.PERSIST_FILE.is_file():
+            for record in self._parse_legacy_file():
+                records.append(record)
+                backfill.append((record.form_id, self._record_payload(record)))
+        with self._lock:
+            for record in records:
+                self._forms[record.form_id] = record
+        for form_id, payload in backfill:
+            self._write_form_file(form_id, payload)
 
     def add(self, record: FormRecord) -> None:
         with self._lock:
             self._forms[record.form_id] = record
-            payload = self._serialize()
-        self._write_payload(payload)
+            payload = self._record_payload(record)
+        self._write_form_file(record.form_id, payload)
 
     def get(self, form_id: str) -> FormRecord | None:
         with self._lock:
@@ -174,8 +254,16 @@ class FormRegistry:
                 record.submitted_at = now
             elif status == "cancelled":
                 record.cancelled_at = now
-            payload = self._serialize()
-        self._write_payload(payload)
+            # AUD09-04: terminal states are dropped from disk (the submit
+            # yaml itself is the durable artifact); others update the file.
+            if status in ("submitted", "cancelled", "expired"):
+                payload = None
+            else:
+                payload = self._record_payload(record)
+        if payload is None:
+            self._remove_form_file(form_id)
+        else:
+            self._write_form_file(form_id, payload)
         return record
 
     def claim_for_submit(self, form_id: str) -> bool:
@@ -183,8 +271,12 @@ class FormRegistry:
 
         Returns True if the form was pending and this call successfully
         claimed it (caller may proceed to write submit file). Returns
-        False if form was already submitted/cancelled/missing — caller
-        must abort.
+        False if form was already submitted/cancelled/expired/missing —
+        caller must abort.
+
+        AUD09-05: a "submitting" form is re-claimable when its claim is
+        stale (crash between claim and finalize, >= STALE_CLAIM_SECONDS
+        or no claimed_at) — otherwise the HTTP path 409s forever.
 
         Without this, two parallel POSTs in ThreadingHTTPServer could
         both pass the `status == 'pending'` check and both write to
@@ -192,12 +284,17 @@ class FormRegistry:
         """
         with self._lock:
             record = self._forms.get(form_id)
-            if record is None or record.status != "pending":
+            if record is None:
+                return False
+            if record.status == "submitting":
+                if not _is_stale_claim(record):
+                    return False
+            elif record.status != "pending":
                 return False
             record.status = "submitting"  # intermediate state
             record.claimed_at = datetime.now(timezone.utc)
-            payload = self._serialize()
-        self._write_payload(payload)
+            payload = self._record_payload(record)
+        self._write_form_file(form_id, payload)
         return True
 
     def finalize_submit(self, form_id: str) -> FormRecord | None:
@@ -208,31 +305,25 @@ class FormRegistry:
                 return None
             record.status = "submitted"
             record.submitted_at = datetime.now(timezone.utc)
-            payload = self._serialize()
-        self._write_payload(payload)
+        self._remove_form_file(form_id)
         return record
 
     def list_pending(self) -> list[FormRecord]:
-        payload = None
         with self._lock:
-            now = datetime.now(timezone.utc)
             result = []
+            reverted: list[tuple[str, dict]] = []
             for r in self._forms.values():
                 if r.status == "pending":
                     result.append(r)
                 elif r.status == "submitting":
-                    # P1: auto-revert stale "submitting" forms (crash recovery).
-                    # If a form has been in "submitting" for >10 minutes, the
-                    # process that claimed it likely crashed. Revert to pending.
-                    if r.claimed_at:
-                        age = (now - r.claimed_at).total_seconds()
-                    else:
-                        age = 600  # no timestamp → assume stale
-                    if age > 600:
+                    # P1/AUD09-05: auto-revert stale "submitting" forms
+                    # (crash recovery): the claimer likely crashed.
+                    if _is_stale_claim(r):
                         r.status = "pending"
-                        payload = self._serialize()  # QA .25: write outside lock
                         result.append(r)
-        self._write_payload(payload)
+                        reverted.append((r.form_id, self._record_payload(r)))
+        for form_id, payload in reverted:
+            self._write_form_file(form_id, payload)
         return result
 
     def next_form_id(self) -> str:

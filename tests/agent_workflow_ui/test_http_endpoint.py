@@ -1,9 +1,10 @@
 """Tests for HTTP endpoint: form submits, validation, idempotency."""
 from __future__ import annotations
 
+import socket
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from agent_workflow_ui.config import load
@@ -461,3 +462,160 @@ class TestBuildPlanMdFromVariant:
         assert "**Pros:**" in md
         assert "- speed" in md
         assert "**Cons:**" not in md
+
+
+# ── FU-16 / AUD09-01: TTL enforced on the HTTP endpoint ───────────────────
+
+
+def test_submit_after_ttl_rejected(http_setup):
+    """POST after expires_at — with nobody having called read_submit/
+    list_pending — must get 410, no submit file, status flipped to
+    'expired'."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-ttl",
+        template="test",
+        opened_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    ))
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-ttl",
+        data=b"foo=bar",
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 410
+    body = exc_info.value.read().decode()
+    assert "expired" in body.lower()
+
+    assert not (config.inputs_dir / "FORM-ttl.yaml").exists()
+    assert registry.get("FORM-ttl").status == "expired"
+
+
+def test_submit_already_expired_status_says_expired(http_setup):
+    """Form whose status was already flipped to 'expired' (by a prior
+    read_submit) → 410 with expiry text, not the misleading 409
+    'being submitted by another request'."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-exp",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+        status="expired",
+    ))
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-exp",
+        data=b"foo=bar",
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 410
+    body = exc_info.value.read().decode()
+    assert "expired" in body.lower()
+    assert "another request" not in body.lower()
+    assert not (config.inputs_dir / "FORM-exp.yaml").exists()
+
+
+# ── FU-16 / AUD09-07: malformed Content-Length ───────────────────────────
+
+
+def _raw_post(port: int, raw_request: bytes, half_close: bool = False,
+              timeout: float = 5.0) -> bytes:
+    """Send a raw request and return the full response (read to EOF)."""
+    with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+        s.sendall(raw_request)
+        if half_close:
+            s.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+
+def test_negative_content_length_rejected(http_setup):
+    """Content-Length: -1 → 400 immediately (old code: read(-1) blocked
+    the handler thread until the client closed the connection)."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-neg",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+
+    raw = (
+        b"POST /submit/FORM-neg HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Content-Type: application/x-www-form-urlencoded\r\n"
+        b"Content-Length: -1\r\n"
+        b"\r\n"
+        b"foo=bar"
+    )
+    resp = _raw_post(port, raw)
+
+    assert b" 400 " in resp.split(b"\r\n", 1)[0], resp.split(b"\r\n", 1)[0]
+    assert not (config.inputs_dir / "FORM-neg.yaml").exists()
+    assert registry.get("FORM-neg").status == "pending"
+
+
+def test_short_body_not_submitted(http_setup):
+    """Declared Content-Length: 5, only 1 byte sent + EOF → 400 'Short
+    body'. Old code continued with the truncated body and submitted the
+    form with an empty payload."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-short",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+
+    raw = (
+        b"POST /submit/FORM-short HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Content-Type: application/x-www-form-urlencoded\r\n"
+        b"Content-Length: 5\r\n"
+        b"\r\n"
+        b"a"
+    )
+    resp = _raw_post(port, raw, half_close=True)
+
+    assert b" 400 " in resp.split(b"\r\n", 1)[0], resp.split(b"\r\n", 1)[0]
+    assert b"Short body" in resp
+    assert not (config.inputs_dir / "FORM-short.yaml").exists()
+    assert registry.get("FORM-short").status == "pending"
+
+
+# ── FU-16 / AUD09-05: crash-resubmit through the HTTP path itself ─────────
+
+
+def test_stale_submitting_reclaimable_via_http(http_setup):
+    """AUD09-05 completion criterion at the HTTP level (audit proposal
+    ``test_stale_submitting_reclaimable_via_http``): the claiming process
+    crashed between claim and finalize 11 minutes ago and nobody called
+    list_pending. A browser resubmit must be accepted (200 + file), not
+    409'ed — the registry-level reclaim is what do_POST relies on."""
+    config, registry, port = http_setup
+    registry.add(FormRecord(
+        form_id="FORM-crash",
+        template="test",
+        opened_at=datetime.now(timezone.utc) - timedelta(minutes=12),
+        status="submitting",
+        claimed_at=datetime.now(timezone.utc) - timedelta(minutes=11),
+    ))
+
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/submit/FORM-crash",
+        data=b"foo=bar",
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req)
+    assert resp.status == 200
+
+    assert (config.inputs_dir / "FORM-crash.yaml").exists()
+    assert registry.get("FORM-crash").status == "submitted"

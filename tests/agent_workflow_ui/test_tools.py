@@ -73,6 +73,76 @@ def test_open_form_no_data(plugin_setup):
     assert "submit_url" in result
 
 
+# --- FU-16 / AUD08-03: browser-fail must not lose the form ---
+
+def test_open_form_browser_fail_keeps_form_id(plugin_setup, monkeypatch):
+    """Headless repro: browser open fails but the form IS materialized.
+    Old code returned an `error` key, so awf_* wrappers dropped the
+    form_id — the form was alive in the registry but unreachable."""
+    import agent_workflow_ui.tools.forms as forms_mod
+    from agent_workflow_ui.tools.forms import open_form
+
+    def _fail_open(target, command="auto"):
+        return False, "Browser open command 'xdg-open' not found on PATH"
+
+    monkeypatch.setattr(forms_mod, "open_path", _fail_open, raising=True)
+
+    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
+
+    assert result["form_id"].startswith("FORM-"), "form_id lost on browser-fail"
+    assert result["browser_opened"] is False
+    assert "error" not in result, "error key is reserved for 'form not materialized'"
+    # The agent must know the form is ready and how to reach it.
+    assert result["submit_url"] in result.get("next_action", "")
+    # And the registry agrees.
+    assert get_registry().get(result["form_id"]) is not None
+
+
+def test_open_form_browser_fail_wrapper_returns_ok(plugin_setup, monkeypatch):
+    """The awf_open_project_setup_form wrapper: browser-fail → status ok
+    + form_id (not status error with no form_id)."""
+    import agent_workflow_ui.tools.forms as forms_mod
+    from agent_workflow_ui.tools.awf import awf_open_project_setup_form
+
+    def _fail_open(target, command="auto"):
+        return False, "no browser in headless"
+
+    monkeypatch.setattr(forms_mod, "open_path", _fail_open, raising=True)
+
+    result = asyncio.run(awf_open_project_setup_form(project_dir=str(plugin_setup.temp_dir)))
+    assert result["status"] == "ok"
+    assert result["form_id"].startswith("FORM-")
+    assert result["browser_opened"] is False
+
+
+def test_open_form_materialize_warning_in_response(plugin_setup):
+    """AUD08-03 (S2b): project-setup without a resolvable project_dir will
+    NOT materialize the submit — the response must carry a warning field,
+    not just a log line (which the agent never sees)."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
+    assert "warning" in result, "response must expose the materialization warning"
+    assert "materialize" in result["warning"]
+    assert result["form_id"].startswith("FORM-")
+
+
+def test_open_form_no_materialize_warning_with_project_dir(plugin_setup, tmp_path):
+    """With a valid project_dir (.agentic/ present) no warning."""
+    from agent_workflow_ui.tools.forms import open_form
+
+    proj = tmp_path / "proj"
+    (proj / ".agentic").mkdir(parents=True)
+
+    result = asyncio.run(open_form(
+        template="project-setup",
+        data={"available_roles": ["worker"]},
+        project_dir=str(proj),
+    ))
+    assert "warning" not in result
+    assert result["form_id"].startswith("FORM-")
+
+
 # --- read_submit ---
 
 def test_read_submit_pending(plugin_setup):
@@ -149,6 +219,22 @@ def test_cancel_form_unknown(plugin_setup):
     r = asyncio.run(cancel_form("FORM-999"))
     assert r["cancelled"] is False
     assert r["reason"] == "not_found"
+
+
+def test_cancel_form_removes_temp_html(plugin_setup):
+    """AUD08-14: a cancelled form must not leave its temp HTML in temp_dir
+    (was: alive until the 24h lazy cleanup)."""
+    from agent_workflow_ui.tools.forms import cancel_form, open_form
+
+    open_result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
+    form_id = open_result["form_id"]
+
+    temp_html = plugin_setup.temp_dir / f"agent-workflow-ui-{form_id}.html"
+    assert temp_html.exists(), "precondition: open_form wrote the temp HTML"
+
+    r = asyncio.run(cancel_form(form_id))
+    assert r["cancelled"] is True
+    assert not temp_html.exists(), "cancelled form left its temp HTML behind"
 
 
 # --- list_pending_forms ---
@@ -316,22 +402,9 @@ def test_read_submit_non_dict_yaml(plugin_setup):
     assert r["status"] == "error"
 
 
-def test_open_form_browser_open_fails(plugin_setup, monkeypatch):
-    """open_form sets error when browser open fails."""
-    from agent_workflow_ui.tools.forms import open_form
-
-    def _fail_open(target, command="auto"):
-        return False, "xdg-open not found"
-
-    import agent_workflow_ui.browser as browser_mod
-    monkeypatch.setattr(browser_mod, "open_path", _fail_open, raising=True)
-    import agent_workflow_ui.tools.forms as forms_mod
-    monkeypatch.setattr(forms_mod, "open_path", _fail_open, raising=True)
-
-    result = asyncio.run(open_form(template="project-setup", data={"available_roles": ["worker"]}))
-    assert result["browser_opened"] is False
-    assert "error" in result
-    assert "xdg-open" in result["error"]
+# (open_form browser-fail behavior is covered by
+#  test_open_form_browser_fail_keeps_form_id — AUD08-03: the form stays
+#  usable, so `error` is no longer set on a mere browser failure.)
 
 
 # --- Task 3: templates.py coverage gaps ---
