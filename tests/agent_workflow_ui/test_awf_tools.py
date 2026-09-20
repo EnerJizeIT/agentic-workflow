@@ -1011,3 +1011,111 @@ class TestNoLoopBlockingSleep:
             ):
                 count += 1
         assert count == 5  # 4 tools + the _open_dashboard_browser facade
+
+
+# ─── FU-18 (TODO-0032): prompt/docstring consistency ────────────────────
+
+
+class TestAnalyzeRolesNextActionPhase:
+    """AUD08-06: next_action was unconditional ('call awf_confirm_normalized')
+    — from a 'run' phase that steered a weak model into a phase jump.
+    The hint must follow the ACTUAL phase."""
+
+    def _prep(self, mcp_project, phase):
+        from awf.pipeline_state import write_state
+
+        write_state(mcp_project, phase=phase)
+        (mcp_project / ".agentic" / "roles" / "worker.md").write_text(
+            "# ROLE: worker\nImplementation role\n"
+        )
+
+    def test_run_phase_does_not_steer_to_confirm_normalized(self, mcp_project):
+        self._prep(mcp_project, "run")
+        result = run(awf.awf_analyze_roles(project_dir=str(mcp_project), dry_run=True))
+        assert result["status"] == "ok"
+        # no imperative steering — the hint must NOT tell the model to call
+        # it (mentioning it as forbidden is fine)
+        assert "Call awf_confirm_normalized" not in result["next_action"]
+        assert "do NOT call awf_confirm_normalized" in result["next_action"]
+
+    def test_normalize_phase_keeps_confirm_normalized(self, mcp_project):
+        self._prep(mcp_project, "normalize")
+        result = run(awf.awf_analyze_roles(project_dir=str(mcp_project), dry_run=True))
+        assert result["status"] == "ok"
+        assert "confirm_normalized" in result["next_action"]
+
+
+class TestApproveNextActionFacts:
+    """AUD05-03: the fixed 'approved and committed. Pipeline exited.'
+    promised a commit and an exit that approve does not cause.
+    next_action must be built from run/pipeline facts."""
+
+    T = "TODO-0001"
+
+    def test_active_run_continues_run_loop(self, mcp_project):
+        from awf import run_state
+
+        run_state.write_run(
+            mcp_project, active=True, queue=[self.T], started_at=run_state.now_iso(),
+        )
+        result = run(awf.awf_approve(
+            self.T, project_dir=str(mcp_project),
+            evidence="pytest -q → 348 passed; verdict: approve",
+        ))
+        assert result["status"] == "ok"
+        assert "awf_run_next" in result["next_action"]
+        assert "committed" not in result["next_action"]
+        assert "exited" not in result["next_action"].lower()
+
+    def test_dead_pipeline_no_false_promise(self, mcp_project):
+        result = run(awf.awf_approve(self.T, project_dir=str(mcp_project)))
+        assert result["status"] == "ok"
+        assert "committed" not in result["next_action"]
+        assert "exited" not in result["next_action"].lower()
+        assert "not running" in result["next_action"]
+
+    def test_live_pipeline_signal_waited_in_inbox(self, mcp_project, monkeypatch):
+        class _St:
+            pipeline_running = True
+
+        monkeypatch.setattr(api, "get_status", lambda *a, **kw: _St())
+        result = run(awf.awf_approve(self.T, project_dir=str(mcp_project)))
+        assert result["status"] == "ok"
+        assert "committed" not in result["next_action"]
+        assert "not running" not in result["next_action"]
+
+
+class TestStartNextActionDashboard:
+    """AUD08-15: next_action claimed 'Dashboard already opened' even when
+    the open failed (dashboard_opened=False) — it must agree with the fact."""
+
+    def _fake_start(self, monkeypatch):
+        class _R:
+            def as_dict(self):
+                return {"run_mode": "background", "run_id": 12345,
+                        "log_file": "x.log", "message": "started"}
+
+        monkeypatch.setattr(api, "start_pipeline", lambda *a, **kw: _R())
+
+    def test_failed_dashboard_not_claimed_opened(self, mcp_project, monkeypatch):
+        self._fake_start(monkeypatch)
+        monkeypatch.setattr(
+            awf, "_open_dashboard_sync",
+            lambda pd, wait=False: {"opened": False, "method": "none"},
+        )
+        result = run(awf.awf_start(project_dir=str(mcp_project), background=True))
+        assert result["status"] == "ok"
+        assert result["dashboard_opened"] is False
+        assert "already opened" not in result["next_action"]
+        assert "awf_open_pipeline_dashboard" in result["next_action"]
+
+    def test_opened_dashboard_keeps_idle_instruction(self, mcp_project, monkeypatch):
+        self._fake_start(monkeypatch)
+        monkeypatch.setattr(
+            awf, "_open_dashboard_sync",
+            lambda pd, wait=False: {"opened": True, "method": "http", "url": "http://x"},
+        )
+        result = run(awf.awf_start(project_dir=str(mcp_project), background=True))
+        assert result["status"] == "ok"
+        assert result["dashboard_opened"] is True
+        assert "GO IDLE" in result["next_action"]

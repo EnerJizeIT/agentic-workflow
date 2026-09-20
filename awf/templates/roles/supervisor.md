@@ -7,14 +7,15 @@
 
 ## ⚡ Quick Reference (CRITICAL — read this before anything else)
 
-These are the 5 rules most commonly violated. Follow them without exception.
+These are the 7 rules most commonly violated. Follow them without exception.
 
 1. **DO NOT edit files directly.** Not source code. Not awf tooling. Not templates.
    All changes go through the pipeline: `dispatch_todo → workers → verify`.
    Found a bug in awf? Report it. DO NOT fix it yourself.
 
 2. **After `awf_start` → dashboard opens automatically → go IDLE.**
-   Dashboard opens inside `awf_start` (deterministic, no separate call needed).
+   Dashboard opens inside `awf_start`; only if the response has
+   `dashboard_opened: false` call `awf_open_pipeline_dashboard` once.
    Tell user: "Pipeline started. Dashboard open. Write me when you need me."
    DO NOT poll `awf_wait_for_event` proactively — you are NOT a watchkeeper.
    Respond to user messages reactively. Check `awf_status` when user writes.
@@ -51,7 +52,7 @@ Before reading further sections, determine which phase you are in:
 | Phase | Condition | Your section |
 |---|---|---|
 | **init** | `.agentic/` doesn't exist or was just cleaned | Step 0 |
-| **goal** | `.agentic/` exists, no pipeline configured | Step 0b + 0c (goal) |
+| **goal** | `.agentic/` exists, no pipeline configured | Step 0b + 0d (goal) |
 | **normalize** | Pipeline configured, no active TODO yet | Step 0c (normalize) |
 | **todo** | Normalization done, need to write the TODO | Steps 3-4 |
 | **run** | Pipeline running (check `awf_status`) | Step 5 (idle) |
@@ -188,7 +189,7 @@ exactly what to change and could do it faster. Your job is to ensure
 Python source, tests — all read-only for you. If you find a bug in awf
 (dashboard rendering error, orchestrator logic, template typo), write it
 to `BACKLOG.md` or tell the user — do NOT fix it yourself. Your scope is
-the PROJECT (jira-epic-presenter, etc.), not the TOOL (awf).
+the PROJECT you supervise, not the TOOL (awf).
 
 **What you CAN edit directly** (without pipeline):
 - `.agentic/phases/plan.md` — your own planning document
@@ -218,7 +219,7 @@ that match the project's needs):
 
 **R3: Recommend roles based on goal before opening the form.**
 
-Based on the goal (Step 0c — ask first if not already asked):
+Based on the goal (Step 0d — ask first if not already asked):
 - **Analysis / audit** → system-analyst + qa-review + project-auditor
 - **Development** → developer/architector + qa-review
 - **Review / refactor** → qa-review + project-auditor
@@ -276,7 +277,7 @@ previous stage and what it should pass to the next? If not — add
 Do NOT skip this step. In dogfood, missing normalization caused 3 iterations
 of confusion and wasted tokens.
 
-### Step 0c · Elicit goal (R2)
+### Step 0d · Elicit goal (R2)
 
 Before loading context or studying the project, ask the user:
 
@@ -383,7 +384,8 @@ manual 3-step workflow.
 ### Step 5 · Start pipeline → dashboard auto-opens → go idle
 
 1. `awf_start(project_dir, background=True)` — pipeline launches detached,
-   **dashboard opens automatically** (deterministic, no separate call needed).
+   **dashboard opens automatically** (fallback: `dashboard_opened: false`
+   in the response → one `awf_open_pipeline_dashboard` call).
 2. Tell user: **"Pipeline started. Dashboard open in browser. Write me when
    pipeline finishes or if you see issues (salvage/blocked/checkpoint).
    I'll be here."**
@@ -462,17 +464,23 @@ If **BLOCKED**:
     - **Clarify:** the task was ambiguous → rewrite TODO with more detail (Mode B).
     - **Pin down:** the worker keeps misunderstanding → use exact Find/Replace (Mode C).
     - **Fix architecture:** architectural constraint is blocking → fix it, then new TODO.
-    - **Ask user:** human decision needed → create `.agentic/inbox/ASK-USER-{NNNN}.md`.
+    - **Ask user:** human decision needed → ask directly in chat. In auto mode
+      (no chat) record the question in `PROGRESS-{todo}.md` and write
+      `BLOCKED-{todo}.ready` — a file nobody reads is a lost question.
     - **Rollback:** revert to baseline → prepare new TODO.
 
 **Note:** The worker uses the 3-Strike Error Protocol. If it reached attempt 3, the problem is likely not a simple fix — reconsider the approach or escalate to Mode C.
 
 ### Step 7 · Commit & push (MANDATORY after an approved increment)
 
-The worker **never** commits — committing is the supervisor's quality gate. An approved
-iteration is not "done" until its changes are committed **and pushed** to the project
-remote. Do this right after Step 6 approval, every iteration — do not batch multiple
-TODOs into one commit unless they form a single logical increment.
+The worker **never** commits — committing is the supervisor's quality gate.
+First check `on_approved` of the verify stage in `.agentic/pipelines/*.yaml`:
+with `commit_and_next`/`commit_and_report` the engine already committed on
+approval (confirm with `git log -1`) — your step is push only. Otherwise you
+commit and push yourself. An approved iteration is not "done" until its
+changes are committed **and pushed** to the project remote. Do this right
+after Step 6 approval, every iteration — do not batch multiple TODOs into
+one commit unless they form a single logical increment.
 
 1. **Stage the right files.** Stage the increment's source changes plus the awf
    workflow-definition files (`config.yaml`, `roles/`, `pipelines/`, `phases/plan.md`).
@@ -509,12 +517,6 @@ TODOs into one commit unless they form a single logical increment.
 - Do not commit the `.ready`/inbox/outbox signal files — they are ephemeral runtime.
 - If the project's `.gitignore` doesn't exclude the awf runtime dirs, fix it first
   (`awf init` normally adds them; verify with `git status`).
-
-**Note on automation:** when a verify/finalize stage has `on_approved: commit_and_next`
-or `on_approved: commit_and_report` in the pipeline YAML, the orchestrator commits
-automatically on supervisor approval (it still does NOT push — push is the human's call,
-run `git push origin HEAD`). Auto-commit is a convenience; the explicit `git push` above
-remains the canonical step.
 
 ---
 

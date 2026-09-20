@@ -66,6 +66,12 @@ async def awf_init(
     the full supervisor context (role instructions, vision excerpt, plan.md
     content). Caller is now ready to act as supervisor.
 
+    **R1 warning (AUD05-04):** if ``.agentic/`` already exists and
+    ``force=False``, the runtime directories (inbox/outbox/handoff/done/
+    state/logs/context/dashboards/inputs) are DELETED and config.yaml is
+    preserved — calling this on a live project drops active TODOs and
+    state. ``dry_run=True`` is a pure read.
+
     All command parameters are optional — auto-detected when not provided.
     Project name is derived from directory name when not provided.
 
@@ -136,9 +142,11 @@ async def awf_start(
     Default mode is ``background=True`` — launches a detached subprocess
     and returns immediately with a PID.
 
-    **R6 sleep mode:** After start, call ``awf_open_pipeline_dashboard``
-    to open the live dashboard, then go idle. Do NOT poll — the user
-    monitors the dashboard and writes you when needed.
+    **R6 sleep mode:** ``awf_start`` opens the dashboard itself — check
+    ``dashboard_opened`` in the response and call
+    ``awf_open_pipeline_dashboard`` only ONCE as a fallback when it is
+    false. Then go idle. Do NOT poll — the user monitors the dashboard
+    and writes you when needed.
 
     Set ``background=False`` only for short pipelines or tests — the call
     blocks until completion (can be minutes/hours).
@@ -185,11 +193,21 @@ async def awf_start(
         except Exception:
             result["dashboard_opened"] = False
     # SMO: explicit next_action — weak models need this to avoid polling.
+    # AUD08-15: the text must agree with the fact in `dashboard_opened` —
+    # a failed open (headless) used to be claimed as "already opened".
     if result.get("status") == "ok" and result.get("run_mode") == "background":
-        result["next_action"] = (
-            "GO IDLE. Dashboard already opened. Do NOT call awf_wait_for_event "
-            "or awf_status in a loop. Wait for the user to write you."
-        )
+        if result.get("dashboard_opened"):
+            result["next_action"] = (
+                "GO IDLE. Dashboard already opened. Do NOT call awf_wait_for_event "
+                "or awf_status in a loop. Wait for the user to write you."
+            )
+        else:
+            result["next_action"] = (
+                "GO IDLE. Dashboard did NOT open (headless?) — open it once with "
+                "awf_open_pipeline_dashboard(project_dir). Do NOT call "
+                "awf_wait_for_event or awf_status in a loop. Wait for the user "
+                "to write you."
+            )
     return result
 
 
@@ -642,16 +660,46 @@ async def awf_approve(
         Dict with: todo_id, signal_file (path to APPROVE-*.ready).
     """
     try:
-        result = api.approve_commit(
-            _resolve_project_dir(project_dir), todo_id, evidence=evidence
-        )
+        pd = _resolve_project_dir(project_dir)
+        result = api.approve_commit(pd, todo_id, evidence=evidence)
         response = _ok(result)
-        # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat)
-        response["next_action"] = (
-            f"{todo_id} approved and committed. Pipeline exited. "
-            "Wait for user to decide next step. "
-            "DO NOT dispatch next TODO without user asking."
-        )
+        # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat).
+        # AUD05-03: the old fixed text promised "approved and committed.
+        # Pipeline exited." — approve only writes the signal; neither the
+        # commit nor the exit is guaranteed by it. Build the hint from facts.
+        run_active = False
+        try:
+            brief = api.run_brief(pd)
+            run_active = bool(brief and brief.get("active"))
+        except Exception:
+            pass
+        if run_active:
+            response["next_action"] = (
+                f"{todo_id} approved — APPROVE signal written"
+                + (", evidence stored" if result.evidence_file else "")
+                + ". Continue the run loop: awf_run_next."
+            )
+        else:
+            pipeline_alive = False
+            try:
+                st = api.get_status(pd)
+                pipeline_alive = bool(st and st.pipeline_running)
+            except Exception:
+                pipeline_alive = False
+            if pipeline_alive:
+                response["next_action"] = (
+                    f"{todo_id} approved — APPROVE signal written. The pipeline "
+                    "acts on it at its verify/commit gate; a commit happens only "
+                    "if the stage policy auto-commits. Wait for the user before "
+                    "the next TODO."
+                )
+            else:
+                response["next_action"] = (
+                    f"{todo_id} approved — APPROVE signal written, but the "
+                    "pipeline is not running: the signal waits in the inbox for "
+                    "the next run. Check awf_status. Wait for the user before "
+                    "the next TODO."
+                )
         return response
     except api.AwfApiError as e:
         return _err(e)
@@ -851,7 +899,32 @@ async def awf_analyze_roles(
             dry_run=dry_run,
         )
         response = _ok(result)
-        response["next_action"] = "Roles analyzed. Call awf_confirm_normalized to advance to brief phase."
+        # AUD08-06: next_action is built from the ACTUAL phase. The old
+        # unconditional "call awf_confirm_normalized" steered a weak model
+        # into a phase jump from any other phase (advance_phase steps from
+        # the current one: run → verify).
+        try:
+            from awf.phase import detect_phase
+
+            phase = detect_phase(_resolve_project_dir(project_dir))
+        except Exception:
+            phase = None
+        if phase == "normalize":
+            response["next_action"] = (
+                "Roles analyzed. Call awf_confirm_normalized to advance to "
+                "brief phase."
+            )
+        elif phase:
+            response["next_action"] = (
+                f"Roles analyzed (current phase: {phase}). No phase change "
+                "needed — do NOT call awf_confirm_normalized outside the "
+                "normalize phase. Continue with the current phase."
+            )
+        else:
+            response["next_action"] = (
+                "Roles analyzed. Check awf_current_step for the phase and "
+                "the next step."
+            )
         return response
     except api.AwfApiError as e:
         return _err(e)
@@ -1239,6 +1312,7 @@ async def awf_wait_for_event(
 
     - ``verify`` — pipeline reached verify stage (supervisor must act)
     - ``blocked`` — worker wrote BLOCKED signal
+    - ``salvage`` — worker died without a signal (highest priority)
     - ``checkpoint`` — BD-36 checkpoint form opened (tell user)
     - ``done`` — pipeline completed (state file cleared)
     - ``timeout`` — no event within timeout
@@ -1260,10 +1334,11 @@ async def awf_wait_for_event(
         actionable_only: Only events needing supervisor action end the wait.
 
     Returns:
-        Dict with: event_type (verify/blocked/checkpoint/done/timeout/idle),
-        message (instruction for supervisor), state_snapshot,
-        suggested_timeout (recommended wait size for the next call),
-        timeout_clamped (true when the requested timeout exceeded the cap).
+        Dict with: event_type (verify/blocked/salvage/checkpoint/done/
+        timeout/stage_changed/idle), message (instruction for supervisor),
+        state_snapshot, suggested_timeout (recommended wait size for the
+        next call), timeout_clamped (true when the requested timeout
+        exceeded the cap).
     """
     MAX_WAIT = 600
     # AUD08-07: a non-numeric timeout used to raise ValueError OUTSIDE the

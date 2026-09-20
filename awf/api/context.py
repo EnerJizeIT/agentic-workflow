@@ -172,7 +172,9 @@ def _compute_expected_action(
     if current_stage_kind == "execute":
         return (
             "worker stage running — auto-transition on worker DONE. Do NOT "
-            "intervene. Poll awf_status until current_stage_kind becomes 'verify'."
+            "intervene and do NOT poll in a loop: check awf_status once when "
+            "you need to act. In an active run, keep the run loop instead: "
+            "awf_wait_for_event(actionable_only=True)."
         )
 
     if current_stage_kind == "verify":

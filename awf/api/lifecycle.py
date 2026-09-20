@@ -64,6 +64,12 @@ def init_project(
     not provided explicitly. Project name is derived from directory when
     not provided.
 
+    **R1 (AUD05-04):** when ``.agentic/`` already exists and
+    ``force=False``, the runtime directories (inbox/outbox/handoff/done/
+    state/logs/context/dashboards/inputs) are deleted and config.yaml is
+    preserved — calling this on a live project drops active TODOs and
+    state. ``dry_run=True`` is a pure read and changes nothing.
+
     Returns :class:`InitResult` with supervisor.md, vision excerpt, plan.md
     content — caller (CLI/MCP) has everything needed to assume the supervisor
     role without further file reads.

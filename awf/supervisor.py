@@ -141,9 +141,14 @@ def _build_pipeline_context(
 _SNIPPET_ALWAYS = """\
 ## ⚡ Critical rules (always apply)
 - DO NOT edit source files, awf tooling, or templates. All changes through pipeline.
-- DO NOT git commit/push manually — pipeline auto-commits after verify approve.
+- Commit follows the stage policy: `on_approved` in .agentic/pipelines/*.yaml —
+  commit_and_next/commit_and_report = the engine commits after approve; with
+  `next` the commit is yours. `git push` is always yours.
 - You ARE the decision maker. Do NOT ask user "should I approve?" — decide yourself.
-- After ANY action (approve, dispatch, start) → call awf_wait_for_event to verify result.
+- No active run: GO IDLE after start — the engine tracks signals itself, do NOT
+  poll awf_wait_for_event/awf_status in a loop. In an active run (забег): keep
+  the loop awf_wait_for_event(actionable_only=True) → awf_approve(evidence=...)
+  → awf_run_next (see phase-run.md).
 - If MCP tool times out → bash fallback: `python3 -m awf status --project-dir <path>`
 """
 
@@ -174,9 +179,13 @@ _SNIPPET_VERIFY = """\
 5. Run verify commands from the TODO independently
 6. DECIDE YOURSELF (do NOT ask user):
    - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
+     (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
+     the engine ignores a file-based ACK without RUN-EVIDENCE)
    - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
      listing which criteria failed and what to fix
 7. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
+8. Commit follows the stage policy (on_approved in .agentic/pipelines/*.yaml):
+   auto-commit = engine's step, otherwise the commit is yours; push always is.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -185,9 +194,12 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
 1. Read .agentic/inbox/SALVAGE-{todo_id}.md for details on what happened.
 2. Check git diff — did worker produce useful work?
 3. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
+   (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
+   the engine ignores a file-based ACK without RUN-EVIDENCE)
 4. If no → call awf_retry_stage(project_dir) to retry the stage
 5. If retry also fails → create .agentic/outbox/REVIEW-{todo_id}.md (reject)
-6. Do NOT git commit manually — pipeline auto-commits after ACK.
+6. Commit follows the stage policy (on_approved in .agentic/pipelines/*.yaml);
+   `git push` is always the supervisor's step.
 
 If the diff is EMPTY and this is a REPEAT salvage (see "ATTEMPT" in the
 SALVAGE file): do NOT retry the same scope again. Split the work into
@@ -276,9 +288,10 @@ def build_prompt(
         base = (
             f"## CRITICAL completion contract (read this BEFORE your skill)\n"
             f"Pipeline BLOCKS until you create the signal file. This is non-negotiable.\n\n"
-            f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready\n"
-            f"  🚫 Blocked? → touch .agentic/outbox/BLOCKED-{todo_id}.ready\n\n"
-            f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n"
+            f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready AND write a\n"
+            f"               1-line summary: .agentic/outbox/DONE-{todo_id}.md\n"
+            f"  🚫 Blocked? → write .agentic/outbox/BLOCKED-{todo_id}.md with the reason,\n"
+            f"               then touch .agentic/outbox/BLOCKED-{todo_id}.ready (no DONE file)\n\n"
             f"Optional machine facts for the next role: .agentic/outbox/DONE-{todo_id}.json —\n"
             f"a JSON object with keys files_changed, tests_run, gates, notes, e.g.:\n"
             f'  {{"files_changed": ["awf/x.py", "tests/unit/test_x.py"],\n'
@@ -465,6 +478,30 @@ def _decision_is_stale(
     return int(mtime) <= int(accepted_decision_mtime)
 
 
+def _run_evidence_ok(project_dir: Path, todo_id: str) -> bool:
+    """AUD11-03: approve-signal gate for run (забег) mode.
+
+    Inside an ACTIVE run, an approve (ACK/APPROVE) only counts when the
+    independent-verification evidence file exists:
+    ``context/RUN-EVIDENCE-{todo_id}.md`` (written by
+    ``awf_approve(evidence=...)``). Without it the verify wait and the
+    auto-mode fallback ignore the file-based approve — the run protocol's
+    audit trail is the reason run mode exists, and the prompts used to
+    teach exactly the bypass (manual ACK, no evidence).
+
+    Outside a run, file-based ACK is the normal interactive flow — the
+    gate must not change it. REVIEW is never gated (rejection needs no
+    evidence).
+    """
+    from . import run_state
+
+    run = run_state.read_run(project_dir)
+    if not (run and run.get("active")):
+        return True
+    evidence = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
+    return evidence.is_file()
+
+
 def wait_for_supervisor_signal(
     kind: str,
     todo_id: str,
@@ -530,6 +567,8 @@ def wait_for_supervisor_signal(
     last_log = start
     # AUD04-04: filenames already logged as stale, to keep the poll quiet.
     stale_decision_logged: set[str] = set()
+    # AUD11-03: log the evidence-gate rejection once per wait.
+    evidence_gate_logged = False
 
     while True:
         if kind == "plan":
@@ -557,15 +596,31 @@ def wait_for_supervisor_signal(
             # AUD04-04: existence alone is not acceptance — the decision must
             # be fresh for this wait (a previous cycle's ACK/APPROVE/REVIEW
             # must not be accepted again).
+            # AUD11-03: inside an ACTIVE run an approve additionally needs
+            # the evidence file (RUN-EVIDENCE-{todo}.md) — a bare ACK/APPROVE
+            # is the bypass the run protocol exists to prevent. Recomputed
+            # each poll: the run can finish (or the evidence arrive) mid-wait.
+            evidence_ok = _run_evidence_ok(project_dir, todo_id)
             for sig_path in (
                 inbox / f"ACK-{todo_id}.ready",
                 inbox / f"APPROVE-{todo_id}.ready",
             ):
-                if sig_path.exists() and _decision_signal_fresh(
+                if not (sig_path.exists() and _decision_signal_fresh(
                     sig_path, wall_start, stale_decision_logged, logs_dir
-                ):
-                    _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
-                    return sig_path.stem
+                )):
+                    continue
+                if not evidence_ok:
+                    if not evidence_gate_logged:
+                        evidence_gate_logged = True
+                        _log(
+                            logs_dir,
+                            f"AUD11-03: {sig_path.name} ignored — active run "
+                            f"requires RUN-EVIDENCE-{todo_id}.md "
+                            "(awf_approve with evidence=)",
+                        )
+                    continue
+                _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
+                return sig_path.stem
             review = outbox / f"REVIEW-{todo_id}.md"
             if review.exists() and _decision_signal_fresh(
                 review, wall_start, stale_decision_logged, logs_dir
@@ -688,8 +743,17 @@ def print_interactive_supervisor_instructions(
         print("     - APPROVED → create signal file below")
         print(f"     - REJECTED → write REVIEW-{todo_id}.md in outbox explaining what's wrong")
         print()
-        print(f"SIGNAL TO CREATE: {inbox}/ACK-{todo_id}.ready")
-        print(f"  (or write REVIEW to: {outbox}/REVIEW-{todo_id}.md)")
+        if _run_evidence_ok(project_dir, todo_id):
+            print(f"SIGNAL TO CREATE: {inbox}/ACK-{todo_id}.ready")
+            print(f"  (or write REVIEW to: {outbox}/REVIEW-{todo_id}.md)")
+        else:
+            # AUD11-03: inside an active run the file-based ACK is ignored
+            # by the engine — the approve path is awf_approve(evidence=...).
+            print("RUN MODE: an active run is in progress — a hand-made ACK without")
+            print(f".agentic/context/RUN-EVIDENCE-{todo_id}.md is IGNORED by the engine.")
+            print(f"APPROVE VIA: awf_approve(todo_id=\"{todo_id}\", evidence=...) — evidence")
+            print("  = the commands you actually ran + your verdict.")
+            print(f"REJECT AS USUAL: write REVIEW-{todo_id}.md to {outbox}/")
     else:
         print(f"STAGE: {kind}")
         print()
@@ -702,6 +766,11 @@ def print_interactive_supervisor_instructions(
             print(f"Salvage details: read {inbox}/SALVAGE-{todo_id}.md — it lists what")
             print("happened and, for repeat attempts, what to change before retrying.")
             print()
+            if not _run_evidence_ok(project_dir, todo_id):
+                print("RUN MODE: an active run is in progress — a hand-made ACK without")
+                print(f".agentic/context/RUN-EVIDENCE-{todo_id}.md is IGNORED by the engine.")
+                print(f"APPROVE VIA: awf_approve(todo_id=\"{todo_id}\", evidence=...) instead.")
+                print()
         print(f"SIGNAL TO CREATE: {inbox}/TODO-NNNN.ready (for replan)")
         print(f"  or: {inbox}/ACK-{todo_id}.ready (for salvage ACK)")
 
@@ -978,6 +1047,8 @@ def run_supervisor_via_subprocess(
         kind, todo_id, inbox, outbox,
         accepted_decision=prev_state.get("accepted_decision"),
         accepted_decision_mtime=prev_state.get("accepted_decision_mtime"),
+        # AUD11-03: same run-mode evidence gate as the interactive wait.
+        run_evidence_ok=_run_evidence_ok(project_dir, todo_id),
     )
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
     return signal_name
@@ -990,6 +1061,7 @@ def _detect_supervisor_signal(
     outbox: Path,
     accepted_decision: str | None = None,
     accepted_decision_mtime: float | None = None,
+    run_evidence_ok: bool = True,
 ) -> str:
     """C1 fix: detect which signal the supervisor actually produced.
 
@@ -1003,6 +1075,10 @@ def _detect_supervisor_signal(
     that record at the same or older mtime is the leftover of a killed cycle
     and is rejected (see _decision_is_stale). A pre-approval with no record
     (BD-8) and a fresh re-approval (newer mtime) are accepted as before.
+
+    AUD11-03: ``run_evidence_ok`` is the run-mode gate — inside an active
+    run, ACK/APPROVE are detected only when the evidence file exists
+    (see _run_evidence_ok). REVIEW is never gated.
     """
     if kind == "verify" and todo_id:
         # Check REVIEW first (most recent decision wins)
@@ -1011,6 +1087,8 @@ def _detect_supervisor_signal(
             review, f"REVIEW-{todo_id}", accepted_decision, accepted_decision_mtime
         ):
             return f"REVIEW-{todo_id}"
+        if not run_evidence_ok:
+            return ""
         # Then ACK and APPROVE
         ack = inbox / f"ACK-{todo_id}.ready"
         if ack.exists() and not _decision_is_stale(

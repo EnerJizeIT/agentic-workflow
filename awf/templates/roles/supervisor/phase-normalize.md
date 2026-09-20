@@ -1,8 +1,10 @@
 # Phase: normalize
 
 ## Your task
-Normalize role.md files before writing any TODO. This is a **mandatory gate** —
-awf will NOT let you proceed to brief until normalization is confirmed.
+Normalize role.md files before writing any TODO. This is a **mandatory gate**:
+until you call `awf_confirm_normalized`, the phase stays `normalize`
+(`awf_current_step` keeps returning this prompt). The dispatch itself is not
+blocked mechanically — skipping costs you a wasted pipeline cycle.
 
 ## 3-part checklist
 
@@ -27,7 +29,8 @@ For each role, verify it knows what it receives and produces:
 ## After checklist is done
 Call `awf_confirm_normalized(project_dir=<path>)`.
 
-This advances to **brief** phase. Awf will NOT let you skip this step.
+This advances to **brief** phase. Until the call, the phase stays `normalize`
+— nothing stops a weak model mechanically, so do not skip.
 
 ## Do NOT
 - Do NOT skip this step. Missing normalization = wasted iterations.

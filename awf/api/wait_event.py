@@ -2,8 +2,8 @@
 
 Replaces the ``while True: sleep(30); awf_status()`` pattern with a
 single blocking call. Supervisor calls ``wait_for_event``, tool blocks
-inside plugin (polling state file every 10s), returns immediately when
-an interesting event happens:
+inside plugin (polling the state file every ``poll_interval`` seconds,
+default 3), returns immediately when an interesting event happens:
 
 - ``verify`` — pipeline reached verify stage (supervisor must act)
 - ``blocked`` — worker wrote BLOCKED signal
