@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from awf._atomic import atomic_write_text
 from awf.xdg import xdg_config_home  # AUD-12: consolidated
 
 log = logging.getLogger(__name__)
@@ -63,8 +64,10 @@ def ensure_skill_installed() -> bool:
 
     # Copy / overwrite
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(bundled_content, encoding="utf-8")
+        # AUD09-08: atomic write (tmp + rename) — a crash mid-write used to
+        # leave a truncated SKILL.md until the next start. Also 0600, like
+        # the rest of the plugin's persistent artifacts (T2.6).
+        atomic_write_text(target, bundled_content, encoding="utf-8")
         log.info("Installed SKILL.md → %s", target)
         return True
     except OSError as e:

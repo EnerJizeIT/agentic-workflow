@@ -7,6 +7,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import socket
 import threading
 import urllib.parse
@@ -37,7 +38,11 @@ def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".{uuid4().hex}.tmp")
     content = yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    tmp.write_text(content, encoding="utf-8")
+    # AUD14-06e: submit file (may carry form payload) — create tmp 0600
+    # before the rename instead of the old write_text(0644) + chmod-after.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
     tmp.replace(path)
 
 

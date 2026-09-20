@@ -6,7 +6,6 @@ instead (no prompts, deterministic stack detection).
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -199,38 +198,11 @@ def _offer_plugin_install(project_name: str) -> None:
 
 
 def _add_mcp_config_to_opencode() -> None:
-    """Add agent-workflow-ui MCP block to opencode.json."""
-    import json
-    from datetime import datetime
+    """Add agent-workflow-ui MCP block to opencode.json.
 
-    cfg_path = opencode_config_file()
-    if not cfg_path.exists():
-        print(f"  NOTE: {cfg_path} not found. Skipping.")
-        return
-
-    backup = cfg_path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
-    shutil.copy2(cfg_path, backup)
-
-    try:
-        with cfg_path.open(encoding="utf-8") as f:
-            cfg = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"  ERROR: cannot parse {cfg_path}: {e}")
-        return
-
-    mcp = cfg.setdefault("mcp", {})
-    if "agent-workflow-ui" in mcp:
-        print("  ✓ agent-workflow-ui already in opencode.json.")
-        return
-
-    mcp["agent-workflow-ui"] = {
-        "type": "local",
-        "command": ["python3", "-m", "agent_workflow_ui"],
-    }
-
-    with cfg_path.open("w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    print(f"  ✓ Added agent-workflow-ui to {cfg_path}")
-    print(f"  Backup: {backup}")
+    AUD07-06: thin delegation — the backup/parse/merge/write logic lives in
+    :func:`awf.opencode_agents.ensure_mcp_block` (atomic write, backup only
+    after a successful parse, ERR results instead of tracebacks).
+    """
+    result = opencode_agents.ensure_mcp_block(str(opencode_config_file()))
+    print(f"  {result}")

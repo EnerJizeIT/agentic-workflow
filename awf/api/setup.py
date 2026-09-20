@@ -296,13 +296,15 @@ def update_config_role_mapping(
     backup = config_path.with_suffix(".yaml.bak")
     try:
         old_content = config_path.read_text(encoding="utf-8")
-        backup.write_text(old_content, encoding="utf-8")
+        # AUD14-06: backups hold the full config (may contain keys) —
+        # atomic_write_text creates them 0600; write_text left them 0644.
+        atomic_write_text(backup, old_content)
         # Also write timestamped backup (keep last 3)
         from datetime import datetime as _dt
         ts_backup = config_path.with_name(
             f"config.yaml.{_dt.now().strftime('%Y%m%d%H%M%S')}.bak"
         )
-        ts_backup.write_text(old_content, encoding="utf-8")
+        atomic_write_text(ts_backup, old_content)
         old_baks = sorted(config_path.parent.glob("config.yaml.*.bak"))
         for old in old_baks[:-3]:
             old.unlink(missing_ok=True)

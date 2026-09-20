@@ -78,7 +78,10 @@ def start_in_background(
         child_argv.append("--auto")
     child_argv += ["--timeout", str(timeout)]
 
-    with open(log_file, "ab") as out:
+    # AUD14-06c: awf-start.out carries stage crash tracebacks (which embed
+    # the worker prompt) — born 0600, not 0644 via open("ab").
+    log_fd = os.open(log_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    with os.fdopen(log_fd, "ab") as out:
         proc = subprocess.Popen(
             child_argv,
             cwd=str(project_dir),

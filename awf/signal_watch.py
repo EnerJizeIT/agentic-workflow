@@ -238,13 +238,18 @@ def run_subprocess_until_signal(
         # erase the previous run's log, so post-mortems lost what the worker
         # actually wrote. Marker line delimits runs for forensics.
         import os as _os
-        worker_log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
+        # AUD14-06e: O_CREAT 0o600 — the log is born user-only. The old
+        # open("a") created it 0644 and chmod'd after the first write,
+        # leaving a window where the prompt-bearing log was world-readable.
+        log_fd = _os.open(log_path, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
+        worker_log = _os.fdopen(log_fd, "a", encoding="utf-8")
         worker_log.write(
             f"\n===== awf run {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
             f"(pid {_os.getpid()}) =====\n"
         )
         worker_log.flush()
-        # P2: restrict worker log permissions (may contain sensitive output)
+        # P2: restrict worker log permissions (may contain sensitive output).
+        # Ratchet: also covers logs a previous version created 0644.
         _os.chmod(log_path, 0o600)
         if log_holder is not None:
             log_holder["log_path"] = str(log_path)
