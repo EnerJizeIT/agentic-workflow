@@ -46,7 +46,7 @@ def detect_phase(project_dir: Path) -> str:
         # Infer from pipeline stage
         stage_kind = state.get("stage_kind")
         if stage_kind == "plan":
-            # Plan stage = writing Brief or TODO
+            # Plan stage = writing the TODO
             return "brief"
         if stage_kind == "execute":
             return "run"

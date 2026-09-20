@@ -1,4 +1,4 @@
-"""Tests for pipeline_engine: R5 two-phase plan, F4 auto-retry."""
+"""Tests for pipeline_engine: plan stage (single-phase, FU-05), F4 auto-retry."""
 from __future__ import annotations
 
 import pytest
@@ -15,36 +15,43 @@ def _make_stages() -> list[Stage]:
     ]
 
 
-class TestR5TwoPhasePlan:
-    """R5: Brief → checkpoint → TODO."""
+class TestPlanStage:
+    """FU-05: single-phase plan — the contract is the TODO, no BRIEF."""
 
-    def test_brief_detected_triggers_checkpoint_and_write_todo(
-        self, tmp_path, monkeypatch
-    ):
-        """Brief.ready detected → checkpoint → second supervisor call for TODO."""
+    def test_stale_brief_does_not_hijack_new_run(self, tmp_path, monkeypatch):
+        """AUD04-03 regression: stale BRIEF-* leftovers in the inbox must not
+        pin the run to an already-finished TODO. The plan stage has to run the
+        newest active TODO (TODO-0002 here) and call the checkpoint gate
+        exactly once for it — no second supervisor call, no Brief phase."""
         project = tmp_path / "proj"
         inbox = project / ".agentic" / "inbox"
         inbox.mkdir(parents=True)
-        # Create Brief signal
+        # Stale R5 leftovers for a FINISHED TODO-0001
         (inbox / "BRIEF-TODO-0001.md").write_text("# Brief\nGoal: test\n")
         (inbox / "BRIEF-TODO-0001.ready").write_text("")
-        # Create TODO (will be found after second supervisor call)
-        (inbox / "TODO-0001.md").write_text("# TODO\nTask\n")
-        (inbox / "TODO-0001.ready").write_text("")
+        done_dir = project / ".agentic" / "done" / "TODO-0001"
+        done_dir.mkdir(parents=True)
+        (done_dir / "TODO.md").write_text("# TODO (finished)\n")
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True)
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+        # The NEW active TODO the plan stage must run
+        (inbox / "TODO-0002.md").write_text("# TODO\nTask\n")
+        (inbox / "TODO-0002.ready").write_text("")
 
-        calls = {"supervisor": 0, "checkpoint": 0}
+        supervisor_calls = {"n": 0}
+        checkpoint_todos: list[str] = []
 
         def mock_supervisor(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
-            calls["supervisor"] += 1
+            supervisor_calls["n"] += 1
             return ""
 
         def mock_checkpoint(todo_id, project_dir, config, auto, logs_dir):
-            calls["checkpoint"] += 1
+            checkpoint_todos.append(todo_id)
             return 0
 
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", mock_supervisor)
         monkeypatch.setattr(pipeline_engine, "_run_plan_checkpoint_gate", mock_checkpoint)
-        monkeypatch.setattr(pipeline_engine, "_find_active_todo", lambda pd: "TODO-0001")
         monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
 
         stages = _make_stages()
@@ -53,26 +60,31 @@ class TestR5TwoPhasePlan:
             project_dir=project, config={}, logs_dir=tmp_path,
         )
 
-        assert calls["supervisor"] == 2  # Phase 1 (Brief) + Phase 2 (TODO)
-        assert calls["checkpoint"] == 1
-        assert todo == "TODO-0001"
+        assert todo == "TODO-0002", (
+            "stale BRIEF hijacked the run to a finished TODO — AUD04-03 "
+            "regression: BRIEF-* files are not part of the contract"
+        )
+        assert checkpoint_todos == ["TODO-0002"]
+        assert supervisor_calls["n"] == 1  # single phase — no second call
         assert rc == 0
 
-    def test_no_brief_backward_compat(self, tmp_path, monkeypatch):
-        """No Brief → old single-phase flow (checkpoint on TODO directly)."""
+    def test_single_phase_plan(self, tmp_path, monkeypatch):
+        """Plan stage: one supervisor call, checkpoint previews the TODO."""
         project = tmp_path / "proj"
         inbox = project / ".agentic" / "inbox"
         inbox.mkdir(parents=True)
         (inbox / "TODO-0001.md").write_text("# TODO\n")
         (inbox / "TODO-0001.ready").write_text("")
 
-        checkpoint_called = {"v": False}
+        supervisor_calls = {"n": 0}
+        checkpoint_todos: list[str] = []
 
         def mock_supervisor(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
+            supervisor_calls["n"] += 1
             return "TODO-0001"
 
         def mock_checkpoint(todo_id, project_dir, config, auto, logs_dir):
-            checkpoint_called["v"] = True
+            checkpoint_todos.append(todo_id)
             return 0
 
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", mock_supervisor)
@@ -86,18 +98,53 @@ class TestR5TwoPhasePlan:
             project_dir=project, config={}, logs_dir=tmp_path,
         )
 
-        assert checkpoint_called["v"] is True
+        assert supervisor_calls["n"] == 1
+        assert checkpoint_todos == ["TODO-0001"]
         assert todo == "TODO-0001"
+        assert rc == 0
 
-    def test_brief_checkpoint_rejected_stops_pipeline(self, tmp_path, monkeypatch):
-        """Brief checkpoint rejected → pipeline stops."""
+    def test_pinned_todo_wins_over_newest_active(self, tmp_path, monkeypatch):
+        """NEG-2026-09-19 R1: a caller-pinned TODO (run queue) is kept."""
         project = tmp_path / "proj"
         inbox = project / ".agentic" / "inbox"
         inbox.mkdir(parents=True)
-        (inbox / "BRIEF-TODO-0001.ready").write_text("")
+        (inbox / "TODO-0001.md").write_text("# TODO\n")
+        (inbox / "TODO-0001.ready").write_text("")
+        (inbox / "TODO-0002.md").write_text("# TODO\n")
+        (inbox / "TODO-0002.ready").write_text("")
+
+        checkpoint_todos: list[str] = []
+        monkeypatch.setattr(
+            pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "TODO-0001"
+        )
+        monkeypatch.setattr(
+            pipeline_engine,
+            "_run_plan_checkpoint_gate",
+            lambda todo_id, *a, **kw: checkpoint_todos.append(todo_id) or 0,
+        )
+        monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
+
+        stages = _make_stages()
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=stages[0], current_todo="TODO-0001", auto=False,
+            project_dir=project, config={}, logs_dir=tmp_path,
+        )
+
+        assert todo == "TODO-0001"
+        assert checkpoint_todos == ["TODO-0001"]
+        assert rc == 0
+
+    def test_plan_checkpoint_rejected_stops_pipeline(self, tmp_path, monkeypatch):
+        """Checkpoint rejected → pipeline stops."""
+        project = tmp_path / "proj"
+        inbox = project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text("# TODO\n")
+        (inbox / "TODO-0001.ready").write_text("")
 
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
         monkeypatch.setattr(pipeline_engine, "_run_plan_checkpoint_gate", lambda *a, **kw: 1)
+        monkeypatch.setattr(pipeline_engine, "_find_active_todo", lambda pd: "TODO-0001")
         monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
 
         stages = _make_stages()

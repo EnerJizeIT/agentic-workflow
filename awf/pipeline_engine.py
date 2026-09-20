@@ -484,40 +484,9 @@ def execute_supervisor_stage(
         return current_todo, 0, 1
 
     if s_kind == "plan":
-        # R5: Two-phase plan — Brief → checkpoint → TODO
-        inbox_dir = paths.inbox(project_dir)
-        brief_signals = sorted(inbox_dir.glob("BRIEF-TODO-*.ready")) if inbox_dir.is_dir() else []
-
-        if brief_signals:
-            # R5: Brief detected — run checkpoint on Brief, then write TODO
-            brief_name = brief_signals[0].stem  # BRIEF-TODO-0001
-            current_todo = brief_name.replace("BRIEF-", "")  # TODO-0001
-            print(f"R5: Brief detected for {current_todo}")
-            _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
-
-            rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
-            if rc != 0:
-                return current_todo, 0, rc
-
-            # Phase 2: call supervisor again to write TODO based on approved Brief
-            print("R5: Brief approved — supervisor writing TODO for agent...")
-            _log(logs_dir, f"R5: Brief approved, requesting TODO for {current_todo}")
-            write_todo_stage = Stage(name="write-todo", role="supervisor", kind="plan")
-            try:
-                _run_supervisor_stage(
-                    write_todo_stage, current_todo, auto,
-                    project_dir=project_dir, logs_dir=logs_dir,
-                    pipeline_name=pipeline_name,
-                )
-            except (RuntimeError, TimeoutError) as e:
-                print(f"ERROR: write-todo stage crashed: {e}", file=sys.stderr)
-                return current_todo, 0, 1
-        else:
-            # Backward compat: no Brief, old flow (supervisor wrote TODO directly)
-            rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
-            if rc != 0:
-                return current_todo, 0, rc
-
+        # FU-05: single-phase plan — the contract is the TODO itself. The
+        # two-phase brief flow is gone: stray brief-signal leftovers in the
+        # inbox no longer influence TODO selection (AUD04-03).
         # NEG-2026-09-19 R1: keep the pinned TODO if the caller supplied one
         # (run queue); fall back to "newest active" only when unpinned.
         current_todo = current_todo or _find_active_todo(project_dir)
@@ -525,6 +494,11 @@ def execute_supervisor_stage(
             print("No active TODO found. Create one first, then continue.")
             _log(logs_dir, "No active TODO after supervisor stage")
             return current_todo, 0, 1
+
+        rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
+        if rc != 0:
+            return current_todo, 0, rc
+
         print(f"Active TODO: {current_todo}")
         _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="brief")
         return current_todo, 1, 0  # next stage

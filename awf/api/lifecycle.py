@@ -114,7 +114,7 @@ def init_project(
             "goal": "Спроси пользователя о цели сессии. После ответа — awf_set_goal.",
             "form": "Открой project-setup форму через awf_open_project_setup_form.",
             "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
-            "brief": "Напиши BRIEF-TODO-NNNN.md для user approval.",
+            "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
             "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
             "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
             "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
@@ -254,7 +254,7 @@ def init_project(
         ),
         "form": "Открой project-setup форму через awf_open_project_setup_form.",
         "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
-        "brief": "Изучи vision и план, напиши BRIEF-TODO-NNNN.md для user approval.",
+        "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
         "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
         "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
         "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
@@ -471,7 +471,7 @@ def get_status(project_dir: Path) -> StatusResult:
             "goal": "Спроси пользователя о цели сессии → awf_set_goal.",
             "form": "Открой project-setup форму → awf_open_project_setup_form.",
             "normalize": "Выполни normalize checklist → awf_confirm_normalized.",
-            "brief": "Напиши BRIEF-TODO-NNNN.md → .ready сигнал.",
+            "brief": "Напиши TODO-NNNN.md (awf_dispatch_todo) → .ready сигнал.",
             "init": "Спроси пользователя о цели сессии → awf_set_goal.",
         }
         if current_phase in _PHASE_SUGGESTIONS:

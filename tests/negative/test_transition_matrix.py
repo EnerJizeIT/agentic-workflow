@@ -154,7 +154,7 @@ class TestSignalFileRaceRules:
         (outbox / "DONE-TODO-0001.ready").write_text("", encoding="utf-8")
         (outbox / "DONE-TODO-0001.md").write_text("# done", encoding="utf-8")
         (outbox / "REVIEW-APPROVED-TODO-0001.ready").write_text("", encoding="utf-8")
-        (outbox / "BRIEF-TODO-0002.ready").write_text("", encoding="utf-8")
+        (outbox / "PROGRESS-TODO-0002.md").write_text("# progress\n", encoding="utf-8")
 
         clean_stage_signals(outbox, "TODO-0001", "DONE")
 
@@ -162,7 +162,7 @@ class TestSignalFileRaceRules:
         assert not (outbox / "DONE-TODO-0001.md").exists()
         # Other prefixes and other TODOs survive.
         assert (outbox / "REVIEW-APPROVED-TODO-0001.ready").exists()
-        assert (outbox / "BRIEF-TODO-0002.ready").exists()
+        assert (outbox / "PROGRESS-TODO-0002.md").exists()
 
         # Idempotent: second call must not raise.
         clean_stage_signals(outbox, "TODO-0001", "DONE", "BLOCKED")

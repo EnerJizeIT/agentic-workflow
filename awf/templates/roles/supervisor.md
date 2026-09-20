@@ -52,10 +52,10 @@ Before reading further sections, determine which phase you are in:
 |---|---|---|
 | **init** | `.agentic/` doesn't exist or was just cleaned | Step 0 |
 | **goal** | `.agentic/` exists, no pipeline configured | Step 0b + 0c (goal) |
-| **normalize** | Pipeline configured, no active TODO, no Brief yet | Step 0c (normalize) |
-| **todo** | Normalization done, need to write Brief → TODO | Steps 3-5 |
-| **run** | Pipeline running (check `awf_status`) | Step 6 (idle) |
-| **verify** | User says "pipeline finished" or `awf_status` shows done | Step 7 |
+| **normalize** | Pipeline configured, no active TODO yet | Step 0c (normalize) |
+| **todo** | Normalization done, need to write the TODO | Steps 3-4 |
+| **run** | Pipeline running (check `awf_status`) | Step 5 (idle) |
+| **verify** | User says "pipeline finished" or `awf_status` shows done | Step 6 |
 | **salvage** | `awf_status` shows salvage_needed | Salvage snippet |
 
 **Focus ONLY on your current phase's section.** Do not read the entire document
@@ -292,7 +292,7 @@ The goal determines:
   related to X, not the entire codebase.
 - **What roles to recommend** — analysis → system-analyst + qa-review;
   development → developer + qa; review → project-auditor + qa-review.
-- **Brief content** — the goal becomes the Brief's "Goal" section (Step 3).
+- **TODO content** — the goal becomes the TODO's "Goal" section (Step 3).
 
 Do NOT skip this step even if the project is familiar. A wrong assumption
 about the goal wastes more time than a 30-second question.
@@ -312,15 +312,16 @@ Open the phases file and pick the **nearest unfinished step**. Do not skip ahead
 
 **Principle:** one TODO = one completed increment. The Worker is capable — an increment can include designing and implementing a feature across several files.
 
-### Step 3 · Write Increment Brief
+### Step 3 · Write TODO for agent
 
-R5: Before writing the detailed TODO, write a **Brief** for user approval.
-The Brief is the user-facing contract — concise, human-readable.
+The TODO is the **only contract** — concise, human-readable, and what the
+agent works from. The checkpoint form shows it to the user: they approve,
+edit, or reject before agents start.
 
-Write `.agentic/inbox/BRIEF-TODO-NNNN.md`:
+Write `.agentic/inbox/TODO-NNNN.md`:
 
 ```markdown
-# Brief: <increment title>
+# TODO-NNNN — <increment title>
 
 ## Goal
 What this increment achieves (1-3 sentences).
@@ -335,20 +336,13 @@ What this increment achieves (1-3 sentences).
 - Commands to check success
 ```
 
-Create signal: `.agentic/inbox/BRIEF-TODO-NNNN.ready`
-
-The checkpoint form will show this Brief to the user. They approve or edit it.
-
-### Step 4 · After Brief approval → write TODO for agent
-
-Once the user approves the Brief, write `.agentic/inbox/TODO-NNNN.md` — the
-detailed task for the agent. This is what the agent sees and works from.
+Create signal: `.agentic/inbox/TODO-NNNN.ready`
 
 Include: context, tasks, files to touch, constraints, verify command, done criterion, prohibitions.
 
 **Multi-stage pipeline template** (when 2+ roles share one TODO):
 
-TODO for 1st agent must contain: (1) Goal for the whole iteration (from Brief),
+TODO for 1st agent must contain: (1) Goal for the whole iteration (from the session goal),
 (2) Specific task for THIS stage only, (3) Context about what follows.
 
 ```markdown
@@ -380,13 +374,13 @@ Do NOT: micro-manage the whole pipeline in one TODO.
 4. Mitigation: rephrase TODO to fit the role, or assign to a different role,
    or split the work into multiple TODOs across roles.
 
-### Step 5 · Dispatch TODO (atomic)
+### Step 4 · Dispatch TODO (atomic)
 
 Use `awf_dispatch_todo(project_dir, content, role=...)` — writes TODO-NNNN.md
 + creates BASELINE snapshot + writes .ready signal in ONE call. Replaces
 manual 3-step workflow.
 
-### Step 6 · Start pipeline → dashboard auto-opens → go idle
+### Step 5 · Start pipeline → dashboard auto-opens → go idle
 
 1. `awf_start(project_dir, background=True)` — pipeline launches detached,
    **dashboard opens automatically** (deterministic, no separate call needed).
@@ -398,7 +392,7 @@ manual 3-step workflow.
    the dashboard and writes you when needed.
 
    **When user writes you** (reactive):
-   - "Pipeline finished" / "Done" → check `awf_status`, proceed to Step 7.
+   - "Pipeline finished" / "Done" → check `awf_status`, proceed to Step 6.
    - "Salvage" / "Blocked" / "Checkpoint" → check `awf_status`, act on event.
    - Any question → answer, then go idle again.
 
@@ -406,7 +400,7 @@ manual 3-step workflow.
    costs zero tokens. The dashboard is the monitoring tool — let the user
    use it.
 
-### Step 7 · Verify — YOU are the reviewer, not a relay
+### Step 6 · Verify — YOU are the reviewer, not a relay
 
 When pipeline reaches verify stage, you MUST act as the decision maker.
 Do NOT relay "pipeline waits for your decision" to the user — that's YOUR call.
@@ -473,11 +467,11 @@ If **BLOCKED**:
 
 **Note:** The worker uses the 3-Strike Error Protocol. If it reached attempt 3, the problem is likely not a simple fix — reconsider the approach or escalate to Mode C.
 
-### Step 8 · Commit & push (MANDATORY after an approved increment)
+### Step 7 · Commit & push (MANDATORY after an approved increment)
 
 The worker **never** commits — committing is the supervisor's quality gate. An approved
 iteration is not "done" until its changes are committed **and pushed** to the project
-remote. Do this right after Step 7 approval, every iteration — do not batch multiple
+remote. Do this right after Step 6 approval, every iteration — do not batch multiple
 TODOs into one commit unless they form a single logical increment.
 
 1. **Stage the right files.** Stage the increment's source changes plus the awf

@@ -865,7 +865,7 @@ async def awf_load_supervisor_context(
             "goal": "Ask user for goal → awf_set_goal.",
             "form": "Open project-setup form → awf_open_project_setup_form.",
             "normalize": "Run awf_analyze_roles → awf_confirm_normalized.",
-            "brief": "Write BRIEF-TODO-NNNN.md → .ready signal.",
+            "brief": "Write TODO-NNNN.md (awf_dispatch_todo) → .ready signal.",
             "run": "Pipeline running. GO IDLE — wait for user.",
             "verify": "Read handoffs + git diff → awf_approve.",
             "done": "Pipeline complete. Ask user for next step.",
@@ -1297,7 +1297,7 @@ async def awf_set_goal(
         _NEXT = {
             "form": "Открой project-setup форму через awf_open_project_setup_form.",
             "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
-            "brief": "Напиши BRIEF-TODO-NNNN.md для user approval.",
+            "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
         }
         return {
             "status": "ok", "phase": new_phase, "goal": goal,

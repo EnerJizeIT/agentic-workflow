@@ -1,15 +1,15 @@
 # Phase: verify
 
 ## Your task
-YOU are the reviewer. Read the Brief (contract), check the work, decide.
+YOU are the reviewer. Read the TODO (contract), check the work, decide.
 
 ## Steps
-1. Read BRIEF-{todo_id}.md — this is the user-approved contract.
+1. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
    For EACH success criterion: mark met or not met.
 2. Read ALL handoffs in `.agentic/handoff/`.
 3. Run: `git diff --stat` — check what actually changed.
 4. Read the actual code changes for correctness.
-5. Run verify commands from the Brief.
+5. Run verify commands from the TODO.
 6. DECIDE YOURSELF:
    - ALL criteria met → create `.agentic/inbox/ACK-{todo_id}.ready`
    - ANY criterion not met → write `.agentic/outbox/REVIEW-{todo_id}.md`

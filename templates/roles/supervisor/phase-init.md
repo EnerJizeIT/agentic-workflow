@@ -14,4 +14,4 @@ Initialize awf in the project.
 
 ## Do NOT
 - Do NOT configure pipeline here — that's the form phase.
-- Do NOT write TODO or Brief — that's the brief phase.
+- Do NOT write the TODO — that's the brief phase.

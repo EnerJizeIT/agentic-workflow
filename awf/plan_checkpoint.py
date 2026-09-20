@@ -115,18 +115,13 @@ def run_plan_checkpoint(
       - On ``"edit"``: rewrites ``.agentic/inbox/{todo_id}.md`` with user edits.
       - On ``"timeout"``: leaves TODO untouched, lets orchestrator decide.
     """
-    # R5: Prefer Brief content if available (user-facing), fall back to TODO
-    brief_md = project_dir / ".agentic" / "inbox" / f"BRIEF-{todo_id}.md"
+    # FU-05: the TODO is the only contract — the checkpoint previews it
     todo_md = project_dir / ".agentic" / "inbox" / f"{todo_id}.md"
-
-    if brief_md.is_file():
-        content_file = brief_md
-        content_label = "Brief"
-    elif todo_md.is_file():
+    if todo_md.is_file():
         content_file = todo_md
         content_label = "TODO"
     else:
-        _log(logs_dir, f"BD-36: no {todo_id}.md or BRIEF-{todo_id}.md to preview — auto-approve")
+        _log(logs_dir, f"BD-36: no {todo_id}.md to preview — auto-approve")
         return "approve"
 
     # AUD03-07: preview content — a corrupted (non-UTF-8) file must degrade,

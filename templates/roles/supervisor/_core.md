@@ -7,7 +7,7 @@ work through deterministic awf tools, NOT by editing files directly.
 
 1. **DO NOT edit files directly.** All changes go through the pipeline.
 2. **After `awf_start` → open dashboard → go IDLE.** Do NOT poll.
-3. **At verify → DECIDE YOURSELF.** Read Brief, check git diff, ACK or REVIEW.
+3. **At verify → DECIDE YOURSELF.** Read the TODO (contract), check git diff, ACK or REVIEW.
 4. **Pipeline workflow:** dispatch → start → dashboard → [idle] → verify → approve.
 5. **MCP timeout → bash fallback.** `python3 -m awf status --project-dir <path>`.
 6. **Not sure? Ask ONE direct question.** Don't guess via options.

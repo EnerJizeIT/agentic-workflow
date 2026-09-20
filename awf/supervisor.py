@@ -148,30 +148,29 @@ _SNIPPET_ALWAYS = """\
 """
 
 _SNIPPET_PLAN = """\
-## Plan stage — write Brief first, then TODO after approval
+## Plan stage — write the TODO (single contract)
 1. Study project vision (above) + phases file (.agentic/phases/plan.md)
 2. Determine next uncompleted step toward goal
-3. Write .agentic/inbox/BRIEF-TODO-NNNN.md:
+3. Write .agentic/inbox/TODO-NNNN.md:
    - Goal: what this increment achieves (1-3 sentences)
-   - Success criteria: testable conditions defining "done"
-   - Out of scope: what we explicitly don't do
+   - Tasks: specific, testable steps for the first agent stage
+   - Context: what the agent needs to know about existing code
    - Verify: commands to check success
-4. Create signal: .agentic/inbox/BRIEF-TODO-NNNN.ready
-5. After user approves Brief in checkpoint form, write TODO-NNNN.md
-   (detailed task for agent) and create TODO-NNNN.ready
+4. Create signal: .agentic/inbox/TODO-NNNN.ready
+5. The checkpoint form shows this TODO to the user — approve, edit, or reject
 6. Workers are capable — give autonomy, don't over-specify
 """
 
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
 1. Read ALL handoffs in .agentic/handoff/
-2. Read BRIEF-{todo_id}.md — this is the user-approved contract.
-   For EACH success criterion in the Brief:
+2. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
+   For EACH success criterion in the TODO:
    - Mark ✅ met or ❌ not met
    - If ❌ → you MUST write REVIEW with specifics, not approve
 3. Run: git diff --stat — check what actually changed
 4. Read the actual code changes for correctness
-5. Run verify commands from the Brief independently
+5. Run verify commands from the TODO independently
 6. DECIDE YOURSELF (do NOT ask user):
    - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
    - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
@@ -473,13 +472,6 @@ def wait_for_supervisor_signal(
                 )
                 return sig
             if inbox.is_dir():
-                # R5: Brief signal first (two-phase plan: Brief → checkpoint → TODO)
-                briefs = sorted(inbox.glob("BRIEF-TODO-*.ready"))
-                if briefs:
-                    sig = briefs[0].name.replace(".ready", "")
-                    _log(logs_dir, f"R5: Brief signal detected: {sig}")
-                    return sig
-                # Backward compat: direct TODO signal (no Brief)
                 current = {p.name for p in inbox.glob("TODO-*.ready")}
                 new_ones = current - existing_todo_signals
                 if new_ones:
@@ -682,30 +674,17 @@ def run_supervisor_stage(
     print(f"Phases file: {phases_file}")
     print()
     if kind == "plan":
-        inbox_path = paths.inbox(project_dir)
-        brief_exists = bool(todo_id) and (inbox_path / f"BRIEF-{todo_id}.md").is_file()
-        todo_exists = bool(todo_id) and (inbox_path / f"{todo_id}.md").is_file()
-
-        if brief_exists and not todo_exists:
-            # R5 Phase 2: Brief approved → write TODO for agent
-            print("What to do (write TODO from approved Brief):")
-            print(f"  1. Read BRIEF-{todo_id}.md (user-approved)")
-            print(f"  2. Write detailed agent task to .agentic/inbox/{todo_id}.md")
-            print("     Include: context, tasks, files, verify command, prohibitions")
-            print(f"  3. Create signal: .agentic/inbox/{todo_id}.ready")
-        else:
-            # R5 Phase 1: Write Brief for user approval
-            print("What to do (plan — write Brief):")
-            print("  1. Study the project state and phases file")
-            print("  2. Determine the next step (or review existing TODO if present)")
-            print("  3. Write .agentic/inbox/BRIEF-TODO-NNNN.md:")
-            print("     - Goal: what this increment achieves (1-3 sentences)")
-            print("     - Success criteria: testable conditions defining 'done'")
-            print("     - Out of scope: what we explicitly don't do")
-            print("     - Verify: commands to check success")
-            print("  4. Create signal: .agentic/inbox/BRIEF-TODO-NNNN.ready")
-            print("  5. After user approves Brief in checkpoint form,")
-            print("     write TODO-NNNN.md (detailed task for agent)")
+        print("What to do (plan — write the TODO):")
+        print("  1. Study the project state and phases file")
+        print("  2. Determine the next step (or review existing TODO if present)")
+        print("  3. Write .agentic/inbox/TODO-NNNN.md:")
+        print("     - Goal: what this increment achieves (1-3 sentences)")
+        print("     - Tasks: specific, testable steps for the first agent stage")
+        print("     - Context: what the agent needs to know about existing code")
+        print("     - Verify: commands to check success")
+        print("  4. Create signal: .agentic/inbox/TODO-NNNN.ready")
+        print("  5. The checkpoint form shows the TODO to the user —")
+        print("     they approve, edit, or reject before agents start")
     elif kind == "verify":
         print("What to do (verify):")
         print("  1. Read report from .agentic/outbox/")
@@ -746,23 +725,11 @@ def _prepare_supervisor_stage(
     prompt = ""
 
     if kind == "plan":
-        # R5: detect phase — Brief exists → write TODO; no Brief → write Brief
-        brief_exists = bool(todo_id) and (inbox / f"BRIEF-{todo_id}.md").is_file()
-        if brief_exists:
-            brief_file = inbox / f"BRIEF-{todo_id}.md"
-            extra_files.append(str(brief_file))
-            prompt = (
-                f"Brief {todo_id} was approved by the user. Read BRIEF-{todo_id}.md "
-                f"and write a detailed TODO at .agentic/inbox/{todo_id}.md for the agent. "
-                "Include context, specific tasks, files to touch, verify commands, prohibitions. "
-                f"Then create the signal at .agentic/inbox/{todo_id}.ready."
-            )
-        else:
-            if phases_path.is_file():
-                extra_files.append(str(phases_path))
-            prompt = build_prompt(
-                "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
-            )
+        if phases_path.is_file():
+            extra_files.append(str(phases_path))
+        prompt = build_prompt(
+            "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        )
 
     elif kind == "verify":
         if not todo_id:
@@ -781,16 +748,14 @@ def _prepare_supervisor_stage(
             for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
                 if hf.is_file():
                     extra_files.append(str(hf))
-        # R8: inline Brief content so supervisor sees contract without opening file
-        brief_content = ""
-        brief_path = inbox / f"BRIEF-{todo_id}.md"
-        if brief_path.is_file():
-            brief_content = brief_path.read_text(encoding="utf-8")
+        # R8: the TODO is the contract — forward it as an extra file so the
+        # supervisor sees it without opening the file manually.
+        todo_md = inbox / f"{todo_id}.md"
+        if todo_md.is_file():
+            extra_files.append(str(todo_md))
         prompt = build_prompt(
             "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
         )
-        if brief_content:
-            prompt += f"\n\n---\n## BRIEF (user-approved contract):\n{brief_content}\n---\n"
 
     elif kind == "replan":
         if not todo_id:
