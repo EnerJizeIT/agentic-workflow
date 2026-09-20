@@ -433,6 +433,37 @@ def _decision_signal_fresh(
     return False
 
 
+def _decision_is_stale(
+    path: Path,
+    signal: str,
+    accepted_decision: str | None,
+    accepted_decision_mtime: float | None,
+) -> bool:
+    """U6b: cycle-aware gate for the auto-verify fallback.
+
+    ``accepted_decision``/``accepted_decision_mtime`` is the decision the
+    engine ACCEPTED in a previous verify cycle (recorded at acceptance,
+    cleared at consumption — pipeline_engine._record_verify_decision /
+    _consume_verify_decision). A kill between acceptance and consumption
+    leaves the decision file on disk; the next cycle's fallback would
+    re-accept it by mere existence (auto-commit on a dead approval).
+
+    The leftover is the SAME physical file as the accepted one: same signal
+    name, mtime no newer than the recorded one (whole-second resolution,
+    same convention as _decision_signal_fresh). A newer mtime means the
+    owner re-approved — that is a fresh decision, not the leftover.
+    """
+    if not accepted_decision or accepted_decision_mtime is None:
+        return False
+    if accepted_decision != signal:
+        return False
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    return int(mtime) <= int(accepted_decision_mtime)
+
+
 def wait_for_supervisor_signal(
     kind: str,
     todo_id: str,
@@ -935,7 +966,18 @@ def run_supervisor_via_subprocess(
         _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
         return signal_name
 
-    signal_name = _detect_supervisor_signal(kind, todo_id, inbox, outbox)
+    # U6b: pass the previous cycle's accepted decision (pipeline state) so
+    # the fallback can reject a leftover from a kill between acceptance and
+    # consumption. The watcher path above already cannot fire on it (BD-22
+    # pre-existing snapshot) — the fallback is the only hole.
+    from .pipeline_state import read_state
+
+    prev_state = read_state(project_dir) or {}
+    signal_name = _detect_supervisor_signal(
+        kind, todo_id, inbox, outbox,
+        accepted_decision=prev_state.get("accepted_decision"),
+        accepted_decision_mtime=prev_state.get("accepted_decision_mtime"),
+    )
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
     return signal_name
 
@@ -945,24 +987,39 @@ def _detect_supervisor_signal(
     todo_id: str,
     inbox: Path,
     outbox: Path,
+    accepted_decision: str | None = None,
+    accepted_decision_mtime: float | None = None,
 ) -> str:
     """C1 fix: detect which signal the supervisor actually produced.
 
     For verify: prefers REVIEW (rejection) over ACK/APPROVE — if supervisor
     wrote REVIEW-{todo_id}.md, that's the most recent decision and should
     override any stale ACK.
+
+    U6b: existence alone is NOT acceptance. ``accepted_decision``/
+    ``accepted_decision_mtime`` (from the pipeline state) carry the decision
+    the engine already accepted in a previous cycle; a decision file matching
+    that record at the same or older mtime is the leftover of a killed cycle
+    and is rejected (see _decision_is_stale). A pre-approval with no record
+    (BD-8) and a fresh re-approval (newer mtime) are accepted as before.
     """
     if kind == "verify" and todo_id:
         # Check REVIEW first (most recent decision wins)
         review = outbox / f"REVIEW-{todo_id}.md"
-        if review.exists():
+        if review.exists() and not _decision_is_stale(
+            review, f"REVIEW-{todo_id}", accepted_decision, accepted_decision_mtime
+        ):
             return f"REVIEW-{todo_id}"
         # Then ACK and APPROVE
         ack = inbox / f"ACK-{todo_id}.ready"
-        if ack.exists():
+        if ack.exists() and not _decision_is_stale(
+            ack, f"ACK-{todo_id}", accepted_decision, accepted_decision_mtime
+        ):
             return f"ACK-{todo_id}"
         approve = inbox / f"APPROVE-{todo_id}.ready"
-        if approve.exists():
+        if approve.exists() and not _decision_is_stale(
+            approve, f"APPROVE-{todo_id}", accepted_decision, accepted_decision_mtime
+        ):
             return f"APPROVE-{todo_id}"
     elif kind in ("plan", "replan"):
         # Newest TODO-*.ready by mtime. signal_watch already confirmed at

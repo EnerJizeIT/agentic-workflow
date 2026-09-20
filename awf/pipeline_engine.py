@@ -159,6 +159,52 @@ def _consume_verify_decision(
             pass
         else:
             _log(logs_dir, f"AUD04-04: consumed verify decision {p.name}")
+    # U6b: the decision has been acted on — drop the acceptance record so the
+    # next cycle starts fresh (a fresh re-approval must not be mistaken for
+    # this cycle's leftover).
+    _write_state(
+        project_dir,
+        accepted_decision=None, accepted_decision_mtime=None,
+        logs_dir=logs_dir,
+    )
+
+
+def _record_verify_decision(
+    project_dir: Path,
+    current_todo: str,
+    signal: str,
+    logs_dir: Path,
+) -> None:
+    """U6b: record the accepted verify decision BEFORE the cycle acts on it.
+
+    A kill between acceptance and consumption (AUD04-04) leaves the decision
+    file on disk. This record — signal name + the file's mtime at acceptance,
+    keyed per signal in the pipeline state — is what makes the next verify's
+    fallback (supervisor._detect_supervisor_signal) recognize the leftover as
+    the SAME decision instead of a fresh approval.
+    """
+    if not signal:
+        return
+    if signal.startswith("REVIEW-"):
+        candidates = [paths.outbox(project_dir) / f"REVIEW-{current_todo}.md"]
+    elif signal.startswith(("ACK-", "APPROVE-")):
+        prefix = signal.split("-", 1)[0]
+        candidates = [paths.inbox(project_dir) / f"{prefix}-{current_todo}.ready"]
+    else:
+        return
+    for p in candidates:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        _write_state(
+            project_dir,
+            accepted_decision=signal,
+            accepted_decision_mtime=mtime,
+            logs_dir=logs_dir,
+        )
+        _log(logs_dir, f"U6b: recorded accepted verify decision {p.name} (mtime={mtime})")
+        return
 
 
 def _handle_next(
@@ -562,6 +608,12 @@ def execute_supervisor_stage(
             print(f"ERROR: verify stage produced no supervisor signal for {current_todo}.", file=sys.stderr)
             _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
             return current_todo, 0, 1
+
+        # U6b: record the acceptance BEFORE the cycle acts on it — the commit
+        # gate and the replan live inside the kill window, so the record must
+        # already be in state when they start. A kill before the consumption
+        # below then leaves a file the next verify can recognize as stale.
+        _record_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
 
         if sup_signal.startswith("REVIEW-"):
             rejected_todo = current_todo  # AUD04-04: the REVIEW belongs to THIS todo

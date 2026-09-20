@@ -13,7 +13,7 @@ from . import paths
 from ._atomic import atomic_write_text
 from ._log import log as _log
 from .pipeline import Stage
-from .signals import clean_stage_signals, expected_signal_prefixes
+from .signals import clean_stage_signals, expected_signal_prefixes, read_signal_for_todo
 from .supervisor import (
     build_prompt,
     get_agent_name,
@@ -148,10 +148,22 @@ def run_agent_stage(
     agent_elapsed = time.monotonic() - agent_start
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Agent stage {role} ({kind}) subprocess exited with code {result.returncode}. "
-            f"Cmd: {' '.join(cmd)}"
-        )
+        # U6b: a signal is the stage's contract — the worker's exit code AFTER
+        # a signal is noise (context compaction + tool timeouts can flip rc
+        # without touching the work; observed on TODO-0014: DONE written, rc=1,
+        # pipeline stopped). No signal + rc!=0 stays a failure.
+        present = read_signal_for_todo(outbox, todo_id, *prefixes)
+        if present:
+            _log(
+                logs_dir,
+                f"U6b: signal present ({present}); ignoring worker exit code "
+                f"{result.returncode}",
+            )
+        else:
+            raise RuntimeError(
+                f"Agent stage {role} ({kind}) subprocess exited with code {result.returncode}. "
+                f"Cmd: {' '.join(cmd)}"
+            )
 
     collect_handoff(
         role, todo_id, project_dir, logs_dir,
