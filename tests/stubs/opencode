@@ -9,6 +9,10 @@
 #                  (exercises the orchestrator's auto-DONE path: verify passes
 #                  because tests don't configure a real test_cmd, BUT we leave
 #                  work evidence so detect_work_evidence sees it)
+#   sleep        → sleep AWF_TEST_OPENCODE_SLEEP_SECONDS (default 60), no signal.
+#                  FU-19: keeps a detached pipeline child alive mid-stage so
+#                  the detach mechanics (PID file, state.pipeline_pid,
+#                  kill-by-PID) are observable in-process.
 #
 # Invocation shape (from lib/orchestrator.sh run_agent_stage):
 #   opencode run --auto --agent worker --file .agentic/roles/worker.md \
@@ -75,6 +79,7 @@ case "$BEHAVIOR" in
     blocked)      write_blocked ;;
     noop)         : ;;  # intentional no-op
     auto_done)    write_progress_and_work ;;
+    sleep)        sleep "${AWF_TEST_OPENCODE_SLEEP_SECONDS:-60}" ;;
     *)
         echo "tests/stubs/opencode: unknown AWF_TEST_OPENCODE_BEHAVIOR=$BEHAVIOR" >&2
         exit 1

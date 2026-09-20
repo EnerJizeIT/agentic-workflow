@@ -670,13 +670,18 @@ def reset_runtime(
 ) -> ResetResult:
     """Clean runtime data.
 
-    Modes (mutually exclusive):
-    - ``tasks_only``: clean only inbox + outbox.
-    - ``full``: clean inbox/outbox/context/logs/reports.
+    Modes (mutually exclusive). Every mode also clears ``state/current.yaml``
+    and (when present) ``state/run.yaml`` — a leftover state file is a stale
+    "running" banner / a ghost run (AUD05-02):
+
+    - ``tasks_only``: clean inbox + outbox.
+    - ``full``: clean inbox/outbox/context/logs/reports + handoff/inputs/
+      dashboards (iteration artifacts).
     - ``orphans``: convenience mode — list + remove orphans in one call.
       Prefer :func:`list_orphans` + :func:`remove_orphans` two-step protocol
       when confirmation is needed.
-    - default: clean inbox/outbox/context/logs/reports (keep phases).
+    - default: clean inbox/outbox/context/logs/reports (keep phases,
+      handoff, inputs, dashboards).
     """
     project_dir = Path(project_dir).resolve()
     agentic = project_dir / ".agentic"
@@ -693,6 +698,12 @@ def reset_runtime(
 
     if full or not tasks_only:
         dirs_to_clean = ["inbox", "outbox", "context", "logs", "reports"]
+        if full:
+            # AUD07-03: --full was functionally identical to default (only
+            # the mode label differed — a decoration flag). It now also
+            # cleans iteration artifacts. Default behavior is unchanged —
+            # the AUD05-02 ghost-run regression test locks it.
+            dirs_to_clean += ["handoff", "inputs", "dashboards"]
         mode = "full" if full else "default"
     else:
         dirs_to_clean = ["inbox", "outbox"]
@@ -792,4 +803,8 @@ __all__ = [
     "reset_runtime",
     "list_orphans",
     "remove_orphans",
+    # AUD05-09: restore_todo was exported by awf.api but missing from the
+    # module's own __all__ — the "star import of the declaring module"
+    # contract was broken.
+    "restore_todo",
 ]

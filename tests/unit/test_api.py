@@ -562,6 +562,32 @@ class TestResetRuntime:
         assert "reports" in result.cleaned_dirs
         assert "context" in result.cleaned_dirs
 
+    def test_full_cleans_handoff_inputs_dashboards_default_does_not(self, tmp_git_repo):
+        """AUD07-03: --full must be behaviorally different from default.
+
+        default: inbox/outbox/context/logs/reports (+ state files);
+        full: the same PLUS handoff/inputs/dashboards.
+        """
+        agentic = tmp_git_repo / ".agentic"
+        for d in ["handoff", "inputs", "dashboards"]:
+            (agentic / d).mkdir(parents=True)
+            (agentic / d / "junk.txt").write_text("junk")
+
+        full = api.reset_runtime(tmp_git_repo, full=True)
+        assert {"handoff", "inputs", "dashboards"} <= set(full.cleaned_dirs)
+        for d in ["handoff", "inputs", "dashboards"]:
+            assert not (agentic / d / "junk.txt").exists()
+
+        for d in ["handoff", "inputs", "dashboards"]:
+            (agentic / d).mkdir(parents=True, exist_ok=True)
+            (agentic / d / "junk.txt").write_text("junk")
+        default = api.reset_runtime(tmp_git_repo)
+        assert not ({"handoff", "inputs", "dashboards"} & set(default.cleaned_dirs)), (
+            f"default reset must keep handoff/inputs/dashboards, got {default.cleaned_dirs}"
+        )
+        for d in ["handoff", "inputs", "dashboards"]:
+            assert (agentic / d / "junk.txt").exists()
+
     def test_orphans_removes_active_without_progress(self, tmp_git_repo):
         agentic = tmp_git_repo / ".agentic"
         (agentic / "inbox").mkdir(parents=True)
@@ -1078,3 +1104,61 @@ class TestLogTailDedup:
         from awf.api._helpers import read_log_tail
 
         assert read_log_tail(tmp_path / "nope.log", 5) is None
+
+
+# ─── FU-19 (TODO-0023): Part C — AUD-05 API self-consistency ─────────────
+
+
+class TestApiStarImportSelfConsistency:
+    """AUD05-09: the package must be import-star safe.
+
+    Before FU-19 ``from awf.api import *`` crashed with AttributeError
+    (RejectResult was in ``_results`` but never imported into the package
+    namespace), and several ``__all__`` names (restore_todo) were
+    unreachable. These tests pin the invariant both ways.
+    """
+
+    def test_star_import_does_not_crash(self):
+        ns: dict = {}
+        exec("from awf.api import *", ns)
+        assert "start_pipeline" in ns
+        assert "continue_pipeline" in ns
+        assert "reject_commit" in ns
+        assert "restore_todo" in ns
+
+    def test_all_names_are_reachable(self):
+        """Every name in ``__all__`` must be importable from the package."""
+        import awf.api as m
+
+        missing = [n for n in m.__all__ if not hasattr(m, n)]
+        assert not missing, f"__all__ names missing from package namespace: {missing}"
+
+    def test_result_dataclasses_reachable(self):
+        """The Result dataclasses the tools import must be on the package."""
+        import awf.api as m
+
+        for name in (
+            "StartResult", "RejectResult", "RestoreResult",
+            "RunStartResult", "RunNextResult", "RunFinishResult", "RunStatusResult",
+        ):
+            assert hasattr(m, name), f"awf.api.{name} is not importable from the package"
+
+
+class TestContinueAckInvalidTodo:
+    """AUD07-01: a garbage --ack is a user-caused refusal → exit_code 1.
+
+    State-condition noops (no active TODO, pipeline already running) stay
+    exit_code 0; a typo in --ack is an owner mistake that `set -e` must catch.
+    """
+
+    def test_garbage_ack_returns_exit_code_1(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="Ack")
+        result = api.continue_pipeline(tmp_git_repo, ack="garbage")
+        assert result.exit_code == 1
+        assert "Invalid TODO id for --ack" in result.message
+
+    def test_no_ack_no_active_todo_stays_zero(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="AckNoop")
+        result = api.continue_pipeline(tmp_git_repo)
+        assert result.exit_code == 0
+        assert "No active TODO" in result.message or "no active todo" in result.message.lower()

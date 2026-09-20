@@ -70,7 +70,8 @@ async def awf_init(
     Project name is derived from directory name when not provided.
 
     Args:
-        project_dir: Project root (default: current working directory).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         force: Overwrite existing .agentic/ if present (default: False).
         project_name: Override auto-derived name (default: from dir name).
         test_cmd: Override auto-detected test command.
@@ -106,7 +107,8 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
     """Get current workflow state — active TODOs, progress, blocked, conflicts.
 
     Args:
-        project_dir: Project root (default: current working directory).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: project_name, active_todos (list of {todo_id, ack?,
@@ -127,6 +129,7 @@ async def awf_start(
     from_stage: str | None = None,
     auto: bool = False,
     timeout: int = 3600,
+    todo_id: str = "",
 ) -> dict[str, Any]:
     """Start the pipeline from the beginning.
 
@@ -141,12 +144,16 @@ async def awf_start(
     blocks until completion (can be minutes/hours).
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         background: Detach and return immediately (default: True).
         pipeline: Pipeline name to run (default: from config.yaml).
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
         timeout: Agent stage timeout in seconds (default: 3600).
+        todo_id: Pin the pipeline to a specific TODO (e.g. "TODO-0015").
+            Without it the engine picks the "newest active" TODO — wrong
+            pick when several TODOs are active (AUD08-02).
 
     Returns:
         Dict with: run_mode ("background"|"foreground"|"noop"),
@@ -161,6 +168,8 @@ async def awf_start(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        # AUD08-02: signature parity with api.start_pipeline / CLI --todo.
+        todo_id=todo_id,
     )
     # SMO: deterministic dashboard opening — HTTP server started by orchestrator.
     # Opens HTTP URL (not file://) for smooth live updates via /api/state polling.
@@ -214,11 +223,13 @@ async def awf_continue(
     auto: bool = False,
     timeout: int = 3600,
     ack: str = "",
+    background: bool = True,
 ) -> dict[str, Any]:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         pipeline: Pipeline name to run (default: from config.yaml).
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
@@ -228,6 +239,10 @@ async def awf_continue(
             answer survives process death. Without it, a pending ACK/APPROVE
             is still picked up; a blocked TODO with no answer returns a clear
             instruction instead of "No active TODO found".
+        background: Detach and return immediately (default: True, the API
+            default). Set ``background=False`` to block the call until the
+            pipeline finishes (AUD08-02 — foreground continue was previously
+            impossible from MCP).
 
     Returns:
         Same shape as :func:`awf_start`.
@@ -240,6 +255,8 @@ async def awf_continue(
         auto=auto,
         timeout=timeout,
         ack=ack,
+        # AUD08-02: signature parity with api.continue_pipeline.
+        background=background,
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
         # Open dashboard (same as awf_start)
@@ -272,7 +289,8 @@ async def awf_retry_stage(
     For other restart scenarios, use ``awf_kill`` + ``awf_continue``.
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         pipeline: Pipeline name to run (default: from config.yaml).
         auto: Skip interactive supervisor waits (CI mode).
         timeout: Agent stage timeout in seconds (default: 3600).
@@ -319,7 +337,8 @@ async def awf_run_start(
     only on stop conditions or at the end.
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         queue: Ordered TODO ids to run, e.g. ["TODO-0010", "TODO-0011"].
         budget_minutes: Optional time budget (0 = unlimited).
         stop_flags_json: Optional JSON map of TODO id → [reason], e.g.
@@ -339,10 +358,21 @@ async def awf_run_start(
     if stop_flags_json.strip():
         try:
             parsed = _json.loads(stop_flags_json)
-            if isinstance(parsed, dict):
-                flags = {str(k): list(v) for k, v in parsed.items()}
         except (_json.JSONDecodeError, TypeError):
             return {"status": "error", "error": "stop_flags_json is not valid JSON."}
+        if not isinstance(parsed, dict):
+            # AUD08-16: valid JSON that is not a map (e.g. a list like
+            # ["TODO-0012"]) used to be dropped silently — the run started
+            # with NO stop flags while the owner believed the gate was set.
+            return {
+                "status": "error",
+                "error": (
+                    "stop_flags_json must be a JSON object "
+                    '{TODO-NNNN: [reason]}, e.g. \'{"TODO-0012": ["phase-boundary"]}\' '
+                    f"— got {type(parsed).__name__}"
+                ),
+            }
+        flags = {str(k): list(v) for k, v in parsed.items()}
     result = await _exec(
         api.run_start,
         project_dir=_resolve_project_dir(project_dir),
@@ -414,18 +444,22 @@ async def awf_run_next(
     exhausted / budget / stop flag / two rejections.
 
     Returns:
-        Dict with: action (started/finished/stopped/refused), todo_id, message,
+        Dict with: action (started/stopped/refused), todo_id, message,
         run_mode, run_id, log_file, report_file, next_action.
+
+        AUD08-07: wrapped in ``_exec`` so an AwfApiError/any exception
+        degrades to ``{status: "error", error: ...}`` instead of escaping
+        the tool (this was the only awf_ tool without the error wrapper).
     """
-    result = await asyncio.to_thread(
+    result = await _exec(
         api.run_next,
-        _resolve_project_dir(project_dir),
+        project_dir=_resolve_project_dir(project_dir),
         from_stage=from_stage,
         background=True,
         timeout=timeout,
     )
-    response = _ok(result)
-    if response.get("action") == "started":
+    response = result  # _exec returns {status: ok|error, ...as_dict()}
+    if response.get("status") == "ok" and response.get("action") == "started":
         try:
             import time as _time
             pd = _resolve_project_dir(project_dir)
@@ -467,7 +501,8 @@ async def awf_baseline(
 
     Args:
         todo_id: TODO identifier (e.g. "TODO-0001").
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: todo_id, sha, is_git_repo, files_created (list),
@@ -502,7 +537,8 @@ async def awf_rollback(
 
     Args:
         todo_id: TODO identifier whose baseline to rollback to.
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         mode: "hard" | "soft" | "dry-run" (default: "hard").
 
     Returns:
@@ -548,7 +584,8 @@ async def awf_prove_red(
 
     Args:
         todo_id: TODO identifier (e.g. "TODO-0021").
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         tests: Test files and/or ``file::test`` ids. Default: the
             ``prove_red`` block of the TODO contract.
 
@@ -585,7 +622,8 @@ async def awf_verify_pack(
 
     Args:
         todo_id: TODO identifier (e.g. "TODO-0022").
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: todo_id, verdict, exit_code, measured, report_path,
@@ -616,7 +654,8 @@ async def awf_approve(
 
     Args:
         todo_id: TODO identifier to approve.
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         evidence: SPEC A-run — in run (забег) mode this is REQUIRED: the
             commands you actually ran and your verdict, e.g.
             "pytest -q → 348 passed; ruff → clean; diff checked; verdict: approve".
@@ -660,20 +699,16 @@ async def awf_reject(
     Args:
         todo_id: TODO identifier to reject.
         reason: Why the work is rejected (what needs fixing).
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: todo_id, review_file, next_action.
     """
-    import re as _re
-
-    if not todo_id:
-        return {"status": "error", "error": "todo_id is required"}
-    if not _re.match(r"^TODO-\d{4,}$", todo_id):
-        return {"status": "error", "error": f"invalid todo_id '{todo_id}', expected TODO-NNNN"}
-    if not reason.strip():
-        return {"status": "error", "error": "reason is required"}
-
+    # AUD08-13: the duplicate validation (todo_id regex, reason.strip()) that
+    # lived here is removed — api.reject_commit validates the same way and
+    # raises AwfApiError, which the except below turns into a clean error
+    # dict. One validation layer (the API), like every other wrapper.
     try:
         pd = _resolve_project_dir(project_dir)
         result = api.reject_commit(pd, todo_id, reason)
@@ -713,7 +748,8 @@ async def awf_report(project_dir: str | None = None) -> dict[str, Any]:
     """Generate workflow report — task statuses, git diff, latest test log.
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: project_name, generated_at, items (list of
@@ -737,18 +773,21 @@ async def awf_reset(
 
     Modes (mutually exclusive):
     - ``tasks_only``: clean only inbox + outbox.
-    - ``full``: clean inbox/outbox/context/logs/reports.
+    - ``full``: clean inbox/outbox/context/logs/reports + handoff/inputs/
+      dashboards (iteration artifacts).
     - ``orphans``: remove orphan TODOs (active without progress).
-    - default: clean inbox/outbox/context/logs/reports (keep phases).
+    - default: clean inbox/outbox/context/logs/reports (keep phases,
+      handoff, inputs, dashboards).
 
     **Destructive** — clears runtime state. The ``orphans`` mode in CLI
     asks for confirmation; here we proceed (agent should ask user first
     via a form if confirmation is needed).
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         tasks_only: Clean only inbox + outbox (default: False).
-        full: Clean everything including context/logs/reports (default: False).
+        full: default clean + handoff/inputs/dashboards (default: False).
         orphans: Remove orphan TODOs (default: False).
 
     Returns:
@@ -783,7 +822,8 @@ async def awf_add_role(
 
     Args:
         name: Role slug (e.g. "qa", "reviewer", "auditor").
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         description: One-line role description (default: "new role").
         model: Model ID for this role. If empty, placeholder inserted.
 
@@ -820,7 +860,8 @@ async def awf_analyze_roles(
     (idempotent — replaces existing BD-31 markers).
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         dry_run: If True, return analysis without writing patches.
 
     Returns:
@@ -863,7 +904,8 @@ async def awf_dispatch_todo(
     Args:
         content: TODO markdown body (the task description, Mode A/B/C
             per supervisor.md).
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         role: Optional role hint for debugging. Stored as HTML comment
             in TODO .md. Does NOT affect pipeline routing (that's
             determined by stage order in pipeline.yaml).
@@ -927,7 +969,8 @@ async def awf_load_supervisor_context(
     - Before writing next TODO (full context)
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with all fields of SupervisorContextResult.
@@ -1061,10 +1104,19 @@ async def awf_open_increment_planning_form(
             "status": "error",
             "error": "variants must be a non-empty list of variant dicts",
         }
-    if len(variants) > 6:
+    # AUD08-10: docstring says "2-5 variant dicts" but the code accepted 1
+    # (an anti-interface — a "choice" form with a single card) and up to 6
+    # (the error message itself said 2-5). Validation now matches the
+    # docstring: exactly 2..5.
+    if len(variants) > 5:
         return {
             "status": "error",
             "error": f"too many variants ({len(variants)}) — keep to 2-5 for user clarity",
+        }
+    if len(variants) < 2:
+        return {
+            "status": "error",
+            "error": "at least 2 variants are required — a single card is not a choice",
         }
 
     from .forms import open_form
@@ -1124,11 +1176,27 @@ async def awf_open_pipeline_dashboard(
     """
     p = _resolve_project_dir(project_dir)
     result = await _open_dashboard_browser(p)
+    # AUD08-11: the module contract is that every status:"error" carries an
+    # error message — the old code returned an error dict without one, so
+    # the model could not tell "no dashboard" from "server not up".
+    if result["opened"]:
+        return {
+            "status": "ok",
+            "opened": True,
+            "url": result["url"],
+            "method": result["method"],
+        }
     return {
-        "status": "ok" if result["opened"] else "error",
-        "opened": result["opened"],
-        "url": result["url"],
-        "method": result["method"],
+        "status": "error",
+        "opened": False,
+        "url": "",
+        "method": "none",
+        "error": (
+            "Dashboard could not be opened: no live dashboard server port "
+            "(.agentic/state/dashboard_port) and no generated "
+            ".agentic/dashboards/current.html. Start the pipeline first "
+            "(awf_start) or generate the dashboard, then retry."
+        ),
     }
 
 
@@ -1170,7 +1238,8 @@ async def awf_wait_for_event(
         "mcp": {"agent-workflow-ui": {..., "timeout": 600000}}
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
         timeout: Max seconds to block (default 30 — reactive mode; clamped
             to 600). In a run loop pass suggested_timeout: the call runs in
             a worker thread, long waits do NOT freeze other MCP tools.
@@ -1183,7 +1252,15 @@ async def awf_wait_for_event(
         timeout_clamped (true when the requested timeout exceeded the cap).
     """
     MAX_WAIT = 600
-    requested = int(timeout or 0)
+    # AUD08-07: a non-numeric timeout used to raise ValueError OUTSIDE the
+    # try below — the module contract is "never escape with an exception".
+    try:
+        requested = int(timeout or 0)
+    except (TypeError, ValueError):
+        return {
+            "status": "error",
+            "error": f"timeout must be an integer number of seconds, got {timeout!r}",
+        }
     timeout = max(1, min(requested, MAX_WAIT))
     clamped = requested > MAX_WAIT
     try:
@@ -1264,7 +1341,8 @@ async def awf_check_model_config(
     - Missing models → worker uses opencode default
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: models (list of {role, model, provider, valid, note}),
@@ -1292,7 +1370,8 @@ async def awf_kill(
     still alive, clears state. Use when pipeline is stuck or needs to stop.
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: killed (bool), pid, message.
@@ -1323,7 +1402,8 @@ async def awf_current_step(
     Call this at the START of every interaction to know what to do.
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: phase (str), prompt (str), goal (str|None).
@@ -1359,7 +1439,8 @@ async def awf_set_goal(
 
     Args:
         goal: User's goal for this session (1-3 sentences).
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: phase ("form"), goal (str).
@@ -1395,7 +1476,8 @@ async def awf_confirm_normalized(
     until this is called (gate).
 
     Args:
-        project_dir: Project root (default: cwd).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
         Dict with: phase ("brief").

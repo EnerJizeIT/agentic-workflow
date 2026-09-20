@@ -64,11 +64,17 @@ def run(args: Any) -> int:
         # AUD07-07: dry-run writes nothing and must not ask a single prompt —
         # the five input() calls used to run before this check and blocked
         # on stdin (or swallowed real answers) on `awf init --dry-run`.
-        print("[DRY RUN] Would create:")
-        print("  .agentic/config.yaml (models added by project-setup form)")
-        print("  .agentic/roles/supervisor.md")
-        print("  .agentic/phases/plan.md (stub)")
-        print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
+        # FU-19 (backlog tail): "Would create:" lied when .agentic/ already
+        # existed (R1 branch) — the message must match the branch taken.
+        if (project_dir_path / ".agentic").is_dir():
+            print("[DRY RUN] .agentic/ already exists — the existing project "
+                  "and its runtime are left untouched.")
+        else:
+            print("[DRY RUN] Would create:")
+            print("  .agentic/config.yaml (models added by project-setup form)")
+            print("  .agentic/roles/supervisor.md")
+            print("  .agentic/phases/plan.md (stub)")
+            print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
         print("[DRY RUN] No files written.")
         return 0
 

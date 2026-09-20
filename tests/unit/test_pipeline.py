@@ -286,3 +286,74 @@ class TestLoadStagesWithNonDict:
         pipeline.write_text("stages:\n  - \"a\"\n  - 42\n  - null\n")
         stages = load_stages(pipeline)
         assert stages == []
+
+
+class TestRollbackToKeyScope:
+    """FU-19 (AUD03-02 tail): ``rollback_to:<stage>`` is only resolved on
+    on_blocked/on_rejected. On any other policy key the resolver ignores it,
+    so the loader must say so instead of accepting it silently."""
+
+    def test_rollback_to_on_on_approved_warns(self, tmp_path: Path, capsys) -> None:
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "    on_approved: rollback_to:implement\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "on_approved" in err and "rollback_to" in err
+        # the warning names the keys where rollback_to: actually works
+        assert "on_blocked" in err and "on_rejected" in err
+        # the value is still loaded verbatim — resolver fallback applies
+        assert stages[2].on_approved == "rollback_to:implement"
+
+    def test_rollback_to_on_on_failed_warns(self, tmp_path: Path, capsys) -> None:
+        """on_failed is a reserved key (AUD16-03) — nothing drives it, so a
+        rollback_to: there is dead config and must be flagged."""
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: test\n    role: tester\n    on_failed: rollback_to:implement\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "on_failed" in err and "rollback_to" in err
+        assert stages[2].on_failed == "rollback_to:implement"
+
+    def test_rollback_to_on_supported_key_no_warning(self, tmp_path: Path, capsys) -> None:
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "    on_rejected: rollback_to:implement\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "rollback_to" not in err, err
+        assert stages[2].on_rejected == "rollback_to:implement"
+
+    def test_bad_target_on_supported_key_still_warns(self, tmp_path: Path, capsys) -> None:
+        """Existing target-existence check is untouched: on_rejected pointing
+        at a nonexistent stage still warns."""
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "    on_rejected: rollback_to:ghost\n",
+            encoding="utf-8",
+        )
+        load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "ghost" in err

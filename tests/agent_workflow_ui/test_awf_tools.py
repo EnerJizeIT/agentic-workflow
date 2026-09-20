@@ -648,3 +648,253 @@ class TestWaitForEventClamp:
         assert result["event_type"] == "blocked"
         assert "Worker blocked" in result["next_action"]
         assert "Continue the run loop" not in result["next_action"]
+
+
+# ─── FU-19 (TODO-0023): Part B — AUD-08 wrapper parity ──────────────────
+
+
+class TestAwfStartTodoId:
+    """AUD08-02: awf_start gained todo_id (parity with api.start_pipeline / CLI --todo)."""
+
+    def test_todo_id_is_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_start(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "start_pipeline", spy_start)
+
+        result = run(awf.awf_start(project_dir="/tmp", todo_id="TODO-0015"))
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls and calls[0]["todo_id"] == "TODO-0015"
+
+    def test_todo_id_defaults_empty(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_start(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "start_pipeline", spy_start)
+
+        run(awf.awf_start(project_dir="/tmp"))
+
+        assert calls and calls[0]["todo_id"] == ""
+
+
+class TestAwfContinueBackground:
+    """AUD08-02: awf_continue gained background (API default True — MCP parity)."""
+
+    def test_background_default_true(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_continue(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "continue_pipeline", spy_continue)
+
+        run(awf.awf_continue(project_dir="/tmp"))
+
+        assert calls and calls[0]["background"] is True
+
+    def test_background_false_is_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_continue(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "continue_pipeline", spy_continue)
+
+        run(awf.awf_continue(project_dir="/tmp", background=False))
+
+        assert calls and calls[0]["background"] is False
+
+
+class TestAwfRunNextErrorWrapping:
+    """AUD08-07: run_next went through _exec — no exception may escape the tool."""
+
+    def test_api_error_is_wrapped(self, monkeypatch):
+        def spy_run_next(**kw):
+            raise api.AwfApiError("no active run")
+
+        monkeypatch.setattr(api, "run_next", spy_run_next)
+
+        result = run(awf.awf_run_next(project_dir="/tmp"))
+
+        assert result["status"] == "error"
+        assert "no active run" in result["error"]
+
+    def test_unexpected_error_is_wrapped(self, monkeypatch):
+        def spy_run_next(**kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(api, "run_next", spy_run_next)
+
+        result = run(awf.awf_run_next(project_dir="/tmp"))
+
+        assert result["status"] == "error"
+        assert "RuntimeError" in result["error"]
+
+    def test_refused_action_is_ok_without_dashboard(self, monkeypatch):
+        """A refused launch is a normal outcome (status ok) — and must NOT
+        trigger the dashboard branch (that is for action == started)."""
+        from awf.api import RunNextResult
+
+        def spy_run_next(**kw):
+            return RunNextResult(
+                action="refused", todo_id="TODO-0002", message="previous not finished"
+            )
+
+        monkeypatch.setattr(api, "run_next", spy_run_next)
+
+        result = run(awf.awf_run_next(project_dir="/tmp"))
+
+        assert result["status"] == "ok"
+        assert result["action"] == "refused"
+        assert "dashboard_opened" not in result
+
+
+class TestAwfWaitForEventTimeout:
+    """AUD08-07: a non-numeric timeout must degrade to an error dict."""
+
+    def test_non_numeric_timeout_returns_error(self):
+        result = run(awf.awf_wait_for_event(project_dir="/tmp", timeout="abc"))
+
+        assert result["status"] == "error"
+        assert "timeout must be an integer" in result["error"]
+
+
+class TestIncrementPlanningBoundaries:
+    """AUD08-10: validation now matches the docstring — exactly 2..5 variants."""
+
+    @staticmethod
+    def _variants(n):
+        return [{"id": chr(ord("A") + i), "title": f"V{i}"} for i in range(n)]
+
+    def test_single_variant_rejected(self, plugin_setup, tmp_path):
+        result = run(
+            awf.awf_open_increment_planning_form(
+                variants=self._variants(1), project_dir=str(tmp_path)
+            )
+        )
+        assert result["status"] == "error"
+        assert "at least 2" in result["error"]
+
+    def test_two_variants_ok(self, plugin_setup, tmp_path):
+        result = run(
+            awf.awf_open_increment_planning_form(
+                variants=self._variants(2), project_dir=str(tmp_path)
+            )
+        )
+        assert result["status"] == "ok", result
+        assert result["form_id"].startswith("FORM-")
+
+    def test_five_variants_ok(self, plugin_setup, tmp_path):
+        result = run(
+            awf.awf_open_increment_planning_form(
+                variants=self._variants(5), project_dir=str(tmp_path)
+            )
+        )
+        assert result["status"] == "ok", result
+
+    def test_six_variants_rejected(self, plugin_setup, tmp_path):
+        result = run(
+            awf.awf_open_increment_planning_form(
+                variants=self._variants(6), project_dir=str(tmp_path)
+            )
+        )
+        assert result["status"] == "error"
+        assert "too many" in result["error"]
+
+
+class TestDashboardErrorField:
+    """AUD08-11: every status:"error" from a tool carries an error message."""
+
+    def test_dashboard_failure_has_error_message(self, tmp_path, monkeypatch):
+        # No live server port (absent) + generate_dashboard produces no
+        # current.html (patched to a no-op) → the "cannot open" branch.
+        import awf.api.dashboard as dash_mod
+
+        monkeypatch.setattr(dash_mod, "generate_dashboard", lambda pd: None)
+
+        result = run(awf.awf_open_pipeline_dashboard(project_dir=str(tmp_path)))
+
+        assert result["status"] == "error"
+        assert result["opened"] is False
+        assert result.get("error"), "error dict without an error message"
+        assert "dashboard" in result["error"].lower()
+
+
+class TestRejectSingleValidationLayer:
+    """AUD08-13: validation lives in api.reject_commit; the tool just wraps it."""
+
+    def test_invalid_todo_id_rejected_via_api(self, git_project):
+        result = run(
+            awf.awf_reject("garbage", "reason", project_dir=str(git_project))
+        )
+        assert result["status"] == "error"
+        assert "TODO-NNNN" in result["error"]
+
+    def test_empty_reason_rejected_via_api(self, git_project):
+        result = run(
+            awf.awf_reject("TODO-0001", "   ", project_dir=str(git_project))
+        )
+        assert result["status"] == "error"
+        assert "reason" in result["error"].lower()
+
+    def test_valid_reject_writes_review(self, git_project):
+        api.init_project(git_project, project_name="RejectTest")
+        result = run(
+            awf.awf_reject("TODO-0001", "fix the edge case", project_dir=str(git_project))
+        )
+        assert result["status"] == "ok", result
+        assert (
+            git_project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md"
+        ).is_file()
+
+
+class TestRunStartStopFlags:
+    """AUD08-16: stop_flags_json that is valid JSON but not a map must fail loudly."""
+
+    def test_json_list_rejected(self, git_project):
+        result = run(
+            awf.awf_run_start(
+                project_dir=str(git_project),
+                stop_flags_json='["TODO-0012"]',
+            )
+        )
+        assert result["status"] == "error"
+        assert "JSON object" in result["error"]
+        assert "list" in result["error"]
+
+    def test_invalid_json_rejected(self, git_project):
+        result = run(
+            awf.awf_run_start(
+                project_dir=str(git_project),
+                stop_flags_json="{not json",
+            )
+        )
+        assert result["status"] == "error"
+        assert "not valid JSON" in result["error"]
+
+    def test_valid_map_is_proxied(self, git_project, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_run_start(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "run_start", spy_run_start)
+
+        run(
+            awf.awf_run_start(
+                project_dir=str(git_project),
+                stop_flags_json='{"TODO-0012": ["phase-boundary"]}',
+            )
+        )
+        assert calls
+        assert calls[0]["stop_flags"] == {"TODO-0012": ["phase-boundary"]}

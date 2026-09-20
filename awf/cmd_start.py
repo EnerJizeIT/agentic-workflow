@@ -18,7 +18,12 @@ def run(args: Any) -> int:
     command = getattr(args, "command", "start")
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
 
-    background = command == "start" and getattr(args, "background", False)
+    # AUD07-02: both start and continue accept --background. The API default
+    # for continue is background=True (designed for the MCP agent), so the CLI
+    # passes the flag explicitly: default False = foreground for a human in
+    # the terminal (the old code computed `background` here and then dropped
+    # it on the continue branch — a dead variable).
+    background = getattr(args, "background", False)
 
     if command == "continue":
         # Day-2 B3: no early "No active TODO found" pre-check here — the api
@@ -37,6 +42,7 @@ def run(args: Any) -> int:
                 from_stage=getattr(args, "from_stage", None),
                 auto=getattr(args, "auto", False),
                 timeout=getattr(args, "timeout", 3600),
+                background=background,
                 ack=ack,
             )
         else:
@@ -63,7 +69,11 @@ def run(args: Any) -> int:
 
     if result.run_mode == "noop":
         print(result.message)
-        return 0
+        # AUD07-01: the API encodes the verdict in exit_code (e.g. 1 for the
+        # foreground+checkpoint incompatibility or a user-caused refusal like
+        # a garbage --ack). The CLI used to swallow it and always return 0,
+        # so `awf start && next_step` sailed through a refusal.
+        return result.exit_code if result.exit_code else 0
 
     # Foreground completed — exit code from orchestrator
     if result.exit_code is not None:

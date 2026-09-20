@@ -86,6 +86,12 @@ _POLICY_ALLOWED = {
     "on_failed": {"escalate", "replan"},
 }
 
+# FU-19 (AUD03-02 tail): the policy keys that may carry ``rollback_to:<stage>``
+# — exactly the keys the transition resolver reads the prefix on
+# (awf/transitions.py: on_blocked, on_rejected). On any other key the value
+# is ignored at runtime, so the loader warns instead of accepting silently.
+_ROLLBACK_TO_KEYS = ("on_blocked", "on_rejected")
+
 
 def _compute_kind(position: int, total: int) -> str:
     """BD-29: compute kind from position in the pipeline.
@@ -174,9 +180,12 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     # NEG-2 (dogfood-11): rollback targets must exist. Warn at load time
     # instead of discovering a broken target mid-run (the transition then
     # escalates instead of hard-stopping).
+    # FU-19 (AUD03-02 tail): only the keys the resolver actually reads the
+    # prefix on (on_blocked/on_rejected) get the target-existence check.
     stage_names = {st.name for st in result}
     for st in result:
-        for policy in (st.on_blocked, st.on_rejected, st.on_failed):
+        for pk in _ROLLBACK_TO_KEYS:
+            policy = getattr(st, pk)
             if policy.startswith("rollback_to:"):
                 rb_target = policy.split(":", 1)[1]
                 if rb_target not in stage_names:
@@ -205,13 +214,26 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     # AUD04-02: unknown policy words used to be silently reinterpreted by the
     # resolver (on_approved → "next", on_rejected/on_failed → "escalate"),
     # which hid typos like "on_blocked: halt". Warn at load time.
+    # FU-19 (AUD03-02 tail): rollback_to:<stage> is only allowed on
+    # _ROLLBACK_TO_KEYS — on other keys the resolver ignores it, so warn
+    # (previously any rollback_to: value passed the warning filter silently).
     for st in result:
         for pk in _POLICY_KEYS:
             value = getattr(st, pk)
             if not isinstance(value, str) or not value:
                 continue
             if value.startswith("rollback_to:"):
-                continue  # target existence checked above
+                if pk in _ROLLBACK_TO_KEYS:
+                    continue  # target existence checked above
+                print(
+                    f"WARNING: stage '{st.name}' has {pk}={value!r} — "
+                    f"rollback_to:<stage> is only supported for "
+                    f"{'/'.join(_ROLLBACK_TO_KEYS)} (the transition resolver "
+                    f"ignores it on {pk}). Expected one of: "
+                    f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}.",
+                    file=sys.stderr,
+                )
+                continue
             if value not in _POLICY_ALLOWED[pk]:
                 print(
                     f"WARNING: stage '{st.name}' has {pk}={value!r} — expected one of: "

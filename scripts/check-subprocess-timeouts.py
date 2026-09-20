@@ -19,10 +19,11 @@ Allowlist (honest exceptions, each with its reason):
 - awf/signal_watch.py (1): worker Popen — a hard timeout is enforced by
   the deadline loop (``time.monotonic() + hard_timeout``) that kills the
   whole process group.
-- awf/api/pipeline.py (2): U2 FINDING (2026-09-20): the rollback path's
-  ``git diff`` (dry-run) and ``git reset`` run without timeout. Ratcheted
-  here on purpose — fix it in a follow-up and drop the entry; the gate
-  will fail until the allowlist is updated to match reality.
+
+History: awf/api/pipeline.py (2) carried the U2 FINDING (2026-09-20) —
+the rollback path's ``git diff`` / ``git reset`` ran without timeout.
+Closed in FU-19 (TODO-0023): both calls now carry ``timeout=30`` and
+degrade to AwfApiError.
 """
 
 from __future__ import annotations
@@ -35,7 +36,6 @@ EXPECTED_NO_TIMEOUT: dict[str, int] = {
     "awf/_proc.py": 1,
     "awf/api/_background.py": 1,
     "awf/signal_watch.py": 1,
-    "awf/api/pipeline.py": 2,
 }
 
 MIN_CALL_SITES = 20  # awf/ has 25+ today; below this the gate looks at nothing

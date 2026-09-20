@@ -1291,6 +1291,13 @@ P1 закрытые:
 ✅ `.11` **Subprocess timeouts** — git_utils, context, lifecycle (30s).
 ✅ `.12` **Frontmatter regex** — `[ \t]*` вместо `\s*` (precise delimiter).
 ✅ `.13` **HTTP unicode form_id** — `isascii()` check added.
+✅ `.16` **[HIGH] Entry points coverage** — закрыт (FU-19/TODO-0023).
+   cmd_add_role и cmd_report получили CLI smoke-тесты
+   (`tests/integration/test_cli_entrypoints.py::TestAddRoleEntrypoint`,
+   `::TestReportEntrypoint`): rc 0 + файл на happy-path, rc 1 без traceback
+   на traversal, OK/BLK в `awf report` на живом проекте. cmd_baseline
+   покрывался с 28b30fe (`tests/unit/test_cmd_baseline.py` — shell-инъекции,
+   таймауты). Все entry points из .16 теперь имеют CLI-вход.
 
 P2 закрытые:
 ✅ `.17` **AWF_SUPERVISOR_TIMEOUT** — restored after pipeline.

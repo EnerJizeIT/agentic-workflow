@@ -337,7 +337,8 @@ class RunStatusResult:
 class RunNextResult:
     """Result of :func:`awf.api.run_next`."""
 
-    action: str  # started | finished | stopped | refused
+    # AUD05-09: dead "finished" removed from the contract (never produced).
+    action: str  # started | stopped | refused
     todo_id: str
     message: str
     run_mode: str = ""

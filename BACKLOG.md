@@ -52,11 +52,6 @@
 
 **Status:** закрытые пункты — в архиве; ниже только то, что осталось.
 
-⬜ `.16` **[HIGH] Entry points coverage** — большая часть закрыта (NEG-2026-09-19:
-   cmd_init/status/start/restore/approve/rollback/reset/analyze-roles покрыты
-   реальными CLI smoke-тестами, `tests/integration/test_cli_entrypoints.py`).
-   Остались: cmd_add_role, cmd_baseline, cmd_report.
-
 ⬜ `.24` **[MED] CSRF token** — `http_endpoint.py:94` no Origin/Referer → True.
 ⬜ `.32` **Coverage критических путей** — verify.py 14%, plan_checkpoint.py 21%,
    wait_event.py 22%, _stack.py 27%, context.py 34%, setup.py 39%.

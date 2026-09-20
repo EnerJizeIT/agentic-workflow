@@ -632,13 +632,22 @@ def rollback(
 
     baseline_sha = baseline_sha_file.read_text(encoding="utf-8").strip()
 
-    diff_result = subprocess.run(
-        ["git", "diff", baseline_sha, "--stat"],
-        cwd=str(project_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        diff_result = subprocess.run(
+            ["git", "diff", baseline_sha, "--stat"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            # FU-19 (AUD01-02 tail): the last unbounded git call — contract
+            # docs/contracts/subprocess-timeouts.md.
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AwfApiError(
+            f"git diff timed out after {e.timeout}s — a hung git call blocks "
+            "the rollback. Check the repo state (index.lock, huge diff) and retry."
+        ) from e
     diff_stat = diff_result.stdout
 
     if mode == "dry-run":
@@ -655,7 +664,13 @@ def rollback(
     if git_flag:
         git_cmd.append(git_flag)
     git_cmd.append(baseline_sha)
-    subprocess.run(git_cmd, cwd=str(project_dir), check=True)
+    try:
+        subprocess.run(git_cmd, cwd=str(project_dir), check=True, timeout=30)
+    except subprocess.TimeoutExpired as e:
+        raise AwfApiError(
+            f"git reset timed out after {e.timeout}s — a hung git call leaves "
+            "the repo in an unknown state. Check the repo (index.lock) and retry."
+        ) from e
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     ack_content = (
@@ -874,7 +889,10 @@ def continue_pipeline(
             run_mode="noop",
             run_id=None,
             log_file=None,
-            exit_code=0,
+            # AUD07-01: user-caused refusal (typo in --ack) — non-zero so
+            # `set -e` scripts catch it. State-condition noops (no active
+            # TODO, pipeline already running) stay 0.
+            exit_code=1,
             message=f"Invalid TODO id for --ack: {ack!r} (expected TODO-NNNN).",
         )
     if ack:
