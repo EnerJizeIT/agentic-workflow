@@ -277,7 +277,7 @@ class TestCleanupStaleTempHtml:
         os.utime(stale2, (old_time, old_time))
 
         try:
-            removed = _cleanup_stale_temp_html()
+            removed = _cleanup_stale_temp_html(tmp_path)
             assert removed == 2
             assert not stale1.exists()
             assert not stale2.exists()
@@ -297,7 +297,7 @@ class TestCleanupStaleTempHtml:
         recent.write_text("just created by another awf instance")
 
         try:
-            removed = _cleanup_stale_temp_html()
+            removed = _cleanup_stale_temp_html(tmp_path)
             # Recent file must survive
             assert recent.exists(), "Recent file (<10min) must NOT be removed"
             # removed count may be 0 or include other stale files from
@@ -306,14 +306,14 @@ class TestCleanupStaleTempHtml:
             if recent.exists():
                 recent.unlink()
 
-    def test_returns_zero_when_nothing_to_clean(self):
+    def test_returns_zero_when_nothing_to_clean(self, tmp_path):
         """No stale files — returns 0, no error."""
         # Pre-clean to ensure clean state
         import glob
         for f in glob.glob("/tmp/awf-checkpoint-*.html"):
             Path(f).unlink(missing_ok=True)
 
-        assert _cleanup_stale_temp_html() == 0
+        assert _cleanup_stale_temp_html(tmp_path) == 0
 
     def test_ignores_permission_errors(self, tmp_path, monkeypatch):
         """П7: permission errors are silently ignored (best-effort)."""
@@ -343,7 +343,7 @@ class TestCleanupStaleTempHtml:
 
         try:
             # Must NOT raise — permission errors are caught internally
-            removed = _cleanup_stale_temp_html()
+            removed = _cleanup_stale_temp_html(tmp_path)
             # The file we created counts as removed from glob's perspective,
             # even though unlink failed — that's fine, it's best-effort.
             assert isinstance(removed, int)

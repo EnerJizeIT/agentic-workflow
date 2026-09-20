@@ -217,7 +217,8 @@ class TestP1CheckpointSkip:
         content = "# TODO\nTask\n"
         (inbox / "TODO-0001.md").write_text(content)
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-        (ctx / "checkpoint-approved.hash").write_text(content_hash + "\n")
+        # AUD03-04: entry is keyed "{todo_id}:{hash}"
+        (ctx / "checkpoint-approved.hash").write_text(f"TODO-0001:{content_hash}\n")
 
         result = plan_checkpoint.run_plan_checkpoint(
             "TODO-0001", project, {}, tmp_path, timeout=1
