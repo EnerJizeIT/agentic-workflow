@@ -32,6 +32,15 @@ def add_role(
     """Generate a new role template at ``.agentic/roles/{role_name}.md``."""
     if not role_name:
         raise AwfApiError("role_name is required")
+    # AUD06-06: role_name is public input (MCP awf_add_role / CLI). Normalize
+    # (strip + lowercase) then validate as a slug — "../../x", "a/b" or an
+    # absolute path must not be able to write outside .agentic/roles/.
+    role_name = role_name.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", role_name):
+        raise AwfApiError(
+            f"Invalid role name {role_name!r}: use lowercase letters, digits, "
+            "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
+        )
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
@@ -47,6 +56,12 @@ def add_role(
         model=model,
     )
     role_file = roles_dir / f"{role_name}.md"
+    # AUD06-06: defense in depth — even a slug that passed validation must
+    # resolve back inside roles/ (guards against future validation drift).
+    if not role_file.resolve().is_relative_to(roles_dir.resolve()):
+        raise AwfApiError(
+            f"Invalid role name {role_name!r}: resolves outside .agentic/roles/."
+        )
     atomic_write_text(role_file, content)
 
     return AddRoleResult(

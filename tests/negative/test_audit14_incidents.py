@@ -14,6 +14,12 @@ Findings covered (TODO-0008 / FU-10):
 - AUD01-02: git_utils has_diff/commit_all/is_git_repo have no timeout
 - AUD14-07: preexec_fn does dlopen (CDLL) after fork in a threaded parent
 - AUD04-10: AWF_SUPERVISOR_TIMEOUT env flag not restored on early returns
+
+Findings covered (TODO-0009 / FU-11):
+- AUD14-04: worker log name derived from cmd arg (config agent_name)
+  without sanitization — "../agent-pwn" escapes logs/
+- AUD14-05: pipeline_name (public arg) read outside .agentic/pipelines/
+  via "../evil" — resolve_pipeline_file must validate the name
 """
 from __future__ import annotations
 
@@ -406,3 +412,123 @@ class TestEnvRestoreOnEarlyReturn:
         rc = self._run_with_failing_stage(tmp_path, monkeypatch)
         assert rc == 1
         assert os.environ.get("AWF_SUPERVISOR_TIMEOUT") == "999"
+
+
+# ── AUD14-04: worker log name must be sanitized (config-derived) ─────────
+
+
+class TestWorkerLogNameSanitized:
+    """AUD14-04: ``models.<role>.agent_name`` from config.yaml reaches
+    run_subprocess_until_signal as a cmd arg (``--agent <name>``). The log
+    name is derived from that arg — an unsanitized "../agent-pwn" used to
+    create ``logs/../agent-pwn.out``, one level above logs/."""
+
+    def test_traversal_agent_name_stays_in_logs_dir(self, tmp_path):
+        from awf.signal_watch import run_subprocess_until_signal
+
+        logs_dir = tmp_path / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        cmd = [sys.executable, "-c", "print('worker')", "--agent", "../agent-pwn"]
+
+        run_subprocess_until_signal(cmd=cmd, cwd=tmp_path, logs_dir=logs_dir)
+
+        # no file escaped above logs/
+        assert not (logs_dir.parent / "agent-pwn.out").exists()
+        # a log WAS created (worker output must not be lost), strictly inside
+        logs = sorted(logs_dir.glob("*.out"))
+        assert logs, "worker log missing — output must not be dropped"
+        for p in logs:
+            assert p.resolve().is_relative_to(logs_dir.resolve())
+            assert not p.name.startswith("..")
+        # the run marker is in one of the created logs
+        contents = "\n".join(p.read_text(encoding="utf-8") for p in logs)
+        assert "===== awf run" in contents
+
+    def test_plain_agent_name_unchanged(self, tmp_path):
+        """Sanitization must not rename a well-formed slug."""
+        from awf.signal_watch import run_subprocess_until_signal
+
+        logs_dir = tmp_path / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        cmd = [sys.executable, "-c", "print('worker')", "--agent", "agent-implementer"]
+
+        run_subprocess_until_signal(cmd=cmd, cwd=tmp_path, logs_dir=logs_dir)
+
+        assert (logs_dir / "agent-implementer.out").is_file()
+
+
+# ── AUD14-05: pipeline name must not escape .agentic/pipelines/ ──────────
+
+
+class TestPipelineNameValidation:
+    """AUD14-05: ``pipeline`` is a public arg (awf_start / awf_continue /
+    CLI --pipeline). resolve_pipeline_file used to do
+    ``pipelines_dir / f"{name}.yaml"`` verbatim, so ``"../../evil"`` loaded
+    a YAML from outside the project."""
+
+    def _project(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "proj"
+        (proj / ".agentic" / "pipelines").mkdir(parents=True)
+        (proj / ".agentic" / "config.yaml").write_text("default_pipeline: default\n")
+        (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+            "name: default\nstages:\n  - name: plan\n    role: supervisor\n"
+        )
+        return proj
+
+    def test_dotdot_name_rejected(self, tmp_path):
+        from awf.api._errors import AwfApiError
+        from awf.pipeline import resolve_pipeline_file
+
+        proj = self._project(tmp_path)
+        # the file a traversal WOULD have reached — must never be loadable
+        (tmp_path / "evil.yaml").write_text("name: evil\nstages: []\n")
+        with pytest.raises(AwfApiError):
+            resolve_pipeline_file(proj, "../evil")
+        with pytest.raises(AwfApiError):
+            resolve_pipeline_file(proj, "..")
+
+    def test_slash_name_rejected(self, tmp_path):
+        from awf.api._errors import AwfApiError
+        from awf.pipeline import resolve_pipeline_file
+
+        proj = self._project(tmp_path)
+        with pytest.raises(AwfApiError):
+            resolve_pipeline_file(proj, "a/b")
+
+    def test_valid_names_still_resolve(self, tmp_path):
+        from awf.pipeline import resolve_pipeline_file
+
+        proj = self._project(tmp_path)
+        (proj / ".agentic" / "pipelines" / "custom-name.yaml").write_text(
+            "name: custom-name\nstages: []\n"
+        )
+        assert resolve_pipeline_file(proj, "default").name == "default.yaml"
+        assert resolve_pipeline_file(proj, "custom-name").name == "custom-name.yaml"
+        # AUD14-05 acceptance: a resolved pipeline file is always inside
+        # .agentic/pipelines/ — pin the invariant directly.
+        pipelines = (proj / ".agentic" / "pipelines").resolve()
+        for name in ("default", "custom-name"):
+            assert resolve_pipeline_file(proj, name).resolve().is_relative_to(pipelines)
+
+    def test_start_with_traversal_name_fails_cleanly(self, tmp_path, monkeypatch):
+        """Public entry (run_pipeline) must fail cleanly (rc 1), not crash.
+
+        Pre-fix behavior: "../evil" loaded the external evil.yaml and the
+        pipeline RAN it (rc 0 with the stage neutralized below) — the
+        assertion is that a foreign pipeline must never be executed.
+        """
+        import awf.orchestrator
+        from awf.orchestrator import run_pipeline
+
+        proj = self._project(tmp_path)
+        (tmp_path / "evil.yaml").write_text(
+            "name: evil\nstages:\n  - name: plan\n    role: supervisor\n"
+        )
+        # Neutralize the supervisor stage: if the foreign pipeline is loaded,
+        # the run "completes" (rc 0) instead of failing.
+        monkeypatch.setattr(
+            awf.orchestrator, "execute_supervisor_stage",
+            lambda *a, **k: ("TODO-X", 1, 0),
+        )
+        rc = run_pipeline(_pipeline_args(proj, pipeline="../evil"))
+        assert rc == 1

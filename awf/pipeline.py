@@ -12,6 +12,7 @@ carry an `action:` field — it's read but ignored. kind always wins.
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -223,6 +224,18 @@ def resolve_pipeline_file(
         config = cfg_mod.load(project_dir)
 
     name = pipeline_name or cfg_mod.get(config, "default_pipeline", "default") or "default"
+
+    # AUD14-05: pipeline_name is public input (awf_start(pipeline=...),
+    # awf continue --pipeline, CLI). Reject names that could escape
+    # .agentic/pipelines/ — "../../evil" used to load an external YAML.
+    # Lazy import: awf.api pulls this module at package init.
+    if name in {".", ".."} or not re.fullmatch(r"[\w.-]+", name):
+        from .api._errors import AwfApiError
+
+        raise AwfApiError(
+            f"Invalid pipeline name {name!r}: use letters, digits, '_', '.' or "
+            "'-' (no path separators), e.g. 'default' or 'custom-name'."
+        )
 
     candidate = pipelines_dir / f"{name}.yaml"
     if candidate.exists():

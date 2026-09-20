@@ -144,21 +144,29 @@ def run_subprocess_until_signal(
         # Derive a log file name from the command (role name)
         log_name = "worker-output.out"
         for arg in cmd:
-            if "agent-" in str(arg) and ".md" not in str(arg):
-                log_name = f"{arg}.out"
+            s = str(arg)
+            if "agent-" in s and ".md" not in s:
+                # AUD14-04: the arg comes from config (models.<role>.agent_name)
+                # — public input. Keep only the last path component and
+                # replace anything outside a safe charset, so
+                # "../agent-pwn" cannot escape logs_dir.
+                log_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(s).name) + ".out"
                 break
+        log_path = (logs_dir / log_name).resolve()
+        if not log_path.is_relative_to(logs_dir.resolve()):
+            log_path = (logs_dir / "worker-output.out").resolve()
         # dogfood-11: APPEND instead of overwrite — a retried stage used to
         # erase the previous run's log, so post-mortems lost what the worker
         # actually wrote. Marker line delimits runs for forensics.
         import os as _os
-        worker_log = open(logs_dir / log_name, "a", encoding="utf-8")  # noqa: SIM115
+        worker_log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
         worker_log.write(
             f"\n===== awf run {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
             f"(pid {_os.getpid()}) =====\n"
         )
         worker_log.flush()
         # P2: restrict worker log permissions (may contain sensitive output)
-        _os.chmod(logs_dir / log_name, 0o600)
+        _os.chmod(log_path, 0o600)
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=env or awf_subprocess_env(),

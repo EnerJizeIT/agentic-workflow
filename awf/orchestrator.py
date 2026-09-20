@@ -53,6 +53,10 @@ def run_pipeline(args: Any) -> int:
 
     config = cfg_mod.load(project_dir)
 
+    # AUD14-05: lazy import — cross-imports between core modules stay
+    # function-local to avoid import cycles (see .api.* imports below).
+    from .api._errors import AwfApiError
+
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
@@ -65,6 +69,12 @@ def run_pipeline(args: Any) -> int:
         agent_hard_timeout = None
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
+    except AwfApiError as e:
+        # AUD14-05: invalid --pipeline name (path traversal attempt) —
+        # fail cleanly instead of loading an external YAML.
+        print(f"ERROR: {e}", file=sys.stderr)
+        _log(logs_dir, f"Pipeline file rejected: {e}")
+        return 1
     except FileNotFoundError as e:
         # П5: was a bare error message. Now gives the user a clear next step.
         # Pipeline configuration is created by the project-setup form
