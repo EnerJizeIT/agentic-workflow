@@ -74,45 +74,64 @@ def mark_plan_step_done(
         _log(logs_dir, f"BD-33: no Step N found in {todo_id}.md — skip step update")
         return False
 
-    try:
-        content = plan_path.read_text(encoding="utf-8")
-    except OSError as e:
-        _log(logs_dir, f"BD-33: failed to read {plan_path}: {e}")
-        return False
-
     # Match: '- [ ] Step N:' OR '- [ ] **Step N**:' (any whitespace)
     # Use [ \t] instead of \s to avoid matching across newlines.
     pattern = re.compile(
         r"^([ \t]*-[ \t]*\[[ \t]])(?:[ \t]|\*\*)*Step[ \t]+" + str(step_id) + r"\b",
         re.MULTILINE,
     )
-    match = pattern.search(content)
-    if not match:
-        _log(logs_dir, f"BD-33: no '- [ ] Step {step_id}' in plan.md — skip")
-        return False
 
-    # Replace '[ ]' with '[x]' and append TODO id at end of line
-    line_start = match.start()
-    line_end = content.find("\n", line_start)
-    if line_end == -1:
-        line_end = len(content)
-    original_line = content[line_start:line_end]
+    # AUD14-08: read–modify–write with a re-read guard. A concurrent edit
+    # landing between our read and write used to be silently lost (our
+    # whole-file write won over the fresh content). Re-read just before
+    # writing; if the file changed, reapply the tick to the FRESH content.
+    for _attempt in range(3):
+        try:
+            content = plan_path.read_text(encoding="utf-8")
+        except OSError as e:
+            _log(logs_dir, f"BD-33: failed to read {plan_path}: {e}")
+            return False
 
-    updated_line = original_line.replace("[ ]", "[x]", 1)
-    # Append TODO marker if not already present
-    if todo_id not in updated_line:
-        updated_line = updated_line.rstrip() + f"  — {todo_id}"
+        match = pattern.search(content)
+        if not match:
+            _log(logs_dir, f"BD-33: no '- [ ] Step {step_id}' in plan.md — skip")
+            return False
 
-    new_content = content[:line_start] + updated_line + content[line_end:]
-    # H5 fix: atomic write (was direct write_text — crash mid-write corrupts plan.md).
-    try:
-        from ._atomic import atomic_write_text
-        atomic_write_text(plan_path, new_content)
-        _log(logs_dir, f"BD-33: marked Step {step_id} done in plan.md (TODO {todo_id})")
-        return True
-    except OSError as e:
-        _log(logs_dir, f"BD-33: failed to write {plan_path}: {e}")
-        return False
+        # Replace '[ ]' with '[x]' and append TODO id at end of line
+        line_start = match.start()
+        line_end = content.find("\n", line_start)
+        if line_end == -1:
+            line_end = len(content)
+        original_line = content[line_start:line_end]
+
+        updated_line = original_line.replace("[ ]", "[x]", 1)
+        # Append TODO marker if not already present
+        if todo_id not in updated_line:
+            updated_line = updated_line.rstrip() + f"  — {todo_id}"
+
+        new_content = content[:line_start] + updated_line + content[line_end:]
+
+        try:
+            fresh = plan_path.read_text(encoding="utf-8")
+        except OSError as e:
+            _log(logs_dir, f"BD-33: failed to re-read {plan_path}: {e}")
+            return False
+        if fresh != content:
+            continue  # concurrent edit landed — reapply to fresh content
+
+        # H5 fix: atomic write (was direct write_text — crash mid-write
+        # corrupts plan.md).
+        try:
+            from ._atomic import atomic_write_text
+            atomic_write_text(plan_path, new_content)
+            _log(logs_dir, f"BD-33: marked Step {step_id} done in plan.md (TODO {todo_id})")
+            return True
+        except OSError as e:
+            _log(logs_dir, f"BD-33: failed to write {plan_path}: {e}")
+            return False
+
+    _log(logs_dir, f"BD-33: plan.md kept changing — gave up marking Step {step_id}")
+    return False
 
 
 def print_progress_report(project_dir: Path, logs_dir: Path) -> None:

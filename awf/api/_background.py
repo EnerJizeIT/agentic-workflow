@@ -101,58 +101,26 @@ def check_pipeline_running(
     *,
     log_tail_lines: int = 20,
 ) -> tuple[bool, int | None, str | None]:
-    """Detect a running awf pipeline by reading PID file + os.kill probe.
+    """Detect a running awf pipeline (AUD04-07: shared liveness resolver).
+
+    One code path over BOTH sources — the background PID file AND
+    ``state.pipeline_pid`` — so a foreground pipeline (no PID file) is
+    visible to ``awf status``. Identity is strict: the PID is ours only
+    if its argv is ``... -m awf start|continue ...`` (AUD-8 PID-reuse
+    defense, hardened). Stale PID files (dead/foreign process) are
+    cleaned up by the resolver.
 
     Returns ``(is_running, pid, log_tail)``:
-    - ``is_running``: True if PID file exists AND process is alive.
-    - ``pid``: PID from file, or None.
+    - ``is_running``: True if a live, identity-verified pipeline exists.
+    - ``pid``: the pipeline PID, or None.
     - ``log_tail``: last N lines of ``.agentic/logs/awf-start.out``
       (None if file absent).
-
-    Stale PID files (process exited) are cleaned up automatically.
     """
-    logs_dir = paths.agentic_dir(project_dir) / "logs"
-    pid_file = logs_dir / "awf-start.pid"
-    log_file = logs_dir / "awf-start.out"
+    from ._liveness import resolve
 
-    if not pid_file.is_file():
-        return False, None, read_log_tail(log_file, log_tail_lines)
-
-    try:
-        pid_str = pid_file.read_text(encoding="utf-8").strip()
-        pid = int(pid_str)
-    except (OSError, ValueError):
-        try:
-            pid_file.unlink()
-        except OSError:
-            pass
-        return False, None, read_log_tail(log_file, log_tail_lines)
-
-    try:
-        os.kill(pid, 0)
-        alive = True
-    except (OSError, ProcessLookupError):
-        alive = False
-
-    # AUD-8: PID reuse defense — verify the process is actually an awf pipeline.
-    if alive:
-        cmdline_path = Path(f"/proc/{pid}/cmdline")
-        if cmdline_path.exists():
-            try:
-                cmdline = cmdline_path.read_bytes().decode("utf-8", errors="replace")
-                if "awf" not in cmdline and "python" not in cmdline.lower():
-                    alive = False  # PID reused by unrelated process
-            except OSError:
-                pass
-
-    if not alive:
-        try:
-            pid_file.unlink()
-        except OSError:
-            pass
-        return False, None, read_log_tail(log_file, log_tail_lines)
-
-    return True, pid, read_log_tail(log_file, log_tail_lines)
+    log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
+    running, pid, _source = resolve(project_dir)
+    return running, pid, read_log_tail(log_file, log_tail_lines)
 
 
 __all__ = [

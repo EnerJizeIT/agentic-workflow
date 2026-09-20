@@ -389,9 +389,16 @@ class TestPipelineRunningDetection:
         assert result.pipeline_running is False
         assert not (logs / "awf-start.pid").exists()
 
-    def test_live_pid_detected_as_running(self, tmp_git_repo):
-        """PID file pointing to current process → marked running."""
+    def test_live_pid_detected_as_running(self, tmp_git_repo, monkeypatch):
+        """PID file pointing to current process → marked running.
+
+        AUD04-07: identity is strict (argv must be `-m awf start|continue`),
+        so the test process is made to LOOK like an awf pipeline via the
+        read_cmdline seam.
+        """
         import os
+
+        from awf.api import _liveness
         (tmp_git_repo / ".agentic").mkdir()
         (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
         logs = tmp_git_repo / ".agentic" / "logs"
@@ -399,20 +406,30 @@ class TestPipelineRunningDetection:
         # Use current process PID — guaranteed alive during test
         (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
         (logs / "awf-start.out").write_text("line1\nline2\nline3\n")
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         result = api.get_status(tmp_git_repo)
         assert result.pipeline_running is True
         assert result.pipeline_pid == os.getpid()
         assert result.log_tail is not None
         assert "line3" in result.log_tail
 
-    def test_log_tail_truncated_to_n_lines(self, tmp_git_repo):
+    def test_log_tail_truncated_to_n_lines(self, tmp_git_repo, monkeypatch):
         """log_tail returns last N lines (default 20)."""
         import os
+
+        from awf.api import _liveness
         (tmp_git_repo / ".agentic").mkdir()
         (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
         logs = tmp_git_repo / ".agentic" / "logs"
         logs.mkdir()
         (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         # Write 30 lines
         (logs / "awf-start.out").write_text("\n".join(f"L{i}" for i in range(30)))
         result = api.get_status(tmp_git_repo)

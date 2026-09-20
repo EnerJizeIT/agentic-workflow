@@ -19,6 +19,7 @@ from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
 from ..pipeline_state import read_state
+from . import _liveness
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import require_agentic
@@ -35,50 +36,32 @@ def _read_pid_cmdline(pid: int) -> str | None:
     """Read /proc/<pid>/cmdline; None when the process is gone/unreadable.
 
     Extracted as a seam for tests (PID-reuse race, QA .14).
+    AUD04-07: delegates to the shared liveness module.
     """
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", errors="replace")
-    except OSError:
-        return None
+    return _liveness.read_cmdline(pid)
 
 
 def _is_pipeline_running(project_dir: Path) -> int | None:
-    """DF5-6: Check if a pipeline subprocess is still alive.
+    """DF5-6 + AUD04-07: state-source liveness via the shared resolver.
 
-    Reads ``pipeline_pid`` from state file and probes via ``os.kill(pid, 0)``.
-    QA-4: on Linux, also verifies ``/proc/<pid>/cmdline`` contains ``awf``
-    to guard against PID reuse (another process took the same PID after
-    awf pipeline exited).
-    Returns the live PID, or None if no pipeline / process is dead / PID reused.
+    Reads ``pipeline_pid`` from the state file. Identity is strict: the
+    PID is ours only if its argv is ``... -m awf start|continue ...``
+    (guards against PID reuse; an unreadable /proc never passes).
+    Returns the live PID, or None if no pipeline / process is dead /
+    PID reused.
     """
-    import os
-
     state = read_state(project_dir)
     if not state:
         return None
-    pid = state.get("pipeline_pid")
-    if not pid:
-        return None
     try:
-        pid_int = int(pid)
+        pid_int = int(state.get("pipeline_pid"))
     except (ValueError, TypeError):
         return None
-
-    # QA .14 (NEG-2026-09-19): identity check FIRST, liveness second.
-    # The old order (kill → cmdline read, with an "assume ours" fallback)
-    # let a reused PID pass as our pipeline when /proc was unreadable.
-    cmdline = _read_pid_cmdline(pid_int)
-    if cmdline is None:
-        return None  # dead or unreadable — never assume it is ours
-    if "awf" not in cmdline and "python" not in cmdline.lower():
-        return None  # PID reused by an unrelated process
-
-    try:
-        os.kill(pid_int, 0)
-    except (ProcessLookupError, PermissionError, OSError):
+    if not pid_int:
         return None
-
-    return pid_int
+    if _liveness.pid_is_ours(pid_int, _read_pid_cmdline(pid_int), strict=True):
+        return pid_int
+    return None
 
 
 def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
@@ -349,17 +332,40 @@ def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> Ap
     signal.touch()
 
     # SPEC A-run (second tier): record the verdict in the run diary.
+    # AUD05-05 (rest): computed from the FRESH state inside the lock
+    # (update_run), not from the snapshot read above. If a reject landed
+    # first, this approve must NOT publish verdict='approved' — audit
+    # invariant: 'approved' ⇒ rejects == 0. The reject's diary entry stays.
+    conflict = False
     if run_active:
         from .. import run_state as _run_state
 
-        outcomes = dict((run or {}).get("outcomes") or {})
-        outcomes[todo_id] = {"verdict": "approved"}
-        _run_state.write_run(project_dir, outcomes=outcomes)
+        def _approve_mutator(state: dict) -> dict:
+            nonlocal conflict
+            if not state.get("active"):
+                return state
+            rejects_map = state.get("rejects") or {}
+            if int(rejects_map.get(todo_id, 0) or 0) >= 1:
+                conflict = True
+                return state  # reject won — do not publish 'approved'
+            outcomes = dict(state.get("outcomes") or {})
+            outcomes[todo_id] = {"verdict": "approved"}
+            state["outcomes"] = outcomes
+            return state
+
+        _run_state.update_run(project_dir, _approve_mutator)
 
     return ApproveResult(
         todo_id=todo_id,
         signal_file=str(signal),
         evidence_file=str(evidence_file) if evidence.strip() else "",
+        message=(
+            f"{todo_id}: a rejection already counted for this TODO — the "
+            "verdict stays 'rejected' in the run diary (hard invariant: "
+            "'approved' ⇒ rejects == 0). Resolve the reject first."
+            if conflict
+            else ""
+        ),
     )
 
 
@@ -396,28 +402,42 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
     report_file = ""
     message = f"{todo_id} rejected — REVIEW written."
     if run and run.get("active"):
-        rejects_map = dict(run.get("rejects") or {})
-        rejects = int(rejects_map.get(todo_id, 0) or 0) + 1
-        rejects_map[todo_id] = rejects
-        outcomes = dict(run.get("outcomes") or {})
-        outcomes[todo_id] = {
-            "verdict": "rejected",
-            "reason": reason.strip(),
-            "rejects": rejects,
-        }
-        _run_state.write_run(project_dir, rejects=rejects_map, outcomes=outcomes)
-        message = f"{todo_id} rejected (rejection #{rejects} in this run)."
-        if rejects >= 2:
-            from .run import stop_run
+        # AUD05-05 (rest): count from the FRESH state inside the lock
+        # (update_run). A reject is never lost: the counter always reads
+        # what is on disk at the moment of the write, so a concurrent
+        # approve/finish cannot blank the count that drives the
+        # "rejected twice" gate.
+        def _reject_mutator(state: dict) -> dict:
+            nonlocal rejects
+            if not state.get("active"):
+                return state  # run closed meanwhile — stay legacy (no count)
+            rejects_map = dict(state.get("rejects") or {})
+            rejects = int(rejects_map.get(todo_id, 0) or 0) + 1
+            rejects_map[todo_id] = rejects
+            state["rejects"] = rejects_map
+            outcomes = dict(state.get("outcomes") or {})
+            outcomes[todo_id] = {
+                "verdict": "rejected",
+                "reason": reason.strip(),
+                "rejects": rejects,
+            }
+            state["outcomes"] = outcomes
+            return state
 
-            stopped = stop_run(
-                project_dir,
-                _run_state.read_run(project_dir) or run,
-                f"{todo_id} rejected twice — the task needs the owner",
-            )
-            run_stopped = True
-            report_file = stopped.report_file
-            message += " Run STOPPED: two rejections — the task needs the owner."
+        fresh = _run_state.update_run(project_dir, _reject_mutator)
+        if rejects:
+            message = f"{todo_id} rejected (rejection #{rejects} in this run)."
+            if rejects >= 2:
+                from .run import stop_run
+
+                stopped = stop_run(
+                    project_dir,
+                    fresh,
+                    f"{todo_id} rejected twice — the task needs the owner",
+                )
+                run_stopped = True
+                report_file = stopped.report_file
+                message += " Run STOPPED: two rejections — the task needs the owner."
 
     return RejectResult(
         todo_id=todo_id,
@@ -685,8 +705,9 @@ def start_pipeline(
                 ),
             )
 
-    # DF5-6: refuse to start if a pipeline is already running.
-    live_pid = _is_pipeline_running(project_dir)
+    # DF5-6 + AUD04-07: refuse to start if a pipeline is already running
+    # (shared resolver: background PID file AND state.pipeline_pid).
+    live_pid = _liveness.resolve(project_dir)[1]
     if live_pid and background:
         return StartResult(
             run_mode="noop",
@@ -839,7 +860,8 @@ def continue_pipeline(
 
     # DF6-2: reconcile state before continuing
     _reconcile(project_dir)
-    live_pid = _is_pipeline_running(project_dir)
+    # AUD04-07: shared liveness resolver (PID file + state), same as start.
+    live_pid = _liveness.resolve(project_dir)[1]
     if live_pid:
         return StartResult(
             run_mode="noop",
@@ -1040,7 +1062,8 @@ def kill_pipeline(
     import time as _time
 
     project_dir = Path(project_dir).resolve()
-    pid = _is_pipeline_running(project_dir)
+    # AUD04-07: shared resolver (PID file + state) — same view as status.
+    _running, pid, _source = _liveness.resolve(project_dir)
 
     if not pid:
         # Clear stale state if any (AUD04-08: salvage counter survives)
@@ -1048,32 +1071,43 @@ def kill_pipeline(
         return {"killed": False, "pid": None, "message": "No running pipeline found."}
 
     killed = False
+    signaled = False
     try:
         os.kill(pid, _signal.SIGTERM)
-        # Wait up to 5s for graceful shutdown
-        for _ in range(10):
-            _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except (ProcessLookupError, PermissionError):
-                killed = True
-                break
-            except OSError:
-                killed = True
-                break
+        signaled = True
+    except (ProcessLookupError, PermissionError, OSError):
+        # AUD04-07: the process died between the liveness check and our
+        # signal (a concurrent kill won the race). We did NOT kill it —
+        # claiming success would hide the real killer from the log.
+        signaled = False
 
-        if not killed:
-            os.kill(pid, _signal.SIGKILL)
-            _time.sleep(0.5)
-            killed = True
-    except (ProcessLookupError, PermissionError):
-        killed = True  # already dead
-    except OSError:
-        pass
+    if signaled:
+        try:
+            # Wait up to 5s for graceful shutdown
+            for _ in range(10):
+                _time.sleep(0.5)
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, PermissionError, OSError):
+                    killed = True
+                    break
+
+            if not killed:
+                os.kill(pid, _signal.SIGKILL)
+                _time.sleep(0.5)
+                killed = True
+        except OSError:
+            pass
 
     # Clear state (AUD04-08: salvage counter survives the kill)
     _clear_state_keep_salvage(project_dir)
 
+    if not signaled:
+        return {
+            "killed": False,
+            "pid": pid,
+            "message": f"PID {pid} already exited — nothing was killed.",
+        }
     msg = f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
     return {"killed": killed, "pid": pid, "message": msg}
 

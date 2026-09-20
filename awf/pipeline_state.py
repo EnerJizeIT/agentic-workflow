@@ -65,17 +65,23 @@ def write_state(
     state_path = _state_file(project_dir)
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Merge with existing state
-    current = read_state(project_dir) or {}
-    current.update(fields)
-    # Always update `updated_at` for staleness detection
-    current["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # AUD05-05: merge is read-modify-write — serialize with the same
+    # advisory lock as run_state.write_run so concurrent stage
+    # transitions don't lose each other's fields.
+    from ._lock import locked
 
     try:
-        content = yaml.safe_dump(
-            current, default_flow_style=False, allow_unicode=True, sort_keys=True
-        )
-        atomic_write_text(state_path, content)
+        with locked(project_dir):
+            # Merge with existing state
+            current = read_state(project_dir) or {}
+            current.update(fields)
+            # Always update `updated_at` for staleness detection
+            current["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            content = yaml.safe_dump(
+                current, default_flow_style=False, allow_unicode=True, sort_keys=True
+            )
+            atomic_write_text(state_path, content)
     except OSError as e:
         if logs_dir is not None:
             _log(logs_dir, f"T4.1: state write failed: {e}")

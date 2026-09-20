@@ -102,6 +102,9 @@ class ApproveResult:
     todo_id: str
     signal_file: str
     evidence_file: str = ""
+    # AUD05-05 (rest): non-empty when a concurrent reject won the race and
+    # the verdict stayed 'rejected' (hard invariant: 'approved' ⇒ rejects == 0).
+    message: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

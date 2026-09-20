@@ -247,15 +247,22 @@ class TestResetClearsRun:
 
 
 class TestOrphansGuard:
-    def test_orphans_guard_live_pipeline(self, tmp_git_repo):
+    def test_orphans_guard_live_pipeline(self, tmp_git_repo, monkeypatch):
         proj = _project(tmp_git_repo)
         _activate(proj, "TODO-0001")  # no PROGRESS — looks like an orphan
         _activate(proj, "TODO-0002")
         inbox = proj / ".agentic" / "inbox"
         pid_file = proj / ".agentic" / "logs" / "awf-start.pid"
 
-        # live pipeline (this pytest process is alive and runs python)
+        # live pipeline (this pytest process is alive and runs python);
+        # AUD04-07 strict identity — make it look like an awf pipeline
+        # via the read_cmdline seam.
+        from awf.api import _liveness
         pid_file.write_text(str(os.getpid()), encoding="utf-8")
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         try:
             try:
                 api.remove_orphans(proj, ["TODO-0001"])

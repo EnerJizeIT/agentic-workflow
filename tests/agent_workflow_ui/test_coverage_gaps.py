@@ -60,11 +60,17 @@ class TestAwfKill:
         assert result["status"] == "ok"
         assert result["killed"] is False
 
-    def test_kill_live_pid(self, project):
-        # Use python3 process (PID reuse check requires "python" in cmdline)
+    def test_kill_live_pid(self, project, monkeypatch):
+        # Use python3 process; AUD04-07 strict identity — make it look
+        # like an awf pipeline via the read_cmdline seam.
         proc = subprocess.Popen([__import__("sys").executable, "-c", "import time; time.sleep(300)"])
+        from awf.api import _liveness
         from awf.pipeline_state import write_state
         write_state(project, pipeline_pid=str(proc.pid))
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == proc.pid else None,
+        )
         from agent_workflow_ui.tools.awf import awf_kill
         result = asyncio.run(awf_kill(project_dir=str(project)))
         assert result["status"] == "ok"

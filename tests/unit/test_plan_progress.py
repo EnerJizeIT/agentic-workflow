@@ -164,6 +164,39 @@ class TestMarkPlanStepDone:
         plan = (proj / ".agentic" / "phases" / "plan.md").read_text()
         assert "TODO-0001" in plan
 
+    def test_concurrent_edit_not_lost(self, tmp_path: Path, monkeypatch) -> None:
+        """AUD14-08: a colleague's edit landing between read and write must
+        survive the step-marking (old code overwrote it — whole-file write)."""
+        import time
+
+        proj = _make_proj(tmp_path)
+        todo_path = proj / ".agentic" / "inbox" / "TODO-0001.md"
+        todo_path.write_text("**Phase:** Step 1\n")
+        logs = proj / ".agentic" / "logs"
+        plan_path = proj / ".agentic" / "phases" / "plan.md"
+
+        real_read = Path.read_text
+        state = {"edits": 0}
+
+        def racy_read(self, *a, **kw):
+            result = real_read(self, *a, **kw)
+            if self == plan_path and state["edits"] == 0:
+                # the colleague appends a line right after OUR first read
+                time.sleep(0.02)
+                with open(self, "a", encoding="utf-8") as f:
+                    f.write("\n- colleague edit must survive\n")
+                state["edits"] += 1
+            return result
+
+        monkeypatch.setattr(Path, "read_text", racy_read)
+
+        result = _mark_plan_step_done(proj, "TODO-0001", logs)
+
+        assert result is True
+        plan = plan_path.read_text()
+        assert "- colleague edit must survive" in plan, "concurrent edit was lost"
+        assert "- [x] Step 1: First task  — TODO-0001" in plan
+
 
 # ── _print_progress_report ────────────────────────────────────────────────────
 

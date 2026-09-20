@@ -177,3 +177,34 @@ class TestExtractStageInfoPrefersStateFile:
 
         cur, _nxt, _sig, _lt, _cp, _port, _url = _extract_stage_info(awf_project)
         assert cur is None  # stale state NOT used, no regex fallback
+
+
+class TestWriteStateConcurrency:
+    """AUD05-05: parallel write_state must not lose fields (same lock)."""
+
+    def test_parallel_writes_no_lost_fields(self, awf_project):
+        import threading
+
+        proj = awf_project
+        iters = 50
+        errors: list = []
+
+        def writer(prefix: str) -> None:
+            for i in range(iters):
+                try:
+                    pipeline_state.write_state(proj, **{f"field_{prefix}_{i}": i})
+                except Exception as e:  # noqa: BLE001 — surface in the test
+                    errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("x",))
+        t2 = threading.Thread(target=writer, args=("y",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, errors
+        state = pipeline_state.read_state(proj) or {}
+        for i in range(iters):
+            assert f"field_x_{i}" in state, f"lost field field_x_{i}"
+            assert f"field_y_{i}" in state, f"lost field field_y_{i}"

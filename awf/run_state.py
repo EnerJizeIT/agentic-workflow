@@ -41,15 +41,83 @@ def read_run(project_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _ensure_lock_file(project_dir: Path) -> None:
+    """AUD05-05 (QA): the .lock must hold at least one byte before first use.
+
+    ``locked()`` creates the lock file empty via ``open(..., "a+b")`` on
+    first use; msvcrt.locking (Windows) locks by byte offset, and locking
+    byte 0 of an empty file is unstable. Writing one byte up front — only
+    when the file is absent — makes the Windows path stable. The Linux path
+    is unchanged: flock does not depend on file contents.
+    """
+    state_dir = paths.agentic_dir(project_dir) / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = state_dir / ".lock"
+    if lock_file.is_file():
+        return
+    try:
+        with open(lock_file, "xb") as f:
+            f.write(b"\0")
+    except FileExistsError:
+        pass  # a concurrent caller created it first
+
+
 def write_run(project_dir: Path, **fields) -> dict:
-    """Merge fields into run state and return the merged dict."""
-    state = read_run(project_dir) or {}
-    state.update(fields)
-    atomic_write_text(
-        run_file(project_dir),
-        yaml.safe_dump(state, allow_unicode=True, sort_keys=False),
-    )
+    """Merge fields into run state and return the merged dict.
+
+    AUD05-05: the read → merge → write runs under an advisory lock so
+    concurrent write_run calls (parallel approve/reject, run_next +
+    run_finish) cannot lose each other's updates.
+    """
+    from ._lock import locked
+
+    _ensure_lock_file(project_dir)
+    with locked(project_dir):
+        state = read_run(project_dir) or {}
+        state.update(fields)
+        atomic_write_text(
+            run_file(project_dir),
+            yaml.safe_dump(state, allow_unicode=True, sort_keys=False),
+        )
     return state
+
+
+def update_run(project_dir: Path, mutator) -> dict:
+    """Atomic read → mutate → write in ONE lock hold (AUD05-05, rest).
+
+    ``write_run`` serializes its own RMW, but callers like
+    ``approve_commit`` / ``reject_commit`` / ``run_next`` used to read the
+    state BEFORE the lock and pass whole keys (``outcomes``, ``rejects``,
+    ``index``/``current``) computed from that stale snapshot — the shallow
+    merge then clobbered a concurrent writer's update (supervisor repro:
+    verdict='approved' while rejects>=1). ``update_run`` moves the
+    computation INSIDE the lock: ``mutator`` receives the state exactly as
+    it is on disk at that moment and returns the state to write (mutating
+    the dict in place is enough; returning ``None`` keeps it). A mutator
+    that finds a conflict (e.g. an approve that sees the TODO already
+    rejected) returns the input unchanged — the audit invariant
+    ``'approved' ⇒ rejects == 0`` is enforced by the caller, not by hope.
+
+    Returns the written state.
+    """
+    from ._lock import locked
+
+    _ensure_lock_file(project_dir)
+    with locked(project_dir):
+        state = read_run(project_dir) or {}
+        new_state = mutator(state)
+        if new_state is None:
+            new_state = state
+        if not isinstance(new_state, dict):
+            raise TypeError(
+                "update_run mutator must return a dict (or None) — "
+                f"got {type(new_state).__name__}"
+            )
+        atomic_write_text(
+            run_file(project_dir),
+            yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
+        )
+    return new_state
 
 
 def clear_run(project_dir: Path) -> None:

@@ -436,12 +436,48 @@ def run_next(
         )
 
     # AUD02-02: advance the run position only AFTER a successful launch.
-    completed = list(state.get("completed") or [])
-    if index > 0 and queue[index - 1] not in completed:
-        completed.append(queue[index - 1])
-    run_state.write_run(
-        project_dir, index=index + 1, current=next_id, completed=completed,
-    )
+    # AUD05-05 (rest): the commit is re-checked UNDER THE LOCK. If the run
+    # closed (run_finish / stop_run) during the launch window, the item is
+    # NOT recorded as current: a closed run cannot own the verify cycle of
+    # a launched pipeline. The orphaned pipeline is the accepted
+    # consequence (documented in the result) — the owner inspects it via
+    # awf_status and decides (kill + fresh run, or take it over).
+    advance = {"closed": False}
+
+    def _advance_mutator(st: dict) -> dict:
+        if not st.get("active"):
+            advance["closed"] = True
+            return st
+        completed = list(st.get("completed") or [])
+        if index > 0 and queue[index - 1] not in completed:
+            completed.append(queue[index - 1])
+        st["index"] = index + 1
+        st["current"] = next_id
+        st["completed"] = completed
+        return st
+
+    run_state.update_run(project_dir, _advance_mutator)
+
+    if advance["closed"]:
+        return RunNextResult(
+            action="started",
+            todo_id=next_id,
+            message=(
+                f"Run item {index + 1}/{len(queue)} launched: {next_id} "
+                f"({result.run_mode}) — but the run was closed during the "
+                "launch window, so index/current were NOT recorded. The "
+                "launched pipeline is orphaned (accepted consequence): no "
+                "run will finish its verify cycle."
+            ),
+            run_mode=result.run_mode,
+            run_id=result.run_id,
+            log_file=result.log_file or "",
+            next_action=(
+                "Inspect the orphaned pipeline with awf_status, then decide: "
+                "awf_kill + a fresh run (awf_run_start) to take over its verify "
+                "cycle, or finish the work manually."
+            ),
+        )
 
     return RunNextResult(
         action="started",

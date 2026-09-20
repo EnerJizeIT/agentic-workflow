@@ -434,3 +434,34 @@ class TestRestoreApi:
             todo_id = "TODO-9999"
 
         assert cmd_restore.run(_Args()) == 1
+
+
+class TestRunConcurrency:
+    """AUD05-05: parallel write_run must not lose updates (advisory lock)."""
+
+    def test_parallel_writes_no_lost_updates(self, tmp_git_repo):
+        import threading
+
+        proj = tmp_git_repo
+        iters = 100
+        errors: list = []
+
+        def writer(prefix: str) -> None:
+            for i in range(iters):
+                try:
+                    run_state.write_run(proj, **{f"{prefix}_{i}": i})
+                except Exception as e:  # noqa: BLE001 — surface in the test
+                    errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("a",))
+        t2 = threading.Thread(target=writer, args=("b",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, errors
+        state = run_state.read_run(proj) or {}
+        for i in range(iters):
+            assert f"a_{i}" in state, f"lost update a_{i}"
+            assert f"b_{i}" in state, f"lost update b_{i}"
