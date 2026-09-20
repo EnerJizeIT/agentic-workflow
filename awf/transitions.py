@@ -22,17 +22,14 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
             return ("rollback", policy.split(":", 1)[1])
         return ("escalate", "")
 
-    if sig_type in ("done", "approved", "passed"):
-        if sig_type == "passed":
-            policy = stage.on_passed
-        else:
-            policy = stage.on_approved
+    if sig_type in ("done", "approved"):
+        policy = stage.on_approved
         if policy in ("commit_and_next", "commit_and_report"):
             return (policy, "")
         return ("next", "")
 
-    if sig_type in ("rejected", "failed"):
-        policy = stage.on_rejected if sig_type == "rejected" else stage.on_failed
+    if sig_type == "rejected":
+        policy = stage.on_rejected
         if policy.startswith("rollback_to:"):
             return ("rollback", policy.split(":", 1)[1])
         # Both 'replan' and 'escalate' (default) escalate to supervisor
@@ -43,9 +40,11 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
 
     # Unknown signal — treat as blocked so supervisor gets salvage context
     # (P3: was "stop" which left no recovery path for the supervisor).
+    # AUD16-03: "passed"/"failed" land here too — TEST-PASSED/TEST-FAILED
+    # no longer exist, so the only real types are the ones below.
     msg = (
         f"Unknown signal type {sig_type!r} at stage {stage.name!r} — treating as blocked. "
-        f"Expected one of: done, blocked, approved, rejected, passed, failed."
+        f"Expected one of: done, blocked, approved, rejected."
     )
     import sys
     print(f"WARNING: {msg}", file=sys.stderr)

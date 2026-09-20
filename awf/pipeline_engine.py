@@ -117,6 +117,40 @@ def _ensure_baseline_sha(
 # ─── transition handlers ────────────────────────────────────────────────
 
 
+def _consume_verify_decision(
+    project_dir: Path,
+    current_todo: str,
+    signal: str,
+    logs_dir: Path,
+) -> None:
+    """AUD04-04: consume the verify decision signal once the cycle acted on it.
+
+    Analog of the DONE consumption in execute_agent_stage (NEG-4): a decision
+    file must not survive the cycle that accepted it. Without this, a
+    commit-fail or a kill left the ACK/APPROVE/REVIEW in place, and a
+    re-verify of the same TODO (``awf continue``) re-accepted the old decision
+    — e.g. auto-committing on a dead approval. The mtime gate in
+    wait_for_supervisor_signal is the safety net for files a dead process
+    never got to consume.
+    """
+    if not signal:
+        return
+    if signal.startswith("REVIEW-"):
+        candidates = [paths.outbox(project_dir) / f"REVIEW-{current_todo}.md"]
+    elif signal.startswith(("ACK-", "APPROVE-")):
+        prefix = signal.split("-", 1)[0]
+        candidates = [paths.inbox(project_dir) / f"{prefix}-{current_todo}.ready"]
+    else:
+        return
+    for p in candidates:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        else:
+            _log(logs_dir, f"AUD04-04: consumed verify decision {p.name}")
+
+
 def _handle_next(
     project_dir: Path,
     logs_dir: Path,
@@ -520,6 +554,7 @@ def execute_supervisor_stage(
             return current_todo, 0, 1
 
         if sup_signal.startswith("REVIEW-"):
+            rejected_todo = current_todo  # AUD04-04: the REVIEW belongs to THIS todo
             print(f"Supervisor REJECTED work on {current_todo} (REVIEW signal).", file=sys.stderr)
             _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
             replan_stage = Stage(name="replan", role="supervisor", kind="replan")
@@ -529,12 +564,18 @@ def execute_supervisor_stage(
                 )
             except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
+                _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
                 return current_todo, 0, 1
             new_todo = _find_active_todo(project_dir)
             if new_todo and new_todo != current_todo:
                 current_todo = new_todo
                 # Persist replanned TODO so continue resumes the right task.
                 _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
+            # AUD04-04: consume the REVIEW now that the replan had its chance —
+            # a re-run of the same TODO must not re-trigger replan on it. The
+            # file is keyed to the REJECTED todo (current_todo may have moved
+            # to the replanned one by now).
+            _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
             print("Pipeline stopped: supervisor rejected.", file=sys.stderr)
             return current_todo, 0, 1
 
@@ -553,6 +594,11 @@ def execute_supervisor_stage(
             print(f"  Details: {e}", file=sys.stderr)
             _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
             commit_ok = False
+        # AUD04-04: consume the accepted ACK/APPROVE now that the commit gate
+        # has acted on it — success OR failure. A commit-fail leaves the TODO
+        # active; a re-verify of the same TODO must get a FRESH approval, not
+        # re-open the gate on this cycle's stale one.
+        _consume_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
         if not commit_ok:
             print(
                 f"Commit failed for {current_todo} — TODO NOT archived, "

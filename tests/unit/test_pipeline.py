@@ -103,10 +103,28 @@ class TestLoadStages:
         # NEG-2: escalate is the only safe default — a fixed stage name
         # ('implement') does not exist in role-named generated pipelines.
         assert s.on_rejected == "escalate"
-        assert s.on_passed == "next"
+        # AUD16-03: on_passed is gone (dead TEST-PASSED signal); on_failed
+        # stays as a reserved policy (loader accepts it, nothing drives it).
+        assert not hasattr(s, "on_passed")
         assert s.on_failed == "escalate"
         assert s.max_retries == 1
         assert s.max_rollbacks == 3
+
+    def test_loader_ignores_legacy_on_passed(self, tmp_path, capsys) -> None:
+        """AUD16-03: load_stages does not accept on_passed — a YAML key with
+        that name is dropped (no Stage field, no policy check), while the
+        stage itself loads normally."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    on_passed: commit_and_next\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipe)
+        assert len(stages) == 3
+        assert not hasattr(stages[1], "on_passed")
 
     def test_invalid_policy_word_warns_at_load(self, tmp_path, capsys) -> None:
         """AUD04-02: an unknown policy word must warn at load time instead of

@@ -43,10 +43,12 @@ class TestTransitionMatrix:
     @pytest.mark.parametrize("policy", POLICIES)
     def test_every_signal_yields_valid_action(self, policy):
         for sig in SIGNALS:
+            # AUD16-03: on_passed is off the schema (dead TEST-PASSED); the
+            # "passed"/"failed" strings in SIGNALS exercise the unknown path.
             stage = Stage(
                 name="stage-x", role="worker", kind="execute",
                 on_blocked=policy, on_approved=policy, on_rejected=policy,
-                on_passed=policy, on_failed=policy,
+                on_failed=policy,
             )
             action, target = resolve_transition(stage, sig)
             ctx = f"policy={policy!r} signal={sig!r}"

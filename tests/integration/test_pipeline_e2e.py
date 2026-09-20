@@ -210,8 +210,11 @@ class TestFullPipelineReview:
         # Pipeline should stop after REVIEW
         assert rc == 1, f"Pipeline should stop on REVIEW. rc={rc}"
 
-        # REVIEW file should exist
-        assert (project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md").exists()
+        # AUD04-04: the REVIEW is consumed at the end of the cycle — a stale
+        # file in the outbox would re-trigger replan in a fresh verify.
+        assert not (project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md").exists(), (
+            "stale REVIEW survived the cycle — a fresh verify would re-reject"
+        )
 
         # TODO should NOT be archived (work rejected)
         done_dir = project / ".agentic" / "done" / "TODO-0001"

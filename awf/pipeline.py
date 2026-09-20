@@ -35,7 +35,9 @@ class Stage:
     on_blocked: str = "escalate"
     on_approved: str = "next"
     on_rejected: str = "escalate"
-    on_passed: str = "next"
+    # AUD16-03: reserved — the TEST-FAILED signal it used to drive no longer
+    # exists, so no transition reads this field. Kept (not removed) because
+    # pipeline.yaml files still carry it; the loader keeps accepting it.
     on_failed: str = "escalate"
     max_retries: int = 1
     # AUD03-01: separate budget for rollback transitions (the escalate budget
@@ -56,14 +58,19 @@ _DEFAULTS: dict[str, Any] = {
     # replans. Authors who want a rollback set ``rollback_to:<stage-name>``
     # explicitly (validated with a warning at load).
     "on_rejected": "escalate",
-    "on_passed": "next",
+    # AUD16-03: reserved — accepted from pipeline.yaml (files still carry it),
+    # but no signal drives it: TEST-FAILED no longer exists, so the resolver
+    # never reads this policy.
     "on_failed": "escalate",
     "max_retries": 1,
     "max_rollbacks": 3,
 }
 
+# AUD16-03: on_passed removed — TEST-PASSED never existed as an emitted
+# signal, so its policy had no transition to drive. YAML keys named
+# on_passed are now ignored by the loader.
 _POLICY_KEYS = [
-    "on_blocked", "on_approved", "on_rejected", "on_passed", "on_failed",
+    "on_blocked", "on_approved", "on_rejected", "on_failed",
 ]
 
 # AUD04-02: allowed plain words per policy key (rollback_to:<stage> is
@@ -74,7 +81,8 @@ _POLICY_ALLOWED = {
     "on_blocked": {"escalate", "stop"},
     "on_approved": {"next", "commit_and_next", "commit_and_report"},
     "on_rejected": {"escalate", "replan"},
-    "on_passed": {"next", "commit_and_next", "commit_and_report"},
+    # AUD16-03: reserved — kept in the allowed list so existing pipeline.yaml
+    # files load without warnings; the signal it drove no longer exists.
     "on_failed": {"escalate", "replan"},
 }
 
@@ -195,8 +203,8 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             )
 
     # AUD04-02: unknown policy words used to be silently reinterpreted by the
-    # resolver (on_approved/on_passed → "next", on_rejected/on_failed →
-    # "escalate"), which hid typos like "on_blocked: halt". Warn at load time.
+    # resolver (on_approved → "next", on_rejected/on_failed → "escalate"),
+    # which hid typos like "on_blocked: halt". Warn at load time.
     for st in result:
         for pk in _POLICY_KEYS:
             value = getattr(st, pk)

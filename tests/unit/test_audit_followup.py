@@ -373,8 +373,13 @@ class TestC1PipelineReviewRejection:
         # The C1 fix is that verify stage does NOT call _maybe_commit or _mark_plan_step_done
         # when supervisor returns REVIEW.
         assert not step_marked["v"], "C1: must NOT mark Step done on REVIEW rejection"
-        # Verify the REVIEW file was written
-        assert (outbox / "REVIEW-TODO-0001.md").exists(), "C1: REVIEW file should exist"
+        # AUD04-04: the REVIEW the supervisor wrote is consumed at the end of
+        # the cycle (the replan already had its chance). It must NOT survive —
+        # a fresh verify of the same TODO would otherwise re-reject on it.
+        assert not (outbox / "REVIEW-TODO-0001.md").exists(), (
+            "AUD04-04: stale REVIEW survived the cycle — a fresh cycle would "
+            "re-trigger replan on a dead rejection"
+        )
 
 
 # ── QA: empty sup_signal at verify must abort (not silently approve) ────────

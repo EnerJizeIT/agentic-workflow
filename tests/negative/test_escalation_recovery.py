@@ -63,16 +63,46 @@ class TestReplanWait:
         assert sig == "TODO-0009"
 
     def test_ack_satisfies_wait(self, tmp_path, monkeypatch):
-        """ACK for the current TODO = "accept and continue"."""
+        """ACK for the current TODO = "accept and continue".
+
+        AUD04-04: the ACK is written DURING the wait — the real interactive
+        flow (the supervisor answers after seeing the instructions). A
+        pre-existing ACK is a previous cycle's decision; the mtime gate
+        ignores it (see test_stale_ack_does_not_satisfy_wait).
+        """
         proj = _project(tmp_path)
         _todo(proj, mtime=_time.time() - 1000)
-        (proj / ".agentic" / "inbox" / "ACK-TODO-0009.ready").write_text("", encoding="utf-8")
-        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+        inbox = proj / ".agentic" / "inbox"
+        written = {"n": 0}
+
+        def fake_sleep(*_a, **_kw):
+            if written["n"] == 0:
+                written["n"] = 1
+                (inbox / "ACK-TODO-0009.ready").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr("time.sleep", fake_sleep)
 
         sig = wait_for_supervisor_signal(
             "replan", "TODO-0009", proj, proj / ".agentic" / "logs", timeout=5,
         )
         assert sig == "ACK-TODO-0009"
+
+    def test_stale_ack_does_not_satisfy_wait(self, tmp_path, monkeypatch):
+        """AUD04-04: an ACK left by a previous cycle (mtime predating this
+        wait) must NOT complete the wait — a dead approval is not an answer.
+        Without the mtime gate this returned 'ACK-TODO-0009' instantly."""
+        proj = _project(tmp_path)
+        _todo(proj, mtime=_time.time() - 1000)
+        ack = proj / ".agentic" / "inbox" / "ACK-TODO-0009.ready"
+        ack.write_text("", encoding="utf-8")
+        old = _time.time() - 600
+        os.utime(ack, (old, old))
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        with pytest.raises(TimeoutError):
+            wait_for_supervisor_signal(
+                "replan", "TODO-0009", proj, proj / ".agentic" / "logs", timeout=1,
+            )
 
 
 class TestEscalateOnBlocked:

@@ -400,6 +400,39 @@ def _safe_supervisor_timeout() -> int:
         return 3600
 
 
+def _decision_signal_fresh(
+    path: Path,
+    wall_start: float,
+    stale_logged: set[str],
+    logs_dir: Path,
+) -> bool:
+    """AUD04-04: mtime gate for verify decision signals (ACK/APPROVE/REVIEW).
+
+    A decision file is fresh when it appeared no earlier than the second the
+    wait started. Compared at whole-second resolution on purpose: filesystem
+    mtime granularity can be 1s, and a supervisor answering in the first
+    microseconds of the wait must not be rejected by a strict
+    ``st_mtime > wall_start`` compare (FU-03 QA note). Anything older is a
+    leftover from a previous cycle (commit-fail, kill+continue) and is
+    ignored — otherwise a dead approval would re-open the commit gate.
+    Stale hits are logged once per filename so the poll loop stays quiet.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    if int(mtime) >= int(wall_start):
+        return True
+    if path.name not in stale_logged:
+        stale_logged.add(path.name)
+        _log(
+            logs_dir,
+            f"AUD04-04: stale decision signal ignored: {path.name} "
+            f"(mtime predates this wait — previous cycle's decision)",
+        )
+    return False
+
+
 def wait_for_supervisor_signal(
     kind: str,
     todo_id: str,
@@ -423,6 +456,13 @@ def wait_for_supervisor_signal(
     (created by supervisor before `awf start`, no DONE yet) are picked up
     immediately. Without this, the common workflow "create TODO → awf_start"
     would hang forever waiting for a "new" signal that never arrives.
+
+    AUD04-04: for verify/salvage/replan, decision signals (ACK/APPROVE/REVIEW)
+    must be fresh for THIS wait (mtime >= wait start, whole-second resolution).
+    A file left over from a previous cycle no longer satisfies the wait; it
+    is also consumed by the engine at the end of the cycle that accepted it
+    (pipeline_engine._consume_verify_decision) — the mtime gate is the safety
+    net for files the dead process never got to consume.
     """
     import time
 
@@ -456,6 +496,8 @@ def wait_for_supervisor_signal(
     wall_start = time.time()  # for mtime comparisons (replan signals)
     deadline = start + timeout
     last_log = start
+    # AUD04-04: filenames already logged as stale, to keep the poll quiet.
+    stale_decision_logged: set[str] = set()
 
     while True:
         if kind == "plan":
@@ -480,15 +522,22 @@ def wait_for_supervisor_signal(
                     return sig
 
         if kind in ("verify", "salvage", "replan") and todo_id:
+            # AUD04-04: existence alone is not acceptance — the decision must
+            # be fresh for this wait (a previous cycle's ACK/APPROVE/REVIEW
+            # must not be accepted again).
             for sig_path in (
                 inbox / f"ACK-{todo_id}.ready",
                 inbox / f"APPROVE-{todo_id}.ready",
             ):
-                if sig_path.exists():
+                if sig_path.exists() and _decision_signal_fresh(
+                    sig_path, wall_start, stale_decision_logged, logs_dir
+                ):
                     _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
                     return sig_path.stem
             review = outbox / f"REVIEW-{todo_id}.md"
-            if review.exists():
+            if review.exists() and _decision_signal_fresh(
+                review, wall_start, stale_decision_logged, logs_dir
+            ):
                 _log(logs_dir, f"BD-30: interactive supervisor signal detected: REVIEW-{todo_id}.md")
                 return f"REVIEW-{todo_id}"
 

@@ -284,7 +284,8 @@ def _get_final_stage_commit_policy(project_dir: Path) -> str | None:
     if not stages:
         return None
     last = stages[-1]
-    return last.on_approved or last.on_passed
+    # AUD16-03: on_passed is gone (no TEST-PASSED signal) — on_approved alone.
+    return last.on_approved
 
 
 def _pipeline_exists(project_dir: Path) -> bool:

@@ -27,15 +27,13 @@ class TestResolveTransition:
         action, target = resolve_transition(stage, "approved")
         assert (action, target) == ("next", "")
 
-    def test_passed_next(self) -> None:
-        stage = Stage(name="t", role="tester", on_passed="next")
+    def test_passed_is_a_dead_signal(self) -> None:
+        """AUD16-03: TEST-PASSED was never emitted, on_passed is off the
+        schema — 'passed' is not a known type anymore and escalates."""
+        stage = Stage(name="t", role="tester")
         action, target = resolve_transition(stage, "passed")
-        assert (action, target) == ("next", "")
-
-    def test_passed_commit_and_next(self) -> None:
-        stage = Stage(name="t", role="tester", on_passed="commit_and_next")
-        action, target = resolve_transition(stage, "passed")
-        assert (action, target) == ("commit_and_next", "")
+        assert (action, target) == ("escalate", "")
+        assert not hasattr(stage, "on_passed")
 
     def test_rejected_rollback(self) -> None:
         stage = Stage(name="r", role="rev", on_rejected="rollback_to:implement")
@@ -47,16 +45,18 @@ class TestResolveTransition:
         action, target = resolve_transition(stage, "rejected")
         assert (action, target) == ("escalate", "")
 
-    def test_failed_rollback(self) -> None:
+    def test_failed_is_a_dead_signal(self) -> None:
+        """AUD16-03: TEST-FAILED was never emitted, so 'failed' is not a known
+        type anymore and escalates. on_failed is RESERVED — still accepted by
+        the loader (pipeline.yaml files carry it) but no transition reads it,
+        so even an explicit rollback_to policy has no effect."""
         stage = Stage(name="t", role="tester", on_failed="rollback_to:implement")
         action, target = resolve_transition(stage, "failed")
-        assert (action, target) == ("rollback", "implement")
+        assert (action, target) == ("escalate", "")
 
     def test_failed_default_escalate(self) -> None:
-        """NEG-2: the default for 'failed' is escalate — the old default
-        (rollback_to:implement) pointed at a stage that generated pipelines
-        don't have."""
-        stage = Stage(name="t", role="tester", )
+        """AUD16-03: with the default (reserved) on_failed, 'failed' escalates."""
+        stage = Stage(name="t", role="tester")
         action, target = resolve_transition(stage, "failed")
         assert (action, target) == ("escalate", "")
 

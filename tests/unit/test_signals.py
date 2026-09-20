@@ -24,8 +24,10 @@ class TestSignalType:
             ("BLOCKED-0001", "blocked"),
             ("REVIEW-APPROVED-TODO-0001", "approved"),
             ("REVIEW-REJECTED-TODO-0001", "rejected"),
-            ("TEST-PASSED-TODO-0001", "passed"),
-            ("TEST-FAILED-TODO-0001", "failed"),
+            # AUD16-03: TEST-* are dead signals — nobody ever emitted them,
+            # a stray file classifies as unknown (escalates, like any garbage).
+            ("TEST-PASSED-TODO-0001", "unknown"),
+            ("TEST-FAILED-TODO-0001", "unknown"),
             ("WEIRD-TODO-0001", "unknown"),
             ("RANDOM", "unknown"),
         ],
@@ -38,14 +40,15 @@ class TestExpectedSignalPrefixes:
     """BD-29: prefixes are now kind-based (plan/execute/verify), not action-based."""
 
     def test_execute_returns_full_vocabulary(self) -> None:
-        """Execute-kind stages accept all signal types — role decides what to emit."""
+        """Execute-kind stages accept the real signal set — role decides what to emit."""
         result = expected_signal_prefixes("execute")
         assert "DONE" in result
         assert "BLOCKED" in result
         assert "REVIEW-APPROVED" in result
         assert "REVIEW-REJECTED" in result
-        assert "TEST-PASSED" in result
-        assert "TEST-FAILED" in result
+        # AUD16-03: TEST-* are dead (never emitted) and must not be watched.
+        assert "TEST-PASSED" not in result
+        assert "TEST-FAILED" not in result
 
     def test_plan_returns_empty(self) -> None:
         """Plan stages emit no worker signals (supervisor creates TODO, doesn't signal)."""
@@ -241,6 +244,24 @@ class TestCleanStageSignals:
         clean_stage_signals(outbox, "TODO-0001", "REVIEW-APPROVED", "REVIEW-REJECTED", "BLOCKED")
 
         assert not (outbox / "REVIEW-REJECTED-0001.ready").exists()
+
+    def test_removes_md_ready_typo_form(self, tmp_path: Path) -> None:
+        """AUD01-03: the BD-21 typo form (DONE-*.md.ready) is a VALID signal
+        for read_signal_for_todo, so a stage clean that skipped it left a
+        live signal behind for the next stage."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0001.md.ready").write_text("")
+        (outbox / "DONE-TODO-0001.md").write_text("# done report\n")
+
+        # pre-clean: the typo form is readable as a signal
+        assert read_signal_for_todo(outbox, "TODO-0001", "DONE", "BLOCKED") == "DONE-TODO-0001"
+
+        clean_stage_signals(outbox, "TODO-0001", "DONE", "BLOCKED")
+
+        # criterion: nothing readable for this todo_id survives the clean
+        assert read_signal_for_todo(outbox, "TODO-0001", "DONE", "BLOCKED") is None
+        assert not (outbox / "DONE-TODO-0001.md.ready").exists()
 
     def test_clean_noop_when_missing(self, tmp_path: Path) -> None:
         outbox = tmp_path / "outbox"

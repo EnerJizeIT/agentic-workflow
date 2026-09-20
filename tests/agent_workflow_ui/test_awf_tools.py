@@ -258,6 +258,58 @@ class TestAwfApprove:
         assert "No .agentic/" in result["error"]
 
 
+# ─── awf_reject ─────────────────────────────────────────────────────────
+
+
+class TestAwfReject:
+    def test_reject_writes_review_and_does_not_kill(self, initialized_project, monkeypatch):
+        """AUD08-04: the wrapper used to kill the waiting pipeline right
+        after reject_commit while its docstring promised the engine handles
+        REVIEW → replan itself. The kill is gone — the engine owns the
+        REVIEW transition, so the state is deterministic for
+        pipeline alive/dead × run/not-run."""
+        kill_calls = {"n": 0}
+
+        def spy_kill(*a, **kw):
+            kill_calls["n"] += 1
+
+        monkeypatch.setattr(awf.api, "kill_pipeline", spy_kill)
+
+        result = run(awf.awf_reject(
+            todo_id="TODO-0001",
+            reason="diff has a bug",
+            project_dir=str(initialized_project),
+        ))
+
+        assert result["status"] == "ok"
+        review = initialized_project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md"
+        assert review.is_file(), "REVIEW-{todo}.md must be written to the outbox"
+        assert "diff has a bug" in review.read_text(encoding="utf-8")
+        assert kill_calls["n"] == 0, (
+            "awf_reject killed the pipeline — the docstring (engine handles "
+            "REVIEW → replan) and the behavior must match"
+        )
+        assert "killed" not in result["next_action"].lower()
+
+    def test_reject_requires_reason(self, initialized_project):
+        result = run(awf.awf_reject(
+            todo_id="TODO-0001",
+            reason="   ",
+            project_dir=str(initialized_project),
+        ))
+        assert result["status"] == "error"
+        assert "reason" in result["error"]
+
+    def test_reject_invalid_todo(self, initialized_project):
+        result = run(awf.awf_reject(
+            todo_id="NOT-A-TODO",
+            reason="bad",
+            project_dir=str(initialized_project),
+        ))
+        assert result["status"] == "error"
+        assert "todo_id" in result["error"]
+
+
 # ─── awf_report ─────────────────────────────────────────────────────────
 
 

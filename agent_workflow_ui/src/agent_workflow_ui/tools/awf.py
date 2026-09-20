@@ -573,8 +573,12 @@ async def awf_reject(
 ) -> dict[str, Any]:
     """Reject work at verify stage — creates REVIEW signal for replan.
 
-    Writes REVIEW-{todo_id}.md to outbox + creates signal. Pipeline
-    detects REVIEW → replan (supervisor writes new TODO).
+    Writes REVIEW-{todo_id}.md to outbox + creates signal. The engine owns
+    the REVIEW transition itself: a live pipeline picks the signal up at its
+    verify stage (replan → new TODO → stop), and a stopped pipeline picks it
+    up on the next continue. No pipeline kill here (AUD08-04) — killing the
+    waiting pipeline used to contradict this docstring and left the run in
+    a non-deterministic state.
 
     Args:
         todo_id: TODO identifier to reject.
@@ -597,12 +601,6 @@ async def awf_reject(
         pd = _resolve_project_dir(project_dir)
         result = api.reject_commit(pd, todo_id, reason)
 
-        # awf_kill to stop the waiting pipeline
-        try:
-            api.kill_pipeline(pd)
-        except Exception:
-            pass
-
         if result.run_stopped:
             next_action = (
                 f"{todo_id} rejected twice — RUN STOPPED. Report: {result.report_file}. "
@@ -610,8 +608,11 @@ async def awf_reject(
             )
         else:
             next_action = (
-                f"{result.message} Pipeline killed. Address the cause, then continue "
-                "(run mode: awf_retry_stage or awf_run_next)."
+                f"{result.message} The engine owns the REVIEW transition — do not "
+                "kill the pipeline yourself. If it is alive at the verify stage it "
+                "consumes the REVIEW, replans (new TODO) and stops. If it is stopped, "
+                "the REVIEW stays in the outbox: the next awf_continue reports it, "
+                "so dispatch the refined TODO and continue."
             )
         return {
             "status": "ok",

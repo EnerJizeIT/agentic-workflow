@@ -22,14 +22,15 @@ work through deterministic awf tools, NOT by editing files directly.
 
 ## Signal contract
 
-Workers write signals to `.agentic/outbox/`:
+Workers write to `.agentic/outbox/`:
 - `DONE-{todo}.md` + `.ready` — work complete
 - `BLOCKED-{todo}.md` + `.ready` — need supervisor help
-- `REVIEW-APPROVED` / `REVIEW-REJECTED` — QA verdict
 
-You write signals to `.agentic/inbox/`:
-- `ACK-{todo}.ready` — approve work (verify stage)
-- `APPROVE-{todo}.ready` — auto-commit gate
+You (verify) write:
+- `ACK-{todo}.ready` (`.agentic/inbox/`) — approve the work
+- `APPROVE-{todo}.ready` (`.agentic/inbox/`) — authorize the auto-commit
+- `REVIEW-{todo}.md` (`.agentic/outbox/`) — reject the work; the engine
+  replans on its own and stops (you then write the next TODO)
 
 ## Task description modes
 

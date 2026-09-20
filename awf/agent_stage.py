@@ -112,8 +112,9 @@ def run_agent_stage(
 
     # BD-20: watch for expected signal files in outbox.
     # P1: watch ALL expected prefixes, not just DONE/BLOCKED — otherwise
-    # REVIEW-APPROVED, TEST-PASSED etc. signals aren't detected until
-    # subprocess exits, causing unnecessary delays.
+    # REVIEW-* signals aren't detected until subprocess exits, causing
+    # unnecessary delays. AUD16-03: the prefix list no longer contains the
+    # dead TEST-PASSED/TEST-FAILED signals.
     watch_paths: list[Path] = []
     if todo_id:
         for prefix in expected_signal_prefixes("execute"):

@@ -609,3 +609,106 @@ class TestSalvageEscalation:
         assert "Automatic continue-pushes after the silent exits: 2" in text
         assert "do NOT retry the same scope" in text
         assert "Split the task" in text
+
+
+class TestVerifyDecisionConsumption:
+    """AUD04-04: the accepted verify decision must not survive its cycle.
+
+    Without consume-on-accept a commit-fail (or a kill) left the
+    ACK/APPROVE/REVIEW file in place, and a re-verify of the same TODO
+    re-accepted the old decision — e.g. auto-committing on a dead approval.
+    """
+
+    def _project(self, tmp_path):
+        proj = tmp_path / "proj"
+        for d in ("inbox", "outbox", "context", "logs", "done", "handoff"):
+            (proj / ".agentic" / d).mkdir(parents=True)
+        (proj / ".agentic" / "inbox" / "TODO-0001.md").write_text("# task\n")
+        return proj
+
+    def _verify_stage(self):
+        return Stage(
+            name="verify", role="supervisor", kind="verify",
+            on_approved="commit_and_next",
+        )
+
+    def test_ack_consumed_after_commit_success(self, tmp_path, monkeypatch):
+        proj = self._project(tmp_path)
+        ack = proj / ".agentic" / "inbox" / "ACK-TODO-0001.ready"
+        ack.write_text("")
+
+        monkeypatch.setattr(
+            pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "ACK-TODO-0001"
+        )
+        monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a: "")
+        monkeypatch.setattr(pipeline_engine, "_maybe_commit", lambda *a, **kw: True)
+        monkeypatch.setattr(pipeline_engine, "_mark_plan_step_done", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+        import awf.todos as todos_mod
+
+        monkeypatch.setattr(todos_mod, "archive_todo", lambda *a, **kw: None)
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=proj, config={}, logs_dir=tmp_path,
+        )
+
+        assert rc == 0 and delta == 1
+        assert not ack.exists(), "accepted ACK must be consumed at the end of the cycle"
+
+    def test_ack_consumed_after_commit_fail(self, tmp_path, monkeypatch):
+        """The incident: commit-fail left the approval in the inbox and a
+        re-verify of the same TODO auto-committed on it."""
+        proj = self._project(tmp_path)
+        ack = proj / ".agentic" / "inbox" / "ACK-TODO-0001.ready"
+        ack.write_text("")
+
+        monkeypatch.setattr(
+            pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "ACK-TODO-0001"
+        )
+        monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a: "")
+        monkeypatch.setattr(pipeline_engine, "_maybe_commit", lambda *a, **kw: False)
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=proj, config={}, logs_dir=tmp_path,
+        )
+
+        assert rc == 1, "commit fail stops the pipeline"
+        assert not ack.exists(), (
+            "stale ACK survived the commit-fail — a re-verify of the same TODO "
+            "would auto-commit on a dead approval"
+        )
+
+    def test_review_consumed_after_replan(self, tmp_path, monkeypatch):
+        """A stale REVIEW must not re-trigger replan in a fresh cycle."""
+        proj = self._project(tmp_path)
+        review = proj / ".agentic" / "outbox" / "REVIEW-TODO-0001.md"
+        review.write_text("# rejected\nfix X\n")
+
+        replan_calls = {"n": 0}
+
+        def fake_supervisor(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
+            if stage.kind == "verify":
+                return "REVIEW-TODO-0001"  # the rejection under test
+            assert stage.kind == "replan"
+            replan_calls["n"] += 1
+            return ""
+
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", fake_supervisor)
+        monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_find_active_todo", lambda *a: None)
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=proj, config={}, logs_dir=tmp_path,
+        )
+
+        assert rc == 1 and replan_calls["n"] == 1
+        assert not review.exists(), (
+            "stale REVIEW survived — a fresh cycle would re-replan on it"
+        )
