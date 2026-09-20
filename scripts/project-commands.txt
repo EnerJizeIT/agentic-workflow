@@ -1,0 +1,5 @@
+# Команды проекта для run-all.sh (U2, quality-gates).
+# Одна команда на строку, '#' — комментарий. Падение любой команды
+# красит run-all (pipefail).
+python3 -m pytest tests/ -q -n auto --timeout=300 -p no:cacheprovider
+ruff check .

@@ -28,3 +28,9 @@ jobs:
 
       - name: Ruff check
         run: ruff check .
+
+      - name: Quality gates
+        # U2: контракты (docs/contracts/), храповики (.ratchet-counters),
+        # бюджет инструкций + команды проекта (тесты, линт — повторный
+        # прогон осознанный: run-all = один автономный набор проверок).
+        run: bash scripts/run-all.sh

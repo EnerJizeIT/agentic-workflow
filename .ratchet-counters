@@ -1,0 +1,2 @@
+files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs wc -l | awk '$1>400 && $2!="total"' | wc -l
+todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

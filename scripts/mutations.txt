@@ -1,0 +1,20 @@
+# Мутации для mutation-smoke.sh (U2, quality-gates).
+# Формат: ФАЙЛ @@ ЧТО_ЗАМЕНИТЬ @@ НА_ЧТО @@ КОМАНДА_ТЕСТОВ
+# Одна мутация на строку, замена буквальная (первое вхождение).
+# Запускать на покоящемся дереве, в самом конце (trap-restore).
+
+# Guard pid>1 (инцидент 2026-09-20): фейк pid=1 должен уйти в proc.kill(),
+# а не в killpg(1). Мутация >0 пропускает pid=1 в killpg.
+awf/_proc.py @@ candidate is not None and candidate == proc.pid and proc.pid > 1 @@ candidate is not None and candidate == proc.pid and proc.pid > 0 @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestTimeoutKillsProcessGroup::test_kill_process_tree_never_targets_pid_1 -q
+
+# update_run: mutator обязан видеть состояние С ДИСКА. Мутация передаёт
+# пустой словарь вместо on-disk state.
+awf/run_state.py @@ new_state = mutator(state) @@ new_state = mutator({}) @@ python3 -m pytest tests/negative/test_audit05_incidents.py::TestUpdateRunAtomic::test_mutator_sees_fresh_state -q
+
+# O_EXCL делает claim TODO-NNNN атомарным (AUD14-01): параллельные
+# dispatch не должны дать коллизию id. Мутация убирает атомарность.
+awf/api/dispatch.py @@ os.O_CREAT | os.O_EXCL | os.O_WRONLY @@ os.O_CREAT | os.O_WRONLY @@ python3 -m pytest tests/negative/test_dispatch_concurrency.py::TestParallelDispatch::test_parallel_dispatch_unique_ids_and_content -q
+
+# AUD04-11: git-вызов commit gate обязан нести timeout (зависший hook не
+# должен вешать verify). Мутация убирает timeout из diff-вызова.
+awf/commit_gate.py @@ timeout=30,  # AUD04-11: hung git must not hang the commit gate @@ # AUD04-11: (timeout REMOVED by mutation) @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestCommitGateTimeout::test_commit_gate_git_calls_carry_timeout -q
