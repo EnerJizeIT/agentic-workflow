@@ -212,3 +212,86 @@ class TestBaselineTimeout:
         assert "pip_list" in names, "pip list call not captured"
         for name, t in captured_timeouts:
             assert t is not None and t > 0, f"{name} missing timeout (was None before fix)"
+
+
+class TestBaselineCmd:
+    """U1 (TODO-0011): ``verification.baseline_cmd`` — fast smoke command for
+    the dispatch-time baseline instead of the full test_cmd.
+
+    Absent/empty/blank ``baseline_cmd`` → legacy behavior (test_cmd).
+    """
+
+    def _setup(self, tmp_path: Path, verification_yaml: str) -> Path:
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        agentic = proj / ".agentic"
+        (agentic / "context").mkdir(parents=True)
+        (agentic / "config.yaml").write_text(verification_yaml)
+        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
+        subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
+        (proj / "README.md").write_text("init\n")
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        return proj
+
+    def _run(self, proj: Path, monkeypatch, todo_id: str) -> int:
+        monkeypatch.chdir(proj)
+        args = type("Args", (), {"todo_id": todo_id})()
+        return cmd_baseline.run(args)
+
+    def _tests_log(self, proj: Path, todo_id: str) -> str:
+        return (proj / ".agentic" / "context" / f"BASELINE-{todo_id}.tests.log").read_text()
+
+    def test_baseline_cmd_used_when_set(self, tmp_path: Path, monkeypatch) -> None:
+        """baseline_cmd set → its marker lands in the tests log, test_cmd not run."""
+        proj = self._setup(
+            tmp_path,
+            "verification:\n"
+            "  test_cmd: /bin/echo FULL-SUITE-RUN\n"
+            "  baseline_cmd: /bin/echo U1-SMOKE-MARKER\n",
+        )
+        rc = self._run(proj, monkeypatch, "TODO-0020")
+        assert rc == 0
+        log = self._tests_log(proj, "TODO-0020")
+        assert "U1-SMOKE-MARKER" in log
+        assert "FULL-SUITE-RUN" not in log
+
+    def test_fallback_to_test_cmd_when_absent(self, tmp_path: Path, monkeypatch) -> None:
+        """No baseline_cmd key → test_cmd runs (legacy behavior)."""
+        proj = self._setup(
+            tmp_path,
+            "verification:\n"
+            "  test_cmd: /bin/echo FULL-SUITE-RUN\n",
+        )
+        rc = self._run(proj, monkeypatch, "TODO-0021")
+        assert rc == 0
+        log = self._tests_log(proj, "TODO-0021")
+        assert "FULL-SUITE-RUN" in log
+        assert "U1-SMOKE-MARKER" not in log
+
+    def test_fallback_to_test_cmd_when_empty(self, tmp_path: Path, monkeypatch) -> None:
+        """baseline_cmd: '' → test_cmd runs."""
+        proj = self._setup(
+            tmp_path,
+            "verification:\n"
+            "  test_cmd: /bin/echo FULL-SUITE-RUN\n"
+            "  baseline_cmd: ''\n",
+        )
+        rc = self._run(proj, monkeypatch, "TODO-0022")
+        assert rc == 0
+        log = self._tests_log(proj, "TODO-0022")
+        assert "FULL-SUITE-RUN" in log
+
+    def test_fallback_to_test_cmd_when_blank(self, tmp_path: Path, monkeypatch) -> None:
+        """baseline_cmd: '   ' (whitespace) → test_cmd runs."""
+        proj = self._setup(
+            tmp_path,
+            "verification:\n"
+            "  test_cmd: /bin/echo FULL-SUITE-RUN\n"
+            "  baseline_cmd: '   '\n",
+        )
+        rc = self._run(proj, monkeypatch, "TODO-0023")
+        assert rc == 0
+        log = self._tests_log(proj, "TODO-0023")
+        assert "FULL-SUITE-RUN" in log

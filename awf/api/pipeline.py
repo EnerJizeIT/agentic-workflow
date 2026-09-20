@@ -503,14 +503,21 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
 
     if config_file.exists():
         config_data = cfg_mod.load(project_dir)
+        # U1: dispatch-time baseline runs a fast smoke command (baseline_cmd)
+        # instead of the full test_cmd. Absent/empty/blank → legacy test_cmd.
+        baseline_cmd = (
+            cfg_mod.get(config_data, "verification.baseline_cmd", "") or ""
+        ).strip()
         test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
-        if test_cmd:
+        run_cmd = baseline_cmd or test_cmd
+        cmd_key = "baseline_cmd" if baseline_cmd else "test_cmd"
+        if run_cmd:
             try:
-                parts = shlex.split(test_cmd)
+                parts = shlex.split(run_cmd)
             except ValueError as e:
                 # AUD14-02: bad quoting in test_cmd must not traceback baseline
                 raise AwfApiError(
-                    f"verification.test_cmd не парсится: {e} (cmd: {test_cmd!r})"
+                    f"verification.{cmd_key} не парсится: {e} (cmd: {run_cmd!r})"
                 ) from e
             if parts:
                 try:
@@ -522,14 +529,14 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
                         timeout=300,
                     )
                 except subprocess.TimeoutExpired:
-                    # test_cmd hung (watcher / stdin prompt / infinite loop).
+                    # cmd hung (watcher / stdin prompt / infinite loop).
                     # Don't block baseline creation — record failure, continue.
                     atomic_write_text(
                         tests_log_path,
-                        f"test_cmd timed out after 300s: {test_cmd}\n",
+                        f"{cmd_key} timed out after 300s: {run_cmd}\n",
                     )
                     test_status = "failed"
-                    test_log_excerpt = f"test_cmd timed out: {test_cmd}"
+                    test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
                 else:
                     log_content = result.stdout + result.stderr
                     atomic_write_text(tests_log_path, log_content)
