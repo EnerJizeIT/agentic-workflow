@@ -32,7 +32,7 @@
 ⬜ **Сканер timeout-контракта и алиасы** — AST-чекер ловит `subprocess.run`/`_sp.run`,
    но не алиас (`import subprocess as _s`). Расширить правило (refine).
 ⬜ **`files:` в `_CONTRACT_KEYS`** — кросс-чек verify-pack читает ключ `files` из
-   контракта TODO, а валидатор U3 не знает его → лог «unknown contract keys: files».
+   контракта юнита, а валидатор U3 не знает его → лог «unknown contract keys: files».
    Добавить ключ (+ валидация str-list). Стык U3/U5, двухстрочный фикс.
 ⬜ **`verify_pack._git_lines`** — при git-зависании >30 c `subprocess.TimeoutExpired`
    даёт traceback в ручном CLI (`awf verify-pack`); в пайплайне безопасно (хук ловит).
