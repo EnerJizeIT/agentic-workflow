@@ -31,7 +31,7 @@ from ._templates import _CONFIG_TEMPLATE, update_gitignore
 
 _RUNTIME_DIRS = [
     "inbox", "outbox", "handoff", "done", "state",
-    "logs", "context", "dashboards", "inputs", "reports",
+    "logs", "context", "dashboards", "inputs",
 ]
 
 
@@ -180,7 +180,6 @@ def init_project(
         "outbox",
         "context",
         "logs",
-        "reports",
     ]:
         (agentic / d).mkdir(parents=True, exist_ok=True)
         created_files.append(f".agentic/{d}/")
@@ -675,13 +674,13 @@ def reset_runtime(
     "running" banner / a ghost run (AUD05-02):
 
     - ``tasks_only``: clean inbox + outbox.
-    - ``full``: clean inbox/outbox/context/logs/reports + handoff/inputs/
-      dashboards (iteration artifacts).
+    - ``full``: clean inbox/outbox/context/logs + handoff/inputs/dashboards
+      (iteration artifacts).
     - ``orphans``: convenience mode — list + remove orphans in one call.
       Prefer :func:`list_orphans` + :func:`remove_orphans` two-step protocol
       when confirmation is needed.
-    - default: clean inbox/outbox/context/logs/reports (keep phases,
-      handoff, inputs, dashboards).
+    - default: clean inbox/outbox/context/logs (keep phases, handoff,
+      inputs, dashboards).
     """
     project_dir = Path(project_dir).resolve()
     agentic = project_dir / ".agentic"
@@ -697,7 +696,7 @@ def reset_runtime(
         return remove_orphans(project_dir, ids)
 
     if full or not tasks_only:
-        dirs_to_clean = ["inbox", "outbox", "context", "logs", "reports"]
+        dirs_to_clean = ["inbox", "outbox", "context", "logs"]
         if full:
             # AUD07-03: --full was functionally identical to default (only
             # the mode label differed — a decoration flag). It now also

@@ -247,6 +247,26 @@ class TestCli:
         assert "not an awf project" in capsys.readouterr().err
 
 
+# ─── git timeout degradation (FU-21 D3) ─────────────────────────────────
+
+
+class TestGitTimeoutDegradation:
+    """A hung git call must degrade its section, not kill the pack."""
+
+    def test_hung_git_degrades_diff_section(self, tmp_path: Path, monkeypatch) -> None:
+        repo = _proj(tmp_path, name="githang")
+
+        def _hang(*args, **kw):
+            raise subprocess.TimeoutExpired(cmd=["git", "diff"], timeout=30)
+
+        monkeypatch.setattr(vp.subprocess, "run", _hang)
+
+        # Before the fix this raised TimeoutExpired out of _git_lines.
+        section = vp._diff_section(repo, TODOS, None)
+        assert section.status == "fail"
+        assert any("timed out" in ln for ln in section.lines)
+
+
 # ─── archiving (U3 DONE.json lifecycle) ──────────────────────────────────
 
 

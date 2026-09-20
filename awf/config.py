@@ -6,10 +6,12 @@ from pathlib import Path
 
 import yaml
 
+from . import paths
+
 
 def load(project_dir: str | Path = ".") -> dict:
     """Load config.yaml as a dict. Returns empty dict when file is missing."""
-    cfg = Path(project_dir).resolve() / ".agentic" / "config.yaml"
+    cfg = paths.config_file(project_dir)
     if not cfg.exists():
         return {}
     try:

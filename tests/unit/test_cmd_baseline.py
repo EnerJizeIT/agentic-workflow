@@ -14,6 +14,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from conftest import _git_init  # AUD12-08: shared git boilerplate
+
 from awf import cmd_baseline
 
 
@@ -27,12 +29,7 @@ class TestBaselineShellSafety:
         (agentic / "config.yaml").write_text(
             "verification:\n  test_cmd: /bin/true\n"
         )
-        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
-        subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
-        (proj / "README.md").write_text("init\n")
-        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        _git_init(proj)
         return proj
 
     def test_test_cmd_runs_without_shell(self, tmp_path: Path, monkeypatch) -> None:
@@ -149,12 +146,7 @@ class TestBaselineTimeout:
         (agentic / "config.yaml").write_text(
             "verification:\n  test_cmd: pytest --watch\n"
         )
-        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
-        subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
-        (proj / "README.md").write_text("init\n")
-        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        _git_init(proj)
         return proj
 
     def test_test_cmd_timeout_records_failure(self, tmp_path: Path, monkeypatch) -> None:
@@ -227,12 +219,7 @@ class TestBaselineCmd:
         agentic = proj / ".agentic"
         (agentic / "context").mkdir(parents=True)
         (agentic / "config.yaml").write_text(verification_yaml)
-        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
-        subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
-        (proj / "README.md").write_text("init\n")
-        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        _git_init(proj)
         return proj
 
     def _run(self, proj: Path, monkeypatch, todo_id: str) -> int:

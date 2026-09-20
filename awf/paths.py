@@ -39,6 +39,41 @@ def config_file(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "config.yaml"
 
 
+def roles_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/roles/."""
+    return agentic_dir(project_dir) / "roles"
+
+
+def logs_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/logs/."""
+    return agentic_dir(project_dir) / "logs"
+
+
+def state_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/state/."""
+    return agentic_dir(project_dir) / "state"
+
+
+def pipelines_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/pipelines/."""
+    return agentic_dir(project_dir) / "pipelines"
+
+
+def phases_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/phases/."""
+    return agentic_dir(project_dir) / "phases"
+
+
+def dashboards_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/dashboards/."""
+    return agentic_dir(project_dir) / "dashboards"
+
+
+def inputs_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/inputs/."""
+    return agentic_dir(project_dir) / "inputs"
+
+
 # П2/П6: candidate filenames in priority order. The numbered prefix on
 # PRODUCT-VISION matches the convention used in user's pet-projects
 # (forces sort order at top of file listing).

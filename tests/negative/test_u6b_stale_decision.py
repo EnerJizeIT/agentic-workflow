@@ -231,14 +231,11 @@ class TestStaleDecisionWiring:
 
 def _git_project(tmp_path: Path) -> Path:
     """Git repo + .agentic + pipeline (same shape as test_pipeline_e2e)."""
+    from conftest import _git_init
+
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    _git_init(repo)
 
     from awf import api
 

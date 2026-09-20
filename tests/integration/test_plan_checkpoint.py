@@ -8,7 +8,6 @@ Coverage matrix:
 """
 from __future__ import annotations
 
-import socket
 import tempfile
 import time
 import urllib.error
@@ -17,6 +16,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from conftest import _free_port  # AUD12-09: shared free-port helper
 
 from awf import plan_checkpoint
 
@@ -1016,10 +1016,4 @@ class TestCheckpointFirstWins:
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _free_port() -> int:
-    """Find a free port (different from any in-use one)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# _free_port — imported from the root conftest (AUD12-09).

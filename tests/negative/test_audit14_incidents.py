@@ -418,19 +418,22 @@ class TestEnvRestoreOnEarlyReturn:
 
 
 class TestWorkerLogNameSanitized:
-    """AUD14-04: ``models.<role>.agent_name`` from config.yaml reaches
-    run_subprocess_until_signal as a cmd arg (``--agent <name>``). The log
-    name is derived from that arg — an unsanitized "../agent-pwn" used to
-    create ``logs/../agent-pwn.out``, one level above logs/."""
+    """AUD14-04 + AUD16-06: the worker log name is a public input
+    (run_agent_stage builds it from role/todo_id, both config-derived).
+    An unsanitized "../agent-pwn" must not create ``logs/../agent-pwn.out``,
+    one level above logs/."""
 
-    def test_traversal_agent_name_stays_in_logs_dir(self, tmp_path):
+    def test_traversal_log_name_stays_in_logs_dir(self, tmp_path):
         from awf.signal_watch import run_subprocess_until_signal
 
         logs_dir = tmp_path / ".agentic" / "logs"
         logs_dir.mkdir(parents=True)
-        cmd = [sys.executable, "-c", "print('worker')", "--agent", "../agent-pwn"]
+        cmd = [sys.executable, "-c", "print('worker')"]
 
-        run_subprocess_until_signal(cmd=cmd, cwd=tmp_path, logs_dir=logs_dir)
+        run_subprocess_until_signal(
+            cmd=cmd, cwd=tmp_path, logs_dir=logs_dir,
+            log_name="../agent-pwn.out",
+        )
 
         # no file escaped above logs/
         assert not (logs_dir.parent / "agent-pwn.out").exists()
@@ -444,8 +447,24 @@ class TestWorkerLogNameSanitized:
         contents = "\n".join(p.read_text(encoding="utf-8") for p in logs)
         assert "===== awf run" in contents
 
-    def test_plain_agent_name_unchanged(self, tmp_path):
+    def test_plain_log_name_unchanged(self, tmp_path):
         """Sanitization must not rename a well-formed slug."""
+        from awf.signal_watch import run_subprocess_until_signal
+
+        logs_dir = tmp_path / ".agentic" / "logs"
+        logs_dir.mkdir(parents=True)
+        cmd = [sys.executable, "-c", "print('worker')"]
+
+        run_subprocess_until_signal(
+            cmd=cmd, cwd=tmp_path, logs_dir=logs_dir,
+            log_name="awf-agent-implementer-TODO-0001.out",
+        )
+
+        assert (logs_dir / "awf-agent-implementer-TODO-0001.out").is_file()
+
+    def test_no_log_name_falls_back_to_default(self, tmp_path):
+        """AUD16-06: without an explicit name the fixed default is used —
+        no more guessing from argv."""
         from awf.signal_watch import run_subprocess_until_signal
 
         logs_dir = tmp_path / ".agentic" / "logs"
@@ -454,7 +473,7 @@ class TestWorkerLogNameSanitized:
 
         run_subprocess_until_signal(cmd=cmd, cwd=tmp_path, logs_dir=logs_dir)
 
-        assert (logs_dir / "agent-implementer.out").is_file()
+        assert (logs_dir / "worker-output.out").is_file()
 
 
 # ── AUD14-05: pipeline name must not escape .agentic/pipelines/ ──────────

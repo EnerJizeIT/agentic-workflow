@@ -139,6 +139,10 @@ def run_agent_stage(
         env=awf_subprocess_env(),
         hard_timeout=hard_timeout,
         log_holder=log_holder,
+        # AUD16-06: explicit worker log name — role and todo_id are known
+        # exactly here. The dashboard glob awf-*-{todo_id}.out matches any
+        # role (previously only agent-* roles were visible).
+        log_name=f"awf-{role}-{todo_id}.out",
         # U6a/U6c: automation.* settings, defaults from _net when absent.
         preflight_timeout=cfg_mod.get(config, "automation.preflight_timeout_seconds",
                                       _net.PREFLIGHT_TIMEOUT_DEFAULT),
@@ -191,7 +195,7 @@ def collect_handoff(
     run metadata, signal/notes presence, changes vs baseline — instead of
     alarm prose addressed to the supervisor (that lives in the SALVAGE note).
     """
-    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    handoff_dir = paths.handoff_dir(project_dir)
     handoff_dir.mkdir(parents=True, exist_ok=True)
     outbox = paths.outbox(project_dir)
 
@@ -370,7 +374,7 @@ def resolve_prev_handoffs(
     todo_id: str = "",
 ) -> list[Path]:
     """BD-15/19: return handoff paths for all AGENT stages before current_stage_idx."""
-    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    handoff_dir = paths.handoff_dir(project_dir)
     result: list[Path] = []
     for i in range(current_stage_idx):
         st = pipeline_stages[i]

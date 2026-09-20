@@ -773,10 +773,10 @@ async def awf_reset(
 
     Modes (mutually exclusive):
     - ``tasks_only``: clean only inbox + outbox.
-    - ``full``: clean inbox/outbox/context/logs/reports + handoff/inputs/
+    - ``full``: clean inbox/outbox/context/logs + handoff/inputs/
       dashboards (iteration artifacts).
     - ``orphans``: remove orphan TODOs (active without progress).
-    - default: clean inbox/outbox/context/logs/reports (keep phases,
+    - default: clean inbox/outbox/context/logs (keep phases,
       handoff, inputs, dashboards).
 
     **Destructive** — clears runtime state. The ``orphans`` mode in CLI

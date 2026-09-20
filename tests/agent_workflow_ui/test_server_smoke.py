@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("mcp.server.fastmcp")
 
 from agent_workflow_ui.config import ensure_directories, load
+from agent_workflow_ui.http_endpoint import _find_free_port  # AUD12-09
 from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.server import create_server
 from agent_workflow_ui.state import (
@@ -47,7 +48,9 @@ def plugin_initialized(tmp_path, monkeypatch):
     config = load()
     ensure_directories(config)
     set_config(config)
-    set_http_port(13747)
+    # AUD12-09: no hardcoded port — the suite must not depend on a
+    # specific port being free.
+    set_http_port(_find_free_port())
     set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
     reset_registry()
 

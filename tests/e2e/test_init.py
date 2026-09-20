@@ -29,7 +29,7 @@ class TestInit:
         assert not (empty_project / ".agentic/pipelines/default.yaml").exists()
 
         # Required directories
-        for d in ("pipelines", "phases", "inbox", "outbox", "context", "logs", "reports"):
+        for d in ("pipelines", "phases", "inbox", "outbox", "context", "logs"):
             assert (empty_project / ".agentic" / d).is_dir(), f"missing dir: {d}"
 
         # Config content — BD-29: only supervisor in models (agent roles added by form)
@@ -49,7 +49,8 @@ class TestInit:
         assert ".agentic/outbox/" in gitignore
         assert ".agentic/context/" in gitignore
         assert ".agentic/logs/" in gitignore
-        assert ".agentic/reports/" in gitignore
+        # AUD16-08: reports/ is no longer a runtime dir — not in gitignore
+        assert ".agentic/reports/" not in gitignore
         # agent-workflow-ui runtime dirs (added when plugin is installed)
         assert ".agentic/inputs/" in gitignore
         assert ".agentic/dashboards/" in gitignore
@@ -63,11 +64,11 @@ class TestInit:
         assert ".agentic/inbox/" not in git_status.stdout
 
     def test_init_reuses_opencode_model(self, empty_project: Path, awf_bin: str, awf_env: dict, tmp_path: Path):
-        """When an existing opencode agent is present, init reuses its model.
+        """When an existing opencode agent is present, init completes.
 
-        BD-29: model no longer baked into CONFIG_TEMPLATE at init time —
-        but the worker_model prompt input still happens (used by opencode
-        agent proposal step). Verifying init completes successfully.
+        BD-29: model no longer baked into CONFIG_TEMPLATE at init time
+        (per-role models come from the project-setup form). Verifying init
+        completes successfully.
         """
         oc_dir = tmp_path / "fake_home" / ".config" / "opencode"
         (oc_dir / "opencode.json").write_text(

@@ -184,16 +184,16 @@ def _build_parser():
     p_init.add_argument("--project-dir", default=".", help="Project root (default: cwd)")
 
     # AUD07-03: the help used to promise a gentle "inbox/outbox/logs" clean
-    # while the default actually wipes context/reports/state too. The text
+    # while the default actually wipes context/state too. The text
     # now mirrors api.reset_runtime verbatim (same source, checked by test).
     p_reset = sub.add_parser(
         "reset",
-        help="Clean runtime data (default: inbox/outbox/context/logs/reports + state)",
+        help="Clean runtime data (default: inbox/outbox/context/logs + state)",
         description=(
             "Clean runtime data. Every mode also clears state/current.yaml "
             "and state/run.yaml (when present).\n"
             "\n"
-            "  default       inbox, outbox, context, logs, reports\n"
+            "  default       inbox, outbox, context, logs\n"
             "  --full        default + handoff, inputs, dashboards\n"
             "  --tasks-only  inbox, outbox\n"
             "  --orphans     remove orphan TODOs (asks for confirmation,\n"

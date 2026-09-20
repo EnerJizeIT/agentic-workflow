@@ -137,6 +137,7 @@ def run_subprocess_until_signal(
     preflight_timeout: float | None = None,
     no_output_timeout: float | None = None,
     opencode_config: str | Path | None = None,
+    log_name: str | None = None,
 ) -> subprocess.CompletedProcess:
     """BD-20: run subprocess, watch for signal files, wait for natural exit.
 
@@ -179,6 +180,11 @@ def run_subprocess_until_signal(
             NO_OUTPUT_TIMEOUT_DEFAULT` (900). 0 → disabled.
         opencode_config: path to opencode.json for preflight provider
             lookup. None → the XDG opencode.json.
+        log_name: AUD16-06 — explicit worker log filename (e.g.
+            ``awf-{role}-{todo_id}.out``). The caller knows role and todo_id
+            exactly, so the name no longer is guessed from argv (which used
+            to produce three forms the dashboard glob could not match).
+            None → ``worker-output.out``.
     """
     watch_paths = watch_paths or []
     # KAUD-4: handle hard_timeout=None (use default)
@@ -213,18 +219,19 @@ def run_subprocess_until_signal(
     worker_log = None
     log_path: Path | None = None
     if logs_dir and logs_dir.is_dir():
-        # Derive a log file name from the command (role name)
-        log_name = "worker-output.out"
-        for arg in cmd:
-            s = str(arg)
-            if "agent-" in s and ".md" not in s:
-                # AUD14-04: the arg comes from config (models.<role>.agent_name)
-                # — public input. Keep only the last path component and
-                # replace anything outside a safe charset, so
-                # "../agent-pwn" cannot escape logs_dir.
-                log_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(s).name) + ".out"
-                break
-        log_path = (logs_dir / log_name).resolve()
+        # AUD16-06: explicit log name from the caller — run_agent_stage knows
+        # role and todo_id exactly. No more guessing from argv (which used to
+        # produce three naming forms the dashboard glob could not match).
+        # AUD14-04: log_name is public input — keep only the last path
+        # component and replace anything outside a safe charset, so
+        # "../agent-pwn" cannot escape logs_dir.
+        if log_name:
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(log_name).name)
+            if not safe_name.endswith(".out"):
+                safe_name += ".out"
+            log_path = (logs_dir / safe_name).resolve()
+        else:
+            log_path = (logs_dir / "worker-output.out").resolve()
         if not log_path.is_relative_to(logs_dir.resolve()):
             log_path = (logs_dir / "worker-output.out").resolve()
         # dogfood-11: APPEND instead of overwrite — a retried stage used to

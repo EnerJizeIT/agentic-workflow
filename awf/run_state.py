@@ -36,7 +36,9 @@ def read_run(project_dir: Path) -> dict | None:
         return None
     try:
         data = yaml.safe_load(f.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
+        # AUD12-11: non-UTF-8 bytes in run.yaml are a corrupt file —
+        # degrade to "no run", not traceback (same as broken YAML).
         return None
     return data if isinstance(data, dict) else None
 

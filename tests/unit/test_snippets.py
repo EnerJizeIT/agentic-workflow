@@ -7,7 +7,6 @@ Validates that:
 - _SNIPPET_ALWAYS is injected for plan/verify/salvage
 - Snippets are NOT injected for execute stages
 - Salvage prompt differs from verify (different context)
-- get_salvage_snippet() returns public salvage instructions
 """
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ from awf.supervisor import (
     _SNIPPET_VERIFY,
     _stage_snippet,
     build_prompt,
-    get_salvage_snippet,
 )
 
 
@@ -146,6 +144,17 @@ class TestBuildPromptInjection:
         assert "skeleton first" in prompt
         assert "STOP, save what you have" in prompt
 
+    def test_execute_prompt_done_json_example(self):
+        """FU-21 D4: the completion contract shows the DONE.json schema
+        inline — a worker that wrote tests_run as strings got the file
+        rejected by the U3 schema and had no example at hand."""
+        prompt = build_prompt("execute", "TODO-0001")
+        assert "DONE-TODO-0001.json" in prompt
+        # The example must show tests_run as objects, not strings.
+        assert '{"cmd": "python3 -m pytest tests/unit/test_x.py -q", "result": "12 passed"}' in prompt
+        assert "OBJECTS {cmd, result}, not strings" in prompt
+        assert "docs/unit-contract.md" in prompt
+
     def test_snippet_at_end_of_prompt(self):
         """Stage-specific snippet should be towards the END of the prompt (recency bias)."""
         prompt = build_prompt("verify", "TODO-0001")
@@ -156,27 +165,6 @@ class TestBuildPromptInjection:
             f"Verify snippet at pos {verify_pos}, prompt len {len(prompt)}, "
             f"should be in last half (> {half:.0f})"
         )
-
-
-class TestGetSalvageSnippet:
-    """Public API for orchestrator salvage path."""
-
-    def test_returns_string(self):
-        result = get_salvage_snippet()
-        assert isinstance(result, str)
-
-    def test_contains_always_rules(self):
-        result = get_salvage_snippet()
-        assert "Critical rules" in result
-
-    def test_contains_salvage_instructions(self):
-        result = get_salvage_snippet()
-        assert "Salvage" in result
-        assert "git diff" in result.lower()
-
-    def test_todo_id_substitution(self):
-        result = get_salvage_snippet("TODO-0099")
-        assert "TODO-0099" in result
 
 
 class TestWorkspaceDiscipline:

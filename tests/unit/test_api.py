@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import _git_init_bare  # AUD12-08: shared git boilerplate
 
 from awf import api
 from awf.api._helpers import read_file_text
@@ -529,7 +530,7 @@ class TestGetReport:
 class TestResetRuntime:
     def test_default_cleans_runtime_dirs(self, tmp_git_repo):
         agentic = tmp_git_repo / ".agentic"
-        for d in ["inbox", "outbox", "context", "logs", "reports", "phases"]:
+        for d in ["inbox", "outbox", "context", "logs", "phases"]:
             (agentic / d).mkdir(parents=True)
             (agentic / d / "junk.txt").write_text("junk")
         result = api.reset_runtime(tmp_git_repo)
@@ -537,7 +538,6 @@ class TestResetRuntime:
         assert "outbox" in result.cleaned_dirs
         assert "context" in result.cleaned_dirs
         assert "logs" in result.cleaned_dirs
-        assert "reports" in result.cleaned_dirs
         # phases NOT cleaned
         assert "phases" not in result.cleaned_dirs
         assert (agentic / "phases" / "junk.txt").exists()
@@ -555,17 +555,16 @@ class TestResetRuntime:
 
     def test_full_includes_everything_runtime(self, tmp_git_repo):
         agentic = tmp_git_repo / ".agentic"
-        for d in ["inbox", "outbox", "context", "logs", "reports"]:
+        for d in ["inbox", "outbox", "context", "logs"]:
             (agentic / d).mkdir(parents=True)
             (agentic / d / "junk.txt").write_text("junk")
         result = api.reset_runtime(tmp_git_repo, full=True)
-        assert "reports" in result.cleaned_dirs
         assert "context" in result.cleaned_dirs
 
     def test_full_cleans_handoff_inputs_dashboards_default_does_not(self, tmp_git_repo):
         """AUD07-03: --full must be behaviorally different from default.
 
-        default: inbox/outbox/context/logs/reports (+ state files);
+        default: inbox/outbox/context/logs (+ state files);
         full: the same PLUS handoff/inputs/dashboards.
         """
         agentic = tmp_git_repo / ".agentic"
@@ -803,7 +802,7 @@ class TestInitProject:
         assert result.project_name == "My Project"
         assert result.stack == "unknown"  # no config files in tmp_git_repo
         # .agentic created with full structure
-        for d in ["roles", "pipelines", "phases", "inbox", "outbox", "context", "logs", "reports"]:
+        for d in ["roles", "pipelines", "phases", "inbox", "outbox", "context", "logs"]:
             assert (tmp_git_repo / ".agentic" / d).is_dir(), f"missing .agentic/{d}/"
         assert (tmp_git_repo / ".agentic" / "config.yaml").exists()
         assert (tmp_git_repo / ".agentic" / "roles" / "supervisor.md").exists()
@@ -823,7 +822,8 @@ class TestInitProject:
         # (tmp_git_repo fixture name is "repo" — we test derivation via sub-dir)
         sub = tmp_git_repo / "jira-epic-presenter"
         sub.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=sub, check=True)
+        # Nested repo without a commit — bare init on purpose.
+        _git_init_bare(sub)
         (sub / "package.json").write_text(json.dumps({
             "scripts": {"test": "bun test"},
             "devDependencies": {"typescript": "^5.0"},

@@ -20,15 +20,14 @@ def run(args: Any) -> int:
         mode = "dry-run"
     project_dir = Path(getattr(args, "project_dir", "."))
 
-    try:
-        result = api.rollback(
-            project_dir=project_dir,
-            todo_id=todo_id,
-            mode=mode,
-        )
-    except api.AwfApiError as e:
-        print(str(e))
-        return 1
+    # AUD07-05: no local AwfApiError catch — the dispatcher's unified
+    # handler (cli._run_command) prints `ERROR: <msg>` to stderr with rc 1.
+    # A local `print(str(e))` to stdout used to shadow it (AUD12-11).
+    result = api.rollback(
+        project_dir=project_dir,
+        todo_id=todo_id,
+        mode=mode,
+    )
 
     print(f"Rolling back {result.todo_id} to baseline: {result.baseline_sha}")
     print(f"Mode: {result.mode}")

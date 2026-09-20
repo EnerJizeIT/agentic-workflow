@@ -429,6 +429,7 @@ class TestWatchdog:
             ["hung-agent-worker"], cwd=tmp_path,
             watch_paths=[outbox / "DONE-TODO-0001.ready"],
             logs_dir=tmp_path,
+            log_name="hung-agent-worker.out",
             no_output_timeout=0.01,
             hard_timeout=30,
         )
@@ -447,10 +448,13 @@ class TestLogHolder:
         run_subprocess_until_signal(
             ["agent-impl-worker"], cwd=tmp_path,
             logs_dir=tmp_path, log_holder=holder,
+            log_name="awf-agent-impl-TODO-0001.out",
             no_output_timeout=0,
         )
 
-        assert holder.get("log_path") == str(tmp_path / "agent-impl-worker.out")
+        assert holder.get("log_path") == str(
+            tmp_path / "awf-agent-impl-TODO-0001.out"
+        )
         assert Path(holder["log_path"]).is_file()
         # U6b: run-start offset = size of the marker preamble the run wrote
         # first (append-mode log — classification must start after it).

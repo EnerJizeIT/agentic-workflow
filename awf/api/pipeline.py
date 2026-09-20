@@ -631,6 +631,15 @@ def rollback(
         )
 
     baseline_sha = baseline_sha_file.read_text(encoding="utf-8").strip()
+    # AUD12-11: garbage in BASELINE-{todo}.sha used to surface as a raw
+    # CalledProcessError from `git reset`. Validate the shape first — the
+    # message then names the file to check instead of git's argv noise.
+    if not re.fullmatch(r"[0-9a-f]{7,40}", baseline_sha):
+        raise AwfApiError(
+            f"baseline SHA {baseline_sha!r} is not a valid git revision — "
+            f"{baseline_sha_file} is corrupt. Recreate the baseline "
+            f"(awf_baseline {todo_id}) and retry."
+        )
 
     try:
         diff_result = subprocess.run(
@@ -665,11 +674,29 @@ def rollback(
         git_cmd.append(git_flag)
     git_cmd.append(baseline_sha)
     try:
-        subprocess.run(git_cmd, cwd=str(project_dir), check=True, timeout=30)
+        # AUD12-11: capture git's stderr — a rejected revision must surface
+        # as the AwfApiError message below, not as raw `fatal:` noise on
+        # the human's terminal.
+        subprocess.run(
+            git_cmd,
+            cwd=str(project_dir),
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.TimeoutExpired as e:
         raise AwfApiError(
             f"git reset timed out after {e.timeout}s — a hung git call leaves "
             "the repo in an unknown state. Check the repo (index.lock) and retry."
+        ) from e
+    except subprocess.CalledProcessError as e:
+        # AUD12-11: well-formed SHA that git still rejects (deleted branch,
+        # shallow clone without that commit) — typed error, not traceback.
+        raise AwfApiError(
+            f"git reset to baseline {baseline_sha[:12]} failed (exit "
+            f"{e.returncode}) — the revision is not reachable in this repo. "
+            f"Check {baseline_sha_file} and the git history."
         ) from e
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -15,32 +15,11 @@ from awf import api
 
 
 @pytest.fixture
-def project(tmp_path):
-    import subprocess
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
-    api.init_project(repo, project_name="Test")
-    return repo
-
-
-@pytest.fixture
-def tmp_git_repo(tmp_path):
-    import subprocess
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
-    return repo
+def project(tmp_git_repo):
+    """Git repo + .agentic (AUD12-08: git boilerplate from the shared
+    tmp_git_repo fixture in tests/conftest.py)."""
+    api.init_project(tmp_git_repo, project_name="Test")
+    return tmp_git_repo
 
 
 class TestAwfKill:
@@ -63,19 +42,25 @@ class TestAwfKill:
     def test_kill_live_pid(self, project, monkeypatch):
         # Use python3 process; AUD04-07 strict identity — make it look
         # like an awf pipeline via the read_cmdline seam.
+        # AUD12-09: try/finally — a failed assertion used to leave the
+        # sleep-300 orphan alive for 5 minutes, polluting ps checks.
         proc = subprocess.Popen([__import__("sys").executable, "-c", "import time; time.sleep(300)"])
-        from awf.api import _liveness
-        from awf.pipeline_state import write_state
-        write_state(project, pipeline_pid=str(proc.pid))
-        monkeypatch.setattr(
-            _liveness, "read_cmdline",
-            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == proc.pid else None,
-        )
-        from agent_workflow_ui.tools.awf import awf_kill
-        result = asyncio.run(awf_kill(project_dir=str(project)))
-        assert result["status"] == "ok"
-        assert result["killed"] is True
-        assert result["pid"] == proc.pid
+        try:
+            from awf.api import _liveness
+            from awf.pipeline_state import write_state
+            write_state(project, pipeline_pid=str(proc.pid))
+            monkeypatch.setattr(
+                _liveness, "read_cmdline",
+                lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == proc.pid else None,
+            )
+            from agent_workflow_ui.tools.awf import awf_kill
+            result = asyncio.run(awf_kill(project_dir=str(project)))
+            assert result["status"] == "ok"
+            assert result["killed"] is True
+            assert result["pid"] == proc.pid
+        finally:
+            proc.kill()
+            proc.wait()
 
     def test_kill_missing_agentic(self, tmp_path):
         """No .agentic/ → no-op (killed=False), not error."""

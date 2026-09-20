@@ -323,11 +323,28 @@ class TestDestructiveGate:
             api.rollback(proj, "TODO-0001", mode="hard")
 
     def test_soft_rollback_allowed(self, tmp_git_repo):
+        # AUD12-12: used to assert only "must not raise" — HEAD was never
+        # checked. Now the semantics of soft are pinned: the baseline is
+        # the current commit, so HEAD stays put, and working-tree changes
+        # made after the baseline survive.
         proj = _project(tmp_git_repo)
         api.create_baseline(proj, "TODO-0001")
         api.run_start(proj, queue=["TODO-0001"])
 
-        api.rollback(proj, "TODO-0001", mode="soft")  # must not raise
+        def _head() -> str:
+            return subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=proj, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+
+        head_before = _head()
+        (proj / "changed-after-baseline.txt").write_text("work in progress\n")
+
+        result = api.rollback(proj, "TODO-0001", mode="soft")
+
+        assert result.mode == "soft"
+        assert _head() == head_before, "soft rollback must not move HEAD"
+        assert (proj / "changed-after-baseline.txt").read_text() == "work in progress\n"
 
 
 class TestReportHealth:

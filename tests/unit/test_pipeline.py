@@ -33,8 +33,18 @@ class TestLoadStages:
         assert stages[2].role == "supervisor"
 
     def test_simple_stage_actions(self, tmp_pipeline_file) -> None:
+        # AUD12-12: this test used to load stages and assert NOTHING — a
+        # load_stages regression (silent fallback, dropped stage, lost
+        # action) stayed green. Now every stage's name/kind/on_* is pinned.
         tmp_path, _ = tmp_pipeline_file
         stages = load_stages(tmp_path / ".agentic" / "pipelines" / "simple.yaml")
+        assert [s.name for s in stages] == ["plan", "implement", "verify"]
+        assert [s.kind for s in stages] == ["plan", "execute", "verify"]
+        assert stages[0].on_blocked == "escalate"
+        assert stages[1].on_blocked == "escalate"
+        assert stages[1].max_retries == 3
+        assert stages[2].on_approved == "commit_and_next"
+        assert stages[2].on_rejected == "replan"
 
     def test_simple_verify_on_approved(self, tmp_pipeline_file) -> None:
         tmp_path, _ = tmp_pipeline_file

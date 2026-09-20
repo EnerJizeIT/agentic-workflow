@@ -11,12 +11,16 @@ Each phase has:
 - A compact prompt (~50-100 lines from templates/phases/phase-<name>.md)
 - Exit conditions (signal or state transition)
 
-Backward compat: if phase files don't exist, falls back to supervisor.md.
+If the template files are missing (corrupted install), the prompt degrades
+to a short "No prompt template found." message — AUD16-11 removed the old
+fallback to the full supervisor.md, which could only fire on a broken
+install and gave no hint that the install was broken.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from . import paths
 from .pipeline import load_stages, resolve_pipeline_file
 from .pipeline_state import is_state_stale, read_state
 
@@ -55,7 +59,7 @@ def detect_phase(project_dir: Path) -> str:
 
     # ── Setup flow detection ──────────────────────────────────────────
 
-    agentic = project_dir / ".agentic"
+    agentic = paths.agentic_dir(project_dir)
     if not agentic.is_dir():
         return "init"
 
@@ -97,8 +101,9 @@ def _pipeline_exists(project_dir: Path) -> bool:
 def get_phase_prompt(phase: str, project_dir: Path) -> str:
     """Assemble compact prompt for the given phase.
 
-    Returns _core.md + phase-<name>.md content.
-    Falls back to full supervisor.md if phase files don't exist.
+    Returns _core.md + phase-<name>.md content. When the templates are
+    missing (corrupted install) degrades to a short "No prompt template
+    found." message.
     """
     project_dir = Path(project_dir).resolve()
 
@@ -127,14 +132,10 @@ def get_phase_prompt(phase: str, project_dir: Path) -> str:
 
         return "\n".join(parts)
 
-    # Fallback: full supervisor.md (backward compat)
-    supervisor_md = project_dir / "templates" / "roles" / "supervisor.md"
-    if not supervisor_md.is_file():
-        import awf
-        supervisor_md = Path(awf.__file__).parent / "templates" / "roles" / "supervisor.md"
-    if supervisor_md.is_file():
-        return supervisor_md.read_text(encoding="utf-8")
-
+    # AUD16-11: the old fallback to the full supervisor.md was unreachable
+    # on an intact install (the package copy of _core.md is guaranteed by
+    # package-data) and useless on a broken one — an honest degradation
+    # message is all that remains.
     return f"Phase: {phase}. No prompt template found."
 
 

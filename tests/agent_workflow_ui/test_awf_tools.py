@@ -29,22 +29,23 @@ except Exception:
 
 
 @pytest.fixture
-def git_project(tmp_path):
-    """Create a git-initialized empty project."""
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
-    (proj / "README.md").write_text("# Test\n")
-    subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
-    return proj
+def git_project(tmp_git_repo):
+    """Create a git-initialized empty project.
+
+    AUD12-08: the git boilerplate is the shared tmp_git_repo fixture
+    (tests/conftest.py).
+    """
+    return tmp_git_repo
 
 
 @pytest.fixture
-def initialized_project(git_project):
-    """Project with .agentic/ already set up via api.init_project."""
+def mcp_project(git_project):
+    """Project with .agentic/ already set up via api.init_project.
+
+    AUD12-08: renamed from ``initialized_project`` — that name is taken by
+    the root e2e fixture with a DIFFERENT contract (CLI ``awf init`` +
+    pipeline.yaml). One name, one meaning.
+    """
     api.init_project(git_project, project_name="Test Project")
     # Dogfood-10: start_pipeline background guard requires active TODO
     inbox = git_project / ".agentic" / "inbox"
@@ -66,7 +67,7 @@ class TestAwfInit:
     def test_creates_skeleton(self, git_project):
         result = run(awf.awf_init(project_dir=str(git_project)))
         assert result["status"] == "ok"
-        assert result["project_name"] == "Proj"
+        assert result["project_name"] == "Repo"
         assert "supervisor_md" in result
         assert len(result["supervisor_md"]) > 0
         assert "plan_md" in result
@@ -134,12 +135,12 @@ class TestAwfStatus:
         assert result["status"] == "error"
         assert "No .agentic/" in result["error"]
 
-    def test_with_active_todo(self, initialized_project):
-        inbox = initialized_project / ".agentic" / "inbox"
-        outbox = initialized_project / ".agentic" / "outbox"
+    def test_with_active_todo(self, mcp_project):
+        inbox = mcp_project / ".agentic" / "inbox"
+        outbox = mcp_project / ".agentic" / "outbox"
         (inbox / "TODO-0001.ready").touch()
         (inbox / "TODO-0001.md").write_text("# Task")
-        result = run(awf.awf_status(project_dir=str(initialized_project)))
+        result = run(awf.awf_status(project_dir=str(mcp_project)))
         assert result["status"] == "ok"
         assert len(result["active_todos"]) == 1
         assert result["active_todos"][0]["todo_id"] == "TODO-0001"
@@ -149,17 +150,17 @@ class TestAwfStatus:
 
 
 class TestAwfBaseline:
-    def test_creates_baseline(self, initialized_project):
+    def test_creates_baseline(self, mcp_project):
         result = run(awf.awf_baseline(
             todo_id="TODO-0001",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "ok"
         assert result["todo_id"] == "TODO-0001"
         assert len(result["sha"]) == 40
         assert result["is_git_repo"] is True
         assert "BASELINE-TODO-0001.sha" in result["files_created"]
-        assert (initialized_project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").exists()
+        assert (mcp_project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").exists()
 
     def test_missing_agentic(self, tmp_path):
         result = run(awf.awf_baseline(
@@ -173,53 +174,53 @@ class TestAwfBaseline:
 
 
 class TestAwfRollback:
-    def test_dry_run(self, initialized_project):
+    def test_dry_run(self, mcp_project):
         # First create baseline + change
         sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=initialized_project, text=True
+            ["git", "rev-parse", "HEAD"], cwd=mcp_project, text=True
         ).strip()
-        (initialized_project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
+        (mcp_project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
             sha + "\n"
         )
-        (initialized_project / "extra.txt").write_text("extra")
-        subprocess.run(["git", "add", "-A"], cwd=initialized_project, check=True)
-        subprocess.run(["git", "commit", "-qm", "extra"], cwd=initialized_project, check=True)
+        (mcp_project / "extra.txt").write_text("extra")
+        subprocess.run(["git", "add", "-A"], cwd=mcp_project, check=True)
+        subprocess.run(["git", "commit", "-qm", "extra"], cwd=mcp_project, check=True)
 
         result = run(awf.awf_rollback(
             todo_id="TODO-0001",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             mode="dry-run",
         ))
         assert result["status"] == "ok"
         assert result["mode"] == "dry-run"
         assert result["ack_file"] is None
         # extra.txt still there
-        assert (initialized_project / "extra.txt").exists()
+        assert (mcp_project / "extra.txt").exists()
 
-    def test_hard_resets(self, initialized_project):
+    def test_hard_resets(self, mcp_project):
         sha = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=initialized_project, text=True
+            ["git", "rev-parse", "HEAD"], cwd=mcp_project, text=True
         ).strip()
-        (initialized_project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
+        (mcp_project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text(
             sha + "\n"
         )
-        (initialized_project / "extra.txt").write_text("extra")
-        subprocess.run(["git", "add", "-A"], cwd=initialized_project, check=True)
-        subprocess.run(["git", "commit", "-qm", "extra"], cwd=initialized_project, check=True)
+        (mcp_project / "extra.txt").write_text("extra")
+        subprocess.run(["git", "add", "-A"], cwd=mcp_project, check=True)
+        subprocess.run(["git", "commit", "-qm", "extra"], cwd=mcp_project, check=True)
 
         result = run(awf.awf_rollback(
             todo_id="TODO-0001",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             mode="hard",
         ))
         assert result["status"] == "ok"
-        assert not (initialized_project / "extra.txt").exists()
+        assert not (mcp_project / "extra.txt").exists()
         assert result["ack_file"] is not None
 
-    def test_missing_baseline(self, initialized_project):
+    def test_missing_baseline(self, mcp_project):
         result = run(awf.awf_rollback(
             todo_id="TODO-9999",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "error"
         assert "Baseline SHA not found" in result["error"]
@@ -229,19 +230,19 @@ class TestAwfRollback:
 
 
 class TestAwfApprove:
-    def test_creates_signal(self, initialized_project):
+    def test_creates_signal(self, mcp_project):
         result = run(awf.awf_approve(
             todo_id="TODO-0001",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "ok"
         assert "APPROVE-TODO-0001.ready" in result["signal_file"]
-        assert (initialized_project / ".agentic" / "inbox" / "APPROVE-TODO-0001.ready").exists()
+        assert (mcp_project / ".agentic" / "inbox" / "APPROVE-TODO-0001.ready").exists()
 
-    def test_empty_todo_id(self, initialized_project):
+    def test_empty_todo_id(self, mcp_project):
         result = run(awf.awf_approve(
             todo_id="",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "error"
 
@@ -262,7 +263,7 @@ class TestAwfApprove:
 
 
 class TestAwfReject:
-    def test_reject_writes_review_and_does_not_kill(self, initialized_project, monkeypatch):
+    def test_reject_writes_review_and_does_not_kill(self, mcp_project, monkeypatch):
         """AUD08-04: the wrapper used to kill the waiting pipeline right
         after reject_commit while its docstring promised the engine handles
         REVIEW → replan itself. The kill is gone — the engine owns the
@@ -278,11 +279,11 @@ class TestAwfReject:
         result = run(awf.awf_reject(
             todo_id="TODO-0001",
             reason="diff has a bug",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
 
         assert result["status"] == "ok"
-        review = initialized_project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md"
+        review = mcp_project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md"
         assert review.is_file(), "REVIEW-{todo}.md must be written to the outbox"
         assert "diff has a bug" in review.read_text(encoding="utf-8")
         assert kill_calls["n"] == 0, (
@@ -291,20 +292,20 @@ class TestAwfReject:
         )
         assert "killed" not in result["next_action"].lower()
 
-    def test_reject_requires_reason(self, initialized_project):
+    def test_reject_requires_reason(self, mcp_project):
         result = run(awf.awf_reject(
             todo_id="TODO-0001",
             reason="   ",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "error"
         assert "reason" in result["error"]
 
-    def test_reject_invalid_todo(self, initialized_project):
+    def test_reject_invalid_todo(self, mcp_project):
         result = run(awf.awf_reject(
             todo_id="NOT-A-TODO",
             reason="bad",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "error"
         assert "todo_id" in result["error"]
@@ -324,11 +325,11 @@ class TestAwfReport:
         assert result["items"] == []
         assert result["done_count"] == 0
 
-    def test_with_done_task(self, initialized_project):
-        ag = initialized_project / ".agentic"
+    def test_with_done_task(self, mcp_project):
+        ag = mcp_project / ".agentic"
         (ag / "inbox" / "TODO-0001.ready").touch()
         (ag / "outbox" / "DONE-TODO-0001.ready").touch()
-        result = run(awf.awf_report(project_dir=str(initialized_project)))
+        result = run(awf.awf_report(project_dir=str(mcp_project)))
         assert result["done_count"] == 1
         assert any(item["status"] == "OK" for item in result["items"])
 
@@ -337,21 +338,21 @@ class TestAwfReport:
 
 
 class TestAwfReset:
-    def test_default_cleans_runtime(self, initialized_project):
-        ag = initialized_project / ".agentic"
-        for d in ["inbox", "outbox", "context", "logs", "reports"]:
+    def test_default_cleans_runtime(self, mcp_project):
+        ag = mcp_project / ".agentic"
+        for d in ["inbox", "outbox", "context", "logs"]:
             (ag / d / "junk.txt").write_text("junk")
-        result = run(awf.awf_reset(project_dir=str(initialized_project)))
+        result = run(awf.awf_reset(project_dir=str(mcp_project)))
         assert result["status"] == "ok"
         assert "inbox" in result["cleaned_dirs"]
         assert "outbox" in result["cleaned_dirs"]
 
-    def test_tasks_only(self, initialized_project):
-        ag = initialized_project / ".agentic"
+    def test_tasks_only(self, mcp_project):
+        ag = mcp_project / ".agentic"
         (ag / "inbox" / "x.txt").write_text("x")
         (ag / "context" / "y.txt").write_text("y")
         result = run(awf.awf_reset(
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             tasks_only=True,
         ))
         assert "inbox" in result["cleaned_dirs"]
@@ -369,23 +370,23 @@ class TestAwfReset:
 
 
 class TestAwfAddRole:
-    def test_creates_role(self, initialized_project):
+    def test_creates_role(self, mcp_project):
         result = run(awf.awf_add_role(
             name="qa",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             description="QA engineer",
             model="glm-5.2",
         ))
         assert result["status"] == "ok"
         assert result["role_name"] == "qa"
-        role_file = initialized_project / ".agentic" / "roles" / "qa.md"
+        role_file = mcp_project / ".agentic" / "roles" / "qa.md"
         assert role_file.exists()
         assert "glm-5.2" in role_file.read_text()
 
-    def test_empty_name(self, initialized_project):
+    def test_empty_name(self, mcp_project):
         result = run(awf.awf_add_role(
             name="",
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
         ))
         assert result["status"] == "error"
 
@@ -394,13 +395,13 @@ class TestAwfAddRole:
 
 
 class TestAwfAnalyzeRoles:
-    def test_dry_run_returns_result(self, initialized_project):
+    def test_dry_run_returns_result(self, mcp_project):
         # analyze requires team roles (not just supervisor.md)
-        (initialized_project / ".agentic" / "roles" / "worker.md").write_text(
+        (mcp_project / ".agentic" / "roles" / "worker.md").write_text(
             "# ROLE: worker\nImplementation role\n"
         )
         result = run(awf.awf_analyze_roles(
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             dry_run=True,
         ))
         # Either ok with empty overlaps, or error if no pipeline configured
@@ -421,10 +422,10 @@ class TestAwfAnalyzeRoles:
 
 
 class TestAwfStart:
-    def test_background_returns_pid(self, initialized_project):
+    def test_background_returns_pid(self, mcp_project):
         """Background mode returns immediately with a PID."""
         result = run(awf.awf_start(
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             background=True,
             auto=True,
         ))
@@ -435,7 +436,7 @@ class TestAwfStart:
             assert result["run_mode"] == "background"
             assert result["run_id"] is not None or result["exit_code"] is not None
 
-    def test_foreground_orchestrator_crash_returns_error_not_crash(self, initialized_project, monkeypatch):
+    def test_foreground_orchestrator_crash_returns_error_not_crash(self, mcp_project, monkeypatch):
         """Foreground mode catches orchestrator exceptions and returns
         {status: "ok", exit_code: 1, message: "crashed..."} instead of crashing."""
         import awf.orchestrator as orch_mod
@@ -446,7 +447,7 @@ class TestAwfStart:
         monkeypatch.setattr(orch_mod, "run_pipeline", crashing)
 
         result = run(awf.awf_start(
-            project_dir=str(initialized_project),
+            project_dir=str(mcp_project),
             background=False,
         ))
         # MCP tool catches AwfApiError; but api.start_pipeline now catches

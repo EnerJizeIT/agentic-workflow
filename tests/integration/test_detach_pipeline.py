@@ -21,6 +21,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from conftest import _git_init  # AUD12-08: shared git boilerplate
+
 from awf import api
 
 # Captured at module import — BEFORE the autouse conftest fixture patches
@@ -32,14 +34,10 @@ STUBS_DIR = REPO_ROOT / "tests" / "stubs"
 
 
 def _git_repo(tmp_path: Path) -> Path:
+    # AUD12-08: git boilerplate delegated to the shared conftest helper.
     repo = tmp_path / "detach"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n", encoding="utf-8")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    _git_init(repo)
     return repo
 
 

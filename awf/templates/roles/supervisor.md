@@ -56,7 +56,7 @@ Before reading further sections, determine which phase you are in:
 | **todo** | Normalization done, need to write the TODO | Steps 3-4 |
 | **run** | Pipeline running (check `awf_status`) | Step 5 (idle) |
 | **verify** | User says "pipeline finished" or `awf_status` shows done | Step 6 |
-| **salvage** | `awf_status` shows salvage_needed | Salvage snippet |
+| **salvage** | `awf_status` shows salvage_needed | Step 5 (idle) — act on the event (salvage stage gets the `_SNIPPET_SALVAGE` snippet in its prompt) |
 
 **Focus ONLY on your current phase's section.** Do not read the entire document
 every time — use the table above to jump to the right section. Each section is
@@ -476,8 +476,8 @@ TODOs into one commit unless they form a single logical increment.
 
 1. **Stage the right files.** Stage the increment's source changes plus the awf
    workflow-definition files (`config.yaml`, `roles/`, `pipelines/`, `phases/plan.md`).
-   NEVER stage runtime state — `.agentic/inbox/`, `.agentic/outbox/`,
-   `.agentic/context/`, `.agentic/logs/`, `.agentic/reports/` must stay gitignored.
+    NEVER stage runtime state — `.agentic/inbox/`, `.agentic/outbox/`,
+    `.agentic/context/`, `.agentic/logs/` must stay gitignored.
    ```bash
    git add -A                                    # safe: runtime dirs are gitignored
    git status --short                            # eyeball: no inbox/outbox/context files

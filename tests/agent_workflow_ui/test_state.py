@@ -84,8 +84,10 @@ def test_http_port_accessor():
     state_mod._http_port = None
 
     assert get_http_port() is None
-    set_http_port(13747)
-    assert get_http_port() == 13747
+    # AUD12-09: value is arbitrary — accessor roundtrip, no port is bound.
+    port = 4711
+    set_http_port(port)
+    assert get_http_port() == port
 
     state_mod._http_port = None
 

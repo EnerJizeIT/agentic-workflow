@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf._env import awf_subprocess_env as _awf_subprocess_env
 from awf.agent_stage import (
@@ -201,16 +202,11 @@ class TestGlobalRolesDir:
 class TestMaybeCommitBD8:
 
     def _init_git(self, tmp_path: Path) -> Path:
+        # AUD12-08: git boilerplate is the shared conftest helper.
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        (project_dir / ".git").mkdir()
         (project_dir / "file.txt").write_text("hello")
-        import subprocess
-        subprocess.run(["git", "init"], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.name", "A"], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "add", "."], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "init"], cwd=project_dir, capture_output=True, check=True)
+        _git_init(project_dir)
         return project_dir
 
     def test_maybe_commit_auto_waits_for_approve_signal(

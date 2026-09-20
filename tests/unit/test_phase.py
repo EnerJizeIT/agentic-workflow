@@ -129,13 +129,30 @@ class TestGetPhasePrompt:
         prompt = phase.get_phase_prompt("form", project)
         assert "Build feature X" in prompt
 
-    def test_fallback_to_supervisor_md(self, tmp_path):
-        """Without phase files, falls back to supervisor.md."""
+    def test_fallback_to_package_templates(self, tmp_path):
+        """Without project-level templates, falls back to awf package
+        templates."""
         project = tmp_path / "noTemplates"
         (project / ".agentic").mkdir(parents=True)
         prompt = phase.get_phase_prompt("goal", project)
-        # Should still return a string (from awf templates)
+        # Should still return the prompt (from awf templates)
         assert isinstance(prompt, str)
+        assert "No prompt template found" not in prompt
+
+    def test_missing_templates_degrade_message(self, tmp_path, monkeypatch):
+        """AUD16-11: no templates anywhere (corrupted install) → honest
+        degradation message. The old fallback to the full supervisor.md is
+        gone — it was unreachable on an intact install and useless on a
+        broken one."""
+        import awf
+
+        project = tmp_path / "noTemplates"
+        (project / ".agentic").mkdir(parents=True)
+        monkeypatch.setattr(
+            awf, "__file__", str(tmp_path / "gone" / "awf" / "__init__.py"),
+        )
+        prompt = phase.get_phase_prompt("goal", project)
+        assert "No prompt template found" in prompt
 
 
 class TestAdvancePhase:

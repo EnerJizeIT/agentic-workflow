@@ -98,7 +98,9 @@ def read_state(project_dir: Path) -> dict[str, Any] | None:
         if isinstance(data, dict):
             return data
         return None
-    except (yaml.YAMLError, OSError):
+    except (yaml.YAMLError, OSError, UnicodeDecodeError):
+        # AUD12-11: a state file with non-UTF-8 bytes is corrupt the same
+        # way a broken YAML one is — degrade to "no state", not traceback.
         return None
 
 

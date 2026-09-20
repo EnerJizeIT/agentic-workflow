@@ -10,8 +10,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Node24: v4 ran on the deprecated Node 20 runtime; v5 is Node 24.
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6  # Node24: v5 ran on Node 20; v6 is Node 24.
         with:
           python-version: "3.12"
       - name: Install ruff
@@ -26,10 +27,11 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      # Node24: v4 ran on the deprecated Node 20 runtime; v5 is Node 24.
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6  # Node24: v5 ran on Node 20; v6 is Node 24.
         with:
           python-version: ${{ matrix.python-version }}
 

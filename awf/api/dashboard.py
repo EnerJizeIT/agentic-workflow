@@ -861,20 +861,23 @@ def _read_worker_last_line(project_dir: Path, todo_id: str | None = None) -> str
 
     Day-4 (live review): the glob used 'agent-*.out' while awf writes
     'awf-agent-*.out' — the worker panel's last line was always empty.
+    AUD16-06: the writer now names logs ``awf-{role}-{todo_id}.out`` for
+    ANY role (role is known exactly in run_agent_stage), so the glob
+    matches ``awf-*-{todo_id}.out`` — not just agent-* roles.
     """
     import re as _re
 
-    logs_dir = project_dir / ".agentic" / "logs"
+    logs_dir = paths.logs_dir(project_dir)
     candidates: list[Path] = []
     if todo_id:
         candidates = sorted(
-            logs_dir.glob(f"awf-agent-*-{todo_id}.out"),
+            logs_dir.glob(f"awf-*-{todo_id}.out"),
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
     if not candidates:
         try:
             candidates = sorted(
-                logs_dir.glob("awf-agent-*.out"),
+                logs_dir.glob("awf-*.out"),
                 key=lambda p: p.stat().st_mtime, reverse=True,
             )
         except OSError:

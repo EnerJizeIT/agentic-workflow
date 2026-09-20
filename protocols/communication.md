@@ -47,7 +47,7 @@ archive_todo → done/{id}/ (inbox + outbox очищены)
 - **execute:** signal contract (DF5-1) + pipeline context (BD-10)
 - **plan:** plan snippet + vision injection
 - **verify:** verify snippet ("DECIDE YOURSELF")
-- **salvage:** salvage snippet ("check git diff, ACK or REVIEW")
+- **salvage:** salvage-stage snippet (`_SNIPPET_SALVAGE` — "check git diff, ACK or REVIEW")
 
 Snippets добавляются в КОНЕЦ prompt (recency bias).
 

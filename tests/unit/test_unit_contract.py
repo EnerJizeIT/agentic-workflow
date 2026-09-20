@@ -40,6 +40,7 @@ class TestParseTodoContract:
             'verify: ["python3 -m pytest tests/unit/test_x.py -q"]\n'
             'gates: ["contracts", "ratchet"]\n'
             'prove_red: ["tests/unit/test_x.py::test_y"]\n'
+            'files: ["awf/x.py", "tests/unit/test_x.py"]\n'
             "---\n"
             "# Task\n"
         )
@@ -47,6 +48,7 @@ class TestParseTodoContract:
         assert contract["verify"] == ["python3 -m pytest tests/unit/test_x.py -q"]
         assert contract["gates"] == ["contracts", "ratchet"]
         assert contract["prove_red"] == ["tests/unit/test_x.py::test_y"]
+        assert contract["files"] == ["awf/x.py", "tests/unit/test_x.py"]
         assert unknown == []
 
     def test_block_only_with_prove_red(self):
@@ -147,6 +149,39 @@ class TestParseTodoContract:
             raise AssertionError("expected ValueError")
         except ValueError as e:
             assert "empty" in str(e)
+
+    def test_files_valid_list_is_a_contract_key(self):
+        # FU-21 D2: verify-pack already cross-checks the diff against
+        # `files`, so the key must be first-class — no unknown-key warning,
+        # no missing validation.
+        content = '---\nfiles: ["awf/x.py", "tests/unit/test_x.py"]\n---\nbody\n'
+        contract, unknown = parse_todo_contract(content)
+        assert contract["files"] == ["awf/x.py", "tests/unit/test_x.py"]
+        assert unknown == []
+
+    def test_files_not_a_list_raises(self):
+        content = '---\nfiles: "awf/x.py"\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "'files' must be a list" in str(e)
+
+    def test_files_empty_list_raises(self):
+        content = '---\nfiles: []\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "empty" in str(e)
+
+    def test_files_non_string_item_raises(self):
+        content = '---\nfiles: ["awf/x.py", 42]\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "non-empty string" in str(e)
 
     def test_unknown_key_is_warning_not_error(self):
         content = '---\nverify: ["pytest -q"]\nverfiy: ["typo"]\n---\nbody\n'

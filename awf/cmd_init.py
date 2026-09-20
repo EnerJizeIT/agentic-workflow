@@ -74,7 +74,7 @@ def run(args: Any) -> int:
             print("  .agentic/config.yaml (models added by project-setup form)")
             print("  .agentic/roles/supervisor.md")
             print("  .agentic/phases/plan.md (stub)")
-            print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
+            print("  .agentic/{pipelines,phases,inbox,outbox,context,logs}/")
         print("[DRY RUN] No files written.")
         return 0
 
@@ -88,10 +88,10 @@ def run(args: Any) -> int:
     typecheck_cmd = input("Typecheck command (e.g. mypy src/, tsc --noEmit): ").strip()
     build_cmd = input("Build command (optional, e.g. docker compose config): ").strip()
 
-    # M5 fix: worker_model prompt was asked but never saved (no placeholder
-    # in CONFIG_TEMPLATE). Project-setup form handles per-role models now
-    # (BD-32). Removed the dead prompt — was misleading users.
-    worker_model = ""  # kept for opencode_agents.propose() below (legacy compat)
+    # M5 fix: the worker-model prompt was asked but never saved (no
+    # placeholder in CONFIG_TEMPLATE). Project-setup form handles per-role
+    # models now (BD-32). AUD16-10: the leftover "" variable went with it —
+    # propose/apply are called with an empty model.
 
     # Delegate skeleton creation to api.init_project
     try:
@@ -118,7 +118,7 @@ def run(args: Any) -> int:
 
     # Offer to create opencode agents — only `worker` (the universal agent
     # that loads role .md as instruction). Other roles come from skills.
-    _offer_opencode_agent_setup(worker_model)
+    _offer_opencode_agent_setup()
 
     _offer_plugin_install(result.project_name)
 
@@ -130,8 +130,12 @@ def run(args: Any) -> int:
     return 0
 
 
-def _offer_opencode_agent_setup(worker_model: str) -> None:
-    """Offer to add 'worker' agent to opencode.json. No-op if already there."""
+def _offer_opencode_agent_setup() -> None:
+    """Offer to add 'worker' agent to opencode.json. No-op if already there.
+
+    AUD16-10: no model — the init flow never collected one (the prompt was
+    removed in M5); per-role models come from the project-setup form.
+    """
     oc_cfg = opencode_config_file()
     if not oc_cfg.exists():
         print()
@@ -139,7 +143,7 @@ def _offer_opencode_agent_setup(worker_model: str) -> None:
         print("      Create the 'worker' opencode agent manually (see README → Requirements).")
         return
 
-    proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
+    proposal = opencode_agents.propose(str(oc_cfg), ["worker"], "")
     # T2.8: typed Proposal instead of stringly-typed startswith checks.
     # __str__ keeps legacy format for prints, but branching on .kind is
     # exhaustiveness-checked and self-documenting.
@@ -161,7 +165,7 @@ def _offer_opencode_agent_setup(worker_model: str) -> None:
         if ans and ans not in ("y", "yes"):
             print("Skipping agent creation (create them manually if needed).")
             return
-        result = opencode_agents.apply(str(oc_cfg), ["worker"], worker_model)
+        result = opencode_agents.apply(str(oc_cfg), ["worker"], "")
         print(result)
         return
     print()

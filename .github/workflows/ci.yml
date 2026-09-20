@@ -10,7 +10,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Node24: v4 ran on the deprecated Node 20 runtime (2026 deprecation
+      # wave); v5 is the first Node-24 major (manifest: using: node24).
+      - uses: actions/checkout@v5
         with:
           # instruction-gates проверяет «живые хэши» — ссылки на коммиты
           # в docs/contracts/*.md должны существовать в истории (shallow
@@ -18,7 +20,8 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        # Node24: v5 ran on Node 20; v6 is Node 24 (manifest verified).
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 

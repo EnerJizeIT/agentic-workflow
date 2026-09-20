@@ -13,8 +13,14 @@
 #                  FU-19: keeps a detached pipeline child alive mid-stage so
 #                  the detach mechanics (PID file, state.pipeline_pid,
 #                  kill-by-PID) are observable in-process.
+#   crash        → exit 1, no signal (AUD12-10: the pipeline must fail loud
+#                  and must not archive a fake DONE).
+#   hang         → sleep AWF_TEST_OPENCODE_HANG_SECONDS (default 599), no
+#                  signal. AUD12-10: outlives any sane --timeout so the
+#                  hard-timeout kill (process tree) is exercised for real.
 #
-# Invocation shape (from lib/orchestrator.sh run_agent_stage):
+# Invocation shape (from awf/orchestrator.py → awf/supervisor.py
+# run_supervisor_via_subprocess / awf/agent_stage.py run_agent_stage):
 #   opencode run --auto --agent worker --file .agentic/roles/worker.md \
 #                --file .agentic/inbox/TODO-0001.md -- <prompt containing "TODO-0001">
 set -euo pipefail
@@ -61,7 +67,7 @@ EOF
 
 write_progress_and_work() {
     # Append a PROGRESS entry and leave a NEW source file (untracked).
-    # detect_work_evidence in lib/orchestrator.sh counts untracked files
+    # detect_work_evidence (awf/verify.py) counts untracked files
     # via `git ls-files --others --exclude-standard`.
     cat >> "$OUTBOX/PROGRESS-${TODO_ID}.md" <<EOF
 ## Task 1 · stub work — [x]
@@ -80,6 +86,10 @@ case "$BEHAVIOR" in
     noop)         : ;;  # intentional no-op
     auto_done)    write_progress_and_work ;;
     sleep)        sleep "${AWF_TEST_OPENCODE_SLEEP_SECONDS:-60}" ;;
+    # AUD12-10: crash — die immediately, leave no signal.
+    crash)        exit 1 ;;
+    # AUD12-10: hang — outlive the --timeout so the kill path is real.
+    hang)         sleep "${AWF_TEST_OPENCODE_HANG_SECONDS:-599}" ;;
     *)
         echo "tests/stubs/opencode: unknown AWF_TEST_OPENCODE_BEHAVIOR=$BEHAVIOR" >&2
         exit 1

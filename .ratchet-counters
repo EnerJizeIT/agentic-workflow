@@ -1,2 +1,5 @@
 files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs wc -l | awk '$1>400 && $2!="total"' | wc -l
-todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
+# FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
+# identifiers (backlog item references), and every docs reword there
+# shifted the count (see "reword to keep the todos ratchet at baseline").
+todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

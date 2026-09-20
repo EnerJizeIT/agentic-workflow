@@ -123,7 +123,7 @@ def _build_pipeline_context(
         parts.append("\nYour scope: project audit. Don't implement — assess overall quality.")
 
     # 6. Prior completed work from done/
-    done_dir = project_dir / ".agentic" / "done"
+    done_dir = paths.done_dir(project_dir)
     if done_dir.is_dir():
         completed = sorted(d.name for d in done_dir.iterdir() if d.is_dir())
         if completed:
@@ -215,14 +215,6 @@ def _stage_snippet(kind: str, todo_id: str = "") -> str:
     return snippet
 
 
-def get_salvage_snippet(todo_id: str = "") -> str:
-    """Public API: salvage instructions for orchestrator."""
-    snippet = _SNIPPET_ALWAYS + "\n" + _SNIPPET_SALVAGE
-    if todo_id:
-        snippet = snippet.replace("{todo_id}", todo_id)
-    return snippet
-
-
 def build_prompt(
     kind: str,
     todo_id: str,
@@ -287,7 +279,14 @@ def build_prompt(
             f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready\n"
             f"  🚫 Blocked? → touch .agentic/outbox/BLOCKED-{todo_id}.ready\n\n"
             f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n"
-            f"Optional machine facts for the next role: .agentic/outbox/DONE-{todo_id}.json (keys: files_changed, tests_run, gates, notes — format in docs/unit-contract.md).\n\n"
+            f"Optional machine facts for the next role: .agentic/outbox/DONE-{todo_id}.json —\n"
+            f"a JSON object with keys files_changed, tests_run, gates, notes, e.g.:\n"
+            f'  {{"files_changed": ["awf/x.py", "tests/unit/test_x.py"],\n'
+            f'   "tests_run": [{{"cmd": "python3 -m pytest tests/unit/test_x.py -q", "result": "12 passed"}}],\n'
+            f'   "gates": ["contracts", "ratchet"], "notes": "one line"}}\n'
+            f"tests_run items are OBJECTS {{cmd, result}}, not strings — a file that\n"
+            f"violates the schema (or is broken JSON) is skipped by the handoff.\n"
+            f"Full format: docs/unit-contract.md.\n\n"
             f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
             f"Your reply has a limited token budget. Work in small pieces:\n"
             f"- Write code straight into files (write/edit tools). NEVER draft whole\n"

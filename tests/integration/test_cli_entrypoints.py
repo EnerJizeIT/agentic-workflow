@@ -8,25 +8,21 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf import api, cli
 
 
 def _git_repo(tmp_path: Path) -> Path:
+    """Git repo with an initial commit (AUD12-08: boilerplate in conftest)."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    _git_init(repo)
     return repo
 
 
@@ -556,7 +552,7 @@ class TestResetHelpMatchesBehavior:
     """AUD07-03: the reset help text must name what reset actually cleans.
 
     The old help promised a gentle "inbox/outbox/logs" clean while the
-    default wiped context/reports/state too. --full is now behaviorally
+    default wiped context/state too. --full is now behaviorally
     different (also handoff/inputs/dashboards).
     """
 
@@ -570,14 +566,14 @@ class TestResetHelpMatchesBehavior:
         repo = _git_repo(tmp_path)
         api.init_project(repo, project_name="CliResetDiff")
         self._plant_junk(
-            repo, ["inbox", "outbox", "context", "logs", "reports",
+            repo, ["inbox", "outbox", "context", "logs",
                    "handoff", "inputs", "dashboards"]
         )
         full = api.reset_runtime(repo, full=True)
         assert {"handoff", "inputs", "dashboards"} <= set(full.cleaned_dirs)
 
         self._plant_junk(
-            repo, ["inbox", "outbox", "context", "logs", "reports",
+            repo, ["inbox", "outbox", "context", "logs",
                    "handoff", "inputs", "dashboards"]
         )
         default = api.reset_runtime(repo)
@@ -585,7 +581,7 @@ class TestResetHelpMatchesBehavior:
             "default reset must keep handoff/inputs/dashboards (that is what "
             f"--full is for); got {default.cleaned_dirs}"
         )
-        assert {"inbox", "outbox", "context", "logs", "reports"} <= set(default.cleaned_dirs)
+        assert {"inbox", "outbox", "context", "logs"} <= set(default.cleaned_dirs)
 
     def test_reset_help_names_the_cleaned_dirs(self, tmp_path, capsys):
         repo = _git_repo(tmp_path)
@@ -596,6 +592,6 @@ class TestResetHelpMatchesBehavior:
             cli.main(["reset", "--help"])
         help_out = capsys.readouterr().out
 
-        for d in ("inbox", "outbox", "context", "logs", "reports",
+        for d in ("inbox", "outbox", "context", "logs",
                   "handoff", "inputs", "dashboards"):
             assert d in help_out, f"reset --help does not name cleaned dir {d!r}"

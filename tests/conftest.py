@@ -167,10 +167,40 @@ def awf_env(tmp_path, monkeypatch) -> dict:
     return env
 
 
-def _git_init(proj: Path) -> None:
+def _free_port() -> int:
+    """Ask the OS for a free TCP port (AUD12-09).
+
+    No test may depend on a specific port being free (13747 used to be
+    hardcoded in three places — parallel runs or a busy CI box crashed
+    them). This is the shared home of the pattern; test_plan_checkpoint
+    imports it from here.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _git_init_bare(proj: Path) -> None:
+    """git init + test identity, NO initial commit (AUD12-08).
+
+    For scenarios that need an empty repo without HEAD (e.g. testing
+    current_sha failure on a fresh repo).
+    """
     subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
     subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
+
+
+def _git_init(proj: Path) -> None:
+    """git init + identity + README + initial commit (AUD12-08).
+
+    The single home of the 5-line git boilerplate — every test that needs
+    a committed repo goes through here (fixtures tmp_git_repo/empty_project
+    or a direct call).
+    """
+    _git_init_bare(proj)
     (proj / "README.md").write_text("init\n")
     subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
@@ -183,6 +213,20 @@ def empty_project(tmp_path) -> Path:
     proj.mkdir()
     _git_init(proj)
     return proj
+
+
+@pytest.fixture
+def tmp_git_repo(tmp_path) -> Path:
+    """A tmp_path/repo with git init, user config, and an initial commit.
+
+    AUD12-08: single home for the 5-line git boilerplate — previously
+    duplicated in tests/unit/conftest.py, tests/negative/conftest.py and
+    ~18 inline copies across the suite.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    return repo
 
 
 @pytest.fixture
@@ -280,7 +324,9 @@ def plugin_setup(tmp_path, monkeypatch):
     config = load()
     ensure_directories(config)
     set_config(config)
-    set_http_port(13747)
+    # AUD12-09: no hardcoded port — the suite must not depend on a
+    # specific port being free (parallel runs / busy CI box).
+    set_http_port(_free_port())
     set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
     reset_registry()
 

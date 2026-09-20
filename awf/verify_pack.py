@@ -221,14 +221,22 @@ def _is_noise(rel: str) -> bool:
 
 
 def _git_lines(project: Path, *args: str) -> tuple[int, str]:
-    cp = subprocess.run(
-        ["git", *args],
-        cwd=str(project),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        cp = subprocess.run(
+            ["git", *args],
+            cwd=str(project),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        # FU-21 D3: a hung git (dead process holding index.lock, stalled
+        # filesystem) used to escape as a raw TimeoutExpired traceback and
+        # kill the whole verify pack. rc 124 is the conventional timeout
+        # code; every caller already degrades rc != 0 into a failed
+        # section, so hand it the timeout text.
+        return 124, f"git {' '.join(args)} timed out after {e.timeout}s"
     return cp.returncode, (cp.stdout or "").strip()
 
 

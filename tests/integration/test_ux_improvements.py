@@ -7,10 +7,10 @@
 """
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import _git_init, _git_init_bare  # AUD12-08: shared git boilerplate
 
 from awf import paths
 from awf.pipeline_engine import _ensure_baseline_sha
@@ -49,15 +49,7 @@ class TestFindVisionFile:
 
 
 # ── _ensure_baseline_sha (П3) ────────────────────────────────────────────────
-
-
-def _git_init(proj: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
-    (proj / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+# _git_init / _git_init_bare — из корневого conftest (AUD12-08).
 
 
 class TestEnsureBaselineSha:
@@ -122,7 +114,7 @@ class TestEnsureBaselineSha:
     def test_handles_empty_git_repo(self, tmp_path):
         """T1 (QA gap): git init but no commits yet — current_sha fails.
         _ensure_baseline_sha must catch and log, not crash."""
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        _git_init_bare(tmp_path)
         # NO commit — HEAD doesn't exist
         context = tmp_path / ".agentic" / "context"
         logs = tmp_path / ".agentic" / "logs"

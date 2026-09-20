@@ -76,9 +76,18 @@ class TestDashboardRenders:
         assert "worker" in html.lower()
 
     def test_without_worker_activity(self, dash_project):
-        """Dashboard renders when worker_activity is absent (no crash)."""
+        """Dashboard renders when worker_activity is absent (no crash).
+
+        AUD12-12: used to assert only "not None" — a template regression
+        (dropped section) stayed green. Now the basic sections are pinned.
+        """
         result = generate_dashboard(dash_project)
         assert result is not None
+        html = result.read_text(encoding="utf-8")
+        assert "<title>awf" in html
+        assert 'id="status-badge"' in html
+        assert 'id="stage-list"' in html
+        assert 'id="pane-chat"' in html
 
     def test_dashboard_overwrites_previous(self, dash_project):
         """Second call overwrites first (atomic write)."""
@@ -110,12 +119,16 @@ class TestDashboardErrorHandling:
 class TestDashboardJinjaTemplate:
     """Direct template validation — catches syntax errors early."""
 
-    def test_all_endif_have_closing_brace(self):
-        """Every {% endif %} has closing } (DF5-7 was {% endif %)."""
+    def test_template_parses(self):
+        """Dashboard template compiles (DF5-7 was a broken {% endif %}).
+
+        AUD12-12: renamed from ``test_all_endif_have_closing_brace`` — the
+        name promised a brace check the test never did; it loads the
+        template (Jinja2 parse), so it gets an honest name.
+        """
         from awf.api.dashboard import _get_template
 
         template = _get_template()
-        # If template loads, Jinja2 syntax is valid
         assert template is not None
 
     def test_template_renders_with_minimal_data(self):
@@ -557,6 +570,22 @@ class TestWorkerLastLine:
         from awf.api.dashboard import _read_worker_last_line
 
         assert _read_worker_last_line(dash_project, "TODO-0001") == ""
+
+    def test_non_agent_role_log_found(self, dash_project):
+        """AUD16-06: a role without 'agent-' in the name (worker/auditor)
+        produces awf-{role}-{todo}.out — the glob must match it."""
+        from awf.api.dashboard import _read_worker_last_line
+
+        self._log(
+            dash_project, "awf-worker-TODO-0001.out",
+            "Building feature x\n", mtime=2_000_000,
+        )
+        self._log(
+            dash_project, "awf-agent-y-TODO-0001.out",
+            "stale line\n", mtime=1_000_000,
+        )
+
+        assert _read_worker_last_line(dash_project, "TODO-0001") == "Building feature x"
 
 
 class TestElapsedFormat:

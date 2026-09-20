@@ -24,8 +24,16 @@ prove_red: ["tests/unit/test_x.py::test_y"]
 Ключи (все необязательны, но объявленный ключ обязан быть заполнен):
 
 - `verify` — список непустых команд проверки.
-- `gates` — список имён проверок из `scripts/run-all.sh`:
-  `contracts`, `ratchet`, `instructions`, `tests`, `lint`, `mutations`.
+- `gates` — список коротких имён проверок: канонический набор
+  `KNOWN_GATES` из `awf/unit_contract.py`
+  (`contracts`, `ratchet`, `instructions`, `tests`, `lint`, `mutations`).
+  Это НЕ «имена проверок из run-all.sh»: `scripts/run-all.sh` гоняет
+  `contracts`/`ratchet`/`instructions` под этими короткими именами, а
+  pytest- и ruff-команды — строками из `scripts/project-commands.txt`
+  (это и есть `tests`/`lint`); `mutations` в run-all не входит —
+  отдельный шаг `scripts/mutation-smoke.sh` (CI). В verify-pack секция
+  `gates` исполняет только первые три; `tests`/`lint` покрывают команды
+  из `verify:`, а `mutations` — декларация для QA/CI.
 - `prove_red` — список тест-идов, которые обязаны быть красными до фикса.
   `awf prove-red --todo <id>` проверяет это машинно (baseline в worktree:
   красный от ассерта + зелёный на текущем дереве; вердикты `red-ok` /

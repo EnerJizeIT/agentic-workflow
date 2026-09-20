@@ -7,6 +7,7 @@ skipped when locating the block)::
     verify: ["python3 -m pytest tests/unit/test_x.py -q"]
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
+    files: ["awf/x.py", "tests/unit/test_x.py"]
 
 ``dispatch_todo`` validates the block; a TODO without a block works exactly
 as before. Broken YAML / wrong types / empty lists / unknown gate names are
@@ -38,7 +39,11 @@ KNOWN_GATES: frozenset[str] = frozenset(
     {"contracts", "ratchet", "instructions", "tests", "lint", "mutations"}
 )
 
-_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red")
+#: ``files`` is the declared touch-list: verify-pack cross-checks the git
+#: diff against it (changed-but-undeclared files are reported). FU-21 D2:
+#: it was read by verify_pack but missing here, so declaring it produced
+#: an "unknown key" warning and no str-list validation.
+_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red", "files")
 
 
 def _find_contract_lines(content: str) -> tuple[list[str] | None, str | None]:
@@ -120,6 +125,8 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
                 )
     if "prove_red" in data:
         _check_str_list(data["prove_red"], "prove_red")
+    if "files" in data:
+        _check_str_list(data["files"], "files")
     return data, unknown
 
 

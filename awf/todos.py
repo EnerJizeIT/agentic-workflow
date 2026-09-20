@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .paths import handoff_dir
 from .signals import short_id as _short_id
 
 
@@ -140,7 +141,7 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
                     moved_anything = True
 
     # Move handoff files to done/{id}/handoff/
-    handoff_p = project_dir / ".agentic" / "handoff"
+    handoff_p = handoff_dir(project_dir)
     if handoff_p.is_dir():
         # Day-3 (dashboard review): also catch the legacy naming agents used —
         # '{role}-{todo}-final.md'. Two exact globs on purpose: a single

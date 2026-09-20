@@ -1097,6 +1097,12 @@ def execute_agent_stage(
         # stage_idx used to re-run this stage forever (the BLOCKED-stop loop).
         return current_todo, stage_idx, 1
 
-    else:
-        print(f"Unknown transition: {action}")
-        return current_todo, stage_idx, 1
+    # AUD04-12: resolve_transition returns a closed action set
+    # (next/commit_and_next/commit_and_report/escalate/rollback/stop) and
+    # every member is handled above — the old `else: Unknown transition`
+    # branch was unreachable dead code. The invariant is pinned explicitly:
+    # a new resolver action must be dispatched here, not silently stopped.
+    raise AssertionError(
+        f"Unhandled transition action {action!r} at stage {s_name!r} — "
+        "resolve_transition returned an action the dispatcher does not handle"
+    )

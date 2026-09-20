@@ -92,9 +92,11 @@ def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
     - :attr:`ProposalKind.PROPOSE` — there are additions or model updates.
     - :attr:`ProposalKind.ERR` — file unreadable or schema wrong.
 
-    The legacy string-prefix format is preserved via ``Proposal.__str__``
-    (renders as ``"NOTHING:..."`` etc.) so old ``startswith`` callers keep
-    working — but new callers should check ``proposal.kind`` directly.
+    ``model`` is an API capability for programmatic callers (the CLI init
+    flow passes an empty string — per-role models come from the
+    project-setup form). Callers branch on ``proposal.kind``;
+    ``Proposal.__str__`` renders the legacy ``"KIND:detail"`` form for
+    CLI printing.
     """
     try:
         with open(cfg_path, encoding="utf-8") as f:
