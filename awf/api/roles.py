@@ -32,7 +32,12 @@ def add_role(
     description: str = "",
     model: str = "",
 ) -> AddRoleResult:
-    """Generate a new role template at ``.agentic/roles/{role_name}.md``."""
+    """Generate a new role template at ``.agentic/roles/{role_name}.md``.
+
+    AUD06-07: raises AwfApiError when the role file already exists — an
+    existing file is user data (hand-edited instructions) and is never
+    silently replaced by the template.
+    """
     if not role_name:
         raise AwfApiError("role_name is required")
     # AUD06-06: role_name is public input (MCP awf_add_role / CLI). Normalize
@@ -64,6 +69,14 @@ def add_role(
     if not role_file.resolve().is_relative_to(roles_dir.resolve()):
         raise AwfApiError(
             f"Invalid role name {role_name!r}: resolves outside .agentic/roles/."
+        )
+    # AUD06-07: an existing role file is user data (hand-edited instructions)
+    # — silently replacing it with the template lost it without a trace or a
+    # backup. Refuse; the caller edits the file instead.
+    if role_file.exists():
+        raise AwfApiError(
+            f"Role file already exists: {role_file} — edit it in place "
+            "(add_role only creates new roles)."
         )
     atomic_write_text(role_file, content)
 

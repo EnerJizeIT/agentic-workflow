@@ -23,17 +23,16 @@ verification:
   lint_cmd: '{lint_cmd}'
   typecheck_cmd: '{typecheck_cmd}'
   build_cmd: '{build_cmd}'
-  coverage_cmd: ""
 
 phases:
   current: ".agentic/phases/plan.md"
 
 default_pipeline: "default"
-
-retry:
-  max_attempts: 3
-  backoff_seconds: 0
 '''
+# AUD06-09: coverage_cmd / retry.max_attempts / retry.backoff_seconds removed
+# from the template — zero readers anywhere in the repo (the engine's retry
+# budgets are per-stage max_retries/max_rollbacks in pipeline.yaml). Keys
+# nobody reads advertised configurability that did nothing.
 
 
 _ROLE_TEMPLATE = """# ROLE: {role_name}
@@ -73,12 +72,15 @@ def update_gitignore(project_dir: Path) -> None:
     Two checks: first for the main runtime block (inbox/outbox/context/...),
     second for the plugin's inputs/dashboards dirs. Avoids duplicating either.
     """
+    # AUD06-14: the .bak patterns are anchored under .agentic/ — an unanchored
+    # '*.bak' made git untrack the USER's backup files repo-wide after init
+    # (e.g. a Rails project's config.ru.bak at the root).
     gitignore_block = (
         ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n"
         ".agentic/handoff/\n.agentic/state/\n"
         ".agentic/logs/\n.agentic/done/\n"
         ".agentic/inputs/\n.agentic/dashboards/\n"
-        "*.bak\n*.bak-*\n"
+        ".agentic/**/*.bak\n.agentic/**/*.bak-*\n"
     )
     gitignore = project_dir / ".gitignore"
     if gitignore.exists():
@@ -91,7 +93,8 @@ def update_gitignore(project_dir: Path) -> None:
         elif ".agentic/handoff/" not in content:
             gitignore.write_text(
                 content + "\n# Agentic workflow runtime (updated)\n"
-                ".agentic/handoff/\n.agentic/state/\n*.bak\n*.bak-*\n",
+                ".agentic/handoff/\n.agentic/state/\n"
+                ".agentic/**/*.bak\n.agentic/**/*.bak-*\n",
                 encoding="utf-8",
             )
         elif ".agentic/inputs/" not in content:

@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import _git_init_bare  # AUD12-08: shared git boilerplate
 
 from awf import api
@@ -873,6 +874,48 @@ class TestInitProject:
         gitignore = (tmp_git_repo / ".gitignore").read_text()
         # No duplicate additions
         assert gitignore.count(".agentic/inbox/") == 1
+
+    def test_gitignore_bak_anchored_to_agentic(self, tmp_git_repo):
+        """AUD06-14: an unanchored '*.bak' untracked the user's .bak files
+        repo-wide after init. The pattern must be scoped to .agentic/ so a
+        Rails project's config.ru.bak at the root stays tracked."""
+        # A user backup at the repo root that init must NOT start ignoring.
+        (tmp_git_repo / "config.ru.bak").write_text("user backup\n")
+        api.init_project(tmp_git_repo, project_name="Test")
+        gitignore = (tmp_git_repo / ".gitignore").read_text()
+        # No bare, unanchored *.bak pattern anywhere.
+        for line in gitignore.splitlines():
+            stripped = line.strip()
+            assert stripped != "*.bak", f"unanchored pattern leaked: {stripped!r}"
+            assert stripped != "*.bak-*", f"unanchored pattern leaked: {stripped!r}"
+        # The .agentic backups are still ignored (scoped pattern present).
+        assert ".agentic" in gitignore and ".bak" in gitignore
+        # Verify with git itself: root user file is trackable, .agentic .bak is ignored.
+        rc_user = subprocess.run(
+            ["git", "check-ignore", "config.ru.bak"],
+            cwd=tmp_git_repo, capture_output=True,
+        )
+        assert rc_user.returncode != 0, "root user .bak must stay trackable"
+        (tmp_git_repo / ".agentic" / "config.yaml.bak").write_text("awf backup\n")
+        rc_agentic = subprocess.run(
+            ["git", "check-ignore", ".agentic/config.yaml.bak"],
+            cwd=tmp_git_repo, capture_output=True,
+        )
+        assert rc_agentic.returncode == 0, ".agentic .bak must be ignored"
+
+    def test_config_template_no_dead_keys(self, tmp_git_repo):
+        """AUD06-09: every key in the generated config.yaml must have a
+        reader. retry.max_attempts / retry.backoff_seconds /
+        verification.coverage_cmd had none — they advertised
+        configurability that did nothing."""
+        api.init_project(tmp_git_repo, project_name="Test")
+        config = yaml.safe_load(
+            (tmp_git_repo / ".agentic" / "config.yaml").read_text()
+        )
+        assert "retry" not in config, "retry.* had no readers — remove from template"
+        assert "coverage_cmd" not in config.get("verification", {}), (
+            "verification.coverage_cmd had no readers — remove from template"
+        )
 
     def test_existing_agentic_without_force_cleans_runtime(self, tmp_git_repo):
         """R1: awf init without force cleans runtime, preserves config."""

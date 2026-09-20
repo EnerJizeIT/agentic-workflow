@@ -6,10 +6,27 @@ use them as building blocks.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from .. import git_utils, paths
 from ._errors import AwfApiError
+
+
+def slugify_role(name: str) -> str:
+    """Normalize a role name to its saved file slug.
+
+    Single normalization point for role names (AUD06-01): the pipeline
+    stages, the config.yaml ``models.<role>`` keys, and the role-file
+    lookup must all agree on the same slug, or runtime lookups miss.
+
+    Custom roles are saved by the plugin as ``auditor.md`` (lowercased,
+    non-alphanumerics dashed). Mirrors the ASCII subset of the plugin's
+    ``_slugify``; falls back to the raw name when nothing usable remains
+    (the pipeline loader warns about the mismatch).
+    """
+    slug = re.sub(r"[^a-z0-9_-]", "-", name.strip().lower()).strip("-")
+    return slug or name.strip()
 
 
 def require_agentic(project_dir: Path) -> Path:

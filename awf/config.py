@@ -17,7 +17,10 @@ def load(project_dir: str | Path = ".") -> dict:
     try:
         with cfg.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        # AUD06-02 class: non-UTF-8 bytes / read errors used to escape as
+        # UnicodeDecodeError and crash every caller (load is the universal
+        # config reader). Degrade to {} like a malformed file.
         print(f"ERROR: config.yaml is malformed: {e}", file=sys.stderr)
         return {}
     return data if isinstance(data, dict) else {}
