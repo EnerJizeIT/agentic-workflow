@@ -27,6 +27,10 @@ prove_red: ["tests/unit/test_x.py::test_y"]
 - `gates` — список имён проверок из `scripts/run-all.sh`:
   `contracts`, `ratchet`, `instructions`, `tests`, `lint`, `mutations`.
 - `prove_red` — список тест-идов, которые обязаны быть красными до фикса.
+  `awf prove-red --todo <id>` проверяет это машинно (baseline в worktree:
+  красный от ассерта + зелёный на текущем дереве; вердикты `red-ok` /
+  `not-red` / `broken-runner` / `green-after`) — в отличие от `verify`,
+  который просто прогоняет команды проверки на текущем дереве.
 
 Валидация в `awf/api/dispatch.py::dispatch_todo` (один путь для MCP и CLI):
 

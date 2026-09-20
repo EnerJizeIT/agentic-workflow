@@ -25,6 +25,8 @@ def _print_top_level_help() -> int:
         "  add-role <name>   Generate a template for a new role\n"
         "  approve <id>      Approve auto-commit for a TODO in --auto mode\n"
         "  baseline <id>     Create a baseline snapshot\n"
+        "  prove-red --todo <id>\n"
+        "                  Prove tests are red on the baseline sha (U4)\n"
         "  rollback <id>     Rollback to baseline\n"
         "  reset             Clean runtime data (inbox/outbox/logs)\n"
         "  analyze-roles     BD-31: analyze team roles, add disambiguation patches\n"
@@ -185,6 +187,29 @@ def _dispatch_subcommand(argv):
         help="Path to project root (default: current directory)",
     )
 
+    p_prove_red = sub.add_parser(
+        "prove-red",
+        help="U4: prove declared tests are red on the baseline sha, green now",
+    )
+    p_prove_red.add_argument(
+        "--todo", dest="todo_id", required=True, help="TODO id (e.g. TODO-0021)"
+    )
+    p_prove_red.add_argument(
+        "--tests",
+        nargs="*",
+        default=None,
+        help="Test files and/or file::test ids "
+             "(default: prove_red block of the TODO contract)",
+    )
+    p_prove_red.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    p_prove_red.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_rollback = sub.add_parser("rollback", help="Rollback to baseline")
     p_rollback.add_argument("todo_id")
     p_rollback.add_argument("--hard", action="store_true")
@@ -260,6 +285,9 @@ def _run_command(args) -> int:
         if args.command == "baseline":
             from . import cmd_baseline
             return cmd_baseline.run(args)
+        if args.command == "prove-red":
+            from . import cmd_prove_red
+            return cmd_prove_red.run(args)
         if args.command == "rollback":
             from . import cmd_rollback
             return cmd_rollback.run(args)

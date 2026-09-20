@@ -70,7 +70,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 29 tools are registered with correct names (5 UI + 24 awf)."""
+    """All 30 tools are registered with correct names (5 UI + 25 awf)."""
     server = create_server()
     tools = asyncio.run(server.list_tools())
 
@@ -121,6 +121,8 @@ def test_all_tools_registered():
         "awf_run_finish",
         "awf_run_note",
         "awf_restore",
+        # U4: machine proof that tests are red on the baseline sha
+        "awf_prove_red",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

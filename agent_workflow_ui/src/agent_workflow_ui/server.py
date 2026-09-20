@@ -69,5 +69,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_run_finish, name="awf_run_finish")
     mcp.add_tool(awf.awf_run_note, name="awf_run_note")
     mcp.add_tool(awf.awf_restore, name="awf_restore")
+    # U4: machine proof that tests are red on the baseline sha
+    mcp.add_tool(awf.awf_prove_red, name="awf_prove_red")
 
     return mcp

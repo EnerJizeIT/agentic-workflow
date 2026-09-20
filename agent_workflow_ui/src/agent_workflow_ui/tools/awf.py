@@ -522,6 +522,49 @@ async def awf_rollback(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+async def awf_prove_red(
+    todo_id: str,
+    project_dir: str | None = None,
+    *,
+    tests: list[str] | None = None,
+) -> dict[str, Any]:
+    """U4: machine-proof that declared tests are red on the baseline sha.
+
+    Deploys BASELINE-{todo_id}.sha into a temporary git worktree under
+    /tmp/opencode/, copies the test files (new/untracked included) from the
+    current tree, and runs them: on the old code the tests must fail with a
+    real red (assertions), and the same tests must pass in the current tree.
+
+    Verdicts (same as the CLI ``awf prove-red`` exit codes):
+    - ``red-ok`` (0) — real red on baseline, green in the current tree;
+    - ``not-red`` (1) — tests PASSED on the baseline: they prove nothing;
+    - ``broken-runner`` (2) — 0 tests collected / collection error / broken
+      runner / import error that is only a missing project symbol (the last
+      one is acceptable for new code — a warning is attached);
+    - ``green-after`` (1) — red on baseline but not passing in the current
+      tree.
+
+    The worktree is removed in ``finally`` on every outcome.
+
+    Args:
+        todo_id: TODO identifier (e.g. "TODO-0021").
+        project_dir: Project root (default: cwd).
+        tests: Test files and/or ``file::test`` ids. Default: the
+            ``prove_red`` block of the TODO contract.
+
+    Returns:
+        Dict with: todo_id, verdict, exit_code, baseline_sha, tests,
+        copied_files, baseline_output, current_output, message, warnings.
+        On error: {status: "error", error: "..."}.
+    """
+    return await _exec(
+        api.prove_red,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        tests=tests,
+    )
+
+
 # ─── Auto-commit approval ───────────────────────────────────────────────
 
 

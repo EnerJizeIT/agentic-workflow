@@ -29,6 +29,8 @@ try/except.
 """
 from __future__ import annotations
 
+from ..prove_red import ProveRedResult, prove_red
+
 # Public types
 from ._errors import AwfApiError
 from ._results import (
@@ -87,6 +89,7 @@ __all__ = [
     "StatusResult",
     "BaselineResult",
     "RollbackResult",
+    "ProveRedResult",
     "ApproveResult",
     "RejectResult",
     "ReportResult",
@@ -120,6 +123,7 @@ __all__ = [
     "kill_pipeline",
     "create_baseline",
     "rollback",
+    "prove_red",
     "approve_commit",
     "reject_commit",
     "retry_stage",
