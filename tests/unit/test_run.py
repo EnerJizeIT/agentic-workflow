@@ -136,6 +136,35 @@ class TestRunNextGates:
         assert result.action == "refused"
         assert "TODO-0001 is not finished" in result.message
 
+    def test_restored_prev_refuses(self, tmp_git_repo, monkeypatch):
+        """AUD05-07: a restored TODO is active again — the 'previous finished'
+        gate must not let a still-active prev through via the leftover done/ dir."""
+        from awf.todos import archive_todo
+
+        proj = _project(tmp_git_repo)
+        inbox = proj / ".agentic" / "inbox"
+        outbox = proj / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        _write_todo(proj, "TODO-0001")
+        _write_todo(proj, "TODO-0002")
+        (inbox / "TODO-0001.ready").write_text("", encoding="utf-8")
+        (outbox / "DONE-TODO-0001.md").write_text("# done\n", encoding="utf-8")
+
+        archive_todo(proj, "TODO-0001")
+        api.run_start(proj, queue=["TODO-0001", "TODO-0002"])
+        run_state.write_run(proj, index=1)  # TODO-0001 archived → gate passes today
+        api.restore_todo(proj, "TODO-0001")  # active again, done/ dir still there
+
+        def boom(*a, **kw):
+            raise AssertionError("run_next launched the pipeline instead of refusing the restored prev")
+
+        monkeypatch.setattr(api_pipeline, "start_pipeline", boom)
+
+        result = api.run_next(proj)
+
+        assert result.action == "refused"
+        assert "TODO-0001 is not finished" in result.message
+
     def test_missing_todo_refuses(self, tmp_git_repo):
         proj = _project(tmp_git_repo)
         api.run_start(proj, queue=["TODO-0001"])

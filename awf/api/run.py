@@ -374,7 +374,13 @@ def run_next(
 
     if index > 0:
         prev = queue[index - 1]
-        if not todos.is_archived(project_dir, prev):
+        # AUD05-07: restore_todo leaves done/{id}/ behind, so is_archived alone
+        # lets a restored (active again) prev pass. Require it to be gone from
+        # the active list too.
+        prev_active = prev in todos.list_active_todos(
+            paths.inbox(project_dir), paths.outbox(project_dir)
+        )
+        if not todos.is_archived(project_dir, prev) or prev_active:
             return RunNextResult(
                 action="refused",
                 todo_id=next_id,

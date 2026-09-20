@@ -137,6 +137,29 @@ class TestArchiveTodo:
         assert result is not None
         assert (result / "TODO.md").is_file()
 
+    def test_archives_legacy_short_id_signals(self, project):
+        """AUD01-05: legacy DONE-NNNN / PROGRESS-NNNN (no TODO- prefix) must
+        also move to the archive — otherwise leftovers stay in outbox."""
+        inbox = project / ".agentic/inbox"
+        outbox = project / ".agentic/outbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        outbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text("# Task\n")
+        (inbox / "TODO-0001.ready").write_text("")
+        (outbox / "DONE-0001.md").write_text("# legacy done\n")
+        (outbox / "DONE-0001.ready").write_text("")
+        (outbox / "PROGRESS-0001.md").write_text("# legacy progress\n")
+
+        result = archive_todo(project, "TODO-0001")
+
+        assert result is not None
+        assert (result / "DONE.md").is_file()
+        assert "legacy done" in (result / "DONE.md").read_text()
+        assert (result / "PROGRESS.md").is_file()
+        assert not (outbox / "DONE-0001.md").exists()
+        assert not (outbox / "DONE-0001.ready").exists()
+        assert not (outbox / "PROGRESS-0001.md").exists()
+
     def test_preserves_review_signal(self, project):
         """REVIEW-TODO-0001.md should NOT be archived (it's a rejection)."""
         outbox = project / ".agentic/outbox"

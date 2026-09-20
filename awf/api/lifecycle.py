@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as cfg_mod
-from .. import paths, todos
+from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
@@ -687,6 +687,8 @@ def reset_runtime(
         # T1.6: use two-step protocol (list + remove) instead of legacy
         # _reset_orphans one-shot. Single computation path, no duplication.
         ids = list_orphans(project_dir)
+        if not ids:
+            return ResetResult(cleaned_dirs=[], orphan_ids=[], mode="orphans")
         return remove_orphans(project_dir, ids)
 
     if full or not tasks_only:
@@ -709,8 +711,16 @@ def reset_runtime(
 
     # Clear pipeline state file so stale "running" doesn't persist
     state_file = agentic / "state" / "current.yaml"
+    state_cleared = False
     if state_file.is_file():
         state_file.unlink()
+        state_cleared = True
+    # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks the
+    # next run_start with "Run already active". Clear it alongside.
+    if run_state.read_run(project_dir) is not None:
+        run_state.clear_run(project_dir)
+        state_cleared = True
+    if state_cleared:
         cleaned.append("state")
 
     # Regenerate dashboard so user sees clean state
@@ -751,6 +761,14 @@ def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
     """
     project_dir = Path(project_dir).resolve()
     inbox = paths.inbox(project_dir)
+    # AUD05-06: a fresh worker may not have written PROGRESS yet, so its
+    # TODO looks like an orphan. Refuse to delete while the pipeline is
+    # alive — wait for verify/salvage, or kill first (no force flag).
+    running, _pid, _tail = check_pipeline_running(project_dir)
+    if running:
+        raise AwfApiError(
+            "pipeline is running — wait for verify/salvage, or awf kill first"
+        )
     removed: list[str] = []
     for tid in orphan_ids:
         ready = inbox / f"{tid}.ready"

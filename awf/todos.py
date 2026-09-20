@@ -125,16 +125,18 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
             p.unlink()
             moved_anything = True
 
-    # Move PROGRESS and DONE from outbox
+    # Move PROGRESS and DONE from outbox — canonical (TODO-NNNN) AND legacy
+    # short (NNNN) form, mirroring is_closed/has_progress (AUD01-05).
     for prefix in ("PROGRESS", "DONE"):
         for ext in (".md", ".ready"):
-            src = outbox_p / f"{prefix}-{todo_id}{ext}"
-            if src.is_file():
-                if ext == ".md":
-                    shutil.move(str(src), str(dest / f"{prefix}.md"))
-                else:
-                    src.unlink()  # .ready signals consumed
-                moved_anything = True
+            for tid_variant in (todo_id, _short_id(todo_id)):
+                src = outbox_p / f"{prefix}-{tid_variant}{ext}"
+                if src.is_file():
+                    if ext == ".md":
+                        shutil.move(str(src), str(dest / f"{prefix}.md"))
+                    else:
+                        src.unlink()  # .ready signals consumed
+                    moved_anything = True
 
     # Move handoff files to done/{id}/handoff/
     handoff_p = project_dir / ".agentic" / "handoff"
