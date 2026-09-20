@@ -18,6 +18,7 @@ from pathlib import Path
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
+from .._proc import run_tree
 from ..pipeline_state import read_state
 from . import _liveness
 from ._background import PipelineArgs, start_in_background
@@ -494,10 +495,16 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
         config_data = cfg_mod.load(project_dir)
         test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
         if test_cmd:
-            parts = shlex.split(test_cmd)
+            try:
+                parts = shlex.split(test_cmd)
+            except ValueError as e:
+                # AUD14-02: bad quoting in test_cmd must not traceback baseline
+                raise AwfApiError(
+                    f"verification.test_cmd не парсится: {e} (cmd: {test_cmd!r})"
+                ) from e
             if parts:
                 try:
-                    result = subprocess.run(
+                    result = run_tree(
                         parts,
                         cwd=str(project_dir),
                         capture_output=True,

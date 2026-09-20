@@ -16,6 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import _proc
 from ._env import awf_subprocess_env
 from ._log import log as _log
 
@@ -164,6 +165,9 @@ def run_subprocess_until_signal(
             stdout=worker_log if worker_log else None,
             stderr=subprocess.STDOUT if worker_log else None,
             preexec_fn=_pdeathsig_preexec,
+            # AUD04-06: own process group, so the hard timeout can kill the
+            # whole tree (MCP servers, node children), not just opencode.
+            **_proc.start_new_session_kwargs(),
         )
         deadline = time.monotonic() + hard_timeout
         signal_seen_at: float | None = None
@@ -194,13 +198,22 @@ def run_subprocess_until_signal(
 
             if now >= deadline:
                 if logs_dir:
-                    _log(logs_dir, f"BD-20: hard timeout reached, killing (pid={proc.pid})")
-                proc.kill()
-                proc.wait()
-                if signal_seen_at is not None:
-                    raise TimeoutError(
-                        f"Signal was detected but process did not exit within {hard_timeout}s"
+                    _log(
+                        logs_dir,
+                        f"BD-20: hard timeout reached, killing process group (pid={proc.pid})",
                     )
+                _proc.kill_process_tree(proc)
+                if signal_seen_at is not None:
+                    # AUD04-06: the signal file is already on disk — the work
+                    # is logically done. Consume it instead of raising: the
+                    # caller picks the signal up and moves on (the hung tree
+                    # is already dead).
+                    if logs_dir:
+                        _log(
+                            logs_dir,
+                            "BD-20: signal already detected — treating stage as done",
+                        )
+                    return subprocess.CompletedProcess(cmd, 0)
                 raise TimeoutError(
                     f"Subprocess did not produce signal within {hard_timeout}s"
                 )

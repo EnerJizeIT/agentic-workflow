@@ -39,10 +39,14 @@ def untracked_files(project_dir: str | Path) -> list[str]:
 
 def has_diff(project_dir: str | Path, baseline_sha: str) -> bool:
     """Return True if there are tracked changes vs baseline."""
-    result = subprocess.run(
-        ["git", "diff", "--quiet", baseline_sha],
-        cwd=Path(project_dir), capture_output=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--quiet", baseline_sha],
+            cwd=Path(project_dir), capture_output=True, check=False, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        # AUD01-02: fail closed — no evidence of work, no traceback
+        return False
     return result.returncode != 0
 
 
@@ -55,17 +59,24 @@ def commit_all(project_dir: str | Path, message: str) -> bool:
     callers (commit_gate.maybe_commit) report failure correctly.
     """
     cwd = Path(project_dir)
-    _git(cwd, "add", "-A", check=False)
-    diff_check = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"],
-        cwd=cwd, capture_output=True, check=False,
-    )
+    try:
+        _git(cwd, "add", "-A", check=False)
+        diff_check = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"],
+            cwd=cwd, capture_output=True, check=False, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        # AUD01-02: fail closed — report commit failure, no traceback
+        return False
     if diff_check.returncode == 0:
         return False  # nothing staged
-    commit_result = subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=cwd, capture_output=True, text=True, check=False,
-    )
+    try:
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=cwd, capture_output=True, text=True, check=False, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     if commit_result.returncode != 0:
         # Pre-commit hook rejection, signing failed, etc.
         return False
@@ -74,8 +85,12 @@ def commit_all(project_dir: str | Path, message: str) -> bool:
 
 def is_git_repo(project_dir: str | Path) -> bool:
     """Return True if project_dir is inside a git repo."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-dir"],
-        cwd=Path(project_dir), capture_output=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=Path(project_dir), capture_output=True, check=False, timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        # AUD01-02: fail closed — treat as not a repo, no traceback
+        return False
     return result.returncode == 0

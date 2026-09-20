@@ -63,13 +63,6 @@ def run_pipeline(args: Any) -> int:
     except (ValueError, TypeError):
         print(f"WARNING: invalid timeout '{cli_timeout}' — ignoring.", file=sys.stderr)
         agent_hard_timeout = None
-    # KA2-6: also forward to supervisor stages via env var (covers all
-    # supervisor calls: primary, escalate, rollback, salvage — without
-    # threading timeout through 5+ function signatures).
-    _prev_timeout = os.environ.get("AWF_SUPERVISOR_TIMEOUT")
-    if agent_hard_timeout:
-        os.environ["AWF_SUPERVISOR_TIMEOUT"] = str(agent_hard_timeout)
-
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
     except FileNotFoundError as e:
@@ -143,72 +136,83 @@ def run_pipeline(args: Any) -> int:
     # "newest active" heuristic — queue order must be honored.
     current_todo = str(getattr(args, "todo_id", "") or "")
 
-    while 0 <= stage_idx < total:
-        stage = stages[stage_idx]
-        s_name = stage.name
-        s_role = stage.role
-        s_kind = stage.kind
-        s_desc = stage.description
-
-        print()
-        print("-" * 43)
-        print(f"  Stage {stage_idx + 1}/{total}: {s_name} ({s_role} :: {s_kind})")
-        if s_desc:
-            print(f"  {s_desc}")
-        print("-" * 43)
-        _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_kind})")
-        write_state(
-            project_dir, logs_dir=logs_dir, stage_idx=stage_idx,
-            stage_name=s_name, stage_kind=s_kind, stage_role=s_role,
-            todo_id=current_todo, pipeline_pid=os.getpid(),
-            # dogfood-11: a new stage start means any previous salvage was
-            # resolved (ACK/retry) — clear the flag, or the dashboard would
-            # keep showing "Salvage" forever (write_state merges fields).
-            salvage_needed=False, salvage_stage=None,
-            # AUD02-01: same for the previous stage's signal — a stale
-            # BLOCKED would re-trigger the blocked wake-up during a retried
-            # stage before the worker emits its own signal.
-            last_signal=None,
-        )
-        from .api.dashboard import generate_dashboard
-        generate_dashboard(project_dir)
-
-        if s_role == "supervisor":
-            current_todo, delta, rc = execute_supervisor_stage(
-                stage, current_todo, auto, project_dir, config, logs_dir, pipeline_name
-            )
-            if rc != 0:
-                return rc
-            stage_idx += delta
-        else:
-            current_todo, stage_idx, rc = execute_agent_stage(
-                stage, current_todo, project_dir, config, logs_dir,
-                stages, stage_idx, retry_counts, auto, agent_hard_timeout,
-            )
-            if rc != 0:
-                return rc
-
-    # All stages completed
-    print()
-    print("=" * 41)
-    print("  Pipeline complete!")
-    print("=" * 41)
-    print()
-    _print_progress_report(project_dir, logs_dir)
-    print("Run 'awf start' for the next iteration.")
-    _log(logs_dir, "Pipeline complete")
-    # T4.1: clear structured state on clean exit (pipeline not running anymore)
-    # But first generate final dashboard so user sees "complete" state
-    from .api.dashboard import generate_dashboard as _gen_dash
-    _gen_dash(project_dir)
-    # SMO: write phase=done + preserve goal for next iteration
-    prev_state = read_state(project_dir) or {}
-    clear_state(project_dir, logs_dir=logs_dir)
-    write_state(project_dir, phase="done", goal=prev_state.get("goal"))
-    # P2: restore env var (don't leak AWF_SUPERVISOR_TIMEOUT to caller)
+    # KA2-6: forward the CLI timeout to supervisor stages via env var
+    # (covers primary, escalate, rollback, salvage — without threading it
+    # through 5+ function signatures). AUD04-10: set at the loop boundary
+    # and restore on EVERY exit path — early return, exception, clean exit.
+    _prev_timeout = os.environ.get("AWF_SUPERVISOR_TIMEOUT")
     if agent_hard_timeout:
-        if _prev_timeout is not None:
-            os.environ["AWF_SUPERVISOR_TIMEOUT"] = _prev_timeout
-        else:
-            os.environ.pop("AWF_SUPERVISOR_TIMEOUT", None)
-    return 0
+        os.environ["AWF_SUPERVISOR_TIMEOUT"] = str(agent_hard_timeout)
+
+    try:
+        while 0 <= stage_idx < total:
+            stage = stages[stage_idx]
+            s_name = stage.name
+            s_role = stage.role
+            s_kind = stage.kind
+            s_desc = stage.description
+
+            print()
+            print("-" * 43)
+            print(f"  Stage {stage_idx + 1}/{total}: {s_name} ({s_role} :: {s_kind})")
+            if s_desc:
+                print(f"  {s_desc}")
+            print("-" * 43)
+            _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_kind})")
+            write_state(
+                project_dir, logs_dir=logs_dir, stage_idx=stage_idx,
+                stage_name=s_name, stage_kind=s_kind, stage_role=s_role,
+                todo_id=current_todo, pipeline_pid=os.getpid(),
+                # dogfood-11: a new stage start means any previous salvage was
+                # resolved (ACK/retry) — clear the flag, or the dashboard would
+                # keep showing "Salvage" forever (write_state merges fields).
+                salvage_needed=False, salvage_stage=None,
+                # AUD02-01: same for the previous stage's signal — a stale
+                # BLOCKED would re-trigger the blocked wake-up during a retried
+                # stage before the worker emits its own signal.
+                last_signal=None,
+            )
+            from .api.dashboard import generate_dashboard
+            generate_dashboard(project_dir)
+
+            if s_role == "supervisor":
+                current_todo, delta, rc = execute_supervisor_stage(
+                    stage, current_todo, auto, project_dir, config, logs_dir, pipeline_name
+                )
+                if rc != 0:
+                    return rc
+                stage_idx += delta
+            else:
+                current_todo, stage_idx, rc = execute_agent_stage(
+                    stage, current_todo, project_dir, config, logs_dir,
+                    stages, stage_idx, retry_counts, auto, agent_hard_timeout,
+                )
+                if rc != 0:
+                    return rc
+
+        # All stages completed
+        print()
+        print("=" * 41)
+        print("  Pipeline complete!")
+        print("=" * 41)
+        print()
+        _print_progress_report(project_dir, logs_dir)
+        print("Run 'awf start' for the next iteration.")
+        _log(logs_dir, "Pipeline complete")
+        # T4.1: clear structured state on clean exit (pipeline not running anymore)
+        # But first generate final dashboard so user sees "complete" state
+        from .api.dashboard import generate_dashboard as _gen_dash
+        _gen_dash(project_dir)
+        # SMO: write phase=done + preserve goal for next iteration
+        prev_state = read_state(project_dir) or {}
+        clear_state(project_dir, logs_dir=logs_dir)
+        write_state(project_dir, phase="done", goal=prev_state.get("goal"))
+        return 0
+    finally:
+        # P2/AUD04-10: restore env var (don't leak AWF_SUPERVISOR_TIMEOUT
+        # to the caller — in-process foreground runs, MCP continue, tests).
+        if agent_hard_timeout:
+            if _prev_timeout is not None:
+                os.environ["AWF_SUPERVISOR_TIMEOUT"] = _prev_timeout
+            else:
+                os.environ.pop("AWF_SUPERVISOR_TIMEOUT", None)

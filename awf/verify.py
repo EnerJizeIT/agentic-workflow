@@ -6,8 +6,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from . import _proc, git_utils
 from . import config as cfg_mod
-from . import git_utils
 from ._atomic import atomic_write_text
 
 # Per-command timeout for verify commands (test/lint/typecheck/build).
@@ -154,15 +154,21 @@ def run_verify_commands(
     log_chunks: list[str] = []
     cmd_timeout = _verify_cmd_timeout()
     for cmd in cmds:
-        parts = shlex.split(cmd)
+        try:
+            parts = shlex.split(cmd)
+        except ValueError as e:
+            # AUD14-02: bad quoting in test_cmd must not traceback the pipeline
+            if log_path is not None:
+                log_chunks.append(f"$ {cmd}\nABORTED: bad quoting: {e}\n")
+                atomic_write_text(log_path, "".join(log_chunks))
+            return False
         if not parts:
             return False
         try:
-            result = subprocess.run(
+            result = _proc.run_tree(
                 parts,
                 capture_output=True,
                 text=True,
-                check=False,
                 cwd=str(cwd) if cwd is not None else None,
                 timeout=cmd_timeout or None,
             )

@@ -25,6 +25,36 @@ os.environ.setdefault("AWF_APPROVE_TIMEOUT_SECONDS", "5")
 # would spawn browser windows on every test that triggers awf_start).
 webbrowser.open = lambda *a, **kw: True
 
+# SAFETY (2026-09-20): never let the suite signal pid/pgid <= 1.
+# `os.killpg(1, sig)` is a libc wrapper over `kill(2)` with argument
+# `-pgid` — on Linux that is `kill(-1, sig)`: SIGTERM/SIGKILL to every
+# process the caller may signal (the whole uid session). Full
+# `pytest tests/` runs killed the owner's graphical session three times
+# (fake Popen with pid=1 + hard timeout in tests/integration; analysis:
+# ~/Desktop/session-crash-report-2026-09-20.md). The guard in
+# awf/_proc.py::kill_process_tree is `proc.pid > 1`; this tripwire is the
+# belt-and-suspenders for the whole suite: any REAL broad-kill attempt
+# fails loudly instead of wiping the session.
+# Refusal marker at runtime (green-light grep target):
+# "SAFETY: os.killpg(1, 15) targets pid/pgid <= 1 ..." (name comes from the
+# wrapped function, see _forbid_session_kill call sites below).
+def _forbid_session_kill(real, name):
+    def guarded(target, sig, *args, **kwargs):
+        if isinstance(target, int) and target <= 1:
+            raise RuntimeError(
+                f"SAFETY: {name}({target!r}, {sig}) targets pid/pgid <= 1 — "
+                "kill(-1) would signal the entire user session. Refusing to "
+                "call through (2026-09-20 session-kill incident)."
+            )
+        return real(target, sig, *args, **kwargs)
+
+    return guarded
+
+
+os.kill = _forbid_session_kill(os.kill, "os.kill")
+if hasattr(os, "killpg"):
+    os.killpg = _forbid_session_kill(os.killpg, "os.killpg")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"
