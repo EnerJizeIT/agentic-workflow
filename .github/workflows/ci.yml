@@ -11,6 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # instruction-gates проверяет «живые хэши» — ссылки на коммиты
+          # в docs/contracts/*.md должны существовать в истории (shallow
+          # clone ломает гейт: badf05e вне fetch-depth=1).
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -23,14 +28,9 @@ jobs:
           pip install -e ".[dev]"
           pip install -e "./agent_workflow_ui[dev]"
 
-      - name: Run all tests
-        run: python3 -m pytest tests/ -q -n auto --timeout=300 -p no:cacheprovider
-
-      - name: Ruff check
-        run: ruff check .
-
       - name: Quality gates
-        # U2: контракты (docs/contracts/), храповики (.ratchet-counters),
-        # бюджет инструкций + команды проекта (тесты, линт — повторный
-        # прогон осознанный: run-all = один автономный набор проверок).
+        # U2: единый прогон — контракты (docs/contracts/), храповики
+        # (.ratchet-counters), бюджет инструкций и команды проекта
+        # (pytest -n auto, ruff). Отдельные шаги тестов/линта убраны:
+        # run-all уже покрывает их — без двойного прогона (+2,5 мин CI).
         run: bash scripts/run-all.sh
