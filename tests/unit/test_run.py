@@ -1,6 +1,7 @@
 """SPEC A-run v1: autonomous run (забег) state, gates and evidence."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -191,6 +192,21 @@ class TestRunNextGates:
         state = run_state.read_run(proj)
         assert state["index"] == 1
         assert state["current"] == "TODO-0001"
+
+    def test_repo_without_commits_starts_without_traceback(self, tmp_git_repo, monkeypatch):
+        """AUD05-08: a repo with zero commits used to crash run_next with a
+        raw RuntimeError from `git rev-parse HEAD` (baseline is best-effort)."""
+        proj = _project(tmp_git_repo)
+        # Drop the initial commit → the repo has no HEAD anymore.
+        subprocess.run(["git", "update-ref", "-d", "HEAD"], cwd=proj, check=True)
+        _write_todo(proj, "TODO-0001")
+        api.run_start(proj, queue=["TODO-0001"])
+        _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+        assert (proj / ".agentic" / "inbox" / "TODO-0001.ready").is_file()
 
 
 class TestEvidenceGate:

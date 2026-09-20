@@ -112,7 +112,10 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     try:
         with p.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, UnicodeDecodeError, OSError) as e:
+        # AUD06-16: non-UTF-8 bytes and read errors used to escape past
+        # `except yaml.YAMLError` (UnicodeDecodeError is a ValueError) and
+        # crash the caller with a raw traceback.
         print(f"ERROR: pipeline file {p.name} is malformed: {e}", file=sys.stderr)
         return []
 
@@ -139,6 +142,23 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             kwargs["max_rollbacks"] = int(mrb)
         except (ValueError, TypeError):
             kwargs["max_rollbacks"] = _DEFAULTS["max_rollbacks"]
+        # AUD03-06: a negative budget used to load silently (max_retries: -3)
+        # — flag it; the value is kept as-is (warning only, no behavior change).
+        stage_label = str(s.get("name") or f"#{dict_index}")
+        if kwargs["max_retries"] < 0:
+            print(
+                f"WARNING: stage '{stage_label}': max_retries="
+                f"{kwargs['max_retries']} is negative — a negative retry "
+                "budget is meaningless, check the value.",
+                file=sys.stderr,
+            )
+        if kwargs["max_rollbacks"] < 0:
+            print(
+                f"WARNING: stage '{stage_label}': max_rollbacks="
+                f"{kwargs['max_rollbacks']} is negative — a negative "
+                "rollback budget is meaningless, check the value.",
+                file=sys.stderr,
+            )
         kwargs["kind"] = _compute_kind(dict_index, total)
         result.append(Stage(**kwargs))
         dict_index += 1
@@ -158,6 +178,21 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
                         f"to the supervisor instead.",
                         file=sys.stderr,
                     )
+
+    # AUD03-06: duplicate stage names used to load silently. The engine
+    # always resolves the FIRST match (_find_stage_index), so later
+    # duplicates are unreachable (rollback targets, dashboard labels).
+    name_counts: dict[str, int] = {}
+    for st in result:
+        name_counts[st.name] = name_counts.get(st.name, 0) + 1
+    for name, count in name_counts.items():
+        if count > 1:
+            print(
+                f"WARNING: duplicate stage name '{name}' (used {count} times) — "
+                "the engine always resolves the first match; the later "
+                "stage(s) are unreachable. Give each stage a unique name.",
+                file=sys.stderr,
+            )
 
     # AUD04-02: unknown policy words used to be silently reinterpreted by the
     # resolver (on_approved/on_passed → "next", on_rejected/on_failed →

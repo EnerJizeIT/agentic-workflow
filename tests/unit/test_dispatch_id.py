@@ -6,9 +6,11 @@ again → BD-30 skipped it as 'archived' → pipeline stuck at plan.
 """
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
-from awf import paths
+from awf import api, paths
 from awf.api.dispatch import _next_todo_id
 
 
@@ -56,3 +58,25 @@ class TestNextTodoIdDoneCheck:
             d.mkdir(parents=True)
         result = _next_todo_id(project)
         assert result == "TODO-0004"
+
+
+class TestDispatchWithoutCommits:
+    """AUD05-08: a git repo with zero commits is a normal pet-project start.
+    dispatch_todo must raise a clean AwfApiError (not raw RuntimeError) and
+    roll back the orphan TODO.md."""
+
+    def test_raises_awf_api_error_not_runtime_error(self, project):
+        api.init_project(project, project_name="NoCommits")
+        subprocess.run(["git", "update-ref", "-d", "HEAD"], cwd=project, check=True)
+
+        with pytest.raises(api.AwfApiError, match="no commits"):
+            api.dispatch_todo(project, "# Task\n")
+
+    def test_orphan_todo_md_rolled_back(self, project):
+        api.init_project(project, project_name="NoCommits2")
+        subprocess.run(["git", "update-ref", "-d", "HEAD"], cwd=project, check=True)
+
+        with pytest.raises(api.AwfApiError):
+            api.dispatch_todo(project, "# Task\n")
+
+        assert not (paths.inbox(project) / "TODO-0001.md").exists()

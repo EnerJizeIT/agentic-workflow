@@ -129,7 +129,10 @@ def run_plan_checkpoint(
         _log(logs_dir, f"BD-36: no {todo_id}.md or BRIEF-{todo_id}.md to preview — auto-approve")
         return "approve"
 
-    todo_content = content_file.read_text(encoding="utf-8")
+    # AUD03-07: preview content — a corrupted (non-UTF-8) file must degrade,
+    # not crash the pipeline main-loop. errors="replace" keeps the preview
+    # renderable (the user sees replacement chars instead of a traceback).
+    todo_content = content_file.read_text(encoding="utf-8", errors="replace")
 
     # P1: Skip checkpoint if content unchanged since last approval (kill+start loop)
     import hashlib
@@ -149,7 +152,10 @@ def run_plan_checkpoint(
         _log(logs_dir, f"П7: removed {stale_count} stale checkpoint HTML file(s)")
 
     plan_md = project_dir / ".agentic" / "phases" / "plan.md"
-    plan_content = plan_md.read_text(encoding="utf-8") if plan_md.is_file() else ""
+    # AUD03-07: same as above — plan.md is preview content, degrade on garbage.
+    plan_content = (
+        plan_md.read_text(encoding="utf-8", errors="replace") if plan_md.is_file() else ""
+    )
 
     port = 0  # P2: let OS assign free port — eliminates TOCTOU race entirely
     decision_holder: dict[str, str] = {}

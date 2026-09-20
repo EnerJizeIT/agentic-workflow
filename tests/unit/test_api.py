@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from awf import api
+from awf.api._helpers import read_file_text
 
 # ─── detect_stack ───────────────────────────────────────────────────────
 
@@ -105,6 +106,19 @@ class TestDetectStack:
         # Should fall through to Python heuristic
         assert result["stack"] == "python"
 
+    def test_package_json_non_dict_sections_do_not_crash(self, tmp_path):
+        """AUD06-10: scripts/dependencies as strings → empty commands, no
+        AttributeError ('str' object has no attribute 'get')."""
+        (tmp_path / "package.json").write_text(json.dumps({
+            "scripts": "oops",
+            "dependencies": "oops",
+            "devDependencies": "oops",
+        }))
+        result = api.detect_stack(tmp_path)
+        assert result["stack"] == "javascript"
+        assert result["test_cmd"] == ""
+        assert result["lint_cmd"] == ""
+
 
 # ─── derive_project_name ────────────────────────────────────────────────
 
@@ -139,6 +153,23 @@ class TestDeriveProjectName:
 
 
 # ─── approve_commit ─────────────────────────────────────────────────────
+
+
+class TestReadFileText:
+    """AUD06-17: docstring promises 'never raises' for existing files."""
+
+    def test_non_utf8_file_does_not_raise(self, tmp_path):
+        p = tmp_path / "vision.md"
+        p.write_bytes(b"\xff\xfe\x00garbage-tail")
+        text = read_file_text(p)
+        assert isinstance(text, str)
+        # readable tail survives, garbage bytes are replaced
+        assert "garbage-tail" in text
+
+    def test_missing_file_returns_placeholder(self, tmp_path):
+        p = tmp_path / "absent.md"
+        text = read_file_text(p)
+        assert "(error reading" in text
 
 
 class TestApproveCommit:

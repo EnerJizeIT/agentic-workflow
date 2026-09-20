@@ -190,24 +190,43 @@ def _compute_models() -> list[str]:
 
     try:
         cfg = json.loads(cfg_path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return []
+
+    # AUD09-06: a valid-JSON opencode.json with a non-dict root (list,
+    # number) must degrade to [] — this runs at plugin startup, and a
+    # crash here kills all 35 tools.
+    if not isinstance(cfg, dict):
         return []
 
     models: set[str] = set()
 
-    for provider_name, provider_cfg in (cfg.get("provider") or {}).items():
-        if isinstance(provider_cfg, dict):
-            models_raw = provider_cfg.get("models") or {}
-            if isinstance(models_raw, dict) or isinstance(models_raw, list):
-                for model_id in models_raw:
-                    models.add(f"{provider_name}/{model_id}")
+    provider_section = cfg.get("provider")
+    if isinstance(provider_section, dict):
+        for provider_name, provider_cfg in provider_section.items():
+            if not isinstance(provider_cfg, dict):
+                continue
+            models_raw = provider_cfg.get("models")
+            if isinstance(models_raw, dict):
+                ids = [str(k) for k in models_raw.keys()]
+            elif isinstance(models_raw, list):
+                # only plain strings — a list of dicts used to produce
+                # garbage ids like "acme/{'id': 'm1'}"
+                ids = [m for m in models_raw if isinstance(m, str)]
+            else:
+                ids = []
+            for model_id in ids:
+                models.add(f"{provider_name}/{model_id}")
 
-    for agent_cfg in (cfg.get("agent") or {}).values():
-        if isinstance(agent_cfg, dict) and agent_cfg.get("model"):
-            models.add(agent_cfg["model"])
+    agent_section = cfg.get("agent")
+    if isinstance(agent_section, dict):
+        for agent_cfg in agent_section.values():
+            if isinstance(agent_cfg, dict) and isinstance(agent_cfg.get("model"), str):
+                models.add(agent_cfg["model"])
 
-    if cfg.get("model"):
-        models.add(cfg["model"])
+    top_model = cfg.get("model")
+    if isinstance(top_model, str) and top_model:
+        models.add(top_model)
 
     return sorted(models)
 

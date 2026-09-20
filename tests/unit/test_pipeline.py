@@ -129,6 +129,56 @@ class TestLoadStages:
         # the value is still loaded verbatim — the resolver fallback applies
         assert stages[1].on_blocked == "halt"
 
+    def test_duplicate_stage_names_warn_at_load(self, tmp_path, capsys) -> None:
+        """AUD03-06: two stages named 'impl' used to load silently — the
+        engine always resolves the first one, the second is unreachable."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: impl\n    role: worker\n"
+            "  - name: impl\n    role: qa\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipe)
+        assert len(stages) == 4  # still loaded — warning, not rejection
+        err = capsys.readouterr().err
+        assert "impl" in err and "duplicate" in err.lower(), (
+            f"duplicate stage name must be flagged at load, got stderr:\n{err}"
+        )
+
+    def test_negative_max_retries_warns_at_load(self, tmp_path, capsys) -> None:
+        """AUD03-06: max_retries: -3 was accepted without a hint."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    max_retries: -3\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        load_stages(pipe)
+        err = capsys.readouterr().err
+        assert "max_retries" in err and "-3" in err, (
+            f"negative max_retries must be flagged at load, got stderr:\n{err}"
+        )
+
+    def test_valid_pipeline_stays_quiet_on_new_checks(self, tmp_path, capsys) -> None:
+        """AUD03-06: a clean pipeline must not trigger the new warnings."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    max_retries: 2\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        load_stages(pipe)
+        err = capsys.readouterr().err
+        assert "duplicate" not in err.lower()
+        assert "max_retries" not in err
+
 
 class TestResolvePipelineFile:
 

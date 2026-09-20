@@ -390,3 +390,52 @@ class TestRoleSlugify:
         from awf.api.setup import _slugify_role
 
         assert _slugify_role("Аудитор") == "Аудитор"
+
+
+# ─── AUD06-02/03: corrupted config.yaml must survive a submit ─────────────
+
+
+class TestCorruptedConfigSurvivesSubmit:
+    """A broken config.yaml (non-UTF-8, broken YAML, non-dict root) must not
+    crash the submit and must not be wiped — the damage goes to warnings."""
+
+    def test_non_utf8_config_does_not_crash_submit(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_bytes(b"\xff\xfe\x00broken\n")
+        result = api.apply_project_setup(
+            awf_project,
+            team=[{"agent": "developer"}],
+            context_message="ctx",
+        )
+        # pipeline still written, config damage surfaced in warnings
+        assert result.pipeline_file is not None
+        assert any("config.yaml" in w for w in result.warnings)
+
+    def test_broken_yaml_config_does_not_crash_submit(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text("key: [unclosed\n  bad: : :\n", encoding="utf-8")
+        result = api.apply_project_setup(
+            awf_project,
+            team=[{"agent": "developer"}],
+            context_message="ctx",
+        )
+        assert result.pipeline_file is not None
+        assert any("config.yaml" in w for w in result.warnings)
+
+    def test_non_dict_config_is_not_wiped(self, awf_project):
+        """AUD06-03: non-dict root survives the submit byte-for-byte."""
+        config_path = awf_project / ".agentic" / "config.yaml"
+        original = b"- a\n- b\n"
+        config_path.write_bytes(original)
+        api.apply_project_setup(
+            awf_project, team=[], context_message="hello ctx"
+        )
+        assert config_path.read_bytes() == original
+
+    def test_non_dict_config_warns(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_bytes(b"- a\n- b\n")
+        result = api.apply_project_setup(
+            awf_project, team=[], context_message="hello ctx"
+        )
+        assert any("config.yaml" in w for w in result.warnings)

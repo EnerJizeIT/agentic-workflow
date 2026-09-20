@@ -30,18 +30,24 @@ def detect_stack(project_dir: Path) -> dict[str, str]:
         "stack": "unknown",
     }
 
+    def _as_dict(value: object) -> dict:
+        # AUD06-10: sections can be any JSON value (monorepo wrappers,
+        # generators) — only a dict is usable, anything else means "absent".
+        return value if isinstance(value, dict) else {}
+
     # 1. Node/TypeScript — package.json scripts.* are authoritative
     pkg = project_dir / "package.json"
     if pkg.is_file():
         try:
             data = json.loads(pkg.read_text(encoding="utf-8"))
-            scripts = data.get("scripts", {}) if isinstance(data, dict) else {}
+            data = data if isinstance(data, dict) else {}
+            scripts = _as_dict(data.get("scripts"))
             result["test_cmd"] = str(scripts.get("test", "")) or ""
             result["lint_cmd"] = str(scripts.get("lint", "")) or ""
             result["build_cmd"] = str(scripts.get("build", "")) or ""
             result["typecheck_cmd"] = str(scripts.get("typecheck", "")) or ""
-            dev_deps = data.get("devDependencies", {}) if isinstance(data, dict) else {}
-            deps = data.get("dependencies", {}) if isinstance(data, dict) else {}
+            dev_deps = _as_dict(data.get("devDependencies"))
+            deps = _as_dict(data.get("dependencies"))
             all_deps = {**dev_deps, **deps}
             tsconfig_present = (project_dir / "tsconfig.json").is_file()
             if "typescript" in all_deps or tsconfig_present:

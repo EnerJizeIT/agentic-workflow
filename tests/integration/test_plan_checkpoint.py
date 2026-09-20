@@ -249,6 +249,38 @@ class TestRunPlanCheckpoint:
         )
         assert result == "approve"
 
+    def test_non_utf8_brief_degrades_without_traceback(self, tmp_path, monkeypatch):
+        """AUD03-07: non-UTF-8 BRIEF must not crash the checkpoint.
+
+        Before the fix: UnicodeDecodeError escaped run_plan_checkpoint and
+        killed the pipeline main-loop. Now the content is read with
+        errors="replace" and the flow continues (here: plain timeout).
+        """
+        project = self._make_project(tmp_path)
+        brief = project / ".agentic" / "inbox" / "BRIEF-TODO-0001.md"
+        brief.write_bytes(b"\xff\xfe\x00corrupt-brief-bytes")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs",
+            timeout=1,
+        )
+        assert result == "timeout"
+
+    def test_non_utf8_plan_md_degrades_without_traceback(self, tmp_path, monkeypatch):
+        """AUD03-07: non-UTF-8 phases/plan.md must not crash the checkpoint."""
+        project = self._make_project(tmp_path)
+        (project / ".agentic" / "phases" / "plan.md").write_bytes(b"\xff\xfe\x00bad-plan")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs",
+            timeout=1,
+        )
+        assert result == "timeout"
+
     def test_approve_decision(self, tmp_path, monkeypatch):
         """User approves → returns 'approve', TODO untouched."""
         project = self._make_project(tmp_path)

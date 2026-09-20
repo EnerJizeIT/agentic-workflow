@@ -7,6 +7,7 @@ CLI wrapper that imports from this module.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,8 @@ from ._errors import AwfApiError
 from ._helpers import require_agentic
 from ._results import AddRoleResult, AnalyzeRolesResult
 from ._templates import _ROLE_TEMPLATE
+
+log = logging.getLogger(__name__)
 
 # ─── add_role ───────────────────────────────────────────────────────────
 
@@ -103,13 +106,20 @@ class AnalyzeData:
 
 
 def _read_role_files(project_dir: Path) -> dict[str, str]:
-    """Read all .agentic/roles/*.md → {role_slug: content}."""
+    """Read all .agentic/roles/*.md → {role_slug: content}.
+
+    AUD06-16: an unreadable role file (non-UTF-8, permissions) is skipped
+    with a log line — one corrupt file must not kill the whole analysis.
+    """
     roles_dir = paths.agentic_dir(project_dir) / "roles"
     if not roles_dir.is_dir():
         return {}
     result: dict[str, str] = {}
     for f in sorted(roles_dir.glob("*.md")):
-        result[f.stem] = f.read_text(encoding="utf-8")
+        try:
+            result[f.stem] = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            log.warning("analyze_roles: skipping unreadable role file %s: %s", f, e)
     return result
 
 
@@ -117,14 +127,23 @@ def _read_pipeline_roles(project_dir: Path, config: dict) -> list[str]:
     """Return ordered list of agent role slugs from default pipeline.
 
     Skips supervisor (it's built-in). Returns [] if no pipeline.yaml.
+    AUD06-16: a corrupted pipeline file (non-UTF-8, broken YAML, unreadable)
+    degrades to [] — role analysis without pipeline order is still useful,
+    and the loader already prints the reason to stderr.
     """
+    import yaml
+
     from ..pipeline import load_stages, resolve_pipeline_file
 
     try:
         pipeline_file = resolve_pipeline_file(project_dir, None, config)
     except FileNotFoundError:
         return []
-    stages = load_stages(pipeline_file)
+    try:
+        stages = load_stages(pipeline_file)
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
+        log.warning("analyze_roles: cannot read pipeline %s: %s", pipeline_file, e)
+        return []
     return [s.role for s in stages if s.role != "supervisor"]
 
 

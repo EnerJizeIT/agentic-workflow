@@ -404,11 +404,16 @@ def run_next(
         )
 
     # Baseline before the signal (same order as dispatch_todo).
+    # AUD05-08: best-effort — ANY failure here (no commits, git timeout,
+    # permissions) must not kill the run; the orchestrator ensures a
+    # baseline at stage start.
     try:
+        import subprocess
+
         from .pipeline import create_baseline
 
         create_baseline(project_dir, next_id)
-    except AwfApiError:
+    except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 
     (paths.inbox(project_dir) / f"{next_id}.ready").touch()

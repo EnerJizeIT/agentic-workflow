@@ -105,8 +105,17 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
                 if not sig_file.is_file():
                     continue
                 md_file = outbox / f"{prefix}-{candidate_id}.md"
-                if md_file.exists() and not md_file.read_text(encoding="utf-8").strip():
-                    continue  # P3: reject whitespace-only .md (no real content)
+                if md_file.exists():
+                    try:
+                        # AUD01-04: a corrupted companion (worker killed
+                        # mid-write, binary garbage) must not crash the
+                        # polling loop — treat unreadable as empty, which
+                        # the P3 branch below already rejects.
+                        md_text = md_file.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        md_text = ""
+                    if not md_text.strip():
+                        continue  # P3: reject whitespace-only .md (no real content)
                 signal_name = sig_file.stem.rsplit(".md", 1)[0] if sig_file.stem.endswith(".md") else sig_file.stem
                 mtime = sig_file.stat().st_mtime
                 candidates.append((mtime, signal_name))

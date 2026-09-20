@@ -68,3 +68,65 @@ class TestAddRoleSlugValidation:
         role_file = awf_project / ".agentic" / "roles" / "myrole.md"
         assert role_file.is_file()
         assert result.role_name == "myrole"
+
+
+class TestCorruptedPipelineDegrades:
+    """AUD06-16: a broken pipelines/default.yaml must degrade, not traceback.
+
+    Before the fix: non-UTF-8 bytes slipped past ``except yaml.YAMLError``
+    in load_stages and crashed analyze_roles with a raw
+    UnicodeDecodeError (MCP: "Unexpected UnicodeDecodeError").
+    """
+
+    @pytest.fixture
+    def awf_project(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="Roles")
+        roles = tmp_git_repo / ".agentic" / "roles"
+        (roles / "developer.md").write_text(
+            "# developer\n\nWrites code.\n", encoding="utf-8"
+        )
+        return tmp_git_repo
+
+    def _corrupt_pipeline(self, project, payload: bytes):
+        pipe = project / ".agentic" / "pipelines" / "default.yaml"
+        pipe.parent.mkdir(parents=True, exist_ok=True)
+        pipe.write_bytes(payload)
+
+    def test_non_utf8_pipeline_degrades(self, awf_project):
+        self._corrupt_pipeline(awf_project, b"\xff\xfe\x00stages: [plan]")
+        result = api.analyze_roles(awf_project, dry_run=True)
+        assert result.dry_run is True
+        assert isinstance(result.overlaps, list)
+
+    def test_truncated_yaml_pipeline_degrades(self, awf_project):
+        self._corrupt_pipeline(
+            awf_project, b"stages:\n  - name: plan\n    role: [unclosed"
+        )
+        result = api.analyze_roles(awf_project, dry_run=True)
+        assert result.dry_run is True
+
+    def test_read_pipeline_roles_returns_empty_on_corrupt(self, awf_project):
+        self._corrupt_pipeline(awf_project, b"\xff\xfe\x00garbage")
+        from awf.api.roles import _read_pipeline_roles
+
+        assert _read_pipeline_roles(awf_project, {}) == []
+
+    def test_load_stages_itself_degrades_on_non_utf8(self, awf_project):
+        """Systemic layer: load_stages must not raise on corrupt bytes —
+        this protects the pipeline engine and start_pipeline, not just
+        analyze_roles (whose guard would mask a load_stages regression)."""
+        self._corrupt_pipeline(awf_project, b"\xff\xfe\x00stages: [plan]")
+        from awf.pipeline import load_stages
+
+        pipe = awf_project / ".agentic" / "pipelines" / "default.yaml"
+        assert load_stages(pipe) == []
+
+    def test_non_utf8_role_file_is_skipped(self, awf_project):
+        """A corrupted role .md must not kill the whole analysis."""
+        roles = awf_project / ".agentic" / "roles"
+        (roles / "corrupt.md").write_bytes(b"\xff\xfe\x00bad")
+        from awf.api.roles import _read_role_files
+
+        files = _read_role_files(awf_project)
+        assert "developer" in files
+        assert "corrupt" not in files

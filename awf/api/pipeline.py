@@ -471,7 +471,17 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
 
     is_git = git_utils.is_git_repo(project_dir)
     if is_git:
-        sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
+        try:
+            sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
+        except RuntimeError as e:
+            # AUD05-08: `git init` with zero commits → `rev-parse HEAD`
+            # fails. Surface a clean AwfApiError (MCP/CLI render it)
+            # instead of letting the raw RuntimeError escape every caller.
+            raise AwfApiError(
+                f"git repo at {project_dir} has no commits yet — create the "
+                "first commit, then retry. (git: "
+                f"{str(e).splitlines()[0] if str(e) else 'rev-parse HEAD failed'})"
+            ) from e
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
         status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", status)

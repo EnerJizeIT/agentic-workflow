@@ -176,6 +176,22 @@ class TestReadSignalForTodo:
         result = read_signal_for_todo(outbox, "TODO-0001", "DONE")
         assert result == "DONE-TODO-0001"
 
+    def test_non_utf8_companion_md_returns_none(self, tmp_path: Path) -> None:
+        """AUD01-04: companion .md with invalid UTF-8 → treated as empty, no raise."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0009.md").write_bytes(b"\xff\xfe\x00bad")
+        (outbox / "DONE-TODO-0009.ready").touch()
+        assert read_signal_for_todo(outbox, "TODO-0009", "DONE", "BLOCKED") is None
+
+    def test_directory_companion_md_returns_none(self, tmp_path: Path) -> None:
+        """AUD01-04: companion .md that is a directory → IsADirectoryError must not escape."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        (outbox / "DONE-TODO-0010.md").mkdir()
+        (outbox / "DONE-TODO-0010.ready").touch()
+        assert read_signal_for_todo(outbox, "TODO-0010", "DONE", "BLOCKED") is None
+
     def test_ready_with_whitespace_only_md_rejected(self, tmp_path: Path) -> None:
         """P3: .ready + .md with only whitespace → should be rejected (same as empty).
 

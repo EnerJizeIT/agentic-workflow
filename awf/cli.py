@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 
 from . import cmd_start, cmd_status
+from .api._errors import AwfApiError
 
 
 def _print_top_level_help() -> int:
@@ -226,35 +228,58 @@ def _dispatch_subcommand(argv):
 
     args = parser.parse_args(argv)
 
-    if args.command == "restore":
-        from . import cmd_restore
-        return cmd_restore.run(args)
-    if args.command == "status":
-        return cmd_status.run(args)
-    if args.command in ("start", "continue"):
-        return cmd_start.run(args)
-    if args.command == "init":
-        from . import cmd_init
-        return cmd_init.run(args)
-    if args.command == "reset":
-        from . import cmd_reset
-        return cmd_reset.run(args)
-    if args.command == "add-role":
-        from . import cmd_add_role
-        return cmd_add_role.run(args)
-    if args.command == "baseline":
-        from . import cmd_baseline
-        return cmd_baseline.run(args)
-    if args.command == "rollback":
-        from . import cmd_rollback
-        return cmd_rollback.run(args)
-    if args.command == "approve":
-        from . import cmd_approve
-        return cmd_approve.run(args)
-    if args.command == "report":
-        from . import cmd_report
-        return cmd_report.run(args)
-    if args.command == "analyze-roles":
-        from . import cmd_analyze_roles
-        return cmd_analyze_roles.run(args)
+    return _run_command(args)
+
+
+def _run_command(args) -> int:
+    """AUD07-05: one error handler for every subcommand — mirrors the MCP
+    ``_exec`` wrapper. Corrupted inputs (garbage baseline sha, EOF on a
+    prompt, non-UTF-8 pipeline) used to leak a raw traceback to a human;
+    now they get a clean ``ERROR: <type>: <msg>`` line and rc 1.
+
+    SystemExit (argparse --help / bad args) and KeyboardInterrupt are
+    BaseExceptions — intentionally NOT caught here.
+    """
+    try:
+        if args.command == "restore":
+            from . import cmd_restore
+            return cmd_restore.run(args)
+        if args.command == "status":
+            return cmd_status.run(args)
+        if args.command in ("start", "continue"):
+            return cmd_start.run(args)
+        if args.command == "init":
+            from . import cmd_init
+            return cmd_init.run(args)
+        if args.command == "reset":
+            from . import cmd_reset
+            return cmd_reset.run(args)
+        if args.command == "add-role":
+            from . import cmd_add_role
+            return cmd_add_role.run(args)
+        if args.command == "baseline":
+            from . import cmd_baseline
+            return cmd_baseline.run(args)
+        if args.command == "rollback":
+            from . import cmd_rollback
+            return cmd_rollback.run(args)
+        if args.command == "approve":
+            from . import cmd_approve
+            return cmd_approve.run(args)
+        if args.command == "report":
+            from . import cmd_report
+            return cmd_report.run(args)
+        if args.command == "analyze-roles":
+            from . import cmd_analyze_roles
+            return cmd_analyze_roles.run(args)
+        return 1
+    except AwfApiError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except (EOFError, subprocess.CalledProcessError, OSError, UnicodeDecodeError) as e:
+        print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:  # noqa: BLE001 — last line of defense, mirrors _exec
+        print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
 

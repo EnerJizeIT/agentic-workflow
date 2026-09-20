@@ -177,6 +177,8 @@ def write_pipeline(team_order: list[dict[str, Any]], project_dir: Path) -> Path 
 def update_config_role_mapping(
     team: list[dict[str, Any]],
     project_dir: Path,
+    *,
+    warnings: list[str] | None = None,
 ) -> bool:
     """BD-12: ensure each team role has ``models.<role>.agent_name`` in config.yaml.
 
@@ -204,11 +206,19 @@ def update_config_role_mapping(
 
     try:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as e:
-        log.error("BD-12: config.yaml parse error: %s", e)
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        # AUD06-02: non-UTF-8 bytes and read errors used to escape as
+        # UnicodeDecodeError/OSError and crash the whole submit.
+        log.error("BD-12: cannot read config.yaml: %s — skip role mapping", e)
+        if warnings is not None:
+            warnings.append(
+                f"config.yaml: unreadable ({type(e).__name__}) — role mapping skipped"
+            )
         return False
     if not isinstance(config, dict):
         log.error("BD-12: config.yaml root is not a mapping — skip")
+        if warnings is not None:
+            warnings.append("config.yaml: root is not a mapping — role mapping skipped")
         return False
 
     models = config.setdefault("models", {})
@@ -289,6 +299,7 @@ def save_context_and_instructions(
     *,
     context_message: str = "",
     supervisor_instructions: str = "",
+    warnings: list[str] | None = None,
 ) -> bool:
     """UI-2/UI-3: persist ``context_message`` + ``supervisor_instructions``.
 
@@ -315,13 +326,33 @@ def save_context_and_instructions(
     config_path = project_dir / ".agentic" / "config.yaml"
     if config_path.exists():
         try:
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except (yaml.YAMLError, OSError):
-            config = {}
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            # AUD06-02: unreadable config must degrade (warning), not crash
+            # the submit; AUD06-03: never overwrite a config we cannot parse
+            # — that would wipe project/models/phases with one section.
+            log.error(
+                "UI-2/UI-3: cannot read config.yaml: %s — skipping save", e
+            )
+            if warnings is not None:
+                warnings.append(
+                    f"config.yaml: unreadable ({type(e).__name__}) — "
+                    "context/instructions save skipped, file left untouched"
+                )
+            return False
+        if config is None:
+            config = {}  # empty file — nothing to lose
+        if not isinstance(config, dict):
+            log.error(
+                "UI-2/UI-3: config.yaml root is not a mapping — skipping save"
+            )
+            if warnings is not None:
+                warnings.append(
+                    "config.yaml: root is not a mapping — "
+                    "context/instructions save skipped, file left untouched"
+                )
+            return False
     else:
-        config = {}
-
-    if not isinstance(config, dict):
         config = {}
 
     config_changed = False
@@ -433,7 +464,9 @@ def apply_project_setup(
             warnings.append(f"pipeline: {e}")
             log.warning("apply_project_setup: %s", e)
 
-        config_updated = update_config_role_mapping(team, project_dir)
+        config_updated = update_config_role_mapping(
+            team, project_dir, warnings=warnings
+        )
     else:
         config_updated = False
         warnings.append("team is empty — pipeline + role mapping skipped")
@@ -442,6 +475,7 @@ def apply_project_setup(
         project_dir,
         context_message=context_message,
         supervisor_instructions=supervisor_instructions,
+        warnings=warnings,
     )
 
     # D9 (topic-trainer spec): a rebuilt pipeline shifts stage positions, but

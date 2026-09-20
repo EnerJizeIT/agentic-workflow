@@ -38,9 +38,11 @@ def read_file_text(path: Path, max_chars: int | None = None) -> str:
 
     Returns a placeholder string on OSError (never raises) — used by
     init_project which prefers degraded content over total failure.
+    AUD06-17: non-UTF-8 bytes are replaced (errors="replace") instead of
+    raising UnicodeDecodeError, so the "never raises" promise holds.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
         return f"(error reading {path.name}: {e})"
     if max_chars is not None and len(text) > max_chars:
