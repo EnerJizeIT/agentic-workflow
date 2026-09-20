@@ -419,7 +419,14 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
     if stage_kind and stage_kind != "verify":
         return ("running", "running", "Pipeline running", "●", "Running")
 
-    return ("running", "running", "Pipeline running", "●", "Running")
+    # AUD10-01: no live stage and no pid — the engine is not running.
+    # Post-completion residue ({phase: done}) → "done" (first server-side
+    # consumer of the .status-badge.done CSS); pre-start ({phase: run}) →
+    # "idle". Both used to render as "Pipeline running" with a forever-
+    # ticking timer.
+    if state.get("phase") == "done":
+        return ("done", "done", "Iteration complete", "✓", "Done")
+    return ("idle", "done", "Idle", "○", "Idle")
 
 
 def _pick_worker_pid(pids: list[str], read_cmdline: Any = None) -> str:
@@ -986,7 +993,10 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # pick the first agent line of the whole multi-run log — 47h on a fresh run)
     if state and status == "running":
         elapsed_epoch, elapsed_frozen, elapsed_str = _run_elapsed(project_dir, "running")
-    elif state and status in ("verify", "done", "idle", "dead", "salvage"):
+    elif state and status in ("verify", "done", "dead", "salvage"):
+        # AUD10-01: "done" → frozen span of the finished run (no growth).
+        # "idle" is NOT here: pre-start state must not show a timer computed
+        # from a previous run's log — it goes to the else branch (no timer).
         elapsed_epoch, elapsed_frozen, elapsed_str = _run_elapsed(project_dir, status)
     else:
         elapsed_epoch, elapsed_frozen, elapsed_str = 0, False, ""

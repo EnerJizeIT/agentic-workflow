@@ -193,6 +193,56 @@ class TestDashboardStatus:
             "no stage, no pid, no signal — a dead state must not render as 'running'"
         )
 
+    def test_determine_status_no_stage_fields(self):
+        """AUD10-01: post-completion residue renders as 'done', not 'running'."""
+        from awf.api.dashboard import _determine_status
+
+        status, _cls, _text, _icon, _label = _determine_status({"phase": "done"})
+        assert status == "done"
+
+    def test_determine_status_pre_start(self):
+        """AUD10-01: pre-start state (after set_goal, before awf_start) → idle."""
+        from awf.api.dashboard import _determine_status
+
+        status, _cls, _text, _icon, _label = _determine_status({"phase": "run"})
+        assert status == "idle"
+
+    def test_state_dict_after_completion(self, tmp_git_repo):
+        """AUD10-01: with a previous run's log, the dict must not claim
+        'running' and the iteration timer must be frozen (no growth)."""
+        from awf.api.dashboard import generate_state_dict
+        from awf.pipeline_state import write_state
+
+        proj = _project(tmp_git_repo)
+
+        log_file = proj / ".agentic" / "logs" / "orchestrator.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file.write_text(
+            "[2026-09-19T10:00:00Z] Pipeline started with 3 stages: plan agent-dev verify\n"
+            "[2026-09-19T10:00:05Z] Stage 1: agent-dev (developer :: execute)\n"
+            "[2026-09-19T10:10:00Z] Stage 2: verify (supervisor :: verify)\n"
+            "[2026-09-19T10:12:30Z] Pipeline complete\n",
+            encoding="utf-8",
+        )
+        write_state(proj, phase="done", goal="g")
+
+        d1 = generate_state_dict(proj)
+        assert d1["status"] != "running", (
+            f"post-completion state must not render as running, got {d1['status']!r}"
+        )
+        assert d1["status"] == "done"
+        assert d1["pipeline_running"] is False
+        assert d1["elapsed_frozen"] is True, (
+            "timer of a finished run must be frozen, not keep ticking"
+        )
+        assert d1["elapsed_str"], "frozen elapsed of the finished run must be shown"
+
+        # A second poll (later in wall time) must show the same span —
+        # the timer does not grow from the old log.
+        d2 = generate_state_dict(proj)
+        assert d2["elapsed_str"] == d1["elapsed_str"]
+        assert d2["elapsed_epoch"] == d1["elapsed_epoch"]
+
 
 # ── T4.1 · AUD04-04: stale APPROVE must not be accepted by a new verify ──
 
