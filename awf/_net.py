@@ -96,6 +96,25 @@ def is_network_failure(text: str) -> bool:
     return any(marker in text for marker in NETWORK_MARKERS)
 
 
+def is_preflight_timeout(text: str) -> bool:
+    """True when an exception text is the U6a preflight timeout (U6c).
+
+    The preflight dies BEFORE the worker starts, so there is no worker log
+    to classify — the exception text is the only evidence. The message
+    ("Model endpoint <url> unreachable for <n>s — worker not started")
+    embeds the URL between "endpoint" and "unreachable", so the match
+    requires BOTH words (plus a literal "preflight" fallback for
+    rewordings). Watchdog and hard-timeout messages contain neither, so
+    they stay non-network.
+    """
+    if not text:
+        return False
+    lowered = str(text).lower()
+    if "preflight" in lowered:
+        return True
+    return "unreachable" in lowered and "endpoint" in lowered
+
+
 def read_log_tail(path: Path, max_bytes: int = 65536, start_offset: int = 0) -> str:
     """Last ``max_bytes`` of a file (from ``start_offset``) as text.
 
@@ -122,6 +141,7 @@ __all__ = [
     "PREFLIGHT_TIMEOUT_DEFAULT",
     "endpoint_reachable",
     "is_network_failure",
+    "is_preflight_timeout",
     "model_endpoint_url",
     "parse_model_from_cmd",
     "read_log_tail",

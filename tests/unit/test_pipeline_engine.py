@@ -970,6 +970,269 @@ class TestU6bNetRetry:
         assert calls["n"] == 4  # original + all 3 retries
 
 
+class TestU6cNetRetryOnCrash:
+    """U6c: a crash death (no signal + rc!=0 → RuntimeError, or the
+    preflight TimeoutError) is classified like a silent network death.
+
+    U6b raised RuntimeError for "no signal + rc!=0" BEFORE the network
+    classification block — so the most common network death (endpoint down
+    mid-run, observed on FU-16) stopped the pipeline without a retry.
+    """
+
+    NET_LOG = "opencode run failed\nerror: Cannot connect to API.\n"
+
+    @staticmethod
+    def _crash():
+        return RuntimeError(
+            "Agent stage worker (execute) subprocess exited with code 1. "
+            "Cmd: opencode run --auto"
+        )
+
+    def _setup(self, tmp_path, monkeypatch, log_text, exc, until_success=2,
+               config=None, start_offset=0, fill_holder=True):
+        """Same scaffolding as TestU6bNetRetry._setup, but the worker run
+        RAISES (like run_agent_stage does for no-signal + rc!=0) until
+        run ``until_success``."""
+        project = tmp_path / "proj"
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True)
+        log_file = tmp_path / "worker.out"
+        log_file.write_text(log_text, encoding="utf-8")
+
+        call_count = {"n": 0}
+
+        def mock_agent(stage, todo_id, project_dir, cfg, logs_dir, **kw):
+            call_count["n"] += 1
+            holder = kw.get("log_holder")
+            if fill_holder and holder is not None:
+                holder["log_path"] = str(log_file)
+                holder["log_start_offset"] = start_offset
+            if call_count["n"] < until_success:
+                raise exc
+            (outbox / f"DONE-{todo_id}.md").write_text("# Done\n")
+            (outbox / f"DONE-{todo_id}.ready").write_text("")
+
+        import time as _time_mod
+        monkeypatch.setattr(_time_mod, "monotonic", lambda: 100.0)
+
+        # NOTE: time.sleep is faked here, so the stage entry must not spawn
+        # REAL subprocesses — Popen._wait's internal polling would spin on
+        # the fake sleep until the child (git) exits.
+        sleeps: list[float] = []
+        monkeypatch.setattr("time.sleep", lambda dt: sleeps.append(dt))
+
+        state_calls: list[dict] = []
+
+        import awf.pipeline_state as pipeline_state_mod
+
+        def fake_write_state(project_dir, *, logs_dir=None, **fields):
+            state_calls.append(dict(fields))
+
+        log_lines: list[str] = []
+        monkeypatch.setattr(pipeline_engine, "_log", lambda d, msg: log_lines.append(msg))
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
+        monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+        monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
+        monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_state_mod, "write_state", fake_write_state)
+        from awf import signals as sig_module
+        monkeypatch.setattr(sig_module, "clean_stage_signals", lambda *a, **kw: None)
+        from awf import verify
+        monkeypatch.setattr(verify, "attempt_auto_done", lambda *a, **kw: False)
+        monkeypatch.setattr(verify, "work_fingerprint", lambda *a, **kw: "")
+
+        def run():
+            stages = _make_stages()
+            return pipeline_engine.execute_agent_stage(
+                stage=stages[1], current_todo="TODO-0001", project_dir=project,
+                config=config or {}, logs_dir=tmp_path, stages=stages, stage_idx=1,
+                retry_counts=[0, 0, 0], auto=False, agent_hard_timeout=None,
+                pipeline_name=None,
+            )
+
+        return run, call_count, sleeps, state_calls, log_lines, project
+
+    def test_rc_nonzero_network_death_retries(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The FU-16 case: worker dies rc=1 without a signal, its log shows
+        a network marker → backoff retry with the U6a counter/key, success
+        on the next net round, counter reset after the stage resolves."""
+
+        run, calls, sleeps, state_calls, _logs, project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, self._crash(),
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 0
+        assert calls["n"] == 2  # crashed run + successful net-retry run
+        assert sleeps == [30.0]  # first backoff
+        assert any(
+            f.get("net_retry_count") == 1 and f.get("net_retry_key") == "TODO-0001:worker"
+            for f in state_calls
+        ), f"counter not written to state: {state_calls}"
+        # stage resolved → counter reset in the persisted state
+        from awf.pipeline_state import read_state
+        final = read_state(project) or {}
+        assert final.get("net_retry_count") == 0
+        assert final.get("net_retry_key") is None
+
+    def test_rc_nonzero_network_exhausted_stops_with_reason(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Endpoint stays dead past the limit → stop with the explicit
+        'network retries exhausted' reason, not the generic crash stop."""
+
+        run, calls, sleeps, state_calls, log_lines, _project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, self._crash(),
+            until_success=99,
+            config={"automation": {"net_retry_limit": 1}},
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        todo, _idx, rc = run()
+
+        assert rc == 1  # failure path (salvage produced no signal)
+        assert calls["n"] == 2  # 1 original + 1 net retry (limit 1)
+        assert sleeps == [30.0]  # exactly one backoff
+        assert any(f.get("net_retry_count") == 1 for f in state_calls)
+        assert any("network retries exhausted" in line for line in log_lines)
+
+    def test_rc_nonzero_non_network_keeps_stop(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """No network marker in the log and no preflight marker in the
+        error → the old behavior: a single crash stops the pipeline."""
+
+        run, calls, sleeps, state_calls, log_lines, _project = self._setup(
+            tmp_path, monkeypatch, "worker crashed: internal assertion\n",
+            self._crash(),
+            until_success=99,
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        assert calls["n"] == 1  # no retry at all
+        assert 30.0 not in sleeps  # no net backoff
+        assert not any("net_retry_count" in f for f in state_calls)
+        assert any("Pipeline stopped at stage" in line for line in log_lines)
+
+    def test_preflight_timeout_is_network_class(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Preflight spent its whole budget on a dead endpoint (no worker
+        log exists yet) — the exception text alone must classify the death
+        as network: retry with backoff instead of a lost run."""
+        preflight = TimeoutError(
+            "Model endpoint http://127.0.0.1:8000 unreachable for 600s — "
+            "worker not started"
+        )
+        run, calls, sleeps, state_calls, _logs, _project = self._setup(
+            tmp_path, monkeypatch, "", preflight,
+            fill_holder=False,  # preflight dies before the log is created
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 0
+        assert calls["n"] == 2  # preflight-failed run + successful net-retry run
+        assert sleeps == [30.0]
+        assert any(
+            f.get("net_retry_count") == 1 and f.get("net_retry_key") == "TODO-0001:worker"
+            for f in state_calls
+        )
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            TimeoutError(
+                "Worker produced no output for 15.0 min (watchdog) — "
+                "process tree killed"
+            ),
+            TimeoutError("Subprocess did not produce signal within 3600s"),
+        ],
+        ids=["watchdog", "hard-timeout"],
+    )
+    def test_non_network_timeout_keeps_stop(
+        self, tmp_path, monkeypatch, exc
+    ) -> None:
+        """Watchdog and hard-timeout deaths with a clean log are NOT the
+        network class — no over-classification, the old stop stands."""
+        run, calls, sleeps, state_calls, log_lines, _project = self._setup(
+            tmp_path, monkeypatch, "worker: starting work\n", exc,
+            until_success=99,
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        assert calls["n"] == 1
+        assert 30.0 not in sleeps
+        assert not any("net_retry_count" in f for f in state_calls)
+        assert any("Pipeline stopped at stage" in line for line in log_lines)
+
+    def test_crash_inherits_persisted_counter(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Kill+continue between crash retries: the persisted (TODO, stage)
+        counter must be inherited through the crash path exactly like the
+        no-signal path — a fresh 0 would silently double the budget."""
+
+        run, calls, sleeps, state_calls, _logs, project = self._setup(
+            tmp_path, monkeypatch, self.NET_LOG, self._crash(),
+            until_success=99,
+            config={"automation": {"net_retry_limit": 3}},
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        state_file = project / ".agentic" / "state" / "current.yaml"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(
+            "net_retry_count: 1\nnet_retry_key: TODO-0001:worker\n",
+            encoding="utf-8",
+        )
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        # inherited 1 → this entry spends retries 2 and 3 (60s + 120s)
+        assert sleeps == [60.0, 120.0]
+        assert calls["n"] == 3
+        assert any(f.get("net_retry_count") == 2 for f in state_calls)
+
+    def test_crash_text_with_preflight_word_not_network(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """U6b's RuntimeError embeds the full Cmd (stage/agent names, file
+        paths, prompt) — a 'preflight' word in the project's own pipeline
+        names must not classify a clean-log rc!=0 crash as network. The
+        log tail is the only evidence for a crash death; the preflight
+        text check is reserved for the preflight TimeoutError itself."""
+        polluted = RuntimeError(
+            "Agent stage preflight-checker (execute) subprocess exited "
+            "with code 1. Cmd: opencode run --auto"
+        )
+        run, calls, sleeps, state_calls, _logs, _project = self._setup(
+            tmp_path, monkeypatch, "worker crashed: internal assertion\n",
+            polluted,
+            until_success=99,
+        )
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
+        monkeypatch.setattr(pipeline_engine, "_write_salvage_prompt", lambda *a, **kw: None)
+
+        todo, _idx, rc = run()
+
+        assert rc == 1
+        assert calls["n"] == 1  # no retry — the crash is not network-class
+        assert 30.0 not in sleeps
+        assert not any("net_retry_count" in f for f in state_calls)
+
+
 class TestU5VerifyPack:
     """U5: the verify pack must run BEFORE the supervisor's signal wait."""
 

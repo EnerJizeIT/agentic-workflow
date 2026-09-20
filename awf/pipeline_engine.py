@@ -751,6 +751,88 @@ def execute_supervisor_stage(
     return current_todo, 1, 0
 
 
+def _death_tail(log_holder: dict[str, str]) -> str:
+    """U6b/U6c: this run's worker-log tail (from its start offset).
+
+    Append-mode log (dogfood-11): without the offset an earlier run's
+    network marker would leak into this run's death classification
+    (QA TODO-0017). '' when the run never got a log (the preflight died
+    before the file was created).
+    """
+    from . import _net
+
+    log_path_str = log_holder.get("log_path", "")
+    if not log_path_str:
+        return ""
+    start_offset = int(log_holder.get("log_start_offset") or 0)
+    return _net.read_log_tail(Path(log_path_str), start_offset=start_offset)
+
+
+def _handle_net_death(
+    *,
+    s_name: str,
+    net_retries: int,
+    net_limit: int,
+    net_key: str,
+    project_dir: Path,
+    logs_dir: Path,
+    outbox: Path,
+    todo_id: str,
+    prefixes: tuple[str, ...],
+) -> tuple[int, bool]:
+    """U6b/U6c: what a network-class death does — schedule the backoff
+    retry (budget left) or declare the budget exhausted.
+
+    Shared by both death paths (the silent no-signal exit and the
+    RuntimeError/TimeoutError crash) so they can never classify or spend
+    the retry budget differently. Returns (new_net_retries,
+    retry_scheduled); the caller breaks to the net-round epilogue either
+    way — scheduled means the next net round, exhausted means the
+    failure path.
+    """
+    import time as _time
+
+    from . import _net
+    from .pipeline_state import write_state as _ws
+    from .signals import clean_stage_signals
+
+    if net_retries < net_limit:
+        net_retries += 1
+        backoff = _net.NET_RETRY_BACKOFFS[
+            min(net_retries - 1, len(_net.NET_RETRY_BACKOFFS) - 1)
+        ]
+        _ws(
+            project_dir,
+            net_retry_count=net_retries, net_retry_key=net_key,
+            logs_dir=logs_dir,
+        )
+        print(
+            f"U6b: worker log shows a network failure — retrying "
+            f"'{s_name}' in {backoff:.0f}s "
+            f"(net retry {net_retries}/{net_limit})...",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"U6b: network failure on {s_name} — backoff "
+            f"{backoff:.0f}s (net retry {net_retries}/{net_limit})",
+        )
+        clean_stage_signals(outbox, todo_id, *prefixes)
+        _time.sleep(backoff)
+        return net_retries, True
+    print(
+        f"U6b: network retries exhausted ({net_limit}/{net_limit}) "
+        f"on '{s_name}' — no more retries",
+        file=sys.stderr,
+    )
+    _log(
+        logs_dir,
+        f"U6b: network retries exhausted on {s_name} "
+        f"(limit {net_limit}) — proceeding to failure path",
+    )
+    return net_retries, False
+
+
 def execute_agent_stage(
     stage: Stage,
     current_todo: str,
@@ -829,6 +911,10 @@ def execute_agent_stage(
 
     log_holder: dict[str, str] = {}
     signal = None
+    # U6c: bound BEFORE the attempt loop — the crash path (except branch)
+    # exits the loop before the in-loop assignment, and the salvage path
+    # below still needs the prefixes.
+    prefixes = expected_signal_prefixes(s_kind)
     worker_run = 0  # cumulative worker run number (handoff fact "worker run")
     for _net_round in range(net_limit + 1):
         net_retry_scheduled = False
@@ -843,12 +929,39 @@ def execute_agent_stage(
                                  retry_note=retry_note, attempt=worker_run,
                                  log_holder=log_holder)
             except (RuntimeError, TimeoutError) as e:
+                # U6c: a crash is not automatically a non-network death —
+                # U6b turns "no signal + rc!=0" into a RuntimeError, so the
+                # most common network death (endpoint down mid-run) used to
+                # stop the pipeline here, never reaching the classification
+                # below. Classify the same way as the no-signal path: this
+                # run's log tail, plus the preflight-timeout marker in the
+                # exception text (the endpoint was down before the worker
+                # even started — no log to read yet).
+                tail = _death_tail(log_holder)
+                # QA (U6c): the preflight text check applies ONLY to
+                # TimeoutError — preflight is the only network death with no
+                # worker log. U6b's RuntimeError embeds the full Cmd (stage
+                # and agent names, file paths, prompt), so a project's own
+                # "preflight" stage name must not classify a clean-log crash
+                # as network. A crash death is classified by its log tail.
+                # Pinned by test_crash_text_with_preflight_word_not_network.
+                if _net.is_network_failure(tail) or (
+                    isinstance(e, TimeoutError)
+                    and _net.is_preflight_timeout(str(e))
+                ):
+                    net_retries, net_retry_scheduled = _handle_net_death(
+                        s_name=s_name, net_retries=net_retries,
+                        net_limit=net_limit, net_key=net_key,
+                        project_dir=project_dir, logs_dir=logs_dir,
+                        outbox=outbox, todo_id=current_todo,
+                        prefixes=prefixes,
+                    )
+                    break  # scheduled → next net round; exhausted → failure path
                 print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
                 _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
                 return current_todo, stage_idx, 1
             agent_elapsed = _time.monotonic() - agent_start
 
-            prefixes = expected_signal_prefixes(s_kind)
             signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
             if not signal:
@@ -876,48 +989,15 @@ def execute_agent_stage(
             # U6b: worker died without a signal — classify the death BEFORE
             # the silent retry: a dead model endpoint is not fixed by a
             # continue-push, it gets its own backoff-retry budget (30/60/120s).
-            log_path_str = log_holder.get("log_path", "")
-            # From this run's start offset — the append-mode log may still
-            # hold an earlier run's network marker (QA TODO-0017).
-            _run_offset = int(log_holder.get("log_start_offset") or 0)
-            tail = _net.read_log_tail(Path(log_path_str), start_offset=_run_offset) if log_path_str else ""
+            tail = _death_tail(log_holder)
             if _net.is_network_failure(tail):
-                if net_retries < net_limit:
-                    net_retries += 1
-                    backoff = _net.NET_RETRY_BACKOFFS[
-                        min(net_retries - 1, len(_net.NET_RETRY_BACKOFFS) - 1)
-                    ]
-                    _ws(
-                        project_dir,
-                        net_retry_count=net_retries, net_retry_key=net_key,
-                        logs_dir=logs_dir,
-                    )
-                    print(
-                        f"U6b: worker log shows a network failure — retrying "
-                        f"'{s_name}' in {backoff:.0f}s "
-                        f"(net retry {net_retries}/{net_limit})...",
-                        file=sys.stderr,
-                    )
-                    _log(
-                        logs_dir,
-                        f"U6b: network failure on {s_name} — backoff "
-                        f"{backoff:.0f}s (net retry {net_retries}/{net_limit})",
-                    )
-                    from .signals import clean_stage_signals
-                    clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
-                    _time.sleep(backoff)
-                    net_retry_scheduled = True
-                else:
-                    print(
-                        f"U6b: network retries exhausted ({net_limit}/{net_limit}) "
-                        f"on '{s_name}' — no more retries",
-                        file=sys.stderr,
-                    )
-                    _log(
-                        logs_dir,
-                        f"U6b: network retries exhausted on {s_name} "
-                        f"(limit {net_limit}) — proceeding to failure path",
-                    )
+                net_retries, net_retry_scheduled = _handle_net_death(
+                    s_name=s_name, net_retries=net_retries,
+                    net_limit=net_limit, net_key=net_key,
+                    project_dir=project_dir, logs_dir=logs_dir,
+                    outbox=outbox, todo_id=current_todo,
+                    prefixes=prefixes,
+                )
                 break  # scheduled → next net round; exhausted → failure path
 
             # dogfood-11: no signal — retry only when the worker left NO work

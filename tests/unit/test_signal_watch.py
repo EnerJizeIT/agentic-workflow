@@ -504,6 +504,31 @@ class TestNetworkClassifier:
         assert _net.is_network_failure(tail) is True
 
 
+class TestPreflightTimeoutClassifier:
+    """U6c: the preflight dies before the worker log exists — the exception
+    text is the only evidence, and it must not over-match watchdog or
+    hard-timeout messages."""
+
+    @pytest.mark.parametrize("text", [
+        # the real message embeds the URL between "endpoint" and "unreachable"
+        "Model endpoint http://127.0.0.1:8000 unreachable for 600s — worker not started",
+        "Model endpoint https://llm.example/v1 unreachable for 120s — worker not started",
+        "preflight timeout: endpoint http://127.0.0.1:8000 gave up",
+    ])
+    def test_preflight_messages(self, text):
+        assert _net.is_preflight_timeout(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "",
+        "Worker produced no output for 15.0 min (watchdog) — process tree killed",
+        "Subprocess did not produce signal within 3600s",
+        "Agent stage worker (execute) subprocess exited with code 1. Cmd: opencode run",
+        "unreachable: some file path could not be read",
+    ])
+    def test_non_preflight(self, text):
+        assert _net.is_preflight_timeout(text) is False
+
+
 class TestReadLogTail:
 
     def test_returns_whole_file_when_small(self, tmp_path):
