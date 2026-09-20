@@ -7,39 +7,21 @@
 ## Открытые задачи
 
 ### DOGFOOD-2026-09-20 · Хвосты после аудита и инцидента
-**Status:** решения владельца 20.09; исполнять по приоритету. Источник: `~/Desktop/awf-audit/RECOVERY-RUNBOOK.md`.
+**Status:** решения владельца 20.09. Источник: `~/Desktop/awf-audit/RECOVERY-RUNBOOK.md`.
 
-⬜ **Подписи коммитов** — перед вливанием `audit-fixes` в `main` пересобрать ветку без
-   корпоративных X.509-подписей: коммиты FU-01…FU-12 подписаны корп. сертификатом из-за
-   старой опечатки в `~/.gitconfig` (исправлена; подпись теперь только в рабочем профиле).
-   План: replay при `commit.gpgsign=false` → пересоздать теги `verified/*` и
-   `audit-known-good` → обновить бандлы и SHA в `AUDIT-INDEX.md` → force-push.
-⬜ **Герметичность тестов от git-конфига пользователя** — в `tests/conftest.py`:
-   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, личность через
-   `GIT_AUTHOR_*`/`GIT_COMMITTER_*`; тест-страж «коммит в тест-репо не подписывается».
-   Причина: глобальная `commit.gpgsign` подвешивала прогоны на pinentry. Место: пилот
-   ворот (контракт «тесты не зависят от окружения пользователя») / подготовка CI.
-⬜ **`run_next` foreground-ветка** — двигает позицию и при неудачном foreground-запуске
-   (не только noop/error); из плагина недостижимо (`background=True` всегда). Реоткрыть,
-   если появится foreground-вызов. Детали: `.agentic/done/TODO-0003/handoff/agent-qa-review-TODO-0003.md`.
-⬜ **Rollback-вызовы git без timeout** — `awf/api/pipeline.py` (`git diff`/`git reset` в
-   rollback-пути): единственная открытая позиция контракта `docs/contracts/subprocess-timeouts.md`
-   (зафиксирована честно, не спрятана). Закрыть в аудит-хвосте (FU-19).
-⬜ **CI-дубль** — `test.yml` (main) и `ci.yml` (все ветки) сосуществуют: на main-пушах
-   прогоняются оба. Консолидировать при вливании (U7b).
-⬜ **Actions Node20** — `checkout@v4`/`setup-python@v5` deprecated (Node 20 → 24):
-   бампнуть версии при следующем касании CI.
-⬜ **Сканер timeout-контракта и алиасы** — AST-чекер ловит `subprocess.run`/`_sp.run`,
-   но не алиас (`import subprocess as _s`). Расширить правило (refine).
-⬜ **`files:` в `_CONTRACT_KEYS`** — кросс-чек verify-pack читает ключ `files` из
-   контракта юнита, а валидатор U3 не знает его → лог «unknown contract keys: files».
-   Добавить ключ (+ валидация str-list). Стык U3/U5, двухстрочный фикс.
-⬜ **`verify_pack._git_lines`** — при git-зависании >30 c `subprocess.TimeoutExpired`
-   даёт traceback в ручном CLI (`awf verify-pack`); в пайплайне безопасно (хук ловит).
-   Харденить: деградация в секцию failed/timeout.
-⬜ **Doc-формулировка гейтов** — `docs/unit-contract.md` говорит «имена проверок run-all»,
-   а KNOWN_GATES — короткие имена (contracts/ratchet/instructions/tests/lint/mutations).
-   Поправить фразу при следующем касании доки.
+**Закрыто в ходе программы аудита:**
+- ✅ **Подписи коммитов** — ветка пересобрана без корпоративных X.509-подписей (38 коммитов, force-push; теги `verified/*` и `audit-known-good` пересозданы; SHA в реестре обновлены). Новый head: `ffa5e12`.
+- ✅ **Герметичность тестов** (U7a) — `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, личность через env + тест-страж.
+- ✅ **Rollback-таймауты** (FU-19) — git diff/reset в rollback-пути через timeout; контракт-исключение закрыто.
+- ✅ **Actions Node20** (FU-21) — checkout@v5, setup-python@v6.
+- ✅ **`files:` в `_CONTRACT_KEYS`**, **`verify_pack._git_lines`**, **doc-формулировка гейтов**, **ратчет-исключение BACKLOG.md**, **DONE.json пример**, **CI-дубль** (test.yml удалён — ci.yml покрывает всё) — FU-21/FU-20.
+
+**Открыто:**
+⬜ **Кириллица в slugify** — плагин транслитерирует («QA Лид» → `qa-lid`), ядро нет (`qa`); pre-existing рассинхрон (FU-14). Перенести `_CYRILLIC_MAP` в `awf/api/_helpers.slugify_role`.
+⬜ **Ротация логов не атомарна** — `awf/_log.py::_maybe_rotate` (unlink+rename) при двух конкурентных ротаторах может перезаписать архив (FU-17b2). Сделать atomic (rename с уникальным суффиксом + prune).
+⬜ **Evidence-гейт в auto-mode watcher** — auto-verify watcher не гейтится evidence (недостижимо через `awf_run_next`, всегда auto=False) (FU-18). Реоткрыть, если появится auto-режим.
+⬜ **Сканер timeout-контракта и алиасы** — AST-чекер ловит `subprocess.run`/`_sp.run`, но не алиас (`import subprocess as _s`). Расширить правило (refine).
+
 
 ### SMO · State-Machine Orchestration
 
