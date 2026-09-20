@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from awf import paths
 from awf.pipeline_engine import _ensure_baseline_sha
 from awf.plan_checkpoint import _cleanup_stale_temp_html
@@ -258,6 +260,20 @@ class TestCheckpointHtmlStructure:
 
 
 class TestCleanupStaleTempHtml:
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        """U7a: point cleanup at a private dir. The real tempdir is shared
+        across xdist workers — concurrent workers' awf-checkpoint-*.html
+        pre-clean/unlink would race with this test's files (QA note from
+        TODO-0013). Same pattern as test_plan_checkpoint.py::
+        TestStaleCleanupProtectsLiveForm."""
+        import tempfile
+
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
     def test_removes_existing_stale_files(self, tmp_path, monkeypatch):
         """П7: stale awf-checkpoint-*.html from crashed runs are removed
         (only if older than 10 min — protects concurrent awf instances)."""
@@ -308,27 +324,28 @@ class TestCleanupStaleTempHtml:
 
     def test_returns_zero_when_nothing_to_clean(self, tmp_path):
         """No stale files — returns 0, no error."""
-        # Pre-clean to ensure clean state
+        # Pre-clean to ensure clean state (isolated dir, see _isolated_tempdir)
         import glob
-        for f in glob.glob("/tmp/awf-checkpoint-*.html"):
+        import tempfile
+        for f in glob.glob(f"{tempfile.gettempdir()}/awf-checkpoint-*.html"):
             Path(f).unlink(missing_ok=True)
 
         assert _cleanup_stale_temp_html(tmp_path) == 0
 
     def test_ignores_permission_errors(self, tmp_path, monkeypatch):
         """П7: permission errors are silently ignored (best-effort)."""
-        # Patch Path.unlink to raise
-        class _UnlinkablePath(type(Path())):
-            def unlink(self, *args, **kwargs):
-                raise PermissionError("denied")
+        import os
+        import tempfile
+        import time
 
-        # Simpler: just verify the function doesn't propagate exceptions
-        # when a permission error occurs. We create a real stale file
-        # then monkeypatch glob.glob to return a fake path that raises.
-
-        # Create one real stale file
-        stale = Path("/tmp/awf-checkpoint-test-perm.html")
+        # Create one real STALE file in the ISOLATED tempdir (autouse
+        # fixture) and age it past the 10-minute window (same pattern as
+        # test_removes_existing_stale_files) so the cleanup actually
+        # reaches the unlink call.
+        stale = Path(tempfile.gettempdir()) / "awf-checkpoint-test-perm.html"
         stale.write_text("test")
+        old_time = time.time() - 3600
+        os.utime(stale, (old_time, old_time))
 
         original_unlink = Path.unlink
         call_count = {"n": 0}
@@ -344,9 +361,11 @@ class TestCleanupStaleTempHtml:
         try:
             # Must NOT raise — permission errors are caught internally
             removed = _cleanup_stale_temp_html(tmp_path)
-            # The file we created counts as removed from glob's perspective,
-            # even though unlink failed — that's fine, it's best-effort.
             assert isinstance(removed, int)
+            # The permission path was actually exercised (not skipped by
+            # the age window) and the failed unlink was swallowed.
+            assert call_count["n"] >= 1, "unlink was never attempted — test is a no-op"
+            assert removed == 0, "failed unlink must not count as removed"
         finally:
             # Real cleanup (unpatched)
             monkeypatch.undo()

@@ -225,6 +225,18 @@ class TestCheckpointServer:
 class TestRunPlanCheckpoint:
     """run_plan_checkpoint: full flow (without browser; we POST directly)."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        # QA (U7a review): point the checkpoint at a private tempdir. The
+        # real tempdir is shared across xdist workers — parallel
+        # run_plan_checkpoint tests create awf-checkpoint-TODO-*.html there
+        # and test_temp_html_cleaned_up_after's before/after snapshot races
+        # with their files (reproduced 3/3 on -n auto, incl. at baseline).
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
     def _make_project(self, tmp_path: Path, todo_content: str = "Original task") -> Path:
         """Create a minimal .agentic/ layout for checkpoint tests."""
         inbox = tmp_path / ".agentic" / "inbox"

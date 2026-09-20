@@ -21,6 +21,20 @@ os.environ.setdefault("AWF_PLAN_CHECKPOINT", "false")
 # it would sleep for 30 minutes.
 os.environ.setdefault("AWF_APPROVE_TIMEOUT_SECONDS", "5")
 
+# U7a: hermetic git — the suite must never read the user's ~/.gitconfig or
+# the system git config. 2026-09-20 incident: a corporate ~/.gitconfig with
+# commit.gpgsign=true hung full pytest runs on pinentry (gpg prompt).
+# /dev/null is a valid (empty) config file. Hard assignment on purpose:
+# inherited values would break hermeticity.
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+# Fixed test identity: commits in tmp test-repos work even without local
+# user.name/user.email config.
+os.environ["GIT_AUTHOR_NAME"] = "awf-test"
+os.environ["GIT_AUTHOR_EMAIL"] = "test@example.invalid"
+os.environ["GIT_COMMITTER_NAME"] = "awf-test"
+os.environ["GIT_COMMITTER_EMAIL"] = "test@example.invalid"
+
 # Suppress webbrowser.open during tests (deterministic dashboard opening
 # would spawn browser windows on every test that triggers awf_start).
 webbrowser.open = lambda *a, **kw: True
