@@ -6,6 +6,23 @@
 
 ## Открытые задачи
 
+### DOGFOOD-2026-09-20 · Хвосты после аудита и инцидента
+**Status:** решения владельца 20.09; исполнять по приоритету. Источник: `~/Desktop/awf-audit/RECOVERY-RUNBOOK.md`.
+
+⬜ **Подписи коммитов** — перед вливанием `audit-fixes` в `main` пересобрать ветку без
+   корпоративных X.509-подписей: коммиты FU-01…FU-12 подписаны корп. сертификатом из-за
+   старой опечатки в `~/.gitconfig` (исправлена; подпись теперь только в рабочем профиле).
+   План: replay при `commit.gpgsign=false` → пересоздать теги `verified/*` и
+   `audit-known-good` → обновить бандлы и SHA в `AUDIT-INDEX.md` → force-push.
+⬜ **Герметичность тестов от git-конфига пользователя** — в `tests/conftest.py`:
+   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, личность через
+   `GIT_AUTHOR_*`/`GIT_COMMITTER_*`; тест-страж «коммит в тест-репо не подписывается».
+   Причина: глобальная `commit.gpgsign` подвешивала прогоны на pinentry. Место: пилот
+   ворот (контракт «тесты не зависят от окружения пользователя») / подготовка CI.
+⬜ **`run_next` foreground-ветка** — двигает позицию и при неудачном foreground-запуске
+   (не только noop/error); из плагина недостижимо (`background=True` всегда). Реоткрыть,
+   если появится foreground-вызов. Детали: `.agentic/done/TODO-0003/handoff/agent-qa-review-TODO-0003.md`.
+
 ### SMO · State-Machine Orchestration
 
 **Status:** .1–.6 DONE (в архиве). Открыт только .7.
