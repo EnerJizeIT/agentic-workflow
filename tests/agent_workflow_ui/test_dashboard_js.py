@@ -29,7 +29,7 @@ _JS_TEST_FILE = Path(__file__).resolve().parents[1] / "js" / "dashboard_js_test.
 _EXPORT_FOOTER = (
     "module.exports = { updateAll, updateTopbar, updateSidebar, updateChat,"
     " updateTodo, updateEvents, updateElapsed, tickElapsed, switchTab,"
-    " checkNotification, escapeHtml, fmtElapsed };"
+    " checkNotification, escapeHtml, fmtElapsed, poll, _pollLoop, schedulePoll };"
 )
 
 

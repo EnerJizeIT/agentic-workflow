@@ -94,6 +94,7 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     - outbox/DONE-{id}.md       → done/{id}/DONE.md
     - outbox/DONE-{id}.json     → done/{id}/DONE.json (U3 machine facts, U5)
     - outbox/DONE-{id}.ready    → deleted
+    - outbox/TEST-RESULTS-{id}.log → done/{id}/TEST-RESULTS-{id}.log (AUD15-07)
 
     Returns path to done/{todo_id}/ dir, or None if nothing to archive.
     Idempotent — safe to call multiple times.
@@ -139,6 +140,14 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
                     else:
                         src.unlink()  # .ready signals consumed
                     moved_anything = True
+
+    # AUD15-07: the test-results log used to pile up in outbox forever —
+    # it is the DONE report of this TODO, so it archives with it.
+    for tid_variant in (todo_id, _short_id(todo_id)):
+        tr = outbox_p / f"TEST-RESULTS-{tid_variant}.log"
+        if tr.is_file():
+            shutil.move(str(tr), str(dest / f"TEST-RESULTS-{tid_variant}.log"))
+            moved_anything = True
 
     # Move handoff files to done/{id}/handoff/
     handoff_p = handoff_dir(project_dir)

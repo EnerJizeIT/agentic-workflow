@@ -599,35 +599,18 @@ def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
     return diff_stat_for_todo(project_dir, todo_id)
 
 
-def _scoped_log_text(project_dir: Path) -> tuple[datetime | None, str]:
-    """Log text of the CURRENT run only (after the last 'Pipeline started').
+def _log_snapshot(project_dir: Path):
+    """AUD15-01: incremental snapshot of orchestrator.log.
 
-    Day-4 (live review): orchestrator.log accumulates across restarts and
-    TODOs — the elapsed timer picked the first agent line of the WHOLE log
-    and showed 47h on a one-minute-old run.
+    Day-4 (live review) scoped the timer to the CURRENT run (after the last
+    'Pipeline started') because the log accumulates across restarts. AUD15-01
+    replaced the four full reads per poll with one offset-cached incremental
+    reader (awf/_log_reader.py) — only new bytes are parsed per poll.
     """
-    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    if not log_file.is_file():
-        return None, ""
-    try:
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None, ""
+    from .._log_reader import read_log_snapshot
 
-    marker = None
-    for m in re.finditer(
-        r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]\s*Pipeline started", text,
-    ):
-        marker = m
-    if marker is None:
-        return None, text
-    try:
-        start = datetime.strptime(marker.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        start = None
-    return start, text[marker.start():]
+    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+    return read_log_snapshot(log_file)
 
 
 def _run_elapsed(
@@ -639,43 +622,21 @@ def _run_elapsed(
     the string grows with wall time. Frozen statuses → span between the first
     agent line and the verify line of the scoped run.
     """
-    scoped_start, text = _scoped_log_text(project_dir)
-
-    agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
-    verify_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
-    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-
-    first_agent = None
-    verify_ts = None
-    for line in text.splitlines():
-        tm = time_pat.search(line)
-        if not tm:
-            continue
-        try:
-            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        if agent_pat.search(line) and first_agent is None:
-            first_agent = dt
-        if verify_pat.search(line):
-            verify_ts = dt
+    snap = _log_snapshot(project_dir)
 
     if status == "running":
-        epoch = int(first_agent.timestamp()) if first_agent else (
-            int(scoped_start.timestamp()) if scoped_start else 0
+        epoch = snap.first_agent_epoch if snap.first_agent_epoch is not None else (
+            snap.run_start_epoch if snap.run_start_epoch is not None else 0
         )
         return epoch, False, ""
 
     # Frozen statuses
-    if first_agent and verify_ts:
-        epoch = int(first_agent.timestamp())
-        return epoch, True, _format_elapsed_from_seconds(
-            int(verify_ts.timestamp() - epoch)
+    if snap.first_agent_epoch is not None and snap.last_verify_epoch is not None:
+        return snap.first_agent_epoch, True, _format_elapsed_from_seconds(
+            snap.last_verify_epoch - snap.first_agent_epoch
         )
-    if first_agent:
-        return int(first_agent.timestamp()), True, ""
+    if snap.first_agent_epoch is not None:
+        return snap.first_agent_epoch, True, ""
     return 0, True, ""
 
 
@@ -692,25 +653,11 @@ def _fmt_clock(epoch: int | None) -> str:
 def _stage_spans(project_dir: Path) -> dict[str, dict[str, int]]:
     """Run-scoped {stage_name: {"start": epoch, "end": epoch|None}}.
 
-    Day-4: built from the CURRENT run only (see ``_scoped_log_text``);
-    ``end=None`` means the stage is still running.
+    Day-4: built from the CURRENT run only (the reader resets its stage
+    data on every 'Pipeline started'); ``end=None`` means the stage is
+    still running.
     """
-    _, text = _scoped_log_text(project_dir)
-    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-    stage_pat = re.compile(r"Stage\s+\d+:\s+(\S+)")
-    transitions: list[tuple[int, str]] = []
-    for line in text.splitlines():
-        tm = time_pat.search(line)
-        sm = stage_pat.search(line)
-        if not (tm and sm):
-            continue
-        try:
-            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        transitions.append((int(dt.timestamp()), sm.group(1)))
+    transitions = _log_snapshot(project_dir).transitions
     spans: dict[str, dict[str, int]] = {}
     for i, (ts, name) in enumerate(transitions):
         end = transitions[i + 1][0] if i + 1 < len(transitions) else None
@@ -725,40 +672,10 @@ def _total_elapsed(project_dir: Path) -> tuple[int, bool, int]:
     total across iterations. Runs are delimited by 'Pipeline started' /
     'Pipeline complete' lines in the (multi-run) orchestrator log.
     """
-    log = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    if not log.is_file():
-        return 0, False, 0
-    try:
-        text = log.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0, False, 0
-
-    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-    closed_seconds = 0
-    open_start: datetime | None = None
-    for line in text.splitlines():
-        is_start = "Pipeline started" in line
-        is_complete = "Pipeline complete" in line
-        if not (is_start or is_complete):
-            continue
-        tm = time_pat.search(line)
-        if not tm:
-            continue
-        try:
-            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        if is_start:
-            if open_start is not None:  # previous run never completed — close it here
-                closed_seconds += int((dt - open_start).total_seconds())
-            open_start = dt
-        elif is_complete and open_start is not None:
-            closed_seconds += int((dt - open_start).total_seconds())
-            open_start = None
-    return closed_seconds, open_start is not None, (
-        int(open_start.timestamp()) if open_start else 0
+    snap = _log_snapshot(project_dir)
+    open_start = snap.open_run_start_epoch
+    return snap.closed_seconds, open_start is not None, (
+        open_start if open_start is not None else 0
     )
 
 
@@ -841,10 +758,14 @@ def _read_worker_last_line(project_dir: Path, todo_id: str | None = None) -> str
         except OSError:
             candidates = []
 
+    # AUD15-06: worker logs are append-forever — read a bounded tail from
+    # EOF instead of the whole file (was ~95 ms/poll at 33 MB).
+    from .._log_reader import read_tail_lines
+
     ansi = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
     for log_name in candidates[:1]:
         try:
-            lines = log_name.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+            lines = read_tail_lines(log_name)
         except OSError:
             continue
         for line in reversed(lines):
@@ -1082,14 +1003,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # TODO timeline
     todo_timeline = _build_todo_timeline(project_dir, todo_id)
 
-    # Events
-    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    events = []
-    if log_file.is_file():
-        try:
-            events = _parse_log_events(log_file.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            pass
+    # Events — AUD15-01: from the same incremental snapshot (no 4th full read)
+    events = _log_snapshot(project_dir).events
 
     # Project name
     import yaml as _yaml

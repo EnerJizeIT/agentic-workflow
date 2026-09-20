@@ -245,6 +245,33 @@ async function poll() {
   }
 }
 
+// AUD15-03: the old setInterval(poll, 3000) fired a NEW request every 3s
+// regardless of whether the previous one had finished — once /api/state
+// answered slower than 3s the browser queued requests without bound.
+// Now each poll schedules the NEXT one only after its own response lands,
+// and an in-flight poll is skipped (re-scheduled), so at most one
+// request is ever in flight per tab.
+const POLL_INTERVAL_MS = 3000;
+let _pollInFlight = false;
+let _pollTimer = null;
+
+function schedulePoll() {
+  if (_pollTimer !== null) clearTimeout(_pollTimer);
+  _pollTimer = setTimeout(_pollLoop, POLL_INTERVAL_MS);
+}
+
+async function _pollLoop() {
+  _pollTimer = null;
+  if (_pollInFlight) { schedulePoll(); return; }
+  _pollInFlight = true;
+  try {
+    await poll();
+  } finally {
+    _pollInFlight = false;
+    schedulePoll();
+  }
+}
+
 function updateAll(s) {
   updateTopbar(s);
   updateSidebar(s);
@@ -562,8 +589,7 @@ function escapeHtml(s) {
 // ─── Init + Poll ────────────────────────────────────────────────────
 const INITIAL_STATE = {{ initial_state_json | safe }};
 updateAll(INITIAL_STATE);
-poll();  // Day-3: refresh immediately — the embedded snapshot can be a stage old
-setInterval(poll, 3000);
+_pollLoop();  // Day-3: refresh immediately — the embedded snapshot can be a stage old
 </script>
 </body>
 </html>

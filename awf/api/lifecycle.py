@@ -630,21 +630,28 @@ def get_report(project_dir: Path) -> ReportResult:
     )
     git_diff = diff_result.stdout if diff_result.returncode == 0 else ""
 
+    # AUD15-07: an archived task carries its TEST-RESULTS log in done/{id}/ —
+    # look there too, and read only the tail (the file can be many MB).
     latest_test_log_tail: str | None = None
+    candidates: list[Path] = []
     if outbox.exists():
-        logs = sorted(
-            outbox.glob("TEST-RESULTS-*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if logs:
-            try:
-                content = logs[0].read_text(encoding="utf-8")
-                lines = content.splitlines()
-                tail = lines[-5:] if len(lines) > 5 else lines
-                latest_test_log_tail = "\n".join(tail)
-            except OSError:
-                pass
+        candidates.extend(p for p in outbox.glob("TEST-RESULTS-*.log") if p.is_file())
+    if done_d.is_dir():
+        for d in sorted(done_d.iterdir()):
+            if d.is_dir():
+                candidates.extend(
+                    p for p in d.glob("TEST-RESULTS-*.log") if p.is_file()
+                )
+    if candidates:
+        newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        try:
+            from .._log_reader import read_tail_lines
+
+            lines = read_tail_lines(newest, max_lines=5)
+            if lines:
+                latest_test_log_tail = "\n".join(lines)
+        except OSError:
+            pass
 
     return ReportResult(
         project_name=project_name,

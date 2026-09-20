@@ -51,6 +51,7 @@ global.window = global;
 global.setInterval = () => 0;
 global.clearInterval = () => {};
 global.setTimeout = () => 0;
+global.clearTimeout = () => {};
 global.fetch = async () => ({ ok: true, json: async () => ({}) });
 
 // The script self-executes on load (updateAll(INITIAL_STATE), poll(),
@@ -183,4 +184,28 @@ test('empty handoffs show the empty state', () => {
   fresh();
   dash.updateAll(state({ handoffs: [] }));
   assert.ok(registry.get('pane-chat').innerHTML.includes('Agent handoffs'));
+});
+
+// ─── AUD15-03: a slow /api/state must not queue overlapping polls ──────
+test('AUD15-03: at most one poll in flight, no request pile-up', async () => {
+  // drain the module-load poll (it ran with the stubbed fast fetch)
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+
+  let inFlight = 0, maxInFlight = 0, calls = 0;
+  const origFetch = global.fetch;
+  global.fetch = async () => {
+    calls++; inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise(r => setImmediate(r));  // simulate a slow /api/state
+    inFlight--;
+    return { ok: true, json: async () => ({}) };
+  };
+
+  // three loop iterations start while one response is still in flight:
+  await Promise.all([dash._pollLoop(), dash._pollLoop(), dash._pollLoop()]);
+
+  assert.strictEqual(maxInFlight, 1, 'two polls must never be in flight at once');
+  assert.strictEqual(calls, 1, 'concurrent iterations must collapse into one request');
+  global.fetch = origFetch;
 });
