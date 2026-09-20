@@ -181,16 +181,17 @@ class TestSalvageStatus:
         assert label == "Salvage"
 
     def test_state_dict_reports_salvage(self, dash_project):
+        # AUD10-06: salvage_needed left /api/state (no consumer) — the
+        # status itself carries the signal now.
         write_state(dash_project, salvage_needed=True, salvage_stage="agent-implementer")
         d = generate_state_dict(dash_project)
         assert d["status"] == "salvage"
-        assert d["salvage_needed"] is True
+        assert "salvage_needed" not in d
         assert d["salvage_stage"] == "agent-implementer"
 
     def test_state_dict_reports_running_without_salvage(self, dash_project):
         d = generate_state_dict(dash_project)
         assert d["status"] == "running"
-        assert d["salvage_needed"] is False
         assert d["salvage_stage"] is None
 
     def test_stage_start_write_clears_stale_salvage(self, dash_project):
@@ -832,3 +833,251 @@ class TestSummarySkipsHtmlComment:
         )
 
         assert _read_todo_summary(dash_project, "TODO-0001") == "Пайплайн: делаем X и закрываем Y."
+
+
+class TestCorruptContentDoesNotBreakPoll:
+    """AUD10-02: no file read by the poller may 500 /api/state."""
+
+    def test_corrupt_handoff_does_not_break_state(self, dash_project):
+        handoff_dir = dash_project / ".agentic" / "handoff"
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+        (handoff_dir / "agent-x-TODO-0001.md").write_bytes(b"# H\n\n\xff\xfe junk\n")
+
+        d = generate_state_dict(dash_project)  # must not raise
+
+        by_role = {h["role"]: h for h in d["handoffs"]}
+        assert "agent-x" in by_role  # degraded content, not a crash
+        # QA-0030: content must DEGRADE (U+FFFD), not silently vanish —
+        # a bare except with no errors="replace" loses the whole handoff.
+        assert "\ufffd" in by_role["agent-x"]["content_html"]
+
+    def test_corrupt_todo_does_not_break_state(self, dash_project):
+        inbox = dash_project / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_bytes(b"# T\n\n\xff\xff\n")
+
+        d = generate_state_dict(dash_project)  # must not raise
+
+        assert isinstance(d["todo_content_html"], str)
+
+    def test_worker_log_removed_mid_glob(self, dash_project, monkeypatch):
+        """A file vanishing between glob() and stat() must not raise."""
+        from pathlib import Path as _Path
+
+        import awf.api.dashboard as dash_mod
+
+        logs = dash_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        f = logs / "awf-agent-x-TODO-0001.out"
+        f.write_text("hello line\n", encoding="utf-8")
+
+        real_stat = _Path.stat
+
+        def flaky_stat(self, *a, **kw):
+            if self.name == "awf-agent-x-TODO-0001.out":
+                raise OSError("vanished")
+            return real_stat(self, *a, **kw)
+
+        monkeypatch.setattr(_Path, "stat", flaky_stat)
+
+        result = dash_mod._read_worker_last_line(dash_project, "TODO-0001")
+        assert isinstance(result, str)
+
+
+class TestActiveEntryLiveLine:
+    """AUD10-03: the worker's last line must reach the chat re-render key."""
+
+    def _setup(self, proj):
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "orchestrator.log").write_text("\n".join([
+            "[2026-09-19T05:16:07Z] Pipeline started with 3 stages: plan a b",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+            "[2026-09-19T05:22:00Z] Stage 1: agent-implementer (agent-implementer :: execute)",
+        ]) + "\n", encoding="utf-8")
+        write_state(
+            proj, stage_name="agent-implementer", stage_kind="execute",
+            stage_idx=1, todo_id="TODO-0001",
+        )
+
+    def test_active_rev_changes_with_line(self, dash_project, monkeypatch):
+        self._setup(dash_project)
+        monkeypatch.setattr(
+            "awf.api.dashboard._read_worker_activity",
+            lambda state: {"active": True, "worker_pid": 1, "state": "running", "cpu_seconds": 1},
+        )
+        logf = dash_project / ".agentic" / "logs" / "awf-agent-implementer-TODO-0001.out"
+        logf.write_text("\x1b[0mRead src/foo.py\n", encoding="utf-8")
+        a1 = generate_state_dict(dash_project)["handoffs"][0]
+        logf.write_text("\x1b[0mRead src/bar.py\n", encoding="utf-8")
+        a2 = generate_state_dict(dash_project)["handoffs"][0]
+
+        assert a1["active"] is True and a2["active"] is True
+        assert a1["line"] == "Read src/foo.py"
+        assert a2["line"] == "Read src/bar.py"
+        # same stage, same start — only the line changed, and the rev must
+        # change with it, or the client never re-renders the line.
+        assert a1["rev"] != a2["rev"]
+
+
+class TestRoleSpansAndOrder:
+    """AUD10-04: role-keyed handoff entries get stage spans (name≠role)
+    and the chat order is reverse-chronological, not pipeline-order."""
+
+    def _log(self, proj, text):
+        logs = proj / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "orchestrator.log").write_text(text + "\n", encoding="utf-8")
+
+    def _handoff(self, proj, name, content="# H\n\ndone\n"):
+        d = proj / ".agentic" / "handoff"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(content, encoding="utf-8")
+
+    def test_supervisor_entry_gets_times(self, dash_project):
+        """plan/verify both run role 'supervisor' — the merged span wins."""
+        from datetime import datetime, timezone
+
+        self._log(dash_project, "\n".join([
+            "[2026-09-19T05:16:07Z] Pipeline started with 3 stages: plan agent-dev verify",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+            "[2026-09-19T05:17:00Z] Stage 1: agent-dev (developer :: execute)",
+            "[2026-09-19T05:22:00Z] Stage 2: verify (supervisor :: verify)",
+        ]))
+        self._handoff(dash_project, "supervisor-TODO-0001.md")
+        write_state(
+            dash_project, stage_name="verify", stage_kind="verify",
+            stage_idx=2, todo_id="TODO-0001",
+        )
+
+        d = generate_state_dict(dash_project)
+        sup = next(h for h in d["handoffs"] if h["role"] == "supervisor")
+
+        # started with plan (earliest of the role's stages)
+        assert sup["started_epoch"] == int(
+            datetime(2026, 9, 19, 5, 16, 7, tzinfo=timezone.utc).timestamp()
+        )
+        assert sup["started_at"]
+        # verify is still open (active entry) → merged end is None, no duration
+        assert sup["ended_at"] == ""
+        assert sup["duration"] == ""
+
+    def test_order_is_newest_first_chronological(self, dash_project):
+        self._log(dash_project, "\n".join([
+            "[2026-09-19T05:16:07Z] Pipeline started with 3 stages: plan agent-dev verify",
+            "[2026-09-19T05:16:07Z] Stage 0: plan (supervisor :: plan)",
+            "[2026-09-19T05:17:00Z] Stage 1: agent-dev (developer :: execute)",
+        ]))
+        self._handoff(dash_project, "supervisor-TODO-0001.md")
+        self._handoff(dash_project, "developer-TODO-0001.md")
+        write_state(
+            dash_project, stage_name="agent-dev", stage_kind="execute",
+            stage_idx=1, todo_id="TODO-0001",
+        )
+
+        d = generate_state_dict(dash_project)
+        roles = [h["role"] for h in d["handoffs"]]
+
+        # active agent-dev on top, then the newer dev entry (05:17) above
+        # the older plan/verify entry (05:16) — the old pipeline-order sort
+        # put 'supervisor' (no span) on top.
+        assert roles == ["agent-dev", "developer", "supervisor"]
+        dev = d["handoffs"][1]
+        sup = d["handoffs"][2]
+        assert dev["started_epoch"] > sup["started_epoch"]
+        assert sup["duration"] == "53s"  # plan: 05:16:07 → 05:17:00
+
+
+class TestCheckpointStatus:
+    """AUD10-08: the checkpoint state must be visible (dot + badge colored)."""
+
+    def test_checkpoint_status_class(self, dash_project):
+        write_state(dash_project, checkpoint_pending=True)
+
+        out = generate_dashboard(dash_project)
+        html = out.read_text(encoding="utf-8")
+
+        assert 'status-badge checkpoint' in html
+        assert 'status-dot checkpoint' in html
+        assert ".status-badge.checkpoint" in html
+        assert ".status-dot.checkpoint" in html
+
+
+class TestDeadRulesRemoved:
+    """AUD10-09: no dead CSS rules, no stale docstring mechanism."""
+
+    def test_dead_css_removed(self):
+        from awf.api.dashboard import _TEMPLATE_PATH
+
+        src = _TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        for rule in (".chat-dur", ".stage-dur", ".todo-sep"):
+            assert rule not in src, f"dead CSS rule survived: {rule}"
+
+    def test_docstring_mentions_js_polling_not_meta(self):
+        import awf.api.dashboard as dash_mod
+
+        doc = dash_mod.__doc__ or ""
+        assert "meta" not in doc
+        assert "/api/state" in doc
+
+
+class TestUnsafeLinks:
+    """AUD10-10: markdown hrefs with executable schemes are neutralized."""
+
+    def test_javascript_link_neutralized(self, tmp_git_repo):
+        from awf.api.dashboard import _read_handoffs
+
+        d = tmp_git_repo / ".agentic" / "handoff"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "agent-x-TODO-0002.md").write_text(
+            "# T\n\n[click](javascript:alert(1))\n", encoding="utf-8",
+        )
+
+        html = _read_handoffs(tmp_git_repo, todo_id="TODO-0002")[0]["content_html"]
+
+        assert "javascript:" not in html
+        assert 'href="#"' in html
+
+    def test_safe_links_kept(self):
+        from awf.api.dashboard import _neutralize_unsafe_links as fix
+
+        assert 'href="https://x.y"' in fix('<a href="https://x.y">a</a>')
+        assert 'href="/rel/path"' in fix('<a href="/rel/path">a</a>')
+        assert 'href="mailto:a@b.c"' in fix('<a href="mailto:a@b.c">a</a>')
+        assert 'href="#"' in fix('<a href="javascript:alert(1)">a</a>')
+        assert 'href="#"' in fix('<a href="JAVASCRIPT:alert(1)">a</a>')
+        assert 'href="#"' in fix('<a href="data:text/html,x">a</a>')
+
+
+class TestStateContract:
+    """AUD10-06: every /api/state field the server emits must be read by
+    the template/JS — dead contract fields are a drift trap."""
+
+    def test_top_level_keys_consumed_by_template(self, dash_project):
+        import re
+
+        from awf.api.dashboard import _TEMPLATE_PATH
+
+        used = set(re.findall(r"\bs\.(\w+)", _TEMPLATE_PATH.read_text(encoding="utf-8")))
+        d = generate_state_dict(dash_project)
+
+        unused = set(d) - used
+        assert not unused, f"dead /api/state fields: {sorted(unused)}"
+
+    def test_run_keys_consumed_by_template(self, dash_project):
+        import re
+
+        from awf import run_state
+        from awf.api.dashboard import _TEMPLATE_PATH
+
+        run_state.write_run(
+            dash_project, active=True, queue=["TODO-0001"],
+            index=0, current="TODO-0001",
+        )
+        used = set(re.findall(r"\brun\.(\w+)", _TEMPLATE_PATH.read_text(encoding="utf-8")))
+        d = generate_state_dict(dash_project)
+
+        assert d["run"] is not None
+        unused = set(d["run"]) - used
+        assert not unused, f"dead run.* fields: {sorted(unused)}"

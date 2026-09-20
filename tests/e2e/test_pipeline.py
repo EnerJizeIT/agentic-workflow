@@ -85,6 +85,12 @@ class TestPipeline:
         assert (initialized_project / ".agentic/done/TODO-0001").is_dir(), \
             f"Expected done/TODO-0001/ (DF6-1 archive). stdout={result.stdout.decode()!r} stderr={result.stderr.decode()!r}"
 
+        # AUD10-05: the dashboard server was a daemon of the orchestrator —
+        # after a clean exit the port file must be gone, or
+        # awf_open_pipeline_dashboard would open a dead URL.
+        port_file = initialized_project / ".agentic" / "state" / "dashboard_port"
+        assert not port_file.exists(), "stale dashboard_port file after pipeline exit"
+
     def test_pipeline_blocked_then_replan(self, initialized_project: Path, awf_bin: str, awf_env: dict):
         """When stub writes BLOCKED, pipeline detects it and exits non-zero."""
         _create_todo(initialized_project)

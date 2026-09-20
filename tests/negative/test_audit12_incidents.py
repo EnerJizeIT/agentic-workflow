@@ -231,7 +231,9 @@ class TestDashboardStatus:
             f"post-completion state must not render as running, got {d1['status']!r}"
         )
         assert d1["status"] == "done"
-        assert d1["pipeline_running"] is False
+        # AUD10-06: pipeline_running left /api/state (no template consumer)
+        # — status itself is the "not running" contract.
+        assert "pipeline_running" not in d1
         assert d1["elapsed_frozen"] is True, (
             "timer of a finished run must be frozen, not keep ticking"
         )

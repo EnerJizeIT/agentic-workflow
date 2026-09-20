@@ -171,39 +171,17 @@ async def awf_start(
         # AUD08-02: signature parity with api.start_pipeline / CLI --todo.
         todo_id=todo_id,
     )
-    # SMO: deterministic dashboard opening — HTTP server started by orchestrator.
-    # Opens HTTP URL (not file://) for smooth live updates via /api/state polling.
+    # SMO: deterministic dashboard opening — HTTP server started by
+    # orchestrator. AUD08-05: one shared implementation, run in a worker
+    # thread (no time.sleep on the MCP event loop).
     if result.get("status") == "ok" and result.get("run_mode") == "background":
         try:
-            import time as _time
-            import webbrowser
-
-            pd = _resolve_project_dir(project_dir)
-            # Wait briefly for orchestrator to start dashboard server
-            dashboard_url = None
-            port_file = pd / ".agentic" / "state" / "dashboard_port"
-            for _ in range(10):
-                _time.sleep(0.5)
-                if port_file.is_file():
-                    try:
-                        port = int(port_file.read_text().strip())
-                        dashboard_url = f"http://127.0.0.1:{port}"
-                        break
-                    except (ValueError, OSError):
-                        continue
-
-            if dashboard_url:
-                webbrowser.open(dashboard_url)
-                result["dashboard_opened"] = True
-                result["dashboard_url"] = dashboard_url
-            else:
-                # Fallback: generate static HTML + open file://
-                from awf.api.dashboard import generate_dashboard
-                await asyncio.to_thread(generate_dashboard, pd)
-                dashboard_path = pd / ".agentic" / "dashboards" / "current.html"
-                if dashboard_path.is_file():
-                    webbrowser.open(f"file://{dashboard_path}")
-                    result["dashboard_opened"] = True
+            dash = await asyncio.to_thread(
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+            )
+            result["dashboard_opened"] = dash["opened"]
+            if dash["method"] == "http":
+                result["dashboard_url"] = dash["url"]
         except Exception:
             result["dashboard_opened"] = False
     # SMO: explicit next_action — weak models need this to avoid polling.
@@ -259,12 +237,11 @@ async def awf_continue(
         background=background,
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
-        # Open dashboard (same as awf_start)
+        # AUD08-05: shared dashboard-open in a worker thread (no loop block).
         try:
-            import time as _time
-            pd = _resolve_project_dir(project_dir)
-            _time.sleep(1)  # wait for server to start
-            dash = await _open_dashboard_browser(pd)
+            dash = await asyncio.to_thread(
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+            )
             result["dashboard_opened"] = dash["opened"]
         except Exception:
             pass
@@ -306,11 +283,11 @@ async def awf_retry_stage(
         timeout=timeout,
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
+        # AUD08-05: shared dashboard-open in a worker thread (no loop block).
         try:
-            import time as _time
-            pd = _resolve_project_dir(project_dir)
-            _time.sleep(1)
-            dash = await _open_dashboard_browser(pd)
+            dash = await asyncio.to_thread(
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+            )
             result["dashboard_opened"] = dash["opened"]
         except Exception:
             pass
@@ -460,11 +437,11 @@ async def awf_run_next(
     )
     response = result  # _exec returns {status: ok|error, ...as_dict()}
     if response.get("status") == "ok" and response.get("action") == "started":
+        # AUD08-05: shared dashboard-open in a worker thread (no loop block).
         try:
-            import time as _time
-            pd = _resolve_project_dir(project_dir)
-            _time.sleep(1)
-            dash = await _open_dashboard_browser(pd)
+            dash = await asyncio.to_thread(
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+            )
             response["dashboard_opened"] = dash["opened"]
         except Exception:
             pass
@@ -1135,29 +1112,66 @@ async def awf_open_increment_planning_form(
 # ─── DASH Phase 2: pipeline dashboard ────────────────────────────────────
 
 
-async def _open_dashboard_browser(pd: Path) -> dict[str, Any]:
-    """Open dashboard in browser — prefers HTTP server, falls back to file://."""
+def _port_alive(port: int, timeout: float = 0.3) -> bool:
+    """AUD10-05: is anyone actually listening on the dashboard port?
+
+    The port file survives process death — a plain file check opens a dead
+    URL after every finished/killed run.
+    """
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _open_dashboard_sync(pd: Path, wait: bool = False) -> dict[str, Any]:
+    """Open dashboard in browser — single implementation (AUD08-05).
+
+    Prefers the live HTTP server (polling + liveness-checked port), falls
+    back to a generated file:// page. Synchronous on purpose: every caller
+    runs it through ``asyncio.to_thread`` — a ``time.sleep`` inside an async
+    body froze the whole MCP event loop for up to 5 s per background start.
+
+    ``wait=True`` (just launched the pipeline): poll the port file up to
+    ~5 s while the orchestrator boots its server. ``wait=False`` (standalone
+    open): one immediate check, no sleeping.
+    """
+    import time
     import webbrowser
 
-    # Try HTTP server first (live polling, no reload)
     port_file = pd / ".agentic" / "state" / "dashboard_port"
-    if port_file.is_file():
-        try:
-            port = int(port_file.read_text().strip())
-            url = f"http://127.0.0.1:{port}"
-            webbrowser.open(url)
-            return {"opened": True, "url": url, "method": "http"}
-        except (ValueError, OSError):
-            pass
+    attempts = 10 if wait else 1
+    for attempt in range(attempts):
+        if port_file.is_file():
+            try:
+                port = int(port_file.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                port = 0
+            if port and _port_alive(port):
+                url = f"http://127.0.0.1:{port}"
+                webbrowser.open(url)
+                return {"opened": True, "url": url, "method": "http"}
+        if wait and attempt < attempts - 1:
+            time.sleep(0.5)
 
     # Fallback: file://
     from awf.api.dashboard import generate_dashboard
+
     generate_dashboard(pd)
     dashboard_path = pd / ".agentic" / "dashboards" / "current.html"
     if dashboard_path.is_file():
         webbrowser.open(f"file://{dashboard_path}")
         return {"opened": True, "url": f"file://{dashboard_path}", "method": "file"}
     return {"opened": False, "url": "", "method": "none"}
+
+
+async def _open_dashboard_browser(pd: Path) -> dict[str, Any]:
+    """Async facade over :func:`_open_dashboard_sync` (AUD08-05: one impl,
+    executed off the event loop)."""
+    return await asyncio.to_thread(_open_dashboard_sync, pd, False)
 
 
 async def awf_open_pipeline_dashboard(

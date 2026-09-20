@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from pathlib import Path
 
 import pytest
 from agent_workflow_ui.tools import awf
@@ -899,3 +900,114 @@ class TestRunStartStopFlags:
         )
         assert calls
         assert calls[0]["stop_flags"] == {"TODO-0012": ["phase-boundary"]}
+
+
+# ─── Dashboard opening (AUD08-05 / AUD10-05) ───────────────────────────
+
+
+class TestDashboardOpen:
+    """One shared implementation, no event-loop blocking, liveness-checked
+    port (a dead port file must fall back to file://, not open a dead URL)."""
+
+    def _dead_port(self) -> int:
+        import socket
+
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()  # nothing listens anymore — the port is dead
+        return port
+
+    def _write_port_file(self, project: Path, port: int) -> None:
+        state_dir = project / ".agentic" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "dashboard_port").write_text(str(port), encoding="utf-8")
+
+    def test_open_dashboard_falls_back_when_port_dead(self, mcp_project, monkeypatch):
+        self._write_port_file(mcp_project, self._dead_port())
+        opened: list[str] = []
+        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+
+        result = run(awf.awf_open_pipeline_dashboard(project_dir=str(mcp_project)))
+
+        assert result["status"] == "ok"
+        assert result["method"] == "file"
+        assert opened and opened[0].startswith("file://")
+
+    def test_opens_live_http_when_port_alive(self, mcp_project, monkeypatch):
+        from awf.api.dashboard_server import start_dashboard_server
+
+        port, server = start_dashboard_server(mcp_project)
+        try:
+            self._write_port_file(mcp_project, port)
+            opened: list[str] = []
+            monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+
+            result = awf._open_dashboard_sync(mcp_project, wait=False)
+
+            assert result["method"] == "http"
+            assert result["url"] == f"http://127.0.0.1:{port}"
+            assert opened == [result["url"]]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_no_port_file_and_no_dashboard(self, git_project, monkeypatch):
+        # Fallback cannot produce a page: generate_dashboard writes nothing.
+        monkeypatch.setattr(
+            "awf.api.dashboard.generate_dashboard", lambda project_dir: None
+        )
+        opened: list[str] = []
+        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+
+        result = awf._open_dashboard_sync(git_project, wait=False)
+
+        assert result["opened"] is False
+        assert result["method"] == "none"
+        assert opened == []
+
+
+class TestNoLoopBlockingSleep:
+    """AUD08-05: time.sleep inside an async body froze the whole MCP event
+    loop (up to 5 s per background start) — it must live only in the sync
+    helper that callers run through asyncio.to_thread."""
+
+    def test_no_sleep_inside_async_functions(self):
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(awf))
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and sub.func.attr == "sleep"
+                ):
+                    offenders.append(f"{node.name}:{sub.lineno}")
+        assert not offenders, f"time.sleep inside async body: {offenders}"
+
+    def test_all_dashboard_opens_use_shared_helper(self):
+        """Every dashboard open goes through one helper: five
+        to_thread(_open_dashboard_sync, ...) call sites — the
+        start/continue/retry/run_next tools + the _open_dashboard_browser
+        facade (awf_open_pipeline_dashboard). No inline copies."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(awf))
+        count = 0
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "to_thread"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                    and node.args[0].id == "_open_dashboard_sync"
+            ):
+                count += 1
+        assert count == 5  # 4 tools + the _open_dashboard_browser facade

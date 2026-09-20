@@ -242,3 +242,13 @@ def run_pipeline(args: Any) -> int:
                 os.environ["AWF_SUPERVISOR_TIMEOUT"] = _prev_timeout
             else:
                 os.environ.pop("AWF_SUPERVISOR_TIMEOUT", None)
+        # AUD10-05: the dashboard server is a daemon of THIS process — once
+        # we exit the port is dead, and a stale port file makes
+        # awf_open_pipeline_dashboard open a dead URL (no file:// fallback,
+        # its condition is "file absent"). Clean exit unlinks it; killed
+        # runs are covered by the liveness check in _open_dashboard_browser.
+        try:
+            port_file = paths.agentic_dir(project_dir) / "state" / "dashboard_port"
+            port_file.unlink(missing_ok=True)
+        except OSError:
+            pass
