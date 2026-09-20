@@ -64,3 +64,10 @@ prove_red: ["tests/unit/test_x.py::test_y"]
 роли и в Run facts (`DONE-json=present`). Битый json или нарушение схемы —
 предупреждение в `orchestrator.log`, handoff собирается без секции, пада
 нет.
+
+Отчёт на стадии verify: `.agentic/context/GATES-<todo>.md` (собирает
+`awf verify-pack --todo <id>`, U5) — быстрые гейты, safety-канарейки,
+минимальность диффа против baseline, команды из `verify:`, prove-red и
+`ruff check .`; полный сьют туда не входит (он у QA). Тумблер
+`automation.verify_pack` в `.agentic/config.yaml` (дефолт true); файл
+архивируется в `done/<id>/DONE.json` вместе с остальными артефактами TODO.

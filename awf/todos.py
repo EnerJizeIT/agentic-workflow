@@ -91,6 +91,7 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     - inbox/APPROVE-{id}.ready  → deleted
     - outbox/PROGRESS-{id}.md   → done/{id}/PROGRESS.md
     - outbox/DONE-{id}.md       → done/{id}/DONE.md
+    - outbox/DONE-{id}.json     → done/{id}/DONE.json (U3 machine facts, U5)
     - outbox/DONE-{id}.ready    → deleted
 
     Returns path to done/{todo_id}/ dir, or None if nothing to archive.
@@ -128,12 +129,12 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     # Move PROGRESS and DONE from outbox — canonical (TODO-NNNN) AND legacy
     # short (NNNN) form, mirroring is_closed/has_progress (AUD01-05).
     for prefix in ("PROGRESS", "DONE"):
-        for ext in (".md", ".ready"):
+        for ext in (".md", ".json", ".ready"):
             for tid_variant in (todo_id, _short_id(todo_id)):
                 src = outbox_p / f"{prefix}-{tid_variant}{ext}"
                 if src.is_file():
-                    if ext == ".md":
-                        shutil.move(str(src), str(dest / f"{prefix}.md"))
+                    if ext in (".md", ".json"):
+                        shutil.move(str(src), str(dest / f"{prefix}{ext}"))
                     else:
                         src.unlink()  # .ready signals consumed
                     moved_anything = True

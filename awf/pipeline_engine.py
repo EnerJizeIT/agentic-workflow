@@ -30,6 +30,7 @@ from .plan_progress import mark_plan_step_done as _mark_plan_step_done
 from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
+from .verify_pack import verify_pack as _verify_pack_fn
 
 # ─── shared helpers ─────────────────────────────────────────────────────
 
@@ -90,6 +91,71 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     if not sha_file.is_file():
         return ""
     return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+
+
+def _write_verify_pack_error_note(
+    project_dir: Path, todo_id: str, error: Exception,
+) -> None:
+    """U5: best-effort GATES report when verify-pack itself crashed.
+
+    The stage keeps going; the report carries the failure note so the
+    supervisor sees WHY the mechanical checks are missing.
+    """
+    try:
+        report = paths.context_dir(project_dir) / f"GATES-{todo_id}.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            f"# GATES-{todo_id} — verify-pack report\n\n"
+            f"## Verdict: **error** (verify-pack did not run)\n\n"
+            f"verify-pack failed before measuring anything:\n\n"
+            f"```\n{type(error).__name__}: {error}\n```\n\n"
+            f"The verify stage continues; run `awf verify-pack --todo {todo_id}` "
+            "manually to reproduce.\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # the note is best-effort; the log line is the durable record
+
+
+def _maybe_run_verify_pack(
+    current_todo: str,
+    project_dir: Path,
+    config: dict,
+    logs_dir: Path,
+) -> None:
+    """U5: run the verify pack BEFORE the supervisor's signal wait.
+
+    By the time the supervisor wakes (interactive wait or the verify
+    subprocess) the GATES report is already written. Toggle:
+    ``automation.verify_pack`` (default true). Skipped when there is no
+    baseline (nothing to measure the diff against). Any pack error is
+    logged and never stops the pipeline — an error note is written to the
+    report instead.
+    """
+    if cfg_mod.get(config, "automation.verify_pack", True) is False:
+        return
+    if not _read_baseline_sha(project_dir, current_todo):
+        return
+    try:
+        result = _verify_pack_fn(project_dir, current_todo)
+    except Exception as e:  # noqa: BLE001 — the pack must never stop the stage
+        _log(logs_dir, f"U5: verify-pack crashed for {current_todo}: {type(e).__name__}: {e}")
+        _write_verify_pack_error_note(project_dir, current_todo, e)
+        print(
+            f"U5: verify-pack failed for {current_todo} ({type(e).__name__}: {e}) "
+            "— verify stage continues",
+            file=sys.stderr,
+        )
+        return
+    _log(
+        logs_dir,
+        f"U5: verify-pack {current_todo}: {result.verdict} (exit {result.exit_code}) "
+        f"→ {result.report_path}",
+    )
+    print(
+        f"U5: verify-pack {current_todo} → {result.verdict} "
+        f"(exit {result.exit_code}); report: {result.report_path}"
+    )
 
 
 def _ensure_baseline_sha(
@@ -562,6 +628,11 @@ def execute_supervisor_stage(
     """
     s_name = stage.name
     s_kind = stage.kind
+
+    # U5: the verify pack must finish BEFORE the supervisor waits for its
+    # signal — the GATES report is ready when the supervisor wakes.
+    if s_kind == "verify" and current_todo:
+        _maybe_run_verify_pack(current_todo, project_dir, config, logs_dir)
 
     try:
         sup_signal = _run_supervisor_stage(

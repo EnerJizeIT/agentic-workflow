@@ -1,6 +1,8 @@
 """Tests for pipeline_engine: plan stage (single-phase, FU-05), F4 auto-retry."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from awf import pipeline_engine
@@ -966,3 +968,96 @@ class TestU6bNetRetry:
         assert rc == 1
         assert sleeps[0] == 30.0  # fresh budget — first backoff
         assert calls["n"] == 4  # original + all 3 retries
+
+
+class TestU5VerifyPack:
+    """U5: the verify pack must run BEFORE the supervisor's signal wait."""
+
+    @staticmethod
+    def _base(tmp_path, monkeypatch, order, pack_error=None, config=None):
+        project = tmp_path / "proj"
+        ctx = project / ".agentic" / "context"
+        ctx.mkdir(parents=True)
+        (project / ".agentic" / "outbox").mkdir(parents=True)
+
+        def fake_pack(project_dir, todo_id, **kw):
+            order.append("pack")
+            if pack_error is not None:
+                raise pack_error
+            return SimpleNamespace(
+                todo_id=todo_id, verdict="ok", exit_code=0, measured=1,
+                report_path="", sections={}, details={},
+            )
+
+        def mock_sup(stage, todo_id, auto, project_dir, logs_dir, pipeline_name=None):
+            order.append(f"supervisor:{stage.kind}")
+            return "REVIEW-TODO-0001"
+
+        monkeypatch.setattr(pipeline_engine, "_verify_pack_fn", fake_pack)
+        monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", mock_sup)
+        monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_record_verify_decision", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_consume_verify_decision", lambda *a, **kw: None)
+        monkeypatch.setattr(pipeline_engine, "_find_active_todo", lambda *a: "")
+        monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+        return project, config if config is not None else {}
+
+    @staticmethod
+    def _verify_stage():
+        return Stage(name="verify", role="supervisor", kind="verify",
+                     on_approved="commit_and_next")
+
+    def test_pack_runs_before_supervisor_signal(self, tmp_path, monkeypatch):
+        order: list[str] = []
+        project, config = self._base(tmp_path, monkeypatch, order)
+        (project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text("a" * 40)
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=project, config=config, logs_dir=tmp_path,
+        )
+        # the pack finished before the verify supervisor woke up
+        assert order.index("pack") < order.index("supervisor:verify")
+        assert rc == 1  # REVIEW stops the pipeline (mocked decision)
+
+    def test_pack_error_does_not_stop_stage(self, tmp_path, monkeypatch):
+        order: list[str] = []
+        project, config = self._base(tmp_path, monkeypatch, order,
+                                     pack_error=RuntimeError("boom"))
+        (project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text("a" * 40)
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=project, config=config, logs_dir=tmp_path,
+        )
+        # stage survived: the supervisor still ran
+        assert "supervisor:verify" in order
+        assert rc == 1
+        # and the error note is in the report
+        report = project / ".agentic" / "context" / "GATES-TODO-0001.md"
+        assert report.is_file()
+        assert "boom" in report.read_text(encoding="utf-8")
+
+    def test_skipped_without_baseline(self, tmp_path, monkeypatch):
+        order: list[str] = []
+        project, config = self._base(tmp_path, monkeypatch, order)
+        # no BASELINE-TODO-0001.sha → nothing to measure against
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=project, config=config, logs_dir=tmp_path,
+        )
+        assert "pack" not in order
+        assert "supervisor:verify" in order
+
+    def test_disabled_by_config(self, tmp_path, monkeypatch):
+        order: list[str] = []
+        project, config = self._base(tmp_path, monkeypatch, order,
+                                     config={"automation": {"verify_pack": False}})
+        (project / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text("a" * 40)
+
+        todo, delta, rc = pipeline_engine.execute_supervisor_stage(
+            stage=self._verify_stage(), current_todo="TODO-0001", auto=False,
+            project_dir=project, config=config, logs_dir=tmp_path,
+        )
+        assert "pack" not in order

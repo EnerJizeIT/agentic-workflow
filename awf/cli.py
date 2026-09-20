@@ -27,6 +27,8 @@ def _print_top_level_help() -> int:
         "  baseline <id>     Create a baseline snapshot\n"
         "  prove-red --todo <id>\n"
         "                  Prove tests are red on the baseline sha (U4)\n"
+        "  verify-pack --todo <id>\n"
+        "                  Deterministic verify report → GATES-<id>.md (U5)\n"
         "  rollback <id>     Rollback to baseline\n"
         "  reset             Clean runtime data (inbox/outbox/logs)\n"
         "  analyze-roles     BD-31: analyze team roles, add disambiguation patches\n"
@@ -210,6 +212,22 @@ def _dispatch_subcommand(argv):
         help="Path to project root (default: current directory)",
     )
 
+    p_verify_pack = sub.add_parser(
+        "verify-pack",
+        help="U5: run the deterministic verify report (GATES-<todo>.md)",
+    )
+    p_verify_pack.add_argument(
+        "--todo", dest="todo_id", required=True, help="TODO id (e.g. TODO-0022)"
+    )
+    p_verify_pack.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    p_verify_pack.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_rollback = sub.add_parser("rollback", help="Rollback to baseline")
     p_rollback.add_argument("todo_id")
     p_rollback.add_argument("--hard", action="store_true")
@@ -288,6 +306,9 @@ def _run_command(args) -> int:
         if args.command == "prove-red":
             from . import cmd_prove_red
             return cmd_prove_red.run(args)
+        if args.command == "verify-pack":
+            from . import cmd_verify_pack
+            return cmd_verify_pack.run(args)
         if args.command == "rollback":
             from . import cmd_rollback
             return cmd_rollback.run(args)

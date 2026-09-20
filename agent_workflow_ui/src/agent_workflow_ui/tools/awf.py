@@ -565,6 +565,40 @@ async def awf_prove_red(
     )
 
 
+async def awf_verify_pack(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """U5: one deterministic verify report for the supervisor.
+
+    Runs the mechanical part of the verify ritual and writes
+    ``.agentic/context/GATES-{todo_id}.md`` (markdown + JSON block):
+    fast gates (contracts / ratchet / instruction-gates — NOT the full
+    test suite, that belongs to QA), safety canaries (``pid > 1`` guard,
+    ``_forbid_session_kill`` tripwire, regression test), diff minimality
+    vs ``BASELINE-{todo_id}.sha``, the contract's ``verify:`` commands,
+    prove-red (when declared), DONE.json facts (executor data), and
+    ``ruff check .``.
+
+    Verdicts: exit 0 = all measured checks ok, 1 = failures found,
+    2 = nothing was measured (no baseline, no contract, no gates).
+
+    Args:
+        todo_id: TODO identifier (e.g. "TODO-0022").
+        project_dir: Project root (default: cwd).
+
+    Returns:
+        Dict with: todo_id, verdict, exit_code, measured, report_path,
+        sections (name -> status), details.
+        On error: {status: "error", error: "..."}.
+    """
+    return await _exec(
+        api.verify_pack,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+
+
 # ─── Auto-commit approval ───────────────────────────────────────────────
 
 

@@ -30,6 +30,7 @@ try/except.
 from __future__ import annotations
 
 from ..prove_red import ProveRedResult, prove_red
+from ..verify_pack import VerifyPackResult, verify_pack
 
 # Public types
 from ._errors import AwfApiError
@@ -90,6 +91,7 @@ __all__ = [
     "BaselineResult",
     "RollbackResult",
     "ProveRedResult",
+    "VerifyPackResult",
     "ApproveResult",
     "RejectResult",
     "ReportResult",
@@ -124,6 +126,7 @@ __all__ = [
     "create_baseline",
     "rollback",
     "prove_red",
+    "verify_pack",
     "approve_commit",
     "reject_commit",
     "retry_stage",
