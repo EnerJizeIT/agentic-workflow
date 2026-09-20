@@ -1449,8 +1449,11 @@ async def awf_set_goal(
         from awf.phase import advance_phase
 
         pd = _resolve_project_dir(project_dir)
+        # AUD02-05: declare the documented transition — set_goal works only
+        # from the goal phase, otherwise it refuses (mid-run phase flips
+        # were corrupting the phase key).
         new_phase = await asyncio.to_thread(
-            advance_phase, pd, goal=goal
+            advance_phase, pd, from_phase="goal", goal=goal
         )
         # SMO: next_action guides weak models — don't let them guess
         _NEXT = {
@@ -1486,8 +1489,9 @@ async def awf_confirm_normalized(
         from awf.phase import advance_phase
 
         pd = _resolve_project_dir(project_dir)
+        # AUD02-05: declare the documented transition (normalize → brief).
         new_phase = await asyncio.to_thread(
-            advance_phase, pd, normalized=True
+            advance_phase, pd, from_phase="normalize", normalized=True
         )
         # SMO: next_action guides weak models
         _NEXT = {

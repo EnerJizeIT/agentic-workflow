@@ -30,26 +30,28 @@ def _load_pipeline_stages(project_dir: Path) -> list[Stage]:
 def _extract_stage_info(
     project_dir: Path,
 ) -> tuple[str | None, str | None, str | None, str | None, bool, int | None, str | None]:
-    """Read pipeline state from structured file first, fall back to regex.
+    """Read pipeline stage info from the structured state file.
 
     T4.1: orchestrator + plan_checkpoint persist structured state to
     ``.agentic/state/current.yaml`` after each transition. This function
-    reads that file — single source of truth, no fragile regex.
+    reads that file — single source of truth (the regex fallback was
+    removed in AUD-12.5; missing/stale state degrades to None values).
 
-    Falls back to regex parsing of ``awf-start.out`` if state file
-    missing (older pipeline run, or pipeline_state writes failed).
+    AUD02-12: a stale ``updated_at`` does NOT disqualify the state while
+    the pipeline PID is alive — one stage longer than the 2h window is a
+    long stage, not a crash (see ``pipeline_state.state_trusted``).
 
     Returns ``(current_stage_name, next_stage_role, last_signal, log_tail,
     checkpoint_pending, checkpoint_port, checkpoint_form_url)``.
     """
-    # ── T4.1: structured state file (preferred) ────────────────────────
-    from ..pipeline_state import is_state_stale, read_state
+    # ── T4.1: structured state file (single source of truth) ───────────
+    from ..pipeline_state import read_state, state_trusted
 
     state = read_state(project_dir)
     log_tail_text = _read_log_tail(
         paths.agentic_dir(project_dir) / "logs" / "awf-start.out", 30
     )
-    if state and not is_state_stale(state):
+    if state and state_trusted(project_dir, state):
         # All fields available from structured state — no regex needed.
         current_stage = state.get("stage_name")
         checkpoint_pending = bool(state.get("checkpoint_pending", False))

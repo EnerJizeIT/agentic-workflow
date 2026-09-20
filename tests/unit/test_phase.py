@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from awf import phase
 from awf.pipeline_state import read_state, write_state
 
@@ -200,3 +202,111 @@ class TestAdvancePhase:
         write_state(project, phase="done", goal="test")
         new_phase = phase.advance_phase(project)
         assert new_phase == "done"
+
+
+class TestAdvancePhaseFromPhase:
+    """AUD02-05 (r4 2/3): a setup tool must make exactly its documented
+    transition or refuse. Before the fix, awf_set_goal called mid-run
+    (fresh state, stage_kind=execute) silently flipped phase to 'verify',
+    and at phase='brief' it returned 'run' although the docstring promises
+    'goal → form'."""
+
+    def test_set_goal_mid_run_refused(self, tmp_path):
+        from awf.api._errors import AwfApiError
+
+        project = _setup_project(tmp_path)
+        write_state(project, stage_kind="execute", goal="test")  # detect → 'run'
+        with pytest.raises(AwfApiError) as exc:
+            phase.advance_phase(project, from_phase="goal", goal="new goal")
+        # The error names the current phase — a weak model can recover.
+        assert "run" in str(exc.value)
+        # And the phase key is NOT corrupted:
+        state = read_state(project)
+        assert state.get("phase") is None
+
+    def test_set_goal_from_brief_refused(self, tmp_path):
+        from awf.api._errors import AwfApiError
+
+        project = _setup_project(tmp_path)
+        write_state(project, goal="test", phase="brief", normalized=True)
+        _add_pipeline(project)
+        with pytest.raises(AwfApiError):
+            phase.advance_phase(project, from_phase="goal", goal="x")
+        assert read_state(project).get("phase") == "brief"  # untouched
+
+    def test_goal_to_form_with_from_phase(self, tmp_path):
+        project = _setup_project(tmp_path)
+        new_phase = phase.advance_phase(project, from_phase="goal", goal="f")
+        assert new_phase == "form"
+
+    def test_normalize_to_brief_with_from_phase(self, tmp_path):
+        project = _setup_project(tmp_path)
+        write_state(project, goal="test", phase="normalize", normalized=True)
+        _add_pipeline(project)
+        new_phase = phase.advance_phase(
+            project, from_phase="normalize", normalized=True
+        )
+        assert new_phase == "brief"
+
+
+class TestStaleStateAfterFullCycle:
+    """AUD02-04 (r4) + AUD02-12: the phase of a finished project must not
+    degrade with time (and a live PID outranks a stale timestamp)."""
+
+    def _age_state(self, project: Path, hours: float = 3.0) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        import yaml
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        state_path = project / ".agentic" / "state" / "current.yaml"
+        data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+        data["updated_at"] = old_ts
+        state_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    def test_full_cycle_aged_not_goal_or_normalize(self, tmp_path):
+        """After the clean exit (phase=done + goal + normalized preserved by
+        FU-13), >2h of age must NOT degrade detection to the setup phases."""
+        project = _setup_project(tmp_path)
+        write_state(project, phase="done", goal="test", normalized=True)
+        _add_pipeline(project)
+        self._age_state(project)
+        result = phase.detect_phase(project)
+        assert result not in ("init", "goal", "form", "normalize")
+
+    def test_full_cycle_fresh_is_done(self, tmp_path):
+        project = _setup_project(tmp_path)
+        write_state(project, phase="done", goal="test", normalized=True)
+        _add_pipeline(project)
+        assert phase.detect_phase(project) == "done"
+
+    def test_stale_state_live_pid_uses_stage_kind(self, tmp_path, monkeypatch):
+        """AUD02-12: one stage longer than the 2h staleness window — with a
+        live pipeline PID the stage must not disappear from detection."""
+        import os
+
+        import awf.api._liveness as liveness
+
+        project = _setup_project(tmp_path)
+        write_state(
+            project,
+            stage_kind="verify",
+            goal="test",
+            pipeline_pid=os.getpid(),
+        )
+        self._age_state(project)
+        # The test process is our 'live pipeline' (patched cmdline identity):
+        monkeypatch.setattr(
+            liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
+        assert phase.detect_phase(project) == "verify"
+
+    def test_stale_state_dead_pid_falls_through(self, tmp_path):
+        """Crash recovery unchanged: stale state + dead PID → detection by
+        project state (as before the fix)."""
+        project = _setup_project(tmp_path)
+        write_state(project, phase="run", goal="test", pipeline_pid=999999999)
+        self._age_state(project)
+        # Stale + dead → file-based: goal set, no pipeline → 'form'
+        assert phase.detect_phase(project) == "form"

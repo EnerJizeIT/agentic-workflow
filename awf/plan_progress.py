@@ -12,13 +12,16 @@ from ._log import log as _log
 
 
 def extract_step_id_from_todo(todo_path: Path) -> int | None:
-    """BD-33: parse 'Step N' from TODO-NNNN.md frontmatter/body.
+    """BD-33: parse 'Step N' / 'Шаг N' from TODO-NNNN.md frontmatter/body.
 
     Looks for patterns like:
       **Phase:** Неделя 1 — Step 1
       Step 1:
+      Шаг 2 плана
+      ## Step 2: fix the thing
+      **Шаг 3**
+      - [ ] Шаг 1: задача
       step_id: 1
-      **Step 1**
 
     Returns the integer step number, or None if not found.
     """
@@ -34,10 +37,18 @@ def extract_step_id_from_todo(todo_path: Path) -> int | None:
     if m:
         return int(m.group(1))
 
-    # P3: 'Step N' in header area — require markdown context (start of line,
-    # bold, checkbox, or "Phase:" prefix) to avoid matching random prose.
+    # P3 / AUD02-10: 'Step N' or 'Шаг N' in the header area — require
+    # markdown context (line start, ## header, bold, checkbox, or "Phase:"
+    # prefix) to avoid matching random prose. Real TODOs in this repo are
+    # written with the Russian "Шаг N" — before AUD02-10 it silently
+    # returned None and the plan was never auto-marked.
     head = "\n".join(text.splitlines()[:20])
-    matches = re.findall(r"(?:^|\*\*|-\s*\[\s*[xX ]?\s*\]|Phase:.*?)(?:\s*)Step\s+(\d+)", head, re.MULTILINE)
+    matches = re.findall(
+        r"(?:^[ \t]{0,3}#{1,6}[ \t]+|^[ \t]*|\*\*|-[ \t]*\[[xX ]?[ \t]*\][ \t]*|Phase:.*?)"
+        r"[ \t]*(?:Step|Шаг)[ \t]+(\d+)",
+        head,
+        re.MULTILINE,
+    )
     if matches:
         return int(matches[0])
 
@@ -71,13 +82,22 @@ def mark_plan_step_done(
     todo_path = paths.inbox(project_dir) / f"{todo_id}.md"
     step_id = extract_step_id_from_todo(todo_path)
     if step_id is None:
-        _log(logs_dir, f"BD-33: no Step N found in {todo_id}.md — skip step update")
+        # AUD02-10: the plan is not updated — say WHY and what the TODO
+        # needs, instead of a quiet skip nobody reads.
+        _log(
+            logs_dir,
+            f"BD-33 WARNING: no step marker in {todo_id}.md — plan not "
+            "updated. The TODO needs a 'step_id: N' frontmatter line or a "
+            "'Step N' / 'Шаг N' line in its first 20 lines.",
+        )
         return False
 
-    # Match: '- [ ] Step N:' OR '- [ ] **Step N**:' (any whitespace)
-    # Use [ \t] instead of \s to avoid matching across newlines.
+    # Match: '- [ ] Step N:' OR '- [ ] **Step N**:' OR '- [ ] Шаг N:'
+    # (any whitespace). Use [ \t] instead of \s to avoid matching across
+    # newlines. AUD02-10: bilingual, mirroring the TODO-side extraction.
     pattern = re.compile(
-        r"^([ \t]*-[ \t]*\[[ \t]])(?:[ \t]|\*\*)*Step[ \t]+" + str(step_id) + r"\b",
+        r"^([ \t]*-[ \t]*\[[ \t]])(?:[ \t]|\*\*)*(?:Step|Шаг)[ \t]+"
+        + str(step_id) + r"\b",
         re.MULTILINE,
     )
 

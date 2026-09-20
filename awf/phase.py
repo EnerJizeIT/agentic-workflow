@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import paths
 from .pipeline import load_stages, resolve_pipeline_file
-from .pipeline_state import is_state_stale, read_state
+from .pipeline_state import read_state, state_trusted
 
 # Phase names in order
 SETUP_PHASES = ["init", "goal", "form", "normalize", "brief"]
@@ -41,8 +41,11 @@ def detect_phase(project_dir: Path) -> str:
     project_dir = Path(project_dir).resolve()
     state = read_state(project_dir)
 
-    # Check explicit phase in state
-    if state and not is_state_stale(state):
+    # Check explicit phase in state.
+    # AUD02-12: staleness is overridden by a live pipeline PID — a single
+    # stage longer than the 2h window must not push detection back to the
+    # setup phases (same rule as api.context._extract_stage_info).
+    if state and state_trusted(project_dir, state):
         phase = state.get("phase")
         if phase and phase in ALL_PHASES:
             return phase
@@ -139,15 +142,34 @@ def get_phase_prompt(phase: str, project_dir: Path) -> str:
     return f"Phase: {phase}. No prompt template found."
 
 
-def advance_phase(project_dir: Path, **extra_fields) -> str:
+def advance_phase(
+    project_dir: Path, *, from_phase: str | None = None, **extra_fields
+) -> str:
     """Advance to the next phase in the setup flow.
 
     Called by awf tools (awf_set_goal, awf_confirm_normalize, etc.) to
     transition between setup phases. Writes new phase to state.
 
+    AUD02-05: when ``from_phase`` is given, the detected current phase must
+    equal it — otherwise the call raises ``AwfApiError`` (naming the actual
+    phase) and writes nothing. Setup tools declare their documented
+    transition (goal→form, normalize→brief) and must either make exactly
+    that transition or refuse — a weak model calling awf_set_goal mid-run
+    used to silently flip the phase key (run→verify, brief→run).
+
     Returns the new phase name.
     """
     current = detect_phase(project_dir)
+    if from_phase is not None and current != from_phase:
+        # Function-local: awf.api is the heavy package (AUD14-05 convention).
+        from .api._errors import AwfApiError
+
+        raise AwfApiError(
+            f"Phase transition refused: current phase is '{current}', "
+            f"expected '{from_phase}'. Setup tools make exactly their "
+            "documented transition — check awf_current_step and act on the "
+            "actual phase instead of overwriting it."
+        )
 
     # Setup flow progression
     if current in SETUP_PHASES:

@@ -268,17 +268,31 @@ def run_plan_checkpoint(
             # QA: orchestrator treats "timeout" as ABORT (returns 1), not
             # auto-approve. Log message must reflect that — was misleading.
             _log(logs_dir, f"BD-36: checkpoint timeout for {todo_id} — pipeline will abort")
+            # AUD02-03: the form is dead now (the server shuts down in
+            # finally) — clear the pending keys in the moment, so a later
+            # awf_status/awf_wait_for_event between the abort and the next
+            # run does not point at a form that can never be approved.
+            from .pipeline_state import write_state
+            write_state(
+                project_dir,
+                logs_dir=logs_dir,
+                checkpoint_pending=False,
+                checkpoint_port=None,
+                checkpoint_form_url=None,
+            )
             return "timeout"
 
         decision = decision_holder["decision"]
         _log(logs_dir, f"BD-36: checkpoint decision for {todo_id}: {decision}")
-        # T4.1: persist checkpoint resolution (no longer pending)
+        # T4.1: persist checkpoint resolution (no longer pending).
+        # AUD02-11: checkpoint_decision was written but never read — removed
+        # (a dead key is a false contract signal; the decision is also in the
+        # orchestrator.log line above).
         from .pipeline_state import write_state
         write_state(
             project_dir,
             logs_dir=logs_dir,
             checkpoint_pending=False,
-            checkpoint_decision=decision,
         )
 
         # BUG-3 fix: empty edited_content would silently wipe the TODO.

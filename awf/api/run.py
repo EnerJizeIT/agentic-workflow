@@ -66,6 +66,16 @@ def _validate_queue(queue: list[str] | None) -> list[str]:
     return ids
 
 
+def _todo_finished(project_dir: Path, todo_id: str) -> bool:
+    """AUD05-07 + AUD02-08: a TODO counts as finished when it is archived
+    AND not active again — restore_todo leaves done/{id}/ behind, so
+    ``is_archived`` alone would let a restored (active again) TODO pass."""
+    active_ids = todos.list_active_todos(
+        paths.inbox(project_dir), paths.outbox(project_dir)
+    )
+    return todos.is_archived(project_dir, todo_id) and todo_id not in active_ids
+
+
 def run_brief(project_dir: Path) -> dict | None:
     """Compact run state for status/dashboard. None when no run state exists."""
     state = run_state.read_run(project_dir)
@@ -120,7 +130,9 @@ def run_start(
     state = run_state.write_run(
         project_dir,
         active=True,
-        project_root=str(project_dir),
+        # AUD02-11: project_root was written here but never read — a dead
+        # key is a false contract signal. The run state file already lives
+        # under the project's .agentic/, so the root is implicit.
         queue=ids,
         index=0,
         current="",
@@ -351,11 +363,30 @@ def run_next(
     index = int(state.get("index", 0) or 0)
 
     if index >= len(queue):
+        # AUD02-08: the last item is normally credited to `completed` at the
+        # NEXT launch — which never comes at the end of the queue. Credit it
+        # here, but only when it is really finished (archived and not active
+        # again) — the report must not overstate.
+        current = str(state.get("current") or "")
+        completed = list(state.get("completed") or [])
+        if current and current not in completed and _todo_finished(project_dir, current):
+            completed.append(current)
+            state = run_state.write_run(project_dir, completed=completed)
         return stop_run(project_dir, state, "queue exhausted — all items processed")
 
     budget = int(state.get("budget_minutes", 0) or 0)
-    if budget and run_state.elapsed_minutes(state) > budget:
-        return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
+    if budget:
+        if not run_state.started_at_ok(state):
+            # AUD02-09: a corrupt started_at used to read as elapsed 0.0 —
+            # the budget gate silently disabled. Degrade toward safety:
+            # the run clock is untrustworthy, so the run stops.
+            return stop_run(
+                project_dir, state,
+                "run state corrupted (started_at unparseable) — "
+                f"budget {budget} min cannot be verified",
+            )
+        if run_state.elapsed_minutes(state) > budget:
+            return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
 
     next_id = queue[index]
 
@@ -376,11 +407,8 @@ def run_next(
         prev = queue[index - 1]
         # AUD05-07: restore_todo leaves done/{id}/ behind, so is_archived alone
         # lets a restored (active again) prev pass. Require it to be gone from
-        # the active list too.
-        prev_active = prev in todos.list_active_todos(
-            paths.inbox(project_dir), paths.outbox(project_dir)
-        )
-        if not todos.is_archived(project_dir, prev) or prev_active:
+        # the active list too (see _todo_finished).
+        if not _todo_finished(project_dir, prev):
             return RunNextResult(
                 action="refused",
                 todo_id=next_id,

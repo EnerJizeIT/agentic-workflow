@@ -171,7 +171,7 @@ def run_pipeline(args: Any) -> int:
             _log(logs_dir, f"Stage {stage_idx}: {s_name} ({s_role} :: {s_kind})")
             write_state(
                 project_dir, logs_dir=logs_dir, stage_idx=stage_idx,
-                stage_name=s_name, stage_kind=s_kind, stage_role=s_role,
+                stage_name=s_name, stage_kind=s_kind,
                 todo_id=current_todo, pipeline_pid=os.getpid(),
                 # dogfood-11: a new stage start means any previous salvage was
                 # resolved (ACK/retry) — clear the flag, or the dashboard would
@@ -181,6 +181,14 @@ def run_pipeline(args: Any) -> int:
                 # BLOCKED would re-trigger the blocked wake-up during a retried
                 # stage before the worker emits its own signal.
                 last_signal=None,
+                # AUD02-03: same for the checkpoint keys — a stale
+                # checkpoint_pending from a crashed/timed-out previous run
+                # would make wait_for_event emit a phantom "checkpoint" event
+                # for the NEW run (its one-shot POST server is long gone).
+                # (AUD02-11: stage_role was written here but never read —
+                # removed; readers compute the role from pipeline.yaml.)
+                checkpoint_pending=False, checkpoint_port=None,
+                checkpoint_form_url=None,
             )
             from .api.dashboard import generate_dashboard
             generate_dashboard(project_dir)
@@ -213,10 +221,18 @@ def run_pipeline(args: Any) -> int:
         # But first generate final dashboard so user sees "complete" state
         from .api.dashboard import generate_dashboard as _gen_dash
         _gen_dash(project_dir)
-        # SMO: write phase=done + preserve goal for next iteration
+        # SMO: write phase=done + preserve setup context for next iteration.
+        # AUD02-04: normalized must survive the exit too — otherwise a
+        # completed SMO project degrades to 'normalize' (or 'goal' without a
+        # goal) >2h later, when detect_phase falls back to file detection.
         prev_state = read_state(project_dir) or {}
         clear_state(project_dir, logs_dir=logs_dir)
-        write_state(project_dir, phase="done", goal=prev_state.get("goal"))
+        write_state(
+            project_dir,
+            phase="done",
+            goal=prev_state.get("goal"),
+            normalized=prev_state.get("normalized"),
+        )
         return 0
     finally:
         # P2/AUD04-10: restore env var (don't leak AWF_SUPERVISOR_TIMEOUT

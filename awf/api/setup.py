@@ -496,7 +496,10 @@ def apply_project_setup(
         try:
             from ..phase import advance_phase, detect_phase
             if detect_phase(project_dir) == "form":
-                advance_phase(project_dir, setup_done=True)
+                # AUD02-05: declare the documented transition (form →
+                # normalize); the pre-check above makes a refusal impossible
+                # except in a race.
+                advance_phase(project_dir, from_phase="form", setup_done=True)
         except Exception:
             pass  # phase advance is best-effort, not critical
 
