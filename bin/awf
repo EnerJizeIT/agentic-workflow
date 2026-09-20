@@ -12,8 +12,6 @@
 # source tree.
 set -euo pipefail
 
-AWF_VERSION="0.4.0"
-
 if ! command -v python3 &>/dev/null; then
     echo "ERROR: awf requires python3 on PATH." >&2
     exit 1

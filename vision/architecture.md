@@ -4,11 +4,11 @@
 
 ## Обзор
 
-`agent-workflow-ui` — MCP plugin для opencode. 29 typed tools (5 UI + 24 workflow). Plugin импортирует `awf` напрямую (Python import, без subprocess).
+`agent-workflow-ui` — MCP plugin для opencode. 37 typed tools (5 UI + 32 workflow). Plugin импортирует `awf` напрямую (Python import, без subprocess).
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 29 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 37 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf.api.*]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]
@@ -57,8 +57,8 @@ init → goal → form → normalize → brief → run → verify → done
 
 | Файл | Ответственность |
 |---|---|
-| `server.py` | MCP server (stdio transport), 29 tools registered |
-| `tools/awf.py` | 24 awf tool wrappers (async → `asyncio.to_thread` + `next_action`) |
+| `server.py` | MCP server (stdio transport), 37 tools registered |
+| `tools/awf.py` | 32 awf tool wrappers (async → `asyncio.to_thread` + `next_action`) |
 | `tools/forms.py` | 5 UI tool wrappers (open_form, read_submit, ...) |
 | `http_endpoint.py` | Long-lived HTTP server for form submits |
 | `opencode_config.py` | Model discovery (opencode CLI + opencode.json + opencode.db) |

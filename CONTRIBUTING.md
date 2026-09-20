@@ -21,13 +21,18 @@ python -m pytest tests/
 # Unit only (fast)
 python -m pytest tests/unit/
 
-# With coverage
-python -m pytest tests/ --cov=awf --cov=agent_workflow_ui --cov-report=term-missing
+# Coverage gates — exactly what CI runs (test.yml).
+# Combined --cov=awf --cov=agent_workflow_ui is misleading: pytest-cov does
+# not track subprocess execution in E2E tests, so run the two gates separately.
+# Core gate (>=80%)
+python -m pytest tests/unit tests/negative tests/integration tests/e2e --cov=awf --cov-report=term-missing --cov-fail-under=80
+# Plugin gate (>=80%)
+python -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing --cov-fail-under=80
 ```
 
 ## Code style
 
-- **Linter:** ruff (`ruff check awf/ tests/ agent_workflow_ui/src/`)
+- **Linter:** ruff (`ruff check tests/ awf/ agent_workflow_ui/src/agent_workflow_ui/`)
 - **Python:** 3.10+ (PEP 604 union types)
 - **Line length:** 100 chars
 - **Imports:** sorted by isort (via ruff)

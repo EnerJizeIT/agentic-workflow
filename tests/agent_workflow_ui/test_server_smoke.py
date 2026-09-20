@@ -73,7 +73,12 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 44 tools are registered with correct names (5 UI + 39 awf)."""
+    """All 37 tools are registered with correct names (5 UI + 32 awf).
+
+    AUD08-08: this number is a fact-check, not a label — if it drifts from
+    ``server.py``, ``tool_names == expected`` below fails first. Update both
+    together when a tool is added.
+    """
     server = create_server()
     tools = asyncio.run(server.list_tools())
 

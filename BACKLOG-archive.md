@@ -1,6 +1,8 @@
 # BACKLOG Archive
 
-> Закрытые и deprecated записи. История работы. Активные items — в BACKLOG.md.
+> Закрытые, отложенные и исторические записи. История работы.
+> Активные items — только в BACKLOG.md; открытая строка в архиве
+> (пометка OPEN) — ошибка, её дом BACKLOG.md.
 
 ---
 
@@ -221,7 +223,7 @@ Tools registered в `server.py` через `mcp.add_tool(...)`.
 
 ### BD-35 · Pipeline stages don't produce verifiable contribution — branch chain + diff-monitoring
 
-**Status:** OPEN. **Priority:** HIGH — fundamental to "pipeline as conveyor".
+**Status:** отложен — ждать real failure в dogfooding. Активный пункт — в BACKLOG.md (один дом); ниже — история обсуждения. **Priority:** HIGH — fundamental to "pipeline as conveyor".
 
 **Problem.** Currently each agent stage runs in the same project directory
 and shares the filesystem with previous stages. Observed failure modes:
@@ -1310,6 +1312,15 @@ P2 закрытые:
 ✅ `.26` **agent_stage handoff** — sort by numeric ID, not mtime.
 ✅ `.27` **plan_checkpoint TOCTOU** — port=0, OS assigns free port.
 ✅ `.28` **forms.py template whitelist** — project-setup, increment-planning, ack.
+ℹ️ `.24` **[MED] CSRF token** — закрыт как deferred (2026-09, AUD13-07): в `http_endpoint.py`
+   есть origin-проверка (A2, `_check_url` + ALLOWED_HOSTS) поверх 127.0.0.1-binding;
+   `True` остаётся только для curl-кейса без Origin/Referer (backward compat).
+   По решению аудита §7 origin-проверки достаточно; token не вводим.
+   (ID-коллизия с ТИРАЖ .24 снята: секции различаются заголовками.)
+✅ `.32` **Coverage критических путей** — закрыт (2026-09): CI-гейты ≥80%
+   (core: `tests/unit tests/negative tests/integration tests/e2e --cov-fail-under=80`,
+   plugin: `tests/agent_workflow_ui/ --cov-fail-under=80`); на момент закрытия
+   core TOTAL 88% (plan_checkpoint 87%, verify/wait_event/setup — все ≥80%).
 
 P3:
 ✅ `.33` **orchestrator int(cli_timeout)** — try/except.

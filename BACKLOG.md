@@ -48,14 +48,6 @@
 ⬜ `.7` **Escape-hatch'и:** ПОСЛЕ dogfood. Собрать edge-cases с реальных сессий.
    **НЕ проектировать upfront.**
 
-### QA-2026-08-10 · QA Roundtable — открытые пункты
-
-**Status:** закрытые пункты — в архиве; ниже только то, что осталось.
-
-⬜ `.24` **[MED] CSRF token** — `http_endpoint.py:94` no Origin/Referer → True.
-⬜ `.32` **Coverage критических путей** — verify.py 14%, plan_checkpoint.py 21%,
-   wait_event.py 22%, _stack.py 27%, context.py 34%, setup.py 39%.
-
 ### BD-35 · Per-role contribution tracking
 **Status:** ждать real failure в dogfooding.
 
@@ -125,8 +117,8 @@
 
 ### Заметки / кандидаты
 
-- `tools/awf.py` (~940 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
-- `plan_checkpoint.py` (201 строка, 21% coverage) — добавить покрытие при dogfood
+- `agent_workflow_ui/src/agent_workflow_ui/tools/awf.py` (~1600 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
+- `plan_checkpoint.py` (689 строк, 87% coverage) — покрытие есть; оставшееся — через dogfood
 - `supervisor.py` — разделить `wait_for_supervisor_signal` до новых stage kind
 - Два HTTP-сервера: one-shot core + long-lived plugin
 - Event journal — `.agentic/state/journal.jsonl` для replay

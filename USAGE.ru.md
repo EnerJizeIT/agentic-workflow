@@ -112,8 +112,9 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 |---|---|
 | Воркер не просигналил (нет DONE/BLOCKED) | Salvage — awf пишет SALVAGE промт, supervisor решает |
 | Процесс пайплайна упал | `awf_continue` — возобновляет с последней контрольной точки |
-| Orphan TODO (провален dispatch) | Авто-очистка при след. dispatch |
+| Orphan TODO (провален dispatch) | Не очищается автоматически. Удалить: `awf_reset(orphans=True)` |
 | Коммит провален (pre-commit hook) | TODO НЕ архивируется, изменения остаются для ручного ревью |
+| Supervisor завис на verify >1 ч | Стадия таймаутится → salvage. Увеличить: `AWF_SUPERVISOR_TIMEOUT=7200` (env) или `awf start --timeout 7200` |
 
 ## Где что лежит
 
@@ -122,17 +123,22 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 ├── config.yaml              # Конфиг проекта (роли, модели, пайплайн)
 ├── pipelines/default.yaml   # Определение стадий пайплайна
 ├── roles/                   # Файлы ролей (supervisor.md, роли воркеров)
+├── phases/plan.md           # План проекта — шаги с [x]-отметками
 ├── inbox/                   # TODO файлы + сигналы dispatch
 ├── outbox/                  # Сигналы воркеров (DONE, BLOCKED, REVIEW)
-├── handoff/                 # Handoff файлы по стадиям
+├── handoff/                 # Handoff файлы по стадиям (создаётся при dispatch)
 ├── context/                 # Базелины (SHA, тесты, окружение)
 ├── logs/                    # orchestrator.log, вывод воркеров
+├── inputs/                  # Субмиты форм (создаёт плагин)
 ├── done/{todo_id}/          # Архив завершённых TODO
 ├── state/current.yaml       # Состояние пайплайна (stage, todo, PID, phase)
+├── state/run.yaml           # Состояние забегов, если активен
 └── state/dashboard_port     # Порт HTTP-сервера дашборда
 ```
 
 ## Все tools (справочник)
+
+37 инструментов: 32 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -156,6 +162,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_dispatch_todo` | Создание TODO + baseline + signal (+ pre-check grep) |
 | `awf_baseline` | Снапшот git HEAD + тесты + окружение |
 | `awf_rollback` | Откат к baseline (hard / soft / dry-run) |
+| `awf_restore` | Вернуть заархивированный TODO обратно в inbox |
 
 ### Verify
 | Tool | Что делает |
@@ -163,6 +170,17 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_approve` | Авторизация коммита + архивация TODO |
 | `awf_reject` | Запись REVIEW сигнала + остановка пайплайна |
 | `awf_wait_for_event` | Проверка событий пайплайна (реактивно, не для polling) |
+| `awf_prove_red` | Доказательство, что заявленные тесты красные на baseline |
+| `awf_verify_pack` | Один детерминированный verify-отчёт (GATES-файл) |
+
+### Run (автономный забег)
+| Tool | Что делает |
+|---|---|
+| `awf_run_start` | Запуск забега: очередь TODO с механическими гейтами |
+| `awf_run_status` | Состояние забега: позиция, бюджет, reject'ы |
+| `awf_run_next` | Запустить след. пункт очереди, либо стоп по гейту |
+| `awf_run_finish` | Закрыть забег (записать RUN-REPORT) |
+| `awf_run_note` | Обновить живое описание забега для дашборда |
 
 ### SMO
 | Tool | Что делает |

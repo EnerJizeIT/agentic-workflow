@@ -48,10 +48,15 @@ pip install awf agent-workflow-ui
 | **Models** | Model-agnostic. Tested with Qwen vLLM. Should work with Claude, GPT, or any opencode-supported provider. |
 | **Git** | Required (commit gate, baselines, rollback) |
 
+> **Timeouts:** each agent stage times out after 1 hour by default — a supervisor
+> paused on verify longer than that gets the stage salvaged. Extend with
+> `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200`
+> (USAGE.md → Troubleshooting).
+
 ## Features
 
 - 🎯 **State-Machine Orchestration (SMO)** — awf guides the supervisor through phases: `init → goal → form → normalize → brief → run → verify → done`. Every tool returns a `next_action` hint — even weak models follow the full flow without getting lost.
-- 🔧 **29 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
+- 🔧 **37 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
 - 📊 **Live Dashboard** — HTTP server with real-time polling. Chat-style agent handoffs, TODO content, TODO timeline, worker status, browser notifications. No page reloads.
 - 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. You choose in the setup form.
 - ✅ **Approve / Reject** — symmetric verify tools. Approve commits and archives. Reject kills the pipeline and asks for fixes.
@@ -94,7 +99,7 @@ graph LR
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 29 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 37 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf orchestrator]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]
@@ -137,7 +142,7 @@ Live HTTP dashboard opens automatically when pipeline starts:
 ## Roadmap
 
 - **SMO escape-hatch'и** — manual phase jumps, interruptions (from real session edge cases)
-- **Coverage** — critical paths (verify, plan_checkpoint, context)
+- **Coverage** — CI gates ≥80% (awf core + plugin) are in place; keep them from sliding
 - ✅ ~~**PyPI**~~ — `pip install awf agent-workflow-ui` (done!)
 - **Dashboard v3** — stage timing bars, session summary, sound notifications
 - **Standalone mode** — awf without opencode (API-only)

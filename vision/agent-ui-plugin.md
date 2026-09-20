@@ -4,7 +4,7 @@
 
 ## Что
 
-`agent-workflow-ui` — MCP plugin для opencode. Даёт supervisor-агенту 29 typed MCP tools для управления pipeline без shell-команд.
+`agent-workflow-ui` — MCP plugin для opencode. Даёт supervisor-агенту 37 typed MCP tools для управления pipeline без shell-команд.
 
 ## Почему
 
@@ -18,7 +18,7 @@ Pet-проекты где пользователь хочет делегиров
 
 **UI (5):** `open_form`, `read_submit`, `cancel_form`, `list_pending_forms`, `list_templates` — HTML-формы в браузере.
 
-**Workflow (24):** полный lifecycle — init, goal, dispatch, start, wait, status, kill, retry, approve, reject, rollback, report, reset, dashboard, model validation, phase management.
+**Workflow (32):** полный lifecycle — init, goal, dispatch, start, wait, status, kill, retry, approve, reject, rollback, report, reset, dashboard, model validation, phase management, run (забег: start/status/next/finish/note), restore, prove_red, verify_pack.
 
 Все workflow tools возвращают `next_action` — компактную инструкцию для supervisor.
 

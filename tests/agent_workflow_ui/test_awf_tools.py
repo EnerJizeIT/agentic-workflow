@@ -532,8 +532,12 @@ class TestApiParity:
 
 
 class TestToolRegistration:
-    def test_all_11_tools_exist_as_callables(self):
-        """All 11 awf_* tools must be exposed as async callables."""
+    def test_core_tools_exist_as_callables(self):
+        """The 11 core awf_* tools must be exposed as async callables.
+
+        AUD08-08: renamed from "all 11 tools" — the full set is 32 (and
+        grows); the strict count is pinned by test_all_tools_registered.
+        """
         tool_names = [
             "awf_init", "awf_status", "awf_start", "awf_continue",
             "awf_baseline", "awf_rollback", "awf_approve", "awf_report",
@@ -546,12 +550,12 @@ class TestToolRegistration:
             import inspect
             assert inspect.iscoroutinefunction(fn), f"{name} must be async"
 
-    def test_server_registers_all_11_tools(self):
+    def test_server_registers_core_tools(self):
         """server.create_server() registers all awf_* tools without error.
 
         Skipped when ``mcp`` package is unavailable (CI runners without
-        opencode-installed deps). The 11 tools themselves are importable
-        (verified by test_all_11_tools_exist_as_callables); this test only
+        opencode-installed deps). The core tools themselves are importable
+        (verified by test_core_tools_exist_as_callables); this test only
         verifies FastMCP registration wiring.
         """
         if not _MCP_AVAILABLE:
