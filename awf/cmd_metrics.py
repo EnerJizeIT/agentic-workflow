@@ -21,12 +21,15 @@ def run(args: Any) -> int:
         since=args.since or None,
         out=args.out or None,
         refresh_subscriptions=getattr(args, "refresh_subscriptions", False),
+        mirror=not getattr(args, "no_mirror", False),
     )
     if getattr(args, "json", False):
         print(json.dumps(result.as_dict(), indent=2, ensure_ascii=False))
     else:
         if result.report_path:
             print(f"Отчёт: {result.report_path}")
+        if result.mirror_path:
+            print(f"Зеркало: {result.mirror_path}")
         t = result.totals
         print(
             f"Юнитов: {len(result.units)} (окно {t['hours']:.1f} ч); "

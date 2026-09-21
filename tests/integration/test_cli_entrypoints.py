@@ -595,3 +595,23 @@ class TestResetHelpMatchesBehavior:
         for d in ("inbox", "outbox", "context", "logs",
                   "handoff", "inputs", "dashboards"):
             assert d in help_out, f"reset --help does not name cleaned dir {d!r}"
+
+
+class TestMetricsEntrypoint:
+    def test_no_mirror_flag_is_accepted(self, tmp_path, capsys):
+        """U8c: `awf metrics --no-mirror` — the flag exists and the run
+        completes. rc is 0 or 1 depending on whether the machine's
+        opencode.db has measurable sessions; the report is written either
+        way, and an unrecognized flag would SystemExit(2) instead."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliMetrics")
+        capsys.readouterr()
+        out_file = tmp_path / "report.md"
+
+        rc = cli.main([
+            "metrics", "--project-dir", str(repo),
+            "--no-mirror", "--out", str(out_file),
+        ])
+
+        assert rc in (0, 1)
+        assert out_file.is_file()

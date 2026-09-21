@@ -46,13 +46,19 @@ U8d: GLM — кредитная модель (лимиты кредитов/не
   ``metrics.models_cache`` — путь кэша цен моделей (дефолт
   ``.agentic/state/metrics_models_cache.json``, относительно project_dir);
   ``metrics.output_dir`` — каталог отчёта (дефолт ``~/Desktop``, если
-  существует, иначе project_dir).
+  существует, иначе project_dir);
+  ``metrics.mirror_dir`` — U8c: архивное зеркало отчёта (путь; пусто =
+  выключено). После успешной записи отчёта копия с тем же именем
+  складывается туда (каталог создаётся; ошибка копирования —
+  предупреждение, сбор не падает). Флаг ``--no-mirror`` / ``mirror=False``
+  отключает зеркалирование на один запуск.
 """
 from __future__ import annotations
 
 import json
 import math
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -118,6 +124,7 @@ class MetricsResult:
     measured: bool = False
     exit_code: int = 0
     report_path: str | None = None
+    mirror_path: str | None = None
     report: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -136,6 +143,7 @@ class MetricsResult:
             "measured": self.measured,
             "exit_code": self.exit_code,
             "report_path": self.report_path,
+            "mirror_path": self.mirror_path,
         }
 
 
@@ -1195,6 +1203,25 @@ def _report_name() -> str:
     return f"awf-metrics-{time.strftime('%Y%m%d-%H%M')}.md"
 
 
+def _mirror_report(report_path: Path, mirror_dir: str, warnings: list[str]) -> str | None:
+    """U8c: копия отчёта в ``metrics.mirror_dir`` (то же имя).
+
+    Каталог создаётся; совпадение с исходным путём — тихо пропускается;
+    ошибка копирования — предупреждение в ``warnings`` (сбор не падает).
+    """
+    dest_dir = Path(mirror_dir).expanduser()
+    dest = dest_dir / report_path.name
+    if dest.resolve() == report_path.resolve():
+        return str(dest)
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(report_path, dest)
+    except OSError as e:
+        warnings.append(f"зеркало отчёта не записано ({dest_dir}): {e}")
+        return None
+    return str(dest)
+
+
 def collect_metrics(
     project_dir: str | Path,
     *,
@@ -1204,12 +1231,17 @@ def collect_metrics(
     since: str | int | float | None = None,
     out: str | None = None,
     refresh_subscriptions: bool = False,
+    mirror: bool = True,
 ) -> MetricsResult:
     """Собрать метрики программы и записать markdown-отчёт.
 
     Возвращает :class:`MetricsResult`; ``exit_code`` = 0, если измерено хоть
     что-то (воркеры / коммиты / супервизор), иначе 1. Отчёт пишется всегда
     (с пометками о том, что не измерилось).
+
+    U8c: ``mirror=True`` (дефолт) + заданный ``metrics.mirror_dir`` — после
+    успешной записи отчёт копируется в зеркало (``mirror_path`` в результате).
+    ``mirror=False`` отключает копирование на один запуск.
     """
     project_dir = Path(project_dir).resolve()
     warnings: list[str] = []
@@ -1253,6 +1285,9 @@ def collect_metrics(
     subs_cache = subs_cache if isinstance(subs_cache, str) and subs_cache else None
     models_cache = config_mod.get(cfg, "metrics.models_cache")
     models_cache = models_cache if isinstance(models_cache, str) and models_cache else None
+    # U8c: архивное зеркало отчёта (пусто = выключено).
+    mirror_dir = config_mod.get(cfg, "metrics.mirror_dir")
+    mirror_dir = mirror_dir if isinstance(mirror_dir, str) and mirror_dir else None
 
     db = db_path if db_path is not None else default_db_path()
     models = models_path if models_path is not None else default_models_path()
@@ -1398,6 +1433,9 @@ def collect_metrics(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(report, encoding="utf-8")
         result.report_path = str(out_path)
+        # U8c: зеркало — только после успешной записи отчёта.
+        if mirror and mirror_dir:
+            result.mirror_path = _mirror_report(out_path, mirror_dir, warnings)
     except OSError as e:
         warnings.append(f"отчёт не записан: {e}")
         result.warnings = warnings

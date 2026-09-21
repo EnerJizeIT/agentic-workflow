@@ -641,6 +641,8 @@ async def awf_metrics(
     reference_model: str | None = None,
     since: str | None = None,
     out: str | None = None,
+    refresh_subscriptions: bool = False,
+    mirror: bool = True,
 ) -> dict[str, Any]:
     """U8: collect token/cost metrics of the work program (report to desktop).
 
@@ -653,6 +655,10 @@ async def awf_metrics(
     The markdown report is written by default to ``metrics.output_dir``
     (default: ~/Desktop) as ``awf-metrics-<YYYYMMDD-HHMM>.md``.
 
+    U8c: the report can be mirrored to an archive location (config
+    ``metrics.mirror_dir``) — the copy lands there after the report is
+    written successfully (copy failure is a warning, not an error).
+
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
@@ -662,11 +668,18 @@ async def awf_metrics(
         since: Start of the statistics window (ISO date/datetime or epoch;
             default: config ``metrics.since``, no filter).
         out: Output file or directory (default: ``metrics.output_dir``).
+        refresh_subscriptions: U8b — update the subscriptions table from
+            config ``metrics.subscriptions_url`` before computing
+            (fallback to the built-in table on failure).
+        mirror: U8c — copy the report to config ``metrics.mirror_dir``
+            after it is written (default: True; pass False to skip the
+            copy for this run).
 
     Returns:
-        Dict with: status, report_path, units, totals, workers_by_role,
-        supervisor_outside, conversion (line + costs), warnings,
-        exit_code (0 = measured something, 1 = nothing measurable).
+        Dict with: status, report_path, mirror_path, units, totals,
+        workers_by_role, supervisor_outside, conversion (line + costs),
+        warnings, exit_code (0 = measured something, 1 = nothing
+        measurable).
         On error: {status: "error", error: "..."}.
     """
     return await _exec(
@@ -675,6 +688,8 @@ async def awf_metrics(
         reference_model=reference_model,
         since=since,
         out=out,
+        refresh_subscriptions=refresh_subscriptions,
+        mirror=mirror,
     )
 
 

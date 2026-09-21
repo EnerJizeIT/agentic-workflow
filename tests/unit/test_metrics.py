@@ -714,6 +714,88 @@ class TestCli:
         assert rc == 1
 
 
+class TestU8cMirror:
+    """U8c: metrics.mirror_dir — архивная копия отчёта."""
+
+    def _set_mirror_dir(self, env, mirror: Path) -> None:
+        cfg = env["proj"] / ".agentic" / "config.yaml"
+        cfg.write_text(cfg.read_text() + f"  mirror_dir: {mirror}\n")
+
+    def test_mirror_copies_report(self, env, tmp_path):
+        mirror = tmp_path / "archive" / "reports"
+        self._set_mirror_dir(env, mirror)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=str(tmp_path / "out.md"),
+        )
+        assert res.report_path and Path(res.report_path).exists()
+        assert res.mirror_path is not None
+        dest = Path(res.mirror_path)
+        assert dest.parent == mirror
+        assert dest.name == Path(res.report_path).name
+        assert dest.read_text(encoding="utf-8") == Path(res.report_path).read_text(encoding="utf-8")
+
+    def test_no_mirror_dir_no_copy(self, env, tmp_path):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=str(tmp_path / "out.md"),
+        )
+        assert res.report_path and Path(res.report_path).exists()
+        assert res.mirror_path is None
+
+    def test_mirror_false_skips_copy(self, env, tmp_path):
+        mirror = tmp_path / "archive"
+        self._set_mirror_dir(env, mirror)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=str(tmp_path / "out.md"), mirror=False,
+        )
+        assert res.report_path and Path(res.report_path).exists()
+        assert res.mirror_path is None
+        assert not mirror.exists()
+
+    def test_broken_mirror_dir_warns_report_written(self, env, tmp_path):
+        # Каталог зеркала — на самом деле файл: mkdir падает, отчёт всё равно
+        # записан, предупреждение в warnings.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("file, not a dir")
+        self._set_mirror_dir(env, blocker / "sub")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=str(tmp_path / "out.md"),
+        )
+        assert res.report_path and Path(res.report_path).exists()
+        assert res.mirror_path is None
+        assert any("зеркало" in w for w in res.warnings)
+
+    def test_cli_no_mirror_flag(self, env, monkeypatch, capsys):
+        mirror = env["tmp"] / "archive"
+        self._set_mirror_dir(env, mirror)
+        home = env["tmp"] / "home"
+        (home / ".local" / "share" / "opencode").mkdir(parents=True)
+        (home / ".cache" / "opencode").mkdir(parents=True)
+        (home / ".local" / "share" / "opencode" / "opencode.db").write_bytes(env["db"].read_bytes())
+        (home / ".cache" / "opencode" / "models.json").write_bytes(env["models"].read_bytes())
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        rc = cli.main([
+            "metrics", "--project-dir", str(env["proj"]),
+            "--out", str(env["tmp"] / "r1.md"),
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Зеркало: " in out
+        assert (mirror / "r1.md").exists()
+
+        rc = cli.main([
+            "metrics", "--project-dir", str(env["proj"]),
+            "--no-mirror", "--out", str(env["tmp"] / "r2.md"),
+        ])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Зеркало: " not in out
+        assert not (mirror / "r2.md").exists()
+
+
 # U8d: GLM — кредитная модель (GLM-5.3: (in×6.9 + cached_in×1.7 + out×24) ÷ 10 000),
 # cache-read входит в кредиты; off-peak (вне Пн–Пт 14:00–18:00 SGT) ×0.5.
 GLM_TOTALS = {"win": 52_000_000, "wout": 6_000_000, "wcr": 0, "wcw": 0}

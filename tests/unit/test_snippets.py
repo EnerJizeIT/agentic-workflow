@@ -58,6 +58,13 @@ class TestSnippetContent:
         assert "split the work" in lower
         assert "output budget" in lower
 
+    def test_verify_prompt_has_metrics(self):
+        """U8c: the supervisor's prompts point to awf_metrics (the ALWAYS
+        snippet is injected into every supervisor stage prompt)."""
+        assert "awf_metrics" in _SNIPPET_ALWAYS
+        assert "awf metrics" in _SNIPPET_ALWAYS
+        assert "metrics.mirror_dir" in _SNIPPET_ALWAYS
+
     def test_snippets_are_concise(self):
         """Each snippet should be under 30 lines (focused, not a wall of text)."""
         for name, snippet in [("always", _SNIPPET_ALWAYS), ("plan", _SNIPPET_PLAN),

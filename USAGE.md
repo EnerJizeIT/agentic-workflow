@@ -70,6 +70,21 @@ Every tool returns `next_action` — a hint for the next step. Even weak models 
 
 **After approve:** pipeline exits. Say *"continue"* to dispatch next TODO, or *"stop"* to pause.
 
+## Metrics
+
+`awf metrics` (MCP: `awf_metrics`) collects the work program on demand: worker
+tokens (in/out/cache-read) and compactions per unit from opencode.db, supervisor
+tokens attributed to unit windows, +/− code lines per unit commit, and the cost
+conversion "if workers had run on model X" (models.dev prices).
+
+The markdown report lands in `metrics.output_dir` (default: ~/Desktop) as
+`awf-metrics-<YYYYMMDD-HHMM>.md`. Set `metrics.mirror_dir` in
+`.agentic/config.yaml` to keep an archive copy of every report (a failed copy
+is a warning, not an error); `--no-mirror` skips the copy for one run. Update
+the subscriptions table (💳 section of the report) with
+`awf metrics --refresh-subscriptions` — it fetches `metrics.subscriptions_url`
+and falls back to the built-in table on failure.
+
 ## Dashboard
 
 Opens automatically in browser when pipeline starts:

@@ -150,6 +150,8 @@ _SNIPPET_ALWAYS = """\
   the loop awf_wait_for_event(actionable_only=True) → awf_approve(evidence=...)
   → awf_run_next (see phase-run.md).
 - If MCP tool times out → bash fallback: `python3 -m awf status --project-dir <path>`
+- Metrics (U8c): `awf_metrics` / `awf metrics` (on owner request and at the end
+  of a run) — report to the desktop, copy to `metrics.mirror_dir` if set.
 """
 
 _SNIPPET_PLAN = """\

@@ -1123,3 +1123,42 @@ class TestStartNextActionDashboard:
         assert result["status"] == "ok"
         assert result["dashboard_opened"] is True
         assert "GO IDLE" in result["next_action"]
+
+
+class TestAwfMetricsParams:
+    """U8c: awf_metrics gained refresh_subscriptions + mirror (MCP parity
+    with `awf metrics --refresh-subscriptions` / `--no-mirror`)."""
+
+    def test_defaults_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_metrics(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "collect_metrics", spy_metrics)
+
+        result = run(awf.awf_metrics(project_dir="/tmp"))
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls and calls[0]["refresh_subscriptions"] is False
+        assert calls[0]["mirror"] is True
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_metrics(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "collect_metrics", spy_metrics)
+
+        result = run(
+            awf.awf_metrics(
+                project_dir="/tmp", refresh_subscriptions=True, mirror=False
+            )
+        )
+
+        assert result["status"] == "error"
+        assert calls and calls[0]["refresh_subscriptions"] is True
+        assert calls[0]["mirror"] is False

@@ -341,6 +341,12 @@ def _build_parser():
         help="U8b: update the subscriptions table from metrics.subscriptions_url "
              "before computing (fallback to the built-in table on failure)",
     )
+    p_metrics.add_argument(
+        "--no-mirror",
+        dest="no_mirror",
+        action="store_true",
+        help="U8c: do not copy the report to metrics.mirror_dir for this run",
+    )
 
     p_analyze = sub.add_parser(
         "analyze-roles",
