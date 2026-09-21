@@ -1,0 +1,78 @@
+{
+  "as_of": "2026-09-21",
+  "note": "Встроенная таблица подписок (U8b). Токенные месячные лимиты вендоры не публикуют — все лимиты оценены по опубликованным лимитам сообщений на 5-часовое окно при круглосуточном использовании (~144 окна в 30-дневном месяце) и допущению о токенах на сообщение (assumed_tokens_per_message). Такие лимиты в отчёте помечаются «оценка».",
+  "plans": [
+    {
+      "name": "Claude Pro",
+      "family": "claude",
+      "price_usd_month": 20,
+      "limit_messages_period": 6480,
+      "period": "month",
+      "assumed_tokens_per_message": 1000,
+      "source_url": "https://www.anthropic.com/pricing",
+      "as_of": "2026-09-21",
+      "notes": "~45 сообщений на 5-часовое окно (у вендора); 6480 = 45 × ~144 окна/мес при непрерывной работе. Токены на сообщение — допущение.",
+      "assumed": true
+    },
+    {
+      "name": "Claude Max 5x",
+      "family": "claude",
+      "price_usd_month": 100,
+      "limit_messages_period": 32400,
+      "period": "month",
+      "assumed_tokens_per_message": 1000,
+      "source_url": "https://www.anthropic.com/pricing",
+      "as_of": "2026-09-21",
+      "notes": "5× лимита Claude Pro (по спецификации тарифа). Токены на сообщение — допущение.",
+      "assumed": true
+    },
+    {
+      "name": "Claude Max 20x",
+      "family": "claude",
+      "price_usd_month": 200,
+      "limit_messages_period": 129600,
+      "period": "month",
+      "assumed_tokens_per_message": 1000,
+      "source_url": "https://www.anthropic.com/pricing",
+      "as_of": "2026-09-21",
+      "notes": "20× лимита Claude Pro (по спецификации тарифа). Токены на сообщение — допущение.",
+      "assumed": true
+    },
+    {
+      "name": "ChatGPT Plus",
+      "family": "gpt",
+      "price_usd_month": 20,
+      "limit_messages_period": 11520,
+      "period": "month",
+      "assumed_tokens_per_message": 1000,
+      "source_url": "https://openai.com/chatgpt/pricing",
+      "as_of": "2026-09-21",
+      "notes": "~80 сообщений на 5-часовое окно (оценка по публичным лимитам); 11520 = 80 × ~144 окна/мес. Токены на сообщение — допущение.",
+      "assumed": true
+    },
+    {
+      "name": "ChatGPT Pro",
+      "family": "gpt",
+      "price_usd_month": 200,
+      "limit_messages_period": 57600,
+      "period": "month",
+      "assumed_tokens_per_message": 1000,
+      "source_url": "https://openai.com/chatgpt/pricing",
+      "as_of": "2026-09-21",
+      "notes": "5× лимита ChatGPT Plus (оценка). Токены на сообщение — допущение.",
+      "assumed": true
+    },
+    {
+      "name": "GLM Coding Plan (Z.ai)",
+      "family": "glm",
+      "price_usd_month": 6,
+      "limit_messages_period": 34560,
+      "period": "month",
+      "assumed_tokens_per_message": 1000,
+      "source_url": "https://z.ai/subscriptions",
+      "as_of": "2026-09-21",
+      "notes": "Меняет $6/мес после первого месяца ($3). Токенные лимиты Z.ai не публикует; оценка: ~240 запросов на 5-часовое окно (~3× ChatGPT Plus по маркетингу вендора) × ~144 окна/мес. Токены на сообщение — допущение.",
+      "assumed": true
+    }
+  ]
+}
