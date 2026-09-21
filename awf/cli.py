@@ -404,8 +404,7 @@ def _build_parser():
     p_todo_draft.add_argument(
         "--index",
         default="",
-        help="Path to AUDIT-INDEX.md (default: project dir, .agentic/context/, "
-        "~/Desktop/awf-audit/)",
+        help="Path to AUDIT-INDEX.md (default: project dir, .agentic/context/)",
     )
     p_todo_draft.add_argument(
         "--out",

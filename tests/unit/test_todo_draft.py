@@ -149,9 +149,7 @@ class TestMakeDraft:
 
     def test_default_search_finds_project_index(self, tmp_path: Path) -> None:
         _index_file(tmp_path)  # <project>/AUDIT-INDEX.md
-        out_path, draft = td.make_todo_draft(
-            "TEST-03", project_dir=tmp_path, home=tmp_path / "nohome"
-        )
+        out_path, draft = td.make_todo_draft("TEST-03", project_dir=tmp_path)
         assert out_path is None  # stdout mode
         assert "TEST-03" in draft
 
@@ -160,13 +158,10 @@ class TestMakeDraft:
         index.parent.mkdir()
         index.write_text(SAMPLE_INDEX, encoding="utf-8")
         _, draft = td.make_todo_draft(
-            "TEST-01", index_path=index, project_dir=tmp_path / "nope",
-            home=tmp_path / "nohome",
+            "TEST-01", index_path=index, project_dir=tmp_path / "nope"
         )
         assert "TEST-01" in draft
 
     def test_no_index_anywhere_is_error(self, tmp_path: Path) -> None:
         with pytest.raises(td.TodoDraftError, match="AUDIT-INDEX"):
-            td.make_todo_draft(
-                "TEST-01", project_dir=tmp_path, home=tmp_path / "nohome"
-            )
+            td.make_todo_draft("TEST-01", project_dir=tmp_path)

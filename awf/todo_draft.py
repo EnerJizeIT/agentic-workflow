@@ -7,7 +7,7 @@ front-matter keys stay commented-out placeholders, the criteria and
 scope sections carry explicit «супервизор дополняет» markers. No
 invented criteria, no network — a local index file only.
 
-Index format (see ~/Desktop/awf-audit/AUDIT-INDEX.md):
+Index format (the 2026-09 audit registry):
 - findings table ``| ID | Sev | Тип | Заголовок | Итерация | Фикс | Статус |``
 - units table ``| Юнит | Тема | ID (суммарно) | Фикс | Волна |``
 Escaped pipes (``\\|``) inside cells are supported.
@@ -289,10 +289,10 @@ def build_todo_draft(query: str, index: AuditIndex, index_name: str) -> str:
 
 
 def resolve_index_path(
-    explicit: str | None, project_dir: Path, home: Path
+    explicit: str | None, project_dir: Path
 ) -> Path:
     """--index wins; then <project>/AUDIT-INDEX.md, then the project's
-    .agentic/context/, then the known audit program registry."""
+    .agentic/context/."""
     if explicit:
         p = Path(explicit)
         if p.is_file():
@@ -301,7 +301,6 @@ def resolve_index_path(
     candidates = (
         project_dir / _INDEX_NAME,
         project_dir / ".agentic" / "context" / _INDEX_NAME,
-        home / "Desktop" / "awf-audit" / _INDEX_NAME,
     )
     for c in candidates:
         if c.is_file():
@@ -319,7 +318,6 @@ def make_todo_draft(
     project_dir: str | Path = ".",
     out: str | Path | None = None,
     force: bool = False,
-    home: str | Path | None = None,
 ) -> tuple[Path | None, str]:
     """Full CLI-level flow: resolve index, parse, render, write/return.
 
@@ -327,8 +325,7 @@ def make_todo_draft(
     mode. Refuses to overwrite an existing ``--out`` without ``force``.
     """
     pd = Path(project_dir)
-    h = Path(home) if home is not None else Path.home()
-    idx_path = resolve_index_path(index_path, pd, h)
+    idx_path = resolve_index_path(index_path, pd)
     index = parse_audit_index(idx_path.read_text(encoding="utf-8"))
     draft = build_todo_draft(query, index, str(idx_path))
     if out:

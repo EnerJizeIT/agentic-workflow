@@ -44,8 +44,8 @@ webbrowser.open = lambda *a, **kw: True
 # `-pgid` — on Linux that is `kill(-1, sig)`: SIGTERM/SIGKILL to every
 # process the caller may signal (the whole uid session). Full
 # `pytest tests/` runs killed the owner's graphical session three times
-# (fake Popen with pid=1 + hard timeout in tests/integration; analysis:
-# ~/Desktop/session-crash-report-2026-09-20.md). The guard in
+# (fake Popen with pid=1 + hard timeout in tests/integration; post-mortem —
+# in the 2026-09 audit archive). The guard in
 # awf/_proc.py::kill_process_tree is `proc.pid > 1`; this tripwire is the
 # belt-and-suspenders for the whole suite: any REAL broad-kill attempt
 # fails loudly instead of wiping the session.

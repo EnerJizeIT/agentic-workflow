@@ -102,7 +102,7 @@ facts (finding ids, sev, essence, unit, file scope extracted from titles)
 plus explicit «супервизор дополняет замысел» placeholders for the intent
 (criteria, verify commands, scope). It invents no criteria and touches no
 network — a local index file only (default search: `<project>/`,
-`.agentic/context/`, `~/Desktop/awf-audit/`). An existing `--out` file is
+`.agentic/context/`). An existing `--out` file is
 never overwritten without `--force`.
 
 ## Metrics

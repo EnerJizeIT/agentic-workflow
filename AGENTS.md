@@ -24,4 +24,4 @@ markdown-отчёт на рабочий стол (U8).
   это `kill(-1, sig)`, вся сессия пользователя.
 - Перед полным `pytest tests/` — green-light:
   `grep -n "pid > 1" awf/_proc.py` и `grep -n "_forbid_session_kill" tests/conftest.py`.
-- Разбор: `~/Desktop/session-crash-report-2026-09-20.md`.
+- Разбор — в архиве программы аудита 2026-09.
