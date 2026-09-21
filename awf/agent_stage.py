@@ -12,6 +12,7 @@ from pathlib import Path
 from . import paths
 from ._atomic import atomic_write_text
 from ._log import log as _log
+from .doctrine import materialize_doctrine
 from .pipeline import Stage
 from .signals import clean_stage_signals, expected_signal_prefixes, read_signal_for_todo
 from .supervisor import (
@@ -100,8 +101,15 @@ def run_agent_stage(
         "--agent", agent_name,
         "--title", f"awf-{role}-{todo_id}",
         "--file", str(role_file),
-        "--file", str(todo_file),
     ]
+    # U9: doctrine section between the role's instructions and the task —
+    # every role gets the project lessons without editing role templates.
+    doctrine_file = materialize_doctrine(project_dir)
+    if doctrine_file is not None:
+        cmd += ["--file", str(doctrine_file)]
+        print(f"Doctrine in:  {doctrine_file}")
+        _log(logs_dir, f"U9: doctrine section injected: {doctrine_file}")
+    cmd += ["--file", str(todo_file)]
     role_model = get_role_model(config, role)
     if role_model:
         cmd += ["--model", role_model]

@@ -137,6 +137,7 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 ├── config.yaml              # Project config (roles, models, pipeline)
 ├── pipelines/default.yaml   # Pipeline stages definition
 ├── roles/                   # Role files (supervisor.md, worker roles)
+├── doctrine/                # Project lessons (U9) — auto-injected into every role's prompt
 ├── phases/plan.md           # Project plan — steps with [x] checkmarks
 ├── inbox/                   # TODO files + dispatch signals
 ├── outbox/                  # Worker signals (DONE, BLOCKED, REVIEW)

@@ -14,6 +14,10 @@
 #      без правок. Выключено, пока PROJECT_NAMES_FILE пуст.
 #   3. Живые хэши (HASH_FILES). Каждая ссылка «commit <хэш>» существует
 #      в истории. Ссылка на несуществующий коммит — уже не доказательство.
+#   4. Бюджет доктрины (U9: DOCTRINE_DIR + DOCTRINE_WORD_LIMIT).
+#      .agentic/doctrine/*.md попадают в промпт КАЖДОЙ роли — стоимость
+#      платится каждой сессией. Пустой или отсутствующий каталог —
+#      проверка не считается (обратная совместимость).
 #
 # Код возврата: 0 — ок, 1 — есть нарушения, 2 — ошибка конфигурации
 # (в том числе «ни одна проверка не включена»).
@@ -28,6 +32,8 @@ INSTR_WORD_LIMIT=0
 PORTABLE_FILE="AGENTS.md"
 PROJECT_NAMES_FILE=""
 HASH_FILES="docs/playbooks/*.md docs/contracts/*.md"
+DOCTRINE_DIR=""
+DOCTRINE_WORD_LIMIT=0
 # shellcheck disable=SC1090
 . "$CONF"
 
@@ -98,6 +104,33 @@ if [ -n "$HASH_FILES" ]; then
     done
   done
   echo "хэши: ссылок $nhashes, файлов $found_files"
+fi
+
+# 4. Бюджет доктрины (U9)
+if [ -n "$DOCTRINE_DIR" ] && [ "$DOCTRINE_WORD_LIMIT" -gt 0 ]; then
+  total=0; nfiles=0; detail=''
+  for f in "$DOCTRINE_DIR"/*.md; do
+    [ -f "$f" ] || continue
+    nfiles=$((nfiles + 1))
+    # awk, а не wc -w: в локали C wc не считает слова из кириллицы
+    n=$(awk '{ n += NF } END { print n + 0 }' "$f")
+    total=$((total + n))
+    detail="$detail$f: $n слов
+"
+  done
+  # Пустой/отсутствующий каталог — доктрины нет, промпты не меняются:
+  # проверку не считаем (обратная совместимость).
+  if [ "$nfiles" -gt 0 ]; then
+    checks=$((checks + 1))
+    if [ "$total" -gt "$DOCTRINE_WORD_LIMIT" ]; then
+      fail=1
+      echo "✗ доктрина: $total слов при лимите $DOCTRINE_WORD_LIMIT. Урок платит каждая сессия."
+      printf '%s' "$detail" | sed 's/^/    /'
+      echo "  Один урок — одно место, кратко и с «почему»; лишнее удали."
+    else
+      echo "доктрина: $total из $DOCTRINE_WORD_LIMIT слов, файлов: $nfiles"
+    fi
+  fi
 fi
 
 if [ "$checks" -eq 0 ]; then

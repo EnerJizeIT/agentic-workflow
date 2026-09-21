@@ -15,6 +15,7 @@ from pathlib import Path
 from . import config as cfg_mod
 from . import paths
 from ._log import log as _log
+from .doctrine import materialize_doctrine
 from .pipeline import Stage
 from .xdg import awf_roles_dir
 
@@ -982,6 +983,13 @@ def run_supervisor_via_subprocess(
     if role_model:
         cmd += ["--model", role_model]
     cmd += ["--file", str(role_file)]
+    # U9: doctrine section after the role's instructions and before the
+    # stage's task context (extra_files) — the same position for every role.
+    doctrine_file = materialize_doctrine(project_dir)
+    if doctrine_file is not None:
+        cmd += ["--file", str(doctrine_file)]
+        print(f"  doctrine: {doctrine_file}")
+        _log(logs_dir, f"U9: doctrine section injected: {doctrine_file}")
     for f in extra_files:
         cmd += ["--file", f]
     cmd += ["--", prompt]
