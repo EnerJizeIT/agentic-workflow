@@ -70,6 +70,41 @@ Every tool returns `next_action` — a hint for the next step. Even weak models 
 
 **After approve:** pipeline exits. Say *"continue"* to dispatch next TODO, or *"stop"* to pause.
 
+## Supervisor tools (U11): tree-sha, mutations, todo-draft
+
+Three CLI tools for the verify ritual — supervisor instruments, not
+pipeline gates:
+
+**`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — «что
+проверили = что коммитим». At the verify stage, BEFORE the checks, run
+`awf tree-sha` and keep the working-tree hash (HEAD + all tracked changes
++ untracked files; same tree → same hash, at any time). After the checks,
+pass it to approve — `awf approve <todo-id> --verified-sha <hash>` (MCP:
+`awf_approve(verified_sha=...)`). If the tree moved meanwhile (new commit,
+edited file, new file), approve refuses with «the tree changed after
+verification». The hash is stored to
+`.agentic/context/VERIFIED-<todo-id>.sha`, and the run report lists both
+the evidence and the verified tree. Without `--verified-sha` the behavior
+is exactly as before.
+
+**`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
+over `scripts/mutations.txt` (same format as `mutation-smoke.sh`, which
+stays the CI step). Runs on a QUIET tree only (dirty `git status` →
+refusal), reports killed/survived/timeout per mutation with test tails,
+and always restores the mutated files (content + mtime, even on crash).
+It is a «once per wave / before release» tool, not an auto-gate. Exit
+codes: 0 = all killed, 1 = a mutation survived or the run was refused,
+2 = configuration error (bad line, stale mutation, empty list).
+
+**`awf todo-draft <AUDIT-ID|FU-NN> [--index PATH] [--out PATH]
+[--force]`** — task-file skeleton from an `AUDIT-INDEX.md` registry:
+facts (finding ids, sev, essence, unit, file scope extracted from titles)
+plus explicit «супервизор дополняет замысел» placeholders for the intent
+(criteria, verify commands, scope). It invents no criteria and touches no
+network — a local index file only (default search: `<project>/`,
+`.agentic/context/`, `~/Desktop/awf-audit/`). An existing `--out` file is
+never overwritten without `--force`.
+
 ## Metrics
 
 `awf metrics` (MCP: `awf_metrics`) collects the work program on demand: worker

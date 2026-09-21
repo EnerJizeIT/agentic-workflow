@@ -289,9 +289,16 @@ def _write_report(
                 note = verdict.get("reason") or ""
                 extra = ""
                 if verdict.get("verdict") == "approved":
+                    # U11: surface both audit facts — what was checked
+                    # (evidence) and on which tree (verified-sha).
+                    bits: list[str] = []
                     ev = ctx_dir / f"RUN-EVIDENCE-{todo}.md"
                     if ev.is_file():
-                        extra = f" (evidence: {ev.name})"
+                        bits.append(f"evidence: {ev.name}")
+                    vf = ctx_dir / f"VERIFIED-{todo}.sha"
+                    if vf.is_file():
+                        bits.append(f"verified: {vf.name}")
+                    extra = f" ({', '.join(bits)})" if bits else ""
                 lines.append(
                     f"- {todo}: {verdict.get('verdict', '?')}"
                     + (f" — {note[:200]}" if note else "")

@@ -701,6 +701,7 @@ async def awf_approve(
     project_dir: str | None = None,
     *,
     evidence: str = "",
+    verified_sha: str = "",
 ) -> dict[str, Any]:
     """Approve auto-commit for a TODO in --auto mode.
 
@@ -716,13 +717,22 @@ async def awf_approve(
             commands you actually ran and your verdict, e.g.
             "pytest -q → 348 passed; ruff → clean; diff checked; verdict: approve".
             Stored to .agentic/context/RUN-EVIDENCE-{todo}.md for owner audit.
+        verified_sha: U11 (B5) — the working-tree fingerprint recorded at
+            verify time (`awf tree-sha`). If passed, approve is REFUSED
+            when the tree moved since verification (new commit, edited
+            file, new untracked file). Without it the behavior is as
+            before. On match the fingerprint is stored to
+            .agentic/context/VERIFIED-{todo}.sha.
 
     Returns:
-        Dict with: todo_id, signal_file (path to APPROVE-*.ready).
+        Dict with: todo_id, signal_file (path to APPROVE-*.ready),
+        verified_sha_file (when verified_sha matched).
     """
     try:
         pd = _resolve_project_dir(project_dir)
-        result = api.approve_commit(pd, todo_id, evidence=evidence)
+        result = api.approve_commit(
+            pd, todo_id, evidence=evidence, verified_sha=verified_sha
+        )
         response = _ok(result)
         # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat).
         # AUD05-03: the old fixed text promised "approved and committed.

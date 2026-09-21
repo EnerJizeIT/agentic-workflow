@@ -289,7 +289,13 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
 # ─── approve_commit ─────────────────────────────────────────────────────
 
 
-def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> ApproveResult:
+def approve_commit(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    evidence: str = "",
+    verified_sha: str = "",
+) -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
 
     SPEC A-run.3/A-run.8: in run (забег) mode the approve MUST carry the
@@ -297,6 +303,15 @@ def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> Ap
     and the verdict. It is stored to
     ``.agentic/context/RUN-EVIDENCE-{todo_id}.md`` so the owner can audit
     the approver. Outside a run the parameter is optional.
+
+    U11 (B5, verified-sha): optional ``verified_sha`` — the working-tree
+    fingerprint the supervisor recorded at verify time
+    (``git_utils.tree_fingerprint`` / ``awf tree-sha``). When passed, the
+    CURRENT fingerprint is recomputed and a mismatch (new commit, edited
+    tracked file, new/changed untracked file) refuses the approve: the
+    commit gate would commit something that was not verified. On match the
+    fingerprint is stored to ``.agentic/context/VERIFIED-{todo_id}.sha``.
+    Without the parameter the behavior is exactly as before.
 
     Requires ``.agentic/`` (consistency with other api functions).
     """
@@ -312,6 +327,34 @@ def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> Ap
     run = read_run(project_dir)
     run_active = bool(run and run.get("active"))
     evidence_file = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
+    verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
+
+    verified_fp = ""
+    if verified_sha.strip():
+        v = verified_sha.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", v):
+            raise AwfApiError(
+                f"invalid verified_sha '{verified_sha}' — expected the 64-hex "
+                "tree fingerprint from `awf tree-sha` (record it at verify "
+                "time, before your checks)."
+            )
+        try:
+            current_fp = git_utils.tree_fingerprint(project_dir)
+        except RuntimeError as e:
+            raise AwfApiError(
+                "verified_sha was passed but the tree fingerprint could not "
+                f"be computed: {str(e).splitlines()[0] if str(e) else e}. Is "
+                f"{project_dir} a git repo with at least one commit?"
+            ) from e
+        if current_fp != v:
+            raise AwfApiError(
+                f"verified_sha mismatch: the tree changed after verification "
+                f"(verified {v[:12]}…, now {current_fp[:12]}…). The commit "
+                "gate would commit something you did not verify. Re-verify "
+                "on the current tree (`awf tree-sha`) and approve with the "
+                "fresh fingerprint."
+            )
+        verified_fp = current_fp
 
     if evidence.strip():
         atomic_write_text(
@@ -356,10 +399,15 @@ def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> Ap
 
         _run_state.update_run(project_dir, _approve_mutator)
 
+    if verified_fp:
+        paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)
+        atomic_write_text(verified_file, f"{verified_fp}\n")
+
     return ApproveResult(
         todo_id=todo_id,
         signal_file=str(signal),
         evidence_file=str(evidence_file) if evidence.strip() else "",
+        verified_sha_file=str(verified_file) if verified_fp else "",
         message=(
             f"{todo_id}: a rejection already counted for this TODO — the "
             "verdict stays 'rejected' in the run diary (hard invariant: "

@@ -97,13 +97,13 @@ class RollbackResult:
 
 @dataclass
 class ApproveResult:
-    """Result of :func:`awf.api.approve_commit`."""
+    """Result of :func:`awf.api.approve_commit` (U11: +verified_sha_file)."""
 
     todo_id: str
     signal_file: str
     evidence_file: str = ""
-    # AUD05-05 (rest): non-empty when a concurrent reject won the race and
-    # the verdict stayed 'rejected' (hard invariant: 'approved' ⇒ rejects == 0).
+    verified_sha_file: str = ""  # U11 (B5): context/VERIFIED-{todo}.sha, on match
+    # AUD05-05 (rest): non-empty when a reject won the race ('approved' ⇒ rejects == 0)
     message: str = ""
 
     def as_dict(self) -> dict[str, Any]:
