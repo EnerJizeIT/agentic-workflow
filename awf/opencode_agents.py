@@ -92,9 +92,11 @@ def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
     - :attr:`ProposalKind.PROPOSE` — there are additions or model updates.
     - :attr:`ProposalKind.ERR` — file unreadable or schema wrong.
 
-    The legacy string-prefix format is preserved via ``Proposal.__str__``
-    (renders as ``"NOTHING:..."`` etc.) so old ``startswith`` callers keep
-    working — but new callers should check ``proposal.kind`` directly.
+    ``model`` is an API capability for programmatic callers (the CLI init
+    flow passes an empty string — per-role models come from the
+    project-setup form). Callers branch on ``proposal.kind``;
+    ``Proposal.__str__`` renders the legacy ``"KIND:detail"`` form for
+    CLI printing.
     """
     try:
         with open(cfg_path, encoding="utf-8") as f:
@@ -131,10 +133,24 @@ def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
             if r == "worker":
                 probe = json.loads(json.dumps(cur))  # deep copy, probe only
                 if _ensure_worker_permission(probe):
-                    details.append(
+                    detail_parts = [
                         "+ external_directory allow-patterns "
                         "(/tmp/opencode, /tmp/pytest-*)"
+                    ]
+                    # AUD07-09: when the worker has no external_directory
+                    # at all, the merge introduces a ``* -> deny`` default —
+                    # the user approves exactly what is summarized here.
+                    cur_perm = cur.get("permission")
+                    cur_ext = (
+                        cur_perm.get("external_directory")
+                        if isinstance(cur_perm, dict)
+                        else None
                     )
+                    if cur_ext is None:
+                        detail_parts.append(
+                            "* -> deny (all other external directories)"
+                        )
+                    details.append("; ".join(detail_parts))
             if details:
                 to_update.append(f"{r}: " + "; ".join(details))
 
@@ -163,12 +179,25 @@ def propose(cfg_path: str, roles: list[str], model: str) -> Proposal:
     )
 
 
+def _unique_backup(cfg: Path) -> Path:
+    """``<cfg>.bak-<ts>`` that does not collide with an existing backup.
+
+    AUD07-09: second-resolution timestamps made two applies in the same
+    second overwrite each other's backup. Microseconds plus a counter
+    make the name unique; the backup is the user's only restore point.
+    """
+    base = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    backup = Path(f"{cfg}.bak-{base}")
+    n = 1
+    while backup.exists():
+        n += 1
+        backup = Path(f"{cfg}.bak-{base}-{n}")
+    return backup
+
+
 def apply(cfg_path: str, roles: list[str], model: str) -> str:
     """Backup + write opencode.json. Return a summary string."""
     cfg = Path(cfg_path)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    backup = Path(f"{cfg_path}.bak-{ts}")
-    shutil.copy2(cfg, backup)
 
     with open(cfg, encoding="utf-8") as f:
         d = json.load(f)
@@ -200,6 +229,9 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
                 updated.append(r)
 
     if added or updated:
+        # AUD07-09: backup only when we actually write — a no-op apply
+        # used to leave an orphan .bak-<ts> behind.
+        shutil.copy2(cfg, _unique_backup(cfg))
         # T2.6 fix: atomic write — crash mid-write no longer corrupts
         # opencode.json.
         atomic_write_text(
@@ -215,3 +247,47 @@ def apply(cfg_path: str, roles: list[str], model: str) -> str:
         return f"  {'; '.join(parts)} (model: {model or '<blank>'})"
     else:
         return "  Nothing to write — all agents already up to date."
+
+
+def ensure_mcp_block(cfg_path: str) -> str:
+    """Ensure the agent-workflow-ui MCP block exists in opencode.json.
+
+    AUD07-06: the CLI wrapper used to do backup/parse/merge/write itself —
+    business logic that belongs here, next to :func:`apply`. Guarantees:
+    the file is parsed BEFORE any backup is made (broken JSON leaves no
+    orphan .bak), the write is atomic, non-dict ``mcp``/root is an ERR
+    result instead of a TypeError/AttributeError traceback.
+
+    Returns a human-readable summary line; ``ERR:`` prefix on failure.
+    """
+    cfg = Path(cfg_path)
+    if not cfg.is_file():
+        return f"NOTE: {cfg} not found. Skipping."
+    try:
+        with cfg.open(encoding="utf-8") as f:
+            d = json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        return f"ERR: cannot parse {cfg}: {e}"
+    if not isinstance(d, dict):
+        return f"ERR: {cfg} root is not a JSON object"
+    mcp = d.get("mcp")
+    if mcp is None:
+        mcp = {}
+        d["mcp"] = mcp
+    if not isinstance(mcp, dict):
+        return f"ERR: 'mcp' in {cfg} is not a JSON object"
+    if "agent-workflow-ui" in mcp:
+        return "OK: agent-workflow-ui already in opencode.json."
+    # Backup after a successful parse — broken JSON must not leave one.
+    backup = _unique_backup(cfg)
+    shutil.copy2(cfg, backup)
+    mcp["agent-workflow-ui"] = {
+        "type": "local",
+        "command": ["python3", "-m", "agent_workflow_ui"],
+    }
+    atomic_write_text(
+        cfg,
+        json.dumps(d, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return f"OK: added agent-workflow-ui to {cfg} (backup: {backup.name})"

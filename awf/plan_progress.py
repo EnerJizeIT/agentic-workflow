@@ -12,13 +12,16 @@ from ._log import log as _log
 
 
 def extract_step_id_from_todo(todo_path: Path) -> int | None:
-    """BD-33: parse 'Step N' from TODO-NNNN.md frontmatter/body.
+    """BD-33: parse 'Step N' / 'Шаг N' from TODO-NNNN.md frontmatter/body.
 
     Looks for patterns like:
       **Phase:** Неделя 1 — Step 1
       Step 1:
+      Шаг 2 плана
+      ## Step 2: fix the thing
+      **Шаг 3**
+      - [ ] Шаг 1: задача
       step_id: 1
-      **Step 1**
 
     Returns the integer step number, or None if not found.
     """
@@ -34,10 +37,18 @@ def extract_step_id_from_todo(todo_path: Path) -> int | None:
     if m:
         return int(m.group(1))
 
-    # P3: 'Step N' in header area — require markdown context (start of line,
-    # bold, checkbox, or "Phase:" prefix) to avoid matching random prose.
+    # P3 / AUD02-10: 'Step N' or 'Шаг N' in the header area — require
+    # markdown context (line start, ## header, bold, checkbox, or "Phase:"
+    # prefix) to avoid matching random prose. Real TODOs in this repo are
+    # written with the Russian "Шаг N" — before AUD02-10 it silently
+    # returned None and the plan was never auto-marked.
     head = "\n".join(text.splitlines()[:20])
-    matches = re.findall(r"(?:^|\*\*|-\s*\[\s*[xX ]?\s*\]|Phase:.*?)(?:\s*)Step\s+(\d+)", head, re.MULTILINE)
+    matches = re.findall(
+        r"(?:^[ \t]{0,3}#{1,6}[ \t]+|^[ \t]*|\*\*|-[ \t]*\[[xX ]?[ \t]*\][ \t]*|Phase:.*?)"
+        r"[ \t]*(?:Step|Шаг)[ \t]+(\d+)",
+        head,
+        re.MULTILINE,
+    )
     if matches:
         return int(matches[0])
 
@@ -71,48 +82,76 @@ def mark_plan_step_done(
     todo_path = paths.inbox(project_dir) / f"{todo_id}.md"
     step_id = extract_step_id_from_todo(todo_path)
     if step_id is None:
-        _log(logs_dir, f"BD-33: no Step N found in {todo_id}.md — skip step update")
+        # AUD02-10: the plan is not updated — say WHY and what the TODO
+        # needs, instead of a quiet skip nobody reads.
+        _log(
+            logs_dir,
+            f"BD-33 WARNING: no step marker in {todo_id}.md — plan not "
+            "updated. The TODO needs a 'step_id: N' frontmatter line or a "
+            "'Step N' / 'Шаг N' line in its first 20 lines.",
+        )
         return False
 
-    try:
-        content = plan_path.read_text(encoding="utf-8")
-    except OSError as e:
-        _log(logs_dir, f"BD-33: failed to read {plan_path}: {e}")
-        return False
-
-    # Match: '- [ ] Step N:' OR '- [ ] **Step N**:' (any whitespace)
-    # Use [ \t] instead of \s to avoid matching across newlines.
+    # Match: '- [ ] Step N:' OR '- [ ] **Step N**:' OR '- [ ] Шаг N:'
+    # (any whitespace). Use [ \t] instead of \s to avoid matching across
+    # newlines. AUD02-10: bilingual, mirroring the TODO-side extraction.
     pattern = re.compile(
-        r"^([ \t]*-[ \t]*\[[ \t]])(?:[ \t]|\*\*)*Step[ \t]+" + str(step_id) + r"\b",
+        r"^([ \t]*-[ \t]*\[[ \t]])(?:[ \t]|\*\*)*(?:Step|Шаг)[ \t]+"
+        + str(step_id) + r"\b",
         re.MULTILINE,
     )
-    match = pattern.search(content)
-    if not match:
-        _log(logs_dir, f"BD-33: no '- [ ] Step {step_id}' in plan.md — skip")
-        return False
 
-    # Replace '[ ]' with '[x]' and append TODO id at end of line
-    line_start = match.start()
-    line_end = content.find("\n", line_start)
-    if line_end == -1:
-        line_end = len(content)
-    original_line = content[line_start:line_end]
+    # AUD14-08: read–modify–write with a re-read guard. A concurrent edit
+    # landing between our read and write used to be silently lost (our
+    # whole-file write won over the fresh content). Re-read just before
+    # writing; if the file changed, reapply the tick to the FRESH content.
+    for _attempt in range(3):
+        try:
+            content = plan_path.read_text(encoding="utf-8")
+        except OSError as e:
+            _log(logs_dir, f"BD-33: failed to read {plan_path}: {e}")
+            return False
 
-    updated_line = original_line.replace("[ ]", "[x]", 1)
-    # Append TODO marker if not already present
-    if todo_id not in updated_line:
-        updated_line = updated_line.rstrip() + f"  — {todo_id}"
+        match = pattern.search(content)
+        if not match:
+            _log(logs_dir, f"BD-33: no '- [ ] Step {step_id}' in plan.md — skip")
+            return False
 
-    new_content = content[:line_start] + updated_line + content[line_end:]
-    # H5 fix: atomic write (was direct write_text — crash mid-write corrupts plan.md).
-    try:
-        from ._atomic import atomic_write_text
-        atomic_write_text(plan_path, new_content)
-        _log(logs_dir, f"BD-33: marked Step {step_id} done in plan.md (TODO {todo_id})")
-        return True
-    except OSError as e:
-        _log(logs_dir, f"BD-33: failed to write {plan_path}: {e}")
-        return False
+        # Replace '[ ]' with '[x]' and append TODO id at end of line
+        line_start = match.start()
+        line_end = content.find("\n", line_start)
+        if line_end == -1:
+            line_end = len(content)
+        original_line = content[line_start:line_end]
+
+        updated_line = original_line.replace("[ ]", "[x]", 1)
+        # Append TODO marker if not already present
+        if todo_id not in updated_line:
+            updated_line = updated_line.rstrip() + f"  — {todo_id}"
+
+        new_content = content[:line_start] + updated_line + content[line_end:]
+
+        try:
+            fresh = plan_path.read_text(encoding="utf-8")
+        except OSError as e:
+            _log(logs_dir, f"BD-33: failed to re-read {plan_path}: {e}")
+            return False
+        if fresh != content:
+            continue  # concurrent edit landed — reapply to fresh content
+
+        # H5 fix: atomic write (was direct write_text — crash mid-write
+        # corrupts plan.md).
+        try:
+            from ._atomic import atomic_write_text
+            atomic_write_text(plan_path, new_content)
+            _log(logs_dir, f"BD-33: marked Step {step_id} done in plan.md (TODO {todo_id})")
+            return True
+        except OSError as e:
+            _log(logs_dir, f"BD-33: failed to write {plan_path}: {e}")
+            return False
+
+    _log(logs_dir, f"BD-33: plan.md kept changing — gave up marking Step {step_id}")
+    return False
 
 
 def print_progress_report(project_dir: Path, logs_dir: Path) -> None:

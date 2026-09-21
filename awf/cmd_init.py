@@ -6,7 +6,6 @@ instead (no prompts, deterministic stack detection).
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +45,9 @@ def run(args: Any) -> int:
             print(f"ERROR: {e}")
             return 1
         if dry_run:
-            print("[DRY RUN] Would create .agentic/ skeleton")
+            # AUD07-07: dry-run writes nothing — the old "Would create" message
+            # lied when .agentic/ already existed (R1 branch).
+            print("[DRY RUN] No files written — .agentic/ left as-is.")
             return 0
         print(f"Created .agentic/ skeleton for: {result.project_name}")
         print(f"  Stack: {result.stack}")
@@ -58,6 +59,24 @@ def run(args: Any) -> int:
     print("=== Agentic Workflow Init ===")
     print()
 
+    if dry_run:
+        # AUD07-07: dry-run writes nothing and must not ask a single prompt —
+        # the five input() calls used to run before this check and blocked
+        # on stdin (or swallowed real answers) on `awf init --dry-run`.
+        # FU-19 (backlog tail): "Would create:" lied when .agentic/ already
+        # existed (R1 branch) — the message must match the branch taken.
+        if (project_dir_path / ".agentic").is_dir():
+            print("[DRY RUN] .agentic/ already exists — the existing project "
+                  "and its runtime are left untouched.")
+        else:
+            print("[DRY RUN] Would create:")
+            print("  .agentic/config.yaml (models added by project-setup form)")
+            print("  .agentic/roles/supervisor.md")
+            print("  .agentic/phases/plan.md (stub)")
+            print("  .agentic/{pipelines,phases,inbox,outbox,context,logs}/")
+        print("[DRY RUN] No files written.")
+        return 0
+
     # Interactive prompts — order MUST match lib/init.sh for E2E compatibility
     # Use project_dir_path instead of cwd for git checks (MCP-6 compat).
     project_name = input("Project name: ").strip()
@@ -68,25 +87,19 @@ def run(args: Any) -> int:
     typecheck_cmd = input("Typecheck command (e.g. mypy src/, tsc --noEmit): ").strip()
     build_cmd = input("Build command (optional, e.g. docker compose config): ").strip()
 
-    # M5 fix: worker_model prompt was asked but never saved (no placeholder
-    # in CONFIG_TEMPLATE). Project-setup form handles per-role models now
-    # (BD-32). Removed the dead prompt — was misleading users.
-    worker_model = ""  # kept for opencode_agents.propose() below (legacy compat)
-
-    if dry_run:
-        print("[DRY RUN] Would create:")
-        print("  .agentic/config.yaml (models added by project-setup form)")
-        print("  .agentic/roles/supervisor.md")
-        print("  .agentic/phases/plan.md (stub)")
-        print("  .agentic/{pipelines,phases,inbox,outbox,context,logs,reports}/")
-        return 0
+    # M5 fix: the worker-model prompt was asked but never saved (no
+    # placeholder in CONFIG_TEMPLATE). Project-setup form handles per-role
+    # models now (BD-32). AUD16-10: the leftover "" variable went with it —
+    # propose/apply are called with an empty model.
 
     # Delegate skeleton creation to api.init_project
     try:
         result = api.init_project(
             project_dir=project_dir_path,
             force=force,
-            project_name=project_name,
+            # AUD07-07: blank answer → None → api derives name from dir name
+            # (an empty string used to land in config.yaml as `name: ''`).
+            project_name=project_name or None,
             test_cmd=test_cmd,
             lint_cmd=lint_cmd,
             typecheck_cmd=typecheck_cmd,
@@ -104,7 +117,7 @@ def run(args: Any) -> int:
 
     # Offer to create opencode agents — only `worker` (the universal agent
     # that loads role .md as instruction). Other roles come from skills.
-    _offer_opencode_agent_setup(worker_model)
+    _offer_opencode_agent_setup()
 
     _offer_plugin_install(result.project_name)
 
@@ -116,8 +129,12 @@ def run(args: Any) -> int:
     return 0
 
 
-def _offer_opencode_agent_setup(worker_model: str) -> None:
-    """Offer to add 'worker' agent to opencode.json. No-op if already there."""
+def _offer_opencode_agent_setup() -> None:
+    """Offer to add 'worker' agent to opencode.json. No-op if already there.
+
+    AUD16-10: no model — the init flow never collected one (the prompt was
+    removed in M5); per-role models come from the project-setup form.
+    """
     oc_cfg = opencode_config_file()
     if not oc_cfg.exists():
         print()
@@ -125,7 +142,7 @@ def _offer_opencode_agent_setup(worker_model: str) -> None:
         print("      Create the 'worker' opencode agent manually (see README → Requirements).")
         return
 
-    proposal = opencode_agents.propose(str(oc_cfg), ["worker"], worker_model)
+    proposal = opencode_agents.propose(str(oc_cfg), ["worker"], "")
     # T2.8: typed Proposal instead of stringly-typed startswith checks.
     # __str__ keeps legacy format for prints, but branching on .kind is
     # exhaustiveness-checked and self-documenting.
@@ -147,7 +164,7 @@ def _offer_opencode_agent_setup(worker_model: str) -> None:
         if ans and ans not in ("y", "yes"):
             print("Skipping agent creation (create them manually if needed).")
             return
-        result = opencode_agents.apply(str(oc_cfg), ["worker"], worker_model)
+        result = opencode_agents.apply(str(oc_cfg), ["worker"], "")
         print(result)
         return
     print()
@@ -181,38 +198,11 @@ def _offer_plugin_install(project_name: str) -> None:
 
 
 def _add_mcp_config_to_opencode() -> None:
-    """Add agent-workflow-ui MCP block to opencode.json."""
-    import json
-    from datetime import datetime
+    """Add agent-workflow-ui MCP block to opencode.json.
 
-    cfg_path = opencode_config_file()
-    if not cfg_path.exists():
-        print(f"  NOTE: {cfg_path} not found. Skipping.")
-        return
-
-    backup = cfg_path.with_suffix(f".json.bak-{datetime.now().strftime('%Y%m%d%H%M%S')}")
-    shutil.copy2(cfg_path, backup)
-
-    try:
-        with cfg_path.open(encoding="utf-8") as f:
-            cfg = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"  ERROR: cannot parse {cfg_path}: {e}")
-        return
-
-    mcp = cfg.setdefault("mcp", {})
-    if "agent-workflow-ui" in mcp:
-        print("  ✓ agent-workflow-ui already in opencode.json.")
-        return
-
-    mcp["agent-workflow-ui"] = {
-        "type": "local",
-        "command": ["python3", "-m", "agent_workflow_ui"],
-    }
-
-    with cfg_path.open("w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    print(f"  ✓ Added agent-workflow-ui to {cfg_path}")
-    print(f"  Backup: {backup}")
+    AUD07-06: thin delegation — the backup/parse/merge/write logic lives in
+    :func:`awf.opencode_agents.ensure_mcp_block` (atomic write, backup only
+    after a successful parse, ERR results instead of tracebacks).
+    """
+    result = opencode_agents.ensure_mcp_block(str(opencode_config_file()))
+    print(f"  {result}")

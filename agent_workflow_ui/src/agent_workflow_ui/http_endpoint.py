@@ -7,6 +7,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import socket
 import threading
 import urllib.parse
@@ -37,7 +38,11 @@ def _atomic_write_yaml(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".{uuid4().hex}.tmp")
     content = yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    tmp.write_text(content, encoding="utf-8")
+    # AUD14-06e: submit file (may carry form payload) — create tmp 0600
+    # before the rename instead of the old write_text(0644) + chmod-after.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
     tmp.replace(path)
 
 
@@ -155,6 +160,18 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(410, f"Form {form_id} was cancelled.")
             return
 
+        # AUD09-01: TTL is enforced here, not only lazily in read_submit/
+        # list_pending — a stale form submitted from the browser must not
+        # materialize. Expired (or already flipped to "expired") → 410.
+        if record.status == "expired" or (
+            record.expires_at is not None
+            and datetime.now(timezone.utc) > record.expires_at
+        ):
+            if record.status != "expired":
+                self.registry.update_status(form_id, "expired")
+            self._send_text(410, f"Form {form_id} expired.")
+            return
+
         # A2: CSRF protection — verify Origin/Referer is localhost or local file.
         origin = self.headers.get("Origin", "")
         referer = self.headers.get("Referer", "")
@@ -165,6 +182,11 @@ class SubmitHandler(BaseHTTPRequestHandler):
         try:
             content_length = int(self.headers.get("Content-Length", 0))
         except (ValueError, TypeError):
+            self._send_text(400, "Invalid Content-Length header")
+            return
+        # AUD09-07: read(-1) would block the handler thread until EOF and a
+        # negative length is never legitimate.
+        if content_length < 0:
             self._send_text(400, "Invalid Content-Length header")
             return
         if content_length > MAX_BODY_BYTES:
@@ -182,7 +204,14 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(400, "Empty body")
             return
 
-        body = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        body_bytes = self.rfile.read(content_length)
+        # AUD09-07: if the connection closed before CL bytes arrived the
+        # body is truncated. Continue would "submit" a partial/empty payload
+        # and burn the pending form — reject instead.
+        if len(body_bytes) != content_length:
+            self._send_text(400, "Short body: connection closed mid-request")
+            return
+        body = body_bytes.decode("utf-8", errors="replace")
         parsed = urllib.parse.parse_qs(body, keep_blank_values=True)
         data: dict[str, Any] = {}
         for key, values in parsed.items():

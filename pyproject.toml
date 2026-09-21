@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awf"
-version = "1.0.0"
+version = "1.1.0"
 description = "Agentic Workflow Framework — declarative multi-agent pipeline orchestrator for opencode"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,13 +37,17 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "pytest-timeout>=2.0",
+    "pytest-xdist>=3.0",
+    "ruff>=0.4",
 ]
 
 [tool.setuptools.packages.find]
 include = ["awf*"]
 
 [tool.setuptools.package-data]
-awf = ["templates/**/*"]
+# AUD13-02: data/ holds role_zones.yaml (BD-31 zone inference) — without it
+# a PyPI install silently degrades to the 5-key fallback table.
+awf = ["templates/**/*", "data/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

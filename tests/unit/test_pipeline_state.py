@@ -177,3 +177,94 @@ class TestExtractStageInfoPrefersStateFile:
 
         cur, _nxt, _sig, _lt, _cp, _port, _url = _extract_stage_info(awf_project)
         assert cur is None  # stale state NOT used, no regex fallback
+
+
+class TestStaleStateWithLivePipeline:
+    """AUD02-12 (r6b): a single stage longer than the 2h staleness window
+    used to make the stage disappear from _extract_stage_info (and
+    detect_phase) while the pipeline PID was still alive — status and the
+    dashboard diverged."""
+
+    def _write_stale(self, awf_project, pid: int) -> None:
+        old_ts = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        state_path = awf_project / ".agentic" / "state"
+        state_path.mkdir(parents=True, exist_ok=True)
+        (state_path / "current.yaml").write_text(
+            f"stage_name: agent-dev\nstage_kind: execute\n"
+            f"pipeline_pid: {pid}\nupdated_at: {old_ts}\n",
+            encoding="utf-8",
+        )
+
+    def test_stale_state_trusted_when_pid_alive(self, awf_project, monkeypatch):
+        import os
+
+        self._write_stale(awf_project, os.getpid())
+        monkeypatch.setattr(
+            "awf.api._liveness.read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
+        state = pipeline_state.read_state(awf_project)
+        assert pipeline_state.state_trusted(awf_project, state) is True
+
+    def test_stale_state_not_trusted_when_pid_dead(self, awf_project):
+        self._write_stale(awf_project, 999999999)
+        state = pipeline_state.read_state(awf_project)
+        assert pipeline_state.state_trusted(awf_project, state) is False
+
+    def test_fresh_state_trusted_without_liveness(self, awf_project):
+        pipeline_state.write_state(awf_project, stage_name="x")
+        state = pipeline_state.read_state(awf_project)
+        assert pipeline_state.state_trusted(awf_project, state) is True
+
+    def test_extract_stage_info_uses_stale_state_when_pid_alive(
+        self, awf_project, monkeypatch
+    ):
+        import os
+
+        from awf.api.context import _extract_stage_info
+
+        self._write_stale(awf_project, os.getpid())
+        monkeypatch.setattr(
+            "awf.api._liveness.read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
+        cur, _nxt, _sig, _lt, _cp, _port, _url = _extract_stage_info(awf_project)
+        assert cur == "agent-dev"
+
+    def test_extract_stage_info_stale_dead_pid_returns_none(self, awf_project):
+        from awf.api.context import _extract_stage_info
+
+        self._write_stale(awf_project, 999999999)
+        cur, _nxt, _sig, _lt, _cp, _port, _url = _extract_stage_info(awf_project)
+        assert cur is None
+
+
+class TestWriteStateConcurrency:
+    """AUD05-05: parallel write_state must not lose fields (same lock)."""
+
+    def test_parallel_writes_no_lost_fields(self, awf_project):
+        import threading
+
+        proj = awf_project
+        iters = 50
+        errors: list = []
+
+        def writer(prefix: str) -> None:
+            for i in range(iters):
+                try:
+                    pipeline_state.write_state(proj, **{f"field_{prefix}_{i}": i})
+                except Exception as e:  # noqa: BLE001 — surface in the test
+                    errors.append(e)
+
+        t1 = threading.Thread(target=writer, args=("x",))
+        t2 = threading.Thread(target=writer, args=("y",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors, errors
+        state = pipeline_state.read_state(proj) or {}
+        for i in range(iters):
+            assert f"field_x_{i}" in state, f"lost field field_x_{i}"
+            assert f"field_y_{i}" in state, f"lost field field_y_{i}"

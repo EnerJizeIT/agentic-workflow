@@ -12,6 +12,7 @@ carry an `action:` field — it's read but ignored. kind always wins.
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,9 +35,14 @@ class Stage:
     on_blocked: str = "escalate"
     on_approved: str = "next"
     on_rejected: str = "escalate"
-    on_passed: str = "next"
+    # AUD16-03: reserved — the TEST-FAILED signal it used to drive no longer
+    # exists, so no transition reads this field. Kept (not removed) because
+    # pipeline.yaml files still carry it; the loader keeps accepting it.
     on_failed: str = "escalate"
     max_retries: int = 1
+    # AUD03-01: separate budget for rollback transitions (the escalate budget
+    # is max_retries; rollbacks used to be unbounded).
+    max_rollbacks: int = 3
     # Computed at load time — not in YAML.
     kind: str = "execute"  # "plan" | "execute" | "verify"
 
@@ -52,14 +58,39 @@ _DEFAULTS: dict[str, Any] = {
     # replans. Authors who want a rollback set ``rollback_to:<stage-name>``
     # explicitly (validated with a warning at load).
     "on_rejected": "escalate",
-    "on_passed": "next",
+    # AUD16-03: reserved — accepted from pipeline.yaml (files still carry it),
+    # but no signal drives it: TEST-FAILED no longer exists, so the resolver
+    # never reads this policy.
     "on_failed": "escalate",
     "max_retries": 1,
+    "max_rollbacks": 3,
 }
 
+# AUD16-03: on_passed removed — TEST-PASSED never existed as an emitted
+# signal, so its policy had no transition to drive. YAML keys named
+# on_passed are now ignored by the loader.
 _POLICY_KEYS = [
-    "on_blocked", "on_approved", "on_rejected", "on_passed", "on_failed",
+    "on_blocked", "on_approved", "on_rejected", "on_failed",
 ]
+
+# AUD04-02: allowed plain words per policy key (rollback_to:<stage> is
+# checked separately). The resolver used to silently reinterpret unknown
+# words (on_approved/on_passed → "next", on_rejected/on_failed → "escalate"),
+# which hid typos — now the loader warns.
+_POLICY_ALLOWED = {
+    "on_blocked": {"escalate", "stop"},
+    "on_approved": {"next", "commit_and_next", "commit_and_report"},
+    "on_rejected": {"escalate", "replan"},
+    # AUD16-03: reserved — kept in the allowed list so existing pipeline.yaml
+    # files load without warnings; the signal it drove no longer exists.
+    "on_failed": {"escalate", "replan"},
+}
+
+# FU-19 (AUD03-02 tail): the policy keys that may carry ``rollback_to:<stage>``
+# — exactly the keys the transition resolver reads the prefix on
+# (awf/transitions.py: on_blocked, on_rejected). On any other key the value
+# is ignored at runtime, so the loader warns instead of accepting silently.
+_ROLLBACK_TO_KEYS = ("on_blocked", "on_rejected")
 
 
 def _compute_kind(position: int, total: int) -> str:
@@ -95,7 +126,10 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     try:
         with p.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, UnicodeDecodeError, OSError) as e:
+        # AUD06-16: non-UTF-8 bytes and read errors used to escape past
+        # `except yaml.YAMLError` (UnicodeDecodeError is a ValueError) and
+        # crash the caller with a raw traceback.
         print(f"ERROR: pipeline file {p.name} is malformed: {e}", file=sys.stderr)
         return []
 
@@ -117,6 +151,28 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             kwargs["max_retries"] = int(mr)
         except (ValueError, TypeError):
             kwargs["max_retries"] = _DEFAULTS["max_retries"]
+        mrb = s.get("max_rollbacks", _DEFAULTS["max_rollbacks"])
+        try:
+            kwargs["max_rollbacks"] = int(mrb)
+        except (ValueError, TypeError):
+            kwargs["max_rollbacks"] = _DEFAULTS["max_rollbacks"]
+        # AUD03-06: a negative budget used to load silently (max_retries: -3)
+        # — flag it; the value is kept as-is (warning only, no behavior change).
+        stage_label = str(s.get("name") or f"#{dict_index}")
+        if kwargs["max_retries"] < 0:
+            print(
+                f"WARNING: stage '{stage_label}': max_retries="
+                f"{kwargs['max_retries']} is negative — a negative retry "
+                "budget is meaningless, check the value.",
+                file=sys.stderr,
+            )
+        if kwargs["max_rollbacks"] < 0:
+            print(
+                f"WARNING: stage '{stage_label}': max_rollbacks="
+                f"{kwargs['max_rollbacks']} is negative — a negative "
+                "rollback budget is meaningless, check the value.",
+                file=sys.stderr,
+            )
         kwargs["kind"] = _compute_kind(dict_index, total)
         result.append(Stage(**kwargs))
         dict_index += 1
@@ -124,9 +180,12 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     # NEG-2 (dogfood-11): rollback targets must exist. Warn at load time
     # instead of discovering a broken target mid-run (the transition then
     # escalates instead of hard-stopping).
+    # FU-19 (AUD03-02 tail): only the keys the resolver actually reads the
+    # prefix on (on_blocked/on_rejected) get the target-existence check.
     stage_names = {st.name for st in result}
     for st in result:
-        for policy in (st.on_blocked, st.on_rejected, st.on_failed):
+        for pk in _ROLLBACK_TO_KEYS:
+            policy = getattr(st, pk)
             if policy.startswith("rollback_to:"):
                 rb_target = policy.split(":", 1)[1]
                 if rb_target not in stage_names:
@@ -136,6 +195,52 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
                         f"to the supervisor instead.",
                         file=sys.stderr,
                     )
+
+    # AUD03-06: duplicate stage names used to load silently. The engine
+    # always resolves the FIRST match (_find_stage_index), so later
+    # duplicates are unreachable (rollback targets, dashboard labels).
+    name_counts: dict[str, int] = {}
+    for st in result:
+        name_counts[st.name] = name_counts.get(st.name, 0) + 1
+    for name, count in name_counts.items():
+        if count > 1:
+            print(
+                f"WARNING: duplicate stage name '{name}' (used {count} times) — "
+                "the engine always resolves the first match; the later "
+                "stage(s) are unreachable. Give each stage a unique name.",
+                file=sys.stderr,
+            )
+
+    # AUD04-02: unknown policy words used to be silently reinterpreted by the
+    # resolver (on_approved → "next", on_rejected/on_failed → "escalate"),
+    # which hid typos like "on_blocked: halt". Warn at load time.
+    # FU-19 (AUD03-02 tail): rollback_to:<stage> is only allowed on
+    # _ROLLBACK_TO_KEYS — on other keys the resolver ignores it, so warn
+    # (previously any rollback_to: value passed the warning filter silently).
+    for st in result:
+        for pk in _POLICY_KEYS:
+            value = getattr(st, pk)
+            if not isinstance(value, str) or not value:
+                continue
+            if value.startswith("rollback_to:"):
+                if pk in _ROLLBACK_TO_KEYS:
+                    continue  # target existence checked above
+                print(
+                    f"WARNING: stage '{st.name}' has {pk}={value!r} — "
+                    f"rollback_to:<stage> is only supported for "
+                    f"{'/'.join(_ROLLBACK_TO_KEYS)} (the transition resolver "
+                    f"ignores it on {pk}). Expected one of: "
+                    f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}.",
+                    file=sys.stderr,
+                )
+                continue
+            if value not in _POLICY_ALLOWED[pk]:
+                print(
+                    f"WARNING: stage '{st.name}' has {pk}={value!r} — expected one of: "
+                    f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}. The transition resolver "
+                    f"will fall back to the default policy for {pk}.",
+                    file=sys.stderr,
+                )
 
     # Day-2 spec (second tier): stage roles must resolve to a role .md
     # (project .agentic/roles/ or the global awf roles dir). A typo used to
@@ -184,6 +289,18 @@ def resolve_pipeline_file(
         config = cfg_mod.load(project_dir)
 
     name = pipeline_name or cfg_mod.get(config, "default_pipeline", "default") or "default"
+
+    # AUD14-05: pipeline_name is public input (awf_start(pipeline=...),
+    # awf continue --pipeline, CLI). Reject names that could escape
+    # .agentic/pipelines/ — "../../evil" used to load an external YAML.
+    # Lazy import: awf.api pulls this module at package init.
+    if name in {".", ".."} or not re.fullmatch(r"[\w.-]+", name):
+        from .api._errors import AwfApiError
+
+        raise AwfApiError(
+            f"Invalid pipeline name {name!r}: use letters, digits, '_', '.' or "
+            "'-' (no path separators), e.g. 'default' or 'custom-name'."
+        )
 
     candidate = pipelines_dir / f"{name}.yaml"
     if candidate.exists():

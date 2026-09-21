@@ -66,6 +66,16 @@ def _validate_queue(queue: list[str] | None) -> list[str]:
     return ids
 
 
+def _todo_finished(project_dir: Path, todo_id: str) -> bool:
+    """AUD05-07 + AUD02-08: a TODO counts as finished when it is archived
+    AND not active again — restore_todo leaves done/{id}/ behind, so
+    ``is_archived`` alone would let a restored (active again) TODO pass."""
+    active_ids = todos.list_active_todos(
+        paths.inbox(project_dir), paths.outbox(project_dir)
+    )
+    return todos.is_archived(project_dir, todo_id) and todo_id not in active_ids
+
+
 def run_brief(project_dir: Path) -> dict | None:
     """Compact run state for status/dashboard. None when no run state exists."""
     state = run_state.read_run(project_dir)
@@ -120,7 +130,9 @@ def run_start(
     state = run_state.write_run(
         project_dir,
         active=True,
-        project_root=str(project_dir),
+        # AUD02-11: project_root was written here but never read — a dead
+        # key is a false contract signal. The run state file already lives
+        # under the project's .agentic/, so the root is implicit.
         queue=ids,
         index=0,
         current="",
@@ -351,11 +363,30 @@ def run_next(
     index = int(state.get("index", 0) or 0)
 
     if index >= len(queue):
+        # AUD02-08: the last item is normally credited to `completed` at the
+        # NEXT launch — which never comes at the end of the queue. Credit it
+        # here, but only when it is really finished (archived and not active
+        # again) — the report must not overstate.
+        current = str(state.get("current") or "")
+        completed = list(state.get("completed") or [])
+        if current and current not in completed and _todo_finished(project_dir, current):
+            completed.append(current)
+            state = run_state.write_run(project_dir, completed=completed)
         return stop_run(project_dir, state, "queue exhausted — all items processed")
 
     budget = int(state.get("budget_minutes", 0) or 0)
-    if budget and run_state.elapsed_minutes(state) > budget:
-        return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
+    if budget:
+        if not run_state.started_at_ok(state):
+            # AUD02-09: a corrupt started_at used to read as elapsed 0.0 —
+            # the budget gate silently disabled. Degrade toward safety:
+            # the run clock is untrustworthy, so the run stops.
+            return stop_run(
+                project_dir, state,
+                "run state corrupted (started_at unparseable) — "
+                f"budget {budget} min cannot be verified",
+            )
+        if run_state.elapsed_minutes(state) > budget:
+            return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
 
     next_id = queue[index]
 
@@ -374,7 +405,10 @@ def run_next(
 
     if index > 0:
         prev = queue[index - 1]
-        if not todos.is_archived(project_dir, prev):
+        # AUD05-07: restore_todo leaves done/{id}/ behind, so is_archived alone
+        # lets a restored (active again) prev pass. Require it to be gone from
+        # the active list too (see _todo_finished).
+        if not _todo_finished(project_dir, prev):
             return RunNextResult(
                 action="refused",
                 todo_id=next_id,
@@ -398,21 +432,19 @@ def run_next(
         )
 
     # Baseline before the signal (same order as dispatch_todo).
+    # AUD05-08: best-effort — ANY failure here (no commits, git timeout,
+    # permissions) must not kill the run; the orchestrator ensures a
+    # baseline at stage start.
     try:
+        import subprocess
+
         from .pipeline import create_baseline
 
         create_baseline(project_dir, next_id)
-    except AwfApiError:
+    except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 
     (paths.inbox(project_dir) / f"{next_id}.ready").touch()
-
-    completed = list(state.get("completed") or [])
-    if index > 0 and queue[index - 1] not in completed:
-        completed.append(queue[index - 1])
-    run_state.write_run(
-        project_dir, index=index + 1, current=next_id, completed=completed,
-    )
 
     from .pipeline import start_pipeline
 
@@ -426,11 +458,58 @@ def run_next(
     )
 
     if result.run_mode in ("noop", "error"):
+        # AUD02-02: the launch failed — the run position stays put, so the
+        # retry targets the same item instead of skipping it (and the
+        # unlaunched TODO is not counted as completed).
         return RunNextResult(
             action="refused",
             todo_id=next_id,
             message=f"Launch failed: {result.message}",
             next_action="Investigate the pipeline state (awf_status), then retry awf_run_next.",
+        )
+
+    # AUD02-02: advance the run position only AFTER a successful launch.
+    # AUD05-05 (rest): the commit is re-checked UNDER THE LOCK. If the run
+    # closed (run_finish / stop_run) during the launch window, the item is
+    # NOT recorded as current: a closed run cannot own the verify cycle of
+    # a launched pipeline. The orphaned pipeline is the accepted
+    # consequence (documented in the result) — the owner inspects it via
+    # awf_status and decides (kill + fresh run, or take it over).
+    advance = {"closed": False}
+
+    def _advance_mutator(st: dict) -> dict:
+        if not st.get("active"):
+            advance["closed"] = True
+            return st
+        completed = list(st.get("completed") or [])
+        if index > 0 and queue[index - 1] not in completed:
+            completed.append(queue[index - 1])
+        st["index"] = index + 1
+        st["current"] = next_id
+        st["completed"] = completed
+        return st
+
+    run_state.update_run(project_dir, _advance_mutator)
+
+    if advance["closed"]:
+        return RunNextResult(
+            action="started",
+            todo_id=next_id,
+            message=(
+                f"Run item {index + 1}/{len(queue)} launched: {next_id} "
+                f"({result.run_mode}) — but the run was closed during the "
+                "launch window, so index/current were NOT recorded. The "
+                "launched pipeline is orphaned (accepted consequence): no "
+                "run will finish its verify cycle."
+            ),
+            run_mode=result.run_mode,
+            run_id=result.run_id,
+            log_file=result.log_file or "",
+            next_action=(
+                "Inspect the orphaned pipeline with awf_status, then decide: "
+                "awf_kill + a fresh run (awf_run_start) to take over its verify "
+                "cycle, or finish the work manually."
+            ),
         )
 
     return RunNextResult(

@@ -102,12 +102,26 @@ class TestArchiveTodo:
         assert not list(handoff.glob("*-TODO-0001.md"))
 
     def test_idempotent(self, project):
-        """Calling twice doesn't crash."""
+        """Calling twice doesn't crash AND doesn't destroy the archive.
+
+        AUD12-02: the second call used to hit ``not moved_anything`` and
+        rmtree the whole ``done/TODO-0001/`` dir — history loss on a no-op.
+        """
         _setup_todo(project, "TODO-0001")
         first = archive_todo(project, "TODO-0001")
-        second = archive_todo(project, "TODO-0001")
         assert first is not None
+        archived = sorted(p.name for p in first.rglob("*") if p.is_file())
+        todo_md_content = (first / "TODO.md").read_text(encoding="utf-8")
+
+        second = archive_todo(project, "TODO-0001")
         assert second is None  # nothing to archive second time
+
+        for name in ("TODO.md", "DONE.md", "PROGRESS.md"):
+            assert (first / name).is_file(), f"{name} destroyed by second archive call"
+        for name in ("worker-TODO-0001.md", "reviewer-TODO-0001.md"):
+            assert (first / "handoff" / name).is_file(), f"handoff/{name} destroyed by second archive call"
+        assert sorted(p.name for p in first.rglob("*") if p.is_file()) == archived
+        assert (first / "TODO.md").read_text(encoding="utf-8") == todo_md_content
 
     def test_returns_none_when_nothing_to_archive(self, project):
         result = archive_todo(project, "TODO-9999")
@@ -122,6 +136,29 @@ class TestArchiveTodo:
         result = archive_todo(project, "TODO-0001")
         assert result is not None
         assert (result / "TODO.md").is_file()
+
+    def test_archives_legacy_short_id_signals(self, project):
+        """AUD01-05: legacy DONE-NNNN / PROGRESS-NNNN (no TODO- prefix) must
+        also move to the archive — otherwise leftovers stay in outbox."""
+        inbox = project / ".agentic/inbox"
+        outbox = project / ".agentic/outbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        outbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "TODO-0001.md").write_text("# Task\n")
+        (inbox / "TODO-0001.ready").write_text("")
+        (outbox / "DONE-0001.md").write_text("# legacy done\n")
+        (outbox / "DONE-0001.ready").write_text("")
+        (outbox / "PROGRESS-0001.md").write_text("# legacy progress\n")
+
+        result = archive_todo(project, "TODO-0001")
+
+        assert result is not None
+        assert (result / "DONE.md").is_file()
+        assert "legacy done" in (result / "DONE.md").read_text()
+        assert (result / "PROGRESS.md").is_file()
+        assert not (outbox / "DONE-0001.md").exists()
+        assert not (outbox / "DONE-0001.ready").exists()
+        assert not (outbox / "PROGRESS-0001.md").exists()
 
     def test_preserves_review_signal(self, project):
         """REVIEW-TODO-0001.md should NOT be archived (it's a rejection)."""

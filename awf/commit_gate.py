@@ -70,6 +70,7 @@ def _files_changed_since_baseline(
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,  # AUD04-11: hung git must not hang the commit gate
         )
         if result.returncode != 0:
             logs_dir = project_dir / ".agentic" / "logs"
@@ -94,6 +95,7 @@ def _files_changed_since_baseline(
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,  # AUD04-11
         )
         if untracked_result.returncode == 0:
             untracked = [
@@ -162,6 +164,7 @@ def _commit_specific_files(
             cwd=project_dir,
             check=True,
             capture_output=True,
+            timeout=30,  # AUD04-11
         )
         # Commit (allow empty-tree — first commit case)
         result = subprocess.run(
@@ -169,6 +172,7 @@ def _commit_specific_files(
             cwd=project_dir,
             capture_output=True,
             text=True,
+            timeout=30,  # AUD04-11: hung hook/index.lock must not hang verify
         )
         if result.returncode != 0:
             # AUD-2026-08-09.4: commit failed (e.g. pre-commit hook rejection).
@@ -177,6 +181,7 @@ def _commit_specific_files(
                 ["git", "reset"],
                 cwd=project_dir,
                 capture_output=True,
+                timeout=30,  # AUD04-11
             )
             print(
                 f"git commit failed (rc={result.returncode}): "
@@ -258,10 +263,20 @@ def maybe_commit(
         _log(logs_dir, "committed via git add -A (no baseline provided)")
 
     if committed:
-        sha = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=project_dir, capture_output=True, text=True,
-        ).stdout.strip()
+        try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=project_dir, capture_output=True, text=True,
+                timeout=30,  # AUD04-11
+            ).stdout.strip()
+        except subprocess.TimeoutExpired:
+            print(
+                f"git rev-parse timed out at '{stage_name}' — commit result unknown, "
+                "treating as failure.",
+                file=sys.stderr,
+            )
+            _log(logs_dir, f"git rev-parse timed out at {stage_name}")
+            return False
         print(f"Auto-committed: {todo_id} at '{stage_name}' ({sha}).", file=sys.stderr)
         print("Remember to push: git push origin HEAD", file=sys.stderr)
         _log(logs_dir, f"Auto-committed {todo_id} at {stage_name} ({sha})")

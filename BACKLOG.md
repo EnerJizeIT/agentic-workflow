@@ -6,25 +6,29 @@
 
 ## Открытые задачи
 
+### DOGFOOD-2026-09-20 · Хвосты после аудита и инцидента
+**Status:** решения владельца 20.09. Источник: `~/Desktop/awf-audit/RECOVERY-RUNBOOK.md`.
+
+**Закрыто в ходе программы аудита:**
+- ✅ **Подписи коммитов** — ветка пересобрана без корпоративных X.509-подписей (38 коммитов, force-push; теги `verified/*` и `audit-known-good` пересозданы; SHA в реестре обновлены). Новый head: `ffa5e12`.
+- ✅ **Герметичность тестов** (U7a) — `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, личность через env + тест-страж.
+- ✅ **Rollback-таймауты** (FU-19) — git diff/reset в rollback-пути через timeout; контракт-исключение закрыто.
+- ✅ **Actions Node20** (FU-21) — checkout@v5, setup-python@v6.
+- ✅ **`files:` в `_CONTRACT_KEYS`**, **`verify_pack._git_lines`**, **doc-формулировка гейтов**, **ратчет-исключение BACKLOG.md**, **DONE.json пример**, **CI-дубль** (test.yml удалён — ci.yml покрывает всё) — FU-21/FU-20.
+
+**Открыто:**
+⬜ **Кириллица в slugify** — плагин транслитерирует («QA Лид» → `qa-lid`), ядро нет (`qa`); pre-existing рассинхрон (FU-14). Перенести `_CYRILLIC_MAP` в `awf/api/_helpers.slugify_role`.
+⬜ **Ротация логов не атомарна** — `awf/_log.py::_maybe_rotate` (unlink+rename) при двух конкурентных ротаторах может перезаписать архив (FU-17b2). Сделать atomic (rename с уникальным суффиксом + prune).
+⬜ **Evidence-гейт в auto-mode watcher** — auto-verify watcher не гейтится evidence (недостижимо через `awf_run_next`, всегда auto=False) (FU-18). Реоткрыть, если появится auto-режим.
+⬜ **Сканер timeout-контракта и алиасы** — AST-чекер ловит `subprocess.run`/`_sp.run`, но не алиас (`import subprocess as _s`). Расширить правило (refine).
+
+
 ### SMO · State-Machine Orchestration
 
 **Status:** .1–.6 DONE (в архиве). Открыт только .7.
 
 ⬜ `.7` **Escape-hatch'и:** ПОСЛЕ dogfood. Собрать edge-cases с реальных сессий.
    **НЕ проектировать upfront.**
-
-### QA-2026-08-10 · QA Roundtable — открытые пункты
-
-**Status:** закрытые пункты — в архиве; ниже только то, что осталось.
-
-⬜ `.16` **[HIGH] Entry points coverage** — большая часть закрыта (NEG-2026-09-19:
-   cmd_init/status/start/restore/approve/rollback/reset/analyze-roles покрыты
-   реальными CLI smoke-тестами, `tests/integration/test_cli_entrypoints.py`).
-   Остались: cmd_add_role, cmd_baseline, cmd_report.
-
-⬜ `.24` **[MED] CSRF token** — `http_endpoint.py:94` no Origin/Referer → True.
-⬜ `.32` **Coverage критических путей** — verify.py 14%, plan_checkpoint.py 21%,
-   wait_event.py 22%, _stack.py 27%, context.py 34%, setup.py 39%.
 
 ### BD-35 · Per-role contribution tracking
 **Status:** ждать real failure в dogfooding.
@@ -95,8 +99,8 @@
 
 ### Заметки / кандидаты
 
-- `tools/awf.py` (~940 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
-- `plan_checkpoint.py` (201 строка, 21% coverage) — добавить покрытие при dogfood
+- `agent_workflow_ui/src/agent_workflow_ui/tools/awf.py` (~1600 строк) — разбить по зонам (pipeline/state/forms) или схлопнуть через helper
+- `plan_checkpoint.py` (689 строк, 87% coverage) — покрытие есть; оставшееся — через dogfood
 - `supervisor.py` — разделить `wait_for_supervisor_signal` до новых stage kind
 - Два HTTP-сервера: one-shot core + long-lived plugin
 - Event journal — `.agentic/state/journal.jsonl` для replay

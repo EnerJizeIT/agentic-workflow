@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as cfg_mod
-from .. import paths, todos
+from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
@@ -31,7 +31,7 @@ from ._templates import _CONFIG_TEMPLATE, update_gitignore
 
 _RUNTIME_DIRS = [
     "inbox", "outbox", "handoff", "done", "state",
-    "logs", "context", "dashboards", "inputs", "reports",
+    "logs", "context", "dashboards", "inputs",
 ]
 
 
@@ -64,6 +64,12 @@ def init_project(
     not provided explicitly. Project name is derived from directory when
     not provided.
 
+    **R1 (AUD05-04):** when ``.agentic/`` already exists and
+    ``force=False``, the runtime directories (inbox/outbox/handoff/done/
+    state/logs/context/dashboards/inputs) are deleted and config.yaml is
+    preserved — calling this on a live project drops active TODOs and
+    state. ``dry_run=True`` is a pure read and changes nothing.
+
     Returns :class:`InitResult` with supervisor.md, vision excerpt, plan.md
     content — caller (CLI/MCP) has everything needed to assume the supervisor
     role without further file reads.
@@ -73,6 +79,23 @@ def init_project(
 
     agentic = project_dir / ".agentic"
     if agentic.exists() and not force:
+        if dry_run:
+            # AUD05-01: dry-run is a pure read — return BEFORE _clean_runtime.
+            config = cfg_mod.load(project_dir)
+            project_name_val = config.get("project", {}).get("name", project_dir.name)
+            vision_path = paths.find_vision_file(project_dir)
+            return InitResult(
+                project_name=project_name_val,
+                project_dir=str(project_dir),
+                stack="(preserved)",
+                vision_path=str(vision_path) if vision_path else None,
+                vision_excerpt="",
+                supervisor_md="",
+                plan_md="",
+                pipeline_configured=bool(config.get("default_pipeline")),
+                next_action="[dry-run] .agentic/ already exists — nothing written, runtime untouched.",
+                warnings=[],
+            )
         # R1: Clean runtime dirs, preserve config.
         cleaned = _clean_runtime(project_dir)
         config = cfg_mod.load(project_dir)
@@ -97,7 +120,7 @@ def init_project(
             "goal": "Спроси пользователя о цели сессии. После ответа — awf_set_goal.",
             "form": "Открой project-setup форму через awf_open_project_setup_form.",
             "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
-            "brief": "Напиши BRIEF-TODO-NNNN.md для user approval.",
+            "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
             "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
             "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
             "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
@@ -163,7 +186,6 @@ def init_project(
         "outbox",
         "context",
         "logs",
-        "reports",
     ]:
         (agentic / d).mkdir(parents=True, exist_ok=True)
         created_files.append(f".agentic/{d}/")
@@ -237,7 +259,7 @@ def init_project(
         ),
         "form": "Открой project-setup форму через awf_open_project_setup_form.",
         "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
-        "brief": "Изучи vision и план, напиши BRIEF-TODO-NNNN.md для user approval.",
+        "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
         "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
         "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
         "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
@@ -454,7 +476,7 @@ def get_status(project_dir: Path) -> StatusResult:
             "goal": "Спроси пользователя о цели сессии → awf_set_goal.",
             "form": "Открой project-setup форму → awf_open_project_setup_form.",
             "normalize": "Выполни normalize checklist → awf_confirm_normalized.",
-            "brief": "Напиши BRIEF-TODO-NNNN.md → .ready сигнал.",
+            "brief": "Напиши TODO-NNNN.md (awf_dispatch_todo) → .ready сигнал.",
             "init": "Спроси пользователя о цели сессии → awf_set_goal.",
         }
         if current_phase in _PHASE_SUGGESTIONS:
@@ -614,21 +636,28 @@ def get_report(project_dir: Path) -> ReportResult:
     )
     git_diff = diff_result.stdout if diff_result.returncode == 0 else ""
 
+    # AUD15-07: an archived task carries its TEST-RESULTS log in done/{id}/ —
+    # look there too, and read only the tail (the file can be many MB).
     latest_test_log_tail: str | None = None
+    candidates: list[Path] = []
     if outbox.exists():
-        logs = sorted(
-            outbox.glob("TEST-RESULTS-*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if logs:
-            try:
-                content = logs[0].read_text(encoding="utf-8")
-                lines = content.splitlines()
-                tail = lines[-5:] if len(lines) > 5 else lines
-                latest_test_log_tail = "\n".join(tail)
-            except OSError:
-                pass
+        candidates.extend(p for p in outbox.glob("TEST-RESULTS-*.log") if p.is_file())
+    if done_d.is_dir():
+        for d in sorted(done_d.iterdir()):
+            if d.is_dir():
+                candidates.extend(
+                    p for p in d.glob("TEST-RESULTS-*.log") if p.is_file()
+                )
+    if candidates:
+        newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        try:
+            from .._log_reader import read_tail_lines
+
+            lines = read_tail_lines(newest, max_lines=5)
+            if lines:
+                latest_test_log_tail = "\n".join(lines)
+        except OSError:
+            pass
 
     return ReportResult(
         project_name=project_name,
@@ -653,13 +682,18 @@ def reset_runtime(
 ) -> ResetResult:
     """Clean runtime data.
 
-    Modes (mutually exclusive):
-    - ``tasks_only``: clean only inbox + outbox.
-    - ``full``: clean inbox/outbox/context/logs/reports.
+    Modes (mutually exclusive). Every mode also clears ``state/current.yaml``
+    and (when present) ``state/run.yaml`` — a leftover state file is a stale
+    "running" banner / a ghost run (AUD05-02):
+
+    - ``tasks_only``: clean inbox + outbox.
+    - ``full``: clean inbox/outbox/context/logs + handoff/inputs/dashboards
+      (iteration artifacts).
     - ``orphans``: convenience mode — list + remove orphans in one call.
       Prefer :func:`list_orphans` + :func:`remove_orphans` two-step protocol
       when confirmation is needed.
-    - default: clean inbox/outbox/context/logs/reports (keep phases).
+    - default: clean inbox/outbox/context/logs (keep phases, handoff,
+      inputs, dashboards).
     """
     project_dir = Path(project_dir).resolve()
     agentic = project_dir / ".agentic"
@@ -670,10 +704,18 @@ def reset_runtime(
         # T1.6: use two-step protocol (list + remove) instead of legacy
         # _reset_orphans one-shot. Single computation path, no duplication.
         ids = list_orphans(project_dir)
+        if not ids:
+            return ResetResult(cleaned_dirs=[], orphan_ids=[], mode="orphans")
         return remove_orphans(project_dir, ids)
 
     if full or not tasks_only:
-        dirs_to_clean = ["inbox", "outbox", "context", "logs", "reports"]
+        dirs_to_clean = ["inbox", "outbox", "context", "logs"]
+        if full:
+            # AUD07-03: --full was functionally identical to default (only
+            # the mode label differed — a decoration flag). It now also
+            # cleans iteration artifacts. Default behavior is unchanged —
+            # the AUD05-02 ghost-run regression test locks it.
+            dirs_to_clean += ["handoff", "inputs", "dashboards"]
         mode = "full" if full else "default"
     else:
         dirs_to_clean = ["inbox", "outbox"]
@@ -692,8 +734,16 @@ def reset_runtime(
 
     # Clear pipeline state file so stale "running" doesn't persist
     state_file = agentic / "state" / "current.yaml"
+    state_cleared = False
     if state_file.is_file():
         state_file.unlink()
+        state_cleared = True
+    # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks the
+    # next run_start with "Run already active". Clear it alongside.
+    if run_state.read_run(project_dir) is not None:
+        run_state.clear_run(project_dir)
+        state_cleared = True
+    if state_cleared:
         cleaned.append("state")
 
     # Regenerate dashboard so user sees clean state
@@ -734,6 +784,14 @@ def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
     """
     project_dir = Path(project_dir).resolve()
     inbox = paths.inbox(project_dir)
+    # AUD05-06: a fresh worker may not have written PROGRESS yet, so its
+    # TODO looks like an orphan. Refuse to delete while the pipeline is
+    # alive — wait for verify/salvage, or kill first (no force flag).
+    running, _pid, _tail = check_pipeline_running(project_dir)
+    if running:
+        raise AwfApiError(
+            "pipeline is running — wait for verify/salvage, or awf kill first"
+        )
     removed: list[str] = []
     for tid in orphan_ids:
         ready = inbox / f"{tid}.ready"
@@ -757,4 +815,8 @@ __all__ = [
     "reset_runtime",
     "list_orphans",
     "remove_orphans",
+    # AUD05-09: restore_todo was exported by awf.api but missing from the
+    # module's own __all__ — the "star import of the declaring module"
+    # contract was broken.
+    "restore_todo",
 ]

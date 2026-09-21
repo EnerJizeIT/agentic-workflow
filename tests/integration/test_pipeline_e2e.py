@@ -25,18 +25,13 @@ from awf import api
 
 
 @pytest.fixture
-def project(tmp_path):
-    """Project with git + .agentic/ + pipeline + worker role."""
-    import subprocess
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+def project(tmp_git_repo):
+    """Project with git + .agentic/ + pipeline + worker role.
 
+    AUD12-08: git boilerplate is the shared tmp_git_repo fixture
+    (tests/conftest.py).
+    """
+    repo = tmp_git_repo
     api.init_project(repo, project_name="Test")
 
     # Pipeline: plan → worker → verify
@@ -126,7 +121,7 @@ def _mock_stages(monkeypatch, project: Path):
             return f"ACK-{todo_id}"
         return f"ACK-{todo_id}"
 
-    def mock_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, hard_timeout=None, retry_note=None, attempt=1):
+    def mock_agent(stage, todo_id, project_dir, config, logs_dir, prev_handoffs=None, hard_timeout=None, retry_note=None, attempt=1, **kw):
         calls["agent"].append((stage.name, todo_id))
         _write_done(project, todo_id)
 
@@ -210,8 +205,11 @@ class TestFullPipelineReview:
         # Pipeline should stop after REVIEW
         assert rc == 1, f"Pipeline should stop on REVIEW. rc={rc}"
 
-        # REVIEW file should exist
-        assert (project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md").exists()
+        # AUD04-04: the REVIEW is consumed at the end of the cycle — a stale
+        # file in the outbox would re-trigger replan in a fresh verify.
+        assert not (project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md").exists(), (
+            "stale REVIEW survived the cycle — a fresh verify would re-reject"
+        )
 
         # TODO should NOT be archived (work rejected)
         done_dir = project / ".agentic" / "done" / "TODO-0001"

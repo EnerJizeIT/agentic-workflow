@@ -15,6 +15,10 @@ def run(args: Any) -> int:
         result = api.approve_commit(
             project_dir=getattr(args, "project_dir", "."),
             todo_id=getattr(args, "todo_id", ""),
+            # AUD07-04: --evidence flag (parity with the MCP awf_approve
+            # tool). Validation stays in the API — in run mode evidence is
+            # required and the AwfApiError below explains why.
+            evidence=getattr(args, "evidence", "") or "",
         )
     except api.AwfApiError as e:
         print(str(e))

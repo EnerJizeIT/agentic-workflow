@@ -9,6 +9,18 @@ import json
 import os
 import sys
 
+# AUD14-07: load libc in the PARENT at import time. CDLL inside preexec_fn
+# does dlopen after fork in a multi-threaded process (orchestrator runs a
+# dashboard thread) — unsafe. preexec itself must only call prctl.
+_libc = None
+if sys.platform == "linux":
+    try:
+        import ctypes
+
+        _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    except OSError:
+        _libc = None
+
 
 def _pdeathsig_preexec() -> None:
     """DF6-8: Set PR_SET_PDEATHSIG so child dies when parent (orchestrator) dies.
@@ -16,15 +28,13 @@ def _pdeathsig_preexec() -> None:
     Linux-only. On other platforms, no-op (best effort).
     Prevents orphan worker subprocesses from continuing after orchestrator crash.
     """
-    if sys.platform != "linux":
+    if _libc is None:
         return
     try:
-        import ctypes
         import signal as _signal
 
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
         PR_SET_PDEATHSIG = 1
-        libc.prctl(PR_SET_PDEATHSIG, _signal.SIGTERM)
+        _libc.prctl(PR_SET_PDEATHSIG, _signal.SIGTERM)
     except Exception:
         pass  # best effort — don't crash if libc/prctl unavailable
 

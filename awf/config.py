@@ -6,16 +6,21 @@ from pathlib import Path
 
 import yaml
 
+from . import paths
+
 
 def load(project_dir: str | Path = ".") -> dict:
     """Load config.yaml as a dict. Returns empty dict when file is missing."""
-    cfg = Path(project_dir).resolve() / ".agentic" / "config.yaml"
+    cfg = paths.config_file(project_dir)
     if not cfg.exists():
         return {}
     try:
         with cfg.open(encoding="utf-8") as f:
             data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        # AUD06-02 class: non-UTF-8 bytes / read errors used to escape as
+        # UnicodeDecodeError and crash every caller (load is the universal
+        # config reader). Degrade to {} like a malformed file.
         print(f"ERROR: config.yaml is malformed: {e}", file=sys.stderr)
         return {}
     return data if isinstance(data, dict) else {}

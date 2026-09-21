@@ -11,14 +11,18 @@ Each phase has:
 - A compact prompt (~50-100 lines from templates/phases/phase-<name>.md)
 - Exit conditions (signal or state transition)
 
-Backward compat: if phase files don't exist, falls back to supervisor.md.
+If the template files are missing (corrupted install), the prompt degrades
+to a short "No prompt template found." message — AUD16-11 removed the old
+fallback to the full supervisor.md, which could only fire on a broken
+install and gave no hint that the install was broken.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from . import paths
 from .pipeline import load_stages, resolve_pipeline_file
-from .pipeline_state import is_state_stale, read_state
+from .pipeline_state import read_state, state_trusted
 
 # Phase names in order
 SETUP_PHASES = ["init", "goal", "form", "normalize", "brief"]
@@ -37,8 +41,11 @@ def detect_phase(project_dir: Path) -> str:
     project_dir = Path(project_dir).resolve()
     state = read_state(project_dir)
 
-    # Check explicit phase in state
-    if state and not is_state_stale(state):
+    # Check explicit phase in state.
+    # AUD02-12: staleness is overridden by a live pipeline PID — a single
+    # stage longer than the 2h window must not push detection back to the
+    # setup phases (same rule as api.context._extract_stage_info).
+    if state and state_trusted(project_dir, state):
         phase = state.get("phase")
         if phase and phase in ALL_PHASES:
             return phase
@@ -46,7 +53,7 @@ def detect_phase(project_dir: Path) -> str:
         # Infer from pipeline stage
         stage_kind = state.get("stage_kind")
         if stage_kind == "plan":
-            # Plan stage = writing Brief or TODO
+            # Plan stage = writing the TODO
             return "brief"
         if stage_kind == "execute":
             return "run"
@@ -55,7 +62,7 @@ def detect_phase(project_dir: Path) -> str:
 
     # ── Setup flow detection ──────────────────────────────────────────
 
-    agentic = project_dir / ".agentic"
+    agentic = paths.agentic_dir(project_dir)
     if not agentic.is_dir():
         return "init"
 
@@ -97,8 +104,9 @@ def _pipeline_exists(project_dir: Path) -> bool:
 def get_phase_prompt(phase: str, project_dir: Path) -> str:
     """Assemble compact prompt for the given phase.
 
-    Returns _core.md + phase-<name>.md content.
-    Falls back to full supervisor.md if phase files don't exist.
+    Returns _core.md + phase-<name>.md content. When the templates are
+    missing (corrupted install) degrades to a short "No prompt template
+    found." message.
     """
     project_dir = Path(project_dir).resolve()
 
@@ -127,26 +135,41 @@ def get_phase_prompt(phase: str, project_dir: Path) -> str:
 
         return "\n".join(parts)
 
-    # Fallback: full supervisor.md (backward compat)
-    supervisor_md = project_dir / "templates" / "roles" / "supervisor.md"
-    if not supervisor_md.is_file():
-        import awf
-        supervisor_md = Path(awf.__file__).parent / "templates" / "roles" / "supervisor.md"
-    if supervisor_md.is_file():
-        return supervisor_md.read_text(encoding="utf-8")
-
+    # AUD16-11: the old fallback to the full supervisor.md was unreachable
+    # on an intact install (the package copy of _core.md is guaranteed by
+    # package-data) and useless on a broken one — an honest degradation
+    # message is all that remains.
     return f"Phase: {phase}. No prompt template found."
 
 
-def advance_phase(project_dir: Path, **extra_fields) -> str:
+def advance_phase(
+    project_dir: Path, *, from_phase: str | None = None, **extra_fields
+) -> str:
     """Advance to the next phase in the setup flow.
 
     Called by awf tools (awf_set_goal, awf_confirm_normalize, etc.) to
     transition between setup phases. Writes new phase to state.
 
+    AUD02-05: when ``from_phase`` is given, the detected current phase must
+    equal it — otherwise the call raises ``AwfApiError`` (naming the actual
+    phase) and writes nothing. Setup tools declare their documented
+    transition (goal→form, normalize→brief) and must either make exactly
+    that transition or refuse — a weak model calling awf_set_goal mid-run
+    used to silently flip the phase key (run→verify, brief→run).
+
     Returns the new phase name.
     """
     current = detect_phase(project_dir)
+    if from_phase is not None and current != from_phase:
+        # Function-local: awf.api is the heavy package (AUD14-05 convention).
+        from .api._errors import AwfApiError
+
+        raise AwfApiError(
+            f"Phase transition refused: current phase is '{current}', "
+            f"expected '{from_phase}'. Setup tools make exactly their "
+            "documented transition — check awf_current_step and act on the "
+            "actual phase instead of overwriting it."
+        )
 
     # Setup flow progression
     if current in SETUP_PHASES:

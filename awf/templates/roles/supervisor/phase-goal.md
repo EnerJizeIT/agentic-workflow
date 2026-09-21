@@ -17,7 +17,7 @@ This stores the goal in state and advances to **form** phase.
 The goal determines:
 - What artifacts to read (don't load everything — read what's relevant).
 - What roles to recommend (analysis → analyst+qa; dev → developer+qa).
-- What goes into the Brief (the goal becomes the Brief's "Goal" section).
+- What goes into the TODO (the goal becomes the TODO's "Goal" section).
 
 ## Do NOT
 - Do NOT skip this step even if the project is familiar.

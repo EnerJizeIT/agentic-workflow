@@ -112,7 +112,7 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 |---|---|
 | Worker didn't signal (no DONE/BLOCKED) | Salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
-| Orphan TODO (failed dispatch) | Auto-cleaned on next dispatch |
+| Orphan TODO (failed dispatch) | Not auto-cleaned. Remove with `awf_reset(orphans=True)` |
 | Commit failed (pre-commit hook) | TODO NOT archived, changes left for manual review |
 
 ## Where things live
@@ -122,49 +122,69 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 ├── config.yaml              # Project config (roles, models, pipeline)
 ├── pipelines/default.yaml   # Pipeline stages definition
 ├── roles/                   # Role files (supervisor.md, worker roles)
+├── phases/plan.md           # Project plan — steps with [x] checkmarks
 ├── inbox/                   # TODO files + dispatch signals
 ├── outbox/                  # Worker signals (DONE, BLOCKED, REVIEW)
-├── handoff/                 # Per-stage handoff files
+├── handoff/                 # Per-stage handoff files (created at dispatch)
 ├── context/                 # Baselines (SHA, tests, env snapshots)
 ├── logs/                    # orchestrator.log, worker output
+├── inputs/                  # Form submissions (created by the plugin)
 ├── done/{todo_id}/          # Archived TODOs (after approve)
 ├── state/current.yaml       # Pipeline state (stage, todo, PID, phase)
+├── state/run.yaml           # Autonomous run (забег) state, if one is active
 └── state/dashboard_port     # Dashboard HTTP server port
 ```
 
 ## Custom pipelines
 
-You design the pipeline in the setup form. Any roles, any depth. Examples:
+You design the pipeline in the setup form. Any roles, any depth. Every
+pipeline is `plan (supervisor) → worker stages → verify (supervisor)` —
+the form generates the wrapper stages, you pick the middle. Stage keys:
+`name`, `role`, `description`, `on_blocked` / `on_approved` /
+`on_rejected`, `max_retries`, `max_rollbacks`. `kind` (plan / execute /
+verify) is computed from the stage's position — do not write it.
 
 **Single worker (fast, for small fixes):**
 ```yaml
 # .agentic/pipelines/default.yaml
 stages:
-  - name: implementer
+  - name: plan
+    role: supervisor
+    description: Supervisor studies the plan and creates a TODO
+  - name: agent-implementer
     role: agent-implementer
-    kind: execute
-    on_done: commit_and_next
+    description: implementer executes the TODO
+    max_retries: 3
+  - name: verify
+    role: supervisor
+    description: Supervisor verifies the result
+    on_approved: commit_and_next
+    on_rejected: replan
 ```
 
 **Full quality chain (for features):**
 ```yaml
 stages:
-  - name: analyst
+  - name: plan
+    role: supervisor
+    description: Supervisor studies the plan and creates a TODO
+  - name: agent-system-analyst
     role: agent-system-analyst
-    kind: execute
-  - name: architector
+    description: analyst writes the TODO contract
+  - name: agent-architector
     role: agent-architector
-    kind: execute
-  - name: implementer
+    description: architector designs the solution
+  - name: agent-implementer
     role: agent-implementer
-    kind: execute
-  - name: qa-review
+    description: implementer writes the code
+  - name: agent-qa-review
     role: agent-qa-review
-    kind: execute
-  - name: auditor
-    role: agent-project-auditor
-    kind: execute
-    on_done: commit_and_next
+    description: qa-review finds bugs and adds tests
+  - name: verify
+    role: supervisor
+    description: Supervisor verifies the result
+    on_approved: commit_and_next
+    on_rejected: replan
 ```
 
 **Custom role file** (`.agentic/roles/my-custom-role.md`):
@@ -189,14 +209,16 @@ Review database migrations for safety.
 | Problem | Solution |
 |---|---|
 | **Pipeline stuck** | `awf_kill` → `awf_continue` to resume |
-| **Orphan TODO in inbox** | `awf_reset(orphans=True)` or `awf_init` (R1 cleans runtime) |
+| **Orphan TODO in inbox** | `awf_reset(orphans=True)` removes TODOs without progress (a live pipeline is not touched) |
 | **Dashboard port taken** | Port is auto-assigned (random). If stuck: delete `.agentic/state/dashboard_port` |
 | **Commit failed (pre-commit hook)** | TODO is NOT archived. Fix hook issue, then `awf_approve` again |
 | **Worker didn't signal** | Salvage path triggers automatically. Supervisor reads SALVAGE prompt and decides |
-| **Phase stuck** | `awf_init` (force=True) resets to goal phase. Or `awf_current_step` to check |
+| **Supervisor paused on verify >1 h** | Stage times out → salvage. Extend the window: `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200` |
+| **Phase stuck** | Check current state with `awf_current_step`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs); a full reset is a last resort, see below |
 | **Wrong roles after setup** | `awf_analyze_roles` to re-check overlaps, `awf_confirm_normalized` to advance |
 
-To **hard reset** everything: delete `.agentic/` directory, run `awf_init(force=True)`.
+To **hard reset** everything: this deletes all runtime data (TODOs, signals, logs, state).
+Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(force=True)`.
 
 ## Limitations
 
@@ -208,6 +230,8 @@ To **hard reset** everything: delete `.agentic/` directory, run `awf_init(force=
 - **No streaming:** dashboard polls every 3 seconds (not WebSocket/SSE).
 
 ## All tools (reference)
+
+37 tools: 32 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -231,6 +255,7 @@ To **hard reset** everything: delete `.agentic/` directory, run `awf_init(force=
 | `awf_dispatch_todo` | Create TODO + baseline + signal (+ pre-check grep) |
 | `awf_baseline` | Snapshot git HEAD + tests + env |
 | `awf_rollback` | Reset to baseline (hard / soft / dry-run) |
+| `awf_restore` | Restore an archived TODO back to the inbox |
 
 ### Verify
 | Tool | What it does |
@@ -238,6 +263,17 @@ To **hard reset** everything: delete `.agentic/` directory, run `awf_init(force=
 | `awf_approve` | Authorize commit + archive TODO |
 | `awf_reject` | Write REVIEW signal + kill pipeline |
 | `awf_wait_for_event` | Check for pipeline events (reactive, not for polling) |
+| `awf_prove_red` | Prove declared tests are red on the baseline sha |
+| `awf_verify_pack` | One deterministic verify report (GATES file) |
+
+### Run (autonomous queue)
+| Tool | What it does |
+|---|---|
+| `awf_run_start` | Start a run: queue of TODOs with mechanical gates |
+| `awf_run_status` | Current run state: position, budget, rejects |
+| `awf_run_next` | Launch the next queue item, or stop on a gate |
+| `awf_run_finish` | Close the run (write RUN-REPORT) |
+| `awf_run_note` | Set the run's live description for the dashboard |
 
 ### SMO
 | Tool | What it does |

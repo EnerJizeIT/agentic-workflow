@@ -102,20 +102,12 @@ class TestSilentExitFamily:
 
     def test_silent_with_real_diff_no_retry(self, tmp_path, monkeypatch):
         """Worker wrote a tracked change → no rerun risk, straight to salvage."""
-        import subprocess
+        from conftest import _git_init
 
         # Real git repo: baseline sha = HEAD, worker edits a tracked file.
         project = tmp_path / "repo"
         project.mkdir()
-        for cmd in (
-            ["git", "init", "-q"],
-            ["git", "config", "user.email", "t@t.t"],
-            ["git", "config", "user.name", "tester"],
-        ):
-            subprocess.run(cmd, cwd=project, check=True)
-        (project / "README.md").write_text("init\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=project, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=project, check=True)
+        _git_init(project)
         (project / ".agentic" / "outbox").mkdir(parents=True)
         (project / ".agentic" / "context").mkdir(parents=True)
         (project / ".agentic" / "logs").mkdir(parents=True)
@@ -261,19 +253,11 @@ class TestAutoDoneScope:
     """
 
     def _git_repo(self, tmp_path):
-        import subprocess
+        from conftest import _git_init
 
         project = tmp_path / "repo"
         project.mkdir()
-        for cmd in (
-            ["git", "init", "-q"],
-            ["git", "config", "user.email", "t@t.t"],
-            ["git", "config", "user.name", "tester"],
-        ):
-            subprocess.run(cmd, cwd=project, check=True)
-        (project / "README.md").write_text("init\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=project, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=project, check=True)
+        _git_init(project)
         (project / ".agentic" / "outbox").mkdir(parents=True)
         (project / ".agentic" / "context").mkdir(parents=True)
         (project / ".agentic" / "logs").mkdir(parents=True)

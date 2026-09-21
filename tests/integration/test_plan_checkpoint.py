@@ -8,7 +8,7 @@ Coverage matrix:
 """
 from __future__ import annotations
 
-import socket
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from conftest import _free_port  # AUD12-09: shared free-port helper
 
 from awf import plan_checkpoint
 
@@ -224,6 +225,18 @@ class TestCheckpointServer:
 class TestRunPlanCheckpoint:
     """run_plan_checkpoint: full flow (without browser; we POST directly)."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        # QA (U7a review): point the checkpoint at a private tempdir. The
+        # real tempdir is shared across xdist workers — parallel
+        # run_plan_checkpoint tests create awf-checkpoint-TODO-*.html there
+        # and test_temp_html_cleaned_up_after's before/after snapshot races
+        # with their files (reproduced 3/3 on -n auto, incl. at baseline).
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
     def _make_project(self, tmp_path: Path, todo_content: str = "Original task") -> Path:
         """Create a minimal .agentic/ layout for checkpoint tests."""
         inbox = tmp_path / ".agentic" / "inbox"
@@ -249,6 +262,38 @@ class TestRunPlanCheckpoint:
         )
         assert result == "approve"
 
+    def test_non_utf8_todo_degrades_without_traceback(self, tmp_path, monkeypatch):
+        """AUD03-07: non-UTF-8 TODO must not crash the checkpoint.
+
+        Before the fix: UnicodeDecodeError escaped run_plan_checkpoint and
+        killed the pipeline main-loop. Now the content is read with
+        errors="replace" and the flow continues (here: plain timeout).
+        """
+        project = self._make_project(tmp_path)
+        todo = project / ".agentic" / "inbox" / "TODO-0001.md"
+        todo.write_bytes(b"\xff\xfe\x00corrupt-todo-bytes")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs",
+            timeout=1,
+        )
+        assert result == "timeout"
+
+    def test_non_utf8_plan_md_degrades_without_traceback(self, tmp_path, monkeypatch):
+        """AUD03-07: non-UTF-8 phases/plan.md must not crash the checkpoint."""
+        project = self._make_project(tmp_path)
+        (project / ".agentic" / "phases" / "plan.md").write_bytes(b"\xff\xfe\x00bad-plan")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs",
+            timeout=1,
+        )
+        assert result == "timeout"
+
     def test_approve_decision(self, tmp_path, monkeypatch):
         """User approves → returns 'approve', TODO untouched."""
         project = self._make_project(tmp_path)
@@ -262,10 +307,10 @@ class TestRunPlanCheckpoint:
         # Capture the port chosen by run_plan_checkpoint and POST to it.
         real_start = plan_checkpoint._start_checkpoint_server
 
-        def capturing_start(port, decision_holder, edited_holder):
+        def capturing_start(port, decision_holder, edited_holder, **kw):
             decision_holder_ref = decision_holder
             edited_holder_ref = edited_holder
-            server = real_start(port, decision_holder, edited_holder)
+            server = real_start(port, decision_holder, edited_holder, **kw)
             # Schedule approve POST in background thread.
             import threading
             def _approve():
@@ -300,8 +345,8 @@ class TestRunPlanCheckpoint:
 
         new_content = "Edited by user"
 
-        def capturing_start(port, decision_holder, edited_holder):
-            server = real_start(port, decision_holder, edited_holder)
+        def capturing_start(port, decision_holder, edited_holder, **kw):
+            server = real_start(port, decision_holder, edited_holder, **kw)
 
             def _edit():
                 time.sleep(0.2)
@@ -375,8 +420,8 @@ class TestRunPlanCheckpoint:
         monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
         real_start = plan_checkpoint._start_checkpoint_server
 
-        def capturing_start(port, decision_holder, edited_holder):
-            server = real_start(port, decision_holder, edited_holder)
+        def capturing_start(port, decision_holder, edited_holder, **kw):
+            server = real_start(port, decision_holder, edited_holder, **kw)
 
             def _empty_edit():
                 time.sleep(0.2)
@@ -601,11 +646,374 @@ class TestCheckpointGateDispatch:
         assert rc == 0
 
 
+# ── FU-06: gate wiring after todo resolution (AUD16-02) ─────────────────────
+
+
+class TestGateWiringUnpinned:
+    """AUD16-02: checkpoint gate must fire AFTER todo resolution.
+
+    Unpinned start: current_todo="" enters the plan stage. The engine must
+    resolve the dispatched TODO first and hand THAT id to the checkpoint
+    gate. Before the fix (pre-FU-05 layout) the gate saw "" →
+    run_plan_checkpoint("") → no file to preview → silent auto-approve and
+    the form never opened (dogfood: 17/17 auto-approve).
+    """
+
+    def test_unpinned_plan_resolves_todo_before_gate(self, tmp_path, monkeypatch):
+        from awf.pipeline import Stage
+        from awf.pipeline_engine import execute_supervisor_stage
+
+        inbox = tmp_path / ".agentic" / "inbox"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0007.md").write_text("# TODO-0007\ntask", encoding="utf-8")
+        (inbox / "TODO-0007.ready").write_text("", encoding="utf-8")
+
+        seen: list[str] = []
+        def _gate(todo, p, c, a, ld):
+            seen.append(todo)
+            return 0
+
+        monkeypatch.setattr(
+            "awf.pipeline_engine._run_plan_checkpoint_gate", _gate,
+        )
+        monkeypatch.setattr(
+            "awf.pipeline_engine._run_supervisor_stage",
+            lambda *a, **kw: "",
+        )
+
+        stage = Stage(name="plan", role="supervisor", kind="plan")
+        new_todo, _delta, rc = execute_supervisor_stage(
+            stage, current_todo="", auto=True,
+            project_dir=tmp_path, config={}, logs_dir=logs,
+        )
+        # Gate received the RESOLVED id, not the empty pre-stage value
+        assert seen == ["TODO-0007"]
+        assert new_todo == "TODO-0007"
+        assert rc == 0
+
+
+# ── FU-06: real port in state and logs (AUD03-02) ───────────────────────────
+
+
+class TestCheckpointPortSurfaces:
+    """AUD03-02: logs/state must carry the real OS-assigned port, not 0."""
+
+    def _make_project(self, tmp_path: Path) -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        phases = tmp_path / ".agentic" / "phases"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        phases.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text("task", encoding="utf-8")
+        return tmp_path
+
+    def test_state_and_log_carry_real_port(self, tmp_path, monkeypatch):
+        from awf.pipeline_state import read_state
+
+        project = self._make_project(tmp_path)
+        logs_dir = project / ".agentic" / "logs"
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        real_ports: list[int] = []
+        real_start = plan_checkpoint._start_checkpoint_server
+
+        def capturing_start(port, decision_holder, edited_holder, **kw):
+            server = real_start(port, decision_holder, edited_holder, **kw)
+            real_ports.append(server.server_address[1])
+
+            def _approve():
+                time.sleep(0.2)
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
+                    data=b"decision=approve", timeout=2,
+                ).read()
+
+            import threading
+            threading.Thread(target=_approve, daemon=True).start()
+            return server
+
+        monkeypatch.setattr(plan_checkpoint, "_start_checkpoint_server", capturing_start)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None, logs_dir=logs_dir, timeout=5,
+        )
+        assert result == "approve"
+        assert real_ports and real_ports[0] != 0
+
+        state = read_state(project)
+        assert state is not None
+        # State must name the live port, not the 0 placeholder
+        assert state["checkpoint_port"] == real_ports[0]
+
+        log_text = (logs_dir / "orchestrator.log").read_text(encoding="utf-8")
+        assert f"on port {real_ports[0]}" in log_text
+        assert f"server_url=http://127.0.0.1:{real_ports[0]}" in log_text
+        assert "on port 0" not in log_text
+        assert "127.0.0.1:0" not in log_text
+
+
+# ── FU-06: stale cleanup must not kill a live form (AUD03-03) ───────────────
+
+
+class TestStaleCleanupProtectsLiveForm:
+    """AUD03-03: cleanup must never delete the file a live checkpoint waits on.
+
+    The 10-minute threshold is shorter than DEFAULT_CHECKPOINT_TIMEOUT
+    (60 min): a form created 15 minutes ago by a live checkpoint used to be
+    wiped by the next ``_cleanup_stale_temp_html`` call.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        # QA: point cleanup at a private dir. The real tempdir is shared
+        # across xdist workers — concurrent П7 tests there pre-clean or
+        # unlink awf-checkpoint-*.html and would race with this test's files.
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
+    def _old_form_file(self, name: str, age_seconds: int = 900) -> Path:
+        path = Path(tempfile.gettempdir()) / name
+        path.write_text("<html>form</html>", encoding="utf-8")
+        old = time.time() - age_seconds
+        import os
+        os.utime(path, (old, old))
+        return path
+
+    def test_live_form_not_deleted_despite_age(self, tmp_path, monkeypatch):
+        form = self._old_form_file("awf-checkpoint-TODO-0099-live.html")
+        try:
+            logs = tmp_path / ".agentic" / "logs"
+            logs.mkdir(parents=True)
+            from awf.pipeline_state import write_state
+
+            write_state(
+                tmp_path, logs_dir=logs,
+                checkpoint_pending=True,
+                checkpoint_form_url=f"file://{form}",
+            )
+            plan_checkpoint._cleanup_stale_temp_html(tmp_path)
+            assert form.is_file(), "live form was deleted by stale cleanup"
+        finally:
+            form.unlink(missing_ok=True)
+
+    def test_unreferenced_old_form_still_deleted(self, tmp_path, monkeypatch):
+        form = self._old_form_file("awf-checkpoint-TODO-0098-dead.html")
+        try:
+            # No state at all → nothing is protected
+            removed = plan_checkpoint._cleanup_stale_temp_html(tmp_path)
+            assert removed >= 1
+            assert not form.is_file()
+        finally:
+            form.unlink(missing_ok=True)
+
+    def test_pending_false_releases_protection(self, tmp_path, monkeypatch):
+        form = self._old_form_file("awf-checkpoint-TODO-0097-done.html")
+        try:
+            logs = tmp_path / ".agentic" / "logs"
+            logs.mkdir(parents=True)
+            from awf.pipeline_state import write_state
+
+            write_state(
+                tmp_path, logs_dir=logs,
+                checkpoint_pending=False,
+                checkpoint_form_url=f"file://{form}",
+            )
+            plan_checkpoint._cleanup_stale_temp_html(tmp_path)
+            assert not form.is_file()
+        finally:
+            form.unlink(missing_ok=True)
+
+
+# ── FU-06: hash-skip keyed by todo_id, post-edit content (AUD03-04) ─────────
+
+
+class TestCheckpointHashSkip:
+    """AUD03-04: skip hash must be keyed by todo_id and cover written content."""
+
+    def _make_project(self, tmp_path: Path, todo_id: str = "TODO-0001",
+                      content: str = "Original task") -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        phases = tmp_path / ".agentic" / "phases"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        phases.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / f"{todo_id}.md").write_text(content, encoding="utf-8")
+        return tmp_path
+
+    def _run_with_post(self, tmp_path, todo_id, post_data: bytes, monkeypatch):
+        real_start = plan_checkpoint._start_checkpoint_server
+
+        def capturing_start(port, decision_holder, edited_holder, **kw):
+            server = real_start(port, decision_holder, edited_holder, **kw)
+
+            def _post():
+                time.sleep(0.2)
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
+                    data=post_data, timeout=2,
+                ).read()
+
+            import threading
+            threading.Thread(target=_post, daemon=True).start()
+            return server
+
+        monkeypatch.setattr(plan_checkpoint, "_start_checkpoint_server", capturing_start)
+        return plan_checkpoint.run_plan_checkpoint(
+            todo_id, tmp_path, config=None,
+            logs_dir=tmp_path / ".agentic" / "logs", timeout=5,
+        )
+
+    def test_edit_stores_hash_of_written_content(self, tmp_path, monkeypatch):
+        """After decision=edit the stored hash must cover the NEW content."""
+        import hashlib
+
+        project = self._make_project(tmp_path, content="Original")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+        new_content = "Edited by user"
+        payload = (
+            b"decision=edit&edited_content="
+            + urllib.parse.quote(new_content).encode()
+        )
+        assert self._run_with_post(project, "TODO-0001", payload, monkeypatch) == "edit"
+
+        hash_file = project / ".agentic" / "context" / "checkpoint-approved.hash"
+        stored = hash_file.read_text(encoding="utf-8").strip()
+        expected_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()[:16]
+        assert stored == f"TODO-0001:{expected_hash}", (
+            f"stored {stored!r} — must be todo_id:sha256(written content)"
+        )
+
+    def test_reskip_after_edit_same_content(self, tmp_path, monkeypatch):
+        """kill+start right after an edit must NOT re-open the form."""
+        project = self._make_project(tmp_path, content="Original")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+        new_content = "Edited by user"
+        payload = (
+            b"decision=edit&edited_content="
+            + urllib.parse.quote(new_content).encode()
+        )
+        assert self._run_with_post(project, "TODO-0001", payload, monkeypatch) == "edit"
+
+        opened: list[str] = []
+        monkeypatch.setattr(
+            plan_checkpoint.webbrowser, "open",
+            lambda url, **_kw: opened.append(url),
+        )
+        # Second run, same (now on-disk) content → hash-skip, no form
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=5,
+        )
+        assert result == "approve"
+        assert opened == [], "form re-opened for just-approved content"
+
+    def test_different_todo_same_content_opens_form(self, tmp_path, monkeypatch):
+        """Same text under a different todo_id is a new plan — no silent skip."""
+        project = self._make_project(tmp_path, todo_id="TODO-0001", content="Shared text")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+        assert self._run_with_post(project, "TODO-0001", b"decision=approve", monkeypatch) == "approve"
+
+        (project / ".agentic" / "inbox" / "TODO-0002.md").write_text(
+            "Shared text", encoding="utf-8",
+        )
+        opened: list[str] = []
+        monkeypatch.setattr(
+            plan_checkpoint.webbrowser, "open",
+            lambda url, **_kw: opened.append(url),
+        )
+
+        # The second run MUST open the form (no hash-skip across todo ids).
+        # _run_with_post patches the server start and answers with approve.
+        result = self._run_with_post(
+            project, "TODO-0002", b"decision=approve", monkeypatch,
+        )
+        assert result == "approve"
+        assert opened, "form was skipped for a different todo_id with same text"
+
+
+# ── FU-06: first-wins on concurrent decisions (AUD03-05) ────────────────────
+
+
+class TestCheckpointFirstWins:
+    """AUD03-05: the first accepted POST decides; later POSTs ack, not overwrite."""
+
+    def _post(self, port: int, data: bytes) -> int:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/checkpoint", data=data, timeout=2,
+            ) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def test_second_post_does_not_change_decision(self):
+        decision: dict = {}
+        edited: dict = {}
+        server = plan_checkpoint._start_checkpoint_server(
+            port=0, decision_holder=decision, edited_holder=edited,
+        )
+        try:
+            port = server.server_address[1]
+            assert self._post(port, b"decision=approve") == 200
+            assert self._post(port, b"decision=reject") == 200  # ack, no overwrite
+            assert decision.get("decision") == "approve", (
+                f"first-wins broken: holder={decision}"
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_edit_then_approve_keeps_edit_content(self):
+        decision: dict = {}
+        edited: dict = {}
+        server = plan_checkpoint._start_checkpoint_server(
+            port=0, decision_holder=decision, edited_holder=edited,
+        )
+        try:
+            port = server.server_address[1]
+            payload = b"decision=edit&edited_content=First+content"
+            assert self._post(port, payload) == 200
+            assert self._post(port, b"decision=approve") == 200
+            assert decision.get("decision") == "edit"
+            assert edited.get("content") == "First content"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_concurrent_posts_yield_single_consistent_decision(self):
+        """Two racing POSTs: exactly one decision lands, holders stay in sync."""
+        decision: dict = {}
+        edited: dict = {}
+        server = plan_checkpoint._start_checkpoint_server(
+            port=0, decision_holder=decision, edited_holder=edited,
+        )
+        try:
+            import threading
+
+            port = server.server_address[1]
+            bar = threading.Barrier(2)
+
+            def _post(payload: bytes):
+                bar.wait()
+                self._post(port, payload)
+
+            t1 = threading.Thread(target=_post, args=(b"decision=approve",))
+            t2 = threading.Thread(target=_post, args=(b"decision=reject",))
+            t1.start(); t2.start(); t1.join(); t2.join()
+
+            assert list(decision) == ["decision"]
+            assert decision["decision"] in ("approve", "reject")
+            assert edited == {}, "non-edit decision must not leave edited content"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _free_port() -> int:
-    """Find a free port (different from any in-use one)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# _free_port — imported from the root conftest (AUD12-09).

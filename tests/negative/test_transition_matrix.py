@@ -43,10 +43,12 @@ class TestTransitionMatrix:
     @pytest.mark.parametrize("policy", POLICIES)
     def test_every_signal_yields_valid_action(self, policy):
         for sig in SIGNALS:
+            # AUD16-03: on_passed is off the schema (dead TEST-PASSED); the
+            # "passed"/"failed" strings in SIGNALS exercise the unknown path.
             stage = Stage(
                 name="stage-x", role="worker", kind="execute",
                 on_blocked=policy, on_approved=policy, on_rejected=policy,
-                on_passed=policy, on_failed=policy,
+                on_failed=policy,
             )
             action, target = resolve_transition(stage, sig)
             ctx = f"policy={policy!r} signal={sig!r}"
@@ -154,7 +156,7 @@ class TestSignalFileRaceRules:
         (outbox / "DONE-TODO-0001.ready").write_text("", encoding="utf-8")
         (outbox / "DONE-TODO-0001.md").write_text("# done", encoding="utf-8")
         (outbox / "REVIEW-APPROVED-TODO-0001.ready").write_text("", encoding="utf-8")
-        (outbox / "BRIEF-TODO-0002.ready").write_text("", encoding="utf-8")
+        (outbox / "PROGRESS-TODO-0002.md").write_text("# progress\n", encoding="utf-8")
 
         clean_stage_signals(outbox, "TODO-0001", "DONE")
 
@@ -162,7 +164,7 @@ class TestSignalFileRaceRules:
         assert not (outbox / "DONE-TODO-0001.md").exists()
         # Other prefixes and other TODOs survive.
         assert (outbox / "REVIEW-APPROVED-TODO-0001.ready").exists()
-        assert (outbox / "BRIEF-TODO-0002.ready").exists()
+        assert (outbox / "PROGRESS-TODO-0002.md").exists()
 
         # Idempotent: second call must not raise.
         clean_stage_signals(outbox, "TODO-0001", "DONE", "BLOCKED")

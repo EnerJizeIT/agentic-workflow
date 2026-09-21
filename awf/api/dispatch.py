@@ -10,6 +10,7 @@ the signal. Supervisor gets back the todo_id + baseline_sha to track.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -87,9 +88,20 @@ def dispatch_todo(
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
 
+    # U3: optional unit-contract block at the top of the TODO (--- yaml ---)
+    # is validated here, before anything is written. No block = no-op.
+    from ..unit_contract import parse_todo_contract
+    try:
+        _contract, unknown_keys = parse_todo_contract(content)
+    except ValueError as e:
+        raise AwfApiError(f"TODO contract block: {e}") from None
+
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    # Whether the CALLER fixed the id (explicit collisions must raise,
+    # auto-picked ones may retry with the next free id).
+    explicit_id = todo_id is not None
     if todo_id is None:
         todo_id = _next_todo_id(project_dir)
     elif not re.match(r"^TODO-\d{4,}$", todo_id):
@@ -106,12 +118,35 @@ def dispatch_todo(
     if role:
         body = f"<!-- role_hint: {role} -->\n" + body
 
-    # Step 1: write TODO-NNNN.md (atomic — crash-safe)
-    md_path = inbox / f"{todo_id}.md"
-    if md_path.exists():
+    # AUD14-01: reserve the ID atomically before writing content. The old
+    # exists() → write() window let two parallel dispatches pick the same
+    # TODO-NNNN and the second silently overwrote the first's content.
+    # O_CREAT|O_EXCL makes the claim one syscall: the first writer wins,
+    # concurrent callers get FileExistsError and retry with the next id.
+    md_path: Path | None = None
+    for _attempt in range(16):
+        candidate = inbox / f"{todo_id}.md"
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            if explicit_id:
+                raise AwfApiError(
+                    f"{candidate.name} already exists in inbox. Use a different "
+                    "todo_id or remove the existing file first."
+                ) from None
+            todo_id = _next_todo_id(project_dir)
+            # desynchronize the herd of parallel callers
+            import random as _random
+            import time as _time
+            _time.sleep(_random.uniform(0, 0.02))
+            continue
+        os.close(fd)
+        md_path = candidate
+        break
+    if md_path is None:
         raise AwfApiError(
-            f"{md_path.name} already exists in inbox. Use a different todo_id "
-            "or remove the existing file first."
+            f"could not reserve a free TODO id (16 consecutive collisions, "
+            f"last tried {todo_id}) — check .agentic/inbox for stray TODO files"
         )
 
     # Pre-dispatch check: grep code for key identifiers from TODO content.
@@ -136,8 +171,14 @@ def dispatch_todo(
                          "--include=*.py", "--include=*.go", "--include=*.rs",
                          "--include=*.java", "--include=*.rb",
                          "-d", "skip",
+                         # AUD15-05: don't scan VCS/dependency dirs — on a
+                         # 25k-file tree the old unfiltered grep took up to
+                         # 5s per identifier (5 identifiers → ~25s dispatch).
+                         "--exclude-dir=.git", "--exclude-dir=node_modules",
+                         "--exclude-dir=.venv", "--exclude-dir=venv",
+                         "--exclude-dir=vendor",
                          ident, str(project_dir)],
-                        capture_output=True, text=True, timeout=5, check=False,
+                        capture_output=True, text=True, timeout=2, check=False,
                     )
                     # Filter out .agentic/ matches
                     matches = [line for line in result.stdout.strip().splitlines()
@@ -152,6 +193,14 @@ def dispatch_todo(
     except Exception:
         pass  # pre-check is best-effort, never blocks dispatch
 
+    # U3: unknown keys in the contract block are a typo risk — warn, don't fail.
+    for key in unknown_keys:
+        pre_check_warnings.append(
+            f"contract block: unknown key '{key}' — known keys: verify, gates, prove_red"
+        )
+
+    # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the
+    # placeholder — the id is already claimed, no one else can take it).
     atomic_write_text(md_path, body)
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status)

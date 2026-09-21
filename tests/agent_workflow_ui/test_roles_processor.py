@@ -897,21 +897,37 @@ def test_delete_from_project_path_traversal_slash(isolated_roles_dir, tmp_path):
 
 
 def test_delete_from_project_path_traversal_backslash(isolated_roles_dir, tmp_path):
-    """_delete_from_project with \\ is rejected."""
+    """_delete_from_project with \\ is rejected: victim survives, no stray file."""
     proj = _make_project(tmp_path)
+    victim = proj / ".agentic" / "roles" / "victim.md"
+    victim.write_text("victim")
     _delete_from_project("..\\..\\secret.md", project_dir=proj)
+    assert victim.is_file(), "backslash name must be rejected, victim must survive"
+    roles = proj / ".agentic" / "roles"
+    assert not [p for p in roles.iterdir() if "\\" in p.name], (
+        "no backslash-named file may be created in roles/"
+    )
 
 
 def test_delete_from_project_dotdot_alone(isolated_roles_dir, tmp_path):
-    """_delete_from_project with '..' is rejected."""
+    """_delete_from_project with '..' is rejected: nothing outside the project touched."""
     proj = _make_project(tmp_path)
+    victim = proj / ".agentic" / "roles" / "victim.md"
+    victim.write_text("victim")
+    sibling = tmp_path / "sibling.md"
+    sibling.write_text("outside the project")
     _delete_from_project("..", project_dir=proj)
+    assert victim.is_file()
+    assert sibling.is_file(), "'..' must not reach outside the project dir"
 
 
 def test_delete_from_project_dot_alone(isolated_roles_dir, tmp_path):
-    """_delete_from_project with '.' is rejected."""
+    """_delete_from_project with '.' is rejected: the roles dir itself survives."""
     proj = _make_project(tmp_path)
+    victim = proj / ".agentic" / "roles" / "victim.md"
+    victim.write_text("victim")
     _delete_from_project(".", project_dir=proj)
+    assert victim.is_file(), "'.' must be rejected, roles/ must survive"
 
 
 def test_delete_from_project_normal_file(isolated_roles_dir, tmp_path):

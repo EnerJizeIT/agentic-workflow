@@ -21,9 +21,53 @@ os.environ.setdefault("AWF_PLAN_CHECKPOINT", "false")
 # it would sleep for 30 minutes.
 os.environ.setdefault("AWF_APPROVE_TIMEOUT_SECONDS", "5")
 
+# U7a: hermetic git — the suite must never read the user's ~/.gitconfig or
+# the system git config. 2026-09-20 incident: a corporate ~/.gitconfig with
+# commit.gpgsign=true hung full pytest runs on pinentry (gpg prompt).
+# /dev/null is a valid (empty) config file. Hard assignment on purpose:
+# inherited values would break hermeticity.
+os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+# Fixed test identity: commits in tmp test-repos work even without local
+# user.name/user.email config.
+os.environ["GIT_AUTHOR_NAME"] = "awf-test"
+os.environ["GIT_AUTHOR_EMAIL"] = "test@example.invalid"
+os.environ["GIT_COMMITTER_NAME"] = "awf-test"
+os.environ["GIT_COMMITTER_EMAIL"] = "test@example.invalid"
+
 # Suppress webbrowser.open during tests (deterministic dashboard opening
 # would spawn browser windows on every test that triggers awf_start).
 webbrowser.open = lambda *a, **kw: True
+
+# SAFETY (2026-09-20): never let the suite signal pid/pgid <= 1.
+# `os.killpg(1, sig)` is a libc wrapper over `kill(2)` with argument
+# `-pgid` — on Linux that is `kill(-1, sig)`: SIGTERM/SIGKILL to every
+# process the caller may signal (the whole uid session). Full
+# `pytest tests/` runs killed the owner's graphical session three times
+# (fake Popen with pid=1 + hard timeout in tests/integration; analysis:
+# ~/Desktop/session-crash-report-2026-09-20.md). The guard in
+# awf/_proc.py::kill_process_tree is `proc.pid > 1`; this tripwire is the
+# belt-and-suspenders for the whole suite: any REAL broad-kill attempt
+# fails loudly instead of wiping the session.
+# Refusal marker at runtime (green-light grep target):
+# "SAFETY: os.killpg(1, 15) targets pid/pgid <= 1 ..." (name comes from the
+# wrapped function, see _forbid_session_kill call sites below).
+def _forbid_session_kill(real, name):
+    def guarded(target, sig, *args, **kwargs):
+        if isinstance(target, int) and target <= 1:
+            raise RuntimeError(
+                f"SAFETY: {name}({target!r}, {sig}) targets pid/pgid <= 1 — "
+                "kill(-1) would signal the entire user session. Refusing to "
+                "call through (2026-09-20 session-kill incident)."
+            )
+        return real(target, sig, *args, **kwargs)
+
+    return guarded
+
+
+os.kill = _forbid_session_kill(os.kill, "os.kill")
+if hasattr(os, "killpg"):
+    os.killpg = _forbid_session_kill(os.killpg, "os.killpg")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
@@ -123,10 +167,40 @@ def awf_env(tmp_path, monkeypatch) -> dict:
     return env
 
 
-def _git_init(proj: Path) -> None:
+def _free_port() -> int:
+    """Ask the OS for a free TCP port (AUD12-09).
+
+    No test may depend on a specific port being free (13747 used to be
+    hardcoded in three places — parallel runs or a busy CI box crashed
+    them). This is the shared home of the pattern; test_plan_checkpoint
+    imports it from here.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _git_init_bare(proj: Path) -> None:
+    """git init + test identity, NO initial commit (AUD12-08).
+
+    For scenarios that need an empty repo without HEAD (e.g. testing
+    current_sha failure on a fresh repo).
+    """
     subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=proj, check=True)
     subprocess.run(["git", "config", "user.name", "tester"], cwd=proj, check=True)
+
+
+def _git_init(proj: Path) -> None:
+    """git init + identity + README + initial commit (AUD12-08).
+
+    The single home of the 5-line git boilerplate — every test that needs
+    a committed repo goes through here (fixtures tmp_git_repo/empty_project
+    or a direct call).
+    """
+    _git_init_bare(proj)
     (proj / "README.md").write_text("init\n")
     subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
@@ -139,6 +213,20 @@ def empty_project(tmp_path) -> Path:
     proj.mkdir()
     _git_init(proj)
     return proj
+
+
+@pytest.fixture
+def tmp_git_repo(tmp_path) -> Path:
+    """A tmp_path/repo with git init, user config, and an initial commit.
+
+    AUD12-08: single home for the 5-line git boilerplate — previously
+    duplicated in tests/unit/conftest.py, tests/negative/conftest.py and
+    ~18 inline copies across the suite.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    return repo
 
 
 @pytest.fixture
@@ -236,7 +324,9 @@ def plugin_setup(tmp_path, monkeypatch):
     config = load()
     ensure_directories(config)
     set_config(config)
-    set_http_port(13747)
+    # AUD12-09: no hardcoded port — the suite must not depend on a
+    # specific port being free (parallel runs / busy CI box).
+    set_http_port(_free_port())
     set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
     reset_registry()
 

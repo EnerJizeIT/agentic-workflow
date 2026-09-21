@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config as cfg_mod
 from . import paths, todos, verify
 from ._log import log as _log
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
@@ -29,6 +30,7 @@ from .plan_progress import mark_plan_step_done as _mark_plan_step_done
 from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
+from .verify_pack import verify_pack as _verify_pack_fn
 
 # ─── shared helpers ─────────────────────────────────────────────────────
 
@@ -39,6 +41,15 @@ def _find_stage_index(stages: list[Stage], name: str) -> int:
         if s.name == name:
             return i
     return -1
+
+
+def _cfg_int(config: dict, dotted_key: str, default: int) -> int:
+    """automation.* config value as int — ``default`` on miss or bad type."""
+    val = cfg_mod.get(config, dotted_key, default)
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
 
 
 def _find_active_todo(project_dir: Path) -> str:
@@ -82,6 +93,71 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
 
 
+def _write_verify_pack_error_note(
+    project_dir: Path, todo_id: str, error: Exception,
+) -> None:
+    """U5: best-effort GATES report when verify-pack itself crashed.
+
+    The stage keeps going; the report carries the failure note so the
+    supervisor sees WHY the mechanical checks are missing.
+    """
+    try:
+        report = paths.context_dir(project_dir) / f"GATES-{todo_id}.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            f"# GATES-{todo_id} — verify-pack report\n\n"
+            f"## Verdict: **error** (verify-pack did not run)\n\n"
+            f"verify-pack failed before measuring anything:\n\n"
+            f"```\n{type(error).__name__}: {error}\n```\n\n"
+            f"The verify stage continues; run `awf verify-pack --todo {todo_id}` "
+            "manually to reproduce.\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # the note is best-effort; the log line is the durable record
+
+
+def _maybe_run_verify_pack(
+    current_todo: str,
+    project_dir: Path,
+    config: dict,
+    logs_dir: Path,
+) -> None:
+    """U5: run the verify pack BEFORE the supervisor's signal wait.
+
+    By the time the supervisor wakes (interactive wait or the verify
+    subprocess) the GATES report is already written. Toggle:
+    ``automation.verify_pack`` (default true). Skipped when there is no
+    baseline (nothing to measure the diff against). Any pack error is
+    logged and never stops the pipeline — an error note is written to the
+    report instead.
+    """
+    if cfg_mod.get(config, "automation.verify_pack", True) is False:
+        return
+    if not _read_baseline_sha(project_dir, current_todo):
+        return
+    try:
+        result = _verify_pack_fn(project_dir, current_todo)
+    except Exception as e:  # noqa: BLE001 — the pack must never stop the stage
+        _log(logs_dir, f"U5: verify-pack crashed for {current_todo}: {type(e).__name__}: {e}")
+        _write_verify_pack_error_note(project_dir, current_todo, e)
+        print(
+            f"U5: verify-pack failed for {current_todo} ({type(e).__name__}: {e}) "
+            "— verify stage continues",
+            file=sys.stderr,
+        )
+        return
+    _log(
+        logs_dir,
+        f"U5: verify-pack {current_todo}: {result.verdict} (exit {result.exit_code}) "
+        f"→ {result.report_path}",
+    )
+    print(
+        f"U5: verify-pack {current_todo} → {result.verdict} "
+        f"(exit {result.exit_code}); report: {result.report_path}"
+    )
+
+
 def _ensure_baseline_sha(
     project_dir: Path, todo_id: str, logs_dir: Path,
 ) -> None:
@@ -115,6 +191,86 @@ def _ensure_baseline_sha(
 
 
 # ─── transition handlers ────────────────────────────────────────────────
+
+
+def _consume_verify_decision(
+    project_dir: Path,
+    current_todo: str,
+    signal: str,
+    logs_dir: Path,
+) -> None:
+    """AUD04-04: consume the verify decision signal once the cycle acted on it.
+
+    Analog of the DONE consumption in execute_agent_stage (NEG-4): a decision
+    file must not survive the cycle that accepted it. Without this, a
+    commit-fail or a kill left the ACK/APPROVE/REVIEW in place, and a
+    re-verify of the same TODO (``awf continue``) re-accepted the old decision
+    — e.g. auto-committing on a dead approval. The mtime gate in
+    wait_for_supervisor_signal is the safety net for files a dead process
+    never got to consume.
+    """
+    if not signal:
+        return
+    if signal.startswith("REVIEW-"):
+        candidates = [paths.outbox(project_dir) / f"REVIEW-{current_todo}.md"]
+    elif signal.startswith(("ACK-", "APPROVE-")):
+        prefix = signal.split("-", 1)[0]
+        candidates = [paths.inbox(project_dir) / f"{prefix}-{current_todo}.ready"]
+    else:
+        return
+    for p in candidates:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+        else:
+            _log(logs_dir, f"AUD04-04: consumed verify decision {p.name}")
+    # U6b: the decision has been acted on — drop the acceptance record so the
+    # next cycle starts fresh (a fresh re-approval must not be mistaken for
+    # this cycle's leftover).
+    _write_state(
+        project_dir,
+        accepted_decision=None, accepted_decision_mtime=None,
+        logs_dir=logs_dir,
+    )
+
+
+def _record_verify_decision(
+    project_dir: Path,
+    current_todo: str,
+    signal: str,
+    logs_dir: Path,
+) -> None:
+    """U6b: record the accepted verify decision BEFORE the cycle acts on it.
+
+    A kill between acceptance and consumption (AUD04-04) leaves the decision
+    file on disk. This record — signal name + the file's mtime at acceptance,
+    keyed per signal in the pipeline state — is what makes the next verify's
+    fallback (supervisor._detect_supervisor_signal) recognize the leftover as
+    the SAME decision instead of a fresh approval.
+    """
+    if not signal:
+        return
+    if signal.startswith("REVIEW-"):
+        candidates = [paths.outbox(project_dir) / f"REVIEW-{current_todo}.md"]
+    elif signal.startswith(("ACK-", "APPROVE-")):
+        prefix = signal.split("-", 1)[0]
+        candidates = [paths.inbox(project_dir) / f"{prefix}-{current_todo}.ready"]
+    else:
+        return
+    for p in candidates:
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        _write_state(
+            project_dir,
+            accepted_decision=signal,
+            accepted_decision_mtime=mtime,
+            logs_dir=logs_dir,
+        )
+        _log(logs_dir, f"U6b: recorded accepted verify decision {p.name} (mtime={mtime})")
+        return
 
 
 def _handle_next(
@@ -162,9 +318,18 @@ def _handle_escalate(
     _log(logs_dir, "Escalating to supervisor for retry")
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    sup_signal = _run_supervisor_stage(
-        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
-    )
+    # AUD04-05: a replan timeout/crash on this path used to escape as a raw
+    # traceback (dirty state, dashboard stuck on "running") — same class of
+    # event as the main supervisor stage, same clean stop.
+    try:
+        sup_signal = _run_supervisor_stage(
+            replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+        )
+    except (RuntimeError, TimeoutError) as e:
+        print("ERROR: supervisor replan after BLOCKED crashed. Pipeline stopped.", file=sys.stderr)
+        print(f"  Details: {e}", file=sys.stderr)
+        _log(logs_dir, f"Pipeline stopped at stage {s_name}: escalate replan crashed: {e}")
+        return stage_idx, current_todo, 1
 
     # Day-2 B2: ACK/APPROVE from the supervisor means "accept the current
     # state, keep going". Clear the BLOCKED closure (TODO becomes active
@@ -190,8 +355,14 @@ def _handle_rollback(
     auto: bool,
     target: str,
     pipeline_name: str | None = None,
+    source: str = "",
 ) -> tuple[int, str, int]:
     """Transition: rollback to a target stage + supervisor replan.
+
+    AUD03-01: rollbacks are budgeted per (TODO, source->target) in the
+    pipeline state — a systematic reject/failed signal used to loop
+    rollback->replan->stage forever (and self-rollback looped in place).
+    Exhaustion stops the pipeline so the supervisor decides.
 
     Returns (new_stage_idx, new_current_todo, exit_code).
     """
@@ -200,13 +371,49 @@ def _handle_rollback(
         print(f"ERROR: Rollback target '{target}' not found in pipeline")
         return -1, current_todo, 1
 
-    print(f"Rolling back to stage: {stages[target_idx].name}")
-    _log(logs_dir, f"Rollback to stage {stages[target_idx].name} (index {target_idx})")
+    # AUD03-01: rollback budget. The key is per (TODO, source->target), so a
+    # replanned TODO or a different rollback route gets a fresh budget.
+    prev_state = read_state(project_dir) or {}
+    counts = prev_state.get("rollback_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    rb_key = f"{current_todo}:{source}->{target}"
+    try:
+        rb_count = int(counts.get(rb_key, 0) or 0)
+    except (TypeError, ValueError):
+        rb_count = 0
+    limit = stages[target_idx].max_rollbacks
+    if rb_count >= limit:
+        print(
+            f"Rollback budget exhausted ({limit}) for {current_todo} "
+            f"({source or '?'} -> {target}). Escalating to supervisor. "
+            f"Pipeline stopped.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"Rollback budget exhausted for {rb_key} — pipeline stopped")
+        return -1, current_todo, 1
+
+    counts[rb_key] = rb_count + 1
+    _write_state(project_dir, rollback_counts=counts, logs_dir=logs_dir)
+    print(f"Rolling back to stage: {stages[target_idx].name} (rollback {rb_count + 1}/{limit})")
+    _log(
+        logs_dir,
+        f"Rollback to stage {stages[target_idx].name} (index {target_idx}, {rb_count + 1}/{limit})",
+    )
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
-    _run_supervisor_stage(
-        replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
-    )
+    # AUD04-05: same clean stop as the main supervisor stage — a replan
+    # timeout/crash must not escape as a raw traceback.
+    try:
+        _run_supervisor_stage(
+            replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+        )
+    except (RuntimeError, TimeoutError) as e:
+        print("ERROR: supervisor replan after rollback crashed. Pipeline stopped.", file=sys.stderr)
+        print(f"  Details: {e}", file=sys.stderr)
+        _log(logs_dir, f"Pipeline stopped at stage {source or target}: rollback replan crashed: {e}")
+        return -1, current_todo, 1
+
     new_todo = _find_active_todo(project_dir)
     if not new_todo:
         print("Rollback: supervisor did not create a new TODO. Stopping.", file=sys.stderr)
@@ -422,6 +629,11 @@ def execute_supervisor_stage(
     s_name = stage.name
     s_kind = stage.kind
 
+    # U5: the verify pack must finish BEFORE the supervisor waits for its
+    # signal — the GATES report is ready when the supervisor wakes.
+    if s_kind == "verify" and current_todo:
+        _maybe_run_verify_pack(current_todo, project_dir, config, logs_dir)
+
     try:
         sup_signal = _run_supervisor_stage(
             stage, current_todo, auto, project_dir, logs_dir, pipeline_name
@@ -433,40 +645,9 @@ def execute_supervisor_stage(
         return current_todo, 0, 1
 
     if s_kind == "plan":
-        # R5: Two-phase plan — Brief → checkpoint → TODO
-        inbox_dir = paths.inbox(project_dir)
-        brief_signals = sorted(inbox_dir.glob("BRIEF-TODO-*.ready")) if inbox_dir.is_dir() else []
-
-        if brief_signals:
-            # R5: Brief detected — run checkpoint on Brief, then write TODO
-            brief_name = brief_signals[0].stem  # BRIEF-TODO-0001
-            current_todo = brief_name.replace("BRIEF-", "")  # TODO-0001
-            print(f"R5: Brief detected for {current_todo}")
-            _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
-
-            rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
-            if rc != 0:
-                return current_todo, 0, rc
-
-            # Phase 2: call supervisor again to write TODO based on approved Brief
-            print("R5: Brief approved — supervisor writing TODO for agent...")
-            _log(logs_dir, f"R5: Brief approved, requesting TODO for {current_todo}")
-            write_todo_stage = Stage(name="write-todo", role="supervisor", kind="plan")
-            try:
-                _run_supervisor_stage(
-                    write_todo_stage, current_todo, auto,
-                    project_dir=project_dir, logs_dir=logs_dir,
-                    pipeline_name=pipeline_name,
-                )
-            except (RuntimeError, TimeoutError) as e:
-                print(f"ERROR: write-todo stage crashed: {e}", file=sys.stderr)
-                return current_todo, 0, 1
-        else:
-            # Backward compat: no Brief, old flow (supervisor wrote TODO directly)
-            rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
-            if rc != 0:
-                return current_todo, 0, rc
-
+        # FU-05: single-phase plan — the contract is the TODO itself. The
+        # two-phase brief flow is gone: stray brief-signal leftovers in the
+        # inbox no longer influence TODO selection (AUD04-03).
         # NEG-2026-09-19 R1: keep the pinned TODO if the caller supplied one
         # (run queue); fall back to "newest active" only when unpinned.
         current_todo = current_todo or _find_active_todo(project_dir)
@@ -474,18 +655,39 @@ def execute_supervisor_stage(
             print("No active TODO found. Create one first, then continue.")
             _log(logs_dir, "No active TODO after supervisor stage")
             return current_todo, 0, 1
+
+        rc = _run_plan_checkpoint_gate(current_todo, project_dir, config, auto, logs_dir)
+        if rc != 0:
+            return current_todo, 0, rc
+
         print(f"Active TODO: {current_todo}")
         _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="brief")
         return current_todo, 1, 0  # next stage
 
     if s_kind == "verify":
-        _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="verify")
+        # AUD02-01: persist the supervisor's decision — after a REVIEW exit the
+        # context consumer reads last_signal to tell the supervisor to write
+        # the next TODO (REVIEW-restart branch in api/context.py).
+        _write_state(
+            project_dir,
+            todo_id=current_todo,
+            logs_dir=logs_dir,
+            phase="verify",
+            **({"last_signal": sup_signal} if sup_signal else {}),
+        )
         if not sup_signal:
             print(f"ERROR: verify stage produced no supervisor signal for {current_todo}.", file=sys.stderr)
             _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
             return current_todo, 0, 1
 
+        # U6b: record the acceptance BEFORE the cycle acts on it — the commit
+        # gate and the replan live inside the kill window, so the record must
+        # already be in state when they start. A kill before the consumption
+        # below then leaves a file the next verify can recognize as stale.
+        _record_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
+
         if sup_signal.startswith("REVIEW-"):
+            rejected_todo = current_todo  # AUD04-04: the REVIEW belongs to THIS todo
             print(f"Supervisor REJECTED work on {current_todo} (REVIEW signal).", file=sys.stderr)
             _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
             replan_stage = Stage(name="replan", role="supervisor", kind="replan")
@@ -495,22 +697,41 @@ def execute_supervisor_stage(
                 )
             except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
+                _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
                 return current_todo, 0, 1
             new_todo = _find_active_todo(project_dir)
             if new_todo and new_todo != current_todo:
                 current_todo = new_todo
                 # Persist replanned TODO so continue resumes the right task.
                 _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir)
+            # AUD04-04: consume the REVIEW now that the replan had its chance —
+            # a re-run of the same TODO must not re-trigger replan on it. The
+            # file is keyed to the REJECTED todo (current_todo may have moved
+            # to the replanned one by now).
+            _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
             print("Pipeline stopped: supervisor rejected.", file=sys.stderr)
             return current_todo, 0, 1
 
         # Approved path: ACK or APPROVE signal
         print(f"Supervisor approved {current_todo} ({sup_signal or 'implicit'}).")
         baseline_sha = _read_baseline_sha(project_dir, current_todo)
-        commit_ok = _maybe_commit(
-            s_name, current_todo, stage.on_approved,
-            project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
-        )
+        # AUD04-05: the commit gate can time out (APPROVE wait) — treat it as
+        # a failed commit (clean stop) instead of a raw traceback.
+        try:
+            commit_ok = _maybe_commit(
+                s_name, current_todo, stage.on_approved,
+                project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(f"ERROR: commit gate for {current_todo} crashed. Pipeline stopped.", file=sys.stderr)
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
+            commit_ok = False
+        # AUD04-04: consume the accepted ACK/APPROVE now that the commit gate
+        # has acted on it — success OR failure. A commit-fail leaves the TODO
+        # active; a re-verify of the same TODO must get a FRESH approval, not
+        # re-open the gate on this cycle's stale one.
+        _consume_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
         if not commit_ok:
             print(
                 f"Commit failed for {current_todo} — TODO NOT archived, "
@@ -528,6 +749,88 @@ def execute_supervisor_stage(
 
     # Other supervisor kinds (e.g. replan without verify)
     return current_todo, 1, 0
+
+
+def _death_tail(log_holder: dict[str, str]) -> str:
+    """U6b/U6c: this run's worker-log tail (from its start offset).
+
+    Append-mode log (dogfood-11): without the offset an earlier run's
+    network marker would leak into this run's death classification
+    (QA TODO-0017). '' when the run never got a log (the preflight died
+    before the file was created).
+    """
+    from . import _net
+
+    log_path_str = log_holder.get("log_path", "")
+    if not log_path_str:
+        return ""
+    start_offset = int(log_holder.get("log_start_offset") or 0)
+    return _net.read_log_tail(Path(log_path_str), start_offset=start_offset)
+
+
+def _handle_net_death(
+    *,
+    s_name: str,
+    net_retries: int,
+    net_limit: int,
+    net_key: str,
+    project_dir: Path,
+    logs_dir: Path,
+    outbox: Path,
+    todo_id: str,
+    prefixes: tuple[str, ...],
+) -> tuple[int, bool]:
+    """U6b/U6c: what a network-class death does — schedule the backoff
+    retry (budget left) or declare the budget exhausted.
+
+    Shared by both death paths (the silent no-signal exit and the
+    RuntimeError/TimeoutError crash) so they can never classify or spend
+    the retry budget differently. Returns (new_net_retries,
+    retry_scheduled); the caller breaks to the net-round epilogue either
+    way — scheduled means the next net round, exhausted means the
+    failure path.
+    """
+    import time as _time
+
+    from . import _net
+    from .pipeline_state import write_state as _ws
+    from .signals import clean_stage_signals
+
+    if net_retries < net_limit:
+        net_retries += 1
+        backoff = _net.NET_RETRY_BACKOFFS[
+            min(net_retries - 1, len(_net.NET_RETRY_BACKOFFS) - 1)
+        ]
+        _ws(
+            project_dir,
+            net_retry_count=net_retries, net_retry_key=net_key,
+            logs_dir=logs_dir,
+        )
+        print(
+            f"U6b: worker log shows a network failure — retrying "
+            f"'{s_name}' in {backoff:.0f}s "
+            f"(net retry {net_retries}/{net_limit})...",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"U6b: network failure on {s_name} — backoff "
+            f"{backoff:.0f}s (net retry {net_retries}/{net_limit})",
+        )
+        clean_stage_signals(outbox, todo_id, *prefixes)
+        _time.sleep(backoff)
+        return net_retries, True
+    print(
+        f"U6b: network retries exhausted ({net_limit}/{net_limit}) "
+        f"on '{s_name}' — no more retries",
+        file=sys.stderr,
+    )
+    _log(
+        logs_dir,
+        f"U6b: network retries exhausted on {s_name} "
+        f"(limit {net_limit}) — proceeding to failure path",
+    )
+    return net_retries, False
 
 
 def execute_agent_stage(
@@ -586,71 +889,148 @@ def execute_agent_stage(
     MAX_SILENT_RETRIES = 2
     TRANSIENT_THRESHOLD_SEC = 30
 
-    signal = None
-    for attempt_no in range(MAX_SILENT_RETRIES + 1):
-        import time as _time
-        agent_start = _time.monotonic()
-        retry_note = _silent_retry_note(attempt_no, current_todo) if attempt_no else None
+    # U6b: network retry budget. The counter lives in state keyed by
+    # (TODO, stage) — same pattern as salvage_count_key: a different stage
+    # or TODO starts fresh instead of inheriting a stale count.
+    from . import _net
+
+    net_key = f"{current_todo}:{s_name}"
+    net_limit = _cfg_int(config, "automation.net_retry_limit", _net.NET_RETRY_LIMIT_DEFAULT)
+
+    # U6b: the counter survives kill+continue like salvage_count (AUD02-07) —
+    # a pipeline killed mid net-backoff restarts this stage and must NOT get a
+    # fresh budget. Same (TODO, stage) key → inherit; other key/absent → 0.
+    _prev_net_state = read_state(project_dir) or {}
+    if _prev_net_state.get("net_retry_key") != net_key:
+        net_retries = 0
+    else:
         try:
-            _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                             prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
-                             retry_note=retry_note, attempt=attempt_no + 1)
-        except (RuntimeError, TimeoutError) as e:
-            print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
-            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-            return current_todo, stage_idx, 1
-        agent_elapsed = _time.monotonic() - agent_start
+            net_retries = int(_prev_net_state.get("net_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            net_retries = 0
 
-        prefixes = expected_signal_prefixes(s_kind)
-        signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-
-        if not signal:
+    log_holder: dict[str, str] = {}
+    signal = None
+    # U6c: bound BEFORE the attempt loop — the crash path (except branch)
+    # exits the loop before the in-loop assignment, and the salvage path
+    # below still needs the prefixes.
+    prefixes = expected_signal_prefixes(s_kind)
+    worker_run = 0  # cumulative worker run number (handoff fact "worker run")
+    for _net_round in range(net_limit + 1):
+        net_retry_scheduled = False
+        for attempt_no in range(MAX_SILENT_RETRIES + 1):
+            import time as _time
+            agent_start = _time.monotonic()
+            retry_note = _silent_retry_note(attempt_no, current_todo) if attempt_no else None
+            worker_run += 1
             try:
-                signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
-            except TimeoutError:
-                pass
+                _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
+                                 prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
+                                 retry_note=retry_note, attempt=worker_run,
+                                 log_holder=log_holder)
+            except (RuntimeError, TimeoutError) as e:
+                # U6c: a crash is not automatically a non-network death —
+                # U6b turns "no signal + rc!=0" into a RuntimeError, so the
+                # most common network death (endpoint down mid-run) used to
+                # stop the pipeline here, never reaching the classification
+                # below. Classify the same way as the no-signal path: this
+                # run's log tail, plus the preflight-timeout marker in the
+                # exception text (the endpoint was down before the worker
+                # even started — no log to read yet).
+                tail = _death_tail(log_holder)
+                # QA (U6c): the preflight text check applies ONLY to
+                # TimeoutError — preflight is the only network death with no
+                # worker log. U6b's RuntimeError embeds the full Cmd (stage
+                # and agent names, file paths, prompt), so a project's own
+                # "preflight" stage name must not classify a clean-log crash
+                # as network. A crash death is classified by its log tail.
+                # Pinned by test_crash_text_with_preflight_word_not_network.
+                if _net.is_network_failure(tail) or (
+                    isinstance(e, TimeoutError)
+                    and _net.is_preflight_timeout(str(e))
+                ):
+                    net_retries, net_retry_scheduled = _handle_net_death(
+                        s_name=s_name, net_retries=net_retries,
+                        net_limit=net_limit, net_key=net_key,
+                        project_dir=project_dir, logs_dir=logs_dir,
+                        outbox=outbox, todo_id=current_todo,
+                        prefixes=prefixes,
+                    )
+                    break  # scheduled → next net round; exhausted → failure path
+                print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
+                _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+                return current_todo, stage_idx, 1
+            agent_elapsed = _time.monotonic() - agent_start
 
-        # NEG-4: did THIS stage entry produce changes? (not a foreign diff
-        # left over from an earlier stage)
-        stage_produced_work = bool(stage_start_fingerprint) and (
-            verify.work_fingerprint(project_dir, stage_baseline_sha, current_todo)
-            != stage_start_fingerprint
-        )
+            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
-        if not signal:
-            if stage_produced_work and verify.attempt_auto_done(
-                project_dir, current_todo, config, stage_baseline_sha
-            ):
+            if not signal:
+                try:
+                    signal = wait_for_signal(outbox, current_todo, *prefixes, timeout=30)
+                except TimeoutError:
+                    pass
+
+            # NEG-4: did THIS stage entry produce changes? (not a foreign diff
+            # left over from an earlier stage)
+            stage_produced_work = bool(stage_start_fingerprint) and (
+                verify.work_fingerprint(project_dir, stage_baseline_sha, current_todo)
+                != stage_start_fingerprint
+            )
+
+            if not signal:
+                if stage_produced_work and verify.attempt_auto_done(
+                    project_dir, current_todo, config, stage_baseline_sha
+                ):
+                    signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+
+            if signal:
+                break
+
+            # U6b: worker died without a signal — classify the death BEFORE
+            # the silent retry: a dead model endpoint is not fixed by a
+            # continue-push, it gets its own backoff-retry budget (30/60/120s).
+            tail = _death_tail(log_holder)
+            if _net.is_network_failure(tail):
+                net_retries, net_retry_scheduled = _handle_net_death(
+                    s_name=s_name, net_retries=net_retries,
+                    net_limit=net_limit, net_key=net_key,
+                    project_dir=project_dir, logs_dir=logs_dir,
+                    outbox=outbox, todo_id=current_todo,
+                    prefixes=prefixes,
+                )
+                break  # scheduled → next net round; exhausted → failure path
+
+            # dogfood-11: no signal — retry only when the worker left NO work
+            # evidence. With work present, salvage lets the supervisor ACK it;
+            # a rerun could overwrite or duplicate usable changes.
+            worker_has_work = stage_produced_work
+            if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
+                # TOCTOU guard (dogfood-11): a signal may have landed between the
+                # wait timeout above and this cleanup (e.g. the worker wrote DONE
+                # right at the boundary). Re-read before wiping anything — a
+                # valid signal must never be deleted by the retry cleanup.
                 signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+                if signal:
+                    break
+                transient = agent_elapsed < TRANSIENT_THRESHOLD_SEC
+                kind_hint = "fast exit (transient?)" if transient else "no code, no signal"
+                print(
+                    f"Worker exited in {agent_elapsed:.0f}s with no signal ({kind_hint}) — "
+                    f"retrying with a continue-push ({attempt_no + 1}/{MAX_SILENT_RETRIES})...",
+                    file=sys.stderr,
+                )
+                _log(logs_dir, f"F4/F7: auto-retry {attempt_no + 1}/{MAX_SILENT_RETRIES} "
+                    f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
+                from .signals import clean_stage_signals
+                clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                continue
+
+            break
 
         if signal:
             break
-
-        # dogfood-11: no signal — retry only when the worker left NO work
-        # evidence. With work present, salvage lets the supervisor ACK it;
-        # a rerun could overwrite or duplicate usable changes.
-        worker_has_work = stage_produced_work
-        if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
-            # TOCTOU guard (dogfood-11): a signal may have landed between the
-            # wait timeout above and this cleanup (e.g. the worker wrote DONE
-            # right at the boundary). Re-read before wiping anything — a
-            # valid signal must never be deleted by the retry cleanup.
-            signal = read_signal_for_todo(outbox, current_todo, *prefixes)
-            if signal:
-                break
-            transient = agent_elapsed < TRANSIENT_THRESHOLD_SEC
-            kind_hint = "fast exit (transient?)" if transient else "no code, no signal"
-            print(
-                f"Worker exited in {agent_elapsed:.0f}s with no signal ({kind_hint}) — "
-                f"retrying with a continue-push ({attempt_no + 1}/{MAX_SILENT_RETRIES})...",
-                file=sys.stderr,
-            )
-            _log(logs_dir, f"F4/F7: auto-retry {attempt_no + 1}/{MAX_SILENT_RETRIES} "
-                f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
-            from .signals import clean_stage_signals
-            clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
-            continue
-
+        if net_retry_scheduled:
+            continue  # next net round — the endpoint had a chance to recover
         break
 
     if not signal:
@@ -662,11 +1042,16 @@ def execute_agent_stage(
         # Dogfood-11: count consecutive silent exits for this stage. A repeat
         # salvage means retrying the same scope won't help — the SALVAGE note
         # escalates to task splitting / incremental writes instead.
+        # AUD02-07: the count is per (TODO, stage) — a different stage or TODO
+        # starts fresh at 1 instead of inheriting a stale counter ("ATTEMPT 2"
+        # on the first failure of a brand-new stage).
         prev_state = read_state(project_dir) or {}
         try:
-            attempt = int(prev_state.get("salvage_count", 0) or 0) + 1
+            prev_count = int(prev_state.get("salvage_count", 0) or 0)
         except (TypeError, ValueError):
-            attempt = 1
+            prev_count = 0
+        salvage_key = f"{current_todo}:{s_name}"
+        attempt = prev_count + 1 if prev_state.get("salvage_count_key") == salvage_key else 1
 
         _write_salvage_prompt(
             project_dir, current_todo, s_name, baseline_sha, logs_dir,
@@ -675,6 +1060,13 @@ def execute_agent_stage(
         _ws(
             project_dir,
             salvage_needed=True, salvage_stage=s_name, salvage_count=attempt,
+            # AUD04-08: identity of the counted (TODO, stage) — written by the
+            # engine, cleared by no one on stage start, so the count survives
+            # kill+continue (the retry cycle) and the dashboard flag reset.
+            salvage_count_key=salvage_key,
+            # AUD02-01: the worker produced no signal — clear any stale one,
+            # so readers never attribute a previous stage's signal to this run.
+            last_signal=None,
             logs_dir=logs_dir,
         )
 
@@ -688,10 +1080,19 @@ def execute_agent_stage(
             return current_todo, stage_idx, 1
 
         salvage_stage = Stage(name="salvage", role="supervisor", kind="salvage")
-        _run_supervisor_stage(
-            salvage_stage, current_todo, auto=False,
-            project_dir=project_dir, logs_dir=logs_dir, pipeline_name=pipeline_name
-        )
+        # AUD04-05: a salvage wait timeout used to escape as a raw traceback
+        # mid-background-run — same class of event as the main supervisor
+        # stage, same clean stop.
+        try:
+            _run_supervisor_stage(
+                salvage_stage, current_todo, auto=False,
+                project_dir=project_dir, logs_dir=logs_dir, pipeline_name=pipeline_name
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print("ERROR: supervisor salvage crashed. Pipeline stopped.", file=sys.stderr)
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: salvage crashed: {e}")
+            return current_todo, stage_idx, 1
         signal = read_signal_for_todo(outbox, current_todo, *prefixes)
         if not signal:
             print("No signal after supervisor salvage. Stopping.", file=sys.stderr)
@@ -704,7 +1105,13 @@ def execute_agent_stage(
     sig_type = signal_type(signal)
     print(f"Signal classified as: {sig_type}")
     # Dogfood-11: stage resolved — reset the consecutive-salvage counter.
-    _write_state(project_dir, salvage_count=0, logs_dir=logs_dir)
+    # AUD02-01: record the signal — readers (wait_for_event blocked-wake-up,
+    # dashboard banner, context REVIEW-restart hint) all key off this field.
+    _write_state(
+        project_dir, salvage_count=0, salvage_count_key=None,
+        net_retry_count=0, net_retry_key=None,
+        last_signal=signal, logs_dir=logs_dir,
+    )
 
     # NEG-4 (day-2 B1): consume the fired .ready signal now that the stage is
     # resolved. The same filename used to stay valid for every later stage —
@@ -720,9 +1127,17 @@ def execute_agent_stage(
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
 
     if action in ("next", "commit_and_next", "commit_and_report"):
-        new_idx = _handle_next(
-            project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
-        )
+        # AUD04-05: the commit gate can time out (APPROVE wait) — stop
+        # cleanly instead of letting the TimeoutError traceback out.
+        try:
+            new_idx = _handle_next(
+                project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(f"ERROR: commit gate at '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
+            return current_todo, stage_idx, 1
         return current_todo, new_idx, 0
 
     elif action == "escalate":
@@ -751,14 +1166,23 @@ def execute_agent_stage(
             return new_todo, new_idx, exit_code
         new_idx, new_todo, exit_code = _handle_rollback(
             project_dir, logs_dir, stages, current_todo, auto, target, pipeline_name,
+            source=s_name,
         )
         return new_todo, new_idx, exit_code
 
     elif action == "stop":
         print("Pipeline stopped by policy.")
         _log(logs_dir, f"Pipeline stopped by policy at stage {s_name}")
-        return current_todo, stage_idx, 0
-
-    else:
-        print(f"Unknown transition: {action}")
+        # AUD04-02: rc=1 so the orchestrator exits — rc=0 with the same
+        # stage_idx used to re-run this stage forever (the BLOCKED-stop loop).
         return current_todo, stage_idx, 1
+
+    # AUD04-12: resolve_transition returns a closed action set
+    # (next/commit_and_next/commit_and_report/escalate/rollback/stop) and
+    # every member is handled above — the old `else: Unknown transition`
+    # branch was unreachable dead code. The invariant is pinned explicitly:
+    # a new resolver action must be dispatched here, not silently stopped.
+    raise AssertionError(
+        f"Unhandled transition action {action!r} at stage {s_name!r} — "
+        "resolve_transition returned an action the dispatcher does not handle"
+    )

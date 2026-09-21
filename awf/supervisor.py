@@ -123,7 +123,7 @@ def _build_pipeline_context(
         parts.append("\nYour scope: project audit. Don't implement — assess overall quality.")
 
     # 6. Prior completed work from done/
-    done_dir = project_dir / ".agentic" / "done"
+    done_dir = paths.done_dir(project_dir)
     if done_dir.is_dir():
         completed = sorted(d.name for d in done_dir.iterdir() if d.is_dir())
         if completed:
@@ -141,42 +141,51 @@ def _build_pipeline_context(
 _SNIPPET_ALWAYS = """\
 ## ⚡ Critical rules (always apply)
 - DO NOT edit source files, awf tooling, or templates. All changes through pipeline.
-- DO NOT git commit/push manually — pipeline auto-commits after verify approve.
+- Commit follows the stage policy: `on_approved` in .agentic/pipelines/*.yaml —
+  commit_and_next/commit_and_report = the engine commits after approve; with
+  `next` the commit is yours. `git push` is always yours.
 - You ARE the decision maker. Do NOT ask user "should I approve?" — decide yourself.
-- After ANY action (approve, dispatch, start) → call awf_wait_for_event to verify result.
+- No active run: GO IDLE after start — the engine tracks signals itself, do NOT
+  poll awf_wait_for_event/awf_status in a loop. In an active run (забег): keep
+  the loop awf_wait_for_event(actionable_only=True) → awf_approve(evidence=...)
+  → awf_run_next (see phase-run.md).
 - If MCP tool times out → bash fallback: `python3 -m awf status --project-dir <path>`
 """
 
 _SNIPPET_PLAN = """\
-## Plan stage — write Brief first, then TODO after approval
+## Plan stage — write the TODO (single contract)
 1. Study project vision (above) + phases file (.agentic/phases/plan.md)
 2. Determine next uncompleted step toward goal
-3. Write .agentic/inbox/BRIEF-TODO-NNNN.md:
+3. Write .agentic/inbox/TODO-NNNN.md:
    - Goal: what this increment achieves (1-3 sentences)
-   - Success criteria: testable conditions defining "done"
-   - Out of scope: what we explicitly don't do
+   - Tasks: specific, testable steps for the first agent stage
+   - Context: what the agent needs to know about existing code
    - Verify: commands to check success
-4. Create signal: .agentic/inbox/BRIEF-TODO-NNNN.ready
-5. After user approves Brief in checkpoint form, write TODO-NNNN.md
-   (detailed task for agent) and create TODO-NNNN.ready
+   - Optional: TODO может нести машиночитаемый блок в самом верху (--- / ---, ключи verify/gates/prove_red) — валидируется при dispatch, формат: docs/unit-contract.md
+4. Create signal: .agentic/inbox/TODO-NNNN.ready
+5. The checkpoint form shows this TODO to the user — approve, edit, or reject
 6. Workers are capable — give autonomy, don't over-specify
 """
 
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
 1. Read ALL handoffs in .agentic/handoff/
-2. Read BRIEF-{todo_id}.md — this is the user-approved contract.
-   For EACH success criterion in the Brief:
+2. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
+   For EACH success criterion in the TODO:
    - Mark ✅ met or ❌ not met
    - If ❌ → you MUST write REVIEW with specifics, not approve
 3. Run: git diff --stat — check what actually changed
 4. Read the actual code changes for correctness
-5. Run verify commands from the Brief independently
+5. Run verify commands from the TODO independently
 6. DECIDE YOURSELF (do NOT ask user):
    - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
+     (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
+     the engine ignores a file-based ACK without RUN-EVIDENCE)
    - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
      listing which criteria failed and what to fix
 7. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
+8. Commit follows the stage policy (on_approved in .agentic/pipelines/*.yaml):
+   auto-commit = engine's step, otherwise the commit is yours; push always is.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -185,9 +194,12 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
 1. Read .agentic/inbox/SALVAGE-{todo_id}.md for details on what happened.
 2. Check git diff — did worker produce useful work?
 3. If yes → create .agentic/inbox/ACK-{todo_id}.ready (accept)
+   (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
+   the engine ignores a file-based ACK without RUN-EVIDENCE)
 4. If no → call awf_retry_stage(project_dir) to retry the stage
 5. If retry also fails → create .agentic/outbox/REVIEW-{todo_id}.md (reject)
-6. Do NOT git commit manually — pipeline auto-commits after ACK.
+6. Commit follows the stage policy (on_approved in .agentic/pipelines/*.yaml);
+   `git push` is always the supervisor's step.
 
 If the diff is EMPTY and this is a REPEAT salvage (see "ATTEMPT" in the
 SALVAGE file): do NOT retry the same scope again. Split the work into
@@ -211,14 +223,6 @@ def _stage_snippet(kind: str, todo_id: str = "") -> str:
     """
     snippet = _STAGE_SNIPPETS.get(kind, "")
     if snippet and todo_id:
-        snippet = snippet.replace("{todo_id}", todo_id)
-    return snippet
-
-
-def get_salvage_snippet(todo_id: str = "") -> str:
-    """Public API: salvage instructions for orchestrator."""
-    snippet = _SNIPPET_ALWAYS + "\n" + _SNIPPET_SALVAGE
-    if todo_id:
         snippet = snippet.replace("{todo_id}", todo_id)
     return snippet
 
@@ -284,9 +288,18 @@ def build_prompt(
         base = (
             f"## CRITICAL completion contract (read this BEFORE your skill)\n"
             f"Pipeline BLOCKS until you create the signal file. This is non-negotiable.\n\n"
-            f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready\n"
-            f"  🚫 Blocked? → touch .agentic/outbox/BLOCKED-{todo_id}.ready\n\n"
-            f"Also write a 1-line summary: .agentic/outbox/DONE-{todo_id}.md\n\n"
+            f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready AND write a\n"
+            f"               1-line summary: .agentic/outbox/DONE-{todo_id}.md\n"
+            f"  🚫 Blocked? → write .agentic/outbox/BLOCKED-{todo_id}.md with the reason,\n"
+            f"               then touch .agentic/outbox/BLOCKED-{todo_id}.ready (no DONE file)\n\n"
+            f"Optional machine facts for the next role: .agentic/outbox/DONE-{todo_id}.json —\n"
+            f"a JSON object with keys files_changed, tests_run, gates, notes, e.g.:\n"
+            f'  {{"files_changed": ["awf/x.py", "tests/unit/test_x.py"],\n'
+            f'   "tests_run": [{{"cmd": "python3 -m pytest tests/unit/test_x.py -q", "result": "12 passed"}}],\n'
+            f'   "gates": ["contracts", "ratchet"], "notes": "one line"}}\n'
+            f"tests_run items are OBJECTS {{cmd, result}}, not strings — a file that\n"
+            f"violates the schema (or is broken JSON) is skipped by the handoff.\n"
+            f"Full format: docs/unit-contract.md.\n\n"
             f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
             f"Your reply has a limited token budget. Work in small pieces:\n"
             f"- Write code straight into files (write/edit tools). NEVER draft whole\n"
@@ -401,6 +414,94 @@ def _safe_supervisor_timeout() -> int:
         return 3600
 
 
+def _decision_signal_fresh(
+    path: Path,
+    wall_start: float,
+    stale_logged: set[str],
+    logs_dir: Path,
+) -> bool:
+    """AUD04-04: mtime gate for verify decision signals (ACK/APPROVE/REVIEW).
+
+    A decision file is fresh when it appeared no earlier than the second the
+    wait started. Compared at whole-second resolution on purpose: filesystem
+    mtime granularity can be 1s, and a supervisor answering in the first
+    microseconds of the wait must not be rejected by a strict
+    ``st_mtime > wall_start`` compare (FU-03 QA note). Anything older is a
+    leftover from a previous cycle (commit-fail, kill+continue) and is
+    ignored — otherwise a dead approval would re-open the commit gate.
+    Stale hits are logged once per filename so the poll loop stays quiet.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    if int(mtime) >= int(wall_start):
+        return True
+    if path.name not in stale_logged:
+        stale_logged.add(path.name)
+        _log(
+            logs_dir,
+            f"AUD04-04: stale decision signal ignored: {path.name} "
+            f"(mtime predates this wait — previous cycle's decision)",
+        )
+    return False
+
+
+def _decision_is_stale(
+    path: Path,
+    signal: str,
+    accepted_decision: str | None,
+    accepted_decision_mtime: float | None,
+) -> bool:
+    """U6b: cycle-aware gate for the auto-verify fallback.
+
+    ``accepted_decision``/``accepted_decision_mtime`` is the decision the
+    engine ACCEPTED in a previous verify cycle (recorded at acceptance,
+    cleared at consumption — pipeline_engine._record_verify_decision /
+    _consume_verify_decision). A kill between acceptance and consumption
+    leaves the decision file on disk; the next cycle's fallback would
+    re-accept it by mere existence (auto-commit on a dead approval).
+
+    The leftover is the SAME physical file as the accepted one: same signal
+    name, mtime no newer than the recorded one (whole-second resolution,
+    same convention as _decision_signal_fresh). A newer mtime means the
+    owner re-approved — that is a fresh decision, not the leftover.
+    """
+    if not accepted_decision or accepted_decision_mtime is None:
+        return False
+    if accepted_decision != signal:
+        return False
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    return int(mtime) <= int(accepted_decision_mtime)
+
+
+def _run_evidence_ok(project_dir: Path, todo_id: str) -> bool:
+    """AUD11-03: approve-signal gate for run (забег) mode.
+
+    Inside an ACTIVE run, an approve (ACK/APPROVE) only counts when the
+    independent-verification evidence file exists:
+    ``context/RUN-EVIDENCE-{todo_id}.md`` (written by
+    ``awf_approve(evidence=...)``). Without it the verify wait and the
+    auto-mode fallback ignore the file-based approve — the run protocol's
+    audit trail is the reason run mode exists, and the prompts used to
+    teach exactly the bypass (manual ACK, no evidence).
+
+    Outside a run, file-based ACK is the normal interactive flow — the
+    gate must not change it. REVIEW is never gated (rejection needs no
+    evidence).
+    """
+    from . import run_state
+
+    run = run_state.read_run(project_dir)
+    if not (run and run.get("active")):
+        return True
+    evidence = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
+    return evidence.is_file()
+
+
 def wait_for_supervisor_signal(
     kind: str,
     todo_id: str,
@@ -424,6 +525,13 @@ def wait_for_supervisor_signal(
     (created by supervisor before `awf start`, no DONE yet) are picked up
     immediately. Without this, the common workflow "create TODO → awf_start"
     would hang forever waiting for a "new" signal that never arrives.
+
+    AUD04-04: for verify/salvage/replan, decision signals (ACK/APPROVE/REVIEW)
+    must be fresh for THIS wait (mtime >= wait start, whole-second resolution).
+    A file left over from a previous cycle no longer satisfies the wait; it
+    is also consumed by the engine at the end of the cycle that accepted it
+    (pipeline_engine._consume_verify_decision) — the mtime gate is the safety
+    net for files the dead process never got to consume.
     """
     import time
 
@@ -457,12 +565,19 @@ def wait_for_supervisor_signal(
     wall_start = time.time()  # for mtime comparisons (replan signals)
     deadline = start + timeout
     last_log = start
+    # AUD04-04: filenames already logged as stale, to keep the poll quiet.
+    stale_decision_logged: set[str] = set()
+    # AUD11-03: log the evidence-gate rejection once per wait.
+    evidence_gate_logged = False
 
     while True:
         if kind == "plan":
             # Dogfood-1: active orphan TODOs (no DONE) picked up immediately.
+            # AUD04-09: the NEWEST orphan (list is sorted ascending, so the
+            # last element) — the engine executes the newest active TODO
+            # (_find_active_todo), so the logged id must match the one run.
             if active_orphan_signals:
-                sig = active_orphan_signals.pop(0).replace(".ready", "")
+                sig = active_orphan_signals.pop(-1).replace(".ready", "")
                 _log(
                     logs_dir,
                     f"BD-30/dogfood-1: picked up active orphan TODO signal: {sig} "
@@ -470,13 +585,6 @@ def wait_for_supervisor_signal(
                 )
                 return sig
             if inbox.is_dir():
-                # R5: Brief signal first (two-phase plan: Brief → checkpoint → TODO)
-                briefs = sorted(inbox.glob("BRIEF-TODO-*.ready"))
-                if briefs:
-                    sig = briefs[0].name.replace(".ready", "")
-                    _log(logs_dir, f"R5: Brief signal detected: {sig}")
-                    return sig
-                # Backward compat: direct TODO signal (no Brief)
                 current = {p.name for p in inbox.glob("TODO-*.ready")}
                 new_ones = current - existing_todo_signals
                 if new_ones:
@@ -485,15 +593,38 @@ def wait_for_supervisor_signal(
                     return sig
 
         if kind in ("verify", "salvage", "replan") and todo_id:
+            # AUD04-04: existence alone is not acceptance — the decision must
+            # be fresh for this wait (a previous cycle's ACK/APPROVE/REVIEW
+            # must not be accepted again).
+            # AUD11-03: inside an ACTIVE run an approve additionally needs
+            # the evidence file (RUN-EVIDENCE-{todo}.md) — a bare ACK/APPROVE
+            # is the bypass the run protocol exists to prevent. Recomputed
+            # each poll: the run can finish (or the evidence arrive) mid-wait.
+            evidence_ok = _run_evidence_ok(project_dir, todo_id)
             for sig_path in (
                 inbox / f"ACK-{todo_id}.ready",
                 inbox / f"APPROVE-{todo_id}.ready",
             ):
-                if sig_path.exists():
-                    _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
-                    return sig_path.stem
+                if not (sig_path.exists() and _decision_signal_fresh(
+                    sig_path, wall_start, stale_decision_logged, logs_dir
+                )):
+                    continue
+                if not evidence_ok:
+                    if not evidence_gate_logged:
+                        evidence_gate_logged = True
+                        _log(
+                            logs_dir,
+                            f"AUD11-03: {sig_path.name} ignored — active run "
+                            f"requires RUN-EVIDENCE-{todo_id}.md "
+                            "(awf_approve with evidence=)",
+                        )
+                    continue
+                _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
+                return sig_path.stem
             review = outbox / f"REVIEW-{todo_id}.md"
-            if review.exists():
+            if review.exists() and _decision_signal_fresh(
+                review, wall_start, stale_decision_logged, logs_dir
+            ):
                 _log(logs_dir, f"BD-30: interactive supervisor signal detected: REVIEW-{todo_id}.md")
                 return f"REVIEW-{todo_id}"
 
@@ -612,8 +743,17 @@ def print_interactive_supervisor_instructions(
         print("     - APPROVED → create signal file below")
         print(f"     - REJECTED → write REVIEW-{todo_id}.md in outbox explaining what's wrong")
         print()
-        print(f"SIGNAL TO CREATE: {inbox}/ACK-{todo_id}.ready")
-        print(f"  (or write REVIEW to: {outbox}/REVIEW-{todo_id}.md)")
+        if _run_evidence_ok(project_dir, todo_id):
+            print(f"SIGNAL TO CREATE: {inbox}/ACK-{todo_id}.ready")
+            print(f"  (or write REVIEW to: {outbox}/REVIEW-{todo_id}.md)")
+        else:
+            # AUD11-03: inside an active run the file-based ACK is ignored
+            # by the engine — the approve path is awf_approve(evidence=...).
+            print("RUN MODE: an active run is in progress — a hand-made ACK without")
+            print(f".agentic/context/RUN-EVIDENCE-{todo_id}.md is IGNORED by the engine.")
+            print(f"APPROVE VIA: awf_approve(todo_id=\"{todo_id}\", evidence=...) — evidence")
+            print("  = the commands you actually ran + your verdict.")
+            print(f"REJECT AS USUAL: write REVIEW-{todo_id}.md to {outbox}/")
     else:
         print(f"STAGE: {kind}")
         print()
@@ -626,6 +766,11 @@ def print_interactive_supervisor_instructions(
             print(f"Salvage details: read {inbox}/SALVAGE-{todo_id}.md — it lists what")
             print("happened and, for repeat attempts, what to change before retrying.")
             print()
+            if not _run_evidence_ok(project_dir, todo_id):
+                print("RUN MODE: an active run is in progress — a hand-made ACK without")
+                print(f".agentic/context/RUN-EVIDENCE-{todo_id}.md is IGNORED by the engine.")
+                print(f"APPROVE VIA: awf_approve(todo_id=\"{todo_id}\", evidence=...) instead.")
+                print()
         print(f"SIGNAL TO CREATE: {inbox}/TODO-NNNN.ready (for replan)")
         print(f"  or: {inbox}/ACK-{todo_id}.ready (for salvage ACK)")
 
@@ -679,30 +824,17 @@ def run_supervisor_stage(
     print(f"Phases file: {phases_file}")
     print()
     if kind == "plan":
-        inbox_path = paths.inbox(project_dir)
-        brief_exists = bool(todo_id) and (inbox_path / f"BRIEF-{todo_id}.md").is_file()
-        todo_exists = bool(todo_id) and (inbox_path / f"{todo_id}.md").is_file()
-
-        if brief_exists and not todo_exists:
-            # R5 Phase 2: Brief approved → write TODO for agent
-            print("What to do (write TODO from approved Brief):")
-            print(f"  1. Read BRIEF-{todo_id}.md (user-approved)")
-            print(f"  2. Write detailed agent task to .agentic/inbox/{todo_id}.md")
-            print("     Include: context, tasks, files, verify command, prohibitions")
-            print(f"  3. Create signal: .agentic/inbox/{todo_id}.ready")
-        else:
-            # R5 Phase 1: Write Brief for user approval
-            print("What to do (plan — write Brief):")
-            print("  1. Study the project state and phases file")
-            print("  2. Determine the next step (or review existing TODO if present)")
-            print("  3. Write .agentic/inbox/BRIEF-TODO-NNNN.md:")
-            print("     - Goal: what this increment achieves (1-3 sentences)")
-            print("     - Success criteria: testable conditions defining 'done'")
-            print("     - Out of scope: what we explicitly don't do")
-            print("     - Verify: commands to check success")
-            print("  4. Create signal: .agentic/inbox/BRIEF-TODO-NNNN.ready")
-            print("  5. After user approves Brief in checkpoint form,")
-            print("     write TODO-NNNN.md (detailed task for agent)")
+        print("What to do (plan — write the TODO):")
+        print("  1. Study the project state and phases file")
+        print("  2. Determine the next step (or review existing TODO if present)")
+        print("  3. Write .agentic/inbox/TODO-NNNN.md:")
+        print("     - Goal: what this increment achieves (1-3 sentences)")
+        print("     - Tasks: specific, testable steps for the first agent stage")
+        print("     - Context: what the agent needs to know about existing code")
+        print("     - Verify: commands to check success")
+        print("  4. Create signal: .agentic/inbox/TODO-NNNN.ready")
+        print("  5. The checkpoint form shows the TODO to the user —")
+        print("     they approve, edit, or reject before agents start")
     elif kind == "verify":
         print("What to do (verify):")
         print("  1. Read report from .agentic/outbox/")
@@ -743,23 +875,11 @@ def _prepare_supervisor_stage(
     prompt = ""
 
     if kind == "plan":
-        # R5: detect phase — Brief exists → write TODO; no Brief → write Brief
-        brief_exists = bool(todo_id) and (inbox / f"BRIEF-{todo_id}.md").is_file()
-        if brief_exists:
-            brief_file = inbox / f"BRIEF-{todo_id}.md"
-            extra_files.append(str(brief_file))
-            prompt = (
-                f"Brief {todo_id} was approved by the user. Read BRIEF-{todo_id}.md "
-                f"and write a detailed TODO at .agentic/inbox/{todo_id}.md for the agent. "
-                "Include context, specific tasks, files to touch, verify commands, prohibitions. "
-                f"Then create the signal at .agentic/inbox/{todo_id}.ready."
-            )
-        else:
-            if phases_path.is_file():
-                extra_files.append(str(phases_path))
-            prompt = build_prompt(
-                "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
-            )
+        if phases_path.is_file():
+            extra_files.append(str(phases_path))
+        prompt = build_prompt(
+            "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        )
 
     elif kind == "verify":
         if not todo_id:
@@ -778,16 +898,14 @@ def _prepare_supervisor_stage(
             for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
                 if hf.is_file():
                     extra_files.append(str(hf))
-        # R8: inline Brief content so supervisor sees contract without opening file
-        brief_content = ""
-        brief_path = inbox / f"BRIEF-{todo_id}.md"
-        if brief_path.is_file():
-            brief_content = brief_path.read_text(encoding="utf-8")
+        # R8: the TODO is the contract — forward it as an extra file so the
+        # supervisor sees it without opening the file manually.
+        todo_md = inbox / f"{todo_id}.md"
+        if todo_md.is_file():
+            extra_files.append(str(todo_md))
         prompt = build_prompt(
             "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
         )
-        if brief_content:
-            prompt += f"\n\n---\n## BRIEF (user-approved contract):\n{brief_content}\n---\n"
 
     elif kind == "replan":
         if not todo_id:
@@ -898,6 +1016,11 @@ def run_supervisor_via_subprocess(
         logs_dir=logs_dir,
         env=awf_subprocess_env(),
         signal_holder=signal_holder,
+        # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
+        # be legitimately long-silent (verify waits), so no watchdog; no
+        # preflight either — keep the supervisor flow exactly as before.
+        preflight_timeout=0,
+        no_output_timeout=0,
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
@@ -913,7 +1036,20 @@ def run_supervisor_via_subprocess(
         _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
         return signal_name
 
-    signal_name = _detect_supervisor_signal(kind, todo_id, inbox, outbox)
+    # U6b: pass the previous cycle's accepted decision (pipeline state) so
+    # the fallback can reject a leftover from a kill between acceptance and
+    # consumption. The watcher path above already cannot fire on it (BD-22
+    # pre-existing snapshot) — the fallback is the only hole.
+    from .pipeline_state import read_state
+
+    prev_state = read_state(project_dir) or {}
+    signal_name = _detect_supervisor_signal(
+        kind, todo_id, inbox, outbox,
+        accepted_decision=prev_state.get("accepted_decision"),
+        accepted_decision_mtime=prev_state.get("accepted_decision_mtime"),
+        # AUD11-03: same run-mode evidence gate as the interactive wait.
+        run_evidence_ok=_run_evidence_ok(project_dir, todo_id),
+    )
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
     return signal_name
 
@@ -923,24 +1059,46 @@ def _detect_supervisor_signal(
     todo_id: str,
     inbox: Path,
     outbox: Path,
+    accepted_decision: str | None = None,
+    accepted_decision_mtime: float | None = None,
+    run_evidence_ok: bool = True,
 ) -> str:
     """C1 fix: detect which signal the supervisor actually produced.
 
     For verify: prefers REVIEW (rejection) over ACK/APPROVE — if supervisor
     wrote REVIEW-{todo_id}.md, that's the most recent decision and should
     override any stale ACK.
+
+    U6b: existence alone is NOT acceptance. ``accepted_decision``/
+    ``accepted_decision_mtime`` (from the pipeline state) carry the decision
+    the engine already accepted in a previous cycle; a decision file matching
+    that record at the same or older mtime is the leftover of a killed cycle
+    and is rejected (see _decision_is_stale). A pre-approval with no record
+    (BD-8) and a fresh re-approval (newer mtime) are accepted as before.
+
+    AUD11-03: ``run_evidence_ok`` is the run-mode gate — inside an active
+    run, ACK/APPROVE are detected only when the evidence file exists
+    (see _run_evidence_ok). REVIEW is never gated.
     """
     if kind == "verify" and todo_id:
         # Check REVIEW first (most recent decision wins)
         review = outbox / f"REVIEW-{todo_id}.md"
-        if review.exists():
+        if review.exists() and not _decision_is_stale(
+            review, f"REVIEW-{todo_id}", accepted_decision, accepted_decision_mtime
+        ):
             return f"REVIEW-{todo_id}"
+        if not run_evidence_ok:
+            return ""
         # Then ACK and APPROVE
         ack = inbox / f"ACK-{todo_id}.ready"
-        if ack.exists():
+        if ack.exists() and not _decision_is_stale(
+            ack, f"ACK-{todo_id}", accepted_decision, accepted_decision_mtime
+        ):
             return f"ACK-{todo_id}"
         approve = inbox / f"APPROVE-{todo_id}.ready"
-        if approve.exists():
+        if approve.exists() and not _decision_is_stale(
+            approve, f"APPROVE-{todo_id}", accepted_decision, accepted_decision_mtime
+        ):
             return f"APPROVE-{todo_id}"
     elif kind in ("plan", "replan"):
         # Newest TODO-*.ready by mtime. signal_watch already confirmed at

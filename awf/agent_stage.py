@@ -13,7 +13,7 @@ from . import paths
 from ._atomic import atomic_write_text
 from ._log import log as _log
 from .pipeline import Stage
-from .signals import clean_stage_signals, expected_signal_prefixes
+from .signals import clean_stage_signals, expected_signal_prefixes, read_signal_for_todo
 from .supervisor import (
     build_prompt,
     get_agent_name,
@@ -32,6 +32,7 @@ def run_agent_stage(
     hard_timeout: int | None = None,
     retry_note: str | None = None,
     attempt: int = 1,
+    log_holder: dict[str, str] | None = None,
 ) -> None:
     """Spawn opencode run for an agent stage.
 
@@ -47,6 +48,10 @@ def run_agent_stage(
     output-token limit) — pushes it to act instead of re-researching.
     ``attempt`` is the 1-based worker run number for this stage entry and
     lands in the handoff facts.
+
+    U6b: ``log_holder`` (optional dict) is populated with
+    ``{"log_path": ...}`` — the worker log file the run appends to. The
+    caller (execute_agent_stage) reads its tail to classify network deaths.
     """
     role = stage.role
     kind = stage.kind
@@ -112,30 +117,57 @@ def run_agent_stage(
 
     # BD-20: watch for expected signal files in outbox.
     # P1: watch ALL expected prefixes, not just DONE/BLOCKED — otherwise
-    # REVIEW-APPROVED, TEST-PASSED etc. signals aren't detected until
-    # subprocess exits, causing unnecessary delays.
+    # REVIEW-* signals aren't detected until subprocess exits, causing
+    # unnecessary delays. AUD16-03: the prefix list no longer contains the
+    # dead TEST-PASSED/TEST-FAILED signals.
     watch_paths: list[Path] = []
     if todo_id:
         for prefix in expected_signal_prefixes("execute"):
             watch_paths.append(outbox / f"{prefix}-{todo_id}.ready")
             watch_paths.append(outbox / f"{prefix}-{todo_id}.md.ready")
 
+    from . import _net
+    from . import config as cfg_mod
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
 
+    if log_holder is None:
+        log_holder = {}
     agent_start = time.monotonic()
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         env=awf_subprocess_env(),
         hard_timeout=hard_timeout,
+        log_holder=log_holder,
+        # AUD16-06: explicit worker log name — role and todo_id are known
+        # exactly here. The dashboard glob awf-*-{todo_id}.out matches any
+        # role (previously only agent-* roles were visible).
+        log_name=f"awf-{role}-{todo_id}.out",
+        # U6a/U6c: automation.* settings, defaults from _net when absent.
+        preflight_timeout=cfg_mod.get(config, "automation.preflight_timeout_seconds",
+                                      _net.PREFLIGHT_TIMEOUT_DEFAULT),
+        no_output_timeout=cfg_mod.get(config, "automation.no_output_timeout_seconds",
+                                      _net.NO_OUTPUT_TIMEOUT_DEFAULT),
     )
     agent_elapsed = time.monotonic() - agent_start
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Agent stage {role} ({kind}) subprocess exited with code {result.returncode}. "
-            f"Cmd: {' '.join(cmd)}"
-        )
+        # U6b: a signal is the stage's contract — the worker's exit code AFTER
+        # a signal is noise (context compaction + tool timeouts can flip rc
+        # without touching the work; observed on TODO-0014: DONE written, rc=1,
+        # pipeline stopped). No signal + rc!=0 stays a failure.
+        present = read_signal_for_todo(outbox, todo_id, *prefixes)
+        if present:
+            _log(
+                logs_dir,
+                f"U6b: signal present ({present}); ignoring worker exit code "
+                f"{result.returncode}",
+            )
+        else:
+            raise RuntimeError(
+                f"Agent stage {role} ({kind}) subprocess exited with code {result.returncode}. "
+                f"Cmd: {' '.join(cmd)}"
+            )
 
     collect_handoff(
         role, todo_id, project_dir, logs_dir,
@@ -163,7 +195,7 @@ def collect_handoff(
     run metadata, signal/notes presence, changes vs baseline — instead of
     alarm prose addressed to the supervisor (that lives in the SALVAGE note).
     """
-    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    handoff_dir = paths.handoff_dir(project_dir)
     handoff_dir.mkdir(parents=True, exist_ok=True)
     outbox = paths.outbox(project_dir)
 
@@ -178,6 +210,9 @@ def collect_handoff(
     done_body = ""
     if done_path.is_file():
         done_body = done_path.read_text(encoding="utf-8").strip()
+
+    from .unit_contract import collect_done_facts
+    done_json_fact, machine_facts_lines = collect_done_facts(outbox, todo_id, logs_dir)
 
     def _signal(prefix: str, suffix: str) -> str:
         return "yes" if (outbox / f"{prefix}-{todo_id}{suffix}").is_file() else "no"
@@ -250,7 +285,7 @@ def collect_handoff(
         f"BLOCKED={_signal('BLOCKED', '.ready')}, "
         f"REVIEW={'yes' if (outbox / f'REVIEW-{todo_id}.md').is_file() else 'no'}",
         f"- worker notes: PROGRESS={'present' if progress_body else 'absent'}, "
-        f"DONE-report={'present' if done_body else 'absent'}",
+        f"DONE-report={'present' if done_body else 'absent'}{done_json_fact}",
         changes_fact,
     ]
 
@@ -263,6 +298,9 @@ def collect_handoff(
 
     if done_body:
         parts += ["## DONE summary (from worker)", "", done_body, ""]
+
+    if machine_facts_lines:
+        parts += ["## Machine facts (DONE.json)", "", *machine_facts_lines, ""]
 
     if progress_body:
         parts += ["## PROGRESS notes (from worker)", "", progress_body, ""]
@@ -336,7 +374,7 @@ def resolve_prev_handoffs(
     todo_id: str = "",
 ) -> list[Path]:
     """BD-15/19: return handoff paths for all AGENT stages before current_stage_idx."""
-    handoff_dir = paths.agentic_dir(project_dir) / "handoff"
+    handoff_dir = paths.handoff_dir(project_dir)
     result: list[Path] = []
     for i in range(current_stage_idx):
         st = pipeline_stages[i]

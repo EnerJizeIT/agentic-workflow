@@ -7,7 +7,8 @@ Called by orchestrator after each ``write_state()`` — keeps dashboard
 in sync with pipeline progress without supervisor polling.
 
 Supervisor opens it via ``awf_open_pipeline_dashboard`` MCP tool.
-User sees live progress in browser (auto-refresh 5s via <meta>).
+User sees live progress in browser — live updates via JS polling of
+``/api/state`` every 3s (no page reload).
 """
 from __future__ import annotations
 
@@ -179,10 +180,32 @@ def _parse_log_events(log_text: str, max_events: int = 30) -> list[dict[str, str
     return events[-max_events:]
 
 
+_HREF_SCHEME = re.compile(r"^\s*([a-zA-Z][a-zA-Z0-9+.-]*):")
+_SAFE_HREF_SCHEMES = {"http", "https", "mailto"}
+
+
+def _neutralize_unsafe_links(html: str) -> str:
+    """AUD10-10: drop executable href schemes from markdown output.
+
+    ``html.escape`` runs BEFORE markdown, so ``[x](javascript:alert(1))``
+    comes back as a real ``<a href="javascript:alert(1)">``. Whitelist:
+    http/https/mailto plus scheme-less (relative/anchor) links.
+    """
+
+    def _fix(m: re.Match[str]) -> str:
+        scheme_m = _HREF_SCHEME.match(m.group(2))
+        if scheme_m and scheme_m.group(1).lower() not in _SAFE_HREF_SCHEMES:
+            return f'{m.group(1)}#{m.group(3)}'
+        return m.group(0)
+
+    return re.sub(r'(href=["\'])([^"\']*)(["\'])', _fix, html, flags=re.IGNORECASE)
+
+
 def _read_handoffs(
     project_dir: Path,
     stage_order: list[str] | None = None,
     todo_id: str | None = None,
+    role_order: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     """Read the CURRENT TODO's handoffs from .agentic/handoff/.
 
@@ -194,16 +217,21 @@ def _read_handoffs(
     - one entry per role: the canonical ``{role}-{todo}.md`` wins, otherwise
       the newest file by mtime;
     - ``rev`` (mtime + size) tells the client when to re-render.
+
+    ``role_order`` maps ROLE name → pipeline index (AUD10-04: handoff files
+    are named by role, so the sort index must be keyed by role too). Without
+    it, falls back to treating ``stage_order`` entries as role names.
     """
     handoff_dir = project_dir / ".agentic" / "handoff"
     if not handoff_dir.is_dir() or not todo_id:
         return []
 
-    # Build role → sort index from pipeline stages
-    role_order: dict[str, int] = {}
-    if stage_order:
-        for i, name in enumerate(stage_order):
-            role_order[name] = i
+    # Role → sort index from pipeline stages
+    if role_order is None:
+        role_order = {}
+        if stage_order:
+            for i, name in enumerate(stage_order):
+                role_order[name] = i
 
     # Two exact globs on purpose: a single '*-{todo}*.md' would swallow
     # TODO-00010 when the current TODO is TODO-0001.
@@ -242,9 +270,12 @@ def _read_handoffs(
     for role in best:
         f = best[role]
         try:
-            content = f.read_text(encoding="utf-8")
+            # AUD10-02: handoffs are LLM-written; a single non-UTF-8 byte
+            # used to raise UnicodeDecodeError (a ValueError, not OSError)
+            # → 500 on every /api/state poll → false "Pipeline exited".
+            content = f.read_text(encoding="utf-8", errors="replace")
             mtime = f.stat().st_mtime_ns
-        except OSError:
+        except (OSError, ValueError):
             content = ""
             mtime = 0
         # Day-3: escape raw HTML before markdown — handoffs are written by
@@ -257,6 +288,9 @@ def _read_handoffs(
             content_html = _md.markdown(_html.escape(content), extensions=["fenced_code"])
         except Exception:
             content_html = f"<pre>{_html.escape(content)}</pre>"
+        # AUD10-10: markdown rebuilds hrefs from escaped text — a
+        # [x](javascript:alert(1)) link would survive as executable JS.
+        content_html = _neutralize_unsafe_links(content_html)
 
         handoffs.append({
             "role": role,
@@ -269,106 +303,6 @@ def _read_handoffs(
     # Sort by pipeline order (roles not in pipeline go last, alphabetically)
     handoffs.sort(key=lambda h: (role_order.get(h["role"], 999), h["role"]))
     return handoffs
-
-
-def _extract_stage_timings(project_dir: Path) -> tuple[dict[str, str], int]:
-    """Extract per-stage durations from orchestrator.log.
-
-    Returns (timings_dict, current_stage_epoch).
-    - timings_dict: {stage_name: "Xm Ys"} for completed + current stages.
-    - current_stage_epoch: Unix epoch of current stage start (for live JS ticker).
-    """
-    import re as _re
-    from datetime import datetime as _dt
-    from datetime import timezone as _tz
-
-    log_file = project_dir / ".agentic" / "logs" / "orchestrator.log"
-    if not log_file.is_file():
-        return {}, 0
-
-    try:
-        log_text = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return {}, 0
-
-    time_pat = _re.compile(r"\[(\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2}):(\d{2})Z)\]")
-    stage_pat = _re.compile(r"Stage\s+\d+:\s+(\S+)")
-
-    # Collect (timestamp, stage_name) transitions
-    transitions: list[tuple[int, str]] = []
-    for line in log_text.splitlines():
-        tm = time_pat.search(line)
-        sm = stage_pat.search(line)
-        if tm and sm:
-            try:
-                dt = _dt.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
-                epoch = int(dt.timestamp())
-                transitions.append((epoch, sm.group(1)))
-            except (ValueError, TypeError):
-                continue
-
-    if not transitions:
-        return {}, 0
-
-    timings: dict[str, str] = {}
-    for i in range(len(transitions) - 1):
-        start_epoch, name = transitions[i]
-        end_epoch = transitions[i + 1][0]
-        duration = int(end_epoch - start_epoch)
-        m, s = divmod(duration, 60)
-        timings[name] = f"{m}m {s}s" if m > 0 else f"{s}s"
-
-    # Current (last) stage — elapsed so far
-    import time as _time
-
-    last_epoch, last_name = transitions[-1]
-    elapsed = int(_time.time()) - last_epoch
-    if elapsed > 0:
-        m, s = divmod(elapsed, 60)
-        timings[last_name] = f"{m}m {s}s" if m > 0 else f"{s}s"
-
-    return timings, last_epoch
-
-
-def _read_tasks(project_dir: Path, todo_id: str | None) -> list[dict[str, str]]:
-    """Read PROGRESS-{todo_id}.md for task checklist."""
-    if not todo_id:
-        return []
-    # Check outbox first, then done/ (DF6-1 archive moves PROGRESS)
-    outbox = paths.outbox(project_dir)
-    progress_file = outbox / f"PROGRESS-{todo_id}.md"
-    if not progress_file.is_file():
-        done_progress = paths.done_dir(project_dir) / todo_id / "PROGRESS.md"
-        if done_progress.is_file():
-            progress_file = done_progress
-        else:
-            return []
-
-    try:
-        content = progress_file.read_text(encoding="utf-8")
-    except OSError:
-        return []
-
-    tasks: list[dict[str, str]] = []
-    for line in content.splitlines():
-        if line.startswith("## Task"):
-            if "[x]" in line:
-                text = line.replace("## Task", "").replace("[x]", "").strip()
-                # Remove leading number like "1:"
-                text = re.sub(r"^\d+:\s*", "", text)
-                tasks.append({"text": text, "status": "done"})
-            elif "[!]" in line:
-                text = line.replace("## Task", "").replace("[!]", "").strip()
-                text = re.sub(r"^\d+:\s*", "", text)
-                tasks.append({"text": text, "status": "done"})
-            elif "[ ]" in line:
-                text = line.replace("## Task", "").replace("[ ]", "").strip()
-                text = re.sub(r"^\d+:\s*", "", text)
-                # First undone task = active, rest = pending
-                status = "active" if not any(t["status"] == "active" for t in tasks) else "pending"
-                tasks.append({"text": text, "status": status})
-
-    return tasks
 
 
 def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str, str]:
@@ -419,7 +353,14 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
     if stage_kind and stage_kind != "verify":
         return ("running", "running", "Pipeline running", "●", "Running")
 
-    return ("running", "running", "Pipeline running", "●", "Running")
+    # AUD10-01: no live stage and no pid — the engine is not running.
+    # Post-completion residue ({phase: done}) → "done" (first server-side
+    # consumer of the .status-badge.done CSS); pre-start ({phase: run}) →
+    # "idle". Both used to render as "Pipeline running" with a forever-
+    # ticking timer.
+    if state.get("phase") == "done":
+        return ("done", "done", "Iteration complete", "✓", "Done")
+    return ("idle", "done", "Idle", "○", "Idle")
 
 
 def _pick_worker_pid(pids: list[str], read_cmdline: Any = None) -> str:
@@ -608,25 +549,41 @@ def _read_todo_content(project_dir: Path, todo_id: str | None) -> str:
 
                 import markdown as _md
 
-                raw = f.read_text(encoding="utf-8")
+                # AUD10-02: same non-UTF-8 guard as handoffs — the poller
+                # must never 500 on a corrupt file.
+                raw = f.read_text(encoding="utf-8", errors="replace")
                 # Day-3: escape raw HTML before markdown — TODO bodies are
                 # LLM-written and must not inject markup into the dashboard.
-                return _md.markdown(
+                rendered = _md.markdown(
                     _html.escape(raw), extensions=["fenced_code"]
                 )
+                return _neutralize_unsafe_links(rendered)
             except Exception:
                 return ""
     return ""
 
 
 def _run_brief_for_dashboard(project_dir: Path) -> dict | None:
-    """SPEC A-run: run state for the topbar chip (None when no run)."""
+    """SPEC A-run: run state for the topbar chip (None when no run).
+
+    AUD10-06: the template reads only active/position/current/note/
+    budget_left_minutes — the rest (completed, budget_minutes, stop_reason,
+    report_file) is stripped here instead of dead weight in /api/state.
+    ``run_brief`` itself keeps them: awf_status consumers need the full brief.
+    """
     try:
         from .run import run_brief
 
-        return run_brief(project_dir)
+        brief = run_brief(project_dir)
     except Exception:
         return None
+    if brief is None:
+        return None
+    return {
+        k: brief[k]
+        for k in ("active", "position", "current", "note", "budget_left_minutes")
+        if k in brief
+    }
 
 
 def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
@@ -642,35 +599,18 @@ def _read_todo_diff_stat(project_dir: Path, todo_id: str | None) -> str:
     return diff_stat_for_todo(project_dir, todo_id)
 
 
-def _scoped_log_text(project_dir: Path) -> tuple[datetime | None, str]:
-    """Log text of the CURRENT run only (after the last 'Pipeline started').
+def _log_snapshot(project_dir: Path):
+    """AUD15-01: incremental snapshot of orchestrator.log.
 
-    Day-4 (live review): orchestrator.log accumulates across restarts and
-    TODOs — the elapsed timer picked the first agent line of the WHOLE log
-    and showed 47h on a one-minute-old run.
+    Day-4 (live review) scoped the timer to the CURRENT run (after the last
+    'Pipeline started') because the log accumulates across restarts. AUD15-01
+    replaced the four full reads per poll with one offset-cached incremental
+    reader (awf/_log_reader.py) — only new bytes are parsed per poll.
     """
-    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    if not log_file.is_file():
-        return None, ""
-    try:
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None, ""
+    from .._log_reader import read_log_snapshot
 
-    marker = None
-    for m in re.finditer(
-        r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]\s*Pipeline started", text,
-    ):
-        marker = m
-    if marker is None:
-        return None, text
-    try:
-        start = datetime.strptime(marker.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        start = None
-    return start, text[marker.start():]
+    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
+    return read_log_snapshot(log_file)
 
 
 def _run_elapsed(
@@ -682,43 +622,21 @@ def _run_elapsed(
     the string grows with wall time. Frozen statuses → span between the first
     agent line and the verify line of the scoped run.
     """
-    scoped_start, text = _scoped_log_text(project_dir)
-
-    agent_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*execute")
-    verify_pat = re.compile(r"Stage\s+\d+:\s+\S+\s+\([^)]*::\s*verify")
-    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-
-    first_agent = None
-    verify_ts = None
-    for line in text.splitlines():
-        tm = time_pat.search(line)
-        if not tm:
-            continue
-        try:
-            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        if agent_pat.search(line) and first_agent is None:
-            first_agent = dt
-        if verify_pat.search(line):
-            verify_ts = dt
+    snap = _log_snapshot(project_dir)
 
     if status == "running":
-        epoch = int(first_agent.timestamp()) if first_agent else (
-            int(scoped_start.timestamp()) if scoped_start else 0
+        epoch = snap.first_agent_epoch if snap.first_agent_epoch is not None else (
+            snap.run_start_epoch if snap.run_start_epoch is not None else 0
         )
         return epoch, False, ""
 
     # Frozen statuses
-    if first_agent and verify_ts:
-        epoch = int(first_agent.timestamp())
-        return epoch, True, _format_elapsed_from_seconds(
-            int(verify_ts.timestamp() - epoch)
+    if snap.first_agent_epoch is not None and snap.last_verify_epoch is not None:
+        return snap.first_agent_epoch, True, _format_elapsed_from_seconds(
+            snap.last_verify_epoch - snap.first_agent_epoch
         )
-    if first_agent:
-        return int(first_agent.timestamp()), True, ""
+    if snap.first_agent_epoch is not None:
+        return snap.first_agent_epoch, True, ""
     return 0, True, ""
 
 
@@ -735,25 +653,11 @@ def _fmt_clock(epoch: int | None) -> str:
 def _stage_spans(project_dir: Path) -> dict[str, dict[str, int]]:
     """Run-scoped {stage_name: {"start": epoch, "end": epoch|None}}.
 
-    Day-4: built from the CURRENT run only (see ``_scoped_log_text``);
-    ``end=None`` means the stage is still running.
+    Day-4: built from the CURRENT run only (the reader resets its stage
+    data on every 'Pipeline started'); ``end=None`` means the stage is
+    still running.
     """
-    _, text = _scoped_log_text(project_dir)
-    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-    stage_pat = re.compile(r"Stage\s+\d+:\s+(\S+)")
-    transitions: list[tuple[int, str]] = []
-    for line in text.splitlines():
-        tm = time_pat.search(line)
-        sm = stage_pat.search(line)
-        if not (tm and sm):
-            continue
-        try:
-            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        transitions.append((int(dt.timestamp()), sm.group(1)))
+    transitions = _log_snapshot(project_dir).transitions
     spans: dict[str, dict[str, int]] = {}
     for i, (ts, name) in enumerate(transitions):
         end = transitions[i + 1][0] if i + 1 < len(transitions) else None
@@ -768,40 +672,10 @@ def _total_elapsed(project_dir: Path) -> tuple[int, bool, int]:
     total across iterations. Runs are delimited by 'Pipeline started' /
     'Pipeline complete' lines in the (multi-run) orchestrator log.
     """
-    log = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    if not log.is_file():
-        return 0, False, 0
-    try:
-        text = log.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return 0, False, 0
-
-    time_pat = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
-    closed_seconds = 0
-    open_start: datetime | None = None
-    for line in text.splitlines():
-        is_start = "Pipeline started" in line
-        is_complete = "Pipeline complete" in line
-        if not (is_start or is_complete):
-            continue
-        tm = time_pat.search(line)
-        if not tm:
-            continue
-        try:
-            dt = datetime.strptime(tm.group(1), "%Y-%m-%dT%H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
-        except ValueError:
-            continue
-        if is_start:
-            if open_start is not None:  # previous run never completed — close it here
-                closed_seconds += int((dt - open_start).total_seconds())
-            open_start = dt
-        elif is_complete and open_start is not None:
-            closed_seconds += int((dt - open_start).total_seconds())
-            open_start = None
-    return closed_seconds, open_start is not None, (
-        int(open_start.timestamp()) if open_start else 0
+    snap = _log_snapshot(project_dir)
+    open_start = snap.open_run_start_epoch
+    return snap.closed_seconds, open_start is not None, (
+        open_start if open_start is not None else 0
     )
 
 
@@ -854,29 +728,44 @@ def _read_worker_last_line(project_dir: Path, todo_id: str | None = None) -> str
 
     Day-4 (live review): the glob used 'agent-*.out' while awf writes
     'awf-agent-*.out' — the worker panel's last line was always empty.
+    AUD16-06: the writer now names logs ``awf-{role}-{todo_id}.out`` for
+    ANY role (role is known exactly in run_agent_stage), so the glob
+    matches ``awf-*-{todo_id}.out`` — not just agent-* roles.
     """
     import re as _re
 
-    logs_dir = project_dir / ".agentic" / "logs"
+    def _mtime(p: Path) -> float:
+        # AUD10-02: a file removed between glob() and stat() must not
+        # crash the poll (OSError inside a sort key used to → 500).
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    logs_dir = paths.logs_dir(project_dir)
     candidates: list[Path] = []
     if todo_id:
         candidates = sorted(
-            logs_dir.glob(f"awf-agent-*-{todo_id}.out"),
-            key=lambda p: p.stat().st_mtime, reverse=True,
+            logs_dir.glob(f"awf-*-{todo_id}.out"),
+            key=_mtime, reverse=True,
         )
     if not candidates:
         try:
             candidates = sorted(
-                logs_dir.glob("awf-agent-*.out"),
-                key=lambda p: p.stat().st_mtime, reverse=True,
+                logs_dir.glob("awf-*.out"),
+                key=_mtime, reverse=True,
             )
         except OSError:
             candidates = []
 
+    # AUD15-06: worker logs are append-forever — read a bounded tail from
+    # EOF instead of the whole file (was ~95 ms/poll at 33 MB).
+    from .._log_reader import read_tail_lines
+
     ansi = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
     for log_name in candidates[:1]:
         try:
-            lines = log_name.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+            lines = read_tail_lines(log_name)
         except OSError:
             continue
         for line in reversed(lines):
@@ -980,13 +869,19 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         })
 
     # Status
-    status, status_class, status_text, status_icon, status_label = _determine_status(state)
+    # AUD10-06: /api/state exposes only status + text — the icon/label
+    # fields of the tuple had no template consumer.
+    _sf = _determine_status(state)
+    status, status_text = _sf[0], _sf[2]
 
     # Elapsed — scoped to the CURRENT run (Day-4 live fix: the timer used to
     # pick the first agent line of the whole multi-run log — 47h on a fresh run)
     if state and status == "running":
         elapsed_epoch, elapsed_frozen, elapsed_str = _run_elapsed(project_dir, "running")
-    elif state and status in ("verify", "done", "idle", "dead", "salvage"):
+    elif state and status in ("verify", "done", "dead", "salvage"):
+        # AUD10-01: "done" → frozen span of the finished run (no growth).
+        # "idle" is NOT here: pre-start state must not show a timer computed
+        # from a previous run's log — it goes to the else branch (no timer).
         elapsed_epoch, elapsed_frozen, elapsed_str = _run_elapsed(project_dir, status)
     else:
         elapsed_epoch, elapsed_frozen, elapsed_str = 0, False, ""
@@ -1005,18 +900,49 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     if worker and worker.get("active"):
         worker["last_line"] = _read_worker_last_line(project_dir, todo_id)
 
-    # Stage spans of the CURRENT run — start/end times for the chat entries
+    # Stage spans of the CURRENT run — start/end times for the chat entries.
+    # Keyed by the stage NAME as written in the log.
     spans = _stage_spans(project_dir)
+    # AUD10-04: handoff files (and thus chat entries) are keyed by ROLE,
+    # while spans are keyed by stage NAME — for supervisor stages (plan,
+    # verify) the two never matched, so those entries had no times. Merge
+    # each role's stage spans: earliest start, latest end (None = still open).
+    role_spans: dict[str, dict[str, int | None]] = {}
+    for st in stages:
+        sp = spans.get(st["name"])
+        if sp is None:
+            continue
+        cur = role_spans.get(st["role"])
+        if cur is None:
+            role_spans[st["role"]] = dict(sp)
+            continue
+        cur["start"] = min(cur["start"], sp["start"])
+        if sp["end"] is None:
+            cur["end"] = None
+        elif cur["end"] is not None:
+            cur["end"] = max(cur["end"], sp["end"])
+
     stage_kind_now = str(state.get("stage_kind", "") or "") if state else ""
     current_stage = str(state.get("stage_name", "") or "") if state else ""
 
+    # AUD10-04: handoff sort index keyed by ROLE (files are named by role).
+    role_order: dict[str, int] = {}
+    for i, st in enumerate(stages):
+        role_order.setdefault(st["role"], i)
+
     # Handoffs (chat-style, NEWEST FIRST) + the active stage entry on top
-    handoffs = _read_handoffs(project_dir, stage_order=stage_names, todo_id=todo_id)
+    handoffs = _read_handoffs(
+        project_dir, stage_order=stage_names, todo_id=todo_id, role_order=role_order,
+    )
     handoff_chat: list[dict[str, Any]] = []
 
     if current_stage and status in ("running", "verify"):
         rv = _role_visual(current_stage)
-        span = spans.get(current_stage) or {}
+        span = spans.get(current_stage) or role_spans.get(current_stage) or {}
+        # AUD10-03: the worker's last line is the ONLY live content of the
+        # active entry — it must be part of the re-render key, or the chat
+        # freezes on the first line for the whole stage (sidebar stayed live).
+        line = (worker or {}).get("last_line", "") if stage_kind_now != "verify" else ""
         handoff_chat.append({
             "role": current_stage,
             "icon": rv["icon"],
@@ -1024,24 +950,27 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "label": rv["label"],
             "content_html": "",
             "duration": "",
-            "rev": f"active|{current_stage}|{span.get('start', 0)}",
+            "rev": f"active|{current_stage}|{span.get('start', 0)}|{line}",
             "started_at": _fmt_clock(span.get("start")),
             "ended_at": "",
             "started_epoch": int(span.get("start") or 0),
             "active": True,
             "awaiting": stage_kind_now == "verify",
             "is_verify": stage_kind_now == "verify",
-            "line": (worker or {}).get("last_line", "") if stage_kind_now != "verify" else "",
+            "line": line,
         })
 
-    for h in reversed(handoffs):  # newest first for display
+    completed: list[dict[str, Any]] = []
+    for h in handoffs:
         rv = _role_visual(h["role"])
-        span = spans.get(h["role"]) or {}
+        # By role name when the log used it (agent-* stages: name == role),
+        # else via the merged role spans (supervisor: plan + verify).
+        span = spans.get(h["role"]) or role_spans.get(h["role"]) or {}
         started, ended = span.get("start"), span.get("end")
         duration = ""
         if started and ended:
             duration = _format_elapsed_from_seconds(int(ended - started))
-        handoff_chat.append({
+        completed.append({
             "role": h["role"],
             "icon": rv["icon"],
             "color": rv["color"],
@@ -1057,6 +986,14 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "is_verify": False,
             "line": "",
         })
+    # AUD10-04: newest first by ACTUAL start time (the old pipeline-order
+    # sort put untimed supervisor entries on top). Untimed entries keep
+    # pipeline order after the timed ones.
+    timed = [c for c in completed if c["started_epoch"]]
+    untimed = [c for c in completed if not c["started_epoch"]]
+    timed.sort(key=lambda c: -c["started_epoch"])
+    untimed.sort(key=lambda c: (role_order.get(c["role"], 999), c["role"]))
+    handoff_chat.extend(timed + untimed)
 
     # TODO content
     todo_content_html = _read_todo_content(project_dir, todo_id)
@@ -1066,14 +1003,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # TODO timeline
     todo_timeline = _build_todo_timeline(project_dir, todo_id)
 
-    # Events
-    log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    events = []
-    if log_file.is_file():
-        try:
-            events = _parse_log_events(log_file.read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            pass
+    # Events — AUD15-01: from the same incremental snapshot (no 4th full read)
+    events = _log_snapshot(project_dir).events
 
     # Project name
     import yaml as _yaml
@@ -1092,6 +1023,9 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         ns = stages[current_stage_idx + 1]
         next_stage = {"icon": ns["icon"], "label": ns["label"], "color": ns["color"]}
 
+    # AUD10-06: only fields the template/JS actually reads — every key
+    # here is consumed by dashboard.html.j2 (contract test in
+    # tests/unit/test_dashboard.py catches drift).
     return {
         "project_name": project_name,
         "todo_id": todo_id or "",
@@ -1101,8 +1035,6 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "run": _run_brief_for_dashboard(project_dir),
         "status": status,
         "status_text": status_text,
-        "status_icon": status_icon,
-        "salvage_needed": bool(state.get("salvage_needed", False)) if state else False,
         "salvage_stage": state.get("salvage_stage") if state else None,
         "stages": stages,
         "stages_done": sum(1 for s in stages if s["status"] == "done"),
@@ -1118,7 +1050,6 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "todo_timeline": todo_timeline,
         "worker": worker,
         "events": events[-30:] if events else [],
-        "pipeline_running": status in ("running", "verify"),
     }
 
 

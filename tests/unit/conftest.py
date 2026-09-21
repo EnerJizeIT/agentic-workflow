@@ -1,24 +1,13 @@
-"""Shared fixtures for unit tests."""
-import subprocess
+"""Shared fixtures for unit tests.
+
+AUD12-08: ``tmp_git_repo`` lives in tests/conftest.py (single home for the
+git boilerplate) — unit tests get it by fixture cascade.
+"""
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
-@pytest.fixture
-def tmp_git_repo(tmp_path: Path) -> Path:
-    """A tmp_path with git init, user config, and an initial commit."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
-    return repo
 
 
 @pytest.fixture

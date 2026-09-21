@@ -82,6 +82,80 @@ class TestExtractStepId:
         assert _extract_step_id_from_todo(todo) == 1
 
 
+class TestExtractStepIdBilingual:
+    """AUD02-10: real project TODOs are written with the Russian 'Шаг N'
+    and '## Step N' headers — both silently returned None before, and the
+    plan was never auto-marked (awf-audit: not a single TODO matched)."""
+
+    def test_russian_shag_line(self, tmp_path: Path) -> None:
+        todo = tmp_path / "TODO-0002.md"
+        todo.write_text("# TODO-0002\n\nШаг 2 плана\n\nbody\n")
+        assert _extract_step_id_from_todo(todo) == 2
+
+    def test_russian_shag_bold(self, tmp_path: Path) -> None:
+        todo = tmp_path / "TODO-0002.md"
+        todo.write_text("# TODO\n\n**Шаг 3**: что-то важное\n")
+        assert _extract_step_id_from_todo(todo) == 3
+
+    def test_russian_shag_checkbox(self, tmp_path: Path) -> None:
+        todo = tmp_path / "TODO-0002.md"
+        todo.write_text("# TODO\n\n- [ ] Шаг 1: задача\n")
+        assert _extract_step_id_from_todo(todo) == 1
+
+    def test_header_step_n(self, tmp_path: Path) -> None:
+        todo = tmp_path / "TODO-0002.md"
+        todo.write_text("# TODO\n\n## Step 2: fix the thing\n\nbody\n")
+        assert _extract_step_id_from_todo(todo) == 2
+
+    def test_prose_step_mid_line_not_matched(self, tmp_path: Path) -> None:
+        """'Step 2' inside a sentence (no markdown context) is prose, not a
+        marker — must not match (kept from the P3 rule)."""
+        todo = tmp_path / "TODO-0002.md"
+        todo.write_text("# TODO\n\nFix the Step 2 bug in the parser\n")
+        assert _extract_step_id_from_todo(todo) is None
+
+    def test_mark_plan_step_done_russian_todo_marks_english_plan(self, tmp_path: Path) -> None:
+        """The real awf-audit mismatch: TODO says 'Шаг 2', plan.md has
+        '- [ ] Step 2: ...' — the mark must land."""
+        proj = _make_proj(tmp_path)
+        todo_path = proj / ".agentic" / "inbox" / "TODO-0001.md"
+        todo_path.write_text("# TODO-0001\n\nШаг 2 плана\n")
+        logs = proj / ".agentic" / "logs"
+
+        result = _mark_plan_step_done(proj, "TODO-0001", logs)
+
+        assert result is True
+        plan = (proj / ".agentic" / "phases" / "plan.md").read_text()
+        assert "- [x] Step 2: Second task  — TODO-0001" in plan
+
+    def test_mark_plan_step_done_russian_plan_line(self, tmp_path: Path) -> None:
+        plan_md = "# План\n\n- [ ] Шаг 2: вторая задача\n"
+        proj = _make_proj(tmp_path, plan_md=plan_md)
+        todo_path = proj / ".agentic" / "inbox" / "TODO-0001.md"
+        todo_path.write_text("# TODO\n\nШаг 2\n")
+        logs = proj / ".agentic" / "logs"
+
+        result = _mark_plan_step_done(proj, "TODO-0001", logs)
+
+        assert result is True
+        plan = (proj / ".agentic" / "phases" / "plan.md").read_text()
+        assert "- [x] Шаг 2: вторая задача  — TODO-0001" in plan
+
+    def test_no_marker_logs_warning(self, tmp_path: Path) -> None:
+        """AUD02-10: the quiet no-op becomes an explicit, actionable log line."""
+        proj = _make_proj(tmp_path)
+        todo_path = proj / ".agentic" / "inbox" / "TODO-0001.md"
+        todo_path.write_text("# TODO without any step reference\n")
+        logs = proj / ".agentic" / "logs"
+
+        result = _mark_plan_step_done(proj, "TODO-0001", logs)
+
+        assert result is False
+        text = (logs / "orchestrator.log").read_text(encoding="utf-8")
+        assert "WARNING" in text
+        assert "step_id" in text
+
+
 # ── _mark_plan_step_done ──────────────────────────────────────────────────────
 
 
@@ -163,6 +237,39 @@ class TestMarkPlanStepDone:
         _mark_plan_step_done(proj, "TODO-0001", logs)
         plan = (proj / ".agentic" / "phases" / "plan.md").read_text()
         assert "TODO-0001" in plan
+
+    def test_concurrent_edit_not_lost(self, tmp_path: Path, monkeypatch) -> None:
+        """AUD14-08: a colleague's edit landing between read and write must
+        survive the step-marking (old code overwrote it — whole-file write)."""
+        import time
+
+        proj = _make_proj(tmp_path)
+        todo_path = proj / ".agentic" / "inbox" / "TODO-0001.md"
+        todo_path.write_text("**Phase:** Step 1\n")
+        logs = proj / ".agentic" / "logs"
+        plan_path = proj / ".agentic" / "phases" / "plan.md"
+
+        real_read = Path.read_text
+        state = {"edits": 0}
+
+        def racy_read(self, *a, **kw):
+            result = real_read(self, *a, **kw)
+            if self == plan_path and state["edits"] == 0:
+                # the colleague appends a line right after OUR first read
+                time.sleep(0.02)
+                with open(self, "a", encoding="utf-8") as f:
+                    f.write("\n- colleague edit must survive\n")
+                state["edits"] += 1
+            return result
+
+        monkeypatch.setattr(Path, "read_text", racy_read)
+
+        result = _mark_plan_step_done(proj, "TODO-0001", logs)
+
+        assert result is True
+        plan = plan_path.read_text()
+        assert "- colleague edit must survive" in plan, "concurrent edit was lost"
+        assert "- [x] Step 1: First task  — TODO-0001" in plan
 
 
 # ── _print_progress_report ────────────────────────────────────────────────────

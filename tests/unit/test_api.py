@@ -12,8 +12,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
+from conftest import _git_init_bare  # AUD12-08: shared git boilerplate
 
 from awf import api
+from awf.api._helpers import read_file_text
 
 # ─── detect_stack ───────────────────────────────────────────────────────
 
@@ -105,6 +108,19 @@ class TestDetectStack:
         # Should fall through to Python heuristic
         assert result["stack"] == "python"
 
+    def test_package_json_non_dict_sections_do_not_crash(self, tmp_path):
+        """AUD06-10: scripts/dependencies as strings → empty commands, no
+        AttributeError ('str' object has no attribute 'get')."""
+        (tmp_path / "package.json").write_text(json.dumps({
+            "scripts": "oops",
+            "dependencies": "oops",
+            "devDependencies": "oops",
+        }))
+        result = api.detect_stack(tmp_path)
+        assert result["stack"] == "javascript"
+        assert result["test_cmd"] == ""
+        assert result["lint_cmd"] == ""
+
 
 # ─── derive_project_name ────────────────────────────────────────────────
 
@@ -139,6 +155,23 @@ class TestDeriveProjectName:
 
 
 # ─── approve_commit ─────────────────────────────────────────────────────
+
+
+class TestReadFileText:
+    """AUD06-17: docstring promises 'never raises' for existing files."""
+
+    def test_non_utf8_file_does_not_raise(self, tmp_path):
+        p = tmp_path / "vision.md"
+        p.write_bytes(b"\xff\xfe\x00garbage-tail")
+        text = read_file_text(p)
+        assert isinstance(text, str)
+        # readable tail survives, garbage bytes are replaced
+        assert "garbage-tail" in text
+
+    def test_missing_file_returns_placeholder(self, tmp_path):
+        p = tmp_path / "absent.md"
+        text = read_file_text(p)
+        assert "(error reading" in text
 
 
 class TestApproveCommit:
@@ -389,9 +422,16 @@ class TestPipelineRunningDetection:
         assert result.pipeline_running is False
         assert not (logs / "awf-start.pid").exists()
 
-    def test_live_pid_detected_as_running(self, tmp_git_repo):
-        """PID file pointing to current process → marked running."""
+    def test_live_pid_detected_as_running(self, tmp_git_repo, monkeypatch):
+        """PID file pointing to current process → marked running.
+
+        AUD04-07: identity is strict (argv must be `-m awf start|continue`),
+        so the test process is made to LOOK like an awf pipeline via the
+        read_cmdline seam.
+        """
         import os
+
+        from awf.api import _liveness
         (tmp_git_repo / ".agentic").mkdir()
         (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
         logs = tmp_git_repo / ".agentic" / "logs"
@@ -399,20 +439,30 @@ class TestPipelineRunningDetection:
         # Use current process PID — guaranteed alive during test
         (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
         (logs / "awf-start.out").write_text("line1\nline2\nline3\n")
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         result = api.get_status(tmp_git_repo)
         assert result.pipeline_running is True
         assert result.pipeline_pid == os.getpid()
         assert result.log_tail is not None
         assert "line3" in result.log_tail
 
-    def test_log_tail_truncated_to_n_lines(self, tmp_git_repo):
+    def test_log_tail_truncated_to_n_lines(self, tmp_git_repo, monkeypatch):
         """log_tail returns last N lines (default 20)."""
         import os
+
+        from awf.api import _liveness
         (tmp_git_repo / ".agentic").mkdir()
         (tmp_git_repo / ".agentic" / "config.yaml").write_text('project:\n  name: T\n')
         logs = tmp_git_repo / ".agentic" / "logs"
         logs.mkdir()
         (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         # Write 30 lines
         (logs / "awf-start.out").write_text("\n".join(f"L{i}" for i in range(30)))
         result = api.get_status(tmp_git_repo)
@@ -481,7 +531,7 @@ class TestGetReport:
 class TestResetRuntime:
     def test_default_cleans_runtime_dirs(self, tmp_git_repo):
         agentic = tmp_git_repo / ".agentic"
-        for d in ["inbox", "outbox", "context", "logs", "reports", "phases"]:
+        for d in ["inbox", "outbox", "context", "logs", "phases"]:
             (agentic / d).mkdir(parents=True)
             (agentic / d / "junk.txt").write_text("junk")
         result = api.reset_runtime(tmp_git_repo)
@@ -489,7 +539,6 @@ class TestResetRuntime:
         assert "outbox" in result.cleaned_dirs
         assert "context" in result.cleaned_dirs
         assert "logs" in result.cleaned_dirs
-        assert "reports" in result.cleaned_dirs
         # phases NOT cleaned
         assert "phases" not in result.cleaned_dirs
         assert (agentic / "phases" / "junk.txt").exists()
@@ -507,12 +556,37 @@ class TestResetRuntime:
 
     def test_full_includes_everything_runtime(self, tmp_git_repo):
         agentic = tmp_git_repo / ".agentic"
-        for d in ["inbox", "outbox", "context", "logs", "reports"]:
+        for d in ["inbox", "outbox", "context", "logs"]:
             (agentic / d).mkdir(parents=True)
             (agentic / d / "junk.txt").write_text("junk")
         result = api.reset_runtime(tmp_git_repo, full=True)
-        assert "reports" in result.cleaned_dirs
         assert "context" in result.cleaned_dirs
+
+    def test_full_cleans_handoff_inputs_dashboards_default_does_not(self, tmp_git_repo):
+        """AUD07-03: --full must be behaviorally different from default.
+
+        default: inbox/outbox/context/logs (+ state files);
+        full: the same PLUS handoff/inputs/dashboards.
+        """
+        agentic = tmp_git_repo / ".agentic"
+        for d in ["handoff", "inputs", "dashboards"]:
+            (agentic / d).mkdir(parents=True)
+            (agentic / d / "junk.txt").write_text("junk")
+
+        full = api.reset_runtime(tmp_git_repo, full=True)
+        assert {"handoff", "inputs", "dashboards"} <= set(full.cleaned_dirs)
+        for d in ["handoff", "inputs", "dashboards"]:
+            assert not (agentic / d / "junk.txt").exists()
+
+        for d in ["handoff", "inputs", "dashboards"]:
+            (agentic / d).mkdir(parents=True, exist_ok=True)
+            (agentic / d / "junk.txt").write_text("junk")
+        default = api.reset_runtime(tmp_git_repo)
+        assert not ({"handoff", "inputs", "dashboards"} & set(default.cleaned_dirs)), (
+            f"default reset must keep handoff/inputs/dashboards, got {default.cleaned_dirs}"
+        )
+        for d in ["handoff", "inputs", "dashboards"]:
+            assert (agentic / d / "junk.txt").exists()
 
     def test_orphans_removes_active_without_progress(self, tmp_git_repo):
         agentic = tmp_git_repo / ".agentic"
@@ -729,7 +803,7 @@ class TestInitProject:
         assert result.project_name == "My Project"
         assert result.stack == "unknown"  # no config files in tmp_git_repo
         # .agentic created with full structure
-        for d in ["roles", "pipelines", "phases", "inbox", "outbox", "context", "logs", "reports"]:
+        for d in ["roles", "pipelines", "phases", "inbox", "outbox", "context", "logs"]:
             assert (tmp_git_repo / ".agentic" / d).is_dir(), f"missing .agentic/{d}/"
         assert (tmp_git_repo / ".agentic" / "config.yaml").exists()
         assert (tmp_git_repo / ".agentic" / "roles" / "supervisor.md").exists()
@@ -749,7 +823,8 @@ class TestInitProject:
         # (tmp_git_repo fixture name is "repo" — we test derivation via sub-dir)
         sub = tmp_git_repo / "jira-epic-presenter"
         sub.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=sub, check=True)
+        # Nested repo without a commit — bare init on purpose.
+        _git_init_bare(sub)
         (sub / "package.json").write_text(json.dumps({
             "scripts": {"test": "bun test"},
             "devDependencies": {"typescript": "^5.0"},
@@ -799,6 +874,48 @@ class TestInitProject:
         gitignore = (tmp_git_repo / ".gitignore").read_text()
         # No duplicate additions
         assert gitignore.count(".agentic/inbox/") == 1
+
+    def test_gitignore_bak_anchored_to_agentic(self, tmp_git_repo):
+        """AUD06-14: an unanchored '*.bak' untracked the user's .bak files
+        repo-wide after init. The pattern must be scoped to .agentic/ so a
+        Rails project's config.ru.bak at the root stays tracked."""
+        # A user backup at the repo root that init must NOT start ignoring.
+        (tmp_git_repo / "config.ru.bak").write_text("user backup\n")
+        api.init_project(tmp_git_repo, project_name="Test")
+        gitignore = (tmp_git_repo / ".gitignore").read_text()
+        # No bare, unanchored *.bak pattern anywhere.
+        for line in gitignore.splitlines():
+            stripped = line.strip()
+            assert stripped != "*.bak", f"unanchored pattern leaked: {stripped!r}"
+            assert stripped != "*.bak-*", f"unanchored pattern leaked: {stripped!r}"
+        # The .agentic backups are still ignored (scoped pattern present).
+        assert ".agentic" in gitignore and ".bak" in gitignore
+        # Verify with git itself: root user file is trackable, .agentic .bak is ignored.
+        rc_user = subprocess.run(
+            ["git", "check-ignore", "config.ru.bak"],
+            cwd=tmp_git_repo, capture_output=True,
+        )
+        assert rc_user.returncode != 0, "root user .bak must stay trackable"
+        (tmp_git_repo / ".agentic" / "config.yaml.bak").write_text("awf backup\n")
+        rc_agentic = subprocess.run(
+            ["git", "check-ignore", ".agentic/config.yaml.bak"],
+            cwd=tmp_git_repo, capture_output=True,
+        )
+        assert rc_agentic.returncode == 0, ".agentic .bak must be ignored"
+
+    def test_config_template_no_dead_keys(self, tmp_git_repo):
+        """AUD06-09: every key in the generated config.yaml must have a
+        reader. retry.max_attempts / retry.backoff_seconds /
+        verification.coverage_cmd had none — they advertised
+        configurability that did nothing."""
+        api.init_project(tmp_git_repo, project_name="Test")
+        config = yaml.safe_load(
+            (tmp_git_repo / ".agentic" / "config.yaml").read_text()
+        )
+        assert "retry" not in config, "retry.* had no readers — remove from template"
+        assert "coverage_cmd" not in config.get("verification", {}), (
+            "verification.coverage_cmd had no readers — remove from template"
+        )
 
     def test_existing_agentic_without_force_cleans_runtime(self, tmp_git_repo):
         """R1: awf init without force cleans runtime, preserves config."""
@@ -1030,3 +1147,61 @@ class TestLogTailDedup:
         from awf.api._helpers import read_log_tail
 
         assert read_log_tail(tmp_path / "nope.log", 5) is None
+
+
+# ─── FU-19 (TODO-0023): Part C — AUD-05 API self-consistency ─────────────
+
+
+class TestApiStarImportSelfConsistency:
+    """AUD05-09: the package must be import-star safe.
+
+    Before FU-19 ``from awf.api import *`` crashed with AttributeError
+    (RejectResult was in ``_results`` but never imported into the package
+    namespace), and several ``__all__`` names (restore_todo) were
+    unreachable. These tests pin the invariant both ways.
+    """
+
+    def test_star_import_does_not_crash(self):
+        ns: dict = {}
+        exec("from awf.api import *", ns)
+        assert "start_pipeline" in ns
+        assert "continue_pipeline" in ns
+        assert "reject_commit" in ns
+        assert "restore_todo" in ns
+
+    def test_all_names_are_reachable(self):
+        """Every name in ``__all__`` must be importable from the package."""
+        import awf.api as m
+
+        missing = [n for n in m.__all__ if not hasattr(m, n)]
+        assert not missing, f"__all__ names missing from package namespace: {missing}"
+
+    def test_result_dataclasses_reachable(self):
+        """The Result dataclasses the tools import must be on the package."""
+        import awf.api as m
+
+        for name in (
+            "StartResult", "RejectResult", "RestoreResult",
+            "RunStartResult", "RunNextResult", "RunFinishResult", "RunStatusResult",
+        ):
+            assert hasattr(m, name), f"awf.api.{name} is not importable from the package"
+
+
+class TestContinueAckInvalidTodo:
+    """AUD07-01: a garbage --ack is a user-caused refusal → exit_code 1.
+
+    State-condition noops (no active TODO, pipeline already running) stay
+    exit_code 0; a typo in --ack is an owner mistake that `set -e` must catch.
+    """
+
+    def test_garbage_ack_returns_exit_code_1(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="Ack")
+        result = api.continue_pipeline(tmp_git_repo, ack="garbage")
+        assert result.exit_code == 1
+        assert "Invalid TODO id for --ack" in result.message
+
+    def test_no_ack_no_active_todo_stays_zero(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="AckNoop")
+        result = api.continue_pipeline(tmp_git_repo)
+        assert result.exit_code == 0
+        assert "No active TODO" in result.message or "no active todo" in result.message.lower()

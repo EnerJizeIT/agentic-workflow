@@ -1,22 +1,22 @@
 """T4.1: Pipeline state persistence.
 
 Writes structured state to ``.agentic/state/current.yaml`` after each
-pipeline transition. Replaces regex log parsing in
-:func:`awf.api.context._extract_stage_info` — single source of truth,
-no fragile regex on ``print()`` format.
+pipeline transition. Single source of truth — the regex log fallback was
+removed in AUD-12.5 (c9d88b9); a missing or stale state degrades readers
+to "no pipeline info", never to a second parsing path.
 
-State is written by orchestrator at these points:
-- Pipeline start (clear previous state)
-- Each stage start (stage_idx, stage_name, stage_kind)
+State is written at these points:
+- Each stage start (stage_idx, stage_name, stage_kind, todo_id,
+  pipeline_pid + clears the previous run's salvage_needed/salvage_stage,
+  last_signal and checkpoint_* keys — AUD02-03)
+- Plan/verify/execute transitions (phase, todo_id, last_signal)
+- Worker signal classified (last_signal=DONE/BLOCKED/...-TODO-NNNN,
+  salvage counters reset)
 - BD-36 checkpoint opened (checkpoint_pending=True, form_url, port)
-- BD-36 checkpoint resolved (checkpoint_pending=False)
-- Worker DONE detected (last_signal=DONE-TODO-NNNN)
-- Worker BLOCKED detected (last_signal=BLOCKED-TODO-NNNN)
-- REVIEW written (last_signal=REVIEW-TODO-NNNN)
-- Pipeline exit (clear checkpoint_pending, set pipeline_running=False)
-
-Readers (``api.get_status``, ``api.load_supervisor_context``) read this
-file first, fall back to regex parsing if file missing/stale.
+- BD-36 checkpoint resolved or timed out (checkpoint_pending=False,
+  port/url cleared)
+- Pipeline exit (state cleared; phase=done + goal/normalized preserved —
+  AUD02-04)
 """
 from __future__ import annotations
 
@@ -53,9 +53,11 @@ def write_state(
     Args:
         project_dir: awf project root.
         logs_dir: optional, for logging write failures.
-        **fields: keys to set (stage_idx, stage_name, stage_kind,
-            started_at, last_signal, checkpoint_pending,
-            checkpoint_form_url, checkpoint_port, todo_id, pipeline_pid).
+        **fields: keys to set (stage_idx, stage_name, stage_kind, todo_id,
+            pipeline_pid, phase, goal, normalized, last_signal,
+            checkpoint_pending, checkpoint_form_url, checkpoint_port,
+            salvage_needed, salvage_stage, ...). Note: ``started_at`` lives
+            in run.yaml (run_state), NOT here.
 
     Example::
 
@@ -65,21 +67,27 @@ def write_state(
     state_path = _state_file(project_dir)
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Merge with existing state
-    current = read_state(project_dir) or {}
-    current.update(fields)
-    # Always update `updated_at` for staleness detection
-    current["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # AUD05-05: merge is read-modify-write — serialize with the same
+    # advisory lock as run_state.write_run so concurrent stage
+    # transitions don't lose each other's fields.
+    from ._lock import locked
 
     try:
-        content = yaml.safe_dump(
-            current, default_flow_style=False, allow_unicode=True, sort_keys=True
-        )
-        atomic_write_text(state_path, content)
+        with locked(project_dir):
+            # Merge with existing state
+            current = read_state(project_dir) or {}
+            current.update(fields)
+            # Always update `updated_at` for staleness detection
+            current["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            content = yaml.safe_dump(
+                current, default_flow_style=False, allow_unicode=True, sort_keys=True
+            )
+            atomic_write_text(state_path, content)
     except OSError as e:
         if logs_dir is not None:
             _log(logs_dir, f"T4.1: state write failed: {e}")
-        # Non-fatal — pipeline continues, readers fall back to regex
+        # Non-fatal — pipeline continues, readers degrade to "no state"
 
 
 def read_state(project_dir: Path) -> dict[str, Any] | None:
@@ -92,7 +100,9 @@ def read_state(project_dir: Path) -> dict[str, Any] | None:
         if isinstance(data, dict):
             return data
         return None
-    except (yaml.YAMLError, OSError):
+    except (yaml.YAMLError, OSError, UnicodeDecodeError):
+        # AUD12-11: a state file with non-UTF-8 bytes is corrupt the same
+        # way a broken YAML one is — degrade to "no state", not traceback.
         return None
 
 
@@ -114,8 +124,7 @@ def is_state_stale(state: dict[str, Any], max_age_seconds: int = 7200) -> bool:
     """Check if state file is older than ``max_age_seconds`` (default 2h).
 
     Readers use this to avoid trusting stale state from a crashed pipeline
-    whose orchestrator never wrote a clean exit. If stale, fall back to
-    regex parsing or report pipeline as not running.
+    whose orchestrator never wrote a clean exit.
     """
     updated_at = state.get("updated_at")
     if not updated_at:
@@ -132,4 +141,30 @@ def is_state_stale(state: dict[str, Any], max_age_seconds: int = 7200) -> bool:
         return True
 
 
-__all__ = ["write_state", "read_state", "clear_state", "is_state_stale"]
+def state_trusted(project_dir: Path, state: dict[str, Any] | None) -> bool:
+    """AUD02-12: may a reader trust this state?
+
+    Fresh (not stale by timestamp) → trusted. A STALE timestamp is
+    overridden by a LIVE pipeline: one stage longer than the 2h staleness
+    window is not a crash — liveness is the PID (the shared resolver
+    ``awf.api._liveness.resolve``), the ``updated_at`` age is not. Stale
+    + dead pipeline keeps the old answer: not trusted (crash recovery).
+    """
+    if not state:
+        return False
+    if not is_state_stale(state):
+        return True
+    try:
+        # Function-local: awf.api is the heavy package; the liveness
+        # question only matters on the stale path (see AUD14-05 for the
+        # core→api lazy-import convention).
+        from .api._liveness import resolve
+
+        return bool(resolve(project_dir)[0])
+    except Exception:
+        # Liveness check must never break a status read — degrade to the
+        # conservative answer (not trusted).
+        return False
+
+
+__all__ = ["write_state", "read_state", "clear_state", "is_state_stale", "state_trusted"]

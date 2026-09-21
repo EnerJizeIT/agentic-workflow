@@ -2,8 +2,8 @@
 
 Replaces the ``while True: sleep(30); awf_status()`` pattern with a
 single blocking call. Supervisor calls ``wait_for_event``, tool blocks
-inside plugin (polling state file every 10s), returns immediately when
-an interesting event happens:
+inside plugin (polling the state file every ``poll_interval`` seconds,
+default 3), returns immediately when an interesting event happens:
 
 - ``verify`` — pipeline reached verify stage (supervisor must act)
 - ``blocked`` — worker wrote BLOCKED signal
@@ -32,30 +32,18 @@ def _suggest_timeout(project_dir: Path, *, default: int = 180) -> int:
     the previous stage. Median of the last few, divided by 3 (wake ~3x per
     stage), clamped to [60, 300] seconds. Falls back to ``default`` when the
     log is missing or has too little history.
-    """
-    import re
-    from datetime import datetime
 
+    AUD15-08: the stage stamps come from the shared incremental reader
+    (awf/_log_reader.py) — no 5th full read of the log per wait_for_event.
+    """
     from .. import paths
+    from .._log_reader import read_log_snapshot
 
     log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
-    if not log_file.is_file():
-        return default
-    try:
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return default
-
-    stage_re = re.compile(r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\] Stage \d+/\d+:")
-    stamps = []
-    for m in stage_re.finditer(text):
-        try:
-            stamps.append(datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            continue
+    stamps = read_log_snapshot(log_file).stage_stamps
     if len(stamps) < 2:
         return default
-    deltas = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:])]
+    deltas = [b - a for a, b in zip(stamps, stamps[1:])]
     deltas = [d for d in deltas if 0 < d < 3600][-5:]
     if not deltas:
         return default

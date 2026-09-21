@@ -33,8 +33,18 @@ class TestLoadStages:
         assert stages[2].role == "supervisor"
 
     def test_simple_stage_actions(self, tmp_pipeline_file) -> None:
+        # AUD12-12: this test used to load stages and assert NOTHING — a
+        # load_stages regression (silent fallback, dropped stage, lost
+        # action) stayed green. Now every stage's name/kind/on_* is pinned.
         tmp_path, _ = tmp_pipeline_file
         stages = load_stages(tmp_path / ".agentic" / "pipelines" / "simple.yaml")
+        assert [s.name for s in stages] == ["plan", "implement", "verify"]
+        assert [s.kind for s in stages] == ["plan", "execute", "verify"]
+        assert stages[0].on_blocked == "escalate"
+        assert stages[1].on_blocked == "escalate"
+        assert stages[1].max_retries == 3
+        assert stages[2].on_approved == "commit_and_next"
+        assert stages[2].on_rejected == "replan"
 
     def test_simple_verify_on_approved(self, tmp_pipeline_file) -> None:
         tmp_path, _ = tmp_pipeline_file
@@ -103,9 +113,99 @@ class TestLoadStages:
         # NEG-2: escalate is the only safe default — a fixed stage name
         # ('implement') does not exist in role-named generated pipelines.
         assert s.on_rejected == "escalate"
-        assert s.on_passed == "next"
+        # AUD16-03: on_passed is gone (dead TEST-PASSED signal); on_failed
+        # stays as a reserved policy (loader accepts it, nothing drives it).
+        assert not hasattr(s, "on_passed")
         assert s.on_failed == "escalate"
         assert s.max_retries == 1
+        assert s.max_rollbacks == 3
+
+    def test_loader_ignores_legacy_on_passed(self, tmp_path, capsys) -> None:
+        """AUD16-03: load_stages does not accept on_passed — a YAML key with
+        that name is dropped (no Stage field, no policy check), while the
+        stage itself loads normally."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    on_passed: commit_and_next\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipe)
+        assert len(stages) == 3
+        assert not hasattr(stages[1], "on_passed")
+
+    def test_invalid_policy_word_warns_at_load(self, tmp_path, capsys) -> None:
+        """AUD04-02: an unknown policy word must warn at load time instead of
+        being silently reinterpreted by the resolver (typos like
+        'on_blocked: halt' used to behave as 'escalate' with no hint)."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "    on_blocked: halt\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipe)
+        err = capsys.readouterr().err
+        assert "on_blocked" in err and "halt" in err, (
+            f"invalid policy word must be flagged at load, got stderr:\n{err}"
+        )
+        # the value is still loaded verbatim — the resolver fallback applies
+        assert stages[1].on_blocked == "halt"
+
+    def test_duplicate_stage_names_warn_at_load(self, tmp_path, capsys) -> None:
+        """AUD03-06: two stages named 'impl' used to load silently — the
+        engine always resolves the first one, the second is unreachable."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: impl\n    role: worker\n"
+            "  - name: impl\n    role: qa\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipe)
+        assert len(stages) == 4  # still loaded — warning, not rejection
+        err = capsys.readouterr().err
+        assert "impl" in err and "duplicate" in err.lower(), (
+            f"duplicate stage name must be flagged at load, got stderr:\n{err}"
+        )
+
+    def test_negative_max_retries_warns_at_load(self, tmp_path, capsys) -> None:
+        """AUD03-06: max_retries: -3 was accepted without a hint."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    max_retries: -3\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        load_stages(pipe)
+        err = capsys.readouterr().err
+        assert "max_retries" in err and "-3" in err, (
+            f"negative max_retries must be flagged at load, got stderr:\n{err}"
+        )
+
+    def test_valid_pipeline_stays_quiet_on_new_checks(self, tmp_path, capsys) -> None:
+        """AUD03-06: a clean pipeline must not trigger the new warnings."""
+        pipe = tmp_path / "pipeline.yaml"
+        pipe.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    max_retries: 2\n"
+            "  - name: verify\n    role: supervisor\n",
+            encoding="utf-8",
+        )
+        load_stages(pipe)
+        err = capsys.readouterr().err
+        assert "duplicate" not in err.lower()
+        assert "max_retries" not in err
 
 
 class TestResolvePipelineFile:
@@ -196,3 +296,74 @@ class TestLoadStagesWithNonDict:
         pipeline.write_text("stages:\n  - \"a\"\n  - 42\n  - null\n")
         stages = load_stages(pipeline)
         assert stages == []
+
+
+class TestRollbackToKeyScope:
+    """FU-19 (AUD03-02 tail): ``rollback_to:<stage>`` is only resolved on
+    on_blocked/on_rejected. On any other policy key the resolver ignores it,
+    so the loader must say so instead of accepting it silently."""
+
+    def test_rollback_to_on_on_approved_warns(self, tmp_path: Path, capsys) -> None:
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "    on_approved: rollback_to:implement\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "on_approved" in err and "rollback_to" in err
+        # the warning names the keys where rollback_to: actually works
+        assert "on_blocked" in err and "on_rejected" in err
+        # the value is still loaded verbatim — resolver fallback applies
+        assert stages[2].on_approved == "rollback_to:implement"
+
+    def test_rollback_to_on_on_failed_warns(self, tmp_path: Path, capsys) -> None:
+        """on_failed is a reserved key (AUD16-03) — nothing drives it, so a
+        rollback_to: there is dead config and must be flagged."""
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: test\n    role: tester\n    on_failed: rollback_to:implement\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "on_failed" in err and "rollback_to" in err
+        assert stages[2].on_failed == "rollback_to:implement"
+
+    def test_rollback_to_on_supported_key_no_warning(self, tmp_path: Path, capsys) -> None:
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "    on_rejected: rollback_to:implement\n",
+            encoding="utf-8",
+        )
+        stages = load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "rollback_to" not in err, err
+        assert stages[2].on_rejected == "rollback_to:implement"
+
+    def test_bad_target_on_supported_key_still_warns(self, tmp_path: Path, capsys) -> None:
+        """Existing target-existence check is untouched: on_rejected pointing
+        at a nonexistent stage still warns."""
+        pipeline = tmp_path / "pipeline.yaml"
+        pipeline.write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "    on_rejected: rollback_to:ghost\n",
+            encoding="utf-8",
+        )
+        load_stages(pipeline)
+        err = capsys.readouterr().err
+        assert "ghost" in err

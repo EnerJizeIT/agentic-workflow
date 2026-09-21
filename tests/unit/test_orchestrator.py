@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf._env import awf_subprocess_env as _awf_subprocess_env
 from awf.agent_stage import (
@@ -201,16 +202,11 @@ class TestGlobalRolesDir:
 class TestMaybeCommitBD8:
 
     def _init_git(self, tmp_path: Path) -> Path:
+        # AUD12-08: git boilerplate is the shared conftest helper.
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
-        (project_dir / ".git").mkdir()
         (project_dir / "file.txt").write_text("hello")
-        import subprocess
-        subprocess.run(["git", "init"], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.name", "A"], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "add", "."], cwd=project_dir, capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "init"], cwd=project_dir, capture_output=True, check=True)
+        _git_init(project_dir)
         return project_dir
 
     def test_maybe_commit_auto_waits_for_approve_signal(
@@ -659,7 +655,13 @@ class TestInteractiveSupervisorBD30:
         )
 
     def test_wait_for_supervisor_signal_orphans_prefer_newest(self, tmp_path: Path) -> None:
-        """Multiple orphan TODOs (no DONE) → pick newest (highest NNNN)."""
+        """Multiple orphan TODOs (no DONE) → pick newest (highest NNNN).
+
+        AUD04-09: the engine executes the NEWEST active TODO
+        (_find_active_todo → list_active_todos, highest first) — the wait
+        must return the same id, or the plan-stage log announces a different
+        task than the one actually run.
+        """
 
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
@@ -676,8 +678,9 @@ class TestInteractiveSupervisorBD30:
             kind="plan", todo_id="", project_dir=proj, logs_dir=logs,
             timeout=5,
         )
-        assert result == "TODO-0001", (
-            f"Should pick lowest NNNN first (sorted). Got: {result}"
+        assert result == "TODO-0003", (
+            f"Should pick the NEWEST orphan (the one the engine will run). "
+            f"Got: {result}"
         )
 
     def test_wait_for_supervisor_signal_detects_ack_for_verify(
@@ -1646,3 +1649,105 @@ class TestSupervisorReplan:
         assert len(_FakePopen._last_cmds) == 0
         out = capsys.readouterr().out
         assert "Unknown kind" in out or "not automatable" in out or "skipping" in out.lower()
+
+
+# ── FU-13 (AUD-02): stage-start hygiene + clean-exit context ────────────────
+
+
+class TestStageStartCheckpointClear:
+    """AUD02-03 (r1): a stale checkpoint_pending from a dead previous run
+    (checkpoint timeout/crash) used to survive the NEW run's stage-start
+    write — wait_for_event then emitted a phantom 'checkpoint' event
+    pointing at a dead file:// form (the one-shot POST server is gone)."""
+
+    def _make_proj(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "proj"
+        for d in ("roles", "inbox", "outbox", "context", "logs", "pipelines", "phases"):
+            (proj / ".agentic" / d).mkdir(parents=True)
+        (proj / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: t\nphases:\n  current: ".agentic/phases/plan.md"\n'
+            'default_pipeline: "default"\n'
+        )
+        (proj / ".agentic" / "phases" / "plan.md").write_text("- [ ] Step 1\n")
+        (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: worker\n    role: worker\n    kind: execute\n"
+        )
+        return proj
+
+    def test_stage_start_clears_stale_checkpoint_keys(self, tmp_path: Path, monkeypatch):
+        from types import SimpleNamespace
+
+        from awf import orchestrator
+        from awf.pipeline_state import read_state, write_state
+
+        proj = self._make_proj(tmp_path)
+        # Previous run died with the checkpoint still pending:
+        write_state(
+            proj,
+            checkpoint_pending=True,
+            checkpoint_port=8765,
+            checkpoint_form_url="file:///tmp/cp.html",
+        )
+
+        seen: dict = {}
+
+        def fake_agent_stage(stage, todo_id, project_dir, config, logs_dir,
+                             stages, stage_idx, retry_counts, auto, hard_timeout=None):
+            seen.update(read_state(project_dir) or {})
+            return todo_id, stage_idx, 1  # abort after the stage-start write
+
+        monkeypatch.setattr(orchestrator, "execute_agent_stage", fake_agent_stage)
+
+        args = SimpleNamespace(
+            project_dir=str(proj), pipeline=None, from_stage=None,
+            auto=True, timeout=None, todo_id="",
+        )
+        rc = orchestrator.run_pipeline(args)
+        assert rc == 1
+
+        assert seen.get("stage_name") == "worker"  # the stage-start write ran
+        assert seen.get("checkpoint_pending") is False, (
+            "stale checkpoint_pending survived the stage-start write"
+        )
+        assert seen.get("checkpoint_port") is None
+        assert seen.get("checkpoint_form_url") is None
+        # AUD02-11: stage_role was written but never read — must be gone.
+        assert "stage_role" not in seen
+
+        # The consumer criterion: no phantom 'checkpoint' event for the new run.
+        from awf.api.wait_event import _check_for_event
+
+        assert _check_for_event(seen, proj) is None
+
+    def test_clean_exit_preserves_goal_and_normalized(self, tmp_path: Path, monkeypatch):
+        """AUD02-04 (r4): the clean-exit write must keep the setup context —
+        otherwise >2h later the phase degrades to 'normalize' (SMO project)
+        or 'goal' (CLI project) on every awf_current_step call."""
+        from types import SimpleNamespace
+
+        from awf import orchestrator
+        from awf.pipeline_state import read_state, write_state
+
+        proj = self._make_proj(tmp_path)
+        # SMO context accumulated during the run:
+        write_state(proj, goal="build X", normalized=True)
+
+        def fake_agent_stage(stage, todo_id, project_dir, config, logs_dir,
+                             stages, stage_idx, retry_counts, auto, hard_timeout=None):
+            return todo_id, stage_idx + 1, 0  # stage done → clean exit
+
+        monkeypatch.setattr(orchestrator, "execute_agent_stage", fake_agent_stage)
+
+        args = SimpleNamespace(
+            project_dir=str(proj), pipeline=None, from_stage=None,
+            auto=True, timeout=None, todo_id="",
+        )
+        rc = orchestrator.run_pipeline(args)
+        assert rc == 0
+
+        state = read_state(proj)
+        assert state is not None
+        assert state.get("phase") == "done"
+        assert state.get("goal") == "build X"
+        assert state.get("normalized") is True

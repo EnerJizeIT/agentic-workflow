@@ -325,6 +325,33 @@ class TestCheckModelConfigEdgeCases:
         test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
         assert test_role["valid"] is True
 
+    def test_non_dict_opencode_json_does_not_crash(self, awf_project, monkeypatch, tmp_path):
+        """AUD06-13: opencode.json with a list root → ({}, {}), no AttributeError."""
+        _mock_cli_empty(monkeypatch)
+        fake_home = tmp_path / "home"
+        oc_dir = fake_home / ".config" / "opencode"
+        oc_dir.mkdir(parents=True)
+        (oc_dir / "opencode.json").write_text(json.dumps([1, 2, 3]))
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "custom/model-a"},
+        })
+        result = check_model_config(awf_project)
+        assert result["providers_available"] == []
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is False
+
+    def test_bare_model_without_provider_prefix(self, awf_project, mock_model_env):
+        """AUD06-13: model without '/' gets a meaningful note, not "Provider ''"."""
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker", "model": "baremodel"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is False
+        assert "provider prefix" in test_role["note"]
+        assert "Provider ''" not in test_role["note"]
+
     def test_result_has_providers_available(self, awf_project, mock_model_env):
         """Result includes providers_available list."""
         result = check_model_config(awf_project)

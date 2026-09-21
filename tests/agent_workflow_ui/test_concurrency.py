@@ -15,19 +15,13 @@ from awf import api
 
 
 @pytest.fixture
-def project(tmp_path):
-    """Git repo with .agentic/ structure for testing."""
-    import subprocess
+def project(tmp_git_repo):
+    """Git repo with .agentic/ structure for testing.
 
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "tester"], cwd=repo, check=True)
-    (repo / "README.md").write_text("init\n")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
-
+    AUD12-08: git boilerplate comes from the shared tmp_git_repo fixture
+    (tests/conftest.py).
+    """
+    repo = tmp_git_repo
     api.init_project(repo, project_name="Test")
     from awf.pipeline_state import write_state
 

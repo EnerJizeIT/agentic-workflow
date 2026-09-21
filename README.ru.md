@@ -18,7 +18,7 @@ AI-агенты для кода мощные, но хаотичные. Прыг�
 ## Возможности
 
 - 🎯 **State-Machine Orchestration (SMO)** — awf ведёт supervisor по фазам: `init → goal → form → normalize → brief → run → verify → done`. Каждый tool возвращает `next_action` — даже слабые модели (Qwen vLLM) проходят полный flow без ошибок.
-- 🔧 **29 MCP tools** — типизированное управление пайплайном: init, dispatch, start, approve, reject, rollback, dashboard, валидация моделей. Без bash, без ручного редактирования файлов.
+- 🔧 **37 MCP tools** — типизированное управление пайплайном: init, dispatch, start, approve, reject, rollback, dashboard, валидация моделей. Без bash, без ручного редактирования файлов.
 - 📊 **Живой Dashboard** — HTTP server с real-time опросом. Chat-стиль handoffs, содержимое TODO, timeline, статус воркера, браузерные уведомления. Без перезагрузки страницы.
 - 🧱 **Кастомные пайплайны** — любые роли, любая глубина. 1 стадия или 10. Аналитик → архитектор → разработчик → QA → аудит, или один воркер. Выбираешь в форме настройки.
 - ✅ **Approve / Reject** — симметричные tools для verify. Approve коммитит и архивирует. Reject убивает пайплайн и запрашивает исправления.
@@ -49,6 +49,11 @@ pip install awf agent-workflow-ui
 # "Разработай MVP по бэклогу"
 ```
 
+> **Таймауты:** каждая стадия по умолчанию живёт 1 час — supervisor,
+> зависший на verify дольше, получает salvage. Увеличить:
+> `AWF_SUPERVISOR_TIMEOUT=7200` (env) или `awf start --timeout 7200`
+> (USAGE.ru.md → Восстановление после сбоев).
+
 ## Использование
 
 Говори естественным языком — supervisor-агент вызывает нужные tools:
@@ -76,7 +81,7 @@ init → goal → form → normalize → brief → run → verify → done
 
 ```
 opencode (supervisor LLM)
-  ↕ MCP stdio (29 типизированных tools)
+  ↕ MCP stdio (37 типизированных tools)
 agent-workflow-ui plugin
   ↕ Python import
 awf orchestrator
@@ -115,7 +120,7 @@ Dashboard (live /api/state polling)
 ## Roadmap
 
 - **SMO escape-hatch'и** — ручные переходы между фазами, прерывания (edge cases с реальных сессий)
-- **Coverage** — критические пути (verify, plan_checkpoint, context)
+- **Coverage** — CI-гейты ≥80% (awf core + plugin) стоят; держать от отката
 - ✅ ~~**PyPI**~~ — `pip install awf agent-workflow-ui` (готово!)
 - **Dashboard v3** — timing bars по агентам, session summary, sound notifications
 - **Standalone mode** — awf без opencode (только API)

@@ -84,8 +84,10 @@ def test_http_port_accessor():
     state_mod._http_port = None
 
     assert get_http_port() is None
-    set_http_port(13747)
-    assert get_http_port() == 13747
+    # AUD12-09: value is arbitrary — accessor roundtrip, no port is bound.
+    port = 4711
+    set_http_port(port)
+    assert get_http_port() == port
 
     state_mod._http_port = None
 
@@ -236,7 +238,8 @@ class TestFormRegistryPersistence:
                 project_dir=tmp_path,
             )
         )
-        assert (tmp_path / "reg.yaml").is_file()
+        # AUD09-04: persistence is per-form files (<state>/forms/FORM-A.yaml).
+        assert (tmp_path / "forms" / "FORM-A.yaml").is_file()
 
         reloaded = FormRegistry()  # __init__ → _load_persisted
         record = reloaded.get("FORM-A")
@@ -330,7 +333,7 @@ class TestPersistOutsideLock:
         )
 
         assert lock_states == [False], "disk write must not hold the registry lock"
-        assert (tmp_path / "reg.yaml").is_file()
+        assert (tmp_path / "forms" / "FORM-L.yaml").is_file()
 
     def test_claim_and_finalize_still_persist(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
@@ -341,11 +344,169 @@ class TestPersistOutsideLock:
         )
 
         assert registry.claim_for_submit("FORM-C") is True
-        registry.finalize_submit("FORM-C")
 
-        # Persistence is verified on disk: a reloaded registry intentionally
-        # filters terminal (submitted) records, so check the file directly.
+        # AUD09-04: the intermediate "submitting" state is persisted to the
+        # per-form file (crash recovery depends on it), then finalize drops
+        # the file (terminal state — the submit yaml is the durable artifact).
         import yaml
 
-        data = yaml.safe_load((tmp_path / "reg.yaml").read_text(encoding="utf-8"))
-        assert data["FORM-C"]["status"] == "submitted"
+        form_file = tmp_path / "forms" / "FORM-C.yaml"
+        data = yaml.safe_load(form_file.read_text(encoding="utf-8"))
+        assert data["status"] == "submitting"
+
+        registry.finalize_submit("FORM-C")
+        assert not form_file.exists()
+
+
+# ── FU-16 / AUD09-05: stuck "submitting" crash recovery ──────────────────
+
+
+def test_stale_submitting_reclaimable():
+    """A claim older than 10 min (crash between claim and finalize) is
+    re-claimed by claim_for_submit instead of 409'ing forever."""
+    registry = FormRegistry()
+    registry.add(FormRecord(
+        form_id="FORM-stale",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+    assert registry.claim_for_submit("FORM-stale") is True
+    # Simulate the claim process crashing 11 minutes later.
+    registry.get("FORM-stale").claimed_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+
+    assert registry.claim_for_submit("FORM-stale") is True
+    record = registry.get("FORM-stale")
+    assert record.status == "submitting"
+    # Fresh timestamp — the new claim starts its own 10-minute window.
+    assert (datetime.now(timezone.utc) - record.claimed_at).total_seconds() < 60
+
+
+def test_claim_without_timestamp_treated_stale():
+    """submitting with claimed_at=None (legacy/corrupt record) is stale —
+    the old `age = 600; if age > 600` branch was dead code (off-by-one)."""
+    registry = FormRegistry()
+    registry.add(FormRecord(
+        form_id="FORM-nots",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+    record = registry.get("FORM-nots")
+    record.status = "submitting"
+    record.claimed_at = None
+
+    assert registry.claim_for_submit("FORM-nots") is True
+    assert registry.get("FORM-nots").claimed_at is not None
+
+
+def test_fresh_claim_still_rejected():
+    """A claim within the 10-minute window is NOT stale — second POST
+    still gets rejected (TOCTOU protection must survive the fix)."""
+    registry = FormRegistry()
+    registry.add(FormRecord(
+        form_id="FORM-fresh",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+    assert registry.claim_for_submit("FORM-fresh") is True
+    assert registry.claim_for_submit("FORM-fresh") is False
+
+
+def test_list_pending_reverts_stale_submitting():
+    """list_pending auto-revert (crash recovery) uses the same stale rule."""
+    registry = FormRegistry()
+    registry.add(FormRecord(
+        form_id="FORM-lp",
+        template="test",
+        opened_at=datetime.now(timezone.utc),
+    ))
+    registry.claim_for_submit("FORM-lp")
+    registry.get("FORM-lp").claimed_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+
+    pending = registry.list_pending()
+    assert [r.form_id for r in pending] == ["FORM-lp"]
+    assert registry.get("FORM-lp").status == "pending"
+
+
+# ── FU-16 / AUD09-04: cross-process persistence (no last-write-wins) ─────
+
+
+def test_persist_merge_across_instances(tmp_path: Path, monkeypatch) -> None:
+    """Two registries sharing one persist location ("two MCP processes")
+    must not drop each other's forms.
+
+    Repro from the audit: session B adds FORM-B2, then session A (started
+    later) writes its own whole-registry snapshot — with the old
+    last-write-wins design FORM-B2 vanished from disk and from B's
+    restart. Per-form records must survive.
+    """
+    monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+    monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+    now = datetime.now(timezone.utc)
+
+    session_a = FormRegistry()
+    session_a.add(FormRecord(form_id="FORM-A1", template="t", opened_at=now))
+
+    # Session B starts after A — sees A1, adds its own forms.
+    session_b = FormRegistry()
+    assert session_b.get("FORM-A1") is not None, "session B must load A's form"
+    session_b.add(FormRecord(form_id="FORM-B1", template="t", opened_at=now))
+    session_b.add(FormRecord(form_id="FORM-B2", template="t", opened_at=now))
+
+    # A writes again (new form) — old design: B2 lost from the snapshot.
+    session_a.add(FormRecord(form_id="FORM-A2", template="t", opened_at=now))
+
+    # Restart of B: must see everything, including A2 and its own B2.
+    session_b_restarted = FormRegistry()
+    for form_id in ("FORM-A1", "FORM-A2", "FORM-B1", "FORM-B2"):
+        assert session_b_restarted.get(form_id) is not None, (
+            f"{form_id} lost across processes (AUD09-04)"
+        )
+    # ...and list_pending sees X's form from Y (the read_submit gate).
+    assert {r.form_id for r in session_b_restarted.list_pending()} == {
+        "FORM-A1", "FORM-A2", "FORM-B1", "FORM-B2",
+    }
+
+
+def test_legacy_snapshot_backfilled_to_per_form_files(tmp_path: Path, monkeypatch) -> None:
+    """AUD09-04 migration: pre-AUD09-04 installs persist the WHOLE registry
+    to forms_registry.yaml. First start after the upgrade must load those
+    records AND backfill them as per-form files, so the next start reads
+    only the per-form directory (legacy snapshot becomes inert)."""
+    import yaml
+
+    monkeypatch.delenv("AWF_DISABLE_FORM_PERSIST", raising=False)
+    monkeypatch.setattr(FormRegistry, "PERSIST_FILE", tmp_path / "reg.yaml")
+    now = datetime.now(timezone.utc)
+    legacy = {
+        "FORM-LEG1": {
+            "template": "t", "opened_at": now.isoformat(), "status": "pending",
+            "expires_at": None, "claimed_at": None, "project_dir": None,
+        },
+        "FORM-LEG2": {
+            "template": "t", "opened_at": now.isoformat(), "status": "pending",
+            "expires_at": (now + timedelta(hours=1)).isoformat(),
+            "claimed_at": None, "project_dir": None,
+        },
+        "FORM-LEG-SUB": {
+            "template": "t", "opened_at": now.isoformat(), "status": "submitted",
+            "expires_at": None, "claimed_at": None, "project_dir": None,
+        },
+        "FORM-LEG-EXP": {
+            "template": "t", "opened_at": now.isoformat(), "status": "pending",
+            "expires_at": (now - timedelta(hours=1)).isoformat(),
+            "claimed_at": None, "project_dir": None,
+        },
+    }
+    (tmp_path / "reg.yaml").write_text(yaml.safe_dump(legacy), encoding="utf-8")
+
+    first = FormRegistry()
+    assert first.get("FORM-LEG1") is not None, "legacy pending form not loaded"
+    assert first.get("FORM-LEG2") is not None, "legacy pending form (future TTL) not loaded"
+    assert first.get("FORM-LEG-SUB") is None, "terminal form must stay filtered"
+    assert first.get("FORM-LEG-EXP") is None, "date-expired form must stay filtered"
+    # Backfill happened — the next start never reads the legacy file.
+    assert (tmp_path / "forms" / "FORM-LEG1.yaml").is_file()
+    assert (tmp_path / "forms" / "FORM-LEG2.yaml").is_file()
+
+    second = FormRegistry()
+    assert {r.form_id for r in second.list_pending()} == {"FORM-LEG1", "FORM-LEG2"}

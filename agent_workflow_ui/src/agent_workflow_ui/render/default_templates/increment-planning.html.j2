@@ -175,7 +175,7 @@ optional_data_keys:
     <input type="hidden" name="form_id" value="{{ form_id }}">
 
     {% for v in variants %}
-    <div class="variant-card" data-variant-id="{{ v.id }}" onclick="selectVariant('{{ v.id }}')">
+    <div class="variant-card" data-variant-id="{{ v.id }}" onclick='selectVariant({{ v.id | tojson }})'>
       <div class="variant-header">
         <span class="variant-id">{{ v.id }}</span>
         <span class="variant-title">{{ v.title }}</span>

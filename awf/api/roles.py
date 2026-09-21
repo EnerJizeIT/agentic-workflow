@@ -7,6 +7,7 @@ CLI wrapper that imports from this module.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ from ._helpers import require_agentic
 from ._results import AddRoleResult, AnalyzeRolesResult
 from ._templates import _ROLE_TEMPLATE
 
+log = logging.getLogger(__name__)
+
 # ─── add_role ───────────────────────────────────────────────────────────
 
 
@@ -29,9 +32,23 @@ def add_role(
     description: str = "",
     model: str = "",
 ) -> AddRoleResult:
-    """Generate a new role template at ``.agentic/roles/{role_name}.md``."""
+    """Generate a new role template at ``.agentic/roles/{role_name}.md``.
+
+    AUD06-07: raises AwfApiError when the role file already exists — an
+    existing file is user data (hand-edited instructions) and is never
+    silently replaced by the template.
+    """
     if not role_name:
         raise AwfApiError("role_name is required")
+    # AUD06-06: role_name is public input (MCP awf_add_role / CLI). Normalize
+    # (strip + lowercase) then validate as a slug — "../../x", "a/b" or an
+    # absolute path must not be able to write outside .agentic/roles/.
+    role_name = role_name.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", role_name):
+        raise AwfApiError(
+            f"Invalid role name {role_name!r}: use lowercase letters, digits, "
+            "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
+        )
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
@@ -47,6 +64,20 @@ def add_role(
         model=model,
     )
     role_file = roles_dir / f"{role_name}.md"
+    # AUD06-06: defense in depth — even a slug that passed validation must
+    # resolve back inside roles/ (guards against future validation drift).
+    if not role_file.resolve().is_relative_to(roles_dir.resolve()):
+        raise AwfApiError(
+            f"Invalid role name {role_name!r}: resolves outside .agentic/roles/."
+        )
+    # AUD06-07: an existing role file is user data (hand-edited instructions)
+    # — silently replacing it with the template lost it without a trace or a
+    # backup. Refuse; the caller edits the file instead.
+    if role_file.exists():
+        raise AwfApiError(
+            f"Role file already exists: {role_file} — edit it in place "
+            "(add_role only creates new roles)."
+        )
     atomic_write_text(role_file, content)
 
     return AddRoleResult(
@@ -88,13 +119,20 @@ class AnalyzeData:
 
 
 def _read_role_files(project_dir: Path) -> dict[str, str]:
-    """Read all .agentic/roles/*.md → {role_slug: content}."""
+    """Read all .agentic/roles/*.md → {role_slug: content}.
+
+    AUD06-16: an unreadable role file (non-UTF-8, permissions) is skipped
+    with a log line — one corrupt file must not kill the whole analysis.
+    """
     roles_dir = paths.agentic_dir(project_dir) / "roles"
     if not roles_dir.is_dir():
         return {}
     result: dict[str, str] = {}
     for f in sorted(roles_dir.glob("*.md")):
-        result[f.stem] = f.read_text(encoding="utf-8")
+        try:
+            result[f.stem] = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            log.warning("analyze_roles: skipping unreadable role file %s: %s", f, e)
     return result
 
 
@@ -102,14 +140,23 @@ def _read_pipeline_roles(project_dir: Path, config: dict) -> list[str]:
     """Return ordered list of agent role slugs from default pipeline.
 
     Skips supervisor (it's built-in). Returns [] if no pipeline.yaml.
+    AUD06-16: a corrupted pipeline file (non-UTF-8, broken YAML, unreadable)
+    degrades to [] — role analysis without pipeline order is still useful,
+    and the loader already prints the reason to stderr.
     """
+    import yaml
+
     from ..pipeline import load_stages, resolve_pipeline_file
 
     try:
         pipeline_file = resolve_pipeline_file(project_dir, None, config)
     except FileNotFoundError:
         return []
-    stages = load_stages(pipeline_file)
+    try:
+        stages = load_stages(pipeline_file)
+    except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
+        log.warning("analyze_roles: cannot read pipeline %s: %s", pipeline_file, e)
+        return []
     return [s.role for s in stages if s.role != "supervisor"]
 
 

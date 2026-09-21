@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import html as html_lib
 import os
-import socket
 import tempfile
 import threading
 import time
@@ -37,7 +36,25 @@ from ._log import log as _log
 DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
 
 
-def _cleanup_stale_temp_html() -> int:
+def _live_checkpoint_form_file(project_dir: Path) -> Path | None:
+    """AUD03-03: form file a live checkpoint is waiting on, if any.
+
+    Returns the path named in state ``checkpoint_form_url`` when
+    ``checkpoint_pending`` is true. Missing/corrupt state or a resolved
+    checkpoint → None (nothing to protect).
+    """
+    from .pipeline_state import read_state
+
+    state = read_state(project_dir)
+    if not state or not state.get("checkpoint_pending"):
+        return None
+    form_url = state.get("checkpoint_form_url")
+    if not isinstance(form_url, str) or not form_url.startswith("file://"):
+        return None
+    return Path(form_url[len("file://"):])
+
+
+def _cleanup_stale_temp_html(project_dir: Path) -> int:
     """П7: remove leftover awf-checkpoint-*.html from crashed runs.
 
     Without this, every crash leaves a temp HTML file. On next awf start,
@@ -45,10 +62,13 @@ def _cleanup_stale_temp_html() -> int:
     previous runs are still in temp dir — confusing if user opens them
     manually (they show old TODO content / outdated submit URL).
 
-    Safety: only removes files older than 10 minutes. This avoids
-    deleting a temp HTML that a concurrently-running awf instance just
-    created (rare, but possible if user runs `awf start` in two
-    terminals simultaneously).
+    Safety:
+    - Only removes files older than 10 minutes — protects a temp HTML that
+      a concurrently-running awf instance just created.
+    - AUD03-03: NEVER removes the file a live checkpoint state references
+      (``checkpoint_pending=True`` + ``checkpoint_form_url``). The 10-minute
+      threshold is shorter than DEFAULT_CHECKPOINT_TIMEOUT (60 min), so the
+      age rule alone would wipe an idle user's form mid-run.
 
     Returns count of files removed. Best-effort: ignores permission errors.
     """
@@ -57,12 +77,17 @@ def _cleanup_stale_temp_html() -> int:
     tmp_dir = tempfile.gettempdir()
     pattern = f"{tmp_dir}/awf-checkpoint-*.html"
 
+    protected = _live_checkpoint_form_file(project_dir)
+
     # Note: st_mtime is wall-clock (epoch). Must compare with time.time(),
     # NOT time.monotonic() (which has arbitrary zero point).
     now = time.time()
     removed = 0
     for stale in glob.glob(pattern):
         try:
+            # AUD03-03: live form survives any timeout.
+            if protected is not None and Path(stale) == protected:
+                continue
             # Only remove files older than 10 minutes — protects a
             # concurrently-running awf instance that just created its form.
             mtime = Path(stale).stat().st_mtime
@@ -115,45 +140,52 @@ def run_plan_checkpoint(
       - On ``"edit"``: rewrites ``.agentic/inbox/{todo_id}.md`` with user edits.
       - On ``"timeout"``: leaves TODO untouched, lets orchestrator decide.
     """
-    # R5: Prefer Brief content if available (user-facing), fall back to TODO
-    brief_md = project_dir / ".agentic" / "inbox" / f"BRIEF-{todo_id}.md"
+    # FU-05: the TODO is the only contract — the checkpoint previews it
     todo_md = project_dir / ".agentic" / "inbox" / f"{todo_id}.md"
-
-    if brief_md.is_file():
-        content_file = brief_md
-        content_label = "Brief"
-    elif todo_md.is_file():
+    if todo_md.is_file():
         content_file = todo_md
         content_label = "TODO"
     else:
-        _log(logs_dir, f"BD-36: no {todo_id}.md or BRIEF-{todo_id}.md to preview — auto-approve")
+        _log(logs_dir, f"BD-36: no {todo_id}.md to preview — auto-approve")
         return "approve"
 
-    todo_content = content_file.read_text(encoding="utf-8")
+    # AUD03-07: preview content — a corrupted (non-UTF-8) file must degrade,
+    # not crash the pipeline main-loop. errors="replace" keeps the preview
+    # renderable (the user sees replacement chars instead of a traceback).
+    todo_content = content_file.read_text(encoding="utf-8", errors="replace")
 
     # P1: Skip checkpoint if content unchanged since last approval (kill+start loop)
     import hashlib
     content_hash = hashlib.sha256(todo_content.encode("utf-8")).hexdigest()[:16]
     hash_file = project_dir / ".agentic" / "context" / "checkpoint-approved.hash"
     if hash_file.is_file():
-        last_hash = hash_file.read_text(encoding="utf-8").strip()
-        if last_hash == content_hash:
+        # AUD03-04: stored entry is "{todo_id}:{hash}" — the same text under
+        # a different TODO id is a new plan and must not be silently approved.
+        last_todo, _, last_hash = hash_file.read_text(encoding="utf-8").strip().partition(":")
+        if last_todo == todo_id and last_hash == content_hash:
             _log(logs_dir, f"P1: checkpoint skipped — content unchanged (hash={content_hash})")
             print("BD-36: Plan checkpoint skipped — same as last approved plan.")
             return "approve"
 
     # П7: clean up stale temp HTML from previous (crashed) runs before
     # creating our own. Without this, user may see old forms from /tmp/.
-    stale_count = _cleanup_stale_temp_html()
+    # AUD03-03: a form referenced by a live checkpoint state is protected.
+    stale_count = _cleanup_stale_temp_html(project_dir)
     if stale_count:
         _log(logs_dir, f"П7: removed {stale_count} stale checkpoint HTML file(s)")
 
     plan_md = project_dir / ".agentic" / "phases" / "plan.md"
-    plan_content = plan_md.read_text(encoding="utf-8") if plan_md.is_file() else ""
+    # AUD03-07: same as above — plan.md is preview content, degrade on garbage.
+    plan_content = (
+        plan_md.read_text(encoding="utf-8", errors="replace") if plan_md.is_file() else ""
+    )
 
     port = 0  # P2: let OS assign free port — eliminates TOCTOU race entirely
     decision_holder: dict[str, str] = {}
     edited_holder: dict[str, str] = {}
+    # AUD03-05: first-wins — the check-and-set in do_POST happens under this
+    # lock so two racing POSTs cannot both "win".
+    decision_lock = threading.Lock()
 
     # DAUD-2: port=0 → OS picks free port at bind() time, no race window.
     server = None
@@ -163,6 +195,7 @@ def run_plan_checkpoint(
                 port=port,
                 decision_holder=decision_holder,
                 edited_holder=edited_holder,
+                decision_lock=decision_lock,
             )
             break
         except OSError:
@@ -201,18 +234,20 @@ def run_plan_checkpoint(
             # URL print above is missed. Non-fatal — user can open manually.
             _log(logs_dir, f"BD-36: webbrowser.open failed: {e} — open URL manually")
 
-        _log(logs_dir, f"BD-36: checkpoint opened for {todo_id} on port {port}")
+        # AUD03-02: port=0 is only the bind request — every surface (logs,
+        # state) must carry actual_port, the OS-assigned one.
+        _log(logs_dir, f"BD-36: checkpoint opened for {todo_id} on port {actual_port}")
         # Dogfood-8: also log form URL so api.get_status can extract it
         # and surface to supervisor (who tells user where to approve).
         _log(logs_dir, f"BD-36: form_url=file://{html_path}")
-        _log(logs_dir, f"BD-36: server_url=http://127.0.0.1:{port}")
+        _log(logs_dir, f"BD-36: server_url=http://127.0.0.1:{actual_port}")
         # T4.1: persist checkpoint state to structured file (no regex needed)
         from .pipeline_state import write_state
         write_state(
             project_dir,
             logs_dir=logs_dir,
             checkpoint_pending=True,
-            checkpoint_port=port,
+            checkpoint_port=actual_port,
             checkpoint_form_url=f"file://{html_path}",
         )
 
@@ -233,17 +268,31 @@ def run_plan_checkpoint(
             # QA: orchestrator treats "timeout" as ABORT (returns 1), not
             # auto-approve. Log message must reflect that — was misleading.
             _log(logs_dir, f"BD-36: checkpoint timeout for {todo_id} — pipeline will abort")
+            # AUD02-03: the form is dead now (the server shuts down in
+            # finally) — clear the pending keys in the moment, so a later
+            # awf_status/awf_wait_for_event between the abort and the next
+            # run does not point at a form that can never be approved.
+            from .pipeline_state import write_state
+            write_state(
+                project_dir,
+                logs_dir=logs_dir,
+                checkpoint_pending=False,
+                checkpoint_port=None,
+                checkpoint_form_url=None,
+            )
             return "timeout"
 
         decision = decision_holder["decision"]
         _log(logs_dir, f"BD-36: checkpoint decision for {todo_id}: {decision}")
-        # T4.1: persist checkpoint resolution (no longer pending)
+        # T4.1: persist checkpoint resolution (no longer pending).
+        # AUD02-11: checkpoint_decision was written but never read — removed
+        # (a dead key is a false contract signal; the decision is also in the
+        # orchestrator.log line above).
         from .pipeline_state import write_state
         write_state(
             project_dir,
             logs_dir=logs_dir,
             checkpoint_pending=False,
-            checkpoint_decision=decision,
         )
 
         # BUG-3 fix: empty edited_content would silently wipe the TODO.
@@ -263,9 +312,14 @@ def run_plan_checkpoint(
 
         # P1: Save content hash for skip-on-unchanged
         if decision in ("approve", "edit"):
+            if decision == "edit":
+                # AUD03-04: hash what was ACTUALLY written, not the pre-edit
+                # content — otherwise kill+start right after an edit re-shows
+                # the form for the just-approved text.
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
             try:
                 hash_file.parent.mkdir(parents=True, exist_ok=True)
-                hash_file.write_text(content_hash + "\n", encoding="utf-8")
+                hash_file.write_text(f"{todo_id}:{content_hash}\n", encoding="utf-8")
             except OSError:
                 pass
 
@@ -281,13 +335,6 @@ def run_plan_checkpoint(
 
 
 # ── HTTP server ──────────────────────────────────────────────────────────────
-
-
-def _find_free_port() -> int:
-    """Ask OS for a free port by binding to port 0."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def _is_local_origin(origin: str) -> bool:
@@ -315,13 +362,19 @@ def _start_checkpoint_server(
     port: int,
     decision_holder: dict[str, str],
     edited_holder: dict[str, str],
+    decision_lock: threading.Lock | None = None,
 ) -> ThreadingHTTPServer:
     """Start one-shot HTTP server to receive form POST. Daemon thread.
 
     The handler populates ``decision_holder`` (and ``edited_holder`` on edit)
     and returns a small ack page. Server is shut down by the caller after
     the decision arrives or timeout fires.
+
+    AUD03-05: decision writing is first-wins, guarded by ``decision_lock``
+    (shared across all handler instances of this server).
     """
+    if decision_lock is None:
+        decision_lock = threading.Lock()
 
     class _CheckpointHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server API
@@ -355,9 +408,40 @@ def _start_checkpoint_server(
                 self.wfile.write(b"Invalid decision")
                 return
 
-            decision_holder["decision"] = decision
-            if decision == "edit":
-                edited_holder["content"] = params.get("edited_content", [""])[0]
+            # AUD03-05: first-wins — only the first accepted POST sets the
+            # decision. Repeat/racing POSTs get an ack without overwriting
+            # (last-write-wins used to let a second tab flip the outcome).
+            already_decided = False
+            with decision_lock:
+                if decision_holder:
+                    already_decided = True
+                else:
+                    decision_holder["decision"] = decision
+                    if decision == "edit":
+                        edited_holder["content"] = params.get("edited_content", [""])[0]
+
+            if already_decided:
+                first = decision_holder["decision"]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                dup_ack = (
+                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    "<title>awf</title>"
+                    "<style>"
+                    "body{background:#1e1e1e;color:#d4d4d4;font-family:system-ui,sans-serif;"
+                    "padding:40px;text-align:center;margin:0;}"
+                    "h2{color:#4ec9b0;font-weight:600;margin-bottom:12px;}"
+                    "p{color:#858585;}"
+                    "</style>"
+                    "</head>"
+                    "<body>"
+                    f"<h2>Решение уже принято: {html_lib.escape(first)}</h2>"
+                    "<p>Повторная отправка проигнорирована. Можно закрыть вкладку.</p>"
+                    "</body></html>"
+                )
+                self.wfile.write(dup_ack.encode("utf-8"))
+                return
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

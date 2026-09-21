@@ -6,7 +6,12 @@ from pathlib import Path
 
 
 def signal_type(signal_filename: str) -> str:
-    """Classify a signal basename (without .ready) into a type."""
+    """Classify a signal basename (without .ready) into a type.
+
+    AUD16-03: TEST-PASSED/TEST-FAILED are gone — no worker or stage ever
+    emitted them, so they no longer classify (a stray TEST-* file is
+    'unknown' and escalates like any other garbage signal).
+    """
     if signal_filename.startswith("DONE-"):
         return "done"
     if signal_filename.startswith("BLOCKED-"):
@@ -15,10 +20,6 @@ def signal_type(signal_filename: str) -> str:
         return "approved"
     if signal_filename.startswith("REVIEW-REJECTED-"):
         return "rejected"
-    if signal_filename.startswith("TEST-PASSED-"):
-        return "passed"
-    if signal_filename.startswith("TEST-FAILED-"):
-        return "failed"
     return "unknown"
 
 
@@ -63,9 +64,10 @@ def expected_signal_prefixes(kind: str) -> list[str]:
     """
     # All execute-kind stages produce the same vocabulary. The skill/role
     # decides which to actually use — awf accepts any of them.
+    # AUD16-03: TEST-PASSED/TEST-FAILED removed — the full watch→classify→
+    # transition cycle existed for signals nobody ever emitted.
     if kind == "execute":
-        return ["DONE", "BLOCKED", "REVIEW-APPROVED", "REVIEW-REJECTED",
-                "TEST-PASSED", "TEST-FAILED"]
+        return ["DONE", "BLOCKED", "REVIEW-APPROVED", "REVIEW-REJECTED"]
     # plan and verify stages don't emit worker signals (they create TODO /
     # ACK respectively). Return empty list — caller treats as "no expected
     # signal from this stage".
@@ -105,8 +107,17 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
                 if not sig_file.is_file():
                     continue
                 md_file = outbox / f"{prefix}-{candidate_id}.md"
-                if md_file.exists() and not md_file.read_text(encoding="utf-8").strip():
-                    continue  # P3: reject whitespace-only .md (no real content)
+                if md_file.exists():
+                    try:
+                        # AUD01-04: a corrupted companion (worker killed
+                        # mid-write, binary garbage) must not crash the
+                        # polling loop — treat unreadable as empty, which
+                        # the P3 branch below already rejects.
+                        md_text = md_file.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        md_text = ""
+                    if not md_text.strip():
+                        continue  # P3: reject whitespace-only .md (no real content)
                 signal_name = sig_file.stem.rsplit(".md", 1)[0] if sig_file.stem.endswith(".md") else sig_file.stem
                 mtime = sig_file.stat().st_mtime
                 candidates.append((mtime, signal_name))
@@ -123,7 +134,10 @@ def clean_stage_signals(outbox: Path, todo_id: str, *prefixes: str) -> None:
     short = short_id(todo_id)
     for prefix in prefixes:
         for candidate_id in (todo_id, short):
-            for ext in (".ready", ".md"):
+            # AUD01-03: ".md.ready" (the BD-21 agent typo form) must be
+            # cleaned too — read_signal_for_todo accepts it, so a clean that
+            # skipped it left a VALID signal behind for the next stage.
+            for ext in (".ready", ".md", ".md.ready"):
                 p = outbox / f"{prefix}-{candidate_id}{ext}"
                 try:
                     p.unlink()

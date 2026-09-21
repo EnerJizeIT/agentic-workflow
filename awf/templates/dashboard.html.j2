@@ -31,7 +31,6 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .todo-pill.rejected { background: rgba(248,81,73,0.08); color: var(--red); border: 1px solid rgba(248,81,73,0.15); }
 .todo-pill.running { background: rgba(88,166,255,0.08); color: var(--accent); border: 1px solid rgba(88,166,255,0.2); }
 .todo-pill.running::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: blink 1.5s infinite; }
-.todo-sep { color: var(--text-dim); font-size: 10px; }
 .topbar-status { display: flex; align-items: center; gap: 8px; }
 .status-badge { padding: 4px 14px; border-radius: 20px; font-size: 12px; font-weight: 500; }
 .status-badge.running { background: rgba(63,185,80,0.08); color: var(--green); }
@@ -39,6 +38,8 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .status-badge.done, .status-badge.idle { background: rgba(88,166,255,0.08); color: var(--accent); }
 .status-badge.dead, .status-badge.blocked { background: rgba(248,81,73,0.08); color: var(--red); }
 .status-badge.salvage { background: rgba(210,153,34,0.08); color: var(--yellow); }
+/* AUD10-08: checkpoint waits on a human — the dot/badge must be visible */
+.status-badge.checkpoint { background: rgba(188,140,255,0.08); color: var(--purple); }
 .run-chip { padding: 3px 12px; border-radius: 20px; font-size: 12px; background: rgba(88,166,255,0.08); color: var(--accent); white-space: nowrap; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.running { background: var(--green); animation: blink 1.5s infinite; }
@@ -46,6 +47,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .status-dot.done, .status-dot.idle { background: var(--accent); }
 .status-dot.dead, .status-dot.blocked { background: var(--red); animation: blink 0.5s infinite; }
 .status-dot.salvage { background: var(--yellow); animation: blink 1.5s infinite; }
+.status-dot.checkpoint { background: var(--purple); animation: blink 1.5s infinite; }
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 /* ─── Main layout ─── */
@@ -66,7 +68,6 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .stage-meta { font-size: 10px; color: var(--text-dim); }
 .stage-meta.done { color: var(--green); }
 .stage-meta.current { color: var(--accent); }
-.stage-dur { font-family: var(--mono); font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 
 /* Progress */
 .progress-bar { height: 4px; background: var(--border-subtle); border-radius: 2px; overflow: hidden; margin: 8px 0 4px; }
@@ -104,8 +105,6 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .chat-body { flex: 1; min-width: 0; }
 .chat-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .chat-name { font-weight: 600; font-size: 13px; }
-.chat-dur { font-size: 11px; font-family: var(--mono); color: var(--text-muted); background: var(--bg-hover); padding: 1px 6px; border-radius: 8px; }
-.chat-dur.live { color: var(--accent); }
 .chat-content { background: var(--bg-card); border-radius: 0 var(--radius-sm) var(--radius-sm) var(--radius-sm); padding: 12px 14px; border-left: 3px solid; }
 .chat-content h1, .chat-content h2, .chat-content h3 { margin: 8px 0 4px; }
 .chat-content h1 { font-size: 15px; } .chat-content h2 { font-size: 14px; } .chat-content h3 { font-size: 13px; }
@@ -246,6 +245,33 @@ async function poll() {
   }
 }
 
+// AUD15-03: the old setInterval(poll, 3000) fired a NEW request every 3s
+// regardless of whether the previous one had finished — once /api/state
+// answered slower than 3s the browser queued requests without bound.
+// Now each poll schedules the NEXT one only after its own response lands,
+// and an in-flight poll is skipped (re-scheduled), so at most one
+// request is ever in flight per tab.
+const POLL_INTERVAL_MS = 3000;
+let _pollInFlight = false;
+let _pollTimer = null;
+
+function schedulePoll() {
+  if (_pollTimer !== null) clearTimeout(_pollTimer);
+  _pollTimer = setTimeout(_pollLoop, POLL_INTERVAL_MS);
+}
+
+async function _pollLoop() {
+  _pollTimer = null;
+  if (_pollInFlight) { schedulePoll(); return; }
+  _pollInFlight = true;
+  try {
+    await poll();
+  } finally {
+    _pollInFlight = false;
+    schedulePoll();
+  }
+}
+
 function updateAll(s) {
   updateTopbar(s);
   updateSidebar(s);
@@ -312,9 +338,11 @@ function updateSidebar(s) {
     const cls = 'stage-row ' + (st.status === 'current' ? 'current' : '');
     const statusIcon = st.status === 'done' ? '✓' : st.status === 'current' ? '●' : '○';
     const statusText = st.status === 'done' ? 'done' : st.status === 'current' ? 'running' : 'pending';
+    // AUD10-10: stage name/role comes from hand-written pipeline.yaml —
+    // escape before innerHTML (label is the XSS vector).
     return '<div class="' + cls + '">'
-      + '<div class="stage-icon">' + st.icon + '</div>'
-      + '<div class="stage-info"><div class="stage-name">' + st.label + '</div>'
+      + '<div class="stage-icon">' + escapeHtml(st.icon) + '</div>'
+      + '<div class="stage-info"><div class="stage-name">' + escapeHtml(st.label) + '</div>'
       + '<div class="stage-meta ' + st.status + '">' + statusIcon + ' ' + statusText + '</div></div>'
       + '</div>';
   }).join('');
@@ -338,9 +366,10 @@ function updateSidebar(s) {
   const ns = document.getElementById('next-section');
   if (s.next_stage) {
     ns.style.display = 'block';
+    // AUD10-10: same escaping as the stage list (next_stage shares the source).
     document.getElementById('next-preview').innerHTML =
-      '<span style="font-size:14px">' + s.next_stage.icon + '</span>'
-      + '<span>Next: <strong style="color:' + s.next_stage.color + '">' + s.next_stage.label + '</strong></span>';
+      '<span style="font-size:14px">' + escapeHtml(s.next_stage.icon) + '</span>'
+      + '<span>Next: <strong style="color:' + s.next_stage.color + '">' + escapeHtml(s.next_stage.label) + '</strong></span>';
   } else { ns.style.display = 'none'; }
 }
 
@@ -374,11 +403,12 @@ function updateChat(s) {
     }
     if (h.duration) times += (times ? ' · ' : '') + h.duration;
 
+    // AUD10-10: role labels come from pipeline.yaml — escape before innerHTML.
     html += '<div class="' + cls + '">'
-      + '<div class="chat-avatar" style="background:' + h.color + '22">' + h.icon + '</div>'
+      + '<div class="chat-avatar" style="background:' + h.color + '22">' + escapeHtml(h.icon) + '</div>'
       + '<div class="chat-body">'
       + '<div class="chat-header">'
-      + '<span class="chat-name" style="color:' + h.color + '">' + h.label + '</span>'
+      + '<span class="chat-name" style="color:' + h.color + '">' + escapeHtml(h.label) + '</span>'
       + (times ? '<span class="chat-time">' + times + '</span>' : '')
       + (h.active && !h.awaiting ? '<span class="chat-live" id="chat-active-timer" data-start="' + (h.started_epoch || 0) + '"></span>' : '')
       + '</div>';
@@ -398,7 +428,8 @@ function updateChat(s) {
     html += '</div></div>';
 
     if (older) {
-      html += '<div class="chat-chain"><span class="chat-chain-arrow">↑</span> эстафета от ' + older.icon + ' ' + older.label + '</div>';
+      html += '<div class="chat-chain"><span class="chat-chain-arrow">↑</span> эстафета от '
+        + escapeHtml(older.icon) + ' ' + escapeHtml(older.label) + '</div>';
     }
   });
 
@@ -558,8 +589,7 @@ function escapeHtml(s) {
 // ─── Init + Poll ────────────────────────────────────────────────────
 const INITIAL_STATE = {{ initial_state_json | safe }};
 updateAll(INITIAL_STATE);
-poll();  // Day-3: refresh immediately — the embedded snapshot can be a stage old
-setInterval(poll, 3000);
+_pollLoop();  // Day-3: refresh immediately — the embedded snapshot can be a stage old
 </script>
 </body>
 </html>

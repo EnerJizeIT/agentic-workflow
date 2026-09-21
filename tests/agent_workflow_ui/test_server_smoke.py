@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("mcp.server.fastmcp")
 
 from agent_workflow_ui.config import ensure_directories, load
+from agent_workflow_ui.http_endpoint import _find_free_port  # AUD12-09
 from agent_workflow_ui.render.engine import create_env
 from agent_workflow_ui.server import create_server
 from agent_workflow_ui.state import (
@@ -47,7 +48,9 @@ def plugin_initialized(tmp_path, monkeypatch):
     config = load()
     ensure_directories(config)
     set_config(config)
-    set_http_port(13747)
+    # AUD12-09: no hardcoded port — the suite must not depend on a
+    # specific port being free.
+    set_http_port(_find_free_port())
     set_jinja_env(create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR]))
     reset_registry()
 
@@ -70,7 +73,12 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 29 tools are registered with correct names (5 UI + 24 awf)."""
+    """All 37 tools are registered with correct names (5 UI + 32 awf).
+
+    AUD08-08: this number is a fact-check, not a label — if it drifts from
+    ``server.py``, ``tool_names == expected`` below fails first. Update both
+    together when a tool is added.
+    """
     server = create_server()
     tools = asyncio.run(server.list_tools())
 
@@ -121,6 +129,10 @@ def test_all_tools_registered():
         "awf_run_finish",
         "awf_run_note",
         "awf_restore",
+        # U4: machine proof that tests are red on the baseline sha
+        "awf_prove_red",
+        # U5: one deterministic verify report (GATES-<todo>.md)
+        "awf_verify_pack",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

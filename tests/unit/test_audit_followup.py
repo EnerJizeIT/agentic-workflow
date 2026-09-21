@@ -1,9 +1,8 @@
 """Tests for audit-followup fixes (C1, M1, H2, H3, H4, H6, H7)."""
 from __future__ import annotations
 
-import subprocess
-
 import pytest
+from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf.pipeline import Stage
 from awf.signals import find_signal_file
@@ -230,13 +229,8 @@ class TestH1CommitAllReturnCode:
         """H1 fix: commit_all returns False when git commit fails (pre-commit hook)."""
         from awf import git_utils
 
-        # Init git repo
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
-        (tmp_path / "README.md").write_text("init")
-        subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
+        # Init git repo (AUD12-08: shared boilerplate)
+        _git_init(tmp_path)
 
         # Install failing pre-commit hook
         hook_dir = tmp_path / ".git" / "hooks"
@@ -373,8 +367,13 @@ class TestC1PipelineReviewRejection:
         # The C1 fix is that verify stage does NOT call _maybe_commit or _mark_plan_step_done
         # when supervisor returns REVIEW.
         assert not step_marked["v"], "C1: must NOT mark Step done on REVIEW rejection"
-        # Verify the REVIEW file was written
-        assert (outbox / "REVIEW-TODO-0001.md").exists(), "C1: REVIEW file should exist"
+        # AUD04-04: the REVIEW the supervisor wrote is consumed at the end of
+        # the cycle (the replan already had its chance). It must NOT survive —
+        # a fresh verify of the same TODO would otherwise re-reject on it.
+        assert not (outbox / "REVIEW-TODO-0001.md").exists(), (
+            "AUD04-04: stale REVIEW survived the cycle — a fresh cycle would "
+            "re-trigger replan on a dead rejection"
+        )
 
 
 # ── QA: empty sup_signal at verify must abort (not silently approve) ────────

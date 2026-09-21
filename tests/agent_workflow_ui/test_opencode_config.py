@@ -323,6 +323,47 @@ def test_read_available_models_invalid_json(tmp_path, monkeypatch):
     assert opencode_config.read_available_models() == []
 
 
+def _write_opencode_json(tmp_path, monkeypatch, payload) -> None:
+    """Mock CLI failure + write opencode.json under a fake home."""
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})(),
+    )
+    fake_home = tmp_path / "fake_home"
+    oc_dir = fake_home / ".config" / "opencode"
+    oc_dir.mkdir(parents=True)
+    (oc_dir / "opencode.json").write_text(json.dumps(payload))
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+
+def test_compute_models_non_dict_root(tmp_path, monkeypatch):
+    """AUD09-06: JSON array at the root → [], not AttributeError."""
+    _write_opencode_json(tmp_path, monkeypatch, [1, 2, 3])
+    assert opencode_config.read_available_models() == []
+
+
+def test_compute_models_provider_section_list(tmp_path, monkeypatch):
+    """AUD09-06: 'provider' as a list → [], not AttributeError on .items()."""
+    _write_opencode_json(tmp_path, monkeypatch, {"provider": [1, 2]})
+    assert opencode_config.read_available_models() == []
+
+
+def test_compute_models_agent_section_list(tmp_path, monkeypatch):
+    """AUD09-06: 'agent' as a list → [], not AttributeError on .values()."""
+    _write_opencode_json(tmp_path, monkeypatch, {"agent": [{"model": "x/y"}]})
+    assert opencode_config.read_available_models() == []
+
+
+def test_compute_models_list_of_dicts_no_garbage_ids(tmp_path, monkeypatch):
+    """AUD09-06: 'models' as a list of dicts must not emit dict-formatted ids."""
+    _write_opencode_json(
+        tmp_path, monkeypatch,
+        {"provider": {"acme": {"models": [{"id": "m1"}]}}},
+    )
+    models = opencode_config.read_available_models()
+    assert all(isinstance(m, str) and "{" not in m for m in models)
+
+
 # ── read_recent_models ────────────────────────────────────────────────────────
 
 

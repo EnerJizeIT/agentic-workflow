@@ -1,0 +1,79 @@
+name: ci
+
+# U7a: внешний судья на каждый push/PR. Полный сьют + lint из чистого
+# окружения (venv-симуляция локально — см. DONE-TODO-0016).
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Node24: v4 ran on the deprecated Node 20 runtime (2026 deprecation
+      # wave); v5 is the first Node-24 major (manifest: using: node24).
+      - uses: actions/checkout@v5
+        with:
+          # instruction-gates проверяет «живые хэши» — ссылки на коммиты
+          # в docs/contracts/*.md должны существовать в истории (shallow
+          # clone ломает гейт: badf05e вне fetch-depth=1).
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        # Node24: v5 ran on Node 20; v6 is Node 24 (manifest verified).
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install -e "./agent_workflow_ui[dev]"
+
+      - name: Quality gates
+        # U2: единый прогон — контракты (docs/contracts/), храповики
+        # (.ratchet-counters), бюджет инструкций и команды проекта
+        # (pytest -n auto, ruff). Отдельные шаги тестов/линта убраны:
+        # run-all уже покрывает их — без двойного прогона (+2,5 мин CI).
+        run: bash scripts/run-all.sh
+
+  # AUD13-02/03: editable install never validates package-data, so a
+  # data file can silently drop out of the PyPI wheel. This job builds the
+  # real wheels, asserts the key files are inside, and smoke-installs the
+  # core wheel in a clean venv (import + CLI help + package-data test).
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          pip wheel . --no-deps --wheel-dir dist/
+          pip wheel ./agent_workflow_ui --no-deps --wheel-dir dist/
+
+      - name: Check wheel contents
+        run: |
+          python -m zipfile -l dist/awf-*.whl | grep -E \
+            'awf/data/role_zones\.yaml|awf/templates/roles/supervisor/phase-(init|verify)\.md|awf/templates/dashboard\.html\.j2'
+          python -m zipfile -l dist/agent_workflow_ui-*.whl | grep -E \
+            'render/default_templates/project-setup\.html\.j2|SKILL\.md'
+
+      - name: Smoke install core wheel in clean venv
+        # Runs outside the checkout: from the repo dir, sys.path[0] would
+        # shadow the installed wheel with the source tree.
+        working-directory: /tmp
+        run: |
+          python -m venv /tmp/pip-smoke
+          /tmp/pip-smoke/bin/pip install --quiet "${GITHUB_WORKSPACE}"/dist/awf-*.whl
+          /tmp/pip-smoke/bin/python -c "import awf, pathlib; p = pathlib.Path(awf.__file__).parent / 'data' / 'role_zones.yaml'; assert p.is_file(), f'missing {p} — package-data drift'; print('awf', awf.__version__)"
+          /tmp/pip-smoke/bin/python -m awf --help

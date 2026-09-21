@@ -428,36 +428,18 @@ optional_data_keys: []
 
   <script>
     (function () {
-      var roles = [
-        {% for role in roles %}
-        {id: "{{ role.id }}", title: "{{ role.title }}", desc: "{{ role.get('description', '') }}"}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      {# AUD09-03: arrays are tojson literals — raw {{ }} interpolation broke
+         the whole <script> (SyntaxError) on backslash/newline/quote in ids. #}
+      var roles = {{ roles | tojson }};
 
-      var allModels = [
-        {% for m in (available_models or []) %}
-        "{{ m }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      var allModels = {{ (available_models or []) | tojson }};
 
-      var recentModels = [
-        {% for m in (recent_models or []) %}
-        "{{ m }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      var recentModels = {{ (recent_models or []) | tojson }};
 
-      var customAgents = [
-        {% for ca in (custom_agents or []) %}
-        {id: "{{ ca.id }}", title: "{{ ca.title }}"}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      var customAgents = {{ (custom_agents or []) | tojson }};
 
       // UI-1: project-local roles (.agentic/roles/*.md, excluding supervisor)
-      var projectRoles = [
-        {% for pr in (project_roles or []) %}
-        {id: "{{ pr.id }}", title: "{{ pr.title }}"}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      var projectRoles = {{ (project_roles or []) | tojson }};
 
       // BD-27: global skills with full content — primary source for team roles.
       var globalSkills = [
@@ -466,17 +448,9 @@ optional_data_keys: []
         {% endfor %}
       ];
 
-      var existingSupervisorSlugs = [
-        {% for s in (existing_supervisor_slugs or []) %}
-        "{{ s }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      var existingSupervisorSlugs = {{ (existing_supervisor_slugs or []) | tojson }};
 
-      var existingAgentSlugs = [
-        {% for s in (existing_agent_slugs or []) %}
-        "{{ s }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-      ];
+      var existingAgentSlugs = {{ (existing_agent_slugs or []) | tojson }};
 
       function slugify(name) {
         var m = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};

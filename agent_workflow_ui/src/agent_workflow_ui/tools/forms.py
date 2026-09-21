@@ -92,8 +92,13 @@ async def open_form(
         ttl_seconds: Auto-cancel after N seconds (optional). Default: 24h from config.
 
     Returns:
-        Dict with form_id, browser_opened, submit_url, expires_at (optional),
-        error (on failure).
+        Dict with form_id, browser_opened, submit_url, expires_at (optional).
+        ``error`` is only present when the form was NOT materialized
+        (unknown template, no HTTP endpoint, missing template file).
+        Browser failure keeps the form usable: ``browser_opened: False`` +
+        ``next_action`` with the submit_url (AUD08-03). project-setup
+        without a valid project_dir adds a ``warning`` — the submit will
+        not be materialized to the project (AUD08-03 S2b).
     """
     registry = get_registry()
     config = get_config()
@@ -252,7 +257,23 @@ async def open_form(
     if expires_at:
         result["expires_at"] = expires_at
     if not success:
-        result["error"] = msg
+        # AUD08-03: the form IS materialized (form_id works, submit is
+        # live) — only the browser tab failed. `error` is reserved for
+        # "form not materialized"; mixing the two made awf_* wrappers
+        # drop the form_id on headless machines.
+        result["next_action"] = (
+            f"Browser did not open ({msg}). The form is ready — open "
+            f"{submit_url} manually, then poll read_submit."
+        )
+    if template == "project-setup" and project_dir_resolved is None:
+        # AUD08-03 (S2b): without a resolvable project_dir the submit will
+        # NOT be materialized to .agentic/ — surface it in the response,
+        # not only in the log (which the agent never sees).
+        result["warning"] = (
+            "project_dir is missing or has no .agentic/ — the submit will "
+            "be saved to inputs/ only, NOT materialized to the project. "
+            "Pass project_dir= with the project root."
+        )
     return result
 
 
@@ -301,6 +322,11 @@ async def read_submit(form_id: str) -> dict[str, Any]:
 
     Returns:
         Dict with submitted (bool), form_id, status. If submitted: data, submitted_at, template.
+
+    Note:
+        ``status`` may be "submitting" — a POST claimed the form and is
+        mid-write. It is transient: a crashed claim auto-reverts to
+        "pending" after <= 10 minutes (AUD09-05), so retrying is safe.
     """
     # QA-5: validate form_id separators (defense-in-depth, same as http_endpoint)
     from ..http_endpoint import _is_valid_form_id
@@ -404,6 +430,15 @@ async def cancel_form(form_id: str) -> dict[str, Any]:
         }
 
     registry.update_status(form_id, "cancelled")
+    # AUD08-14: remove the temp HTML so a cancelled form leaves no
+    # artifact in temp_dir (was: alive until the 24h lazy cleanup).
+    config = get_config()
+    try:
+        temp_html = config.temp_dir / f"agent-workflow-ui-{form_id}.html"
+        if temp_html.exists():
+            temp_html.unlink()
+    except OSError:
+        pass
     return {
         "cancelled": True,
         "form_id": form_id,

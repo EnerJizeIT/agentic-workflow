@@ -25,11 +25,20 @@ def _load_opencode_config(
         import json
 
         oc_data = json.loads(oc_path.read_text(encoding="utf-8"))
+        if not isinstance(oc_data, dict):
+            # AUD06-13: a valid-JSON opencode.json with a non-dict root
+            # (list, number) must degrade, not AttributeError on .get.
+            print(
+                f"model_check: opencode.json root is {type(oc_data).__name__}, "
+                "expected an object — treating as empty",
+                file=sys.stderr,
+            )
+            return {}, {}
         return (
             oc_data.get("provider", {}) or {},
             oc_data.get("agent", {}) or {},
         )
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         print(
             f"model_check: cannot read opencode.json: {e}",
             file=sys.stderr,
@@ -217,15 +226,28 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
             )
         else:
             valid = False
-            note = (
-                f"Provider '{provider_name}' not found in opencode.json. "
-                f"Worker will silently fallback to opencode default model."
-            )
-            warnings.append(
-                f"Role '{role}': model '{model}' — provider '{provider_name}' "
-                f"not in opencode.json providers ({list(oc_providers.keys())}). "
-                f"Worker will use fallback model (may be slow/cloud)."
-            )
+            if provider_name:
+                note = (
+                    f"Provider '{provider_name}' not found in opencode.json. "
+                    f"Worker will silently fallback to opencode default model."
+                )
+                warnings.append(
+                    f"Role '{role}': model '{model}' — provider '{provider_name}' "
+                    f"not in opencode.json providers ({list(oc_providers.keys())}). "
+                    f"Worker will use fallback model (may be slow/cloud)."
+                )
+            else:
+                # AUD06-13: bare model name (no 'provider/' prefix) — the
+                # provider-existence check does not apply, say so honestly.
+                note = (
+                    f"Model '{model}' has no provider prefix "
+                    "(expected 'provider/model') — check that opencode "
+                    "knows it by default."
+                )
+                warnings.append(
+                    f"Role '{role}': model '{model}' has no provider prefix — "
+                    "opencode must know it by default."
+                )
 
         results.append({
             "role": role,

@@ -18,7 +18,9 @@ from pathlib import Path
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
+from .._proc import run_tree
 from ..pipeline_state import read_state
+from . import _liveness
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import require_agentic
@@ -35,50 +37,32 @@ def _read_pid_cmdline(pid: int) -> str | None:
     """Read /proc/<pid>/cmdline; None when the process is gone/unreadable.
 
     Extracted as a seam for tests (PID-reuse race, QA .14).
+    AUD04-07: delegates to the shared liveness module.
     """
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", errors="replace")
-    except OSError:
-        return None
+    return _liveness.read_cmdline(pid)
 
 
 def _is_pipeline_running(project_dir: Path) -> int | None:
-    """DF5-6: Check if a pipeline subprocess is still alive.
+    """DF5-6 + AUD04-07: state-source liveness via the shared resolver.
 
-    Reads ``pipeline_pid`` from state file and probes via ``os.kill(pid, 0)``.
-    QA-4: on Linux, also verifies ``/proc/<pid>/cmdline`` contains ``awf``
-    to guard against PID reuse (another process took the same PID after
-    awf pipeline exited).
-    Returns the live PID, or None if no pipeline / process is dead / PID reused.
+    Reads ``pipeline_pid`` from the state file. Identity is strict: the
+    PID is ours only if its argv is ``... -m awf start|continue ...``
+    (guards against PID reuse; an unreadable /proc never passes).
+    Returns the live PID, or None if no pipeline / process is dead /
+    PID reused.
     """
-    import os
-
     state = read_state(project_dir)
     if not state:
         return None
-    pid = state.get("pipeline_pid")
-    if not pid:
-        return None
     try:
-        pid_int = int(pid)
+        pid_int = int(state.get("pipeline_pid"))
     except (ValueError, TypeError):
         return None
-
-    # QA .14 (NEG-2026-09-19): identity check FIRST, liveness second.
-    # The old order (kill → cmdline read, with an "assume ours" fallback)
-    # let a reused PID pass as our pipeline when /proc was unreadable.
-    cmdline = _read_pid_cmdline(pid_int)
-    if cmdline is None:
-        return None  # dead or unreadable — never assume it is ours
-    if "awf" not in cmdline and "python" not in cmdline.lower():
-        return None  # PID reused by an unrelated process
-
-    try:
-        os.kill(pid_int, 0)
-    except (ProcessLookupError, PermissionError, OSError):
+    if not pid_int:
         return None
-
-    return pid_int
+    if _liveness.pid_is_ours(pid_int, _read_pid_cmdline(pid_int), strict=True):
+        return pid_int
+    return None
 
 
 def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
@@ -349,17 +333,40 @@ def approve_commit(project_dir: Path, todo_id: str, *, evidence: str = "") -> Ap
     signal.touch()
 
     # SPEC A-run (second tier): record the verdict in the run diary.
+    # AUD05-05 (rest): computed from the FRESH state inside the lock
+    # (update_run), not from the snapshot read above. If a reject landed
+    # first, this approve must NOT publish verdict='approved' — audit
+    # invariant: 'approved' ⇒ rejects == 0. The reject's diary entry stays.
+    conflict = False
     if run_active:
         from .. import run_state as _run_state
 
-        outcomes = dict((run or {}).get("outcomes") or {})
-        outcomes[todo_id] = {"verdict": "approved"}
-        _run_state.write_run(project_dir, outcomes=outcomes)
+        def _approve_mutator(state: dict) -> dict:
+            nonlocal conflict
+            if not state.get("active"):
+                return state
+            rejects_map = state.get("rejects") or {}
+            if int(rejects_map.get(todo_id, 0) or 0) >= 1:
+                conflict = True
+                return state  # reject won — do not publish 'approved'
+            outcomes = dict(state.get("outcomes") or {})
+            outcomes[todo_id] = {"verdict": "approved"}
+            state["outcomes"] = outcomes
+            return state
+
+        _run_state.update_run(project_dir, _approve_mutator)
 
     return ApproveResult(
         todo_id=todo_id,
         signal_file=str(signal),
         evidence_file=str(evidence_file) if evidence.strip() else "",
+        message=(
+            f"{todo_id}: a rejection already counted for this TODO — the "
+            "verdict stays 'rejected' in the run diary (hard invariant: "
+            "'approved' ⇒ rejects == 0). Resolve the reject first."
+            if conflict
+            else ""
+        ),
     )
 
 
@@ -396,28 +403,42 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
     report_file = ""
     message = f"{todo_id} rejected — REVIEW written."
     if run and run.get("active"):
-        rejects_map = dict(run.get("rejects") or {})
-        rejects = int(rejects_map.get(todo_id, 0) or 0) + 1
-        rejects_map[todo_id] = rejects
-        outcomes = dict(run.get("outcomes") or {})
-        outcomes[todo_id] = {
-            "verdict": "rejected",
-            "reason": reason.strip(),
-            "rejects": rejects,
-        }
-        _run_state.write_run(project_dir, rejects=rejects_map, outcomes=outcomes)
-        message = f"{todo_id} rejected (rejection #{rejects} in this run)."
-        if rejects >= 2:
-            from .run import stop_run
+        # AUD05-05 (rest): count from the FRESH state inside the lock
+        # (update_run). A reject is never lost: the counter always reads
+        # what is on disk at the moment of the write, so a concurrent
+        # approve/finish cannot blank the count that drives the
+        # "rejected twice" gate.
+        def _reject_mutator(state: dict) -> dict:
+            nonlocal rejects
+            if not state.get("active"):
+                return state  # run closed meanwhile — stay legacy (no count)
+            rejects_map = dict(state.get("rejects") or {})
+            rejects = int(rejects_map.get(todo_id, 0) or 0) + 1
+            rejects_map[todo_id] = rejects
+            state["rejects"] = rejects_map
+            outcomes = dict(state.get("outcomes") or {})
+            outcomes[todo_id] = {
+                "verdict": "rejected",
+                "reason": reason.strip(),
+                "rejects": rejects,
+            }
+            state["outcomes"] = outcomes
+            return state
 
-            stopped = stop_run(
-                project_dir,
-                _run_state.read_run(project_dir) or run,
-                f"{todo_id} rejected twice — the task needs the owner",
-            )
-            run_stopped = True
-            report_file = stopped.report_file
-            message += " Run STOPPED: two rejections — the task needs the owner."
+        fresh = _run_state.update_run(project_dir, _reject_mutator)
+        if rejects:
+            message = f"{todo_id} rejected (rejection #{rejects} in this run)."
+            if rejects >= 2:
+                from .run import stop_run
+
+                stopped = stop_run(
+                    project_dir,
+                    fresh,
+                    f"{todo_id} rejected twice — the task needs the owner",
+                )
+                run_stopped = True
+                report_file = stopped.report_file
+                message += " Run STOPPED: two rejections — the task needs the owner."
 
     return RejectResult(
         todo_id=todo_id,
@@ -450,7 +471,17 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
 
     is_git = git_utils.is_git_repo(project_dir)
     if is_git:
-        sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
+        try:
+            sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
+        except RuntimeError as e:
+            # AUD05-08: `git init` with zero commits → `rev-parse HEAD`
+            # fails. Surface a clean AwfApiError (MCP/CLI render it)
+            # instead of letting the raw RuntimeError escape every caller.
+            raise AwfApiError(
+                f"git repo at {project_dir} has no commits yet — create the "
+                "first commit, then retry. (git: "
+                f"{str(e).splitlines()[0] if str(e) else 'rev-parse HEAD failed'})"
+            ) from e
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
         status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", status)
@@ -472,12 +503,25 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
 
     if config_file.exists():
         config_data = cfg_mod.load(project_dir)
+        # U1: dispatch-time baseline runs a fast smoke command (baseline_cmd)
+        # instead of the full test_cmd. Absent/empty/blank → legacy test_cmd.
+        baseline_cmd = (
+            cfg_mod.get(config_data, "verification.baseline_cmd", "") or ""
+        ).strip()
         test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
-        if test_cmd:
-            parts = shlex.split(test_cmd)
+        run_cmd = baseline_cmd or test_cmd
+        cmd_key = "baseline_cmd" if baseline_cmd else "test_cmd"
+        if run_cmd:
+            try:
+                parts = shlex.split(run_cmd)
+            except ValueError as e:
+                # AUD14-02: bad quoting in test_cmd must not traceback baseline
+                raise AwfApiError(
+                    f"verification.{cmd_key} не парсится: {e} (cmd: {run_cmd!r})"
+                ) from e
             if parts:
                 try:
-                    result = subprocess.run(
+                    result = run_tree(
                         parts,
                         cwd=str(project_dir),
                         capture_output=True,
@@ -485,14 +529,14 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
                         timeout=300,
                     )
                 except subprocess.TimeoutExpired:
-                    # test_cmd hung (watcher / stdin prompt / infinite loop).
+                    # cmd hung (watcher / stdin prompt / infinite loop).
                     # Don't block baseline creation — record failure, continue.
                     atomic_write_text(
                         tests_log_path,
-                        f"test_cmd timed out after 300s: {test_cmd}\n",
+                        f"{cmd_key} timed out after 300s: {run_cmd}\n",
                     )
                     test_status = "failed"
-                    test_log_excerpt = f"test_cmd timed out: {test_cmd}"
+                    test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
                 else:
                     log_content = result.stdout + result.stderr
                     atomic_write_text(tests_log_path, log_content)
@@ -587,14 +631,32 @@ def rollback(
         )
 
     baseline_sha = baseline_sha_file.read_text(encoding="utf-8").strip()
+    # AUD12-11: garbage in BASELINE-{todo}.sha used to surface as a raw
+    # CalledProcessError from `git reset`. Validate the shape first — the
+    # message then names the file to check instead of git's argv noise.
+    if not re.fullmatch(r"[0-9a-f]{7,40}", baseline_sha):
+        raise AwfApiError(
+            f"baseline SHA {baseline_sha!r} is not a valid git revision — "
+            f"{baseline_sha_file} is corrupt. Recreate the baseline "
+            f"(awf_baseline {todo_id}) and retry."
+        )
 
-    diff_result = subprocess.run(
-        ["git", "diff", baseline_sha, "--stat"],
-        cwd=str(project_dir),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        diff_result = subprocess.run(
+            ["git", "diff", baseline_sha, "--stat"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            # FU-19 (AUD01-02 tail): the last unbounded git call — contract
+            # docs/contracts/subprocess-timeouts.md.
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AwfApiError(
+            f"git diff timed out after {e.timeout}s — a hung git call blocks "
+            "the rollback. Check the repo state (index.lock, huge diff) and retry."
+        ) from e
     diff_stat = diff_result.stdout
 
     if mode == "dry-run":
@@ -611,7 +673,31 @@ def rollback(
     if git_flag:
         git_cmd.append(git_flag)
     git_cmd.append(baseline_sha)
-    subprocess.run(git_cmd, cwd=str(project_dir), check=True)
+    try:
+        # AUD12-11: capture git's stderr — a rejected revision must surface
+        # as the AwfApiError message below, not as raw `fatal:` noise on
+        # the human's terminal.
+        subprocess.run(
+            git_cmd,
+            cwd=str(project_dir),
+            check=True,
+            timeout=30,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AwfApiError(
+            f"git reset timed out after {e.timeout}s — a hung git call leaves "
+            "the repo in an unknown state. Check the repo (index.lock) and retry."
+        ) from e
+    except subprocess.CalledProcessError as e:
+        # AUD12-11: well-formed SHA that git still rejects (deleted branch,
+        # shallow clone without that commit) — typed error, not traceback.
+        raise AwfApiError(
+            f"git reset to baseline {baseline_sha[:12]} failed (exit "
+            f"{e.returncode}) — the revision is not reachable in this repo. "
+            f"Check {baseline_sha_file} and the git history."
+        ) from e
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     ack_content = (
@@ -685,8 +771,9 @@ def start_pipeline(
                 ),
             )
 
-    # DF5-6: refuse to start if a pipeline is already running.
-    live_pid = _is_pipeline_running(project_dir)
+    # DF5-6 + AUD04-07: refuse to start if a pipeline is already running
+    # (shared resolver: background PID file AND state.pipeline_pid).
+    live_pid = _liveness.resolve(project_dir)[1]
     if live_pid and background:
         return StartResult(
             run_mode="noop",
@@ -829,7 +916,10 @@ def continue_pipeline(
             run_mode="noop",
             run_id=None,
             log_file=None,
-            exit_code=0,
+            # AUD07-01: user-caused refusal (typo in --ack) — non-zero so
+            # `set -e` scripts catch it. State-condition noops (no active
+            # TODO, pipeline already running) stay 0.
+            exit_code=1,
             message=f"Invalid TODO id for --ack: {ack!r} (expected TODO-NNNN).",
         )
     if ack:
@@ -839,7 +929,8 @@ def continue_pipeline(
 
     # DF6-2: reconcile state before continuing
     _reconcile(project_dir)
-    live_pid = _is_pipeline_running(project_dir)
+    # AUD04-07: shared liveness resolver (PID file + state), same as start.
+    live_pid = _liveness.resolve(project_dir)[1]
     if live_pid:
         return StartResult(
             run_mode="noop",
@@ -933,6 +1024,9 @@ def continue_pipeline(
             from_stage=from_stage,
             auto=auto,
             timeout=timeout,
+            # AUD04-01: pin the resolved TODO — resuming from verify with an
+            # empty todo_id skips the ACK/APPROVE check and hangs until timeout.
+            todo_id=current_todo,
         )
         child_alive = _verify_child_alive(pid, log_file)
         if not child_alive:
@@ -975,6 +1069,8 @@ def continue_pipeline(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        # AUD04-01: pin the resolved TODO (same reason as the background branch).
+        todo_id=current_todo,
     )
     try:
         exit_code = run_pipeline(args)
@@ -995,6 +1091,31 @@ def continue_pipeline(
     )
 
 
+def _clear_state_keep_salvage(project_dir: Path) -> None:
+    """AUD04-08: clear pipeline state but keep the salvage counter.
+
+    The salvage retry cycle (silent exit → salvage → retry_stage → kill →
+    continue) is the documented recovery path. Wiping the counter on kill
+    made the dogfood-11 escalation ("do NOT retry the same scope", attempt
+    >= 2) unreachable — every retry restarted at "Attempt 1". Mirrors
+    _reconcile, which preserves state keys it does not own.
+    """
+    from ..pipeline_state import clear_state, read_state, write_state
+
+    state = read_state(project_dir) or {}
+    try:
+        count = int(state.get("salvage_count", 0) or 0)
+    except (TypeError, ValueError):
+        count = 0
+    clear_state(project_dir)
+    if count > 0:
+        write_state(
+            project_dir,
+            salvage_count=count,
+            salvage_count_key=state.get("salvage_count_key"),
+        )
+
+
 def kill_pipeline(
     project_dir: Path,
 ) -> dict:
@@ -1010,42 +1131,52 @@ def kill_pipeline(
     import time as _time
 
     project_dir = Path(project_dir).resolve()
-    pid = _is_pipeline_running(project_dir)
+    # AUD04-07: shared resolver (PID file + state) — same view as status.
+    _running, pid, _source = _liveness.resolve(project_dir)
 
     if not pid:
-        # Clear stale state if any
-        from ..pipeline_state import clear_state
-        clear_state(project_dir)
+        # Clear stale state if any (AUD04-08: salvage counter survives)
+        _clear_state_keep_salvage(project_dir)
         return {"killed": False, "pid": None, "message": "No running pipeline found."}
 
     killed = False
+    signaled = False
     try:
         os.kill(pid, _signal.SIGTERM)
-        # Wait up to 5s for graceful shutdown
-        for _ in range(10):
-            _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except (ProcessLookupError, PermissionError):
+        signaled = True
+    except (ProcessLookupError, PermissionError, OSError):
+        # AUD04-07: the process died between the liveness check and our
+        # signal (a concurrent kill won the race). We did NOT kill it —
+        # claiming success would hide the real killer from the log.
+        signaled = False
+
+    if signaled:
+        try:
+            # Wait up to 5s for graceful shutdown
+            for _ in range(10):
+                _time.sleep(0.5)
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, PermissionError, OSError):
+                    killed = True
+                    break
+
+            if not killed:
+                os.kill(pid, _signal.SIGKILL)
+                _time.sleep(0.5)
                 killed = True
-                break
-            except OSError:
-                killed = True
-                break
+        except OSError:
+            pass
 
-        if not killed:
-            os.kill(pid, _signal.SIGKILL)
-            _time.sleep(0.5)
-            killed = True
-    except (ProcessLookupError, PermissionError):
-        killed = True  # already dead
-    except OSError:
-        pass
+    # Clear state (AUD04-08: salvage counter survives the kill)
+    _clear_state_keep_salvage(project_dir)
 
-    # Clear state
-    from ..pipeline_state import clear_state
-    clear_state(project_dir)
-
+    if not signaled:
+        return {
+            "killed": False,
+            "pid": pid,
+            "message": f"PID {pid} already exited — nothing was killed.",
+        }
     msg = f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
     return {"killed": killed, "pid": pid, "message": msg}
 
@@ -1081,9 +1212,10 @@ def retry_stage(
     # Kill if running
     kill_pipeline(project_dir)
 
-    # Clean salvage signals
-    outbox = paths.outbox(project_dir)
-    for p in outbox.glob("SALVAGE-*.md"):
+    # Clean salvage signals (AUD04-08: they are written to the INBOX — the
+    # old outbox glob was a no-op that left every note behind)
+    inbox = paths.inbox(project_dir)
+    for p in inbox.glob("SALVAGE-*.md"):
         try:
             p.unlink()
         except OSError:

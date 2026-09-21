@@ -2,6 +2,8 @@
 import subprocess
 from pathlib import Path
 
+from conftest import _git_init  # AUD12-08: shared git boilerplate
+
 from awf import verify
 
 
@@ -330,17 +332,10 @@ class TestDiffStatForTodo:
     """Day-4 live fix: `git diff` is blind to new files — verify must see them."""
 
     def _repo(self, tmp_path: Path) -> Path:
+        # AUD12-08: git boilerplate is the shared conftest helper.
         proj = tmp_path / "repo"
         proj.mkdir()
-        for cmd in (
-            ["git", "init", "-q"],
-            ["git", "config", "user.email", "t@t.t"],
-            ["git", "config", "user.name", "tester"],
-        ):
-            subprocess.run(cmd, cwd=proj, check=True)
-        (proj / "README.md").write_text("init\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=proj, check=True)
+        _git_init(proj)
         return proj
 
     def _baseline(self, proj: Path, sha: str | None = None) -> str:

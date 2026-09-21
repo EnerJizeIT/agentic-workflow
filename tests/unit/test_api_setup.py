@@ -390,3 +390,230 @@ class TestRoleSlugify:
         from awf.api.setup import _slugify_role
 
         assert _slugify_role("Аудитор") == "Аудитор"
+
+
+# ─── AUD06-02/03: corrupted config.yaml must survive a submit ─────────────
+
+
+class TestCorruptedConfigSurvivesSubmit:
+    """A broken config.yaml (non-UTF-8, broken YAML, non-dict root) must not
+    crash the submit and must not be wiped — the damage goes to warnings."""
+
+    def test_non_utf8_config_does_not_crash_submit(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_bytes(b"\xff\xfe\x00broken\n")
+        result = api.apply_project_setup(
+            awf_project,
+            team=[{"agent": "developer"}],
+            context_message="ctx",
+        )
+        # pipeline still written, config damage surfaced in warnings
+        assert result.pipeline_file is not None
+        assert any("config.yaml" in w for w in result.warnings)
+
+    def test_broken_yaml_config_does_not_crash_submit(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text("key: [unclosed\n  bad: : :\n", encoding="utf-8")
+        result = api.apply_project_setup(
+            awf_project,
+            team=[{"agent": "developer"}],
+            context_message="ctx",
+        )
+        assert result.pipeline_file is not None
+        assert any("config.yaml" in w for w in result.warnings)
+
+    def test_non_dict_config_is_not_wiped(self, awf_project):
+        """AUD06-03: non-dict root survives the submit byte-for-byte."""
+        config_path = awf_project / ".agentic" / "config.yaml"
+        original = b"- a\n- b\n"
+        config_path.write_bytes(original)
+        api.apply_project_setup(
+            awf_project, team=[], context_message="hello ctx"
+        )
+        assert config_path.read_bytes() == original
+
+    def test_non_dict_config_warns(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_bytes(b"- a\n- b\n")
+        result = api.apply_project_setup(
+            awf_project, team=[], context_message="hello ctx"
+        )
+        assert any("config.yaml" in w for w in result.warnings)
+
+
+# ─── AUD06-01: models.<role> keys must match the pipeline slugs ────────────
+
+
+class TestRoleSlugConsistency:
+    """AUD06-01: build_pipeline_stages slugifies role names, so config.yaml
+    must key models.<slug> the same way. With the raw name the runtime
+    lookup models.<slug> misses and BD-12/BD-32 silently do not apply."""
+
+    def test_raw_role_name_slugified_in_config(self, awf_project):
+        api.setup.update_config_role_mapping(
+            [{"role": "QA Lead", "model": "anthropic/claude-3"}],
+            awf_project,
+        )
+        config = yaml.safe_load(
+            (awf_project / ".agentic" / "config.yaml").read_text()
+        )
+        assert "qa-lead" in config["models"]
+        assert "QA Lead" not in config["models"]
+        assert config["models"]["qa-lead"]["agent_name"] == "worker"
+        assert config["models"]["qa-lead"]["model"] == "anthropic/claude-3"
+
+    def test_runtime_lookup_finds_slug_keyed_mapping(self, awf_project):
+        """Runtime reads models.<slug> — the config key must be the slug."""
+        from awf.supervisor import get_agent_name, get_role_model
+
+        api.setup.update_config_role_mapping(
+            [{"role": "My Auditor", "model": "vllm/audit-model"}],
+            awf_project,
+        )
+        config = yaml.safe_load(
+            (awf_project / ".agentic" / "config.yaml").read_text()
+        )
+        assert get_agent_name(config, "my-auditor") == "worker"
+        assert get_role_model(config, "my-auditor") == "vllm/audit-model"
+
+
+# ─── AUD06-04: write_pipeline targets the active pipeline file ─────────────
+
+
+class TestWritePipelineActiveFile:
+    """AUD06-04: with default_pipeline: custom the runtime uses custom.yaml —
+    writing default.yaml would silently ignore the form's team (repro S9)."""
+
+    def _set_default_pipeline(self, project, name):
+        config_path = project / ".agentic" / "config.yaml"
+        config = yaml.safe_load(config_path.read_text())
+        config["default_pipeline"] = name
+        config_path.write_text(yaml.safe_dump(config))
+
+    def test_writes_active_custom_pipeline(self, awf_project):
+        pipes = awf_project / ".agentic" / "pipelines"
+        (pipes / "custom.yaml").write_text("name: custom\nstages: []\n")
+        (pipes / "default.yaml").write_text("name: default\nstages: []\n")
+        self._set_default_pipeline(awf_project, "custom")
+
+        path = api.setup.write_pipeline([{"agent": "developer"}], awf_project)
+        assert path.name == "custom.yaml"
+        data = yaml.safe_load(path.read_text())
+        assert any(s["role"] == "developer" for s in data["stages"])
+        # the non-active file is left untouched
+        default_stages = yaml.safe_load(
+            (pipes / "default.yaml").read_text()
+        )["stages"]
+        assert default_stages == []
+
+    def test_custom_declared_without_file_creates_custom(self, awf_project):
+        """Config declares custom → the team goes to custom.yaml, the file
+        the runtime will use from then on."""
+        self._set_default_pipeline(awf_project, "custom")
+        path = api.setup.write_pipeline([{"agent": "developer"}], awf_project)
+        assert path.name == "custom.yaml"
+        assert path.is_file()
+
+    def test_invalid_declared_name_falls_back_to_default(self, awf_project):
+        """default_pipeline is a value that becomes a path — validate it like
+        resolve_pipeline_file does (AUD14-05)."""
+        self._set_default_pipeline(awf_project, "../../evil")
+        path = api.setup.write_pipeline([{"agent": "developer"}], awf_project)
+        assert path.name == "default.yaml"
+        assert not (awf_project / "evil.yaml").exists()
+        assert not (awf_project / ".agentic" / "evil.yaml").exists()
+
+    def test_custom_pipeline_backed_up(self, awf_project):
+        pipes = awf_project / ".agentic" / "pipelines"
+        (pipes / "custom.yaml").write_text("old: content\n")
+        self._set_default_pipeline(awf_project, "custom")
+        api.setup.write_pipeline([{"agent": "developer"}], awf_project)
+        backup = pipes / "custom.yaml.bak"
+        assert backup.is_file()
+        assert backup.read_text() == "old: content\n"
+
+
+# ─── AUD06-08: UI-2/UI-3 sections delimited by sentinels ───────────────────
+
+
+class TestUiSectionSentinels:
+    """AUD06-08: sections are delimited by machine-readable sentinels, not by
+    the first '## ' inside user text — re-submits must leave no orphans
+    (repro S4)."""
+
+    def test_resubmit_with_inner_heading_leaves_no_orphans(self, awf_project):
+        api.setup.save_context_and_instructions(
+            awf_project, context_message="line one\n\n## Inner Heading\nlost part"
+        )
+        api.setup.save_context_and_instructions(
+            awf_project, context_message="new context only"
+        )
+        content = (awf_project / ".agentic" / "roles" / "supervisor.md").read_text()
+        assert content.count("Project context (from user, UI-2)") == 1
+        assert "new context only" in content
+        assert "line one" not in content
+        assert "Inner Heading" not in content
+        assert "lost part" not in content
+
+    def test_sentinel_markers_present(self, awf_project):
+        api.setup.save_context_and_instructions(awf_project, context_message="x")
+        content = (awf_project / ".agentic" / "roles" / "supervisor.md").read_text()
+        assert "<!-- awf:ui2:start -->" in content
+        assert "<!-- awf:ui2:end -->" in content
+
+    def test_legacy_section_without_sentinels_stripped(self, awf_project):
+        """Back-compat: files written before sentinels carry bare '## '
+        headings — the old section must be stripped whole, '## ' headings
+        inside user text included."""
+        sup = awf_project / ".agentic" / "roles" / "supervisor.md"
+        sup.write_text(
+            "# supervisor\n\n"
+            "## Project context (from user, UI-2)\n\n"
+            "legacy ctx\n\n"
+            "## Inner Heading\nlost part\n",
+            encoding="utf-8",
+        )
+        api.setup.save_context_and_instructions(awf_project, context_message="fresh")
+        content = sup.read_text(encoding="utf-8")
+        assert content.count("Project context (from user, UI-2)") == 1
+        assert "fresh" in content
+        assert "legacy ctx" not in content
+        assert "lost part" not in content
+        assert "# supervisor" in content
+
+
+# ─── AUD06-15: team roles that do not resolve to a role file ───────────────
+
+
+class TestUnresolvedRoleWarning:
+    """AUD06-15: a typo'd role used to surface only at runtime (RuntimeError
+    from resolve_role_file at stage spawn). Setup must report which roles do
+    not resolve — project .agentic/roles/ first, then the global fallback."""
+
+    def test_missing_role_file_warns(self, awf_project, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-empty"))
+        (tmp_path / "xdg-empty").mkdir()
+        result = api.apply_project_setup(
+            awf_project, team=[{"agent": "ghost-role"}]
+        )
+        assert result.pipeline_file is not None
+        assert any("ghost-role" in w for w in result.warnings)
+
+    def test_project_role_file_no_warning(self, awf_project, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-empty"))
+        (tmp_path / "xdg-empty").mkdir()
+        (awf_project / ".agentic" / "roles" / "developer.md").write_text("# dev\n")
+        result = api.apply_project_setup(
+            awf_project, team=[{"agent": "developer"}]
+        )
+        assert not any("developer" in w for w in result.warnings)
+
+    def test_global_role_fallback_no_warning(self, awf_project, monkeypatch, tmp_path):
+        xdg = tmp_path / "xdg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        (xdg / "awf" / "roles").mkdir(parents=True)
+        (xdg / "awf" / "roles" / "globally-installed.md").write_text("# g\n")
+        result = api.apply_project_setup(
+            awf_project, team=[{"agent": "globally-installed"}]
+        )
+        assert not any("globally-installed" in w for w in result.warnings)

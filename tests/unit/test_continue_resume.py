@@ -112,10 +112,20 @@ class TestContinuePipelineResume:
 
         assert captured_args[0].from_stage is None
 
-    def test_refuses_if_pipeline_already_running(self, project):
-        """DF5-6: if PID alive → noop."""
+    def test_refuses_if_pipeline_already_running(self, project, monkeypatch):
+        """DF5-6: if PID alive → noop.
+
+        AUD04-07: identity is strict — the test process must look like an
+        awf pipeline via the read_cmdline seam.
+        """
         import os
+
+        from awf.api import _liveness
         write_state(project, pipeline_pid=os.getpid(), stage_name="implement")
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         result = continue_pipeline(project, background=False)
         assert result.run_mode == "noop"
         assert "already running" in result.message.lower()
@@ -211,7 +221,7 @@ class TestSalvageInStatus:
         assert result.expected_action is not None
         assert "Salvage" in result.expected_action or "salvage" in result.expected_action.lower()
 
-    def test_status_salvage_overrides_worker_running_action(self, project):
+    def test_status_salvage_overrides_worker_running_action(self, project, monkeypatch):
         """B5 (dogfood-11): salvage + ALIVE orchestrator → salvage action.
 
         The orchestrator process being alive (waiting for the supervisor)
@@ -220,9 +230,16 @@ class TestSalvageInStatus:
         """
         import os
 
+        from awf.api import _liveness
+
         logs = project / ".agentic" / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         (logs / "awf-start.pid").write_text(f"{os.getpid()}\n")
+        # AUD04-07: strict identity — make the test process look like awf.
+        monkeypatch.setattr(
+            _liveness, "read_cmdline",
+            lambda pid: "python\x00-m\x00awf\x00start\x00" if pid == os.getpid() else None,
+        )
         write_state(
             project,
             salvage_needed=True,

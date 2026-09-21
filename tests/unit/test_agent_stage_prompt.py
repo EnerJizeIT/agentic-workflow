@@ -14,7 +14,8 @@ def _capture_run(monkeypatch, tmp_path):
     captured: dict = {}
 
     def fake_run(cmd, cwd, watch_paths=None, watch_new_glob=None,
-                 logs_dir=None, hard_timeout=None, env=None, signal_holder=None):
+                 logs_dir=None, hard_timeout=None, env=None, signal_holder=None,
+                 **kwargs):
         captured["cmd"] = cmd
 
         class _R:
@@ -66,3 +67,34 @@ def test_without_retry_note_prompt_unchanged(tmp_path, monkeypatch):
 
     prompt = captured["cmd"][-1]
     assert "RETRY" not in prompt
+
+
+def test_explicit_log_name_for_any_role(tmp_path, monkeypatch):
+    """AUD16-06: run_agent_stage passes awf-{role}-{todo}.out explicitly —
+    the worker log is findable by the dashboard for ANY role name
+    (previously only roles/agents containing 'agent-' produced a matching
+    file name)."""
+    captured: dict = {}
+
+    def fake_run(cmd, cwd, watch_paths=None, watch_new_glob=None,
+                 logs_dir=None, hard_timeout=None, env=None, signal_holder=None,
+                 **kwargs):
+        captured.update(kwargs)
+
+        class _R:
+            returncode = 0
+
+        return _R()
+
+    monkeypatch.setattr(
+        "awf.signal_watch.run_subprocess_until_signal", fake_run, raising=True,
+    )
+    monkeypatch.setattr(agent_stage, "collect_handoff", lambda *a, **kw: None)
+    monkeypatch.setattr(agent_stage, "clean_stage_signals", lambda *a, **kw: None)
+
+    proj = _project(tmp_path)
+    stage = Stage(name="dev", role="developer", kind="execute")
+
+    agent_stage.run_agent_stage(stage, "TODO-0007", proj, {}, proj / ".agentic" / "logs")
+
+    assert captured["log_name"] == "awf-developer-TODO-0007.out"
