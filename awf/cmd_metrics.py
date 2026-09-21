@@ -20,6 +20,7 @@ def run(args: Any) -> int:
         reference_model=args.reference_model or None,
         since=args.since or None,
         out=args.out or None,
+        refresh_subscriptions=getattr(args, "refresh_subscriptions", False),
     )
     if getattr(args, "json", False):
         print(json.dumps(result.as_dict(), indent=2, ensure_ascii=False))
@@ -38,6 +39,18 @@ def run(args: Any) -> int:
             f"всего ${t['scost'] + sup['cost']:.3f}"
         )
         print(result.conversion["line"])
+        best = next(
+            (r for r in result.tier_tables.get("optimal", []) if r["known"]), None
+        )
+        if best:
+            print(f"Лучший выбор по цене среди оптимума: {best['model']} — ${best['total']:.2f}")
+        s = result.subscriptions
+        if s.get("plans"):
+            extra = f", обновление не удалось: {s['refresh_error']}" if s.get("refresh_error") else ""
+            print(
+                f"Подписки: {len(s['plans'])} планов, объём воркеров "
+                f"{s['usage']:,} токенов (данные: {s['label']}, от {s['as_of'] or 'н/д'}{extra})"
+            )
         for w in result.warnings:
             print(f"предупреждение: {w}", file=sys.stderr)
     return result.exit_code

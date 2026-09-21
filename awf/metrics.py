@@ -13,22 +13,39 @@
 стоимости («если бы воркеры работали на референс-модели» — цены
 models.dev из ``~/.cache/opencode/models.json``).
 
+U8b: три раздела «если бы воркер был…» — 🏆 топ-модели (3), ⚖️ оптимум
+(3), 💡 дешёвые (одна строка) — по спискам id из ``metrics.tiers.top|
+optimal|cheap`` (цены $/M, итог $ по токенам воркеров ÷1e6, минимум в
+таблице жирным, доля cache-read) + раздел 💳 подписки (объём воркеров ≈
+N подписок/мес × цена; GPT / Claude / GLM). Подписки: таблица из
+``awf/data/subscriptions.json``, кэш
+``.agentic/state/metrics_subscriptions.json``, актуализация GET
+``metrics.subscriptions_url`` при ``refresh_subscriptions=True``.
+
 Ключи конфига (``.agentic/config.yaml``, все опциональны):
   ``metrics.since`` — ISO дата/время или epoch (окно статистики);
   ``metrics.directory`` — фильтр ``session.directory``;
   ``metrics.supervisor_titles`` — список подстрок заголовков супервизора;
   ``metrics.reference_model`` — модель для конверсии
   (дефолт ``anthropic/claude-sonnet-4-6``);
+  ``metrics.tiers`` — списки id моделей по классам {top, optimal, cheap}
+  (дефолты :data:`DEFAULT_TIERS`);
+  ``metrics.subscriptions_url`` — JSON-таблица подписок для
+  ``--refresh-subscriptions`` (тот же формат, что у встроенной);
+  ``metrics.subscriptions_cache`` — путь кэша подписок (дефолт
+  ``.agentic/state/metrics_subscriptions.json``, относительно project_dir);
   ``metrics.output_dir`` — каталог отчёта (дефолт ``~/Desktop``, если
   существует, иначе project_dir).
 """
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import subprocess
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +54,29 @@ from typing import Any
 from . import config as config_mod
 
 DEFAULT_REFERENCE_MODEL = "anthropic/claude-sonnet-4-6"
+
+# U8b: дефолтные списки моделей по классам (решения владельца 21.09).
+# Все id проверены в каталоге models.dev 21.09 (цены присутствуют).
+DEFAULT_TIERS: dict[str, list[str]] = {
+    "top": [
+        "anthropic/claude-fable-5",
+        "openai/gpt-6-astra",
+        "anthropic/claude-opus-5",
+    ],
+    "optimal": [
+        "anthropic/claude-sonnet-5",
+        "openai/gpt-5.6-terra",
+        "google/gemini-3.1-pro-preview",
+    ],
+    "cheap": [
+        "opencode/qwen3.8-flash",
+        "opencode/deepseek-v4.1-flash",
+    ],
+}
+
+# U8b: таймаут GET таблицы подписок (сек) — по контракту subprocess-timeouts
+# вся внешняя сеть живёт с явным таймаутом.
+SUBSCRIPTIONS_TIMEOUT = 10.0
 
 _WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4})$")
 _TODO_RE = re.compile(r"TODO-(\d{4})")
@@ -57,6 +97,8 @@ class MetricsResult:
     workers_by_role: dict = field(default_factory=dict)
     supervisor_outside: dict = field(default_factory=dict)
     conversion: dict = field(default_factory=dict)
+    tier_tables: dict = field(default_factory=dict)
+    subscriptions: dict = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     measured: bool = False
@@ -73,6 +115,8 @@ class MetricsResult:
             "workers_by_role": self.workers_by_role,
             "supervisor_outside": self.supervisor_outside,
             "conversion": self.conversion,
+            "tier_tables": self.tier_tables,
+            "subscriptions": self.subscriptions,
             "notes": self.notes,
             "warnings": self.warnings,
             "measured": self.measured,
@@ -381,10 +425,8 @@ def collect_code_lines(
     return diff
 
 
-def load_reference_costs(
-    models_path: Path, reference_model: str, warnings: list[str]
-) -> dict[str, float] | None:
-    """Цены референс-модели из models.json (за 1M токенов) или None."""
+def load_models_catalog(models_path: Path, warnings: list[str]) -> dict | None:
+    """models.json целиком (провайдер → models → cost) или None."""
     if not models_path.exists():
         warnings.append(f"models.json не найден: {models_path} — цена неизвестна")
         return None
@@ -393,8 +435,15 @@ def load_reference_costs(
     except (OSError, json.JSONDecodeError) as e:
         warnings.append(f"models.json не читается: {e} — цена неизвестна")
         return None
+    return data if isinstance(data, dict) else None
+
+
+def model_costs_from_catalog(
+    catalog: dict | None, reference_model: str, warnings: list[str]
+) -> dict[str, float] | None:
+    """Цены одной модели из каталога (за 1M токенов) или None."""
     provider, _, model_id = reference_model.partition("/")
-    provider_data = data.get(provider) if isinstance(data, dict) else None
+    provider_data = catalog.get(provider) if isinstance(catalog, dict) else None
     models = provider_data.get("models") if isinstance(provider_data, dict) else None
     model = models.get(model_id) if isinstance(models, dict) else None
     cost = model.get("cost") if isinstance(model, dict) else None
@@ -404,6 +453,16 @@ def load_reference_costs(
         )
         return None
     return {k: float(cost.get(k, 0) or 0) for k in _COST_KEYS}
+
+
+def load_reference_costs(
+    models_path: Path, reference_model: str, warnings: list[str]
+) -> dict[str, float] | None:
+    """Цены референс-модели из models.json (за 1M токенов) или None."""
+    catalog = load_models_catalog(models_path, warnings)
+    if catalog is None:
+        return None
+    return model_costs_from_catalog(catalog, reference_model, warnings)
 
 
 def convert_cost(
@@ -443,6 +502,316 @@ def convert_cost(
     }
 
 
+def _model_total(totals: dict, costs: dict[str, float]) -> tuple[float, float]:
+    """Итог $ и стоимость cache-read $ (токены × цены ÷ 1e6) по суммам воркеров."""
+    inp = totals["win"] * costs["input"] / 1e6
+    outp = totals["wout"] * costs["output"] / 1e6
+    cr = totals["wcr"] * costs["cache_read"] / 1e6
+    cw = totals["wcw"] * costs["cache_write"] / 1e6
+    return inp + outp + cr + cw, cr
+
+
+def build_tier_rows(
+    totals: dict,
+    catalog: dict | None,
+    models: list[str],
+    warnings: list[str],
+) -> list[dict]:
+    """Строки «что если бы» для списка моделей, отсортированные по итогу, рост.
+
+    Строки без цены (модель нет в каталоге) идут последними с честной
+    пометкой — раздел отчёта не падает.
+    """
+    if catalog is None:
+        warnings.append(
+            "models.json недоступен — цены таблицы «что если бы» неизвестны"
+        )
+    rows: list[dict] = []
+    for model in models:
+        costs = (
+            None if catalog is None
+            else model_costs_from_catalog(catalog, model, warnings)
+        )
+        if costs is None:
+            rows.append(
+                {
+                    "model": model,
+                    "costs": None,
+                    "total": None,
+                    "cache_read_share": None,
+                    "known": False,
+                }
+            )
+            continue
+        total, cr_cost = _model_total(totals, costs)
+        share = (cr_cost / total * 100.0) if total > 0 else 0.0
+        rows.append(
+            {
+                "model": model,
+                "costs": costs,
+                "total": total,
+                "cache_read_share": share,
+                "known": True,
+            }
+        )
+    known = sorted((r for r in rows if r["known"]), key=lambda r: r["total"])
+    unknown = [r for r in rows if not r["known"]]
+    return list(known) + unknown
+
+
+def build_tier_tables(
+    totals: dict,
+    catalog: dict | None,
+    tiers: dict[str, list[str]],
+    warnings: list[str],
+) -> dict[str, list[dict]]:
+    """U8b часть A: строки по классам {top, optimal, cheap} (конфиг ``metrics.tiers``)."""
+    return {
+        name: build_tier_rows(totals, catalog, models, warnings)
+        for name, models in tiers.items()
+    }
+
+
+def builtin_subscriptions_path() -> Path:
+    return Path(__file__).resolve().parent / "data" / "subscriptions.json"
+
+
+def load_builtin_subscriptions() -> dict:
+    """Встроенная таблица подписок (``awf/data/subscriptions.json``)."""
+    try:
+        data = json.loads(builtin_subscriptions_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {"plans": []}
+    except (OSError, json.JSONDecodeError):
+        return {"plans": []}
+
+
+def validate_subscriptions(data: Any) -> list[dict] | None:
+    """Планы валидной таблицы подписок или None (битый формат).
+
+    Формат: список планов либо объект с ключом ``plans``; каждый план —
+    dict с ``name`` (str) и ``price_usd_month`` (число).
+    """
+    plans = data.get("plans") if isinstance(data, dict) else data
+    if not isinstance(plans, list):
+        return None
+    out: list[dict] = []
+    for p in plans:
+        if not isinstance(p, dict):
+            return None
+        if not isinstance(p.get("name"), str) or not p["name"]:
+            return None
+        if not isinstance(p.get("price_usd_month"), (int, float)) or isinstance(
+            p.get("price_usd_month"), bool
+        ):
+            return None
+        out.append(p)
+    return out
+
+
+def _http_get(url: str, timeout: float = SUBSCRIPTIONS_TIMEOUT) -> bytes:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return resp.read()
+
+
+def refresh_subscription_table(
+    url: str, warnings: list[str]
+) -> tuple[dict | None, str | None]:
+    """U8b: GET таблицы подписок. (data, None) при успехе, (None, причина)."""
+    try:
+        raw = _http_get(url)
+    except Exception as e:  # noqa: BLE001 — сеть: любой исход = фолбэк
+        return None, f"{type(e).__name__}: {e}"
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return None, f"битый JSON: {e}"
+    if validate_subscriptions(data) is None:
+        return None, "JSON не в формате таблицы (нужны plans с name и price_usd_month)"
+    return data, None
+
+
+DEFAULT_SUBSCRIPTIONS_CACHE = ".agentic/state/metrics_subscriptions.json"
+
+
+def resolve_subscriptions_table(
+    project_dir: Path,
+    *,
+    refresh: bool,
+    url: str | None,
+    cache_path: str | None = None,
+    warnings: list[str],
+) -> dict:
+    """U8b часть B: таблица подписок — refresh (GET+кэш), кэш, встроенная.
+
+    Возвращает ``{"plans", "as_of", "source", "label", "refresh_error"}``.
+    При неудачном refresh — встроенная таблица + ``refresh_error`` с
+    причиной (строка «данные от <as_of>, обновление не удалось: …» в
+    отчёте строится из полей ``as_of`` и ``refresh_error``).
+    """
+    cache_file = Path(
+        cache_path or DEFAULT_SUBSCRIPTIONS_CACHE
+    ).expanduser()
+    if not cache_file.is_absolute():
+        cache_file = project_dir / cache_file
+
+    def _table(data: dict, source: str, label: str, refresh_error: str = "") -> dict:
+        as_of = data.get("as_of")
+        return {
+            "plans": validate_subscriptions(data) or [],
+            "as_of": as_of if isinstance(as_of, str) else "",
+            "source": source,
+            "label": label,
+            "refresh_error": refresh_error,
+        }
+
+    builtin = load_builtin_subscriptions()
+    if refresh:
+        if not url:
+            warnings.append(
+                "metrics.subscriptions_url не задан — refresh невозможен, "
+                "использована встроенная таблица подписок"
+            )
+            return _table(
+                builtin, "builtin", "встроенная таблица",
+                "metrics.subscriptions_url не задан",
+            )
+        data, err = refresh_subscription_table(url, warnings)
+        if data is None:
+            warnings.append(
+                f"обновление подписок не удалось: {err} — встроенная таблица"
+            )
+            return _table(builtin, "builtin", "встроенная таблица", err or "")
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            warnings.append(f"кэш подписок не записан: {e}")
+        return _table(data, "url", f"обновлено по {url}")
+    # без флага: кэш, если есть и валидный, иначе встроенная
+    if cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached = None
+        if validate_subscriptions(cached) is not None:
+            return _table(cached, "cache", "кэш подписок")
+        warnings.append("кэш подписок бит — использована встроенная таблица")
+    return _table(builtin, "builtin", "встроенная таблица")
+
+
+def build_subscriptions(totals: dict, table: dict) -> dict:
+    """U8b часть B: «объём воркеров ≈ N подписок/мес» для каждого плана.
+
+    База: usage = in + out воркеров за окно статистики.
+    Cache-read/cache-write не входят — это переиспользование контекста,
+    а не объём работы. Пессимистичный базис (все токены, включая кэш)
+    считается рядом как ``usage_incl_cache``/``subs_incl_cache`` —
+    завышенная оценка «если вендор считает и кэш».
+
+    Токенные лимиты берутся напрямую; сообщение-лимиты пересчитываются
+    через ``assumed_tokens_per_message`` (пометка «оценка»). N = ceil(
+    usage ÷ месячный лимит).
+    """
+    usage = totals["win"] + totals["wout"]
+    usage_incl_cache = usage + totals["wcr"] + totals["wcw"]
+    cr = totals["wcr"]
+    cr_share = (cr / usage_incl_cache * 100.0) if usage_incl_cache > 0 else 0.0
+    plans: list[dict] = []
+    notes: list[str] = []
+    for p in table.get("plans", []):
+        name = p.get("name", "?")
+        price = float(p["price_usd_month"])
+        assumed = bool(p.get("assumed"))
+        limit_tokens: float | None = None
+        basis = ""
+        if isinstance(p.get("limit_tokens_month"), (int, float)) and not isinstance(
+            p.get("limit_tokens_month"), bool
+        ) and p["limit_tokens_month"] > 0:
+            limit_tokens = float(p["limit_tokens_month"])
+            basis = f"{limit_tokens:,.0f} токенов/мес"
+        elif (
+            isinstance(p.get("limit_messages_period"), (int, float))
+            and not isinstance(p.get("limit_messages_period"), bool)
+            and p["limit_messages_period"] > 0
+        ):
+            period = str(p.get("period") or "")
+            tpm = p.get("assumed_tokens_per_message")
+            if period != "month":
+                notes.append(
+                    f"План {name}: период «{period or 'не задан'}» не поддерживается — не рассчитан"
+                )
+                continue
+            if not isinstance(tpm, (int, float)) or isinstance(tpm, bool) or tpm <= 0:
+                notes.append(
+                    f"План {name}: нет assumed_tokens_per_message — не рассчитан"
+                )
+                continue
+            limit_tokens = float(p["limit_messages_period"]) * float(tpm)
+            basis = (
+                f"{p['limit_messages_period']:g} сообщений/мес × {tpm:g} токенов/сообщение"
+                + (" (оценка)" if assumed else "")
+            )
+        else:
+            notes.append(
+                f"План {name}: нет лимита (limit_tokens_month / limit_messages_period) — не рассчитан"
+            )
+            continue
+        subs_n = math.ceil(usage / limit_tokens) if usage > 0 else 0
+        subs_cache_n = math.ceil(
+            usage_incl_cache / limit_tokens
+        ) if usage_incl_cache > 0 else 0
+        plans.append(
+            {
+                "name": name,
+                "family": str(p.get("family") or ""),
+                "price": price,
+                "limit_tokens": limit_tokens,
+                "basis": basis,
+                "subs": subs_n,
+                "cost": subs_n * price,
+                "subs_incl_cache": subs_cache_n,
+                "assumed": assumed,
+            }
+        )
+    return {
+        "usage": usage,
+        "usage_incl_cache": usage_incl_cache,
+        "cache_read": cr,
+        "cache_read_share": cr_share,
+        "as_of": table.get("as_of", ""),
+        "source": table.get("source", ""),
+        "label": table.get("label", ""),
+        "refresh_error": table.get("refresh_error", ""),
+        "plans": plans,
+        "notes": notes,
+    }
+
+
+def _render_model_table(rows: list[dict]) -> list[str]:
+    """Таблица «что если бы»; минимум по итогу — жирным."""
+    out = [
+        "| Модель | $/M in | $/M out | $/M cache read | Итог $ | Доля cache-read |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    min_total = min((r["total"] for r in rows if r["known"]), default=None)
+    for r in rows:
+        if not r["known"]:
+            out.append(f"| {r['model']} | — | — | — | цена неизвестна | — |")
+            continue
+        c = r["costs"]
+        if min_total is not None and r["total"] == min_total:
+            total = f"**${r['total']:.2f}**"
+        else:
+            total = f"${r['total']:.2f}"
+        out.append(
+            f"| {r['model']} | {c['input']:g} | {c['output']:g} | {c['cache_read']:g} | "
+            f"{total} | {r['cache_read_share']:.1f}% |"
+        )
+    return out
+
+
 def render_report(
     project_name: str,
     generated_at: str,
@@ -453,6 +822,8 @@ def render_report(
     conversion: dict,
     notes: list[str],
     warnings: list[str],
+    tier_tables: dict[str, list[dict]] | None = None,
+    subscriptions: dict | None = None,
 ) -> str:
     lines = [f"# Метрики программы — снимок: {project_name}", ""]
     lines.append(f"Дата снимка: {generated_at}. Источник: opencode.db + git.")
@@ -517,6 +888,91 @@ def render_report(
     lines.append(f"- Строки кода: +{totals['ins']:,} / −{totals['dels']:,}")
     lines.append("")
     lines.append(conversion["line"])
+    if tier_tables:
+        lines.append("")
+        lines.append("## 🏆 Топ-модели")
+        lines.append("")
+        lines.append(
+            f"Наши токены (in {totals['win']:,} / out {totals['wout']:,} / "
+            f"cache-read {totals['wcr']:,} / cache-write {totals['wcw']:,}) × "
+            "цены модели, $/M токенов. Строки — по итогу, рост; минимум — жирным."
+        )
+        lines.append("")
+        lines.extend(_render_model_table(tier_tables.get("top", [])))
+        lines.append("")
+        lines.append("## ⚖️ Оптимум")
+        lines.append("")
+        lines.extend(_render_model_table(tier_tables.get("optimal", [])))
+        best = next(
+            (r for r in tier_tables.get("optimal", []) if r["known"]), None
+        )
+        if best:
+            lines.append("")
+            lines.append(
+                f"Лучший выбор по цене среди оптимума: {best['model']} — "
+                f"**${best['total']:.2f}**."
+            )
+        lines.append("")
+        lines.append("## 💡 Дешёвые")
+        lines.append("")
+        cheap = [r for r in tier_tables.get("cheap", []) if r["known"]]
+        if cheap:
+            parts = " / ".join(
+                f"{r['model']} ≈ **${r['total']:.2f}**" for r in cheap
+            )
+            lines.append(f"Самые дешёвые: {parts}.")
+        else:
+            lines.append("Цены неизвестны (модели не найдены в каталоге).")
+    if subscriptions:
+        lines.append("")
+        lines.append("## 💳 Подписки (GPT / Claude / GLM)")
+        lines.append("")
+        lines.append(
+            f"Объём воркеров за окно: **{subscriptions['usage']:,} токенов** "
+            f"(in {totals['win']:,} / out {totals['wout']:,}; cache-read "
+            f"{subscriptions['cache_read']:,} и cache-write {totals['wcw']:,} не входят "
+            "— это переиспользование контекста, а не объём работы). "
+            "N = ceil(объём ÷ месячный лимит); лимиты, переведённые из сообщений, "
+            "помечены «оценка»."
+        )
+        lines.append("")
+        lines.append(
+            "| План | Семейство | $/мес | Лимит, токенов/мес | Нужно, шт./мес | ≈ Стоимость, $/мес |"
+        )
+        lines.append("|---|---|---:|---:|---:|---:|")
+        ordered = sorted(
+            subscriptions["plans"],
+            key=lambda p: (p.get("family") or "", p["name"]),
+        )
+        for p in ordered:
+            limit = f"{p['limit_tokens']:,.0f}" + (
+                " (оценка)" if p["assumed"] else ""
+            )
+            lines.append(
+                f"| {p['name']} | {p.get('family') or '—'} | {p['price']:g} | "
+                f"{limit} | **{p['subs']}** | ≈ {p['subs']} × ${p['price']:g} = "
+                f"**${p['cost']:g}** |"
+            )
+        for n in subscriptions["notes"]:
+            lines.append(f"- {n}")
+        pes = [
+            f"{p['name']} — {p['subs_incl_cache']}"
+            for p in ordered
+            if p.get("subs_incl_cache", 0) > p["subs"]
+        ]
+        if pes:
+            lines.append(
+                "Пессимистично, если вендор считает и кэш: "
+                + ", ".join(pes)
+                + " (завышенная оценка)."
+            )
+        lines.append("")
+        data_line = f"Данные: {subscriptions['label']}"
+        if subscriptions["as_of"]:
+            data_line += f", данные от {subscriptions['as_of']}"
+        if subscriptions.get("refresh_error"):
+            data_line += f", обновление не удалось: {subscriptions['refresh_error']}"
+        lines.append(data_line + ".")
     lines.append("")
     for n in notes:
         lines.append(n)
@@ -548,6 +1004,7 @@ def collect_metrics(
     reference_model: str | None = None,
     since: str | int | float | None = None,
     out: str | None = None,
+    refresh_subscriptions: bool = False,
 ) -> MetricsResult:
     """Собрать метрики программы и записать markdown-отчёт.
 
@@ -575,6 +1032,26 @@ def collect_metrics(
         or config_mod.get(cfg, "metrics.reference_model")
         or DEFAULT_REFERENCE_MODEL
     )
+    # U8b: списки моделей по классам (конфиг metrics.tiers.top|optimal|cheap).
+    tiers: dict[str, list[str]] = {k: list(v) for k, v in DEFAULT_TIERS.items()}
+    tiers_cfg = config_mod.get(cfg, "metrics.tiers")
+    if isinstance(tiers_cfg, dict):
+        for k in ("top", "optimal", "cheap"):
+            v = tiers_cfg.get(k)
+            if isinstance(v, list) and all(isinstance(m, str) and m for m in v):
+                tiers[k] = v
+            elif v is not None:
+                warnings.append(
+                    f"metrics.tiers.{k} не список id моделей — дефолтный список"
+                )
+    elif tiers_cfg is not None:
+        warnings.append(
+            "metrics.tiers не мапа {top, optimal, cheap} — дефолтные списки"
+        )
+    subs_url = config_mod.get(cfg, "metrics.subscriptions_url")
+    subs_url = subs_url if isinstance(subs_url, str) and subs_url else None
+    subs_cache = config_mod.get(cfg, "metrics.subscriptions_cache")
+    subs_cache = subs_cache if isinstance(subs_cache, str) and subs_cache else None
 
     db = db_path if db_path is not None else default_db_path()
     models = models_path if models_path is not None else default_models_path()
@@ -602,7 +1079,11 @@ def collect_metrics(
         con.close()
 
     diff = collect_code_lines(project_dir, commits)
-    costs = load_reference_costs(Path(models), ref_model, warnings)
+    catalog = load_models_catalog(Path(models), warnings)
+    costs = (
+        None if catalog is None
+        else model_costs_from_catalog(catalog, ref_model, warnings)
+    )
 
     units: list[dict] = []
     tot = {
@@ -648,6 +1129,17 @@ def collect_metrics(
 
     conversion = convert_cost(tot, costs, ref_model)
 
+    # U8b: таблицы «что если бы» по классам (часть A) + подписки (часть B).
+    tier_tables = build_tier_tables(tot, catalog, tiers, warnings)
+    subs_table = resolve_subscriptions_table(
+        project_dir,
+        refresh=refresh_subscriptions,
+        url=subs_url,
+        cache_path=subs_cache,
+        warnings=warnings,
+    )
+    subscriptions = build_subscriptions(tot, subs_table)
+
     if tot["wcost"] < 0.0005 and workers:
         notes.append("Примечание: у воркеров cost=0 (локальная модель).")
     notes.append(
@@ -663,6 +1155,7 @@ def collect_metrics(
     report = render_report(
         str(project_name), generated_at, units, tot, by_role,
         sup_outside, conversion, notes, warnings,
+        tier_tables=tier_tables, subscriptions=subscriptions,
     )
     result = MetricsResult(
         project_dir=str(project_dir),
@@ -672,6 +1165,8 @@ def collect_metrics(
         workers_by_role=by_role,
         supervisor_outside=dict(sup_outside),
         conversion=conversion,
+        tier_tables=tier_tables,
+        subscriptions=dict(subscriptions),
         notes=notes,
         warnings=warnings,
         measured=measured,

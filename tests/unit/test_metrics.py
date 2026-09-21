@@ -368,6 +368,292 @@ class TestFilters:
         assert any("не распознано" in x for x in w)
 
 
+# U8b: каталог с 8 моделями дефолтных списков metrics.tiers (простые цены).
+TIERS_MODELS = {
+    "anthropic": {
+        "models": {
+            "claude-fable-5": {
+                "cost": {"input": 1, "output": 2, "cache_read": 0.1, "cache_write": 0.5}
+            },
+            "claude-opus-5": {
+                "cost": {"input": 2, "output": 4, "cache_read": 0.2, "cache_write": 1}
+            },
+            "claude-sonnet-5": {
+                "cost": {"input": 3, "output": 6, "cache_read": 0.3, "cache_write": 1.5}
+            },
+            "claude-sonnet-4-6": {
+                "cost": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75}
+            },
+        }
+    },
+    "openai": {
+        "models": {
+            "gpt-6-astra": {
+                "cost": {"input": 0.5, "output": 1, "cache_read": 0.05, "cache_write": 0.25}
+            },
+            "gpt-5.6-terra": {
+                "cost": {"input": 4, "output": 8, "cache_read": 0.4, "cache_write": 2}
+            },
+        }
+    },
+    "google": {
+        "models": {
+            "gemini-3.1-pro-preview": {
+                "cost": {"input": 5, "output": 10, "cache_read": 0.5}
+            }
+        }
+    },
+    "opencode": {
+        "models": {
+            "qwen3.8-flash": {
+                "cost": {"input": 0.1, "output": 0.2, "cache_read": 0.01, "cache_write": 0.05}
+            },
+            "deepseek-v4.1-flash": {
+                "cost": {"input": 0.2, "output": 0.4, "cache_read": 0.02, "cache_write": 0.1}
+            },
+        }
+    },
+}
+
+
+def _t(price: dict, win=1_600_000, wout=160_000, wcr=3_000_000, wcw=100_000) -> float:
+    """Точный итог $: токены фикстуры × цены ÷ 1e6 (как в реализации)."""
+    return (
+        win * price["input"] / 1e6
+        + wout * price["output"] / 1e6
+        + wcr * price.get("cache_read", 0) / 1e6
+        + wcw * price.get("cache_write", 0) / 1e6
+    )
+
+
+def _cr_share(price: dict, total: float) -> float:
+    return (3_000_000 * price.get("cache_read", 0) / 1e6) / total * 100.0
+
+
+def _set_metrics_cfg(env, extra: str) -> None:
+    cfg = env["proj"] / ".agentic" / "config.yaml"
+    cfg.write_text(
+        "project:\n  name: test-project\n"
+        "metrics:\n"
+        "  supervisor_titles:\n"
+        "    - Audit supervisor session\n"
+        "  reference_model: anthropic/claude-sonnet-4-6\n"
+        + extra
+    )
+
+
+class TestU8bTiers:
+    def test_tier_tables_math_sort_bold(self, env):
+        models = make_models(env["tmp"] / "tiers.json", TIERS_MODELS)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=models,
+            out=env["tmp"] / "r.md",
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+
+        tt = res.tier_tables
+        # топ-3: сортировка по итогу, рост
+        top = tt["top"]
+        assert [r["model"] for r in top] == [
+            "openai/gpt-6-astra", "anthropic/claude-fable-5", "anthropic/claude-opus-5"
+        ]
+        astra_p = TIERS_MODELS["openai"]["models"]["gpt-6-astra"]["cost"]
+        fable_p = TIERS_MODELS["anthropic"]["models"]["claude-fable-5"]["cost"]
+        opus_p = TIERS_MODELS["anthropic"]["models"]["claude-opus-5"]["cost"]
+        astra_t, fable_t, opus_t = _t(astra_p), _t(fable_p), _t(opus_p)
+        assert top[0]["total"] == pytest.approx(astra_t)
+        assert top[1]["total"] == pytest.approx(fable_t)
+        assert top[2]["total"] == pytest.approx(opus_t)
+        assert top[0]["cache_read_share"] == pytest.approx(_cr_share(astra_p, astra_t))
+
+        # оптимум-3
+        opt = tt["optimal"]
+        sonnet_p = TIERS_MODELS["anthropic"]["models"]["claude-sonnet-5"]["cost"]
+        terra_p = TIERS_MODELS["openai"]["models"]["gpt-5.6-terra"]["cost"]
+        gemini_p = TIERS_MODELS["google"]["models"]["gemini-3.1-pro-preview"]["cost"]
+        assert [r["model"] for r in opt] == [
+            "anthropic/claude-sonnet-5", "openai/gpt-5.6-terra", "google/gemini-3.1-pro-preview"
+        ]
+        assert opt[0]["total"] == pytest.approx(_t(sonnet_p))
+        assert opt[1]["total"] == pytest.approx(_t(terra_p))
+        assert opt[2]["total"] == pytest.approx(_t(gemini_p))
+
+        # разметка: минимум жирным, остальные — нет
+        assert f"**${astra_t:.2f}**" in text
+        assert f"**${fable_t:.2f}**" not in text
+        assert f"**${opus_t:.2f}**" not in text
+        sonnet_t = _t(sonnet_p)
+        assert f"**${sonnet_t:.2f}**" in text
+        assert f"Лучший выбор по цене среди оптимума: anthropic/claude-sonnet-5 — **${sonnet_t:.2f}**." in text
+
+        # дешёвые — одна строка
+        qwen_p = TIERS_MODELS["opencode"]["models"]["qwen3.8-flash"]["cost"]
+        deep_p = TIERS_MODELS["opencode"]["models"]["deepseek-v4.1-flash"]["cost"]
+        cheap_line = next(
+            ln for ln in text.splitlines() if ln.startswith("Самые дешёвые:")
+        )
+        assert f"opencode/qwen3.8-flash ≈ **${_t(qwen_p):.2f}**" in cheap_line
+        assert f"opencode/deepseek-v4.1-flash ≈ **${_t(deep_p):.2f}**" in cheap_line
+
+    def test_missing_model_price_unknown(self, env):
+        models = make_models(env["tmp"] / "tiers.json", TIERS_MODELS)
+        _set_metrics_cfg(env, "  tiers:\n    top:\n      - nope/ghost-1\n")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=models,
+            out=env["tmp"] / "r.md",
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        top = res.tier_tables["top"]
+        assert [r["model"] for r in top] == ["nope/ghost-1"]
+        assert top[0]["known"] is False
+        assert "| nope/ghost-1 | — | — | — | цена неизвестна | — |" in text
+        # дефолтный оптимум при этом рассчитан
+        assert any(r["known"] for r in res.tier_tables["optimal"])
+
+    def test_tiers_from_config(self, env):
+        models = make_models(env["tmp"] / "tiers.json", TIERS_MODELS)
+        _set_metrics_cfg(env, "  tiers:\n    optimal:\n      - opencode/qwen3.8-flash\n")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=models,
+            out=env["tmp"] / "r.md",
+        )
+        opt = res.tier_tables["optimal"]
+        assert [r["model"] for r in opt] == ["opencode/qwen3.8-flash"]
+        qwen_p = TIERS_MODELS["opencode"]["models"]["qwen3.8-flash"]["cost"]
+        assert opt[0]["total"] == pytest.approx(_t(qwen_p))
+        # топ остался дефолтным (3 модели)
+        assert len(res.tier_tables["top"]) == 3
+
+
+class TestU8bSubscriptions:
+    # база подписок (отклонённый REVIEW): in 1.6M + out 160k = 1.76M;
+    # cache (cr 3M + cw 100k) не входит — переиспользование контекста
+    USAGE = 1_600_000 + 160_000
+    USAGE_INCL_CACHE = 1_600_000 + 160_000 + 3_000_000 + 100_000
+
+    def test_builtin_message_limit_assumed(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        s = res.subscriptions
+        assert s["usage"] == self.USAGE
+        assert s["usage_incl_cache"] == self.USAGE_INCL_CACHE
+        pro = next(p for p in s["plans"] if p["name"] == "Claude Pro")
+        assert pro["limit_tokens"] == pytest.approx(6480 * 1000)
+        assert pro["subs"] == 1  # ceil(1.76M / 6.48M)
+        assert pro["cost"] == pytest.approx(20)
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "## 💳 Подписки (GPT / Claude / GLM)" in text
+        vol_line = next(ln for ln in text.splitlines() if ln.startswith("Объём воркеров за окно"))
+        assert "**1,760,000 токенов**" in vol_line
+        assert "cache-read 3,000,000 и cache-write 100,000 не входят" in vol_line
+        claude_line = next(ln for ln in text.splitlines() if ln.startswith("| Claude Pro |"))
+        assert "6,480,000 (оценка)" in claude_line
+        assert "**1**" in claude_line
+        assert "GLM Coding Plan (Z.ai)" in text
+        assert "данные от 2026-09-21" in text
+
+    def test_subscription_base_excludes_cache_read(self):
+        """Страж: база подписок = in+out, кэш не входит."""
+        totals = {"win": 1_600_000, "wout": 160_000, "wcr": 3_000_000, "wcw": 100_000}
+        table = {
+            "plans": [
+                {
+                    "name": "GuardPlan", "family": "gpt", "price_usd_month": 10,
+                    "limit_tokens_month": 3_000_000,
+                }
+            ]
+        }
+        s = M.build_subscriptions(totals, table)
+        assert s["usage"] == 1_760_000  # со старым базисом было бы 4_860_000
+        assert s["usage_incl_cache"] == 4_860_000
+        p = s["plans"][0]
+        assert p["subs"] == 1  # ceil(1.76M / 3M); со старым базисом было бы 2
+        assert p["subs_incl_cache"] == 2  # пессимистичный базис: ceil(4.86M / 3M)
+
+    def test_token_limit_exact_math(self, env, monkeypatch):
+        _set_metrics_cfg(env, "  subscriptions_url: http://fake/subs.json\n")
+        mock = {
+            "as_of": "2026-09-01",
+            "plans": [
+                {
+                    "name": "TokPlan", "family": "gpt", "price_usd_month": 20,
+                    "limit_tokens_month": 2_000_000,
+                    "source_url": "http://fake", "as_of": "2026-09-01",
+                }
+            ],
+        }
+        monkeypatch.setattr(M, "_http_get", lambda url, timeout=10.0: json.dumps(mock).encode())
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", refresh_subscriptions=True,
+        )
+        s = res.subscriptions
+        assert s["source"] == "url"
+        tok = next(p for p in s["plans"] if p["name"] == "TokPlan")
+        assert tok["subs"] == 1  # ceil(1.76M / 2M) — база in+out
+        assert tok["cost"] == pytest.approx(20)
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        tok_line = next(ln for ln in text.splitlines() if ln.startswith("| TokPlan |"))
+        assert "**1**" in tok_line
+        assert "**$20**" in tok_line
+        # успешный ответ закэширован
+        cache = env["proj"] / ".agentic" / "state" / "metrics_subscriptions.json"
+        assert json.loads(cache.read_text())["plans"][0]["name"] == "TokPlan"
+
+    def test_refresh_fallback_on_network_error(self, env, monkeypatch):
+        _set_metrics_cfg(env, "  subscriptions_url: http://fake/subs.json\n")
+
+        def dead(url, timeout=10.0):
+            raise OSError("network down")
+
+        monkeypatch.setattr(M, "_http_get", dead)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", refresh_subscriptions=True,
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "обновление не удалось: OSError: network down" in text
+        assert "данные от 2026-09-21" in text  # as_of встроенной таблицы
+        # планы всё равно рассчитаны (встроенная таблица)
+        assert len(res.subscriptions["plans"]) >= 5
+        # неудачный refresh кэш не пишет
+        assert not (env["proj"] / ".agentic" / "state" / "metrics_subscriptions.json").exists()
+        assert res.subscriptions["refresh_error"] == "OSError: network down"
+
+    def test_refresh_no_url_uses_builtin(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", refresh_subscriptions=True,
+        )
+        assert res.subscriptions["source"] == "builtin"
+        assert res.subscriptions["refresh_error"] == "metrics.subscriptions_url не задан"
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "обновление не удалось: metrics.subscriptions_url не задан" in text
+
+
+class TestU8bStyle:
+    """friday-style-гейт: без фраз-пустышек, с эмодзи-маркерами разделов."""
+
+    FORBIDDEN = ("важно отметить", "следует подчеркнуть", "необходимо учитывать")
+
+    def test_style_gate(self, env):
+        models = make_models(env["tmp"] / "tiers.json", TIERS_MODELS)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=models,
+            out=env["tmp"] / "r.md",
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        for phrase in self.FORBIDDEN:
+            assert phrase not in text.lower(), phrase
+        for marker in ("🏆", "⚖️", "💡", "💳"):
+            assert marker in text, marker
+        # существующие блоки сохранены
+        assert "Если бы воркеры работали на anthropic/claude-sonnet-4-6" in text
+        assert "## ИТОГО — отдельно (группировка по ролям, не по юнитам)" in text
+
+
 class TestCli:
     def _fake_home(self, tmp_path: Path, db: Path, models: Path) -> Path:
         # Path.home() вызывается несколько раз за прогон — метод идемпотентен.

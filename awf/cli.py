@@ -334,6 +334,13 @@ def _build_parser():
         default="",
         help="Start of the statistics window (ISO date/datetime or epoch)",
     )
+    p_metrics.add_argument(
+        "--refresh-subscriptions",
+        dest="refresh_subscriptions",
+        action="store_true",
+        help="U8b: update the subscriptions table from metrics.subscriptions_url "
+             "before computing (fallback to the built-in table on failure)",
+    )
 
     p_analyze = sub.add_parser(
         "analyze-roles",
