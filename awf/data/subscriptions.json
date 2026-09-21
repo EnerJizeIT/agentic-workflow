@@ -1,6 +1,6 @@
 {
   "as_of": "2026-09-21",
-  "note": "Встроенная таблица подписок (U8b). Токенные месячные лимиты вендоры не публикуют — все лимиты оценены по опубликованным лимитам сообщений на 5-часовое окно при круглосуточном использовании (~144 окна в 30-дневном месяце) и допущению о токенах на сообщение (assumed_tokens_per_message). Такие лимиты в отчёте помечаются «оценка».",
+  "note": "Встроенная таблица подписок (U8b; GLM обновлён U8d по docs.z.ai/devpack). Лимиты Claude/ChatGPT оценены по опубликованным лимитам сообщений на 5-часовое окно при круглосуточном использовании (~144 окна в 30-дневном месяце) и допущению о токенах на сообщение (assumed_tokens_per_message) — в отчёте помечены «оценка». GLM — исключение: лимиты опубликованы как кредиты/нед, cache-read входит в кредиты (кредитная модель).",
   "plans": [
     {
       "name": "Claude Pro",
@@ -63,16 +63,43 @@
       "assumed": true
     },
     {
-      "name": "GLM Coding Plan (Z.ai)",
+      "name": "GLM Coding Plan Lite (Z.ai)",
       "family": "glm",
-      "price_usd_month": 6,
-      "limit_messages_period": 34560,
-      "period": "month",
-      "assumed_tokens_per_message": 1000,
-      "source_url": "https://z.ai/subscriptions",
+      "price_usd_month": 18,
+      "limit_model": "credits",
+      "credits_5h": 2000,
+      "credits_week": 10000,
+      "credit_multipliers": {"input": 6.9, "cached_input": 1.7, "output": 24},
+      "offpeak_multiplier": 0.5,
+      "source_url": "https://docs.z.ai/devpack/overview",
       "as_of": "2026-09-21",
-      "notes": "Меняет $6/мес после первого месяца ($3). Токенные лимиты Z.ai не публикует; оценка: ~240 запросов на 5-часовое окно (~3× ChatGPT Plus по маркетингу вендора) × ~144 окна/мес. Токены на сообщение — допущение.",
-      "assumed": true
+      "notes": "Цена $18/мес по документации (Lite: «starting at just 18 USD per month»). Лимиты — кредиты: 2 000/5ч, 10 000/нед. Формула кредитов (GLM-5.3): (in×6.9 + cached_in×1.7 + out×24) ÷ 10 000; cache-read входит в кредиты — так устроена кредитная модель GLM. Off-peak (вне Пн–Пт 14:00–18:00 SGT) — ×0.5."
+    },
+    {
+      "name": "GLM Coding Plan Pro (Z.ai)",
+      "family": "glm",
+      "price_unverified": true,
+      "limit_model": "credits",
+      "credits_5h": 12000,
+      "credits_week": 60000,
+      "credit_multipliers": {"input": 6.9, "cached_input": 1.7, "output": 24},
+      "offpeak_multiplier": 0.5,
+      "source_url": "https://docs.z.ai/devpack/overview",
+      "as_of": "2026-09-21",
+      "notes": "Цена в документации не опубликована — не выдумываем (price_unverified): доля подписок считается, стоимость нет. Лимиты: 12 000/5ч, 60 000/нед кредитов."
+    },
+    {
+      "name": "GLM Coding Plan Max (Z.ai)",
+      "family": "glm",
+      "price_unverified": true,
+      "limit_model": "credits",
+      "credits_5h": 28000,
+      "credits_week": 140000,
+      "credit_multipliers": {"input": 6.9, "cached_input": 1.7, "output": 24},
+      "offpeak_multiplier": 0.5,
+      "source_url": "https://docs.z.ai/devpack/overview",
+      "as_of": "2026-09-21",
+      "notes": "Цена в документации не опубликована — не выдумываем (price_unverified): доля подписок считается, стоимость нет. Лимиты: 28 000/5ч, 140 000/нед кредитов."
     }
   ]
 }

@@ -22,6 +22,15 @@ N подписок/мес × цена; GPT / Claude / GLM). Подписки: т
 ``.agentic/state/metrics_subscriptions.json``, актуализация GET
 ``metrics.subscriptions_url`` при ``refresh_subscriptions=True``.
 
+U8d: GLM — кредитная модель (лимиты кредитов/нед, cache-read входит в
+кредиты, off-peak ×0.5; Pro/Max без опубликованной цены —
+``price_unverified``, доля считается, стоимость нет). В 💳 — две
+колонки: «Нужно (точно)» (дробная доля, 1 знак) и «Покупать» (ceil).
+Цены моделей кэшируются в
+``.agentic/state/metrics_models_cache.json`` (снапшот используемых
+записей) и используются, когда models.json недоступен; в отчёте —
+строка источника цен. Подписки: refresh → кэш → встроенная.
+
 Ключи конфига (``.agentic/config.yaml``, все опциональны):
   ``metrics.since`` — ISO дата/время или epoch (окно статистики);
   ``metrics.directory`` — фильтр ``session.directory``;
@@ -34,6 +43,8 @@ N подписок/мес × цена; GPT / Claude / GLM). Подписки: т
   ``--refresh-subscriptions`` (тот же формат, что у встроенной);
   ``metrics.subscriptions_cache`` — путь кэша подписок (дефолт
   ``.agentic/state/metrics_subscriptions.json``, относительно project_dir);
+  ``metrics.models_cache`` — путь кэша цен моделей (дефолт
+  ``.agentic/state/metrics_models_cache.json``, относительно project_dir);
   ``metrics.output_dir`` — каталог отчёта (дефолт ``~/Desktop``, если
   существует, иначе project_dir).
 """
@@ -77,6 +88,9 @@ DEFAULT_TIERS: dict[str, list[str]] = {
 # U8b: таймаут GET таблицы подписок (сек) — по контракту subprocess-timeouts
 # вся внешняя сеть живёт с явным таймаутом.
 SUBSCRIPTIONS_TIMEOUT = 10.0
+
+# U8d: недель в месяце (GLM: недельные кредитные лимиты → месячная доля).
+WEEKS_PER_MONTH = 4.345
 
 _WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4})$")
 _TODO_RE = re.compile(r"TODO-(\d{4})")
@@ -428,14 +442,96 @@ def collect_code_lines(
 def load_models_catalog(models_path: Path, warnings: list[str]) -> dict | None:
     """models.json целиком (провайдер → models → cost) или None."""
     if not models_path.exists():
-        warnings.append(f"models.json не найден: {models_path} — цена неизвестна")
+        warnings.append(f"models.json не найден: {models_path}")
         return None
     try:
         data = json.loads(models_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
-        warnings.append(f"models.json не читается: {e} — цена неизвестна")
+        warnings.append(f"models.json не читается: {e}")
         return None
     return data if isinstance(data, dict) else None
+
+
+# U8d: кэш цен моделей — снапшот используемых записей на случай,
+# если models.json недоступен.
+DEFAULT_MODELS_CACHE = ".agentic/state/metrics_models_cache.json"
+
+
+def _models_cache_file(project_dir: Path, cache_path: str | None) -> Path:
+    f = Path(cache_path or DEFAULT_MODELS_CACHE).expanduser()
+    if not f.is_absolute():
+        f = project_dir / f
+    return f
+
+
+def load_models_cache(
+    project_dir: Path, cache_path: str | None, warnings: list[str]
+) -> tuple[dict | None, str | None]:
+    """Снапшот цен моделей (каталог + дата) или (None, None).
+
+    Битый кэш игнорируется с предупреждением — сбор не падает (U8d).
+    """
+    f = _models_cache_file(project_dir, cache_path)
+    if not f.exists():
+        return None, None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        warnings.append(f"кэш цен моделей бит ({e}) — игнорируется")
+        return None, None
+    catalog = data.get("catalog") if isinstance(data, dict) else None
+    if not isinstance(catalog, dict) or not catalog:
+        warnings.append("кэш цен моделей бит (нет каталога) — игнорируется")
+        return None, None
+    saved_at = data.get("saved_at")
+    return catalog, (saved_at if isinstance(saved_at, str) else "")
+
+
+def save_models_cache(
+    catalog: dict,
+    model_ids: list[str],
+    project_dir: Path,
+    cache_path: str | None,
+    warnings: list[str],
+) -> str | None:
+    """После успешного чтения models.json — снапшот используемых записей.
+
+    Записываются только используемые модели (референс + tier-списки):
+    id, name, cost.* — в структуре models.json (провайдер → models → …),
+    чтобы :func:`model_costs_from_catalog` читал снапшот напрямую.
+    Пишется только при успешном чтении; сбой записи — предупреждение.
+    """
+    used: dict[str, dict] = {}
+    for mid in model_ids:
+        provider, _, model_id = mid.partition("/")
+        provider_data = catalog.get(provider)
+        models = provider_data.get("models") if isinstance(provider_data, dict) else None
+        model = models.get(model_id) if isinstance(models, dict) else None
+        if not isinstance(model, dict):
+            continue
+        cost = model.get("cost")
+        if not isinstance(cost, dict):
+            continue
+        used[mid] = {
+            "name": model.get("name") or model_id,
+            "cost": {k: cost.get(k, 0) for k in _COST_KEYS if k in cost},
+        }
+    if not used:
+        return None
+    saved_at = time.strftime("%Y-%m-%d")
+    snap_catalog: dict[str, dict] = {}
+    for mid, rec in used.items():
+        provider, _, model_id = mid.partition("/")
+        snap_catalog.setdefault(provider, {}).setdefault("models", {})[model_id] = rec
+    data = {"version": 1, "saved_at": saved_at, "catalog": snap_catalog}
+    f = _models_cache_file(project_dir, cache_path)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        warnings.append(f"кэш цен моделей не записан: {e}")
+        return None
+    return saved_at
 
 
 def model_costs_from_catalog(
@@ -449,7 +545,8 @@ def model_costs_from_catalog(
     cost = model.get("cost") if isinstance(model, dict) else None
     if not isinstance(cost, dict):
         warnings.append(
-            f"модель {reference_model} не найдена в models.json — цена неизвестна"
+            f"модель {reference_model} не найдена в источнике цен "
+            "(models.json / кэш) — цена неизвестна"
         )
         return None
     return {k: float(cost.get(k, 0) or 0) for k in _COST_KEYS}
@@ -585,11 +682,18 @@ def load_builtin_subscriptions() -> dict:
         return {"plans": []}
 
 
+def _num_gt0(v: Any) -> bool:
+    """Число (не bool), строго больше нуля."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
+
 def validate_subscriptions(data: Any) -> list[dict] | None:
     """Планы валидной таблицы подписок или None (битый формат).
 
     Формат: список планов либо объект с ключом ``plans``; каждый план —
-    dict с ``name`` (str) и ``price_usd_month`` (число).
+    dict с ``name`` (str) и ``price_usd_month`` (число). План с
+    ``price_unverified: true`` валиден и без цены (U8d: цена не
+    опубликована — не выдумывать).
     """
     plans = data.get("plans") if isinstance(data, dict) else data
     if not isinstance(plans, list):
@@ -600,9 +704,9 @@ def validate_subscriptions(data: Any) -> list[dict] | None:
             return None
         if not isinstance(p.get("name"), str) or not p["name"]:
             return None
-        if not isinstance(p.get("price_usd_month"), (int, float)) or isinstance(
-            p.get("price_usd_month"), bool
-        ):
+        price = p.get("price_usd_month")
+        price_ok = isinstance(price, (int, float)) and not isinstance(price, bool)
+        if not price_ok and not p.get("price_unverified"):
             return None
         out.append(p)
     return out
@@ -641,12 +745,16 @@ def resolve_subscriptions_table(
     cache_path: str | None = None,
     warnings: list[str],
 ) -> dict:
-    """U8b часть B: таблица подписок — refresh (GET+кэш), кэш, встроенная.
+    """U8b/U8d: таблица подписок — живой fetch, кэш, встроенная.
+
+    Порядок (U8d): refresh (``--refresh-subscriptions``, GET + запись
+    кэша) → кэш → встроенная. Неудачный refresh не перескакивает через
+    кэш: используется кэш + ``refresh_error`` с причиной (строка «данные
+    от <as_of>, обновление не удалось: …» в отчёте строится из ``as_of``
+    и ``refresh_error``). Кэш пишется только при успешном fetch; битый —
+    игнорируется с предупреждением.
 
     Возвращает ``{"plans", "as_of", "source", "label", "refresh_error"}``.
-    При неудачном refresh — встроенная таблица + ``refresh_error`` с
-    причиной (строка «данные от <as_of>, обновление не удалось: …» в
-    отчёте строится из полей ``as_of`` и ``refresh_error``).
     """
     cache_file = Path(
         cache_path or DEFAULT_SUBSCRIPTIONS_CACHE
@@ -664,6 +772,20 @@ def resolve_subscriptions_table(
             "refresh_error": refresh_error,
         }
 
+    def _from_cache() -> dict | None:
+        """Валидный кэш или None (битый — игнорируется с предупреждением)."""
+        if not cache_file.exists():
+            return None
+        try:
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            warnings.append(f"кэш подписок бит ({e}) — игнорируется")
+            return None
+        if validate_subscriptions(cached) is not None:
+            return _table(cached, "cache", "кэш подписок")
+        warnings.append("кэш подписок бит (формат) — игнорируется")
+        return None
+
     builtin = load_builtin_subscriptions()
     if refresh:
         if not url:
@@ -676,43 +798,48 @@ def resolve_subscriptions_table(
                 "metrics.subscriptions_url не задан",
             )
         data, err = refresh_subscription_table(url, warnings)
-        if data is None:
-            warnings.append(
-                f"обновление подписок не удалось: {err} — встроенная таблица"
-            )
-            return _table(builtin, "builtin", "встроенная таблица", err or "")
-        try:
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError as e:
-            warnings.append(f"кэш подписок не записан: {e}")
-        return _table(data, "url", f"обновлено по {url}")
-    # без флага: кэш, если есть и валидный, иначе встроенная
-    if cache_file.exists():
-        try:
-            cached = json.loads(cache_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            cached = None
-        if validate_subscriptions(cached) is not None:
-            return _table(cached, "cache", "кэш подписок")
-        warnings.append("кэш подписок бит — использована встроенная таблица")
+        if data is not None:
+            try:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(
+                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except OSError as e:
+                warnings.append(f"кэш подписок не записан: {e}")
+            return _table(data, "url", f"обновлено по {url}")
+        warnings.append(f"обновление подписок не удалось: {err}")
+        cached_table = _from_cache()
+        if cached_table is not None:
+            cached_table["refresh_error"] = err or ""
+            return cached_table
+        return _table(builtin, "builtin", "встроенная таблица", err or "")
+    cached_table = _from_cache()
+    if cached_table is not None:
+        return cached_table
     return _table(builtin, "builtin", "встроенная таблица")
 
 
 def build_subscriptions(totals: dict, table: dict) -> dict:
-    """U8b часть B: «объём воркеров ≈ N подписок/мес» для каждого плана.
+    """U8b/U8d: «объём воркеров ≈ N подписок/мес» для каждого плана.
 
     База: usage = in + out воркеров за окно статистики.
     Cache-read/cache-write не входят — это переиспользование контекста,
     а не объём работы. Пессимистичный базис (все токены, включая кэш)
-    считается рядом как ``usage_incl_cache``/``subs_incl_cache`` —
+    считается рядом как ``usage_incl_cache``/``subs_incl_cache_exact`` —
     завышенная оценка «если вендор считает и кэш».
 
-    Токенные лимиты берутся напрямую; сообщение-лимиты пересчитываются
-    через ``assumed_tokens_per_message`` (пометка «оценка»). N = ceil(
-    usage ÷ месячный лимит).
+    Лимиты: токенные — напрямую; сообщение-лимиты — через
+    ``assumed_tokens_per_message`` (пометка «оценка»). GLM (U8d): лимит —
+    ``credits_week``; кредиты окна = ``win×input + wcr×cached_input +
+    wout×output`` ÷ 10 000 (множители ``credit_multipliers``). Cache-read
+    входит в кредиты — так устроена кредитная модель GLM (в отличие от
+    токенной базы). Доля месяца = кредиты ÷ credits_week ÷
+    :data:`WEEKS_PER_MONTH`.
+
+    Каждый план несёт две оценки: ``subs_exact`` — точная дробная доля
+    (1.2) и ``subs`` — «покупать», ceil (2). План с
+    ``price_unverified`` (цена не опубликована) — ``price``/``cost`` None:
+    доля считается, стоимость не выдумывается.
     """
     usage = totals["win"] + totals["wout"]
     usage_incl_cache = usage + totals["wcr"] + totals["wcw"]
@@ -722,20 +849,31 @@ def build_subscriptions(totals: dict, table: dict) -> dict:
     notes: list[str] = []
     for p in table.get("plans", []):
         name = p.get("name", "?")
-        price = float(p["price_usd_month"])
+        price_unverified = bool(p.get("price_unverified"))
+        price = None if price_unverified else float(p["price_usd_month"])
         assumed = bool(p.get("assumed"))
         limit_tokens: float | None = None
-        basis = ""
-        if isinstance(p.get("limit_tokens_month"), (int, float)) and not isinstance(
-            p.get("limit_tokens_month"), bool
-        ) and p["limit_tokens_month"] > 0:
+        limit_label = ""
+        credits_week: float | None = None
+        mult: dict[str, float] | None = None
+        if p.get("limit_model") == "credits" and _num_gt0(p.get("credits_week")):
+            credits_week = float(p["credits_week"])
+            m = p.get("credit_multipliers")
+            if not isinstance(m, dict):
+                m = {}
+            mult = {
+                "input": float(m.get("input") or 0),
+                "cached_input": float(m.get("cached_input") or 0),
+                "output": float(m.get("output") or 0),
+            }
+            limit_label = (
+                f"{credits_week:,.0f} кредитов/нед"
+                + (f" (5ч: {p['credits_5h']:,.0f})" if _num_gt0(p.get("credits_5h")) else "")
+            )
+        elif _num_gt0(p.get("limit_tokens_month")):
             limit_tokens = float(p["limit_tokens_month"])
-            basis = f"{limit_tokens:,.0f} токенов/мес"
-        elif (
-            isinstance(p.get("limit_messages_period"), (int, float))
-            and not isinstance(p.get("limit_messages_period"), bool)
-            and p["limit_messages_period"] > 0
-        ):
+            limit_label = f"{limit_tokens:,.0f} токенов/мес"
+        elif _num_gt0(p.get("limit_messages_period")):
             period = str(p.get("period") or "")
             tpm = p.get("assumed_tokens_per_message")
             if period != "month":
@@ -749,31 +887,74 @@ def build_subscriptions(totals: dict, table: dict) -> dict:
                 )
                 continue
             limit_tokens = float(p["limit_messages_period"]) * float(tpm)
-            basis = (
-                f"{p['limit_messages_period']:g} сообщений/мес × {tpm:g} токенов/сообщение"
-                + (" (оценка)" if assumed else "")
+            limit_label = (
+                f"{limit_tokens:,.0f} токенов/мес" + (" (оценка)" if assumed else "")
             )
         else:
             notes.append(
-                f"План {name}: нет лимита (limit_tokens_month / limit_messages_period) — не рассчитан"
+                f"План {name}: нет лимита (limit_tokens_month / "
+                "limit_messages_period / credits_week) — не рассчитан"
             )
             continue
-        subs_n = math.ceil(usage / limit_tokens) if usage > 0 else 0
-        subs_cache_n = math.ceil(
-            usage_incl_cache / limit_tokens
-        ) if usage_incl_cache > 0 else 0
+        offpeak_raw = p.get("offpeak_multiplier")
+        offpeak_mult = (
+            float(offpeak_raw)
+            if _num_gt0(offpeak_raw) and offpeak_raw < 1
+            else None
+        )
+        if credits_week is not None:
+            # GLM: кредиты окна; cache-read входит в кредиты
+            credits = (
+                totals["win"] * mult["input"]
+                + totals["wcr"] * mult["cached_input"]
+                + totals["wout"] * mult["output"]
+            ) / 10_000
+            subs_exact = credits / credits_week / WEEKS_PER_MONTH
+            subs_incl_cache_exact = subs_exact  # кэш уже в кредитах
+        else:
+            credits = None
+            subs_exact = usage / limit_tokens if usage > 0 else 0.0
+            subs_incl_cache_exact = (
+                usage_incl_cache / limit_tokens if usage_incl_cache > 0 else 0.0
+            )
+        subs = math.ceil(subs_exact) if subs_exact > 0 else 0
+        subs_incl_cache = (
+            math.ceil(subs_incl_cache_exact) if subs_incl_cache_exact > 0 else 0
+        )
+        cost = None if price is None else subs * price
+        offpeak = None
+        if credits is not None and offpeak_mult is not None:
+            op_credits = credits * offpeak_mult
+            op_exact = op_credits / credits_week / WEEKS_PER_MONTH
+            offpeak = {
+                "multiplier": offpeak_mult,
+                "credits": op_credits,
+                "subs_exact": op_exact,
+                "subs": math.ceil(op_exact) if op_exact > 0 else 0,
+            }
         plans.append(
             {
                 "name": name,
                 "family": str(p.get("family") or ""),
                 "price": price,
+                "price_unverified": price_unverified,
                 "limit_tokens": limit_tokens,
-                "basis": basis,
-                "subs": subs_n,
-                "cost": subs_n * price,
-                "subs_incl_cache": subs_cache_n,
+                "limit_label": limit_label,
+                "subs_exact": subs_exact,
+                "subs": subs,
+                "cost": cost,
+                "subs_incl_cache_exact": subs_incl_cache_exact,
+                "subs_incl_cache": subs_incl_cache,
                 "assumed": assumed,
+                "credits": credits,
+                "offpeak": offpeak,
             }
+        )
+    unverified = [pl["name"] for pl in plans if pl["price_unverified"]]
+    if unverified:
+        notes.append(
+            "Цены не опубликованы в документации: " + ", ".join(unverified)
+            + " — не выдумываем (price_unverified): доля считается, стоимость нет"
         )
     return {
         "usage": usage,
@@ -824,6 +1005,7 @@ def render_report(
     warnings: list[str],
     tier_tables: dict[str, list[dict]] | None = None,
     subscriptions: dict | None = None,
+    model_price_source: str = "",
 ) -> str:
     lines = [f"# Метрики программы — снимок: {project_name}", ""]
     lines.append(f"Дата снимка: {generated_at}. Источник: opencode.db + git.")
@@ -888,6 +1070,8 @@ def render_report(
     lines.append(f"- Строки кода: +{totals['ins']:,} / −{totals['dels']:,}")
     lines.append("")
     lines.append(conversion["line"])
+    if model_price_source:
+        lines.append(f"Цены моделей: {model_price_source}.")
     if tier_tables:
         lines.append("")
         lines.append("## 🏆 Топ-модели")
@@ -932,31 +1116,46 @@ def render_report(
             f"(in {totals['win']:,} / out {totals['wout']:,}; cache-read "
             f"{subscriptions['cache_read']:,} и cache-write {totals['wcw']:,} не входят "
             "— это переиспользование контекста, а не объём работы). "
-            "N = ceil(объём ÷ месячный лимит); лимиты, переведённые из сообщений, "
-            "помечены «оценка»."
+            "«Нужно (точно)» — точная доля подписки (один знак); "
+            "«Покупать» — округление вверх в целые (1.2 и 2 — большая разница). "
+            "Лимиты, переведённые из сообщений, помечены «оценка»; у GLM лимит — "
+            "кредиты/нед, и cache-read входит в кредиты (так устроена "
+            "кредитная модель GLM)."
         )
         lines.append("")
         lines.append(
-            "| План | Семейство | $/мес | Лимит, токенов/мес | Нужно, шт./мес | ≈ Стоимость, $/мес |"
+            "| План | Семейство | $/мес | Лимит | Нужно (точно) | Покупать | ≈ Стоимость, $/мес |"
         )
-        lines.append("|---|---|---:|---:|---:|---:|")
+        lines.append("|---|---|---:|---:|---:|---:|---:|")
         ordered = sorted(
             subscriptions["plans"],
             key=lambda p: (p.get("family") or "", p["name"]),
         )
         for p in ordered:
-            limit = f"{p['limit_tokens']:,.0f}" + (
-                " (оценка)" if p["assumed"] else ""
-            )
+            price_txt = "—" if p["price"] is None else f"{p['price']:g}"
+            if p["price"] is None:
+                cost_txt = "— (цена не опубликована)"
+            else:
+                cost_txt = f"≈ {p['subs']} × ${p['price']:g} = **${p['cost']:g}**"
             lines.append(
-                f"| {p['name']} | {p.get('family') or '—'} | {p['price']:g} | "
-                f"{limit} | **{p['subs']}** | ≈ {p['subs']} × ${p['price']:g} = "
-                f"**${p['cost']:g}** |"
+                f"| {p['name']} | {p.get('family') or '—'} | {price_txt} | "
+                f"{p['limit_label']} | {p['subs_exact']:.1f} | **{p['subs']}** | "
+                f"{cost_txt} |"
             )
         for n in subscriptions["notes"]:
             lines.append(f"- {n}")
+        offpeak = [p for p in ordered if p.get("offpeak")]
+        if offpeak:
+            parts = ", ".join(
+                f"{p['name']} — {p['offpeak']['subs_exact']:.1f} ({p['offpeak']['subs']})"
+                for p in offpeak
+            )
+            lines.append(
+                f"Off-peak (кредиты ×{offpeak[0]['offpeak']['multiplier']:g}, "
+                f"вне Пн–Пт 14:00–18:00 SGT): {parts}"
+            )
         pes = [
-            f"{p['name']} — {p['subs_incl_cache']}"
+            f"{p['name']} — {p['subs_incl_cache_exact']:.1f} ({p['subs_incl_cache']})"
             for p in ordered
             if p.get("subs_incl_cache", 0) > p["subs"]
         ]
@@ -1052,6 +1251,8 @@ def collect_metrics(
     subs_url = subs_url if isinstance(subs_url, str) and subs_url else None
     subs_cache = config_mod.get(cfg, "metrics.subscriptions_cache")
     subs_cache = subs_cache if isinstance(subs_cache, str) and subs_cache else None
+    models_cache = config_mod.get(cfg, "metrics.models_cache")
+    models_cache = models_cache if isinstance(models_cache, str) and models_cache else None
 
     db = db_path if db_path is not None else default_db_path()
     models = models_path if models_path is not None else default_models_path()
@@ -1080,6 +1281,24 @@ def collect_metrics(
 
     diff = collect_code_lines(project_dir, commits)
     catalog = load_models_catalog(Path(models), warnings)
+    # U8d: цены моделей — models.json (свежие) + снапшот кэша; при
+    # недоступности models.json — кэш, иначе «цена неизвестна».
+    model_price_source = "models.dev (свежие)"
+    if catalog is not None:
+        used_ids = list(dict.fromkeys(
+            [ref_model, *[m for ms in tiers.values() for m in ms]]
+        ))
+        save_models_cache(catalog, used_ids, project_dir, models_cache, warnings)
+    else:
+        snap_catalog, saved_at = load_models_cache(project_dir, models_cache, warnings)
+        if snap_catalog is not None:
+            catalog = snap_catalog
+            model_price_source = (
+                f"кэш от {saved_at}" if saved_at else "кэш (дата неизвестна)"
+            )
+            warnings.append("models.json недоступен — цены из кэша моделей")
+        else:
+            model_price_source = "цена неизвестна (нет models.json и кэша)"
     costs = (
         None if catalog is None
         else model_costs_from_catalog(catalog, ref_model, warnings)
@@ -1156,6 +1375,7 @@ def collect_metrics(
         str(project_name), generated_at, units, tot, by_role,
         sup_outside, conversion, notes, warnings,
         tier_tables=tier_tables, subscriptions=subscriptions,
+        model_price_source=model_price_source,
     )
     result = MetricsResult(
         project_dir=str(project_dir),

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -549,9 +550,11 @@ class TestU8bSubscriptions:
         assert "**1,760,000 токенов**" in vol_line
         assert "cache-read 3,000,000 и cache-write 100,000 не входят" in vol_line
         claude_line = next(ln for ln in text.splitlines() if ln.startswith("| Claude Pro |"))
-        assert "6,480,000 (оценка)" in claude_line
-        assert "**1**" in claude_line
-        assert "GLM Coding Plan (Z.ai)" in text
+        assert "6,480,000 токенов/мес (оценка)" in claude_line
+        assert "| 0.3 | **1** |" in claude_line  # 1.76M / 6.48M = 0.27 → 0.3, купить 1
+        assert "GLM Coding Plan Lite (Z.ai)" in text
+        assert "GLM Coding Plan Pro (Z.ai)" in text
+        assert "GLM Coding Plan Max (Z.ai)" in text
         assert "данные от 2026-09-21" in text
 
     def test_subscription_base_excludes_cache_read(self):
@@ -709,3 +712,274 @@ class TestCli:
         monkeypatch.setattr(Path, "home", staticmethod(lambda: self._fake_home(env["tmp"], empty_db, env["models"])))
         rc = cli.main(["metrics", "--project-dir", str(proj), "--out", str(env["tmp"] / "r.md")])
         assert rc == 1
+
+
+# U8d: GLM — кредитная модель (GLM-5.3: (in×6.9 + cached_in×1.7 + out×24) ÷ 10 000),
+# cache-read входит в кредиты; off-peak (вне Пн–Пт 14:00–18:00 SGT) ×0.5.
+GLM_TOTALS = {"win": 52_000_000, "wout": 6_000_000, "wcr": 0, "wcw": 0}
+GLM_CREDITS = (52_000_000 * 6.9 + 6_000_000 * 24) / 10_000  # 50 280
+
+
+def _glm_plans() -> list[dict]:
+    mult = {"input": 6.9, "cached_input": 1.7, "output": 24}
+    return [
+        {
+            "name": "GLM Coding Plan Lite (Z.ai)",
+            "family": "glm",
+            "price_usd_month": 18,
+            "limit_model": "credits",
+            "credits_5h": 2000,
+            "credits_week": 10_000,
+            "credit_multipliers": dict(mult),
+            "offpeak_multiplier": 0.5,
+        },
+        {
+            "name": "GLM Coding Plan Pro (Z.ai)",
+            "family": "glm",
+            "price_unverified": True,
+            "limit_model": "credits",
+            "credits_5h": 12_000,
+            "credits_week": 60_000,
+            "credit_multipliers": dict(mult),
+            "offpeak_multiplier": 0.5,
+        },
+    ]
+
+
+def _subs_report(s: dict, totals: dict) -> str:
+    """Отчёт (минимальные аргументы) — для assert'ов разметки 💳."""
+    full = {
+        "hours": 0.0, "win": totals["win"], "wout": totals["wout"],
+        "wcr": totals["wcr"], "wcw": totals["wcw"], "wcost": 0.0,
+        "comp": 0, "sin": 0, "sout": 0, "scost": 0.0, "ins": 0, "dels": 0,
+    }
+    sup = {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0}
+    return M.render_report(
+        "p", "d", [], full, {}, sup, {"line": "conv"}, [], [], subscriptions=s
+    )
+
+
+class TestU8dGlm:
+    def test_credits_math_fraction_offpeak(self):
+        s = M.build_subscriptions(GLM_TOTALS, {"plans": _glm_plans(), "as_of": "2026-09-21"})
+        lite, pro = s["plans"]
+        assert lite["credits"] == pytest.approx(GLM_CREDITS)
+        assert lite["subs_exact"] == pytest.approx(GLM_CREDITS / 10_000 / M.WEEKS_PER_MONTH)
+        assert f"{lite['subs_exact']:.1f}" == "1.2"  # доля с одним знаком
+        assert lite["subs"] == 2  # округление вверх
+        assert lite["cost"] == pytest.approx(36)  # 2 × $18
+        # off-peak: те же токены, кредиты ×0.5
+        op = lite["offpeak"]
+        assert op["multiplier"] == 0.5
+        assert op["credits"] == pytest.approx(GLM_CREDITS * 0.5)
+        assert op["subs_exact"] == pytest.approx(GLM_CREDITS * 0.5 / 10_000 / M.WEEKS_PER_MONTH)
+        assert op["subs"] == 1
+        # cache-read входит в кредиты (кэш-модель GLM)
+        s2 = M.build_subscriptions(
+            {"win": 0, "wout": 0, "wcr": 5_000_000, "wcw": 0},
+            {"plans": [_glm_plans()[0]]},
+        )
+        assert s2["plans"][0]["credits"] == pytest.approx(5_000_000 * 1.7 / 10_000)
+        # Pro: price_unverified — доля считается, цена не выдумана
+        assert pro["price"] is None
+        assert pro["subs_exact"] == pytest.approx(GLM_CREDITS / 60_000 / M.WEEKS_PER_MONTH)
+        assert pro["subs"] == 1
+        assert pro["cost"] is None
+        assert any("price_unverified" in n for n in s["notes"])
+
+    def test_report_markup(self):
+        s = M.build_subscriptions(
+            GLM_TOTALS,
+            {"plans": _glm_plans(), "as_of": "2026-09-21", "label": "встроенная таблица"},
+        )
+        text = _subs_report(s, GLM_TOTALS)
+        lite_line = next(ln for ln in text.splitlines() if ln.startswith("| GLM Coding Plan Lite"))
+        assert "10,000 кредитов/нед (5ч: 2,000)" in lite_line
+        assert "| 1.2 | **2** |" in lite_line
+        assert "≈ 2 × $18 = **$36**" in lite_line
+        pro_line = next(ln for ln in text.splitlines() if ln.startswith("| GLM Coding Plan Pro"))
+        assert "| — |" in pro_line  # $/мес не опубликован
+        assert "— (цена не опубликована)" in pro_line
+        assert "price_unverified" in text  # пометка в отчёте
+        offpeak_line = next(ln for ln in text.splitlines() if ln.startswith("Off-peak"))
+        assert "GLM Coding Plan Lite (Z.ai) — 0.6 (1)" in offpeak_line
+        assert "GLM Coding Plan Pro (Z.ai) — 0.1 (1)" in offpeak_line
+
+
+class TestU8dFractions:
+    def test_messages_fraction_math(self):
+        table = {"plans": [
+            {"name": "MsgPlan", "family": "gpt", "price_usd_month": 20,
+             "limit_tokens_month": 1_000_000}
+        ]}
+        totals = {"win": 1_100_000, "wout": 100_000, "wcr": 1_000_000, "wcw": 0}
+        s = M.build_subscriptions(totals, table)
+        p = s["plans"][0]
+        assert p["subs_exact"] == pytest.approx(1.2)  # 1.2M / 1M
+        assert p["subs"] == 2
+        assert p["subs_incl_cache_exact"] == pytest.approx(2.2)  # + кэш
+        assert p["subs_incl_cache"] == 3
+
+    def test_report_markup_fraction(self):
+        table = {"plans": [
+            {"name": "MsgPlan", "family": "gpt", "price_usd_month": 20,
+             "limit_tokens_month": 1_000_000}
+        ]}
+        totals = {"win": 1_100_000, "wout": 100_000, "wcr": 1_000_000, "wcw": 0}
+        s = M.build_subscriptions(totals, table)
+        text = _subs_report(s, totals)
+        header = next(ln for ln in text.splitlines() if ln.startswith("| План |"))
+        assert "| Нужно (точно) | Покупать |" in header
+        line = next(ln for ln in text.splitlines() if ln.startswith("| MsgPlan |"))
+        assert "| 1,000,000 токенов/мес |" in line
+        assert "| 1.2 | **2** |" in line
+        assert "Пессимистично, если вендор считает и кэш: MsgPlan — 2.2 (3)" in text
+
+    def test_builtin_table_fractional_columns(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        header = next(ln for ln in text.splitlines() if ln.startswith("| План |"))
+        assert "| Нужно (точно) | Покупать |" in header
+        glm_lite = next(
+            p for p in res.subscriptions["plans"]
+            if p["name"] == "GLM Coding Plan Lite (Z.ai)"
+        )
+        # (1.6M×6.9 + 3M×1.7 + 160k×24) / 10 000 = 1 998 кредитов → 0.05 мес
+        assert glm_lite["credits"] == pytest.approx(1_998)
+        glm_line = next(ln for ln in text.splitlines() if ln.startswith("| GLM Coding Plan Lite"))
+        assert "| 0.0 | **1** |" in glm_line
+        assert "Off-peak" in text
+
+
+class TestU8dModelsCache:
+    def test_snapshot_written_and_fresh_source(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        snap = env["proj"] / ".agentic" / "state" / "metrics_models_cache.json"
+        assert snap.exists()
+        data = json.loads(snap.read_text(encoding="utf-8"))
+        rec = data["catalog"]["anthropic"]["models"]["claude-sonnet-4-6"]
+        assert rec["cost"]["input"] == 3
+        assert data["saved_at"]
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "Цены моделей: models.dev (свежие)." in text
+
+    def test_fallback_to_snapshot_when_models_json_missing(self, env):
+        # первый прогон — снапшот записан (models.json есть)
+        M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r1.md",
+        )
+        # второй — models.json исчез: цены из снапшота
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["tmp"] / "absent.json",
+            out=env["tmp"] / "r2.md",
+        )
+        assert res.conversion["known"] is True
+        assert res.conversion["total"] == pytest.approx(
+            1_600_000 * 3 / 1e6 + 160_000 * 15 / 1e6
+            + 3_000_000 * 0.3 / 1e6 + 100_000 * 3.75 / 1e6
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert re.search(r"Цены моделей: кэш от \d{4}-\d{2}-\d{2}\.", text)
+        assert any("models.json недоступен" in w for w in res.warnings)
+
+    def test_no_models_json_no_snapshot_price_unknown(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["tmp"] / "absent.json",
+            out=env["tmp"] / "r.md",
+        )
+        assert res.conversion["known"] is False
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "Цены моделей: цена неизвестна (нет models.json и кэша)." in text
+
+    def test_broken_snapshot_ignored(self, env):
+        snap = env["proj"] / ".agentic" / "state" / "metrics_models_cache.json"
+        snap.parent.mkdir(parents=True, exist_ok=True)
+        snap.write_text("{not json")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["tmp"] / "absent.json",
+            out=env["tmp"] / "r.md",
+        )
+        assert res.conversion["known"] is False
+        assert any("кэш цен моделей бит" in w for w in res.warnings)
+        assert Path(res.report_path).exists()  # отчёт строится
+
+
+class TestU8dSubsCache:
+    MOCK = {
+        "as_of": "2026-09-01",
+        "plans": [
+            {"name": "TokPlan", "family": "gpt", "price_usd_month": 20,
+             "limit_tokens_month": 2_000_000, "source_url": "http://fake",
+             "as_of": "2026-09-01"}
+        ],
+    }
+
+    def _cfg(self, env):
+        _set_metrics_cfg(env, "  subscriptions_url: http://fake/subs.json\n")
+
+    def test_fetch_ok_cache_used_without_flag(self, env, monkeypatch):
+        self._cfg(env)
+        monkeypatch.setattr(M, "_http_get", lambda url, timeout=10.0: json.dumps(self.MOCK).encode())
+        M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r1.md", refresh_subscriptions=True,
+        )
+        # второй прогон без флага: сеть не вызывается, кэш используется
+        def dead(url, timeout=10.0):
+            raise AssertionError("сеть не должна вызываться")
+
+        monkeypatch.setattr(M, "_http_get", dead)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r2.md",
+        )
+        assert res.subscriptions["source"] == "cache"
+        assert res.subscriptions["as_of"] == "2026-09-01"
+        assert res.subscriptions["refresh_error"] == ""
+        assert [p["name"] for p in res.subscriptions["plans"]] == ["TokPlan"]
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "Данные: кэш подписок, данные от 2026-09-01." in text
+
+    def test_fetch_fail_uses_cache(self, env, monkeypatch):
+        self._cfg(env)
+        monkeypatch.setattr(M, "_http_get", lambda url, timeout=10.0: json.dumps(self.MOCK).encode())
+        M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r1.md", refresh_subscriptions=True,
+        )
+
+        def dead(url, timeout=10.0):
+            raise OSError("network down")
+
+        monkeypatch.setattr(M, "_http_get", dead)
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r2.md", refresh_subscriptions=True,
+        )
+        assert res.subscriptions["source"] == "cache"
+        assert res.subscriptions["as_of"] == "2026-09-01"
+        assert res.subscriptions["refresh_error"] == "OSError: network down"
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert (
+            "Данные: кэш подписок, данные от 2026-09-01, "
+            "обновление не удалось: OSError: network down." in text
+        )
+
+    def test_broken_subs_cache_ignored(self, env):
+        cache = env["proj"] / ".agentic" / "state" / "metrics_subscriptions.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text("{bad json")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        assert res.subscriptions["source"] == "builtin"
+        assert any("кэш подписок бит" in w for w in res.warnings)
+        assert len(res.subscriptions["plans"]) >= 6  # встроенная таблица
