@@ -231,7 +231,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-37 tools: 32 `awf_*` workflow + 5 UI (forms).
+38 tools: 33 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -265,6 +265,11 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_wait_for_event` | Check for pipeline events (reactive, not for polling) |
 | `awf_prove_red` | Prove declared tests are red on the baseline sha |
 | `awf_verify_pack` | One deterministic verify report (GATES file) |
+
+### Metrics
+| Tool | What it does |
+|---|---|
+| `awf_metrics` | U8: token/cost metrics of the work program; report to desktop + "if workers ran on model X" cost |
 
 ### Run (autonomous queue)
 | Tool | What it does |

@@ -632,6 +632,52 @@ async def awf_verify_pack(
     )
 
 
+# ─── Metrics (U8) ───────────────────────────────────────────────────────
+
+
+async def awf_metrics(
+    project_dir: str | None = None,
+    *,
+    reference_model: str | None = None,
+    since: str | None = None,
+    out: str | None = None,
+) -> dict[str, Any]:
+    """U8: collect token/cost metrics of the work program (report to desktop).
+
+    Aggregates worker sessions (titles ``awf-<role>-TODO-NNNN``) and
+    supervisor sessions (config ``metrics.supervisor_titles``) from
+    opencode.db, unit windows (baseline sha → verify commit), code lines
+    per unit (git shortstat), and the cost conversion: "if workers had
+    run on <reference model>, the cost would be $Y" (models.dev prices).
+
+    The markdown report is written by default to ``metrics.output_dir``
+    (default: ~/Desktop) as ``awf-metrics-<YYYYMMDD-HHMM>.md``.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        reference_model: Model id for the cost conversion
+            (default: config ``metrics.reference_model`` /
+            ``anthropic/claude-sonnet-4-6``).
+        since: Start of the statistics window (ISO date/datetime or epoch;
+            default: config ``metrics.since``, no filter).
+        out: Output file or directory (default: ``metrics.output_dir``).
+
+    Returns:
+        Dict with: status, report_path, units, totals, workers_by_role,
+        supervisor_outside, conversion (line + costs), warnings,
+        exit_code (0 = measured something, 1 = nothing measurable).
+        On error: {status: "error", error: "..."}.
+    """
+    return await _exec(
+        api.collect_metrics,
+        project_dir=_resolve_project_dir(project_dir),
+        reference_model=reference_model,
+        since=since,
+        out=out,
+    )
+
+
 # ─── Auto-commit approval ───────────────────────────────────────────────
 
 

@@ -73,5 +73,7 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_prove_red, name="awf_prove_red")
     # U5: one deterministic verify report (GATES-<todo>.md)
     mcp.add_tool(awf.awf_verify_pack, name="awf_verify_pack")
+    # U8: token/cost metrics of the work program (report to desktop)
+    mcp.add_tool(awf.awf_metrics, name="awf_metrics")
 
     return mcp

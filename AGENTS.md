@@ -9,6 +9,10 @@
 Контракт юнита (опциональный блок verify/gates/prove_red в TODO +
 `DONE-<id>.json`): формат в `docs/unit-contract.md`.
 
+Метрики программы: `awf metrics` — отчёт токенов/компрессий/строк +
+конверсия стоимости воркеров на референс-модель; по умолчанию кладёт
+markdown-отчёт на рабочий стол (U8).
+
 ## Safety invariants (инцидент 2026-09-20)
 
 - Guard `proc.pid > 1` в `awf/_proc.py` и tripwire `_forbid_session_kill`

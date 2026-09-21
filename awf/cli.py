@@ -306,6 +306,35 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_metrics = sub.add_parser(
+        "metrics", help="U8: token/cost metrics of the work program (report to desktop)"
+    )
+    p_metrics.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    p_metrics.add_argument(
+        "--out",
+        default="",
+        help="Output file or directory (default: metrics.output_dir / ~/Desktop)",
+    )
+    p_metrics.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    p_metrics.add_argument(
+        "--reference-model",
+        dest="reference_model",
+        default="",
+        help="Model for cost conversion "
+             "(default: metrics.reference_model / anthropic/claude-sonnet-4-6)",
+    )
+    p_metrics.add_argument(
+        "--since",
+        default="",
+        help="Start of the statistics window (ISO date/datetime or epoch)",
+    )
+
     p_analyze = sub.add_parser(
         "analyze-roles",
         help="BD-31: analyze team roles for overlaps, add pipeline-specific disambiguation",
@@ -371,6 +400,9 @@ def _run_command(args) -> int:
         if args.command == "analyze-roles":
             from . import cmd_analyze_roles
             return cmd_analyze_roles.run(args)
+        if args.command == "metrics":
+            from . import cmd_metrics
+            return cmd_metrics.run(args)
         return 1
     except AwfApiError as e:
         print(f"ERROR: {e}", file=sys.stderr)

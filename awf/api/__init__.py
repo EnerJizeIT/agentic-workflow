@@ -29,6 +29,7 @@ try/except.
 """
 from __future__ import annotations
 
+from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
 from ..verify_pack import VerifyPackResult, verify_pack
 
@@ -98,6 +99,7 @@ __all__ = [
     "RollbackResult",
     "ProveRedResult",
     "VerifyPackResult",
+    "MetricsResult",
     "ApproveResult",
     "RejectResult",
     "ReportResult",
@@ -133,6 +135,7 @@ __all__ = [
     "rollback",
     "prove_red",
     "verify_pack",
+    "collect_metrics",
     "approve_commit",
     "reject_commit",
     "retry_stage",
