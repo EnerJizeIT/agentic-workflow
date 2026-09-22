@@ -60,6 +60,8 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_kill, name="awf_kill")
     # SMO: Phase-aware supervisor tools
     mcp.add_tool(awf.awf_current_step, name="awf_current_step")
+    # RUN4 #1: supervisor onboarding/recovery card (live state + tool map)
+    mcp.add_tool(awf.awf_brief, name="awf_brief")
     mcp.add_tool(awf.awf_set_goal, name="awf_set_goal")
     mcp.add_tool(awf.awf_confirm_normalized, name="awf_confirm_normalized")
     # SPEC A-run: autonomous run (забег)

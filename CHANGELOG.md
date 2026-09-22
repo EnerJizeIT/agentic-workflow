@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`awf brief`** (MCP `awf_brief`, `--json` for the machine variant; RUN4 #1) — the supervisor's onboarding/recovery card, assembled from the LIVE project state: header (version, project, phase, date), what's next, state (run, active TODOs, blocked/salvage, last signal), a tool map by situation (every tool of the registry, checked both ways by tests), rituals, recovery recipes (`awf/data/recovery.md`) plus project doctrine, what's new (latest CHANGELOG section), and the feedback line. Deterministic for the same state; a new project gets the setup-chain hint instead of the working cycle
 - **Named pipelines** (RUN3 #1) — `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP `awf_write_pipeline`) writes only `.agentic/pipelines/<name>.yaml` (config.yaml and supervisor.md untouched); `awf pipelines` (MCP `awf_pipelines`) lists them and marks the active one; `awf start --pipeline <name>` runs the named pipeline
 
 ### Changed

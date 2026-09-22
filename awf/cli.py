@@ -540,6 +540,20 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    # RUN4 #1: supervisor onboarding/recovery card (live state + tool map)
+    p_brief = sub.add_parser(
+        "brief",
+        help="RUN4 #1: supervisor onboarding/recovery card (live state + tool map)",
+    )
+    p_brief.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    p_brief.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_analyze = sub.add_parser(
         "analyze-roles",
         help="BD-31: analyze team roles for overlaps, add pipeline-specific disambiguation",
@@ -623,6 +637,9 @@ def _run_command(args) -> int:
         if args.command == "feedback":
             from . import cmd_feedback
             return cmd_feedback.run(args)
+        if args.command == "brief":
+            from . import cmd_brief
+            return cmd_brief.run(args)
         if args.command == "tree-sha":
             from . import cmd_tree_sha
             return cmd_tree_sha.run(args)

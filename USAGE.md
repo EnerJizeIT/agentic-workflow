@@ -59,6 +59,15 @@ Awf guides the supervisor through a deterministic flow:
 
 Every tool returns `next_action` — a hint for the next step. Even weak models follow it.
 
+**New session or lost context** → `awf brief` (MCP `awf_brief`, CLI `awf brief`,
+`--json` for the machine variant). One card assembled from the LIVE state, so it
+does not go stale: header (awf version, project, phase, date), what's next, state
+(run, active TODOs, blocked/salvage, last signal), the tool map by situation
+(launch / check / run / hygiene / forms / metrics / context), rituals, recovery
+recipes, what's new. Deterministic — the same state gives the same card (except
+the date line). An empty or new project gets the setup-chain hint instead of the
+working cycle.
+
 ## Verify: approve or reject
 
 | You say | What happens |
@@ -331,13 +340,14 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-42 tools: 37 `awf_*` workflow + 5 UI (forms).
+43 tools: 38 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
 |---|---|
 | `awf_init` | Create `.agentic/`, detect stack, return phase prompt |
 | `awf_status` | Active TODOs, pipeline state, stage info, suggestion |
+| `awf_brief` | RUN4 #1: onboarding/recovery card — live state, tool map, rituals, recovery recipes |
 | `awf_report` | Task statuses + git diff + latest test log |
 | `awf_reset` | Clear runtime data (tasks_only / full / orphans) |
 

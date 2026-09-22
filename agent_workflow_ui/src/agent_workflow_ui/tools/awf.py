@@ -1826,6 +1826,34 @@ async def awf_current_step(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
+    """RUN4 #1: supervisor onboarding/recovery card, assembled live.
+
+    Call this at the START of a new session (or when context is lost)
+    instead of re-reading files: header (awf version, project, phase,
+    date), what's next, state (run, active TODOs, blocked/salvage, last
+    signal), the tool map by situation, rituals, recovery recipes, what's
+    new (latest CHANGELOG section), feedback line.
+
+    Not a static document — the card is built from live project state so
+    it does not go stale. An empty, new, or nonexistent project does not
+    fail: the card degrades to header + setup-chain hint + tool map.
+    Deterministic for the same state (identical text except the date line).
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: status ("ok"), version, project, phase, date,
+        is_live_project, next_action, run, active_todos, blocked,
+        salvage_stage, last_signal, pipeline_running, tool_map (groups),
+        rituals, recovery, doctrine, what_new, text (the rendered card).
+        On error: {status: "error", error: "..."}.
+    """
+    return await _exec(api.brief, project_dir=_resolve_project_dir(project_dir))
+
+
 async def awf_set_goal(
     goal: str,
     project_dir: str | None = None,
