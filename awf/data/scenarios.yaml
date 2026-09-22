@@ -1,0 +1,11 @@
+# The five supervisor scenarios — one compact line each for the
+# `awf brief` card (RUN6 #5, TODO-0060). The card line gives the
+# situation and the first action only (900-word budget); the FULL
+# step-by-step version (situation → calls → expected answer → decision)
+# lives in the `awf-supervisor` skill.
+scenarios:
+  - "single task: `awf_dispatch_todo` → `awf_start` → dashboard → idle → verify (approve/reject)"
+  - "run: `awf_run_start(queue)` → per `done` event: `awf_run_next` → close with `awf_run_finish`"
+  - "verify ritual: `awf tree-sha` → verify commands + `git diff` → `awf_approve(verified_sha=...)`"
+  - "blocked: read `BLOCKED-<id>.md` → answer the question → `awf_continue --ack <id>`"
+  - "salvage: check infrastructure first → `awf_retry_stage` (or `awf_continue --from-stage <stage>`)"

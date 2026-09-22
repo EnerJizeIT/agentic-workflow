@@ -48,7 +48,12 @@ where = ["src"]
 include = ["agent_workflow_ui*"]
 
 [tool.setuptools.package-data]
-agent_workflow_ui = ["render/default_templates/*.j2", "SKILL.md"]
+agent_workflow_ui = [
+    "render/default_templates/*.j2",
+    "SKILL.md",
+    # RUN6 #5 (TODO-0060): the awf-supervisor doctrine skill.
+    "SKILL.awf-supervisor.md",
+]
 
 [tool.ruff]
 line-length = 100

@@ -126,4 +126,17 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # above: test identifiers and unit-id references, not debt. The +1 file
 # over 400 is awf/api/hygiene.py (379 -> 479 — the update_todo helper),
 # same class as the wait_event.py / brief.py raises above.
+# RUN6-2026-09-22 (#5): baseline raised 3377 -> 3407 — the
+# supervisor-onboarding unit (TODO-0060) adds 30 TODO-bearing lines
+# (net, after the compressed tool_map.yaml / recovery.md rewrites
+# removed a few): new files SKILL.awf-supervisor.md (8 — scenario
+# wording), agents_md.py (3), brief_defaults.yaml (2), scenarios.yaml
+# (1), skill_installer.py (2, unit-id comment), pyproject.toml (1,
+# comment), test_agents_md.py (1), test_supervisor_skill.py (2),
+# test_tool_descriptions.py (1); changed: tools/awf.py (next_action
+# messages + docstrings), awf/brief.py (next_action_from_status +
+# unit-id comments), TestNextActionSmoke in test_awf_tools.py
+# (TODO-0001/TODO-0002 ids), test_brief.py (TODO-0042/TODO-0009 test
+# ids). Same class as above: test identifiers and unit-id references,
+# not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

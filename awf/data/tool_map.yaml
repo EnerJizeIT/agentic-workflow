@@ -8,54 +8,54 @@
 # Entry fields:
 #   mcp:  MCP tool name (omit when the tool is CLI-only)
 #   cli:  CLI subcommand (omit when the tool is MCP-only)
-#   when: one short line — when to use it (keep it ≤7 words: the card
-#         has a 900-word budget)
+#   when: one short line — when to use it (keep it ≤5 words: the card
+#         has a 900-word budget; RUN6 #5 compressed the lines)
 groups:
   - title: launch
     tools:
       - mcp: awf_start
         cli: start
-        when: "start the pipeline for the active TODO"
+        when: "start the active unit"
       - mcp: awf_continue
         cli: continue
-        when: "resume a dead pipeline; --ack for BLOCKED"
+        when: "resume dead pipeline (--ack BLOCKED)"
       - mcp: awf_retry_stage
-        when: "kill + retry the salvage stage"
+        when: "retry the salvage stage"
       - mcp: awf_kill
         when: "stop a stuck pipeline"
   - title: check
     tools:
       - mcp: awf_status
         cli: status
-        when: "active TODOs, pipeline PID, last signal"
+        when: "state: units, pipeline, signal"
       - mcp: awf_current_step
-        when: "phase + full phase prompt"
+        when: "phase + its full prompt"
       - mcp: awf_load_supervisor_context
-        when: "full bootstrap context, one call"
+        when: "full context, one call"
       - mcp: awf_wait_for_event
-        when: "wait for the next event (runs)"
+        when: "block for the next event"
       - mcp: awf_pipelines
         cli: pipelines
-        when: "list pipelines, mark the active one"
+        when: "list pipelines + active"
       - mcp: awf_check_model_config
-        when: "role models vs providers, before start"
+        when: "models vs providers (pre-start)"
   - title: run
     tools:
       - mcp: awf_run_start
         when: "queue, budget, stop flags"
       - mcp: awf_run_status
-        when: "position, budget left, stop reason"
+        when: "position, budget, stop reason"
       - mcp: awf_run_next
-        when: "launch the next queue item"
+        when: "launch the next item"
       - mcp: awf_run_note
-        when: "live status line for the owner"
+        when: "owner's live status line"
       - mcp: awf_run_finish
-        when: "close the run, write RUN-REPORT"
+        when: "close the run (report)"
       - mcp: awf_approve
         cli: approve
-        when: "approve after your probes (evidence, sha)"
+        when: "approve (evidence, sha)"
       - mcp: awf_reject
-        when: "reject at verify (REVIEW signal)"
+        when: "reject (REVIEW signal)"
   - title: hygiene
     tools:
       - mcp: awf_unblock
@@ -63,27 +63,27 @@ groups:
         when: "clear stale BLOCKED/ACK signals"
       - mcp: awf_todo_remove
         cli: todo-remove
-        when: "remove a never-started TODO"
+        when: "remove a never-started unit"
       - mcp: awf_todo_retire
         cli: todo-retire
-        when: "retire a rejected TODO stuck active"
+        when: "retire a stuck rejected unit"
       - mcp: awf_todo_update
         cli: todo-update
-        when: "reword a not-started TODO, keep the number"
+        when: "reword a not-started unit"
       - mcp: awf_restore
         cli: restore
-        when: "archived TODO back to the inbox"
+        when: "restore an archived unit"
       - mcp: awf_reset
         cli: reset
-        when: "clean runtime data (confirm first)"
+        when: "clean runtime (confirm first)"
   - title: forms
     tools:
       - mcp: awf_open_project_setup_form
-        when: "pipeline + team for a new project"
+        when: "setup: pipeline + team"
       - mcp: awf_open_increment_planning_form
-        when: "owner picks the decomposition variant"
+        when: "owner picks decomposition"
       - mcp: open_form
-        when: "open an HTML form (template + data)"
+        when: "open a form"
       - mcp: read_submit
         when: "was the form submitted?"
       - mcp: cancel_form
@@ -96,20 +96,20 @@ groups:
     tools:
       - mcp: awf_metrics
         cli: metrics
-        when: "token/cost report of the program"
+        when: "token/cost report"
       - mcp: awf_feedback
         cli: feedback
-        when: "awf friction becomes an owner report"
+        when: "friction → owner report"
   - title: context
     tools:
       - mcp: awf_brief
         cli: brief
-        when: "this card (new session / lost context)"
+        when: "this card (new session)"
       - mcp: awf_dispatch_todo
-        when: "TODO + baseline + .ready, one call"
+        when: "unit + baseline + signal"
       - mcp: awf_write_pipeline
         cli: pipeline-write
-        when: "create a named pipeline file"
+        when: "write a named pipeline"
       - mcp: awf_init
         cli: init
         when: "create the .agentic/ skeleton"
@@ -128,22 +128,22 @@ groups:
         when: "snapshot sha + tests"
       - mcp: awf_rollback
         cli: rollback
-        when: "reset to the baseline sha"
+        when: "reset to baseline sha"
       - mcp: awf_prove_red
         cli: prove-red
-        when: "tests red on baseline, green now"
+        when: "prove tests red at baseline"
       - mcp: awf_verify_pack
         cli: verify-pack
         when: "deterministic verify report"
       - mcp: awf_report
         cli: report
-        when: "statuses + diff + test log"
+        when: "statuses, diff, test log"
       - mcp: awf_open_pipeline_dashboard
         when: "open the live dashboard"
       - mcp: awf_tree_sha
         cli: tree-sha
-        when: "tree fingerprint for --verified-sha"
+        when: "tree fingerprint (verified-sha)"
       - cli: mutations
-        when: "mutation smoke on a quiet tree"
+        when: "mutation smoke"
       - cli: todo-draft
         when: "task skeleton from AUDIT-INDEX.md"

@@ -1752,3 +1752,118 @@ class TestAwfTreeSha:
 
         assert result["status"] == "error"
         assert "fingerprint" in result["error"]
+
+
+# ─── RUN6 #5 (TODO-0060): next_action smoke ──────────────────────────────
+
+
+class TestNextActionSmoke:
+    """Every answer leads to the next step.
+
+    Key tools (status, brief, start, run_next, approve, reject, unblock,
+    todo_remove, todo_retire, wait_for_event) carry a non-empty
+    ``next_action`` in their response.
+    """
+
+    def test_status(self, mcp_project):
+        r = run(awf.awf_status(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert isinstance(r.get("next_action"), str) and r["next_action"]
+
+    def test_brief(self, mcp_project):
+        r = run(awf.awf_brief(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_start_background(self, mcp_project, monkeypatch):
+        class _FakeStart:
+            def as_dict(self):
+                return {
+                    "run_mode": "background",
+                    "run_id": 4242,
+                    "log_file": "x.log",
+                    "message": "started",
+                }
+
+        monkeypatch.setattr(
+            awf.api, "start_pipeline", lambda **kw: _FakeStart()
+        )
+        monkeypatch.setattr(
+            awf,
+            "_open_dashboard_sync",
+            lambda *a, **k: {"opened": True, "method": "http", "url": "http://x"},
+        )
+        r = run(awf.awf_start(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert "GO IDLE" in r["next_action"]
+
+    def test_run_next(self, mcp_project, monkeypatch):
+        class _FakeRunNext:
+            def as_dict(self):
+                return {
+                    "action": "started",
+                    "todo_id": "TODO-0001",
+                    "run_mode": "background",
+                    "run_id": 1,
+                    "log_file": "x.log",
+                    "next_action": "GO IDLE — the run loop continues on `done`.",
+                }
+
+        monkeypatch.setattr(awf.api, "run_next", lambda **kw: _FakeRunNext())
+        monkeypatch.setattr(
+            awf,
+            "_open_dashboard_sync",
+            lambda *a, **k: {"opened": True, "method": "http", "url": "http://x"},
+        )
+        r = run(awf.awf_run_next(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_approve(self, mcp_project):
+        r = run(awf.awf_approve("TODO-0001", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_reject(self, mcp_project):
+        r = run(awf.awf_reject("TODO-0001", "bad work", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_unblock(self, mcp_project):
+        outbox = mcp_project / ".agentic" / "outbox"
+        outbox.mkdir(exist_ok=True)
+        (outbox / "BLOCKED-TODO-0001.ready").touch()
+        r = run(awf.awf_unblock("TODO-0001", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert "awf_start" in r["next_action"]
+
+    def test_todo_remove(self, mcp_project):
+        inbox = mcp_project / ".agentic" / "inbox"
+        (inbox / "TODO-0002.md").write_text("# TODO-0002\n", encoding="utf-8")
+        r = run(awf.awf_todo_remove("TODO-0002", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert "awf_dispatch_todo" in r["next_action"]
+
+    def test_todo_retire(self, mcp_project):
+        r = run(
+            awf.awf_todo_retire(
+                "TODO-0001", reason="obsolete", project_dir=str(mcp_project)
+            )
+        )
+        assert r["status"] == "ok"
+        assert "RETIRED" in r["next_action"]
+
+    def test_wait_for_event(self, mcp_project):
+        r = run(awf.awf_wait_for_event(project_dir=str(mcp_project), timeout=1))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_kill_no_pipeline(self, mcp_project):
+        # QA: nothing running -> killed=False; the next step must say
+        # "nothing to stop", not "Pipeline stopped".
+        r = run(awf.awf_kill(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("killed") is False
+        na = r.get("next_action", "")
+        assert na
+        assert "Nothing to stop" in na or "nothing to stop" in na

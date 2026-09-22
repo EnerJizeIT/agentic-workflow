@@ -119,9 +119,16 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
     Returns:
         Dict with: project_name, active_todos (list of {todo_id, ack?,
         progress?}), done_count, blocked_count, blocked_ids,
-        conflict_warning (str or None), suggestion (str or None).
+        conflict_warning (str or None), suggestion (str or None),
+        next_action (the supervisor's next step derived from the state).
     """
-    return await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
+    result = await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
+    # RUN6 #5 (TODO-0060): every answer leads to the next step.
+    if isinstance(result, dict) and result.get("status") == "ok" and not result.get("next_action"):
+        from awf.brief import next_action_from_status
+
+        result["next_action"] = next_action_from_status(result)
+    return result
 
 
 # ─── Pipeline execution ─────────────────────────────────────────────────
@@ -214,6 +221,17 @@ async def awf_start(
                 "awf_wait_for_event or awf_status in a loop. Wait for the user "
                 "to write you."
             )
+    # RUN6 #5 (TODO-0060): foreground/noop paths also lead to the next step.
+    if result.get("status") == "ok" and result.get("run_mode") == "foreground":
+        result["next_action"] = (
+            f"Pipeline finished (exit_code={result.get('exit_code')}). Check "
+            "awf_status and act on the last signal (verify → the verify ritual)."
+        )
+    elif result.get("status") == "ok" and result.get("run_mode") == "noop":
+        result["next_action"] = (
+            f"No pipeline launched ({result.get('message', '')}) — check "
+            "awf_status, then awf_dispatch_todo for the next unit."
+        )
     return result
 
 
@@ -412,7 +430,7 @@ async def awf_run_note(
     *,
     text: str = "",
 ) -> dict[str, Any]:
-    """R5: set the run's live description ("что сейчас делается").
+    """Set the run's live description line for the owner's dashboard (R5).
 
     The supervisor owns this text; the dashboard renders it under the run
     chip and in the Итерация tab, so the owner sees whether the run is alive
@@ -435,11 +453,17 @@ async def awf_restore(
     archived without work. TODO.md returns, .ready is re-created, handoff
     files move back; PROGRESS/DONE history stays in done/.
     """
-    return await _exec(
+    result = await _exec(
         api.restore_todo,
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
     )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id', 'TODO')} is back in the inbox (active) — "
+            "awf_start(project_dir, todo_id=...) or awf_run_next in a run."
+        )
+    return result
 
 
 async def awf_unblock(
@@ -455,11 +479,17 @@ async def awf_unblock(
     directory. DONE closures are never touched — an archived TODO comes
     back only via ``awf_restore``. Refused while the pipeline is running.
     """
-    return await _exec(
+    result = await _exec(
         api.unblock_todo,
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
     )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id', 'TODO')} is active again — "
+            "awf_start(project_dir, todo_id=...) or awf_run_next in a run."
+        )
+    return result
 
 
 async def awf_todo_remove(
@@ -473,11 +503,17 @@ async def awf_todo_remove(
     ``.ready`` or any signal/progress exists (hints: ``awf_unblock`` /
     ``awf_reset(orphans=True)``).
     """
-    return await _exec(
+    result = await _exec(
         api.remove_todo,
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
     )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"Unit {result.get('todo_id', '?')} removed (trace in {result.get('trace_path', 'done/')}). "
+            "Still needed — re-dispatch via awf_dispatch_todo (a new number)."
+        )
+    return result
 
 
 async def awf_todo_retire(
@@ -500,12 +536,19 @@ async def awf_todo_retire(
     (``done/<id>/TODO.md``); a live pipeline on this id (kill/wait first);
     empty ``reason`` (required — it is the RETIRED note body).
     """
-    return await _exec(
+    result = await _exec(
         api.retire_todo,
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
         reason=reason,
     )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"Unit {result.get('todo_id', '?')} retired (RETIRED note: "
+            f"{result.get('retired_note', 'done/<id>/')}). Still needed — "
+            "re-dispatch via awf_dispatch_todo; bring this one back — awf_restore."
+        )
+    return result
 
 
 async def awf_todo_update(
@@ -524,17 +567,24 @@ async def awf_todo_update(
     closure — fix the unit via REVIEW/replan, or retire + re-dispatch);
     a live pipeline on this id.
     """
-    return await _exec(
+    result = await _exec(
         api.update_todo,
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
         content=content,
         reason=reason,
     )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id', 'TODO')} reworded (backup: "
+            f"{result.get('backup', 'context/')}), the unit stays ready — "
+            "awf_start / awf_run_next."
+        )
+    return result
 
 
 async def awf_tree_sha(project_dir: str | None = None) -> dict[str, Any]:
-    """Working-tree fingerprint for ``awf_approve(verified_sha=...)``.
+    """Compute the working-tree fingerprint for ``awf_approve(verified_sha=...)``.
 
     Same semantics as the CLI ``awf tree-sha`` (``awf.git_utils.
     tree_fingerprint``): HEAD + every tracked change + untracked files;
@@ -560,8 +610,20 @@ async def awf_tree_sha(project_dir: str | None = None) -> dict[str, Any]:
 
 
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
-    """Current run (забег) state: position, budget left, rejects, stop reason."""
-    return await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
+    """Show the current run (забег) state: position, budget left, rejects, stop reason."""
+    result = await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
+    if isinstance(result, dict) and result.get("status") == "ok":
+        if result.get("active"):
+            result["next_action"] = (
+                f"Run active (position {result.get('position', '?')}) — "
+                "awf_run_next(project_dir) launches the next queued unit."
+            )
+        else:
+            result["next_action"] = (
+                "No active run — awf_run_start(project_dir, queue=[...]) to "
+                "start one, or awf_brief for the onboarding card."
+            )
+    return result
 
 
 async def awf_run_next(
@@ -611,12 +673,18 @@ async def awf_run_finish(
     summary: str = "",
 ) -> dict[str, Any]:
     """Close the run: write RUN-REPORT-{ts}.md to outbox and mark inactive."""
-    return await _exec(
+    result = await _exec(
         api.run_finish,
         project_dir=_resolve_project_dir(project_dir),
         reason=reason,
         summary=summary,
     )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            "Run closed (RUN-REPORT in the outbox). Next unit — "
+            "awf_dispatch_todo, or a new awf_run_start if the queue continues."
+        )
+    return result
 
 
 # ─── Baseline / rollback ────────────────────────────────────────────────
@@ -640,13 +708,20 @@ async def awf_baseline(
     Returns:
         Dict with: todo_id, sha, is_git_repo, files_created (list),
         test_status ("passed"|"failed"|"no_test_cmd"|"no_config"),
-        test_log_excerpt.
+        test_log_excerpt, next_action.
     """
     try:
         result = await asyncio.to_thread(
             api.create_baseline, _resolve_project_dir(project_dir), todo_id
         )
-        return _ok(result)
+        response = _ok(result)
+        if not response.get("next_action"):
+            response["next_action"] = (
+                f"Baseline pinned (sha {str(response.get('sha', '?'))[:8]}). Next: "
+                f"awf_start(project_dir, todo_id='{response.get('todo_id', 'TODO')}'). "
+                "awf_rollback is the way back to this sha."
+            )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -659,7 +734,7 @@ async def awf_rollback(
     *,
     mode: str = "hard",
 ) -> dict[str, Any]:
-    """Rollback project to BASELINE-{todo_id}.sha.
+    """Roll the project back to BASELINE-{todo_id}.sha.
 
     Modes:
     - ``hard`` (default): ``git reset --hard`` — discards all changes.
@@ -684,7 +759,19 @@ async def awf_rollback(
             todo_id,
             mode=mode,
         )
-        return _ok(result)
+        response = _ok(result)
+        sha = str(response.get("baseline_sha", "?"))[:8]
+        if response.get("mode") == "dry-run":
+            response["next_action"] = (
+                f"Preview only — nothing changed. To roll back: awf_rollback("
+                f"todo_id, mode='hard'|'soft') (target sha {sha})."
+            )
+        else:
+            response["next_action"] = (
+                f"Rolled back to {sha}. Next: re-dispatch the unit "
+                "(awf_dispatch_todo) or adjust the plan."
+            )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -697,7 +784,7 @@ async def awf_prove_red(
     *,
     tests: list[str] | None = None,
 ) -> dict[str, Any]:
-    """U4: machine-proof that declared tests are red on the baseline sha.
+    """Prove the declared tests are red on the baseline sha (U4).
 
     Deploys BASELINE-{todo_id}.sha into a temporary git worktree under
     /tmp/opencode/, copies the test files (new/untracked included) from the
@@ -739,7 +826,7 @@ async def awf_verify_pack(
     todo_id: str,
     project_dir: str | None = None,
 ) -> dict[str, Any]:
-    """U5: one deterministic verify report for the supervisor.
+    """Produce one deterministic verify report for the supervisor (U5).
 
     Runs the mechanical part of the verify ritual and writes
     ``.agentic/context/GATES-{todo_id}.md`` (markdown + JSON block):
@@ -782,7 +869,7 @@ async def awf_metrics(
     refresh_subscriptions: bool = False,
     mirror: bool = True,
 ) -> dict[str, Any]:
-    """U8: collect token/cost metrics of the work program (report to desktop).
+    """Collect token/cost metrics of the work program and write the report (U8).
 
     Aggregates worker sessions (titles ``awf-<role>-TODO-NNNN``) and
     supervisor sessions (config ``metrics.supervisor_titles``) from
@@ -843,7 +930,7 @@ async def awf_feedback(
     severity: str = "",
     stdout: bool = False,
 ) -> dict[str, Any]:
-    """RUN4 #2: write a bug/feature report about awf friction (to the owner).
+    """Write a bug/feature report about awf friction to the owner (RUN4 #2).
 
     The feedback contour: friction with the tool becomes a structured
     report on the owner's desktop (config ``feedback.dir``, default
@@ -1078,7 +1165,7 @@ async def awf_reset(
     full: bool = False,
     orphans: bool = False,
 ) -> dict[str, Any]:
-    """Clean runtime data.
+    """Clean runtime data — destructive, confirm with the user first.
 
     Modes (mutually exclusive):
     - ``tasks_only``: clean only inbox + outbox.
@@ -1275,7 +1362,12 @@ async def awf_write_pipeline(
             stages,
             force=force,
         )
-        return _ok(result)
+        response = _ok(result)
+        response["next_action"] = (
+            f"Pipeline '{result.name}' written ({result.stages} stages). "
+            f"Run it: awf_start(project_dir, pipeline='{result.name}')."
+        )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -1318,7 +1410,7 @@ async def awf_dispatch_todo(
     pipeline: str | None = None,
     carry_over_from: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically create a TODO, baseline it, dispatch the signal.
+    """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
     Replaces the manual 3-step workflow (write md → awf_baseline → touch
     .ready). One call = TODO ready to be picked up by next pipeline run.
@@ -1907,7 +1999,18 @@ async def awf_check_model_config(
         result = await asyncio.to_thread(
             api.check_model_config, _resolve_project_dir(project_dir)
         )
-        return {"status": "ok", **result}
+        response = {"status": "ok", **result}
+        if result.get("warnings"):
+            response["next_action"] = (
+                "Model config has warnings — fix them in .agentic/config.yaml "
+                "(models/providers), then re-run awf_check_model_config before awf_start."
+            )
+        else:
+            response["next_action"] = (
+                "Models valid — proceed: awf_dispatch_todo for the next unit, "
+                "then awf_start."
+            )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -1935,7 +2038,19 @@ async def awf_kill(
         result = await asyncio.to_thread(
             api.kill_pipeline, _resolve_project_dir(project_dir)
         )
-        return {"status": "ok", **result}
+        response = {"status": "ok", **result}
+        if result.get("killed"):
+            response["next_action"] = (
+                "Pipeline stopped. Check awf_status — resume with "
+                "awf_continue, or replan (awf_dispatch_todo) if the unit "
+                "needs new shape."
+            )
+        else:
+            response["next_action"] = (
+                "No pipeline was running (nothing to stop) — start one: "
+                "awf_start(project_dir), or awf_run_next inside a run."
+            )
+        return response
     except api.AwfApiError as e:
         return _err(e)
     except Exception as e:
@@ -1984,13 +2099,14 @@ async def awf_current_step(
 
 
 async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
-    """RUN4 #1: supervisor onboarding/recovery card, assembled live.
+    """Show the live supervisor onboarding/recovery card, assembled from project state.
 
     Call this at the START of a new session (or when context is lost)
     instead of re-reading files: header (awf version, project, phase,
-    date), what's next, state (run, active TODOs, blocked/salvage, last
-    signal), the tool map by situation, rituals, recovery recipes, what's
-    new (latest CHANGELOG section), feedback line.
+    date), what's next, state (run, active tasks, blocked/salvage, last
+    signal), defaults, the five scenarios, the tool map by situation,
+    rituals, recovery recipes, what's new (latest CHANGELOG section),
+    feedback line (RUN4 #1, expanded in RUN6 #5).
 
     Not a static document — the card is built from live project state so
     it does not go stale. An empty, new, or nonexistent project does not

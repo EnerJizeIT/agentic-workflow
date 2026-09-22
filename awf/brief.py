@@ -28,9 +28,13 @@ import yaml
 from . import paths
 
 MAX_WORDS = 900
-_PHASE_PROMPT_MAX_WORDS = 90
+# RUN6 #5 (TODO-0060): the card grew Defaults + Scenarios sections — the
+# two verbose blocks (phase prompt, changelog tail) shrank to pay for them
+# without touching MAX_WORDS.
+_PHASE_PROMPT_MAX_WORDS = 45
 _CHANGELOG_MAX_LINES = 10
-_NEXT_ACTION_MAX_WORDS = 30
+_CHANGELOG_MAX_WORDS = 45
+_NEXT_ACTION_MAX_WORDS = 26
 
 SETUP_HINT = (
     "New project — setup chain: `awf_init` → `awf_set_goal` → "
@@ -45,17 +49,25 @@ FEEDBACK_LINE = (
     "owner). Do not stay silent."
 )
 
+# RUN6 #5 (TODO-0060): the card keeps the five scenarios compact; the full
+# step-by-step doctrine (role, cycle, rituals, tool map, scenarios,
+# defaults) is the `awf-supervisor` skill — installed with the plugin.
+SCENARIOS_POINTER = (
+    "Full steps (situation → calls → expected answer → decision): "
+    "skill `awf-supervisor`."
+)
+
 RITUALS: list[str] = [
-    "verify: `awf tree-sha` → your own probes (the TODO's verify commands, "
-    "`git diff`) → `awf_approve(todo, evidence=..., verified_sha=...)`",
+    "verify: `awf tree-sha` → your probes (verify commands, `git diff`) → "
+    "`awf_approve(verified_sha=..., evidence=...)`",
     "run loop: after approve the pipeline exits — `wait_for_event` returns "
-    "`done` with the TODO → `awf_run_next` (no `git log` needed)",
+    "`done` → `awf_run_next` (no `git log` needed)",
     "run close: `awf_run_finish` — RUN-REPORT to the outbox",
-    "incident (net/salvage): infrastructure first "
-    "(`opencode run --auto --agent <role> -- 'say hello'`), then "
-    "`awf_continue --from-stage <stage>` / `awf_retry_stage`",
+    "incident: infrastructure first "
+    "(`opencode run --auto --agent <role> -- 'say hello'`) → "
+    "`awf_retry_stage` / `awf_continue --from-stage <stage>`",
     "hygiene: `awf_unblock` (stale closure), `awf_todo_remove` (never "
-    "started), `awf_restore` (archived without work)",
+    "started), `awf_restore` (archived without work), `awf_todo_retire`",
 ]
 
 
@@ -81,6 +93,8 @@ class BriefResult:
     pipeline_running: bool
     pipeline_pid: int | None
     current_stage: str | None
+    defaults: list[str]
+    scenarios: list[str]
     tool_map: list[dict[str, Any]]
     rituals: list[str]
     recovery: str
@@ -122,6 +136,36 @@ def load_recovery() -> str:
         return _data_file("recovery.md").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def load_brief_defaults() -> list[str]:
+    """``awf/data/brief_defaults.yaml`` — default behaviors, one line each.
+
+    RUN6 #5 (TODO-0060): the owner asked for the defaults to be visible in
+    the card (checkpoint on by default, what 'finished' means, run_next
+    refusing, several active tasks normal, where the full docs live) —
+    data file, same class as tool_map.yaml / recovery.md: card content,
+    not logic, editable without code changes.
+    """
+    try:
+        raw = yaml.safe_load(_data_file("brief_defaults.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    return [str(line) for line in (raw.get("defaults") or []) if str(line).strip()]
+
+
+def load_scenarios() -> list[str]:
+    """``awf/data/scenarios.yaml`` — the five scenarios, one compact line each.
+
+    The card line gives situation + first action; the full step-by-step
+    version (situation → calls → expected answer → decision) lives in the
+    ``awf-supervisor`` skill (no word budget there).
+    """
+    try:
+        raw = yaml.safe_load(_data_file("scenarios.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    return [str(line) for line in (raw.get("scenarios") or []) if str(line).strip()]
 
 
 def tool_registry() -> dict[str, list[str]]:
@@ -216,7 +260,7 @@ def _clip_by_words(text: str, max_words: int) -> tuple[str, bool]:
 
 
 def latest_changelog(
-    max_lines: int = _CHANGELOG_MAX_LINES, max_words: int = 80
+    max_lines: int = _CHANGELOG_MAX_LINES, max_words: int = _CHANGELOG_MAX_WORDS
 ) -> str:
     """Latest section of the awf-repo CHANGELOG, '' if absent.
 
@@ -343,6 +387,19 @@ def render_brief(r: BriefResult) -> str:
     L.append("")
     L.extend(_state_lines(r) or ["- no active run, tasks, or flags"])
     L.append("")
+    if r.defaults:
+        L.append("## Defaults")
+        L.append("")
+        for line in r.defaults:
+            L.append(f"- {line}")
+        L.append("")
+    if r.scenarios:
+        L.append("## Scenarios")
+        L.append("")
+        for line in r.scenarios:
+            L.append(f"- {line}")
+        L.append(f"- {SCENARIOS_POINTER}")
+        L.append("")
     L.append("## Tool map")
     L.append("")
     for group in r.tool_map:
@@ -372,6 +429,57 @@ def render_brief(r: BriefResult) -> str:
     L.append("")
     L.append(FEEDBACK_LINE)
     return "\n".join(L).rstrip() + "\n"
+
+
+def next_action_from_status(s: Any) -> str:
+    """Derive the supervisor's next step from live state (RUN6 #5).
+
+    Every answer must lead to the next step — ``awf_status`` / ``awf_brief``
+    responses carry a concrete ``next_action`` instead of raw state. Works
+    on a ``StatusResult`` dataclass or its ``as_dict()`` form.
+    """
+    def _get(name: str, default: Any = None) -> Any:
+        if isinstance(s, dict):
+            return s.get(name, default)
+        return getattr(s, name, default)
+
+    expected = _get("expected_action")
+    if expected:
+        return str(expected)
+    if _get("salvage_needed"):
+        stage = _get("salvage_stage") or "?"
+        return (
+            f"Salvage at stage {stage}: check infrastructure first, then "
+            "`awf_retry_stage` (or `awf_continue(from_stage=...)`)."
+        )
+    blocked = list(_get("blocked_ids") or [])
+    if blocked:
+        first = blocked[0]
+        return (
+            f"Blocked: read `outbox/BLOCKED-{first}.md`, answer the question, "
+            f"then `awf_continue(ack='{first}')`."
+        )
+    if _get("pipeline_running"):
+        stage = _get("current_stage_name") or "?"
+        return (
+            f"Pipeline running (stage: {stage}) — go idle; in a run wait with "
+            "`awf_wait_for_event`."
+        )
+    active = list(_get("active_todos") or [])
+    if active:
+        first = active[0]
+        todo = first.get("todo_id") if isinstance(first, dict) else getattr(first, "todo_id", "?")
+        return (
+            f"Unit {todo} is ready — `awf_start(project_dir, todo_id='{todo}')` "
+            "(background=True)."
+        )
+    suggestion = _get("suggestion")
+    if suggestion:
+        return str(suggestion)
+    return (
+        "No active units — plan the next one: `awf_dispatch_todo` "
+        "(or `awf_current_step` for phase guidance)."
+    )
 
 
 def build_brief(
@@ -438,6 +546,15 @@ def build_brief(
         pipeline_pid = status.pipeline_pid
         current_stage = status.current_stage_name
 
+    # RUN6 #5 (TODO-0060): every answer leads to the next step — a new
+    # project's next action is the setup chain itself (before: empty); a
+    # live project without an explicit expected_action gets one derived
+    # from its state (next_action_from_status).
+    if not is_live and not next_action:
+        next_action = "New project — run the setup chain (above); start with `awf_init`."
+    elif is_live and not next_action:
+        next_action = next_action_from_status(status) if status is not None else LIVE_LINE
+
     result = BriefResult(
         version=_awf.__version__,
         project=project,
@@ -457,6 +574,8 @@ def build_brief(
         pipeline_running=pipeline_running,
         pipeline_pid=pipeline_pid,
         current_stage=current_stage,
+        defaults=load_brief_defaults(),
+        scenarios=load_scenarios(),
         tool_map=load_tool_map(),
         rituals=list(RITUALS),
         recovery=load_recovery(),

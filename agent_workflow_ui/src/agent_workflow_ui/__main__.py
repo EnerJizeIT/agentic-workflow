@@ -5,12 +5,13 @@ import logging
 import sys
 from pathlib import Path
 
+from .agents_md import ensure_agents_md
 from .config import detect_project_dir, ensure_directories, load
 from .http_endpoint import start_http_server
 from .opencode_config import read_opencode_models, read_recent_models
 from .render.engine import create_env
 from .server import create_server
-from .skill_installer import ensure_skill_installed
+from .skill_installer import ensure_skill_installed, ensure_supervisor_skill_installed
 from .state import get_registry, set_config, set_http_port, set_jinja_env, set_project_dir
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ def main() -> int:
         # Lazy skill install: copy SKILL.md to ~/.config/opencode/skills/agent-workflow-ui/
         # Idempotent — overwrites if bundled version differs. No-op if already current.
         ensure_skill_installed()
+        # RUN6 #5: the awf-supervisor doctrine skill (same mechanism).
+        ensure_supervisor_skill_installed()
+        # RUN6 #5: keep the plugin's AGENTS.md block (system prompt) in sync.
+        ensure_agents_md()
 
         config = load()
         ensure_directories(config)

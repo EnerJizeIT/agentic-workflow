@@ -1,0 +1,10 @@
+# Default behaviors of awf — one line each, for the `awf brief` card
+# (RUN6 #5, TODO-0060). The card has a 900-word budget: keep every line
+# short. The full doctrine with reasoning lives in the `awf-supervisor`
+# skill; these lines keep the card self-sufficient without it.
+defaults:
+  - "plan checkpoint ON by default (owner gets the plan form); `no_checkpoints=True` on `awf_start`/`awf_run_start` skips it"
+  - "'pipeline finished' = state cleared + commit `awf(verify): TODO-NNNN`; `awf_wait_for_event` returns `done` — then `awf_run_next`"
+  - "`awf_run_next` refuses until the previous unit is finished (verify → approve/reject)"
+  - "several active tasks in a run is NORMAL — the queue waits its turn"
+  - "full documentation: `USAGE.md` (EN) / `USAGE.ru.md` (RU)"
