@@ -329,6 +329,9 @@ class RunStatusResult:
     report_file: str
     message: str
     no_checkpoints: bool = False
+    # B2: the budget counts productive minutes (elapsed − downtime)
+    downtime_minutes: int = 0
+    productive_minutes: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

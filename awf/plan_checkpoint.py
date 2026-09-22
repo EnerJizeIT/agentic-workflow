@@ -396,6 +396,11 @@ def run_plan_checkpoint(
             checkpoint_form_url=f"file://{html_path}",
         )
 
+        # B2: the form wait is downtime — the pipeline is alive but no work
+        # happens until the owner decides. Measured from the first check to
+        # the decision (or timeout). The form-decision wait IS the
+        # checkpoint wait, so it is recorded exactly once, here.
+        wait_start = time.monotonic()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if decision_holder:
@@ -408,6 +413,12 @@ def run_plan_checkpoint(
         # thread scheduling latency without measurable UX impact.
         if not decision_holder:
             time.sleep(0.2)
+
+        from . import run_state as _run_state
+        _run_state.add_downtime(
+            project_dir, time.monotonic() - wait_start,
+            reason=f"checkpoint-wait:{todo_id}", logs_dir=logs_dir,
+        )
 
         if not decision_holder:
             # QA: orchestrator treats "timeout" as ABORT (returns 1), not

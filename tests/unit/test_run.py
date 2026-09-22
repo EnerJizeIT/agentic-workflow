@@ -649,6 +649,183 @@ class TestCorruptStartedAt:
         assert run_state.elapsed_minutes({"started_at": date(2020, 1, 1)}) == 0.0
 
 
+class TestProductiveBudget:
+    """B2: the budget counts productive minutes (elapsed − downtime), not
+    wall clock. The engine accumulates downtime during checkpoint waits,
+    salvage handling, and net-backoff retries."""
+
+    def test_productive_minutes_math(self):
+        state = {"started_at": "2020-01-01T00:00:00Z", "downtime_seconds": 600}
+        assert run_state.downtime_minutes(state) == 10.0
+        assert run_state.productive_minutes(state) == pytest.approx(
+            run_state.elapsed_minutes(state) - 10.0
+        )
+
+    def test_productive_clamped_at_zero(self):
+        # downtime > elapsed (clock skew / manual edit) → 0, never negative
+        state = {"started_at": "2026-01-01T00:00:00Z", "downtime_seconds": 10**9}
+        assert run_state.productive_minutes(state) == 0.0
+
+    def test_downtime_minutes_defensive(self):
+        assert run_state.downtime_minutes({}) == 0.0
+        assert run_state.downtime_minutes({"downtime_seconds": None}) == 0.0
+        assert run_state.downtime_minutes({"downtime_seconds": "garbage"}) == 0.0
+
+    def test_add_downtime_accumulates(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+
+        run_state.add_downtime(proj, 120, reason="checkpoint-wait")
+        run_state.add_downtime(proj, 60, reason="net-backoff")
+
+        assert run_state.read_run(proj)["downtime_seconds"] == pytest.approx(180)
+
+    def test_add_downtime_no_run_creates_nothing(self, tmp_git_repo):
+        # hard rule: behavior without an active run is unchanged — no file
+        run_state.add_downtime(tmp_git_repo, 60, reason="checkpoint-wait")
+        assert not run_state.run_file(tmp_git_repo).exists()
+        assert run_state.read_run(tmp_git_repo) is None
+
+    def test_add_downtime_inactive_run_is_noop(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+        run_state.write_run(proj, active=False)
+
+        run_state.add_downtime(proj, 60, reason="salvage")
+
+        # run_start initializes the counter to 0 — a no-op leaves it at 0
+        assert run_state.read_run(proj)["downtime_seconds"] == 0
+
+    def test_add_downtime_keeps_corrupt_run_file(self, tmp_git_repo):
+        """AUD02-06: a corrupt run.yaml is kept for inspection — the helper
+        must not overwrite it with an empty dict via update_run."""
+        f = run_state.run_file(tmp_git_repo)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        raw = "queue:\n  - TODO-00\n"
+        f.write_text(raw, encoding="utf-8")
+
+        run_state.add_downtime(tmp_git_repo, 60, reason="checkpoint-wait")
+
+        assert f.read_text(encoding="utf-8") == raw
+
+    def test_add_downtime_bad_seconds_is_noop(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+        run_state.add_downtime(proj, "garbage")
+        run_state.add_downtime(proj, -5)
+        # garbage/negative seconds must not move the counter (0 from run_start)
+        assert run_state.read_run(proj)["downtime_seconds"] == 0
+
+    def test_new_run_starts_with_zero_downtime(self, tmp_git_repo):
+        """A force-replaced run must not inherit the previous run's downtime."""
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+        run_state.add_downtime(proj, 300, reason="checkpoint-wait")
+
+        api.run_start(proj, queue=["TODO-0002"], force=True)
+
+        assert run_state.read_run(proj)["downtime_seconds"] == 0
+
+    def test_budget_gate_counts_productive(self, tmp_git_repo, monkeypatch):
+        """Wall clock is over budget but downtime covers the excess → the
+        run may still launch (the budget is in productive minutes)."""
+        from datetime import datetime, timedelta, timezone
+
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        api.run_start(proj, queue=["TODO-0001"], budget_minutes=5)
+        started = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        run_state.write_run(proj, started_at=started)
+        run_state.add_downtime(proj, 7 * 60, reason="checkpoint-wait")
+        _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+
+    def test_budget_gate_stops_on_productive(self, tmp_git_repo):
+        from datetime import datetime, timedelta, timezone
+
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"], budget_minutes=1)
+        started = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        run_state.write_run(proj, started_at=started)
+        # productive ≈ 8 min > 1 min budget
+        run_state.add_downtime(proj, 2 * 60, reason="salvage")
+
+        result = api.run_next(proj)
+
+        assert result.action == "stopped"
+        assert "budget exhausted" in result.message
+
+    def test_corrupt_started_at_still_stops_with_downtime(self, tmp_git_repo):
+        """AUD02-09 stands: a corrupt clock stops the run even when downtime
+        is present — downtime must not resurrect a dead clock."""
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        api.run_start(proj, queue=["TODO-0001"], budget_minutes=60)
+        run_state.write_run(proj, started_at="not-a-timestamp")
+        run_state.add_downtime(proj, 600, reason="checkpoint-wait")
+
+        result = api.run_next(proj)
+
+        assert result.action == "stopped"
+        assert "started_at" in result.message
+
+    def test_status_and_brief_show_productive_numbers(self, tmp_git_repo):
+        from datetime import datetime, timedelta, timezone
+
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"], budget_minutes=120)
+        started = (datetime.now(timezone.utc) - timedelta(minutes=50)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        run_state.write_run(proj, started_at=started)
+        run_state.add_downtime(proj, 20 * 60, reason="checkpoint-wait")
+
+        st = api.run_status(proj)
+        assert st.elapsed_minutes == 50
+        assert st.downtime_minutes == 20
+        assert st.productive_minutes == 30
+        # int truncation of 120 − 30.000x — accept both edges
+        assert st.budget_left_minutes in (89, 90)
+
+        brief = api.run_brief(proj)
+        assert brief["elapsed_minutes"] == 50
+        assert brief["downtime_minutes"] == 20
+        assert brief["productive_minutes"] == 30
+        assert brief["budget_left_minutes"] in (89, 90)
+
+    def test_report_shows_budget_line(self, tmp_git_repo):
+        from datetime import datetime, timedelta, timezone
+
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"], budget_minutes=120)
+        started = (datetime.now(timezone.utc) - timedelta(minutes=50)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        run_state.write_run(proj, started_at=started)
+        run_state.add_downtime(proj, 20 * 60, reason="checkpoint-wait")
+
+        result = api.run_finish(proj, reason="test")
+        report = Path(result.report_file).read_text(encoding="utf-8")
+        assert "of 120 min productive" in report
+        assert "20 min downtime" in report
+
+    def test_report_without_budget_has_no_budget_line(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+        run_state.add_downtime(proj, 120, reason="salvage")
+
+        result = api.run_finish(proj, reason="test")
+        report = Path(result.report_file).read_text(encoding="utf-8")
+        assert "min productive" not in report
+
+
 class TestRunConcurrency:
     """AUD05-05: parallel write_run must not lose updates (advisory lock)."""
 
