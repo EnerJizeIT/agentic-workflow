@@ -1680,7 +1680,10 @@ async def awf_wait_for_event(
     - ``blocked`` — worker wrote BLOCKED signal
     - ``salvage`` — worker died without a signal (highest priority)
     - ``checkpoint`` — BD-36 checkpoint form opened (tell user)
-    - ``done`` — pipeline completed (state file cleared)
+    - ``done`` — pipeline cycle complete (after approve: the TODO is
+      committed + archived, stage state cleared); the message names the
+      TODO and the next command — ``awf_run_next`` in a run,
+      ``awf_dispatch_todo`` outside
     - ``timeout`` — no event within timeout
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
 
@@ -1756,7 +1759,11 @@ async def awf_wait_for_event(
                 "blocked": "Worker blocked. Read BLOCKED note → fix context and awf_retry_stage, or stop with awf_run_finish.",
                 "checkpoint": "Checkpoint form opened. Tell the user (the run is paused until they submit).",
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage / ACK / split the TODO.",
-                "done": "Pipeline exited. Approved iteration → awf_run_next; failure → handle per the report.",
+                "done": (
+                    "Cycle complete. Next step: awf_run_next(project_dir) — "
+                    "launch the next queued TODO (or stop at a gate). If the "
+                    "cycle archived nothing, check awf_status first."
+                ),
                 "stage_changed": (
                     f"Stage changed — no action needed. Keep waiting: "
                     f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
@@ -1772,7 +1779,10 @@ async def awf_wait_for_event(
                 "verify": "Pipeline at verify. Read handoffs + git diff → awf_approve.",
                 "blocked": "Worker blocked. Read BLOCKED note → replan or adjust TODO.",
                 "checkpoint": "Checkpoint form opened in browser. Tell user to approve.",
-                "done": "Pipeline complete. Ask user for next step.",
+                "done": (
+                    "Pipeline complete. Next step: awf_dispatch_todo(project_dir, "
+                    "content) for the next task, or awf_status to review."
+                ),
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
             }

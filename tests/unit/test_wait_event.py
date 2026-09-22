@@ -312,6 +312,195 @@ class TestActionableOnly:
         assert MIN_WAIT <= result.suggested_timeout <= TRANSPORT_CAP
 
 
+class TestDoneCycleDetection:
+    """RUN6 #1: after approve the pipeline commits, archives and exits —
+    the wake-up must answer 'done' with the next step, not a full timeout
+    on a null state (owner report 22.09, topic-trainer, 5/5 repeats).
+
+    The orchestrator's clean exit CLEARS the stage markers but rewrites
+    the state file with phase=done + goal/normalized (AUD02-04) — the file
+    exists, yet no pipeline is running. That leftover must be treated as
+    'pipeline exited', not as 'still running, keep waiting'.
+    """
+
+    @staticmethod
+    def _simulate_clean_exit(
+        project,
+        todo_id: str = "TODO-0001",
+        *,
+        with_commit: bool = True,
+        with_archive: bool = True,
+    ) -> None:
+        """Mirror the orchestrator's clean exit: the cycle signs (verify
+        commit + done/<id>/ archive) are in place, then the stage state is
+        cleared and the phase=done leftover rewritten (orchestrator.py)."""
+        import subprocess
+
+        from awf.pipeline_state import clear_state
+
+        write_state(
+            project,
+            stage_name="verify",
+            stage_kind="verify",
+            stage_idx=3,
+            todo_id=todo_id,
+            pipeline_pid=99999,
+        )
+        if with_commit:
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-qm", f"awf(verify): {todo_id}"],
+                cwd=project,
+                check=True,
+            )
+        if with_archive:
+            d = project / ".agentic" / "done" / todo_id
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "TODO.md").write_text(f"# {todo_id}\n", encoding="utf-8")
+        clear_state(project)
+        write_state(project, phase="done", goal="test goal", normalized=True)
+
+    def test_done_immediately_after_clean_exit(self, awf_project):
+        """State markers cleared + process dead + cycle signs present →
+        'done' on the FIRST call, in seconds (no poll-loop sleep)."""
+        import time as _time
+
+        self._simulate_clean_exit(awf_project)
+        t0 = _time.monotonic()
+        result = api.wait_for_event(awf_project, timeout=5, poll_interval=1)
+        elapsed = _time.monotonic() - t0
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert elapsed < 1.0, "done must come from the initial check, not the poll loop"
+
+    def test_done_message_next_step_run_next_when_run_active(self, awf_project):
+        """Inside a run (забег) the message leads to awf_run_next."""
+        from awf.run_state import write_run
+
+        self._simulate_clean_exit(awf_project)
+        write_run(
+            awf_project,
+            queue=["TODO-0001", "TODO-0002"],
+            index=1,
+            active=True,
+        )
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert "awf_run_next" in result.message
+        assert "awf_dispatch_todo" not in result.message
+
+    def test_done_message_next_step_dispatch_without_run(self, awf_project):
+        """Single start (no run): the message leads to dispatch, not run_next."""
+        self._simulate_clean_exit(awf_project)
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert "awf_dispatch_todo" in result.message
+        assert "awf_run_next" not in result.message
+
+    def test_not_done_when_pipeline_alive(self, awf_project, monkeypatch):
+        """A LIVE pipeline (cleared state or not) never gets a false 'done'."""
+        self._simulate_clean_exit(awf_project)
+        monkeypatch.setattr(
+            "awf.api._liveness.resolve", lambda pd: (True, 4242, "state")
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout", (
+            f"live pipeline must keep the old wait behavior, got {result.event_type}"
+        )
+        # and with markers still present — also no done
+        write_state(
+            awf_project,
+            stage_name="developer",
+            stage_kind="execute",
+            stage_idx=1,
+            todo_id="TODO-0002",
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+        assert result.event_type == "timeout"
+
+    def test_not_done_when_state_still_has_markers(self, awf_project):
+        """Non-empty stage state (pipeline mid-run) → old behavior, even
+        when an OLDER cycle's signs are present."""
+        d = awf_project / ".agentic" / "done" / "TODO-0001"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "TODO.md").write_text("# TODO-0001\n", encoding="utf-8")
+        write_state(
+            awf_project,
+            stage_name="developer",
+            stage_kind="execute",
+            stage_idx=1,
+            todo_id="TODO-0002",
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+        assert result.event_type == "timeout"
+
+    def test_done_when_state_file_absent(self, awf_project):
+        """No state file at all + cycle signs → 'done' (the file-missing
+        variant of the same detection)."""
+        import subprocess
+
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-qm", "awf(verify): TODO-0001"],
+            cwd=awf_project,
+            check=True,
+        )
+        d = awf_project / ".agentic" / "done" / "TODO-0001"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "TODO.md").write_text("# TODO-0001\n", encoding="utf-8")
+
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+
+    def test_idle_when_no_state_and_no_evidence(self, awf_project):
+        """Fresh project: no state, no cycle signs → 'idle' (unchanged)."""
+        result = api.wait_for_event(awf_project, timeout=1)
+        assert result.event_type == "idle"
+        assert "not running" in result.message
+
+    def test_done_during_wait_when_pipeline_exits(self, awf_project):
+        """Markers present at call start; the pipeline exits mid-wait →
+        'done' with the cycle sign at the next poll (≤ poll_interval)."""
+        import subprocess
+        import threading
+        import time as _time
+
+        from awf.pipeline_state import clear_state
+
+        write_state(
+            awf_project,
+            stage_name="agent-impl",
+            stage_kind="execute",
+            stage_idx=2,
+            todo_id="TODO-0002",
+        )
+
+        def exit_later():
+            _time.sleep(0.3)
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-qm", "awf(verify): TODO-0002"],
+                cwd=awf_project,
+                check=True,
+            )
+            d = awf_project / ".agentic" / "done" / "TODO-0002"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "TODO.md").write_text("# TODO-0002\n", encoding="utf-8")
+            clear_state(awf_project)
+            write_state(awf_project, phase="done")
+
+        threading.Thread(target=exit_later, daemon=True).start()
+        result = api.wait_for_event(awf_project, timeout=5, poll_interval=1)
+
+        assert result.event_type == "done"
+        assert "TODO-0002" in result.message
+
+
 class TestVerifyPayload:
     def test_verify_snapshot_carries_diff_stat(self, awf_project):
         import subprocess

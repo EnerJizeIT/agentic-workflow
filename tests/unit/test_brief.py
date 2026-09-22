@@ -208,6 +208,12 @@ class TestCardSections:
         assert "awf_run_finish" in r.text
         assert "awf_unblock" in r.text
 
+    def test_rituals_run_loop_done_line(self, live_project):
+        """RUN6 #1: the card teaches the approve → done → run_next loop."""
+        r = api.brief(live_project)
+        assert "after approve the pipeline exits" in r.text
+        assert "`done`" in r.text
+
     def test_recovery_section(self, live_project):
         r = api.brief(live_project)
         assert "## Recovery" in r.text
@@ -215,6 +221,11 @@ class TestCardSections:
             assert recipe_tool in r.text
         assert "no_checkpoints" in r.text
         assert load_recovery() in r.text
+
+    def test_recovery_approved_recipe(self, live_project):
+        """RUN6 #1: the 'approved, where's the next step?' recipe is in the card."""
+        r = api.brief(live_project)
+        assert "where's the next step?" in r.text
 
     def test_doctrine_section(self, live_project):
         doctrine = live_project / ".agentic" / "doctrine"

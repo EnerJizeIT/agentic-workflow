@@ -48,6 +48,8 @@ FEEDBACK_LINE = (
 RITUALS: list[str] = [
     "verify: `awf tree-sha` → your own probes (the TODO's verify commands, "
     "`git diff`) → `awf_approve(todo, evidence=..., verified_sha=...)`",
+    "run loop: after approve the pipeline exits — `wait_for_event` returns "
+    "`done` with the TODO → `awf_run_next` (no `git log` needed)",
     "run close: `awf_run_finish` — RUN-REPORT to the outbox",
     "incident (net/salvage): infrastructure first "
     "(`opencode run --auto --agent <role> -- 'say hello'`), then "

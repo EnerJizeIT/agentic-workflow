@@ -80,4 +80,16 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # TODO"), replacing the old [Unreleased]'s one such line (the brief's "active
 # TODOs", kept verbatim). Net +4. Same class as above: unit identifiers in the
 # changelog, not debt.
+# RUN6-2026-09-22 (#1): baseline raised 3176 -> 3215, files_over_400
+# raised 49 -> 51 — the done-after-approve unit (TODO-0056) adds 39
+# TODO-bearing lines: TODO-0001/TODO-0002 test ids in
+# tests/unit/test_wait_event.py (19, TestDoneCycleDetection fixtures),
+# unit-id references in awf/api/wait_event.py docstrings/comments (13),
+# the done-event wording in tools/awf.py (3), the done line in USAGE EN/RU
+# (1+1), the brief ritual + recovery.md recipe (1+1), the brief's
+# "with the TODO" phrasing (1). Same class as above: test identifiers and
+# unit-id references, not debt. The +2 files over 400 are
+# awf/api/wait_event.py (259 -> 426 — the done-detection helpers) and
+# tests/unit/test_wait_event.py (335 -> 524 — its test suite), same class
+# as the test_brief.py / test_todo_hygiene.py raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

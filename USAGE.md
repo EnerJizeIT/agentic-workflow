@@ -407,7 +407,7 @@ a live pipeline on this id (`awf kill` or wait first); empty `--reason` (require
 |---|---|
 | `awf_approve` | Authorize commit + archive TODO |
 | `awf_reject` | Write REVIEW signal + kill pipeline |
-| `awf_wait_for_event` | Check for pipeline events (reactive, not for polling) |
+| `awf_wait_for_event` | Check for pipeline events (reactive, not for polling); after approve it wakes with `done` — the TODO is committed + archived and the message names the next step (`awf_run_next` in a run) |
 | `awf_prove_red` | Prove declared tests are red on the baseline sha |
 | `awf_verify_pack` | One deterministic verify report (GATES file) |
 

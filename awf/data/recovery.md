@@ -1,5 +1,6 @@
 One recipe per situation. Check `awf_status` first.
 
+- **Approved, where's the next step?** → after approve the pipeline commits, archives and exits; `awf_wait_for_event` returns `done` with the TODO and the command — in a run: `awf_run_next`. No need to read `git log`.
 - **Run stopped** (budget / stop-flag / queue) → read `RUN-REPORT-*.md`, replan, `awf_run_start` with the new queue. Do NOT jump past a stop-flag.
 - **Pipeline died / salvage** → infrastructure first: `opencode run --auto --agent <role> -- 'say hello'`. Then `awf_retry_stage` or `awf_continue --from-stage <stage>`.
 - **Stale BLOCKED holds a task** → `awf_unblock TODO-NNNN`, or answer with `awf_continue --ack TODO-NNNN`.

@@ -279,7 +279,7 @@ $ awf start --pipeline audit-llm
 |---|---|
 | `awf_approve` | Авторизация коммита + архивация TODO |
 | `awf_reject` | Запись REVIEW сигнала + остановка пайплайна |
-| `awf_wait_for_event` | Проверка событий пайплайна (реактивно, не для polling) |
+| `awf_wait_for_event` | Проверка событий пайплайна (реактивно, не для polling); после approve будит событием `done` — TODO закоммичен и архивирован, в сообщении следующий шаг (`awf_run_next` в забеге) |
 | `awf_prove_red` | Доказательство, что заявленные тесты красные на baseline |
 | `awf_verify_pack` | Один детерминированный verify-отчёт (GATES-файл) |
 

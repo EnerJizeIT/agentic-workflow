@@ -824,6 +824,30 @@ class TestWaitForEventClamp:
         assert "Worker blocked" in result["next_action"]
         assert "Continue the run loop" not in result["next_action"]
 
+    def test_done_event_gets_run_next_next_action(self, monkeypatch):
+        """RUN6 #1: a done event inside a run must carry the exact next
+        command — awf_run_next (the owner had to read git log instead)."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "done"
+        assert "awf_run_next" in result["next_action"]
+        assert "awf_dispatch_todo" not in result["next_action"]
+
+    def test_done_event_gets_dispatch_next_action(self, monkeypatch):
+        """RUN6 #1: a done event outside a run (single start) must lead to
+        awf_dispatch_todo, not awf_run_next."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "done"
+        assert "awf_dispatch_todo" in result["next_action"]
+        assert "awf_run_next" not in result["next_action"]
+
 
 class TestWaitForEventCapNote:
     """B3 (run2 report): every next_action carries the ACTUAL single-wait
