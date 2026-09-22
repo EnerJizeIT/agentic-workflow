@@ -277,6 +277,20 @@ Review database migrations for safety.
 - Do not create new migrations
 ```
 
+**Role from an opencode skill** (RUN3 #3) — one command instead of a
+hand-written file. The role receives the SKILL.md body (the skill's own
+YAML front-matter is stripped) under a provenance comment with the
+source path and date. Project skills (`.opencode/skills/`) are checked
+before global ones (`~/.config/opencode/skills/`); the role name
+defaults to the skill name; an existing role file is refused without
+`--force` (MCP: `awf_add_role(name, from_skill=..., force=...)`):
+
+```console
+$ awf add-role security-audit --from-skill agent-security-auditor
+Created: ./.agentic/roles/security-audit.md
+  (content copied from skill 'agent-security-auditor')
+```
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -408,7 +422,7 @@ for every replan/split goes into the run report/note.
 ### Roles & Config
 | Tool | What it does |
 |---|---|
-| `awf_add_role` | Create role template at `.agentic/roles/{name}.md` |
+| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`) |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
 

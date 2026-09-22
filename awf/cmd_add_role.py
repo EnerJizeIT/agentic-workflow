@@ -15,9 +15,13 @@ def run(args: Any) -> int:
     role_name = args.name
     description = getattr(args, "description", "") or ""
     model = getattr(args, "model", "") or ""
+    from_skill = getattr(args, "from_skill", "") or ""
+    force = bool(getattr(args, "force", False))
     project_dir = Path(getattr(args, "project_dir", "."))
 
-    if not model:
+    # --from-skill replaces the template — there is no model slot to fill,
+    # so no interactive prompt (also keeps the command scriptable).
+    if not model and not from_skill:
         model = input(
             f"Model id for role '{role_name}' (e.g. claude-sonnet-4-20250514, gpt-4.1): "
         ).strip()
@@ -28,12 +32,16 @@ def run(args: Any) -> int:
             role_name=role_name,
             description=description,
             model=model,
+            from_skill=from_skill,
+            force=force,
         )
     except api.AwfApiError as e:
         print(str(e))
         return 1
 
     print(f"Created: {result.role_file}")
+    if from_skill:
+        print(f"  (content copied from skill '{from_skill}')")
     print()
     print("Next steps:")
     print(f"  1. Edit the role instructions in {result.role_file}")

@@ -246,6 +246,19 @@ def _build_parser():
     p_add_role.add_argument("--description", default="")
     p_add_role.add_argument("--model", default="")
     p_add_role.add_argument(
+        "--from-skill",
+        dest="from_skill",
+        default="",
+        metavar="NAME",
+        help="Create the role from an opencode skill: SKILL.md body "
+        "(front-matter stripped) instead of the empty template",
+    )
+    p_add_role.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the role file if it already exists",
+    )
+    p_add_role.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",

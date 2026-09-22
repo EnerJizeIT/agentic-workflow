@@ -391,6 +391,83 @@ class TestAwfAddRole:
         ))
         assert result["status"] == "error"
 
+    def _make_global_skill(self, mcp_project, monkeypatch, name="demo-skill"):
+        """Private XDG_CONFIG_HOME with one skill; returns its SKILL.md path."""
+        monkeypatch.setenv(
+            "XDG_CONFIG_HOME", str(mcp_project / "xdg-home")
+        )
+        skill_dir = mcp_project / "xdg-home" / "opencode" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: demo-skill\n---\n\n# Demo Skill\n\nDemo body line.\n",
+            encoding="utf-8",
+        )
+        return skill_file
+
+    def test_from_skill_ok(self, mcp_project, monkeypatch):
+        skill_file = self._make_global_skill(mcp_project, monkeypatch)
+        result = run(awf.awf_add_role(
+            name="demo-role",
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+        ))
+        assert result["status"] == "ok", result
+        role_file = mcp_project / ".agentic" / "roles" / "demo-role.md"
+        assert role_file.is_file()
+        content = role_file.read_text(encoding="utf-8")
+        assert "Demo body line." in content
+        assert str(skill_file) in content
+        assert not content.startswith("---")
+
+    def test_from_skill_name_defaults_to_skill(
+        self, mcp_project, monkeypatch
+    ):
+        self._make_global_skill(mcp_project, monkeypatch)
+        result = run(awf.awf_add_role(
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+        ))
+        assert result["status"] == "ok", result
+        assert (mcp_project / ".agentic" / "roles" / "demo-skill.md").is_file()
+
+    def test_from_skill_unknown_lists_available(
+        self, mcp_project, monkeypatch
+    ):
+        self._make_global_skill(mcp_project, monkeypatch)
+        result = run(awf.awf_add_role(
+            name="x",
+            project_dir=str(mcp_project),
+            from_skill="ghost-skill",
+        ))
+        assert result["status"] == "error"
+        assert "ghost-skill" in result["error"]
+        assert "demo-skill" in result["error"]
+
+    def test_from_skill_occupied_refused_then_force(
+        self, mcp_project, monkeypatch
+    ):
+        self._make_global_skill(mcp_project, monkeypatch)
+        run(awf.awf_add_role(name="demo-skill", project_dir=str(mcp_project),
+                             model="m"))
+        result = run(awf.awf_add_role(
+            name="demo-skill",
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+        ))
+        assert result["status"] == "error"
+        assert "already exists" in result["error"]
+        result = run(awf.awf_add_role(
+            name="demo-skill",
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+            force=True,
+        ))
+        assert result["status"] == "ok", result
+        content = (mcp_project / ".agentic" / "roles" / "demo-skill.md"
+                   ).read_text(encoding="utf-8")
+        assert "Demo body line." in content
+
 
 # ─── awf_analyze_roles ──────────────────────────────────────────────────
 

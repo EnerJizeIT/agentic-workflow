@@ -294,9 +294,22 @@ TODO, и `awf_run_next` читает его для элементов без п�
 ### Роли и конфиг
 | Tool | Что делает |
 |---|---|
-| `awf_add_role` | Создание шаблона роли в `.agentic/roles/` |
+| `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`) |
 | `awf_analyze_roles` | Детекция перекрытий зон ролей |
 | `awf_check_model_config` | Валидация моделей в config.yaml vs opencode.json |
+
+**Роль из opencode-скилла** (RUN3 #3) — одной командой вместо рукописного
+файла. Роль получает тело SKILL.md (YAML front-matter скилла вырезан) под
+комментарием-провенансом с путём к источнику и датой. Скиллы проекта
+(`.opencode/skills/`) ищутся раньше глобальных
+(`~/.config/opencode/skills/`); имя роли по умолчанию — имя скилла;
+занятое имя файла роли — отказ без `--force`:
+
+```console
+$ awf add-role security-audit --from-skill agent-security-auditor
+Created: ./.agentic/roles/security-audit.md
+  (content copied from skill 'agent-security-auditor')
+```
 
 ### UI (формы)
 | Tool | Что делает |

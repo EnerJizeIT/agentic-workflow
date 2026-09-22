@@ -431,6 +431,49 @@ class TestAddRoleEntrypoint:
         assert not (repo / "evil.md").exists()
         assert not (tmp_path / "evil.md").exists()
 
+    def _project_skill(self, repo: Path, name: str = "demo-skill") -> None:
+        skill_dir = repo / ".opencode" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo-skill\n---\n\n# Demo Skill\n\nCLI demo body line.\n",
+            encoding="utf-8",
+        )
+
+    def test_add_role_from_skill_flag(self, tmp_path, capsys):
+        """RUN3 #3: --from-skill copies the skill body, no model prompt."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliAddRoleSkill")
+        self._project_skill(repo)
+        capsys.readouterr()
+
+        rc = cli.main(["add-role", "demo-role", "--from-skill", "demo-skill",
+                       "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "content copied from skill" in out
+        role_file = repo / ".agentic" / "roles" / "demo-role.md"
+        assert role_file.is_file()
+        content = role_file.read_text(encoding="utf-8")
+        assert "CLI demo body line." in content
+        assert not content.startswith("---")
+
+    def test_add_role_from_skill_unknown_no_traceback(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliAddRoleSkillMiss")
+        self._project_skill(repo)
+        capsys.readouterr()
+
+        rc = cli.main(["add-role", "x", "--from-skill", "ghost",
+                       "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "Traceback" not in captured.out + captured.err
+        assert "ghost" in captured.out
+        assert "demo-skill" in captured.out  # available skills listed
+        assert not (repo / ".agentic" / "roles" / "x.md").exists()
+
 
 class TestReportEntrypoint:
     """AUD12-07: cmd_report CLI smoke (wrapper was at 68%)."""

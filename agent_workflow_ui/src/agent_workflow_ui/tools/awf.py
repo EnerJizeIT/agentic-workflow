@@ -952,23 +952,36 @@ async def awf_reset(
 
 
 async def awf_add_role(
-    name: str,
+    name: str = "",
     project_dir: str | None = None,
     *,
     description: str = "",
     model: str = "",
+    from_skill: str = "",
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Generate a new role template at .agentic/roles/{name}.md.
+    """Generate a new role file at .agentic/roles/{name}.md.
 
-    Creates a placeholder role file with sections for responsibility,
-    input, actions, output, and prohibitions. Edit the file to specialize.
+    By default creates a placeholder role file with sections for
+    responsibility, input, actions, output, and prohibitions. With
+    ``from_skill`` the role is created from an opencode skill instead:
+    the SKILL.md body (its own YAML front-matter stripped) under a
+    provenance comment. Skill search: project ``.opencode/skills/<name>/``
+    first, then global ``~/.config/opencode/skills/<name>/``. An unknown
+    skill is an error listing the available skills.
 
     Args:
-        name: Role slug (e.g. "qa", "reviewer", "auditor").
+        name: Role slug (e.g. "qa", "reviewer", "auditor"). With
+            ``from_skill`` and empty ``name``, the skill name is used.
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
-        description: One-line role description (default: "new role").
-        model: Model ID for this role. If empty, placeholder inserted.
+        description: One-line role description (template mode only).
+        model: Model ID for this role (template mode only). If empty,
+            placeholder inserted.
+        from_skill: Skill slug to copy the role content from (e.g.
+            "agent-security-auditor").
+        force: Overwrite the role file if it already exists (default:
+            refuse — the file is user data).
 
     Returns:
         Dict with: role_name, role_file (path), model.
@@ -979,6 +992,8 @@ async def awf_add_role(
             name,
             description=description,
             model=model,
+            from_skill=from_skill,
+            force=force,
         )
         return _ok(result)
     except api.AwfApiError as e:
