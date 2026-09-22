@@ -300,7 +300,8 @@ class WaitEventResult:
     message: str
     state_snapshot: dict[str, Any] = field(default_factory=dict)
     # SPEC A-run: recommended wait size for the next call (median stage/3,
-    # clamped to the MCP transport cap, wait_event.TRANSPORT_CAP); 0 when
+    # clamped to the project's wait cap — wait_event.wait_cap: env
+    # AWF_WAIT_CAP / config wait.cap_seconds, default TRANSPORT_CAP); 0 when
     # not computed for this event type.
     suggested_timeout: int = 0
 

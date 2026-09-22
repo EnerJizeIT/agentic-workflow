@@ -522,3 +522,145 @@ class TestVerifyPayload:
 
         assert result.event_type == "verify"
         assert "README.md" in result.state_snapshot.get("diff_stat", "")
+
+
+class TestWaitCap:
+    """RUN6 #3: the single-wait cap is honest — env > config > default 55."""
+
+    def _set_config_cap(self, awf_project, text):
+        (awf_project / ".agentic" / "config.yaml").write_text(text, encoding="utf-8")
+
+    def test_default_without_config_or_env(self, awf_project, monkeypatch):
+        from awf.api.wait_event import TRANSPORT_CAP, wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        assert wait_cap(awf_project) == TRANSPORT_CAP
+        assert wait_cap(None) == TRANSPORT_CAP
+
+    def test_config_cap_seconds(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        assert wait_cap(awf_project) == 300
+
+    def test_env_wins_over_config(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        monkeypatch.setenv("AWF_WAIT_CAP", "420")
+        assert wait_cap(awf_project) == 420
+
+    def test_string_values_accepted(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, 'wait:\n  cap_seconds: "300"\n')
+        assert wait_cap(awf_project) == 300
+        monkeypatch.setenv("AWF_WAIT_CAP", " 270 ")
+        assert wait_cap(awf_project) == 270
+
+    def test_invalid_env_falls_through_to_config(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        monkeypatch.setenv("AWF_WAIT_CAP", "abc")
+        assert wait_cap(awf_project) == 300
+        monkeypatch.setenv("AWF_WAIT_CAP", "0")
+        assert wait_cap(awf_project) == 300
+
+    def test_invalid_config_falls_back_to_default(self, awf_project, monkeypatch):
+        from awf.api.wait_event import TRANSPORT_CAP, wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: -5\n")
+        assert wait_cap(awf_project) == TRANSPORT_CAP
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: fast\n")
+        assert wait_cap(awf_project) == TRANSPORT_CAP
+
+    def test_suggestion_kept_below_raised_config_cap(self, awf_project, monkeypatch):
+        """12-min stage → raw 240s. With the cap raised to 300 the suggestion
+        is 240 (kept), not cut to the 55s transport default (B3 old behavior)."""
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import _suggest_timeout
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=12 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert _suggest_timeout(awf_project) == 240
+
+    def test_suggestion_never_above_env_cap(self, awf_project, monkeypatch):
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import _suggest_timeout
+
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        monkeypatch.setenv("AWF_WAIT_CAP", "100")
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=12 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert _suggest_timeout(awf_project) == 100
+
+    def _write_stage_log(self, awf_project, minutes):
+        from datetime import datetime, timedelta
+
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=minutes * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_timeout_message_cites_configured_cap(self, awf_project, monkeypatch):
+        """Raised cap → the timeout message names it and drops the default
+        transport wording (the 'raise mcp timeout' advice is stale then).
+        20-min stage → raw 400s → clamped to the 300s cap → advice fires."""
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        self._write_stage_log(awf_project, minutes=20)
+
+        write_state(
+            awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2,
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert result.suggested_timeout == 300
+        assert "300s" in result.message
+        assert "Transport cap" not in result.message
+        assert "smaller steps" in result.message
+
+    def test_timeout_message_default_cap_unchanged(self, awf_project, monkeypatch):
+        """No config/env → cap stays 55 and the B3 message is intact.
+        20-min stage → raw 400s → clamped to the 55s cap → advice fires."""
+        from awf.api.wait_event import TRANSPORT_CAP
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._write_stage_log(awf_project, minutes=20)
+
+        write_state(
+            awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2,
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert result.suggested_timeout == TRANSPORT_CAP
+        assert "Transport cap" in result.message
+        assert "smaller steps" in result.message

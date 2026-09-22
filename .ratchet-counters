@@ -103,4 +103,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # removed line is the old "# TODO id + worker status" comment in
 # generate_state_dict.
 # Same class as above: test identifiers and unit-id references, not debt.
+# RUN6-2026-09-22 (#3): baseline raised 3235 -> 3242 — the
+# quiet-run-status + wait-cap unit (TODO-0058) adds 7 TODO-bearing lines:
+# 6 test ids in tests/unit/test_api.py (TestGetStatus::test_conflict_warning_
+# neutral_in_active_run / _stale_outside_run — TODO-000n .ready/.md/queue
+# fixtures + the "4 active TODOs" assertion) and 1 production message line
+# in awf/api/lifecycle.py (the neutral run-queue warning names "each TODO is
+# pinned by awf_run_next"). Same class as above: test identifiers and
+# message wording, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

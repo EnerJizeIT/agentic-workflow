@@ -437,7 +437,11 @@ pipelines (RUN3 #1).
 **Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
 the client timeout — ~55s with the default opencode.json. The tool says so
 in every `next_action`. To wait longer, raise the mcp timeout in
-`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}`.
+`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}` — and
+tell awf the new ceiling via `wait.cap_seconds` in `.agentic/config.yaml`
+(or env `AWF_WAIT_CAP`, which wins). While the cap is the default 55s the
+tool advises raising the mcp timeout; once you raise the cap in config or
+env, the advice goes away and `suggested_timeout` is clamped to your value.
 
 **Supervisor authority.** Replanning, rewriting the spec, and splitting a
 task are a standard supervisor option — no owner approval required.

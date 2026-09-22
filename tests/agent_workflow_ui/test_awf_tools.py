@@ -918,6 +918,36 @@ class TestWaitForEventCapNote:
 
         assert f"timeout={api.TRANSPORT_CAP}" in result["next_action"]
 
+    def test_next_action_raised_cap_drops_mcp_advice(self, monkeypatch, tmp_path):
+        """RUN6 #3: with wait.cap_seconds raised in the project config the
+        note names the raised cap and the stale 'raise the mcp timeout in
+        opencode.json' advice disappears — the owner already raised the
+        ceiling themselves, so the default-transport hint under-sells it."""
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        ag = tmp_path / ".agentic"
+        ag.mkdir()
+        (ag / "config.yaml").write_text("wait:\n  cap_seconds: 300\n", encoding="utf-8")
+
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            class _R:
+                def as_dict(self):
+                    return {"event_type": "timeout", "message": "x",
+                            "state_snapshot": {}, "suggested_timeout": 240}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+
+        result = asyncio.run(
+            awf.awf_wait_for_event(project_dir=str(tmp_path), timeout=10)
+        )
+
+        assert "<= 300s" in result["next_action"]
+        assert "project wait cap" in result["next_action"]
+        assert "opencode.json" not in result["next_action"]
+        assert "raise the mcp timeout" not in result["next_action"]
+
 
 # ─── FU-19 (TODO-0023): Part B — AUD-08 wrapper parity ──────────────────
 
