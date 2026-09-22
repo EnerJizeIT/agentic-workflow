@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.1] — 2026-09-22
 
-Post-audit branch state (ahead of `main`; the published PyPI 1.1.0 artifact
-was built from this state).
+Post-audit additions (U8–U11) plus fixes from the first real autonomous run
+(RUN2, topic-trainer bug report). The published 1.1.0 artifact predates them.
 
 ### Added
 - **`awf metrics`** (MCP `awf_metrics`) — on-demand work-program metrics from `opencode.db`: worker and supervisor tokens, compactions, code lines per unit, and the "if workers ran on model X" cost conversion; markdown report to the desktop with an optional archive mirror (`metrics.mirror_dir`)
@@ -17,9 +17,13 @@ was built from this state).
 - **`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — "what was verified = what is committed": approve refuses when the tree moved after verification
 - **`awf mutations`** — mutation smoke over a quiet tree (once per wave / before release); **`awf todo-draft`** — a task-file skeleton from an audit registry
 - **Model-price and subscription caches** — live source → awf cache → built-in table, with the source and date recorded in the report
+- **Run checkpoints** — `awf_run_start(no_checkpoints=True)` skips the BD-36 plan form for the whole run; a submitted checkpoint decision survives a died pipeline (`.agentic/context/CHECKPOINT-<todo>.json`) and is applied on the next start without re-asking
+- **Productive run budget** — the run budget counts productive minutes (wall clock minus recorded downtime: checkpoint waits, salvage handling, net-backoff pauses); status/brief and RUN-REPORT show both numbers
+- **Wait cap** — every `awf_wait_for_event` response states the single-wait transport cap (55s) and how to raise it (`mcp` timeout in `opencode.json`)
 
 ### Changed
 - `awf_approve` (MCP) accepts `verified_sha`; `awf_metrics` (MCP) accepts `refresh_subscriptions` and `mirror`
+- Supervisor doctrine: replan / spec rewrite / task split need no owner approval — escalation only on the stop-list (role templates + USAGE)
 
 ## [1.1.0] — 2026-09-21
 
