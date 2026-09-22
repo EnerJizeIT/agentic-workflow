@@ -69,6 +69,14 @@ def detect_phase(project_dir: Path) -> str:
     # Check goal
     goal = state.get("goal") if state else None
     if not goal:
+        # RUN3-7 (TODO-0049): a missing goal is a setup signal only for a
+        # NEW project. A live project (configured + completed work) stays
+        # in the working cycle even when state/current.yaml was wiped or
+        # never stored a goal — otherwise a configured project with 19
+        # finished TODOs would be sent through goal → form → normalize
+        # on every awf_current_step call.
+        if _is_live_project(project_dir):
+            return "run"
         return "goal"
 
     # Check pipeline configuration
@@ -99,6 +107,47 @@ def _pipeline_exists(project_dir: Path) -> bool:
         return any(s.role != "supervisor" for s in stages)
     except Exception:
         return False
+
+
+def _is_live_project(project_dir: Path) -> bool:
+    """RUN3-7 (TODO-0049): live project = configured AND has completed work.
+
+    Configured: a pipeline file with non-supervisor stages, or config.yaml
+    with at least one team role under ``models:`` (the supervisor stub
+    written by awf_init does not count). Completed work: at least one
+    entry in .agentic/done/.
+
+    A configured-but-never-run project (empty done/) is still "new" — the
+    setup chain applies, exactly as before this change. A done/ full of
+    archives without any configuration is also not live: work evidence
+    without a configured team says nothing about the setup state.
+    """
+    if not (_pipeline_exists(project_dir) or _config_has_roles(project_dir)):
+        return False
+    done = paths.done_dir(project_dir)
+    return done.is_dir() and any(done.iterdir())
+
+
+def _config_has_roles(project_dir: Path) -> bool:
+    """config.yaml with at least one team role under ``models:``.
+
+    The init-time stub (``models: {supervisor: {description: ...}}``) does
+    not count: awf_init writes it into every new project, and the
+    project-setup form (BD-12) is what adds real team roles, each with
+    ``agent_name`` and usually ``model``.
+    """
+    # Function-local: awf.config is a leaf module (AUD14-05 convention).
+    from . import config as _config
+
+    models = _config.load(project_dir).get("models")
+    if not isinstance(models, dict):
+        return False
+    return any(
+        role != "supervisor"
+        and isinstance(entry, dict)
+        and bool(entry.get("agent_name") or entry.get("model"))
+        for role, entry in models.items()
+    )
 
 
 def get_phase_prompt(phase: str, project_dir: Path) -> str:
@@ -132,6 +181,15 @@ def get_phase_prompt(phase: str, project_dir: Path) -> str:
         goal = state.get("goal") if state else None
         if goal:
             parts.append(f"\n---\n## Goal for this session\n{goal}\n")
+        elif phase == "run" and _is_live_project(project_dir):
+            # RUN3-7 (TODO-0049): one explanatory line for a live project
+            # detected without a stored goal — the setup chain is not
+            # needed, continue the working cycle.
+            parts.append(
+                "\n---\n## Note\nProject is configured and has completed "
+                "TODOs — the setup chain (goal → form → normalize → brief) "
+                "is not needed. Continue the working cycle.\n"
+            )
 
         return "\n".join(parts)
 

@@ -22,4 +22,10 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # single-launch no_checkpoints unit adds 7 TODO-0001 test ids in
 # tests/integration/test_plan_checkpoint.py (gate + plumbing fixtures).
 # Same class as above: test identifiers, not debt.
+# RUN3-2026-09-22 (#7): baseline raised 2868 -> 2884 — the
+# live-project phase unit adds 16 TODO-bearing lines: unit-id
+# references in awf/phase.py comments/docstrings, test docstrings, and
+# TODO-0001/TODO.md archive fixtures in tests/unit/test_phase_live.py
+# and tests/agent_workflow_ui/test_awf_tools.py.
+# Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

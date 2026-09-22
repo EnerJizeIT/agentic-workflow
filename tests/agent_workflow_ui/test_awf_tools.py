@@ -1309,3 +1309,46 @@ class TestAwfMetricsParams:
         assert result["status"] == "error"
         assert calls and calls[0]["refresh_subscriptions"] is True
         assert calls[0]["mirror"] is False
+
+
+class TestCurrentStepLiveProject:
+    """RUN3-7 (TODO-0049): awf_current_step distinguishes a NEW project
+    (setup chain, phase 'goal') from a LIVE one (configured + completed
+    work → working phase 'run'), without changing the response shape."""
+
+    def _make_live(self, project: Path) -> None:
+        """Pipeline with a worker stage + one archived TODO."""
+        pipes = project / ".agentic" / "pipelines"
+        pipes.mkdir(parents=True, exist_ok=True)
+        (pipes / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: worker\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            encoding="utf-8",
+        )
+        done = project / ".agentic" / "done" / "TODO-0001"
+        done.mkdir(parents=True, exist_ok=True)
+        (done / "TODO.md").write_text("# Task\n", encoding="utf-8")
+
+    def test_live_project_no_goal_returns_run(self, mcp_project):
+        self._make_live(mcp_project)
+        result = run(awf.awf_current_step(project_dir=str(mcp_project)))
+        assert result["status"] == "ok"
+        assert result["phase"] == "run"
+        assert result["goal"] is None
+        # Response shape unchanged: exactly these keys.
+        assert set(result) == {"status", "phase", "prompt", "goal"}
+        # The one explanatory line for a live project without a stored goal.
+        assert "setup chain" in result["prompt"]
+
+    def test_new_project_no_goal_returns_goal(self, mcp_project):
+        """No pipeline, empty done/ → the setup chain as before. The
+        init-time config (models: {supervisor: stub}) must NOT count as
+        'configured with work' on its own."""
+        result = run(awf.awf_current_step(project_dir=str(mcp_project)))
+        assert result["status"] == "ok"
+        assert result["phase"] == "goal"
+        assert result["goal"] is None
+        assert set(result) == {"status", "phase", "prompt", "goal"}
+        assert "setup chain" not in result["prompt"]
