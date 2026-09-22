@@ -190,7 +190,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-43 инструмента: 38 `awf_*` workflow + 5 UI (формы).
+45 инструментов: 40 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |

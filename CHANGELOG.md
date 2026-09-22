@@ -7,13 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-22
+
+Three autonomous work programs (RUN3–RUN5) on top of 1.1.1: named pipelines,
+state hygiene, the supervisor onboarding card, the feedback contour, the
+leak-gate, and TODO retirement. Eight new MCP tools — a minor bump.
+
 ### Added
-- **`awf brief`** (MCP `awf_brief`, `--json` for the machine variant; RUN4 #1) — the supervisor's onboarding/recovery card, assembled from the LIVE project state: header (version, project, phase, date), what's next, state (run, active TODOs, blocked/salvage, last signal), a tool map by situation (every tool of the registry, checked both ways by tests), rituals, recovery recipes (`awf/data/recovery.md`) plus project doctrine, what's new (latest CHANGELOG section), and the feedback line. Deterministic for the same state; a new project gets the setup-chain hint instead of the working cycle
 - **Named pipelines** (RUN3 #1) — `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP `awf_write_pipeline`) writes only `.agentic/pipelines/<name>.yaml` (config.yaml and supervisor.md untouched); `awf pipelines` (MCP `awf_pipelines`) lists them and marks the active one; `awf start --pipeline <name>` runs the named pipeline
+- **Per-item pipelines in a run queue** (RUN3 #2) — the queue accepts `{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain id strings; `awf_dispatch_todo(pipeline=...)` writes the name into the TODO's front-matter and `awf run-next` reads it for items without a queue-level pipeline
+- **Role from a skill** (RUN3 #3) — `awf add-role <name> --from-skill <slug>` (MCP `awf_add_role(from_skill=...)`) creates the role with the SKILL.md body (front-matter stripped) instead of the empty template; project skills win over global ones
+- **State hygiene** (RUN3 #4/#5) — `awf unblock <id>` (MCP `awf_unblock`) moves stale BLOCKED/ACK closure signals to a `context/` trace directory so a re-issued TODO is visible again; `awf todo-remove <id>` (MCP `awf_todo_remove`) removes a TODO that never started, trace in `done/<id>/removed-<ts>.md`
+- **`awf brief`** (MCP `awf_brief`, `--json` for the machine variant; RUN4 #1) — the supervisor's onboarding/recovery card, assembled from the LIVE project state: header (version, project, phase, date), what's next, state (run, active TODOs, blocked/salvage, last signal), a tool map by situation (every tool of the registry, checked both ways by tests), rituals, recovery recipes (`awf/data/recovery.md`) plus project doctrine, what's new (latest CHANGELOG section), and the feedback line. Deterministic for the same state; a new project gets the setup-chain hint instead of the working cycle
+- **`awf feedback`** (MCP `awf_feedback`; RUN4 #2) — friction with awf becomes a structured bug/feature report on the owner's desktop: `awf feedback --type bug|feature --title "…" --body "…"`; awf assembles the header facts, the report skeleton, and the newest log tail itself; the report never reads the environment
+- **Leak-gate** (RUN5 #1) — `awf reject` (and the engine REVIEW path) snapshot the unit's untracked new files to `REJECT-<todo>.files`; `awf_dispatch_todo(carry_over_from=<id>)` re-claims those paths for the retry's baseline so the retry commit includes them; `awf verify-pack` warns when a rejected unit's files are still leaking
+- **`awf todo-retire`** (MCP `awf_todo_retire`; RUN5 #2) — `awf todo-retire <id> --reason "…"` moves a rejected/abandoned TODO that stays "active" (DONE files without the `.ready` signal) to `done/<id>/` with a RETIRED note — no fake closure signal, `awf restore` still brings it back
 
 ### Changed
 - An unknown explicit `--pipeline` / `awf_start(pipeline=...)` name is now a clear error with the list of available pipelines (previously it silently fell back to `default.yaml`)
+- `awf_start` / `awf_continue` accept `no_checkpoints=true` — the BD-36 plan form is skipped for that one launch only (process-scoped: not written to config or state, the next launch asks again); the run-level `awf_run_start(no_checkpoints=...)` is unchanged
+- `awf_current_step` recognizes a live project: an active pipeline, roles, or stale state means phase `run` (with a setup note when no goal is stored), and `awf set-goal` refuses on a live project
 - `awf_status` / `awf_run_brief` show the active pipeline and the number of available ones
+- Tool set: 45 MCP tools (5 UI + 40 workflow); README/USAGE counters and reference tables updated to match `server.py`
+
+### Fixed
+- `awf run-next` re-baselining swallowed the carry-over exclusion, so the leak came back in run mode — the exclusion now survives the re-baseline (RUN5 #1 QA)
 
 ## [1.1.1] — 2026-09-22
 

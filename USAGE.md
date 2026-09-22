@@ -340,7 +340,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-43 tools: 38 `awf_*` workflow + 5 UI (forms).
+45 tools: 40 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |

@@ -71,4 +71,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # TODO-0035) locking the retire → restore → retire cycle: suffixed copies,
 # two RETIRED notes, no overwrite. Same class as above: test identifiers,
 # not debt.
+# RUN5-2026-09-22 (#3): baseline raised 3172 -> 3176 — the release-prep unit
+# (TODO-0054) expands the CHANGELOG [Unreleased] section into the full [1.2.0]
+# section. The new section adds 5 TODO-bearing lines (the intro's "TODO
+# retirement", the per-item-pipeline example TODO-0023 + "the TODO's
+# front-matter", state-hygiene's "a re-issued TODO" / "a TODO that never
+# started", the brief's "active TODOs", the retire's "a rejected/abandoned
+# TODO"), replacing the old [Unreleased]'s one such line (the brief's "active
+# TODOs", kept verbatim). Net +4. Same class as above: unit identifiers in the
+# changelog, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
