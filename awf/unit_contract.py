@@ -8,10 +8,16 @@ skipped when locating the block)::
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
     files: ["awf/x.py", "tests/unit/test_x.py"]
+    pipeline: audit-llm
 
 ``dispatch_todo`` validates the block; a TODO without a block works exactly
 as before. Broken YAML / wrong types / empty lists / unknown gate names are
 hard errors (AwfApiError at the API level); unknown keys are warnings only.
+
+``pipeline`` (RUN3 #2): the pipeline name for run (забег) launches — when
+``awf_run_next`` starts this TODO without a queue-level pipeline, it reads
+the name from here. Validated as a plain name (letters, digits, ``_``,
+``.``, ``-``); an empty pipeline = the config default.
 
 DONE.json (optional, written by the worker to ``.agentic/outbox/``)::
 
@@ -26,6 +32,7 @@ log warning and the handoff continues without the section (never a crash).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -43,14 +50,42 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: diff against it (changed-but-undeclared files are reported). FU-21 D2:
 #: it was read by verify_pack but missing here, so declaring it produced
 #: an "unknown key" warning and no str-list validation.
-_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red", "files")
+#: ``pipeline`` (RUN3 #2): the run launch's pipeline name (a string, not a
+#: list); run_next reads it for items without a queue-level pipeline.
+_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red", "files", "pipeline")
+
+#: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
+#: AUD14-05) — a pipeline name is letters, digits, ``_``, ``.``, ``-``.
+_PIPELINE_NAME_RE = re.compile(r"[\w.-]+")
 
 
-def _find_contract_lines(content: str) -> tuple[list[str] | None, str | None]:
-    """Locate the contract block. Returns (yaml_lines, error).
+def check_pipeline_name(value: object) -> str:
+    """Validate the contract's ``pipeline`` value. Returns the stripped name.
 
-    (None, None) — no block; (lines, None) — block found; (None, error) —
-    block opened but broken.
+    It is a single non-empty name (NOT a list — one TODO runs one pipeline),
+    and it must satisfy the engine's name rule, so a typo fails at dispatch
+    time instead of silently falling back to the config default at launch.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "'pipeline' must be a non-empty pipeline name string, "
+            "e.g. pipeline: audit-llm"
+        )
+    name = value.strip()
+    if not _PIPELINE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"invalid pipeline name {name!r}: use letters, digits, '_', '.' or "
+            "'-' (no path separators), e.g. 'default' or 'audit-llm'"
+        )
+    return name
+
+
+def _find_contract_block(content: str) -> tuple[int | None, int | None, str | None]:
+    """Locate the contract block. Returns (open_line, close_line, error).
+
+    (None, None, None) — no block; (i, j, None) — the block spans lines
+    ``i`` (``---``) and ``j`` (``---``) with YAML between; (i, None, error)
+    — block opened but broken.
     """
     lines = content.splitlines()
     i = 0
@@ -61,14 +96,67 @@ def _find_contract_lines(content: str) -> tuple[list[str] | None, str | None]:
             continue
         break
     if i >= len(lines) or lines[i].strip() != "---":
-        return None, None
+        return None, None, None
     for j in range(i + 1, len(lines)):
         if lines[j].strip() == "---":
-            return lines[i + 1 : j], None
-    return None, (
+            return i, j, None
+    return i, None, (
         "contract block opened with `---` at the top but no closing `---` "
         "found — close the block (one `---` line after the last key)"
     )
+
+
+def _find_contract_lines(content: str) -> tuple[list[str] | None, str | None]:
+    """Locate the contract block. Returns (yaml_lines, error).
+
+    (None, None) — no block; (lines, None) — block found; (None, error) —
+    block opened but broken.
+    """
+    open_i, close_j, error = _find_contract_block(content)
+    if error:
+        return None, error
+    if open_i is None or close_j is None:
+        return None, None
+    lines = content.splitlines()
+    return lines[open_i + 1 : close_j], None
+
+
+def inject_pipeline_key(content: str, pipeline: str) -> str:
+    """RUN3 #2 (Part B): write ``pipeline: <name>`` into the TODO's block.
+
+    Creates the block when absent (inserted after the leading comment/blank
+    lines, so a role-hint comment stays above it); replaces an existing
+    ``pipeline:`` line when present (the explicit argument wins over a
+    copy-pasted block). Returns the new content — the trailing newline is
+    preserved as found.
+    """
+    name = check_pipeline_name(pipeline)
+    line = f"pipeline: {name}"
+    lines = content.splitlines()
+    open_i, close_j, error = _find_contract_block(content)
+    if error:
+        raise ValueError(error)
+    if open_i is None or close_j is None:
+        i = 0
+        while i < len(lines):
+            s = lines[i].strip()
+            if not s or s.startswith("<!--"):
+                i += 1
+                continue
+            break
+        lines = lines[:i] + ["---", line, "---"] + lines[i:]
+    else:
+        body = lines[open_i + 1 : close_j]
+        replaced = False
+        for k, existing in enumerate(body):
+            if existing.strip().startswith("pipeline:"):
+                body[k] = line
+                replaced = True
+                break
+        if not replaced:
+            body.insert(0, line)
+        lines = lines[: open_i + 1] + body + lines[close_j:]
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
 
 
 def _check_str_list(value: object, field: str) -> None:
@@ -127,6 +215,8 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         _check_str_list(data["prove_red"], "prove_red")
     if "files" in data:
         _check_str_list(data["files"], "files")
+    if "pipeline" in data:
+        check_pipeline_name(data["pipeline"])
     return data, unknown
 
 
@@ -225,6 +315,8 @@ def collect_done_facts(
 __all__ = [
     "KNOWN_GATES",
     "parse_todo_contract",
+    "check_pipeline_name",
+    "inject_pipeline_key",
     "parse_done_json",
     "render_done_json",
     "collect_done_facts",

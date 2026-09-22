@@ -319,7 +319,7 @@ async def awf_retry_stage(
 async def awf_run_start(
     project_dir: str | None = None,
     *,
-    queue: list[str] | None = None,
+    queue: list[str | dict[str, Any]] | None = None,
     budget_minutes: int = 0,
     stop_flags_json: str = "",
     note: str = "",
@@ -335,7 +335,10 @@ async def awf_run_start(
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
-        queue: Ordered TODO ids to run, e.g. ["TODO-0010", "TODO-0011"].
+        queue: Ordered queue items. Each item is either a TODO id string
+            (e.g. "TODO-0010" — the pipeline comes from config) or an object
+            {"todo_id": "TODO-0023", "pipeline": "audit-llm"} that pins the
+            item's own pipeline (RUN3 #2). Mixed lists are allowed.
         budget_minutes: Optional time budget (0 = unlimited).
         stop_flags_json: Optional JSON map of TODO id → [reason], e.g.
             '{"TODO-0012": ["phase-boundary", "external-audit"]}'. awf refuses
@@ -1131,6 +1134,7 @@ async def awf_dispatch_todo(
     *,
     role: str | None = None,
     todo_id: str | None = None,
+    pipeline: str | None = None,
 ) -> dict[str, Any]:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -1151,6 +1155,9 @@ async def awf_dispatch_todo(
             determined by stage order in pipeline.yaml).
         todo_id: Override auto-generated id (e.g. "TODO-0007"). Must
             match pattern TODO-NNNN.
+        pipeline: Optional pipeline name (RUN3 #2) — written into the TODO's
+            front-matter as ``pipeline: <name>``. When awf_run_next launches
+            this TODO without a queue-level pipeline, it uses this one.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
@@ -1162,6 +1169,7 @@ async def awf_dispatch_todo(
             content,
             role=role,
             todo_id=todo_id,
+            pipeline=pipeline,
         )
         response = _ok(result)
         # SMO: next_action + pre-check warnings guide weak models

@@ -304,7 +304,9 @@ class RunStartResult:
     """Result of :func:`awf.api.run_start`."""
 
     active: bool
-    queue: list[str]
+    # RUN3 #2: normalized items {"todo_id", "pipeline"} (empty pipeline =
+    # the config default).
+    queue: list[dict[str, str]]
     position: str
     budget_minutes: int
     stop_flags: dict[str, list[str]]
@@ -321,7 +323,9 @@ class RunStatusResult:
 
     active: bool
     position: str
-    queue: list[str]
+    # RUN3 #2: normalized items {"todo_id", "pipeline"} (empty pipeline =
+    # the config default).
+    queue: list[dict[str, str]]
     index: int
     current: str
     completed: list[str]

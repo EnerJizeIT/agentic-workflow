@@ -41,7 +41,8 @@ class TestRunState:
         run_state.write_run(proj, index=1)
         state = run_state.read_run(proj)
         assert state["active"] is True
-        assert state["queue"] == ["TODO-0001"]
+        # RUN3 #2: queue items normalize to {"todo_id", "pipeline"} on read.
+        assert state["queue"] == [{"todo_id": "TODO-0001", "pipeline": ""}]
         assert state["index"] == 1
         run_state.clear_run(proj)
         assert run_state.read_run(proj) is None
@@ -451,7 +452,10 @@ class TestRunStartSafety:
         result = api.run_start(proj, queue=["TODO-0002"], force=True)
 
         assert "previous run replaced" in result.message
-        assert run_state.read_run(proj)["queue"] == ["TODO-0002"]
+        # RUN3 #2: normalized queue form on read.
+        assert run_state.read_run(proj)["queue"] == [
+            {"todo_id": "TODO-0002", "pipeline": ""}
+        ]
 
 
 class TestRestoreApi:
@@ -543,7 +547,12 @@ class TestRunStateShape:
         self._write_raw(tmp_git_repo, "active: true\nqueue: [TODO-0001, TODO-0002]\nindex: 2\n")
         state = run_state.read_run(tmp_git_repo)
         assert state is not None
-        assert state["queue"] == ["TODO-0001", "TODO-0002"]
+        # RUN3 #2: legacy string queue is still readable and upgrades to the
+        # canonical {"todo_id", "pipeline"} form (empty pipeline = config).
+        assert state["queue"] == [
+            {"todo_id": "TODO-0001", "pipeline": ""},
+            {"todo_id": "TODO-0002", "pipeline": ""},
+        ]
         assert state["index"] == 2  # exhausted position is valid
 
     def test_shape_failure_is_logged(self, tmp_git_repo):
@@ -858,3 +867,206 @@ class TestRunConcurrency:
         for i in range(iters):
             assert f"a_{i}" in state, f"lost update a_{i}"
             assert f"b_{i}" in state, f"lost update b_{i}"
+
+
+class TestQueuePipelines:
+    """RUN3 #2: per-item pipelines in the run queue (Part A)."""
+
+    def _pipelines_dir(self, proj: Path) -> Path:
+        d = proj / ".agentic" / "pipelines"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def test_object_queue_normalized(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        result = api.run_start(
+            proj,
+            queue=[
+                "TODO-0001",
+                {"todo_id": "TODO-0002", "pipeline": "audit-llm"},
+            ],
+        )
+        assert [i["todo_id"] for i in result.queue] == ["TODO-0001", "TODO-0002"]
+        assert result.queue[0]["pipeline"] == ""
+        assert result.queue[1]["pipeline"] == "audit-llm"
+        state = run_state.read_run(proj)
+        assert state["queue"] == [
+            {"todo_id": "TODO-0001", "pipeline": ""},
+            {"todo_id": "TODO-0002", "pipeline": "audit-llm"},
+        ]
+
+    def test_object_queue_validation(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        with pytest.raises(api.AwfApiError):
+            api.run_start(proj, queue=[{"todo_id": "nope", "pipeline": "x"}])
+        # missing todo_id
+        with pytest.raises(api.AwfApiError):
+            api.run_start(proj, queue=[{"pipeline": "x"}])
+        # duplicate id across a string and an object
+        with pytest.raises(api.AwfApiError):
+            api.run_start(
+                proj,
+                queue=["TODO-0001", {"todo_id": "TODO-0001", "pipeline": "x"}],
+            )
+
+    def test_legacy_string_state_reads_and_launches(self, tmp_git_repo, monkeypatch):
+        """Old run.yaml with a plain string queue keeps working end-to-end."""
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        run_state.write_run(proj, active=True, queue=["TODO-0001"], index=0)
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+        assert captured.get("pipeline") is None
+        assert run_state.read_run(proj)["index"] == 1
+
+    def test_object_item_bad_todo_id_rejected_by_shape(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        f = run_state.run_file(proj)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            "active: true\nqueue:\n  - todo_id: garbage\n    pipeline: x\n",
+            encoding="utf-8",
+        )
+        assert run_state.read_run(proj) is None
+
+    def test_run_next_passes_item_pipeline(self, tmp_git_repo, monkeypatch):
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        (self._pipelines_dir(proj) / "custom.yaml").write_text("stages: []\n")
+        api.run_start(proj, queue=[{"todo_id": "TODO-0001", "pipeline": "custom"}])
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+        assert captured["pipeline"] == "custom"
+
+    def test_run_next_empty_pipeline_uses_config_default(self, tmp_git_repo, monkeypatch):
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        api.run_start(proj, queue=[{"todo_id": "TODO-0001", "pipeline": ""}])
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+        assert captured.get("pipeline") is None
+
+    def test_run_next_reads_pipeline_from_todo_frontmatter(self, tmp_git_repo, monkeypatch):
+        """Part B: an item without a queue-level pipeline takes the
+        pipeline declared in the TODO's contract block."""
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001", body="---\npipeline: fm-pipe\n---\n# Task\n")
+        (self._pipelines_dir(proj) / "fm-pipe.yaml").write_text("stages: []\n")
+        api.run_start(proj, queue=["TODO-0001"])
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+        assert captured["pipeline"] == "fm-pipe"
+
+    def test_queue_pipeline_beats_frontmatter(self, tmp_git_repo, monkeypatch):
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001", body="---\npipeline: fm-pipe\n---\n# Task\n")
+        pdir = self._pipelines_dir(proj)
+        (pdir / "fm-pipe.yaml").write_text("stages: []\n")
+        (pdir / "queue-pipe.yaml").write_text("stages: []\n")
+        api.run_start(
+            proj, queue=[{"todo_id": "TODO-0001", "pipeline": "queue-pipe"}]
+        )
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "started"
+        assert captured["pipeline"] == "queue-pipe"
+
+    def test_run_next_unknown_pipeline_refuses(self, tmp_git_repo, monkeypatch):
+        """RUN3 #1: an unknown name refuses with the list of available
+        pipelines; nothing is launched, the position stays put."""
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        (self._pipelines_dir(proj) / "default.yaml").write_text("stages: []\n")
+        api.run_start(proj, queue=[{"todo_id": "TODO-0001", "pipeline": "ghost"}])
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "refused"
+        assert "ghost" in result.message
+        assert "Available pipelines" in result.message
+        assert "default" in result.message
+        assert not captured  # nothing was launched
+        state = run_state.read_run(proj)
+        assert state["index"] == 0
+        assert state["active"] is True
+
+    def test_refused_launch_leaves_no_side_effects(self, tmp_git_repo, monkeypatch):
+        """A refused launch must leave the tree untouched: a stale
+        {id}.ready would mark the unlaunched TODO active (list_active)
+        and a stray awf_start could launch it with the config pipeline
+        instead of the pinned one."""
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        (self._pipelines_dir(proj) / "default.yaml").write_text("stages: []\n")
+        api.run_start(proj, queue=[{"todo_id": "TODO-0001", "pipeline": "ghost"}])
+        captured = _fake_start(monkeypatch, proj)
+
+        result = api.run_next(proj)
+
+        assert result.action == "refused"
+        assert not captured
+        assert not (proj / ".agentic" / "inbox" / "TODO-0001.ready").exists()
+        assert not (proj / ".agentic" / "context" / "BASELINE-TODO-0001.sha").exists()
+
+    def test_status_and_brief_carry_queue_pipelines(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(
+            proj,
+            queue=[
+                {"todo_id": "TODO-0001", "pipeline": "audit-llm"},
+                "TODO-0002",
+            ],
+        )
+        expected = [
+            {"todo_id": "TODO-0001", "pipeline": "audit-llm"},
+            {"todo_id": "TODO-0002", "pipeline": ""},
+        ]
+        status = api.run_status(proj)
+        assert status.queue == expected
+        brief = api.run_brief(proj)
+        assert brief["queue"] == expected
+
+    def test_status_message_shows_current_pipeline(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        _write_todo(proj, "TODO-0001")
+        api.run_start(
+            proj,
+            queue=[{"todo_id": "TODO-0001", "pipeline": "audit-llm"}, "TODO-0002"],
+        )
+        run_state.write_run(proj, index=1, current="TODO-0001")
+
+        status = api.run_status(proj)
+
+        assert "[pipeline: audit-llm]" in status.message
+        # a config-default item does not bloat the line
+        run_state.write_run(proj, current="TODO-0002")
+        assert "[pipeline:" not in api.run_status(proj).message
+
+    def test_report_labels_queue_pipelines(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(
+            proj,
+            queue=[
+                {"todo_id": "TODO-0001", "pipeline": "audit-llm"},
+                "TODO-0002",
+            ],
+        )
+        result = api.run_finish(proj, reason="test")
+
+        report = Path(result.report_file).read_text(encoding="utf-8")
+        assert "**Queue:** TODO-0001 (audit-llm), TODO-0002 — 0/2 done" in report

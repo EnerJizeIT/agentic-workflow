@@ -61,6 +61,7 @@ def dispatch_todo(
     *,
     role: str | None = None,
     todo_id: str | None = None,
+    pipeline: str | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -78,6 +79,10 @@ def dispatch_todo(
             is for agent-system-analyst".
         todo_id: override auto-generated id (e.g. "TODO-0007"). If None,
             auto-picks next available NNNN by scanning inbox + outbox.
+        pipeline: RUN3 #2 (Part B) — optional pipeline name, written into
+            the TODO's contract block as ``pipeline: <name>`` (the block is
+            created when absent). When an ``awf_run_next`` launch has no
+            queue-level pipeline, it uses this one.
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
@@ -92,6 +97,16 @@ def dispatch_todo(
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
+
+    # RUN3 #2 (Part B): an explicit pipeline= wins over a copy-pasted block
+    # — inject first, so the parse below validates the FINAL content.
+    if pipeline is not None and str(pipeline).strip():
+        from ..unit_contract import inject_pipeline_key
+
+        try:
+            content = inject_pipeline_key(content, str(pipeline))
+        except ValueError as e:
+            raise AwfApiError(f"pipeline: {e}") from None
 
     # U3: optional unit-contract block at the top of the TODO (--- yaml ---)
     # is validated here, before anything is written. No block = no-op.
@@ -211,9 +226,12 @@ def dispatch_todo(
         pass  # pre-check is best-effort, never blocks dispatch
 
     # U3: unknown keys in the contract block are a typo risk — warn, don't fail.
+    from ..unit_contract import _CONTRACT_KEYS
+
     for key in unknown_keys:
         pre_check_warnings.append(
-            f"contract block: unknown key '{key}' — known keys: verify, gates, prove_red"
+            f"contract block: unknown key '{key}' — known keys: "
+            + ", ".join(_CONTRACT_KEYS)
         )
 
     # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the

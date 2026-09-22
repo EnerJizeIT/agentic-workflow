@@ -34,22 +34,56 @@ def run_file(project_dir: Path) -> Path:
     return paths.agentic_dir(project_dir) / "state" / "run.yaml"
 
 
+def _queue_item_ok(q: object) -> bool:
+    """RUN3 #2: a queue item is a legacy ``TODO-NNNN`` string OR an object
+    ``{"todo_id": "TODO-NNNN", "pipeline": "..."}`` (object = per-item
+    pipeline). Anything else is a corrupt item."""
+    if isinstance(q, str):
+        return bool(_TODO_ID_RE.match(q))
+    if isinstance(q, dict):
+        return bool(_TODO_ID_RE.match(str(q.get("todo_id", ""))))
+    return False
+
+
+def normalize_queue(queue: object) -> list[dict]:
+    """RUN3 #2: queue items in the canonical form ``{"todo_id", "pipeline"}``.
+
+    Legacy state files store plain ``TODO-NNNN`` strings — those upgrade to
+    ``{"todo_id": <id>, "pipeline": ""}`` (empty pipeline = the pipeline from
+    config, i.e. unchanged behavior). The reader normalizes in place, so old
+    run.yaml files keep working and self-upgrade on the next write.
+    """
+    items: list[dict] = []
+    for q in queue or []:
+        if isinstance(q, dict):
+            items.append(
+                {
+                    "todo_id": str(q.get("todo_id", "")),
+                    "pipeline": str(q.get("pipeline", "") or ""),
+                }
+            )
+        else:
+            items.append({"todo_id": str(q), "pipeline": ""})
+    return items
+
+
 def _run_shape_ok(state: dict) -> bool:
     """AUD02-06: a truncated run.yaml can parse as a valid partial dict
     (``{'queue': ['TODO-00']}``) — without shape validation the reader
     returns it as normal state: ``active`` lost, queue replaced by a
     garbage id, the rest of the queue silently gone.
 
-    Valid shape: queue is a non-empty list of ``TODO-NNNN`` ids, index
-    (when present) is an int in ``[0, len(queue)]`` (``len`` = exhausted),
-    active (when present) is a bool. Absent index/active is tolerated —
-    a crash-truncated file must degrade to "no run", not to a half-run.
+    Valid shape: queue is a non-empty list of ``TODO-NNNN`` ids (RUN3 #2:
+    or ``{todo_id, pipeline}`` objects), index (when present) is an int in
+    ``[0, len(queue)]`` (``len`` = exhausted), active (when present) is a
+    bool. Absent index/active is tolerated — a crash-truncated file must
+    degrade to "no run", not to a half-run.
     """
     queue = state.get("queue")
     if not isinstance(queue, list) or not queue:
         return False
     for q in queue:
-        if not isinstance(q, str) or not _TODO_ID_RE.match(q):
+        if not _queue_item_ok(q):
             return False
     idx = state.get("index")
     if idx is not None and (
@@ -86,6 +120,9 @@ def read_run(project_dir: Path, *, logs_dir: Path | None = None) -> dict | None:
                 "(corrupt file kept for inspection)",
             )
         return None
+    # RUN3 #2: upgrade legacy string queue items to the canonical
+    # {"todo_id", "pipeline"} form on read (old state files stay readable).
+    data["queue"] = normalize_queue(data["queue"])
     return data
 
 

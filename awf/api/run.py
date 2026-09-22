@@ -52,18 +52,87 @@ def _require_run_project(project_dir: Path) -> Path:
     return project_dir
 
 
-def _validate_queue(queue: list[str] | None) -> list[str]:
-    ids = [str(q).strip() for q in (queue or []) if str(q).strip()]
-    if not ids:
+def _validate_queue(queue: list[str | dict] | None) -> list[dict]:
+    """RUN3 #2: validate + normalize the queue.
+
+    Items may be ``TODO-NNNN`` strings (legacy, pipeline from config) or
+    objects ``{"todo_id": "TODO-NNNN", "pipeline": "<name>"}`` — mixed lists
+    are fine. Returns the canonical form ``[{"todo_id", "pipeline"}, ...]``
+    (empty ``pipeline`` = the config default).
+    """
+    items: list[dict] = []
+    for q in queue or []:
+        if isinstance(q, dict):
+            todo_id = str(q.get("todo_id", "")).strip()
+            pipeline = str(q.get("pipeline", "") or "").strip()
+            if not _TODO_RE.match(todo_id):
+                raise AwfApiError(
+                    f"invalid queue item {q!r} — an object item needs "
+                    "{'todo_id': 'TODO-NNNN', 'pipeline': '<name>'} "
+                    "(pipeline may be empty for the config default)"
+                )
+            items.append({"todo_id": todo_id, "pipeline": pipeline})
+        else:
+            s = str(q).strip()
+            if not s:
+                continue
+            if not _TODO_RE.match(s):
+                raise AwfApiError(f"invalid TODO id {s!r} in queue — expected TODO-NNNN")
+            items.append({"todo_id": s, "pipeline": ""})
+    if not items:
         raise AwfApiError(
-            "queue is required — a non-empty list of TODO ids, e.g. ['TODO-0010', 'TODO-0011']"
+            "queue is required — a non-empty list of TODO ids or "
+            "{'todo_id', 'pipeline'} objects, e.g. ['TODO-0010', "
+            "{'todo_id': 'TODO-0011', 'pipeline': 'audit-llm'}]"
         )
-    for q in ids:
-        if not _TODO_RE.match(q):
-            raise AwfApiError(f"invalid TODO id {q!r} in queue — expected TODO-NNNN")
+    ids = [i["todo_id"] for i in items]
     if len(ids) != len(set(ids)):
         raise AwfApiError("queue contains duplicate TODO ids")
-    return ids
+    return items
+
+
+def _queue_item_label(item: object) -> str:
+    """Human label for a queue item: the id, plus the pipeline when set."""
+    if isinstance(item, dict):
+        tid = str(item.get("todo_id", ""))
+        pipe = str(item.get("pipeline", "") or "")
+        return f"{tid} ({pipe})" if pipe else tid
+    return str(item)
+
+
+def _current_pipeline_hint(queue_items: object, current_id: str) -> str:
+    """RUN3 #2: the running item's pipeline, when pinned explicitly in the
+    queue ("" = config default — nothing to show, do not bloat the line)."""
+    if not current_id:
+        return ""
+    for item in queue_items or []:
+        if isinstance(item, dict) and item.get("todo_id") == current_id:
+            pipe = str(item.get("pipeline", "") or "")
+            return f" [pipeline: {pipe}]" if pipe else ""
+    return ""
+
+
+def _todo_declared_pipeline(todo_md: Path) -> str:
+    """RUN3 #2 (Part B): the pipeline declared in the TODO's contract block.
+
+    Read through the shared contract parser so the block keeps ONE meaning.
+    Absent block / absent key / unreadable file → ``""`` (config default).
+    A broken block also degrades to ``""`` here — the engine's own contract
+    handling surfaces it at verify time; run_next must not crash on it.
+    """
+    from ..unit_contract import parse_todo_contract
+
+    try:
+        content = todo_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    try:
+        contract, _unknown = parse_todo_contract(content)
+    except ValueError:
+        return ""
+    if not contract:
+        return ""
+    return str(contract.get("pipeline", "") or "").strip()
 
 
 def _todo_finished(project_dir: Path, todo_id: str) -> bool:
@@ -102,6 +171,9 @@ def run_brief(project_dir: Path) -> dict | None:
     return {
         "active": bool(state.get("active")),
         "position": run_state.position(state),
+        # RUN3 #2: the queue with per-item pipelines ({"todo_id",
+        # "pipeline"}; empty pipeline = the config default).
+        "queue": [dict(q) for q in (state.get("queue") or [])],
         "note": str(state.get("note") or ""),
         "current": state.get("current", ""),
         "completed": list(state.get("completed") or []),
@@ -120,7 +192,7 @@ def run_brief(project_dir: Path) -> dict | None:
 def run_start(
     project_dir: Path,
     *,
-    queue: list[str] | None = None,
+    queue: list[str | dict] | None = None,
     budget_minutes: int = 0,
     stop_flags: dict[str, list[str]] | None = None,
     note: str = "",
@@ -129,10 +201,14 @@ def run_start(
 ) -> RunStartResult:
     """Start an autonomous run: record the queue and the mechanical gates.
 
-    The queue is a list of TODO ids. The supervisor writes each TODO file
-    before calling :func:`run_next` for it; stop flags keyed by TODO id mark
-    items awf must never auto-continue past (phase boundaries, external
-    audits, owner-decision tasks).
+    The queue is a list of TODO ids (legacy) and/or objects
+    ``{"todo_id": "TODO-NNNN", "pipeline": "<name>"}`` (RUN3 #2 — each item
+    can pin its own pipeline; empty/absent ``pipeline`` = the config
+    default). The state stores the canonical ``{"todo_id", "pipeline"}``
+    form; old string-only state files keep reading. The supervisor writes
+    each TODO file before calling :func:`run_next` for it; stop flags keyed
+    by TODO id mark items awf must never auto-continue past (phase
+    boundaries, external audits, owner-decision tasks).
 
     ``no_checkpoints`` (B4): when True, the BD-36 plan checkpoint is skipped
     for every pipeline launch of this run — the run does not expect the
@@ -140,7 +216,8 @@ def run_start(
     by :func:`run_status` / :func:`run_brief`.
     """
     project_dir = _require_run_project(project_dir)
-    ids = _validate_queue(queue)
+    items = _validate_queue(queue)
+    ids = [i["todo_id"] for i in items]
 
     existing = run_state.read_run(project_dir)
     if existing and existing.get("active") and not force:
@@ -159,7 +236,7 @@ def run_start(
         # AUD02-11: project_root was written here but never read — a dead
         # key is a false contract signal. The run state file already lives
         # under the project's .agentic/, so the root is implicit.
-        queue=ids,
+        queue=items,
         index=0,
         current="",
         completed=[],
@@ -182,7 +259,7 @@ def run_start(
     replace_note = " (previous run replaced)" if replaced else ""
     return RunStartResult(
         active=True,
-        queue=ids,
+        queue=items,
         position=run_state.position(state),
         budget_minutes=int(budget_minutes or 0),
         stop_flags=flags,
@@ -233,6 +310,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
     elif active:
         message = (
             f"Run active: {position}, current {current or '—'}"
+            + _current_pipeline_hint(state.get("queue"), current)
             + (f", budget left ~{left} min (productive)" if budget else "")
         )
     else:
@@ -311,7 +389,8 @@ def _write_report(
         f"# Run report ({ts})",
         "",
         f"**Reason:** {reason}",
-        f"**Queue:** {', '.join(queue) or '—'} — {len(completed)}/{len(queue)} done",
+        f"**Queue:** {', '.join(_queue_item_label(q) for q in queue) or '—'}"
+        f" — {len(completed)}/{len(queue)} done",
         f"**Completed:** {', '.join(completed) or '—'}",
         f"**Rejects:** {rejects_note}",
         f"**Salvage events:** {salvage}{health_note}",
@@ -444,7 +523,13 @@ def run_next(
         if run_state.productive_minutes(state) > budget:
             return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
 
-    next_id = queue[index]
+    # RUN3 #2: queue items are normalized {"todo_id", "pipeline"} dicts
+    # (read_run upgrades legacy strings); the defensive isinstance keeps
+    # hand-written state files alive too.
+    next_item = queue[index]
+    next_id = (
+        str(next_item.get("todo_id", "")) if isinstance(next_item, dict) else str(next_item)
+    )
 
     flags = (state.get("stop_flags") or {}).get(next_id) or []
     if flags:
@@ -460,7 +545,12 @@ def run_next(
         )
 
     if index > 0:
-        prev = queue[index - 1]
+        prev_item = queue[index - 1]
+        prev = (
+            str(prev_item.get("todo_id", ""))
+            if isinstance(prev_item, dict)
+            else str(prev_item)
+        )
         # AUD05-07: restore_todo leaves done/{id}/ behind, so is_archived alone
         # lets a restored (active again) prev pass. Require it to be gone from
         # the active list too (see _todo_finished).
@@ -487,6 +577,41 @@ def run_next(
             ),
         )
 
+    # RUN3 #2: the item's own pipeline, else the TODO-declared one (Part B),
+    # else the config default (None = unchanged behavior). Resolved BEFORE
+    # any side effect (baseline, .ready): a refused launch must leave the
+    # tree untouched — a stale {id}.ready would mark the unlaunched TODO
+    # active (todos.list_active) and a stray awf_start could pick it up
+    # with the config pipeline instead of the pinned one.
+    pipeline_name = (
+        str(next_item.get("pipeline", "") or "").strip()
+        if isinstance(next_item, dict)
+        else ""
+    )
+    if not pipeline_name:
+        pipeline_name = _todo_declared_pipeline(todo_md)
+    launch_pipeline: str | None = None
+    if pipeline_name:
+        # RUN3 #1: reuse the shared resolver — an explicit name that does not
+        # exist raises AwfApiError with the list of available pipelines
+        # (no duplicate of that logic here).
+        from ..pipeline import resolve_pipeline_file
+
+        try:
+            resolve_pipeline_file(project_dir, pipeline_name)
+        except AwfApiError as e:
+            return RunNextResult(
+                action="refused",
+                todo_id=next_id,
+                message=f"Cannot launch {next_id}: {e}",
+                next_action=(
+                    f"Fix the queue entry (or the {next_id} front-matter "
+                    "'pipeline:') to an existing pipeline, then retry "
+                    "awf_run_next."
+                ),
+            )
+        launch_pipeline = pipeline_name
+
     # Baseline before the signal (same order as dispatch_todo).
     # AUD05-08: best-effort — ANY failure here (no commits, git timeout,
     # permissions) must not kill the run; the orchestrator ensures a
@@ -510,6 +635,7 @@ def run_next(
         from_stage=from_stage,
         auto=auto,
         timeout=timeout,
+        pipeline=launch_pipeline,  # RUN3 #2: per-item pipeline (None = config)
         todo_id=next_id,  # NEG-2026-09-19 R1: queue order is pinned, not "newest active"
     )
 
@@ -538,8 +664,10 @@ def run_next(
             advance["closed"] = True
             return st
         completed = list(st.get("completed") or [])
-        if index > 0 and queue[index - 1] not in completed:
-            completed.append(queue[index - 1])
+        # RUN3 #2: queue items are {"todo_id", "pipeline"} dicts — credit
+        # the previous item by its id string (prev, computed above).
+        if index > 0 and prev not in completed:
+            completed.append(prev)
         st["index"] = index + 1
         st["current"] = next_id
         st["completed"] = completed

@@ -371,6 +371,14 @@ refuses the removal and points to `awf unblock` / `awf reset --orphans`.
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
 
+**Per-item pipeline (RUN3 #2).** The queue accepts
+`{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain
+id strings (mixed is fine); an empty/absent `pipeline` = the config default.
+`awf_dispatch_todo(..., pipeline=...)` writes the name into the TODO's
+front-matter, and `awf_run_next` reads it for items without a queue-level
+pipeline. An unknown name refuses the launch with the list of available
+pipelines (RUN3 #1).
+
 **Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
 the client timeout — ~55s with the default opencode.json. The tool says so
 in every `next_action`. To wait longer, raise the mcp timeout in
