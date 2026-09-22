@@ -379,18 +379,20 @@ class TestSuggestTimeoutSharedReader:
         counts = _count_reads(monkeypatch, "orchestrator.log")
         base = datetime(2026, 9, 18, 8, 0, 0)
         lines = [
-            f"[{(base + timedelta(minutes=12 * i)).strftime(_TS)}Z] "
+            f"[{(base + timedelta(minutes=2 * i)).strftime(_TS)}Z] "
             f"Stage {i}/4: stage{i} (role :: execute)"
             for i in range(4)
         ]
         log = _write_log(tmp_git_repo, lines)
 
-        assert _suggest_timeout(tmp_git_repo) == 240
+        # 2 min intervals → raw 40s, below the B3 transport cap (55s) —
+        # the assertion checks the reader math, not the cap.
+        assert _suggest_timeout(tmp_git_repo) == 40
         counts.clear()
 
         with log.open("a", encoding="utf-8") as f:
             f.write(lines[-1] + "\n")  # one more identical-interval stamp
-        assert _suggest_timeout(tmp_git_repo) == 240
+        assert _suggest_timeout(tmp_git_repo) == 40
         incr = sum(counts)
         assert incr <= 32 + 64, (
             f"second suggestion read {incr} bytes — expected the append "

@@ -331,6 +331,17 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
 
+**Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
+the client timeout — ~55s with the default opencode.json. The tool says so
+in every `next_action`. To wait longer, raise the mcp timeout in
+`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}`.
+
+**Supervisor authority.** Replanning, rewriting the spec, and splitting a
+task are a standard supervisor option — no owner approval required.
+Escalation to the owner happens only on the stop-list: a twice-rejected
+iteration, BLOCKED without a resolution, budget, an audit point. The reason
+for every replan/split goes into the run report/note.
+
 ### SMO
 | Tool | What it does |
 |---|---|

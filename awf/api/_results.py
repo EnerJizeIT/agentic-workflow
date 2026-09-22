@@ -284,7 +284,8 @@ class WaitEventResult:
     message: str
     state_snapshot: dict[str, Any] = field(default_factory=dict)
     # SPEC A-run: recommended wait size for the next call (median stage/3,
-    # clamped [60, 300]); 0 when not computed for this event type.
+    # clamped to the MCP transport cap, wait_event.TRANSPORT_CAP); 0 when
+    # not computed for this event type.
     suggested_timeout: int = 0
 
     def as_dict(self) -> dict[str, Any]:

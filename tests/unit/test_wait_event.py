@@ -190,7 +190,7 @@ class TestSuggestedTimeout:
     def test_suggestion_from_stage_history(self, awf_project):
         from datetime import datetime, timedelta
 
-        from awf.api.wait_event import _suggest_timeout
+        from awf.api.wait_event import TRANSPORT_CAP, _suggest_timeout
 
         logs = awf_project / ".agentic" / "logs"
         logs.mkdir(parents=True, exist_ok=True)
@@ -203,21 +203,71 @@ class TestSuggestedTimeout:
 
         suggested = _suggest_timeout(awf_project)
 
-        assert 60 <= suggested <= 300
-        assert suggested == 240  # 12 min stage → wake ~3x per stage
+        # 12 min stage → raw 240s — clamped to the MCP transport cap (B3):
+        # a suggested wait above the cap would die mid-wait (-32001).
+        assert suggested == TRANSPORT_CAP
+        assert suggested <= TRANSPORT_CAP
+
+    def test_suggestion_short_stage_under_cap(self, awf_project):
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import MIN_WAIT, TRANSPORT_CAP, _suggest_timeout
+
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=2 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        suggested = _suggest_timeout(awf_project)
+
+        # 2 min stage → raw 40s — below the cap, kept as-is.
+        assert suggested == 40
+        assert MIN_WAIT <= suggested <= TRANSPORT_CAP
 
     def test_suggestion_default_without_log(self, awf_project):
-        from awf.api.wait_event import _suggest_timeout
+        from awf.api.wait_event import TRANSPORT_CAP, _suggest_timeout
 
-        assert _suggest_timeout(awf_project) == 180
+        assert _suggest_timeout(awf_project) == TRANSPORT_CAP
+        # A stale caller default (180) must not escape the cap either.
+        assert _suggest_timeout(awf_project, default=180) == TRANSPORT_CAP
 
     def test_timeout_event_carries_suggestion(self, awf_project):
+        from awf.api.wait_event import MIN_WAIT, TRANSPORT_CAP
+
         write_state(
             awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2,
         )
         result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
         assert result.event_type == "timeout"
-        assert result.suggested_timeout >= 60
+        assert MIN_WAIT <= result.suggested_timeout <= TRANSPORT_CAP
+
+    def test_clamped_suggestion_advises_smaller_steps(self, awf_project):
+        """B3: the suggestion hit the transport cap → the message advises
+        waiting in smaller steps instead of one long cut-off wait."""
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import TRANSPORT_CAP
+
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=12 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        write_state(awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2)
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert result.suggested_timeout == TRANSPORT_CAP
+        assert "Transport cap" in result.message
+        assert "smaller steps" in result.message
 
 
 class TestActionableOnly:
@@ -256,8 +306,10 @@ class TestActionableOnly:
 
         result = api.wait_for_event(awf_project, timeout=3, poll_interval=1)
 
+        from awf.api.wait_event import MIN_WAIT, TRANSPORT_CAP
+
         assert result.event_type == "stage_changed"
-        assert result.suggested_timeout >= 60
+        assert MIN_WAIT <= result.suggested_timeout <= TRANSPORT_CAP
 
 
 class TestVerifyPayload:

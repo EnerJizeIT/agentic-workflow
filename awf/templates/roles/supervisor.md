@@ -313,6 +313,11 @@ Open the phases file and pick the **nearest unfinished step**. Do not skip ahead
 
 **Principle:** one TODO = one completed increment. The Worker is capable — an increment can include designing and implementing a feature across several files.
 
+**Replanning is your standard option.** Rewriting the spec or splitting a
+task does NOT require owner approval — escalate to the owner only on the
+stop-list: twice-rejected iteration, BLOCKED without a resolution, budget,
+audit point. Record the reason for every replan/split in the run report/note.
+
 ### Step 3 · Write TODO for agent
 
 The TODO is the **only contract** — concise, human-readable, and what the

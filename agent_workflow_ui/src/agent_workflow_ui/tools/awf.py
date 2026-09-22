@@ -1366,6 +1366,28 @@ async def awf_open_pipeline_dashboard(
 
 # ─── DASH Phase 3: supervisor wake-up (no more polling) ─────────────────
 
+# Wrapper-side cap for a single wait. The ACTUAL cap is lower: the MCP
+# client transport (default ~60s timeout) cuts a wait at ~55s (B3, run2
+# report) — awf.api.TRANSPORT_CAP. next_action says so on every response.
+MAX_WAIT = 600
+
+
+def _wait_cap_note(clamped: bool, requested: int) -> str:
+    """B3: append the actual single-wait cap to every next_action.
+
+    The supervisor used to wait with timeout=180 and get the transport
+    cut at ~55s (-32001), then hammer retries. The note makes the working
+    cap explicit; when the request was clamped to MAX_WAIT it says so.
+    """
+    note = (
+        f" Single wait <= {api.TRANSPORT_CAP}s (MCP client transport cap; "
+        "to wait longer, raise the mcp timeout in opencode.json, "
+        f"e.g. 600000 ms; wrapper cap {MAX_WAIT}s)."
+    )
+    if clamped:
+        note = f" Requested {requested}s was clamped to {MAX_WAIT}s." + note
+    return note
+
 
 async def awf_wait_for_event(
     project_dir: str | None = None,
@@ -1396,11 +1418,16 @@ async def awf_wait_for_event(
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
 
     R3 (NEG-2026-09-19): the MCP transport cuts long tool calls (JSON-RPC
-    -32001) — the default client timeout is ~60s. This wrapper clamps the
-    wait to MAX_WAIT (600s). For longer single waits set the MCP server
-    timeout in opencode.json::
+    -32001) — the default client timeout is ~60s, so a single wait works
+    up to ~55s (B3, run2 report). This wrapper clamps the wait to MAX_WAIT
+    (600s). For longer single waits set the MCP server timeout in
+    opencode.json::
 
         "mcp": {"agent-workflow-ui": {..., "timeout": 600000}}
+
+    B3: ``next_action`` of EVERY response carries the actual single-wait
+    cap (MCP client transport, ~55s by default) and how to raise it; when
+    ``timeout_clamped`` is true the same advice comes with the clamp fact.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
@@ -1414,10 +1441,10 @@ async def awf_wait_for_event(
         Dict with: event_type (verify/blocked/salvage/checkpoint/done/
         timeout/stage_changed/idle), message (instruction for supervisor),
         state_snapshot, suggested_timeout (recommended wait size for the
-        next call), timeout_clamped (true when the requested timeout
-        exceeded the cap).
+        next call, never above the transport cap), next_action (instruction
+        + the actual single-wait cap and how to raise it), timeout_clamped
+        (true when the requested timeout exceeded the wrapper cap).
     """
-    MAX_WAIT = 600
     # AUD08-07: a non-numeric timeout used to raise ValueError OUTSIDE the
     # try below — the module contract is "never escape with an exception".
     try:
@@ -1445,7 +1472,7 @@ async def awf_wait_for_event(
         # next_action was stuck on the timeout instruction. _ok() already
         # carries event_type via as_dict().
         et = response.get("event_type") or "timeout"
-        suggested = response.get("suggested_timeout") or 180
+        suggested = response.get("suggested_timeout") or api.TRANSPORT_CAP
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;
         # outside it stays idle (R6 reactive mode).
@@ -1483,6 +1510,10 @@ async def awf_wait_for_event(
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
             }
         response["next_action"] = _EVENT_ACTIONS.get(et, "Check awf_status, then wait for user.")
+        # B3: every response carries the actual single-wait cap (transport
+        # cuts at ~55s by default) + how to raise it; clamped requests say
+        # so explicitly.
+        response["next_action"] += _wait_cap_note(clamped, requested)
         return response
     except api.AwfApiError as e:
         return _err(e)
