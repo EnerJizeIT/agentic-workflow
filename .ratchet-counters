@@ -139,4 +139,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # (TODO-0001/TODO-0002 ids), test_brief.py (TODO-0042/TODO-0009 test
 # ids). Same class as above: test identifiers and unit-id references,
 # not debt.
+# RUN7-2026-09-23 (#1): baseline raised 3407 -> 3435 — the
+# no-false-done-on-salvage-leftover unit (TODO-0061) adds 29 TODO-bearing
+# lines (one removed in the _cycle_done_event docstring reword):
+# TODO-0001/TODO-0002/TODO-0056/TODO-0061 test ids in
+# tests/unit/test_wait_event.py (23 — TestSalvageKillLeftover battle-case
+# fixtures + TestStateIsExited state shapes) and unit-id references in
+# awf/api/wait_event.py comments/docstrings (6 — the _state_is_exited
+# docstring, the _cycle_done_event gate comment, the wait_for_event
+# 'done' bullet). Same class as above: test identifiers and unit-id
+# references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

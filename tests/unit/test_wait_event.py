@@ -501,6 +501,160 @@ class TestDoneCycleDetection:
         assert "TODO-0002" in result.message
 
 
+class TestSalvageKillLeftover:
+    """RUN7 #1: a kill after a salvage attempt leaves ONLY the salvage
+    counter in state (_clear_state_keep_salvage, awf/api/pipeline.py) — the
+    stage markers are wiped and no phase=done is written. When the project
+    carries an OLDER cycle's evidence (done/<id>/ or an awf commit), that
+    leftover must not produce a 'done' for the old TODO — the QA TODO-0056
+    scratch repro: `EVENT: done, MSG: TODO-0001 committed and archived...`
+    in a run whose next TODO was the killed one. The leftover keeps the old
+    wait behavior (timeout), never a 'done' for a past cycle.
+    """
+
+    @staticmethod
+    def _finish_cycle(project, todo_id: str) -> None:
+        """The cycle's signs: the verify commit + the done/<id>/ archive
+        (what _last_completed_todo looks for)."""
+        import subprocess
+
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-qm", f"awf(verify): {todo_id}"],
+            cwd=project, check=True,
+        )
+        d = project / ".agentic" / "done" / todo_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "TODO.md").write_text(f"# {todo_id}\n", encoding="utf-8")
+
+    @staticmethod
+    def _simulate_kill_after_salvage(project, todo_id: str = "TODO-0002") -> None:
+        """Mirror kill_pipeline's tail after a salvage attempt
+        (_clear_state_keep_salvage): the stage state is cleared, only
+        salvage_count/salvage_count_key survive."""
+        from awf.pipeline_state import clear_state
+
+        write_state(
+            project,
+            stage_name="agent-impl",
+            stage_kind="execute",
+            stage_idx=2,
+            todo_id=todo_id,
+            pipeline_pid=99999,
+        )
+        clear_state(project)
+        write_state(
+            project,
+            salvage_count=1,
+            salvage_count_key=f"{todo_id}:execute",
+        )
+
+    def test_no_false_done_for_previous_cycle(self, awf_project):
+        """Battle case (QA TODO-0056): TODO-0001 finished, TODO-0002 killed
+        after salvage → no 'done' for TODO-0001, the old wait (timeout)."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._simulate_kill_after_salvage(awf_project, "TODO-0002")
+
+        result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert "TODO-0001" not in result.message
+
+    def test_no_false_done_when_kill_happens_during_wait(self, awf_project):
+        """The leftover appears mid-wait (the kill lands between polls):
+        the poll loop keeps the old wait behavior too."""
+        import threading
+        import time as _time
+
+        self._finish_cycle(awf_project, "TODO-0001")
+        write_state(
+            awf_project,
+            stage_name="agent-impl",
+            stage_kind="execute",
+            stage_idx=2,
+            todo_id="TODO-0002",
+        )
+
+        def kill_later():
+            _time.sleep(0.3)
+            from awf.pipeline_state import clear_state
+
+            clear_state(awf_project)
+            write_state(
+                awf_project,
+                salvage_count=1,
+                salvage_count_key="TODO-0002:execute",
+            )
+
+        threading.Thread(target=kill_later, daemon=True).start()
+        result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert "TODO-0001" not in result.message
+
+    def test_done_after_real_clean_exit_of_killed_cycle(self, awf_project):
+        """The same cycle finishes for real afterwards (the orchestrator's
+        clean exit) → 'done' names the finished TODO, not the old one."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._simulate_kill_after_salvage(awf_project, "TODO-0002")
+        self._finish_cycle(awf_project, "TODO-0002")
+        from awf.pipeline_state import clear_state
+
+        clear_state(awf_project)
+        write_state(awf_project, phase="done", goal="test goal", normalized=True)
+
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0002" in result.message
+        assert "TODO-0001" not in result.message
+
+
+class TestStateIsExited:
+    """RUN7 #1: the 'exited' decision — only the two cycle-end shapes
+    (state absent; clean-exit leftover with phase=done) count."""
+
+    def test_absent_state_is_exited(self):
+        from awf.api.wait_event import _state_is_exited
+
+        assert _state_is_exited(None) is True
+        assert _state_is_exited({}) is True
+
+    def test_clean_exit_leftover_is_exited(self):
+        from awf.api.wait_event import _state_is_exited
+
+        assert _state_is_exited({"phase": "done", "goal": "g", "normalized": True}) is True
+
+    def test_salvage_kill_leftover_is_not_exited(self):
+        from awf.api.wait_event import _state_is_exited
+
+        assert _state_is_exited(
+            {"salvage_count": 1, "salvage_count_key": "TODO-0002:execute"}
+        ) is False
+        assert _state_is_exited({"salvage_count": 1, "salvage_count_key": None}) is False
+
+    def test_live_state_is_not_exited(self):
+        from awf.api.wait_event import _state_is_exited
+
+        assert _state_is_exited(
+            {"stage_name": "agent-impl", "stage_kind": "execute", "todo_id": "TODO-0002"}
+        ) is False
+
+    def test_active_salvage_on_live_markers_is_not_exited(self):
+        """The salvage flag merges onto live markers (pipeline_engine.py) —
+        that state is a live pipeline, never 'exited'."""
+        from awf.api.wait_event import _state_is_exited
+
+        assert _state_is_exited(
+            {
+                "stage_name": "agent-impl",
+                "stage_kind": "execute",
+                "todo_id": "TODO-0002",
+                "salvage_needed": True,
+                "salvage_count": 1,
+            }
+        ) is False
+
+
 class TestVerifyPayload:
     def test_verify_snapshot_carries_diff_stat(self, awf_project):
         import subprocess
