@@ -14,15 +14,16 @@
 
 ### RUN3-2026-09-22 · Отчёт супервизора topic-trainer — сценарий «аудит по доменам»
 
-**Источник:** `~/Desktop/awf-supervisor-report-2026-09-22.md`. Сценарий: шесть аудит-слоёв, у каждого свой пайплайн и роль; находки сведены в один план. Забег RUN3: 6 юнитов.
+**Status:** закрыто 22.09 забегом RUN3 (6 юнитов, 0 салважей, 208 мин). Источник: `~/Desktop/awf-supervisor-report-2026-09-22.md`.
 
-⬜ **#1 Именованные пайплайны** — `awf pipeline-write` (CLI+MCP) и список пайплайнов; запись в `.agentic/pipelines/<имя>.yaml` без правки config и supervisor (`awf_start(pipeline=…)` имя уже принимает, создать его нечем).
-⬜ **#2 Пайплайн на элемент очереди забега** — `awf_run_start(queue=[{todo_id, pipeline}, …])` (строки — совместимость) + `pipeline=` в `awf_dispatch_todo` (пишется в TODO, читается при запуске); иначе шесть слоёв = шесть одиночных стартов без бюджета/нот/отчёта.
-⬜ **#3 Роль из глобального скилла** — `awf_add_role(..., from_skill="agent-security-auditor")` копирует содержимое скилла в `.agentic/roles/`; сейчас только пустой шаблон, а skill-файлы видны лишь форме setup.
-⬜ **#4 БАГ: перевыдача TODO не снимает старый BLOCKED** — stale `outbox/BLOCKED-<id>.ready` держит `todos.is_closed` → `awf_status` пуст, `awf_start` без закрепления: «No active TODO». Чинить: `awf unblock TODO-NNNN` + автоснятие stale-закрытия (BLOCKED/ACK) при перевыдаче того же номера.
-⬜ **#5 Убрать никогда не стартовавший TODO** — `awf todo-remove TODO-NNNN` (след в `done/`, лог) или `reset --stale`: `reset --orphans` требует `.ready`, а такие TODO инертны и путают.
-⬜ **#6 `no_checkpoints` на одиночный старт** — параметр у `awf_start`/`awf_continue` (CLI+MCP), сейчас флаг есть только у забега.
-⬜ **#7 `awf_current_step` на живом проекте** — пустой `goal` у настроенного проекта с архивом уводит в setup-ритуал; различать «новый» и «живой» проект.
+✅ **#1 Именованные пайплайны** — `awf pipeline-write <имя> --role …` (CLI+MCP): пишет только `.agentic/pipelines/<имя>.yaml`, config/supervisor не трогает; `awf pipelines` + запуск по имени с внятной ошибкой на неизвестное. `2018003`
+✅ **#2 Пайплайн на элемент очереди забега** — очередь принимает `{todo_id, pipeline}` (строки — совместимость, старые state читаются), `awf_dispatch_todo(pipeline=…)` пишет front-matter, `run_next` пробрасывает. `ad640b9`
+✅ **#3 Роль из глобального скилла** — `awf add-role <роль> --from-skill <скилл>`: тело SKILL.md без YAML-шапки + провенанс; проектные скиллы затеняют глобальные; traversal закрыт. `b2ca7e9`
+✅ **#4+#5 Гигиена состояния** — `awf unblock TODO-NNNN` (снимает stale BLOCKED/ACK, DONE неприкосновенен) + автоснятие при перевыдаче; `awf todo-remove` для не стартовавших (след в `done/`). `56af3d1`
+✅ **#6 `no_checkpoints` на одиночный старт** — параметр у `start`/`continue` (CLI+MCP), процессный скоуп (env ребёнка), в config/state не пишется. `68771b7`
+✅ **#7 `awf_current_step` и живой проект** — «живой» = настроен (пайплайн/роли, init-стаб не считается) И непустой `done/` → рабочая фаза вместо setup-ритуала. `2d71168`
+
+ℹ️ Фланг foreground+no_checkpoints (из RUN2) остаётся открытым: в `run_next` флаг забега в guard не пробрасывается (через MCP недостижимо) — см. запись RUN2.
 
 ### RUN2-2026-09-22 · Баг-репорт из topic-trainer (забег 2, awf 1.1.0)
 
