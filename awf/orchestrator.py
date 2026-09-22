@@ -183,6 +183,11 @@ def run_pipeline(args: Any) -> int:
                 project_dir, logs_dir=logs_dir, stage_idx=stage_idx,
                 stage_name=s_name, stage_kind=s_kind,
                 todo_id=current_todo, pipeline_pid=os.getpid(),
+                # RUN6 #2: the name of the ACTUAL (resolved) pipeline —
+                # the dashboard must draw the pipeline that really runs
+                # (a run queue item can pin a non-default one). Cleared
+                # with the rest of the state on exit (clear_state).
+                pipeline=pipeline_file.stem,
                 # dogfood-11: a new stage start means any previous salvage was
                 # resolved (ACK/retry) — clear the flag, or the dashboard would
                 # keep showing "Salvage" forever (write_state merges fields).

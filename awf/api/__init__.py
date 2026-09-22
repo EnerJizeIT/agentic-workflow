@@ -65,6 +65,7 @@ from ._results import (
     StatusResult,
     SupervisorContextResult,
     UnblockResult,
+    UpdateTodoResult,
     WaitEventResult,
     WritePipelineResult,
 )
@@ -74,7 +75,7 @@ from ._stack import derive_project_name, detect_stack
 from .brief import brief
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
-from .hygiene import remove_todo, retire_todo, unblock_todo
+from .hygiene import remove_todo, retire_todo, unblock_todo, update_todo
 from .lifecycle import (
     get_report,
     get_status,
@@ -100,7 +101,7 @@ from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
 from .run import run_brief, run_finish, run_next, run_note, run_start, run_status
 from .setup import apply_project_setup
-from .wait_event import TRANSPORT_CAP, wait_for_event
+from .wait_event import TRANSPORT_CAP, wait_cap, wait_for_event
 
 __all__ = [
     # Exception
@@ -131,6 +132,7 @@ __all__ = [
     "RunFinishResult",
     "RestoreResult",
     "UnblockResult",
+    "UpdateTodoResult",
     "RemoveTodoResult",
     "RetireTodoResult",
     "WritePipelineResult",
@@ -165,6 +167,7 @@ __all__ = [
     "unblock_todo",
     "remove_todo",
     "retire_todo",
+    "update_todo",
     # Autonomous run (забег)
     "run_start",
     "run_status",
@@ -191,6 +194,7 @@ __all__ = [
     "brief",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "TRANSPORT_CAP",
+    "wait_cap",
     "wait_for_event",
     # Model configuration validation
     "check_model_config",

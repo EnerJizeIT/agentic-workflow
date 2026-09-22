@@ -824,6 +824,47 @@ def _build_todo_timeline(project_dir: Path, current_todo: str | None) -> list[di
     return timeline
 
 
+def _display_pipeline_name(
+    project_dir: Path, state: dict[str, Any] | None, todo_id: str | None
+) -> str:
+    """RUN6 #2: which pipeline the dashboard should draw (by name).
+
+    Chain: the engine-written ``state["pipeline"]`` (the run's own
+    pipeline) → the current TODO's run queue item (per-item pipeline,
+    RUN3 #2) → the TODO's contract block (``pipeline:``) → ``""`` (the
+    config default). Every source is best-effort — a missing or
+    unreadable one drops to the next, so a broken file can never break
+    the dashboard.
+    """
+    if state:
+        name = str(state.get("pipeline", "") or "").strip()
+        if name:
+            return name
+    if not todo_id:
+        return ""
+    try:
+        from .. import run_state
+
+        run = run_state.read_run(project_dir)
+        if run:
+            for item in run.get("queue") or []:
+                if str(item.get("todo_id", "") or "") == todo_id:
+                    name = str(item.get("pipeline", "") or "").strip()
+                    if name:
+                        return name
+    except Exception:
+        pass
+    try:
+        from .run import _todo_declared_pipeline
+
+        todo_md = paths.inbox(project_dir) / f"{todo_id}.md"
+        if todo_md.is_file():
+            return _todo_declared_pipeline(todo_md).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     """Generate full dashboard state as dict (for /api/state JSON endpoint).
 
@@ -832,18 +873,43 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     """
     project_dir = Path(project_dir).resolve()
     state = read_state(project_dir)
+    todo_id = state.get("todo_id") if state else None
 
-    # Pipeline stages
+    # RUN6 #2: the dashboard must draw the pipeline that ACTUALLY runs —
+    # resolve its name (engine state → run queue → the TODO's contract
+    # block → config default) and load the stages from THAT file. An
+    # unresolvable name falls back to the default pipeline — never crash.
     stages_raw: list[dict[str, Any]] = []
+    display_pipeline = ""
     try:
         from ..pipeline import resolve_pipeline_file
-        pipeline_file = resolve_pipeline_file(project_dir)
+
+        want_pipeline = _display_pipeline_name(project_dir, state, todo_id)
+        try:
+            pipeline_file = resolve_pipeline_file(project_dir, want_pipeline or None)
+        except Exception:
+            pipeline_file = resolve_pipeline_file(project_dir)
         if pipeline_file.is_file():
+            display_pipeline = pipeline_file.stem
             import yaml
+
             data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
             stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
     except Exception:
-        pass
+        display_pipeline = ""
+        stages_raw = []
+
+    # RUN6 #2: stage_idx belongs to the ACTUAL pipeline. When the
+    # displayed one is different (e.g. the actual file is gone), the
+    # index means nothing — no stage highlight + a note instead.
+    state_pipeline = str(state.get("pipeline", "") or "").strip() if state else ""
+    pipeline_mismatch = bool(state_pipeline) and state_pipeline != display_pipeline
+    pipeline_note = ""
+    if pipeline_mismatch:
+        pipeline_note = (
+            f"исполняемый пайплайн — {state_pipeline}, "
+            f"отображается {display_pipeline}: подсветка стадий отключена"
+        )
 
     current_stage_idx = state.get("stage_idx", -1) if state else -1
     stage_names = []
@@ -856,7 +922,9 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         kind = s.get("kind", "")
         stage_names.append(name)
         rv = _role_visual(role) if role != "supervisor" else _role_visual("supervisor")
-        if i < (current_stage_idx or 0):
+        if pipeline_mismatch:
+            st = "pending"
+        elif i < (current_stage_idx or 0):
             st = "done"
         elif i == current_stage_idx:
             st = "current"
@@ -894,8 +962,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             datetime.fromtimestamp(elapsed_epoch, tz=timezone.utc).isoformat()
         )
 
-    # TODO id + worker status (needed by the chat and the todo pane)
-    todo_id = state.get("todo_id") if state else None
+    # Worker status (needed by the chat and the todo pane); todo_id is
+    # resolved with the state at the top of this function (RUN6 #2).
     worker = _read_worker_activity(state)
     if worker and worker.get("active"):
         worker["last_line"] = _read_worker_last_line(project_dir, todo_id)
@@ -1017,9 +1085,14 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         except Exception:
             pass
 
-    # Next stage preview
+    # Next stage preview (RUN6 #2: suppressed on mismatch — the index
+    # points into the ACTUAL pipeline, not the displayed one)
     next_stage = None
-    if current_stage_idx is not None and 0 <= current_stage_idx < len(stages) - 1:
+    if (
+        not pipeline_mismatch
+        and current_stage_idx is not None
+        and 0 <= current_stage_idx < len(stages) - 1
+    ):
         ns = stages[current_stage_idx + 1]
         next_stage = {"icon": ns["icon"], "label": ns["label"], "color": ns["color"]}
 
@@ -1039,6 +1112,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
         "stages": stages,
         "stages_done": sum(1 for s in stages if s["status"] == "done"),
         "stages_total": len(stages),
+        "pipeline": display_pipeline,
+        "pipeline_note": pipeline_note,
         "next_stage": next_stage,
         "elapsed_epoch": elapsed_epoch,
         "elapsed_frozen": elapsed_frozen,

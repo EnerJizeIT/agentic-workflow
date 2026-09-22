@@ -1751,3 +1751,84 @@ class TestStageStartCheckpointClear:
         assert state.get("phase") == "done"
         assert state.get("goal") == "build X"
         assert state.get("normalized") is True
+
+
+class TestPipelineNameInState:
+    """RUN6 #2: the engine writes the ACTUAL (resolved) pipeline name into
+    state where pipeline_pid is written — the dashboard then draws THAT
+    pipeline's stages (a run queue item can pin a non-default one)."""
+
+    STAGE = "stages:\n  - name: {name}-work\n    role: worker\n    kind: execute\n"
+
+    def _make_proj(self, tmp_path: Path, pipelines: dict[str, str]) -> Path:
+        proj = tmp_path / "proj"
+        for d in ("roles", "inbox", "outbox", "context", "logs", "pipelines", "phases"):
+            (proj / ".agentic" / d).mkdir(parents=True)
+        (proj / ".agentic" / "config.yaml").write_text(
+            'project:\n  name: t\nphases:\n  current: ".agentic/phases/plan.md"\n'
+            'default_pipeline: "default"\n'
+        )
+        (proj / ".agentic" / "phases" / "plan.md").write_text("- [ ] Step 1\n")
+        for name, body in pipelines.items():
+            (proj / ".agentic" / "pipelines" / f"{name}.yaml").write_text(body)
+        return proj
+
+    def _run(self, tmp_path: Path, monkeypatch, pipeline_name: str | None):
+        """Run a 1-stage pipeline with a fake agent stage; returns
+        (rc, proj, state seen by the stage)."""
+        from types import SimpleNamespace
+
+        from awf import orchestrator
+        from awf.pipeline_state import read_state
+
+        proj = self._make_proj(
+            tmp_path,
+            {
+                "default": self.STAGE.format(name="default"),
+                "audit-llm": self.STAGE.format(name="audit"),
+            },
+        )
+        seen: dict = {}
+
+        def fake_agent_stage(stage, todo_id, project_dir, config, logs_dir,
+                             stages, stage_idx, retry_counts, auto, hard_timeout=None):
+            seen.update(read_state(project_dir) or {})
+            return todo_id, stage_idx + 1, 0  # stage done → clean exit
+
+        monkeypatch.setattr(orchestrator, "execute_agent_stage", fake_agent_stage)
+
+        args = SimpleNamespace(
+            project_dir=str(proj), pipeline=pipeline_name, from_stage=None,
+            auto=True, timeout=None, todo_id="",
+        )
+        rc = orchestrator.run_pipeline(args)
+        return rc, proj, seen
+
+    def test_explicit_pipeline_name_written_at_stage_start(self, tmp_path, monkeypatch):
+        import os
+
+        rc, _proj, seen = self._run(tmp_path, monkeypatch, "audit-llm")
+        assert rc == 0
+        assert seen.get("pipeline") == "audit-llm"
+        assert seen.get("stage_name") == "audit-work"
+        assert seen.get("pipeline_pid") == os.getpid()
+
+    def test_default_pipeline_name_written_at_stage_start(self, tmp_path, monkeypatch):
+        rc, _proj, seen = self._run(tmp_path, monkeypatch, None)
+        assert rc == 0
+        assert seen.get("pipeline") == "default"
+
+    def test_pipeline_name_not_stale_after_clean_exit(self, tmp_path, monkeypatch):
+        """clear_state removes the whole file; the post-exit write must not
+        resurrect the name (the dashboard would otherwise draw a pipeline
+        that no longer runs)."""
+        from awf.pipeline_state import read_state
+
+        rc, proj, seen = self._run(tmp_path, monkeypatch, "audit-llm")
+        assert rc == 0
+        assert seen.get("pipeline") == "audit-llm"
+
+        final = read_state(proj)
+        assert final is not None
+        assert final.get("phase") == "done"
+        assert "pipeline" not in final

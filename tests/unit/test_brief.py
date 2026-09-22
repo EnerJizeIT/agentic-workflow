@@ -208,6 +208,12 @@ class TestCardSections:
         assert "awf_run_finish" in r.text
         assert "awf_unblock" in r.text
 
+    def test_rituals_run_loop_done_line(self, live_project):
+        """RUN6 #1: the card teaches the approve → done → run_next loop."""
+        r = api.brief(live_project)
+        assert "after approve the pipeline exits" in r.text
+        assert "`done`" in r.text
+
     def test_recovery_section(self, live_project):
         r = api.brief(live_project)
         assert "## Recovery" in r.text
@@ -215,6 +221,11 @@ class TestCardSections:
             assert recipe_tool in r.text
         assert "no_checkpoints" in r.text
         assert load_recovery() in r.text
+
+    def test_recovery_approved_recipe(self, live_project):
+        """RUN6 #1: the 'approved, where's the next step?' recipe is in the card."""
+        r = api.brief(live_project)
+        assert "where's the next step?" in r.text
 
     def test_doctrine_section(self, live_project):
         doctrine = live_project / ".agentic" / "doctrine"
@@ -246,12 +257,80 @@ class TestCardSections:
         assert names == [
             "What's next",
             "State",
+            "Defaults",
+            "Scenarios",
             "Tool map",
             "Rituals",
             "Recovery",
             "What's new",
             "Feedback",
         ]
+
+    def test_defaults_section(self, live_project):
+        """RUN6 #5: the default behaviors are visible in the card."""
+        r = api.brief(live_project)
+        assert "## Defaults" in r.text
+        section = r.text.split("## Defaults", 1)[1].split("## ", 1)[0]
+        assert "no_checkpoints" in section  # checkpoint on by default
+        assert "awf_run_next" in section  # 'finished' = done event → run_next
+        assert "finished" in section
+        assert "NORMAL" in section or "normal" in section  # several active TODOs
+        assert "USAGE.md" in section  # full docs pointer
+
+    def test_scenarios_section(self, live_project):
+        """RUN6 #5: the five scenarios are in the card + point to the skill."""
+        r = api.brief(live_project)
+        assert "## Scenarios" in r.text
+        section = r.text.split("## Scenarios", 1)[1].split("## ", 1)[0]
+        for kw in ("single task", "run", "verify", "blocked", "salvage"):
+            assert kw in section.lower()
+        assert "awf-supervisor" in section  # full steps live in the skill
+
+    def test_next_action_field_live(self, live_project):
+        """RUN6 #5: a live card always carries a next step."""
+        r = api.brief(live_project)
+        assert r.next_action
+        _make_active_todo(live_project)
+        r2 = api.brief(live_project)
+        assert r2.next_action
+        assert "awf_start" in r2.next_action
+
+
+# ─── next_action_from_status (RUN6 #5) ──────────────────────────────────
+
+
+class TestNextActionFromStatus:
+    def test_expected_action_wins(self):
+        s = {"expected_action": "Stage at verify — act.", "active_todos": []}
+        assert brief_mod.next_action_from_status(s) == "Stage at verify — act."
+
+    def test_blocked(self):
+        s = {"blocked_ids": ["TODO-0009"], "active_todos": []}
+        assert "TODO-0009" in brief_mod.next_action_from_status(s)
+        assert "ack" in brief_mod.next_action_from_status(s)
+
+    def test_pipeline_running(self):
+        s = {"pipeline_running": True, "current_stage_name": "worker"}
+        assert "worker" in brief_mod.next_action_from_status(s)
+
+    def test_active_todo(self):
+        s = {"active_todos": [{"todo_id": "TODO-0042"}]}
+        assert "TODO-0042" in brief_mod.next_action_from_status(s)
+        assert "awf_start" in brief_mod.next_action_from_status(s)
+
+    def test_suggestion_fallback(self):
+        s = {"suggestion": "Do the thing."}
+        assert brief_mod.next_action_from_status(s) == "Do the thing."
+
+    def test_empty_state(self):
+        out = brief_mod.next_action_from_status({})
+        assert "awf_dispatch_todo" in out
+
+    def test_dataclass_form(self):
+        from types import SimpleNamespace
+
+        s = SimpleNamespace(expected_action=None, salvage_needed=True, salvage_stage="worker")
+        assert "awf_retry_stage" in brief_mod.next_action_from_status(s)
 
 
 # ─── Live vs new project ─────────────────────────────────────────────────

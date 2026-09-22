@@ -80,4 +80,63 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # TODO"), replacing the old [Unreleased]'s one such line (the brief's "active
 # TODOs", kept verbatim). Net +4. Same class as above: unit identifiers in the
 # changelog, not debt.
+# RUN6-2026-09-22 (#1): baseline raised 3176 -> 3215, files_over_400
+# raised 49 -> 51 — the done-after-approve unit (TODO-0056) adds 39
+# TODO-bearing lines: TODO-0001/TODO-0002 test ids in
+# tests/unit/test_wait_event.py (19, TestDoneCycleDetection fixtures),
+# unit-id references in awf/api/wait_event.py docstrings/comments (13),
+# the done-event wording in tools/awf.py (3), the done line in USAGE EN/RU
+# (1+1), the brief ritual + recovery.md recipe (1+1), the brief's
+# "with the TODO" phrasing (1). Same class as above: test identifiers and
+# unit-id references, not debt. The +2 files over 400 are
+# awf/api/wait_event.py (259 -> 426 — the done-detection helpers) and
+# tests/unit/test_wait_event.py (335 -> 524 — its test suite), same class
+# as the test_brief.py / test_todo_hygiene.py raises above.
+# RUN6-2026-09-22 (#2): baseline raised 3215 -> 3235 — the
+# actual-pipeline unit (TODO-0057) adds 20 TODO-bearing lines, one
+# removed: 16 test ids in tests/unit/test_dashboard.py
+# (TestActualPipeline: TODO-0010/TODO-0009/TODO-0001 queue/state
+# fixtures + the contract-block TODO-0010.md fixture), 3
+# docstring/comment references in awf/api/dashboard.py (the
+# _display_pipeline_name chain wording), and the pipeline-chip line in
+# USAGE EN/RU (1+1, the chip is described "next to the TODO"); the
+# removed line is the old "# TODO id + worker status" comment in
+# generate_state_dict.
+# Same class as above: test identifiers and unit-id references, not debt.
+# RUN6-2026-09-22 (#3): baseline raised 3235 -> 3242 — the
+# quiet-run-status + wait-cap unit (TODO-0058) adds 7 TODO-bearing lines:
+# 6 test ids in tests/unit/test_api.py (TestGetStatus::test_conflict_warning_
+# neutral_in_active_run / _stale_outside_run — TODO-000n .ready/.md/queue
+# fixtures + the "4 active TODOs" assertion) and 1 production message line
+# in awf/api/lifecycle.py (the neutral run-queue warning names "each TODO is
+# pinned by awf_run_next"). Same class as above: test identifiers and
+# message wording, not debt.
+# RUN6-2026-09-22 (#4): baseline raised 3242 -> 3377, files_over_400
+# raised 51 -> 52 — the todo-update + tree-sha-MCP unit (TODO-0059) adds
+# 135 TODO-bearing lines: TODO-0001/0002/0007/0010/0035/0099 test ids in
+# tests/unit/test_todo_hygiene.py (TestUpdateTodo, 67),
+# tests/agent_workflow_ui/test_awf_tools.py (TestAwfTodoUpdate +
+# TestAwfTreeSha, 11), tests/integration/test_cli_entrypoints.py
+# (TestTodoUpdateEntrypoint, 21); unit-id references in awf/api/hygiene.py
+# (update_todo docstring, 9), awf/api/_results.py (1),
+# awf/cmd_todo_update.py (new module, 4), awf/cli.py (help, 3),
+# tools/awf.py (awf_todo_update/awf_tree_sha docstrings, 4),
+# server.py (registration comment, 1), tool_map.yaml (1), USAGE EN/RU
+# (6+6), test_server_smoke.py (expected-tools comment, 1). Same class as
+# above: test identifiers and unit-id references, not debt. The +1 file
+# over 400 is awf/api/hygiene.py (379 -> 479 — the update_todo helper),
+# same class as the wait_event.py / brief.py raises above.
+# RUN6-2026-09-22 (#5): baseline raised 3377 -> 3407 — the
+# supervisor-onboarding unit (TODO-0060) adds 30 TODO-bearing lines
+# (net, after the compressed tool_map.yaml / recovery.md rewrites
+# removed a few): new files SKILL.awf-supervisor.md (8 — scenario
+# wording), agents_md.py (3), brief_defaults.yaml (2), scenarios.yaml
+# (1), skill_installer.py (2, unit-id comment), pyproject.toml (1,
+# comment), test_agents_md.py (1), test_supervisor_skill.py (2),
+# test_tool_descriptions.py (1); changed: tools/awf.py (next_action
+# messages + docstrings), awf/brief.py (next_action_from_status +
+# unit-id comments), TestNextActionSmoke in test_awf_tools.py
+# (TODO-0001/TODO-0002 ids), test_brief.py (TODO-0042/TODO-0009 test
+# ids). Same class as above: test identifiers and unit-id references,
+# not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

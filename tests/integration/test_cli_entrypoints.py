@@ -1162,12 +1162,108 @@ class TestTodoRetireEntrypoint:
 
         rc = cli.main(
             ["todo-retire", "TODO-0077", "--reason", "gone",
-             "--project-dir", str(repo)]
+              "--project-dir", str(repo)]
         )
 
         captured = capsys.readouterr()
         assert rc == 1, captured.out
         assert "not found" in captured.out + captured.err
+
+
+class TestTodoUpdateEntrypoint:
+    """RUN6 #4: `awf todo-update` — real runs, no mocks."""
+
+    def test_todo_update_cli_keeps_number_ready_baseline(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUpdate")
+        capsys.readouterr()
+        # dispatch-shaped TODO: .md + .ready, plus a baseline snapshot
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("# Task\nold body\n")
+        (inbox / "TODO-0001.ready").touch()
+        (repo / ".agentic" / "context" / "BASELINE-TODO-0001.sha").write_text("b" * 40)
+        new_content = tmp_path / "new-content.md"
+        new_content.write_text("# Task\nnew body\n", encoding="utf-8")
+
+        rc = cli.main([
+            "todo-update", "TODO-0001",
+            "--content-file", str(new_content),
+            "--reason", "reworded at plan",
+            "--project-dir", str(repo),
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        # number + dispatch shape + baseline kept, content replaced
+        assert (inbox / "TODO-0001.md").read_text() == "# Task\nnew body\n"
+        assert (inbox / "TODO-0001.ready").is_file()
+        assert (repo / ".agentic" / "context" / "BASELINE-TODO-0001.sha").read_text() == "b" * 40
+        # backup of the old content in context/
+        backups = list((repo / ".agentic" / "context").glob("TODO-0001.md.bak-*"))
+        assert len(backups) == 1
+        assert backups[0].read_text() == "# Task\nold body\n"
+        # log line with the reason
+        log = (repo / ".agentic" / "logs" / "orchestrator.log").read_text()
+        assert "todo-update: TODO-0001" in log
+        assert "reworded at plan" in log
+
+    def test_todo_update_cli_short_content_flag(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUpdate2")
+        capsys.readouterr()
+        (repo / ".agentic" / "inbox" / "TODO-0001.md").write_text("old")
+
+        rc = cli.main([
+            "todo-update", "TODO-0001", "--content", "short",
+            "--project-dir", str(repo),
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert (repo / ".agentic" / "inbox" / "TODO-0001.md").read_text() == "short"
+
+    def test_todo_update_cli_refuses_started(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUpdate3")
+        capsys.readouterr()
+        (repo / ".agentic" / "inbox" / "TODO-0001.md").write_text("in flight")
+        (repo / ".agentic" / "inbox" / "TODO-0001.ready").touch()
+        (repo / ".agentic" / "outbox" / "PROGRESS-TODO-0001.md").write_text("half")
+
+        rc = cli.main([
+            "todo-update", "TODO-0001", "--content", "v2",
+            "--project-dir", str(repo),
+        ])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "in flight" in captured.out + captured.err
+        assert (repo / ".agentic" / "inbox" / "TODO-0001.md").read_text() == "in flight"
+
+    def test_todo_update_cli_missing_todo_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUpdate4")
+        capsys.readouterr()
+
+        rc = cli.main([
+            "todo-update", "TODO-0077", "--content", "v2",
+            "--project-dir", str(repo),
+        ])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "not found" in captured.out + captured.err
+
+    def test_todo_update_cli_requires_content_source(self, tmp_path):
+        """Neither --content nor --content-file: argparse exits 2 (owner
+        mistake), and nothing is read or written."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUpdate5")
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["todo-update", "TODO-0001", "--project-dir", str(repo)])
+        assert exc.value.code == 2
+        assert not (repo / ".agentic" / "inbox" / "TODO-0001.md").exists()
 
 
 class TestFeedbackEntrypoint:

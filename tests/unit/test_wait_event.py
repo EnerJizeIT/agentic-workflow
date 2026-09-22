@@ -312,6 +312,195 @@ class TestActionableOnly:
         assert MIN_WAIT <= result.suggested_timeout <= TRANSPORT_CAP
 
 
+class TestDoneCycleDetection:
+    """RUN6 #1: after approve the pipeline commits, archives and exits —
+    the wake-up must answer 'done' with the next step, not a full timeout
+    on a null state (owner report 22.09, topic-trainer, 5/5 repeats).
+
+    The orchestrator's clean exit CLEARS the stage markers but rewrites
+    the state file with phase=done + goal/normalized (AUD02-04) — the file
+    exists, yet no pipeline is running. That leftover must be treated as
+    'pipeline exited', not as 'still running, keep waiting'.
+    """
+
+    @staticmethod
+    def _simulate_clean_exit(
+        project,
+        todo_id: str = "TODO-0001",
+        *,
+        with_commit: bool = True,
+        with_archive: bool = True,
+    ) -> None:
+        """Mirror the orchestrator's clean exit: the cycle signs (verify
+        commit + done/<id>/ archive) are in place, then the stage state is
+        cleared and the phase=done leftover rewritten (orchestrator.py)."""
+        import subprocess
+
+        from awf.pipeline_state import clear_state
+
+        write_state(
+            project,
+            stage_name="verify",
+            stage_kind="verify",
+            stage_idx=3,
+            todo_id=todo_id,
+            pipeline_pid=99999,
+        )
+        if with_commit:
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-qm", f"awf(verify): {todo_id}"],
+                cwd=project,
+                check=True,
+            )
+        if with_archive:
+            d = project / ".agentic" / "done" / todo_id
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "TODO.md").write_text(f"# {todo_id}\n", encoding="utf-8")
+        clear_state(project)
+        write_state(project, phase="done", goal="test goal", normalized=True)
+
+    def test_done_immediately_after_clean_exit(self, awf_project):
+        """State markers cleared + process dead + cycle signs present →
+        'done' on the FIRST call, in seconds (no poll-loop sleep)."""
+        import time as _time
+
+        self._simulate_clean_exit(awf_project)
+        t0 = _time.monotonic()
+        result = api.wait_for_event(awf_project, timeout=5, poll_interval=1)
+        elapsed = _time.monotonic() - t0
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert elapsed < 1.0, "done must come from the initial check, not the poll loop"
+
+    def test_done_message_next_step_run_next_when_run_active(self, awf_project):
+        """Inside a run (забег) the message leads to awf_run_next."""
+        from awf.run_state import write_run
+
+        self._simulate_clean_exit(awf_project)
+        write_run(
+            awf_project,
+            queue=["TODO-0001", "TODO-0002"],
+            index=1,
+            active=True,
+        )
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert "awf_run_next" in result.message
+        assert "awf_dispatch_todo" not in result.message
+
+    def test_done_message_next_step_dispatch_without_run(self, awf_project):
+        """Single start (no run): the message leads to dispatch, not run_next."""
+        self._simulate_clean_exit(awf_project)
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert "awf_dispatch_todo" in result.message
+        assert "awf_run_next" not in result.message
+
+    def test_not_done_when_pipeline_alive(self, awf_project, monkeypatch):
+        """A LIVE pipeline (cleared state or not) never gets a false 'done'."""
+        self._simulate_clean_exit(awf_project)
+        monkeypatch.setattr(
+            "awf.api._liveness.resolve", lambda pd: (True, 4242, "state")
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout", (
+            f"live pipeline must keep the old wait behavior, got {result.event_type}"
+        )
+        # and with markers still present — also no done
+        write_state(
+            awf_project,
+            stage_name="developer",
+            stage_kind="execute",
+            stage_idx=1,
+            todo_id="TODO-0002",
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+        assert result.event_type == "timeout"
+
+    def test_not_done_when_state_still_has_markers(self, awf_project):
+        """Non-empty stage state (pipeline mid-run) → old behavior, even
+        when an OLDER cycle's signs are present."""
+        d = awf_project / ".agentic" / "done" / "TODO-0001"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "TODO.md").write_text("# TODO-0001\n", encoding="utf-8")
+        write_state(
+            awf_project,
+            stage_name="developer",
+            stage_kind="execute",
+            stage_idx=1,
+            todo_id="TODO-0002",
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+        assert result.event_type == "timeout"
+
+    def test_done_when_state_file_absent(self, awf_project):
+        """No state file at all + cycle signs → 'done' (the file-missing
+        variant of the same detection)."""
+        import subprocess
+
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-qm", "awf(verify): TODO-0001"],
+            cwd=awf_project,
+            check=True,
+        )
+        d = awf_project / ".agentic" / "done" / "TODO-0001"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "TODO.md").write_text("# TODO-0001\n", encoding="utf-8")
+
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+
+    def test_idle_when_no_state_and_no_evidence(self, awf_project):
+        """Fresh project: no state, no cycle signs → 'idle' (unchanged)."""
+        result = api.wait_for_event(awf_project, timeout=1)
+        assert result.event_type == "idle"
+        assert "not running" in result.message
+
+    def test_done_during_wait_when_pipeline_exits(self, awf_project):
+        """Markers present at call start; the pipeline exits mid-wait →
+        'done' with the cycle sign at the next poll (≤ poll_interval)."""
+        import subprocess
+        import threading
+        import time as _time
+
+        from awf.pipeline_state import clear_state
+
+        write_state(
+            awf_project,
+            stage_name="agent-impl",
+            stage_kind="execute",
+            stage_idx=2,
+            todo_id="TODO-0002",
+        )
+
+        def exit_later():
+            _time.sleep(0.3)
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-qm", "awf(verify): TODO-0002"],
+                cwd=awf_project,
+                check=True,
+            )
+            d = awf_project / ".agentic" / "done" / "TODO-0002"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "TODO.md").write_text("# TODO-0002\n", encoding="utf-8")
+            clear_state(awf_project)
+            write_state(awf_project, phase="done")
+
+        threading.Thread(target=exit_later, daemon=True).start()
+        result = api.wait_for_event(awf_project, timeout=5, poll_interval=1)
+
+        assert result.event_type == "done"
+        assert "TODO-0002" in result.message
+
+
 class TestVerifyPayload:
     def test_verify_snapshot_carries_diff_stat(self, awf_project):
         import subprocess
@@ -333,3 +522,145 @@ class TestVerifyPayload:
 
         assert result.event_type == "verify"
         assert "README.md" in result.state_snapshot.get("diff_stat", "")
+
+
+class TestWaitCap:
+    """RUN6 #3: the single-wait cap is honest — env > config > default 55."""
+
+    def _set_config_cap(self, awf_project, text):
+        (awf_project / ".agentic" / "config.yaml").write_text(text, encoding="utf-8")
+
+    def test_default_without_config_or_env(self, awf_project, monkeypatch):
+        from awf.api.wait_event import TRANSPORT_CAP, wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        assert wait_cap(awf_project) == TRANSPORT_CAP
+        assert wait_cap(None) == TRANSPORT_CAP
+
+    def test_config_cap_seconds(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        assert wait_cap(awf_project) == 300
+
+    def test_env_wins_over_config(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        monkeypatch.setenv("AWF_WAIT_CAP", "420")
+        assert wait_cap(awf_project) == 420
+
+    def test_string_values_accepted(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, 'wait:\n  cap_seconds: "300"\n')
+        assert wait_cap(awf_project) == 300
+        monkeypatch.setenv("AWF_WAIT_CAP", " 270 ")
+        assert wait_cap(awf_project) == 270
+
+    def test_invalid_env_falls_through_to_config(self, awf_project, monkeypatch):
+        from awf.api.wait_event import wait_cap
+
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        monkeypatch.setenv("AWF_WAIT_CAP", "abc")
+        assert wait_cap(awf_project) == 300
+        monkeypatch.setenv("AWF_WAIT_CAP", "0")
+        assert wait_cap(awf_project) == 300
+
+    def test_invalid_config_falls_back_to_default(self, awf_project, monkeypatch):
+        from awf.api.wait_event import TRANSPORT_CAP, wait_cap
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: -5\n")
+        assert wait_cap(awf_project) == TRANSPORT_CAP
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: fast\n")
+        assert wait_cap(awf_project) == TRANSPORT_CAP
+
+    def test_suggestion_kept_below_raised_config_cap(self, awf_project, monkeypatch):
+        """12-min stage → raw 240s. With the cap raised to 300 the suggestion
+        is 240 (kept), not cut to the 55s transport default (B3 old behavior)."""
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import _suggest_timeout
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=12 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert _suggest_timeout(awf_project) == 240
+
+    def test_suggestion_never_above_env_cap(self, awf_project, monkeypatch):
+        from datetime import datetime, timedelta
+
+        from awf.api.wait_event import _suggest_timeout
+
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        monkeypatch.setenv("AWF_WAIT_CAP", "100")
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=12 * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        assert _suggest_timeout(awf_project) == 100
+
+    def _write_stage_log(self, awf_project, minutes):
+        from datetime import datetime, timedelta
+
+        logs = awf_project / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        base = datetime(2026, 9, 18, 8, 0, 0)
+        lines = []
+        for i in range(4):
+            ts = (base + timedelta(minutes=minutes * i)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines.append(f"[{ts}Z] Stage {i}/4: stage{i} (role :: execute)")
+        (logs / "orchestrator.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_timeout_message_cites_configured_cap(self, awf_project, monkeypatch):
+        """Raised cap → the timeout message names it and drops the default
+        transport wording (the 'raise mcp timeout' advice is stale then).
+        20-min stage → raw 400s → clamped to the 300s cap → advice fires."""
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._set_config_cap(awf_project, "wait:\n  cap_seconds: 300\n")
+        self._write_stage_log(awf_project, minutes=20)
+
+        write_state(
+            awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2,
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert result.suggested_timeout == 300
+        assert "300s" in result.message
+        assert "Transport cap" not in result.message
+        assert "smaller steps" in result.message
+
+    def test_timeout_message_default_cap_unchanged(self, awf_project, monkeypatch):
+        """No config/env → cap stays 55 and the B3 message is intact.
+        20-min stage → raw 400s → clamped to the 55s cap → advice fires."""
+        from awf.api.wait_event import TRANSPORT_CAP
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._write_stage_log(awf_project, minutes=20)
+
+        write_state(
+            awf_project, stage_name="agent-impl", stage_kind="execute", stage_idx=2,
+        )
+        result = api.wait_for_event(awf_project, timeout=1, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert result.suggested_timeout == TRANSPORT_CAP
+        assert "Transport cap" in result.message
+        assert "smaller steps" in result.message

@@ -455,12 +455,26 @@ def get_status(project_dir: Path) -> StatusResult:
 
     conflict_warning: str | None = None
     if len(active_ids) > 1:
-        newest = active_ids[0]
-        conflict_warning = (
-            f"{len(active_ids)} active TODOs detected. "
-            f"Orchestrator will run: {newest} (highest NNNN). "
-            f"Others are stale — rollback or 'awf reset --orphans'."
-        )
+        # RUN6 #3: inside an active run the queue is NORMAL — the items wait
+        # for their turn and each todo_id is pinned by awf_run_next. The old
+        # "stale — rollback or reset" text was a false alarm on every run
+        # status call. Outside a run the old warning stands.
+        from ..run_state import read_run
+
+        _run = read_run(project_dir)
+        if _run and _run.get("active"):
+            conflict_warning = (
+                f"Run queue: {len(active_ids)} items wait for a turn — "
+                "normal in an active run (each TODO is pinned by "
+                "awf_run_next)."
+            )
+        else:
+            newest = active_ids[0]
+            conflict_warning = (
+                f"{len(active_ids)} active TODOs detected. "
+                f"Orchestrator will run: {newest} (highest NNNN). "
+                f"Others are stale — rollback or 'awf reset --orphans'."
+            )
 
     suggestion: str | None = None
     if not active_ids and blocked_count == 0:

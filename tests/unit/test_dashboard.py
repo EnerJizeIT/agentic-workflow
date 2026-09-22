@@ -1081,3 +1081,185 @@ class TestStateContract:
         assert d["run"] is not None
         unused = set(d["run"]) - used
         assert not unused, f"dead run.* fields: {sorted(unused)}"
+
+
+class TestActualPipeline:
+    """RUN6 #2: the dashboard draws the pipeline that ACTUALLY runs.
+
+    Owner observation: a run pins a queue item on ``audit-llm`` while
+    default.yaml is implement+qa — the dashboard drew the DEFAULT
+    pipeline's stages and confused them with the running ones. Now the
+    name resolves: state["pipeline"] (engine) → run queue item → the
+    TODO's contract block → config default; an unresolvable name falls
+    back to the default pipeline and never crashes.
+    """
+
+    DEFAULT_YAML = (
+        "stages:\n"
+        "  - name: plan\n    role: supervisor\n    kind: plan\n"
+        "  - name: implement\n    role: agent-implementer\n    kind: execute\n"
+        "  - name: qa\n    role: agent-qa-review\n    kind: execute\n"
+    )
+    AUDIT_YAML = (
+        "stages:\n"
+        "  - name: plan\n    role: supervisor\n    kind: plan\n"
+        "  - name: llm-audit\n    role: agent-security-auditor\n    kind: execute\n"
+        "  - name: verify\n    role: supervisor\n    kind: verify\n"
+    )
+
+    def _project(self, tmp_git_repo, audit=True):
+        api.init_project(tmp_git_repo, project_name="PipeTest")
+        pipes = tmp_git_repo / ".agentic" / "pipelines"
+        pipes.mkdir(parents=True, exist_ok=True)
+        (pipes / "default.yaml").write_text(self.DEFAULT_YAML, encoding="utf-8")
+        if audit:
+            (pipes / "audit-llm.yaml").write_text(self.AUDIT_YAML, encoding="utf-8")
+        return tmp_git_repo
+
+    def test_repro_run_pinned_pipeline_drawn(self, tmp_git_repo):
+        """The owner's repro: default = implement+qa, the run is pinned on
+        audit-llm — the dashboard must draw audit-llm's stages."""
+        from awf import run_state
+
+        proj = self._project(tmp_git_repo)
+        run_state.write_run(
+            proj, active=True,
+            queue=[{"todo_id": "TODO-0010", "pipeline": "audit-llm"}],
+            index=0, current="TODO-0010",
+        )
+        write_state(
+            proj, stage_idx=1, stage_name="llm-audit", stage_kind="execute",
+            todo_id="TODO-0010", pipeline="audit-llm",
+        )
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "audit-llm"
+        assert d["pipeline_note"] == ""
+        names = [s["name"] for s in d["stages"]]
+        assert names == ["plan", "llm-audit", "verify"]
+        assert not ({"implement", "qa"} & set(names)), "default pipeline leaked in"
+        current = [s for s in d["stages"] if s["status"] == "current"]
+        assert len(current) == 1 and current[0]["name"] == "llm-audit"
+
+    def test_single_launch_pipeline_from_state(self, tmp_git_repo):
+        """Single launch (--pipeline X, no run): the engine-written state
+        field carries the name."""
+        proj = self._project(tmp_git_repo)
+        write_state(
+            proj, stage_idx=1, stage_name="llm-audit", stage_kind="execute",
+            todo_id="TODO-0001", pipeline="audit-llm",
+        )
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "audit-llm"
+        assert [s["name"] for s in d["stages"]] == ["plan", "llm-audit", "verify"]
+
+    def test_legacy_state_without_pipeline_falls_back_to_default(self, tmp_git_repo):
+        """State predating the field (or written by an old engine) → the
+        config default, as before."""
+        proj = self._project(tmp_git_repo)
+        write_state(
+            proj, stage_idx=1, stage_name="implement", stage_kind="execute",
+            todo_id="TODO-0001",
+        )
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "default"
+        assert [s["name"] for s in d["stages"]] == ["plan", "implement", "qa"]
+        assert d["stages"][1]["status"] == "current"
+
+    def test_queue_item_pipeline_used_without_state_name(self, tmp_git_repo):
+        """Chain step 2: no state name, but the run queue item carries the
+        per-item pipeline (RUN3 #2)."""
+        from awf import run_state
+
+        proj = self._project(tmp_git_repo)
+        run_state.write_run(
+            proj, active=True,
+            queue=[
+                {"todo_id": "TODO-0009", "pipeline": ""},
+                {"todo_id": "TODO-0010", "pipeline": "audit-llm"},
+            ],
+            index=1, current="TODO-0010",
+        )
+        write_state(
+            proj, stage_idx=1, stage_name="llm-audit", stage_kind="execute",
+            todo_id="TODO-0010",
+        )
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "audit-llm"
+        assert [s["name"] for s in d["stages"]] == ["plan", "llm-audit", "verify"]
+
+    def test_todo_contract_pipeline_used_without_state_or_run(self, tmp_git_repo):
+        """Chain step 3: no state name, no run — the TODO's contract block
+        declares the pipeline."""
+        proj = self._project(tmp_git_repo)
+        (proj / ".agentic" / "inbox" / "TODO-0010.md").write_text(
+            "<!-- role_hint: agent-implementer -->\n"
+            "---\n"
+            "pipeline: audit-llm\n"
+            "gates: [contracts]\n"
+            "---\n\n"
+            "# TODO-0010 — audit\n",
+            encoding="utf-8",
+        )
+        write_state(
+            proj, stage_idx=1, stage_name="llm-audit", stage_kind="execute",
+            todo_id="TODO-0010",
+        )
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "audit-llm"
+
+    def test_no_state_no_crash(self, tmp_git_repo):
+        """No state at all: the config default is drawn, no crash; without
+        any pipelines directory the name is simply empty."""
+        proj = self._project(tmp_git_repo)
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "default"
+        assert d["pipeline_note"] == ""
+        assert d["stages"]
+
+        import shutil
+
+        shutil.rmtree(proj / ".agentic" / "pipelines")
+        d2 = generate_state_dict(proj)
+        assert d2["pipeline"] == ""
+        assert d2["stages"] == []
+
+    def test_stale_state_dead_pid_keeps_existing_status(self, tmp_git_repo):
+        """Stale state (dead pid): the existing liveness logic decides the
+        status; the pipeline name still shows (it is the last known fact)."""
+        import subprocess
+
+        proj = self._project(tmp_git_repo)
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        write_state(
+            proj, stage_idx=1, stage_name="llm-audit", stage_kind="execute",
+            todo_id="TODO-0010", pipeline="audit-llm", pipeline_pid=proc.pid,
+        )
+
+        d = generate_state_dict(proj)
+        assert d["status"] == "dead"
+        assert d["pipeline"] == "audit-llm"
+
+    def test_mismatch_no_highlight_with_note(self, tmp_git_repo):
+        """The actual pipeline's file is gone: fall back to the default
+        stages, but do NOT highlight a foreign stage as current — a note
+        explains why."""
+        proj = self._project(tmp_git_repo)
+        (proj / ".agentic" / "pipelines" / "audit-llm.yaml").unlink()
+        write_state(
+            proj, stage_idx=1, stage_name="llm-audit", stage_kind="execute",
+            todo_id="TODO-0010", pipeline="audit-llm",
+        )
+
+        d = generate_state_dict(proj)
+        assert d["pipeline"] == "default"
+        assert d["pipeline_note"]
+        assert "audit-llm" in d["pipeline_note"]
+        assert all(s["status"] != "current" for s in d["stages"])
+        assert d["next_stage"] is None

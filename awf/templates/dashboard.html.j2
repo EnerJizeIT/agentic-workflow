@@ -41,6 +41,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 /* AUD10-08: checkpoint waits on a human — the dot/badge must be visible */
 .status-badge.checkpoint { background: rgba(188,140,255,0.08); color: var(--purple); }
 .run-chip { padding: 3px 12px; border-radius: 20px; font-size: 12px; background: rgba(88,166,255,0.08); color: var(--accent); white-space: nowrap; }
+.pipeline-chip { padding: 3px 12px; border-radius: 20px; font-size: 12px; background: rgba(197,134,192,0.10); color: var(--text-muted); white-space: nowrap; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.running { background: var(--green); animation: blink 1.5s infinite; }
 .status-dot.verify { background: var(--yellow); }
@@ -170,6 +171,7 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 <div class="topbar">
   <div class="topbar-project" id="project-name">{{ project_name }}</div>
   <div class="topbar-timeline" id="todo-timeline"></div>
+  <span class="pipeline-chip" id="pipeline-chip" style="display:none"></span>
   <span class="run-chip" id="run-chip" style="display:none"></span>
   <div class="topbar-status" id="status-area">
     <div class="status-dot {{ status }}" id="status-dot"></div>
@@ -300,6 +302,18 @@ function updateTopbar(s) {
       vb.style.display = '';
     } else {
       vb.style.display = 'none';
+    }
+  }
+
+  // RUN6 #2: pipeline chip — the pipeline the stage list actually shows
+  const pipeChip = document.getElementById('pipeline-chip');
+  if (pipeChip) {
+    if (s.pipeline) {
+      pipeChip.textContent = 'pipeline: ' + s.pipeline;
+      pipeChip.title = s.pipeline_note || '';
+      pipeChip.style.display = '';
+    } else {
+      pipeChip.style.display = 'none';
     }
   }
 

@@ -84,10 +84,10 @@ Awf ведёт supervisor по детерминированному flow:
 Три CLI-инструмента для ритуала проверки — ими пользуется супервизор, это не гейты пайплайна:
 
 **`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — «что проверили = что коммитим». На стадии
-проверки, ДО своих проб, снимите отпечаток дерева (`awf tree-sha`); после проверок передайте его в approve
-(MCP: `awf_approve(verified_sha=...)`). Если дерево изменилось (новый коммит, правка, новый файл) — approve
-откажет: «the tree changed after verification». Отпечаток сохраняется в `.agentic/context/VERIFIED-<todo-id>.sha`.
-Без `--verified-sha` поведение прежнее.
+проверки, ДО своих проб, снимите отпечаток дерева (`awf tree-sha`, MCP: `awf_tree_sha`); после проверок
+передайте его в approve (MCP: `awf_approve(verified_sha=...)`). Если дерево изменилось (новый коммит,
+правка, новый файл) — approve откажет: «the tree changed after verification». Отпечаток сохраняется в
+`.agentic/context/VERIFIED-<todo-id>.sha`. Без `--verified-sha` поведение прежнее.
 
 **`awf mutations [--list]`** — мутационный smoke по `scripts/mutations.txt` на покоящемся дереве (грязное
 `git status` → отказ): убитые / выжившие / таймауты с хвостами логов, файлы всегда восстанавливаются.
@@ -132,6 +132,7 @@ Markdown-отчёт кладётся в `metrics.output_dir` (по умолча�
 | **📊 События** | События пайплайна (запуски стадий, завершения, сигналы) |
 
 - **TODO timeline** сверху: `[✅ TODO-0001] ─ [✅ TODO-0002] ─ [🔄 TODO-0003]`
+- **Чип пайплайна** рядом с TODO: пайплайн, стадии которого реально нарисованы (забег, закреплённый на нестандартном пайплайне, показывает свои стадии, а не дефолтные)
 - **Статус воркера** в sidebar: PID, CPU, последняя строка лога
 - **Браузерное уведомление** когда verify готов
 - **Таймер** от запуска первого агента, замораживается на verify
@@ -249,6 +250,7 @@ $ awf start --pipeline audit-llm
 | `awf_unblock` | Снять stale BLOCKED/ACK-закрытия — перевыданный TODO снова виден |
 | `awf_todo_remove` | Удалить не стартовавший TODO (след в `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Вывести отклонённый/брошенный TODO, застрявший «активным» (RETIRED-заметка в `done/<id>/`) |
+| `awf_todo_update` | Переписать текст не стартовавшего TODO, сохранив номер (бэкап в `context/`, `.ready` + baseline не трогаются) |
 
 **`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
 лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой
@@ -274,12 +276,22 @@ $ awf start --pipeline audit-llm
 (`awf kill` или дождаться); пустая `--reason` (обязательна). `awf restore` по-прежнему
 возвращает retired-TODO.
 
+**`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |
+--content "…"`). Переписать текст TODO, который НЕ стартовал: содержимое
+`inbox/TODO-<id>.md` заменяется на месте, а номер, dispatch-`.ready` и baseline
+остаются нетронутыми (baseline фиксирует git sha, не текст). Прежнее содержимое
+бэкапится побайтово в `context/TODO-<id>.md.bak-<timestamp>`; `--reason` пишется в
+лог оркестратора. Отказы: нет файла TODO в inbox; пустой content; TODO уже стартовал
+(любой сигнал в outbox, `ACK-`/`APPROVE-` в inbox или непустой `PROGRESS` — юнит в
+работе: править через REVIEW/replan либо retire + перевыпуск); живой пайплайн на этом
+id.
+
 ### Verify
 | Tool | Что делает |
 |---|---|
 | `awf_approve` | Авторизация коммита + архивация TODO |
 | `awf_reject` | Запись REVIEW сигнала + остановка пайплайна |
-| `awf_wait_for_event` | Проверка событий пайплайна (реактивно, не для polling) |
+| `awf_wait_for_event` | Проверка событий пайплайна (реактивно, не для polling); после approve будит событием `done` — TODO закоммичен и архивирован, в сообщении следующий шаг (`awf_run_next` в забеге) |
 | `awf_prove_red` | Доказательство, что заявленные тесты красные на baseline |
 | `awf_verify_pack` | Один детерминированный verify-отчёт (GATES-файл) |
 
@@ -308,7 +320,12 @@ TODO, и `awf_run_next` читает его для элементов без п�
 **Долгие ожидания.** Транспорт MCP рвёт один вызов `awf_wait_for_event` по
 таймауту клиента — ~55 с с дефолтным opencode.json. Инструмент говорит об
 этом в каждом `next_action`. Чтобы ждать дольше — подними mcp timeout в
-`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}`.
+`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}` — и
+сообщи awf о новом потолке: `wait.cap_seconds` в `.agentic/config.yaml`
+(или env `AWF_WAIT_CAP` — он приоритетнее). Пока потолок дефолтный (55 с),
+инструмент советует поднять mcp timeout; после того как потолок поднят в
+конфиге или env, совет исчезает, а `suggested_timeout` режется по твоему
+значению.
 
 **Полномочия супервизора.** Реплан, переписывание ТЗ и сплит задачи — штатная
 опция супервизора, approve владельца не требуется. Эскалация владельцу —

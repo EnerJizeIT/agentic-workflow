@@ -395,6 +395,46 @@ class TestGetStatus:
         assert result.conflict_warning is not None
         assert "2 active TODOs" in result.conflict_warning
 
+    def test_conflict_warning_neutral_in_active_run(self, tmp_git_repo):
+        """RUN6 #3: inside a run the queue waiting is NORMAL — the warning is
+        neutral and carries no destructive 'rollback or reset' advice."""
+        from awf.run_state import write_run
+
+        agentic = tmp_git_repo / ".agentic"
+        (agentic / "inbox").mkdir(parents=True)
+        (agentic / "outbox").mkdir(parents=True)
+        (agentic / "config.yaml").write_text('project:\n  name: Test\n')
+        for n in (1, 2, 3, 4):
+            (agentic / "inbox" / f"TODO-000{n}.ready").touch()
+            (agentic / "inbox" / f"TODO-000{n}.md").write_text(f"# Task {n}")
+        write_run(
+            tmp_git_repo,
+            queue=[f"TODO-000{n}" for n in (1, 2, 3, 4)],
+            index=0,
+            active=True,
+        )
+        result = api.get_status(tmp_git_repo)
+        assert result.conflict_warning is not None
+        assert "Run queue" in result.conflict_warning
+        assert "4 items wait for a turn" in result.conflict_warning
+        assert "rollback" not in result.conflict_warning
+        assert "reset" not in result.conflict_warning
+
+    def test_conflict_warning_stale_outside_run(self, tmp_git_repo):
+        """RUN6 #3: with NO active run the old warning stands (the 4-queue
+        case is only normal inside a run)."""
+        agentic = tmp_git_repo / ".agentic"
+        (agentic / "inbox").mkdir(parents=True)
+        (agentic / "outbox").mkdir(parents=True)
+        (agentic / "config.yaml").write_text('project:\n  name: Test\n')
+        for n in (1, 2, 3, 4):
+            (agentic / "inbox" / f"TODO-000{n}.ready").touch()
+            (agentic / "inbox" / f"TODO-000{n}.md").write_text(f"# Task {n}")
+        result = api.get_status(tmp_git_repo)
+        assert result.conflict_warning is not None
+        assert "4 active TODOs" in result.conflict_warning
+        assert "rollback" in result.conflict_warning
+
     def test_missing_agentic_raises(self, tmp_git_repo):
         with pytest.raises(api.AwfApiError):
             api.get_status(tmp_git_repo)

@@ -86,10 +86,11 @@ pipeline gates:
 
 **`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — «что
 проверили = что коммитим». At the verify stage, BEFORE the checks, run
-`awf tree-sha` and keep the working-tree hash (HEAD + all tracked changes
-+ untracked files; same tree → same hash, at any time). After the checks,
-pass it to approve — `awf approve <todo-id> --verified-sha <hash>` (MCP:
-`awf_approve(verified_sha=...)`). If the tree moved meanwhile (new commit,
+`awf tree-sha` (MCP: `awf_tree_sha`) and keep the working-tree hash (HEAD
++ all tracked changes + untracked files; same tree → same hash, at any
+time). After the checks, pass it to approve — `awf approve <todo-id>
+--verified-sha <hash>` (MCP: `awf_approve(verified_sha=...)`). If the tree
+moved meanwhile (new commit,
 edited file, new file), approve refuses with «the tree changed after
 verification». The hash is stored to
 `.agentic/context/VERIFIED-<todo-id>.sha`, and the run report lists both
@@ -153,6 +154,7 @@ Opens automatically in browser when pipeline starts:
 | **📊 События** | Pipeline events (stage starts, completions, signals) |
 
 - **TODO timeline** at top: `[✅ TODO-0001] ─ [✅ TODO-0002] ─ [🔄 TODO-0003]`
+- **Pipeline chip** next to the TODO: the pipeline the stage list actually draws (a run pinned on a non-default pipeline shows its own stages, not the default's)
 - **Worker status** in sidebar: PID, CPU, last log line
 - **Browser notification** when verify is ready
 - **Elapsed timer** from first agent start, freezes on verify
@@ -377,6 +379,7 @@ unchanged).
 | `awf_unblock` | Clear stale BLOCKED/ACK closures so a re-issued TODO is visible again |
 | `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Retire a rejected/abandoned TODO that stays "active" (RETIRED note in `done/<id>/`) |
+| `awf_todo_update` | Reword a not-started TODO, keeping the number (backup in `context/`, `.ready` + baseline untouched) |
 
 **`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
 `BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
@@ -402,12 +405,23 @@ Refusals: no TODO file in inbox or `done/`; already archived (`done/<id>/TODO.md
 a live pipeline on this id (`awf kill` or wait first); empty `--reason` (required).
 `awf restore` still brings a retired TODO back.
 
+**`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |
+--content "…"`). Reword a TODO that has NOT started: the content of
+`inbox/TODO-<id>.md` is replaced in place while the number, the dispatch
+`.ready` and the baseline stay untouched (the baseline pins a git sha, not
+the text). The previous content is backed up byte-identical to
+`context/TODO-<id>.md.bak-<timestamp>`; `--reason` goes to the orchestrator
+log. Refusals: no TODO file in the inbox; empty content; a started TODO
+(any outbox signal, an inbox `ACK-`/`APPROVE-`, or a non-empty `PROGRESS` —
+the unit is in flight: fix it via REVIEW/replan, or retire it and
+re-dispatch); a live pipeline on this id.
+
 ### Verify
 | Tool | What it does |
 |---|---|
 | `awf_approve` | Authorize commit + archive TODO |
 | `awf_reject` | Write REVIEW signal + kill pipeline |
-| `awf_wait_for_event` | Check for pipeline events (reactive, not for polling) |
+| `awf_wait_for_event` | Check for pipeline events (reactive, not for polling); after approve it wakes with `done` — the TODO is committed + archived and the message names the next step (`awf_run_next` in a run) |
 | `awf_prove_red` | Prove declared tests are red on the baseline sha |
 | `awf_verify_pack` | One deterministic verify report (GATES file) |
 
@@ -436,7 +450,11 @@ pipelines (RUN3 #1).
 **Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
 the client timeout — ~55s with the default opencode.json. The tool says so
 in every `next_action`. To wait longer, raise the mcp timeout in
-`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}`.
+`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}` — and
+tell awf the new ceiling via `wait.cap_seconds` in `.agentic/config.yaml`
+(or env `AWF_WAIT_CAP`, which wins). While the cap is the default 55s the
+tool advises raising the mcp timeout; once you raise the cap in config or
+env, the advice goes away and `suggested_timeout` is clamped to your value.
 
 **Supervisor authority.** Replanning, rewriting the spec, and splitting a
 task are a standard supervisor option — no owner approval required.

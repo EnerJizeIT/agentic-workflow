@@ -300,7 +300,8 @@ class WaitEventResult:
     message: str
     state_snapshot: dict[str, Any] = field(default_factory=dict)
     # SPEC A-run: recommended wait size for the next call (median stage/3,
-    # clamped to the MCP transport cap, wait_event.TRANSPORT_CAP); 0 when
+    # clamped to the project's wait cap — wait_event.wait_cap: env
+    # AWF_WAIT_CAP / config wait.cap_seconds, default TRANSPORT_CAP); 0 when
     # not computed for this event type.
     suggested_timeout: int = 0
 
@@ -426,6 +427,18 @@ class RetireTodoResult:
 
 
 @dataclass
+class UpdateTodoResult:
+    """Result of :func:`awf.api.update_todo` (RUN6 #4 reword, keep the number)."""
+
+    todo_id: str
+    backup: str  # project-relative context/TODO-<id>.md.bak-<ts>
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class WritePipelineResult:
     """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
 
@@ -488,4 +501,5 @@ __all__ = [
     "UnblockResult",
     "RemoveTodoResult",
     "RetireTodoResult",
+    "UpdateTodoResult",
 ]

@@ -824,6 +824,30 @@ class TestWaitForEventClamp:
         assert "Worker blocked" in result["next_action"]
         assert "Continue the run loop" not in result["next_action"]
 
+    def test_done_event_gets_run_next_next_action(self, monkeypatch):
+        """RUN6 #1: a done event inside a run must carry the exact next
+        command — awf_run_next (the owner had to read git log instead)."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "done"
+        assert "awf_run_next" in result["next_action"]
+        assert "awf_dispatch_todo" not in result["next_action"]
+
+    def test_done_event_gets_dispatch_next_action(self, monkeypatch):
+        """RUN6 #1: a done event outside a run (single start) must lead to
+        awf_dispatch_todo, not awf_run_next."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "done"
+        assert "awf_dispatch_todo" in result["next_action"]
+        assert "awf_run_next" not in result["next_action"]
+
 
 class TestWaitForEventCapNote:
     """B3 (run2 report): every next_action carries the ACTUAL single-wait
@@ -893,6 +917,36 @@ class TestWaitForEventCapNote:
         )
 
         assert f"timeout={api.TRANSPORT_CAP}" in result["next_action"]
+
+    def test_next_action_raised_cap_drops_mcp_advice(self, monkeypatch, tmp_path):
+        """RUN6 #3: with wait.cap_seconds raised in the project config the
+        note names the raised cap and the stale 'raise the mcp timeout in
+        opencode.json' advice disappears — the owner already raised the
+        ceiling themselves, so the default-transport hint under-sells it."""
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        ag = tmp_path / ".agentic"
+        ag.mkdir()
+        (ag / "config.yaml").write_text("wait:\n  cap_seconds: 300\n", encoding="utf-8")
+
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            class _R:
+                def as_dict(self):
+                    return {"event_type": "timeout", "message": "x",
+                            "state_snapshot": {}, "suggested_timeout": 240}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+
+        result = asyncio.run(
+            awf.awf_wait_for_event(project_dir=str(tmp_path), timeout=10)
+        )
+
+        assert "<= 300s" in result["next_action"]
+        assert "project wait cap" in result["next_action"]
+        assert "opencode.json" not in result["next_action"]
+        assert "raise the mcp timeout" not in result["next_action"]
 
 
 # ─── FU-19 (TODO-0023): Part B — AUD-08 wrapper parity ──────────────────
@@ -1568,3 +1622,248 @@ class TestCurrentStepLiveProject:
         assert result["goal"] is None
         assert set(result) == {"status", "phase", "prompt", "goal"}
         assert "setup chain" not in result["prompt"]
+
+
+class TestAwfTodoUpdate:
+    """RUN6 #4: awf_todo_update — MCP parity with `awf todo-update` (CLI)."""
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_update(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "update_todo", spy_update)
+
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="new text",
+                project_dir="/tmp",
+                reason="scope cut",
+            )
+        )
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls, "api.update_todo was not called"
+        assert calls[0]["todo_id"] == "TODO-0001"
+        assert calls[0]["content"] == "new text"
+        assert calls[0]["reason"] == "scope cut"
+
+    def test_update_keeps_number_and_ready(self, mcp_project):
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="# Task v2",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["todo_id"] == "TODO-0001"
+        inbox = mcp_project / ".agentic" / "inbox"
+        assert (inbox / "TODO-0001.md").read_text() == "# Task v2"
+        assert (inbox / "TODO-0001.ready").is_file()
+        backup = mcp_project / result["backup"]
+        assert backup.is_file()
+        assert backup.read_text() == "# Task"
+
+    def test_started_todo_returns_error_dict(self, mcp_project):
+        outbox = mcp_project / ".agentic" / "outbox"
+        outbox.mkdir(exist_ok=True)
+        (outbox / "PROGRESS-TODO-0001.md").write_text("half done")
+
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="v2",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "in flight" in result["error"]
+        assert (
+            mcp_project / ".agentic" / "inbox" / "TODO-0001.md"
+        ).read_text() == "# Task"
+
+    def test_missing_todo_returns_error_dict(self, mcp_project):
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0099",
+                content="v2",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "not found" in result["error"]
+
+    def test_empty_content_returns_error_dict(self, mcp_project):
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="   ",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "content is empty" in result["error"]
+
+
+class TestAwfTreeSha:
+    """RUN6 #4: awf_tree_sha — MCP parity with `awf tree-sha` (CLI)."""
+
+    def test_returns_git_utils_fingerprint(self, git_project):
+        from awf import git_utils
+
+        result = run(awf.awf_tree_sha(project_dir=str(git_project)))
+
+        assert result["status"] == "ok"
+        assert result["sha"] == git_utils.tree_fingerprint(git_project)
+        assert len(result["sha"]) == 64
+
+    def test_stable_and_changes_after_edit(self, git_project):
+        first = run(awf.awf_tree_sha(project_dir=str(git_project)))
+        second = run(awf.awf_tree_sha(project_dir=str(git_project)))
+        assert first["sha"] == second["sha"]
+
+        (git_project / "README.md").write_text("tampered\n")
+        third = run(awf.awf_tree_sha(project_dir=str(git_project)))
+        assert third["sha"] != first["sha"]
+
+    def test_non_repo_returns_error_dict(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+
+        result = run(awf.awf_tree_sha(project_dir=str(plain)))
+
+        assert result["status"] == "error"
+        assert "git repo" in result["error"]
+
+    def test_repo_without_commits_returns_error_dict(self, tmp_path):
+        repo = tmp_path / "nocommits"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+        result = run(awf.awf_tree_sha(project_dir=str(repo)))
+
+        assert result["status"] == "error"
+        assert "fingerprint" in result["error"]
+
+
+# ─── RUN6 #5 (TODO-0060): next_action smoke ──────────────────────────────
+
+
+class TestNextActionSmoke:
+    """Every answer leads to the next step.
+
+    Key tools (status, brief, start, run_next, approve, reject, unblock,
+    todo_remove, todo_retire, wait_for_event) carry a non-empty
+    ``next_action`` in their response.
+    """
+
+    def test_status(self, mcp_project):
+        r = run(awf.awf_status(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert isinstance(r.get("next_action"), str) and r["next_action"]
+
+    def test_brief(self, mcp_project):
+        r = run(awf.awf_brief(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_start_background(self, mcp_project, monkeypatch):
+        class _FakeStart:
+            def as_dict(self):
+                return {
+                    "run_mode": "background",
+                    "run_id": 4242,
+                    "log_file": "x.log",
+                    "message": "started",
+                }
+
+        monkeypatch.setattr(
+            awf.api, "start_pipeline", lambda **kw: _FakeStart()
+        )
+        monkeypatch.setattr(
+            awf,
+            "_open_dashboard_sync",
+            lambda *a, **k: {"opened": True, "method": "http", "url": "http://x"},
+        )
+        r = run(awf.awf_start(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert "GO IDLE" in r["next_action"]
+
+    def test_run_next(self, mcp_project, monkeypatch):
+        class _FakeRunNext:
+            def as_dict(self):
+                return {
+                    "action": "started",
+                    "todo_id": "TODO-0001",
+                    "run_mode": "background",
+                    "run_id": 1,
+                    "log_file": "x.log",
+                    "next_action": "GO IDLE — the run loop continues on `done`.",
+                }
+
+        monkeypatch.setattr(awf.api, "run_next", lambda **kw: _FakeRunNext())
+        monkeypatch.setattr(
+            awf,
+            "_open_dashboard_sync",
+            lambda *a, **k: {"opened": True, "method": "http", "url": "http://x"},
+        )
+        r = run(awf.awf_run_next(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_approve(self, mcp_project):
+        r = run(awf.awf_approve("TODO-0001", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_reject(self, mcp_project):
+        r = run(awf.awf_reject("TODO-0001", "bad work", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_unblock(self, mcp_project):
+        outbox = mcp_project / ".agentic" / "outbox"
+        outbox.mkdir(exist_ok=True)
+        (outbox / "BLOCKED-TODO-0001.ready").touch()
+        r = run(awf.awf_unblock("TODO-0001", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert "awf_start" in r["next_action"]
+
+    def test_todo_remove(self, mcp_project):
+        inbox = mcp_project / ".agentic" / "inbox"
+        (inbox / "TODO-0002.md").write_text("# TODO-0002\n", encoding="utf-8")
+        r = run(awf.awf_todo_remove("TODO-0002", project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert "awf_dispatch_todo" in r["next_action"]
+
+    def test_todo_retire(self, mcp_project):
+        r = run(
+            awf.awf_todo_retire(
+                "TODO-0001", reason="obsolete", project_dir=str(mcp_project)
+            )
+        )
+        assert r["status"] == "ok"
+        assert "RETIRED" in r["next_action"]
+
+    def test_wait_for_event(self, mcp_project):
+        r = run(awf.awf_wait_for_event(project_dir=str(mcp_project), timeout=1))
+        assert r["status"] == "ok"
+        assert r.get("next_action")
+
+    def test_kill_no_pipeline(self, mcp_project):
+        # QA: nothing running -> killed=False; the next step must say
+        # "nothing to stop", not "Pipeline stopped".
+        r = run(awf.awf_kill(project_dir=str(mcp_project)))
+        assert r["status"] == "ok"
+        assert r.get("killed") is False
+        na = r.get("next_action", "")
+        assert na
+        assert "Nothing to stop" in na or "nothing to stop" in na

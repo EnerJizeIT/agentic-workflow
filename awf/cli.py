@@ -205,6 +205,34 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # RUN6 #4: reword a not-started TODO, keeping the number (backup in
+    # context/; .ready and the baseline are untouched).
+    p_todo_update = sub.add_parser(
+        "todo-update",
+        help="Reword a not-started TODO, keeping the number (backup in context/)",
+    )
+    p_todo_update.add_argument("todo_id", help="TODO id (e.g. TODO-0001)")
+    _content_group = p_todo_update.add_mutually_exclusive_group(required=True)
+    _content_group.add_argument(
+        "--content", help="New content (short; one-liners)"
+    )
+    _content_group.add_argument(
+        "--content-file",
+        dest="content_file",
+        help="New content read from a file",
+    )
+    p_todo_update.add_argument(
+        "--reason",
+        default="",
+        help="Why the content is reworded (written to the log)",
+    )
+    p_todo_update.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -613,6 +641,9 @@ def _run_command(args) -> int:
         if args.command == "todo-retire":
             from . import cmd_todo_retire
             return cmd_todo_retire.run(args)
+        if args.command == "todo-update":
+            from . import cmd_todo_update
+            return cmd_todo_update.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):

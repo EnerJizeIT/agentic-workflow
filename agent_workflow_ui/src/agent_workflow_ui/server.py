@@ -76,6 +76,10 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_todo_remove, name="awf_todo_remove")
     # RUN5 #2: retire a rejected/abandoned TODO that stays "active"
     mcp.add_tool(awf.awf_todo_retire, name="awf_todo_retire")
+    # RUN6 #4: reword a not-started TODO (number/.ready/baseline preserved)
+    mcp.add_tool(awf.awf_todo_update, name="awf_todo_update")
+    # RUN6 #4: working-tree fingerprint (MCP parity for the CLI tree-sha)
+    mcp.add_tool(awf.awf_tree_sha, name="awf_tree_sha")
     # U4: machine proof that tests are red on the baseline sha
     mcp.add_tool(awf.awf_prove_red, name="awf_prove_red")
     # U5: one deterministic verify report (GATES-<todo>.md)
