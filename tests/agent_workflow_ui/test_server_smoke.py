@@ -73,7 +73,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 43 tools are registered with correct names (5 UI + 38 awf).
+    """All 44 tools are registered with correct names (5 UI + 39 awf).
 
     AUD08-08: this number is a fact-check, not a label — if it drifts from
     ``server.py``, ``tool_names == expected`` below fails first. Update both
@@ -132,6 +132,8 @@ def test_all_tools_registered():
         # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
         "awf_unblock",
         "awf_todo_remove",
+        # RUN5 #2: retire a rejected/abandoned TODO that stays "active"
+        "awf_todo_retire",
         # U4: machine proof that tests are red on the baseline sha
         "awf_prove_red",
         # U5: one deterministic verify report (GATES-<todo>.md)

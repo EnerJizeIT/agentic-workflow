@@ -413,6 +413,19 @@ class RemoveTodoResult:
 
 
 @dataclass
+class RetireTodoResult:
+    """Result of :func:`awf.api.retire_todo` (RUN5 #2 rejected/abandoned archive)."""
+
+    todo_id: str
+    moved: list[str]  # project-relative paths of the archived files
+    retired_note: str  # project-relative RETIRED-<timestamp>.md
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class WritePipelineResult:
     """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
 
@@ -474,4 +487,5 @@ __all__ = [
     "RestoreResult",
     "UnblockResult",
     "RemoveTodoResult",
+    "RetireTodoResult",
 ]

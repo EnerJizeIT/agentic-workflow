@@ -1460,6 +1460,73 @@ class TestAwfFeedback:
         assert "type" in result["error"]
 
 
+class TestAwfTodoRetire:
+    """RUN5 #2: awf_todo_retire — MCP parity with `awf todo-retire` (CLI)."""
+
+    def _ghost(self, project: Path) -> None:
+        """mcp_project ships TODO-0001 (md + .ready); add the reject tail."""
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(exist_ok=True)
+        (outbox / "DONE-TODO-0001.md").write_text("worker claim")
+        (outbox / "REVIEW-TODO-0001.md").write_text("rejected")
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_retire(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "retire_todo", spy_retire)
+
+        result = run(
+            awf.awf_todo_retire(
+                todo_id="TODO-0035",
+                reason="rejected at verify",
+                project_dir="/tmp",
+            )
+        )
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls, "api.retire_todo was not called"
+        assert calls[0]["todo_id"] == "TODO-0035"
+        assert calls[0]["reason"] == "rejected at verify"
+
+    def test_empty_reason_returns_error_dict(self, mcp_project):
+        self._ghost(mcp_project)
+
+        result = run(
+            awf.awf_todo_retire(todo_id="TODO-0001", project_dir=str(mcp_project))
+        )
+
+        assert result["status"] == "error"
+        assert "reason" in result["error"]
+        assert (mcp_project / ".agentic" / "inbox" / "TODO-0001.md").is_file()
+
+    def test_retire_ghost_ok(self, mcp_project):
+        self._ghost(mcp_project)
+
+        result = run(
+            awf.awf_todo_retire(
+                todo_id="TODO-0001",
+                reason="rejected at verify",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "ok"
+        inbox = mcp_project / ".agentic" / "inbox"
+        assert not (inbox / "TODO-0001.md").exists()
+        assert not (inbox / "TODO-0001.ready").exists()
+        done_dir = mcp_project / ".agentic" / "done" / "TODO-0001"
+        assert (done_dir / "TODO.md").is_file()
+        assert list(done_dir.glob("RETIRED-*.md"))
+        assert (
+            [t["todo_id"] for t in api.get_status(mcp_project).active_todos]
+            == []
+        )
+
+
 class TestCurrentStepLiveProject:
     """RUN3-7 (TODO-0049): awf_current_step distinguishes a NEW project
     (setup chain, phase 'goal') from a LIVE one (configured + completed

@@ -1106,6 +1106,70 @@ class TestTodoRemoveEntrypoint:
         assert "not found" in captured.out + captured.err
 
 
+class TestTodoRetireEntrypoint:
+    """RUN5 #2: `awf todo-retire` — real runs, no mocks."""
+
+    def _ghost(self, repo: Path) -> None:
+        inbox = repo / ".agentic" / "inbox"
+        outbox = repo / ".agentic" / "outbox"
+        (inbox / "TODO-0001.md").write_text("rejected task")
+        (inbox / "TODO-0001.ready").touch()
+        (outbox / "DONE-TODO-0001.md").write_text("worker claim")
+        (outbox / "REVIEW-TODO-0001.md").write_text("rejected")
+
+    def test_retire_cli_archives_ghost(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRetire")
+        self._ghost(repo)
+        capsys.readouterr()
+
+        rc = cli.main(
+            ["todo-retire", "TODO-0001", "--reason", "rejected at verify",
+             "--project-dir", str(repo)]
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        inbox = repo / ".agentic" / "inbox"
+        assert not (inbox / "TODO-0001.md").exists()
+        assert not (inbox / "TODO-0001.ready").exists()
+        done_dir = repo / ".agentic" / "done" / "TODO-0001"
+        assert (done_dir / "TODO.md").is_file()
+        notes = list(done_dir.glob("RETIRED-*.md"))
+        assert len(notes) == 1
+        assert "rejected at verify" in notes[0].read_text()
+        # status no longer sees it
+        rc2 = cli.main(["status", "--project-dir", str(repo)])
+        out2 = capsys.readouterr().out
+        assert rc2 == 0
+        assert "TODO-0001" not in out2
+
+    def test_retire_cli_without_reason_exits_2(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRetire2")
+        self._ghost(repo)
+        capsys.readouterr()
+
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["todo-retire", "TODO-0001", "--project-dir", str(repo)])
+        assert exc.value.code == 2
+        assert (repo / ".agentic" / "inbox" / "TODO-0001.md").exists()
+
+    def test_retire_cli_missing_todo_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRetire3")
+        capsys.readouterr()
+
+        rc = cli.main(
+            ["todo-retire", "TODO-0077", "--reason", "gone",
+             "--project-dir", str(repo)]
+        )
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "not found" in captured.out + captured.err
+
+
 class TestFeedbackEntrypoint:
     """RUN4 #2: `awf feedback` — real runs, no mocks (output redirected
     to tmp via config feedback.dir, never the real desktop)."""

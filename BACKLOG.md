@@ -6,6 +6,12 @@
 
 ## Открытые задачи
 
+### RUN5-2026-09-22 · leak-гейт + todo-retire + релиз 1.2.0 (в работе)
+
+⬜ **БАГ: `retry_stage` не закрепляет TODO.** Воскресил salvage-стадию TODO-0052, но движок подхватил новейший активный TODO (0054) и запустил его сразу с QA, минуя implementer; run.yaml и current.yaml разошлись. Пришлось kill → `unblock` → пинованный `start --todo … --from-stage …`. Фикс: пиновать todo_id из salvage-состояния (класс AUD08-02 в retry-пути) + тест «несколько активных TODO — тот же id». Отчёт: `~/Desktop/awf-bug-20260922-retry-stage-voskreshaet-stadiyu-no-ne-zakreplyaet-todo.md`
+
+ℹ️ Также из практики: `awf_kill` нет в CLI (только MCP) — при недоступном MCP остаётся искать PID руками.
+
 ### RUN4-2026-09-22 · `awf brief` + фидбек-контур супервизора (решения владельца 22.09)
 
 **Status:** закрыто 22.09 забегом RUN4 (2 юнита, 0 салважей, 31 мин).

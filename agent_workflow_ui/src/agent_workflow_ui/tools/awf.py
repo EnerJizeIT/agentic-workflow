@@ -480,6 +480,34 @@ async def awf_todo_remove(
     )
 
 
+async def awf_todo_retire(
+    todo_id: str,
+    reason: str = "",
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Retire a rejected/abandoned TODO that stays "active" (RUN5 #2).
+
+    The reject path writes ``DONE-{id}.{md,json}`` to the outbox WITHOUT the
+    ``DONE-{id}.ready`` signal, so ``todos.is_closed`` stays false and
+    ``awf_status``/``awf_brief`` keep listing the TODO as active forever
+    (battle case TODO-0035). This moves the TODO's files (``.md``,
+    ``.ready``, ``PROGRESS-*``, ``DONE-*.md/.json`` without ``.ready``,
+    ``REVIEW-*``) to ``done/<id>/`` and writes a ``RETIRED-<timestamp>.md``
+    note with the reason — no fake closure signal is written, and
+    ``awf_restore`` still brings the TODO back.
+
+    Refusals: no TODO file in inbox or done/; already archived
+    (``done/<id>/TODO.md``); a live pipeline on this id (kill/wait first);
+    empty ``reason`` (required — it is the RETIRED note body).
+    """
+    return await _exec(
+        api.retire_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        reason=reason,
+    )
+
+
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     """Current run (забег) state: position, budget left, rejects, stop reason."""
     return await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))

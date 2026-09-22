@@ -376,6 +376,7 @@ unchanged).
 | `awf_restore` | Restore an archived TODO back to the inbox |
 | `awf_unblock` | Clear stale BLOCKED/ACK closures so a re-issued TODO is visible again |
 | `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
+| `awf_todo_retire` | Retire a rejected/abandoned TODO that stays "active" (RETIRED note in `done/<id>/`) |
 
 **`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
 `BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
@@ -390,6 +391,16 @@ whose DONE closure is still in the outbox.
 dispatch `.ready`, no signals, no progress. The file moves to
 `done/<id>/removed-<timestamp>.md`, the trace stays. A `.ready` or any signal/progress
 refuses the removal and points to `awf unblock` / `awf reset --orphans`.
+
+**`awf_todo_retire`** (CLI `awf todo-retire TODO-NNNN --reason "…"`). The reject path
+writes `DONE-<id>.{md,json}` to the outbox but NOT the `DONE-<id>.ready` signal — so a
+rejected TODO stays "active" in `awf status` forever (no closure, no archive). Retire
+moves the TODO's files (`TODO-<id>.md`, `.ready`, `PROGRESS-*`, `DONE-*.md/.json`
+without `.ready`, `REVIEW-*`) to `done/<id>/` and writes
+`done/<id>/RETIRED-<timestamp>.md` with the reason, who and time — no fake DONE signal.
+Refusals: no TODO file in inbox or `done/`; already archived (`done/<id>/TODO.md`);
+a live pipeline on this id (`awf kill` or wait first); empty `--reason` (required).
+`awf restore` still brings a retired TODO back.
 
 ### Verify
 | Tool | What it does |

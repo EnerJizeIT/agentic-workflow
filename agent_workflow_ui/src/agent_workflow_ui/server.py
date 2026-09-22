@@ -74,6 +74,8 @@ def create_server() -> FastMCP:
     # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
     mcp.add_tool(awf.awf_unblock, name="awf_unblock")
     mcp.add_tool(awf.awf_todo_remove, name="awf_todo_remove")
+    # RUN5 #2: retire a rejected/abandoned TODO that stays "active"
+    mcp.add_tool(awf.awf_todo_retire, name="awf_todo_retire")
     # U4: machine proof that tests are red on the baseline sha
     mcp.add_tool(awf.awf_prove_red, name="awf_prove_red")
     # U5: one deterministic verify report (GATES-<todo>.md)

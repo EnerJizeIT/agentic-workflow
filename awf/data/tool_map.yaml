@@ -64,6 +64,9 @@ groups:
       - mcp: awf_todo_remove
         cli: todo-remove
         when: "remove a never-started TODO"
+      - mcp: awf_todo_retire
+        cli: todo-retire
+        when: "retire a rejected TODO stuck active"
       - mcp: awf_restore
         cli: restore
         when: "archived TODO back to the inbox"

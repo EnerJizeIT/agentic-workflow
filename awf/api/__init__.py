@@ -55,6 +55,7 @@ from ._results import (
     ReportResult,
     ResetResult,
     RestoreResult,
+    RetireTodoResult,
     RollbackResult,
     RunFinishResult,
     RunNextResult,
@@ -73,7 +74,7 @@ from ._stack import derive_project_name, detect_stack
 from .brief import brief
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
-from .hygiene import remove_todo, unblock_todo
+from .hygiene import remove_todo, retire_todo, unblock_todo
 from .lifecycle import (
     get_report,
     get_status,
@@ -131,6 +132,7 @@ __all__ = [
     "RestoreResult",
     "UnblockResult",
     "RemoveTodoResult",
+    "RetireTodoResult",
     "WritePipelineResult",
     "ListPipelinesResult",
     "FeedbackResult",
@@ -158,9 +160,11 @@ __all__ = [
     "reject_commit",
     "retry_stage",
     "restore_todo",
-    # TODO state hygiene (RUN3 #4/#5 — stale closures, never-started removal)
+    # TODO state hygiene (RUN3 #4/#5 — stale closures, never-started removal;
+    # RUN5 #2 — rejected/abandoned TODO archive)
     "unblock_todo",
     "remove_todo",
+    "retire_todo",
     # Autonomous run (забег)
     "run_start",
     "run_status",
