@@ -45,6 +45,7 @@ from ._results import (
     DispatchTodoResult,
     InitResult,
     RejectResult,
+    RemoveTodoResult,
     ReportResult,
     ResetResult,
     RestoreResult,
@@ -56,6 +57,7 @@ from ._results import (
     StartResult,
     StatusResult,
     SupervisorContextResult,
+    UnblockResult,
     WaitEventResult,
 )
 
@@ -63,6 +65,7 @@ from ._results import (
 from ._stack import derive_project_name, detect_stack
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
+from .hygiene import remove_todo, unblock_todo
 from .lifecycle import (
     get_report,
     get_status,
@@ -117,6 +120,8 @@ __all__ = [
     "RunNextResult",
     "RunFinishResult",
     "RestoreResult",
+    "UnblockResult",
+    "RemoveTodoResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -140,6 +145,9 @@ __all__ = [
     "reject_commit",
     "retry_stage",
     "restore_todo",
+    # TODO state hygiene (RUN3 #4/#5 — stale closures, never-started removal)
+    "unblock_todo",
+    "remove_todo",
     # Autonomous run (забег)
     "run_start",
     "run_status",

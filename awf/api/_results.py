@@ -368,6 +368,31 @@ class RestoreResult:
 
 
 @dataclass
+class UnblockResult:
+    """Result of :func:`awf.api.unblock_todo` (RUN3 #4 stale-closure clearing)."""
+
+    todo_id: str
+    moved: list[str]
+    trace: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RemoveTodoResult:
+    """Result of :func:`awf.api.remove_todo` (RUN3 #5 never-started removal)."""
+
+    todo_id: str
+    trace_path: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RunFinishResult:
     """Result of :func:`awf.api.run_finish`."""
 
@@ -402,4 +427,6 @@ __all__ = [
     "RunNextResult",
     "RunFinishResult",
     "RestoreResult",
+    "UnblockResult",
+    "RemoveTodoResult",
 ]

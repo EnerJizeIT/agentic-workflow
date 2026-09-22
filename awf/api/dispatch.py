@@ -79,11 +79,16 @@ def dispatch_todo(
         todo_id: override auto-generated id (e.g. "TODO-0007"). If None,
             auto-picks next available NNNN by scanning inbox + outbox.
 
+    Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
+    clears them automatically; a DONE closure refuses the dispatch
+    (use ``awf restore`` for an archived TODO).
+
     Returns:
         DispatchTodoResult with todo_id, baseline_sha, files written.
 
     Raises:
-        AwfApiError: if .agentic/ missing or content empty.
+        AwfApiError: if .agentic/ missing, content empty, or a DONE
+            closure for ``todo_id`` is still in the outbox.
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -149,6 +154,18 @@ def dispatch_todo(
             f"last tried {todo_id}) — check .agentic/inbox for stray TODO files"
         )
 
+    # RUN3 #4: never (re)issue a number whose DONE closure is still in the
+    # outbox — the fresh TODO would be invisible (todos.is_closed). The
+    # archived TODO comes back via awf restore, not a silent re-dispatch.
+    from .hygiene import clear_stale_closures, has_done_closure
+
+    if has_done_closure(project_dir, todo_id):
+        md_path.unlink(missing_ok=True)
+        raise AwfApiError(
+            f"outbox has a DONE closure for {todo_id} — the TODO is closed as "
+            "finished. Bring it back with awf restore or dispatch a new number."
+        )
+
     # Pre-dispatch check: grep code for key identifiers from TODO content.
     # Warns if patterns already exist in codebase (task may be already done).
     pre_check_warnings: list[str] = []
@@ -210,6 +227,21 @@ def dispatch_todo(
         # Rollback: remove TODO .md if baseline fails (prevents orphan TODO)
         md_path.unlink(missing_ok=True)
         raise
+
+    # RUN3 #4: re-dispatch of the same number must not stay hidden behind
+    # stale BLOCKED/ACK closures — clear them via the shared helper.
+    # (Only reachable when inbox had no .md for this id, i.e. a re-issue;
+    # a running pipeline keeps its own .md in the inbox, so its signals
+    # are never moved out from under the engine.)
+    cleared, _trace = clear_stale_closures(project_dir, todo_id)
+    if cleared:
+        from .._log import log as _log
+
+        _log(
+            paths.logs_dir(project_dir),
+            f"dispatch: {todo_id} — stale closure cleared on re-dispatch: "
+            f"{', '.join(cleared)}",
+        )
 
     # Step 3: dispatch signal
     ready_path = inbox / f"{todo_id}.ready"

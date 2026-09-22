@@ -169,7 +169,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-38 инструментов: 33 `awf_*` workflow + 5 UI (формы).
+40 инструментов: 35 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -194,6 +194,22 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_baseline` | Снапшот git HEAD + тесты + окружение |
 | `awf_rollback` | Откат к baseline (hard / soft / dry-run) |
 | `awf_restore` | Вернуть заархивированный TODO обратно в inbox |
+| `awf_unblock` | Снять stale BLOCKED/ACK-закрытия — перевыданный TODO снова виден |
+| `awf_todo_remove` | Удалить не стартовавший TODO (след в `done/<id>/removed-<ts>.md`) |
+
+**`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
+лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой
+список, `awf start` отвечает «No active TODO». Unblock переносит эти закрывающие
+сигналы (каноническая и legacy-формы) в каталог `context/unblock-<id>-<ts>/` — след
+остаётся, TODO снова активен. DONE-закрытия не трогаются: заархивированный TODO
+возвращает только `awf restore`. `awf_dispatch_todo` сам снимает stale BLOCKED/ACK
+при перевыдаче того же номера и отказывается перевыдавать номер, чьё DONE-закрытие
+ещё лежит в outbox.
+
+**`awf_todo_remove`** (CLI `awf todo-remove`). Убирает TODO, который никогда не
+стартовал — нет dispatch-`.ready`, сигналов и прогресса. Файл переносится в
+`done/<id>/removed-<timestamp>.md`, след остаётся. Если есть `.ready` или любой
+сигнал/прогресс — отказ с подсказкой `awf unblock` / `awf reset --orphans`.
 
 ### Verify
 | Tool | Что делает |

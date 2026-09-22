@@ -427,6 +427,44 @@ async def awf_restore(
     )
 
 
+async def awf_unblock(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Clear stale BLOCKED/ACK closure signals so a re-issued TODO is active again.
+
+    RUN3 #4: a stale ``outbox/BLOCKED-<id>.ready`` outlives a re-issue and
+    keeps ``todos.is_closed`` true — ``awf_status`` shows an empty list and
+    ``awf_start`` without a pin answers "No active TODO". This moves the
+    closure signals (canonical and legacy forms) to a ``context/`` trace
+    directory. DONE closures are never touched — an archived TODO comes
+    back only via ``awf_restore``. Refused while the pipeline is running.
+    """
+    return await _exec(
+        api.unblock_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+
+
+async def awf_todo_remove(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Remove a TODO that never started; the file keeps a trace in done/.
+
+    RUN3 #5: an inert TODO (``.md`` without ``.ready``/signals/progress)
+    moves to ``done/<id>/removed-<timestamp>.md``. Refused when a
+    ``.ready`` or any signal/progress exists (hints: ``awf_unblock`` /
+    ``awf_reset(orphans=True)``).
+    """
+    return await _exec(
+        api.remove_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+
+
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     """Current run (забег) state: position, budget left, rejects, stop reason."""
     return await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))

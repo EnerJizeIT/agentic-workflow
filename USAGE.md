@@ -282,7 +282,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-38 tools: 33 `awf_*` workflow + 5 UI (forms).
+40 tools: 35 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -307,6 +307,22 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_baseline` | Snapshot git HEAD + tests + env |
 | `awf_rollback` | Reset to baseline (hard / soft / dry-run) |
 | `awf_restore` | Restore an archived TODO back to the inbox |
+| `awf_unblock` | Clear stale BLOCKED/ACK closures so a re-issued TODO is visible again |
+| `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
+
+**`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
+`BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
+list and `awf start` answers "No active TODO". Unblock moves those closure signals
+(canonical and legacy forms) to a `context/unblock-<id>-<ts>/` directory — the trace
+stays, the TODO is active again. DONE closures are never touched: an archived TODO
+comes back only via `awf restore`. `awf_dispatch_todo` clears stale BLOCKED/ACK
+closures on its own when re-issuing the same number, and refuses to re-issue a number
+whose DONE closure is still in the outbox.
+
+**`awf_todo_remove`** (CLI `awf todo-remove`). Removes a TODO that never started — no
+dispatch `.ready`, no signals, no progress. The file moves to
+`done/<id>/removed-<timestamp>.md`, the trace stays. A `.ready` or any signal/progress
+refuses the removal and points to `awf unblock` / `awf reset --orphans`.
 
 ### Verify
 | Tool | What it does |

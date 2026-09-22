@@ -69,6 +69,9 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_run_finish, name="awf_run_finish")
     mcp.add_tool(awf.awf_run_note, name="awf_run_note")
     mcp.add_tool(awf.awf_restore, name="awf_restore")
+    # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
+    mcp.add_tool(awf.awf_unblock, name="awf_unblock")
+    mcp.add_tool(awf.awf_todo_remove, name="awf_todo_remove")
     # U4: machine proof that tests are red on the baseline sha
     mcp.add_tool(awf.awf_prove_red, name="awf_prove_red")
     # U5: one deterministic verify report (GATES-<todo>.md)

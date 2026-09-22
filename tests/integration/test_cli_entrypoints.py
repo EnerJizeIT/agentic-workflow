@@ -832,3 +832,86 @@ class TestMetricsEntrypoint:
 
         assert rc in (0, 1)
         assert out_file.is_file()
+
+
+class TestUnblockEntrypoint:
+    """RUN3 #4: `awf unblock` — real runs, no mocks."""
+
+    def test_unblock_cli_clears_stale_blocked(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUnblock")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        outbox = repo / ".agentic" / "outbox"
+        (inbox / "TODO-0001.md").write_text("task")
+        (inbox / "TODO-0001.ready").touch()
+        (outbox / "BLOCKED-TODO-0001.md").write_text("stale reason")
+        (outbox / "BLOCKED-TODO-0001.ready").touch()
+
+        rc = cli.main(["unblock", "TODO-0001", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert not (outbox / "BLOCKED-TODO-0001.ready").exists()
+        assert not (outbox / "BLOCKED-TODO-0001.md").exists()
+        # the re-issued TODO is visible again
+        rc2 = cli.main(["status", "--project-dir", str(repo)])
+        out2 = capsys.readouterr().out
+        assert rc2 == 0
+        assert "TODO-0001" in out2
+
+    def test_unblock_cli_without_closures_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUnblock2")
+        capsys.readouterr()
+
+        rc = cli.main(["unblock", "TODO-0042", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "nothing to unblock" in captured.out + captured.err
+
+
+class TestTodoRemoveEntrypoint:
+    """RUN3 #5: `awf todo-remove` — real runs, no mocks."""
+
+    def test_todo_remove_cli_removes_never_started(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0003.md").write_text("never started")
+
+        rc = cli.main(["todo-remove", "TODO-0003", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert not (inbox / "TODO-0003.md").exists()
+        traces = list((repo / ".agentic" / "done" / "TODO-0003").glob("removed-*.md"))
+        assert len(traces) == 1
+        assert "never started" in traces[0].read_text()
+
+    def test_todo_remove_cli_refuses_armed(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove2")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0003.md").write_text("armed")
+        (inbox / "TODO-0003.ready").touch()
+
+        rc = cli.main(["todo-remove", "TODO-0003", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert (inbox / "TODO-0003.md").exists()
+
+    def test_todo_remove_cli_missing_is_error(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove3")
+        capsys.readouterr()
+
+        rc = cli.main(["todo-remove", "TODO-0077", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "not found" in captured.out + captured.err

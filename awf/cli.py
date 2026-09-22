@@ -159,6 +159,33 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # RUN3 #4: stale-closure clearing (a re-issued TODO stays hidden behind
+    # an old BLOCKED-<id>.ready until this moves the signals away).
+    p_unblock = sub.add_parser(
+        "unblock",
+        help="Clear stale BLOCKED/ACK closure signals for a TODO (trace in context/)",
+    )
+    p_unblock.add_argument("todo_id", help="TODO id (e.g. TODO-0018)")
+    p_unblock.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
+    # RUN3 #5: removal of a TODO that never started (trace in done/<id>/).
+    p_todo_remove = sub.add_parser(
+        "todo-remove",
+        help="Remove a TODO that never started (no .ready/signals/progress; trace in done/)",
+    )
+    p_todo_remove.add_argument("todo_id", help="TODO id (e.g. TODO-0018)")
+    p_todo_remove.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -454,6 +481,12 @@ def _run_command(args) -> int:
         if args.command == "restore":
             from . import cmd_restore
             return cmd_restore.run(args)
+        if args.command == "unblock":
+            from . import cmd_unblock
+            return cmd_unblock.run(args)
+        if args.command == "todo-remove":
+            from . import cmd_todo_remove
+            return cmd_todo_remove.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):

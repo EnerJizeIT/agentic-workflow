@@ -6,6 +6,18 @@
 
 ## Открытые задачи
 
+### RUN3-2026-09-22 · Отчёт супервизора topic-trainer — сценарий «аудит по доменам»
+
+**Источник:** `~/Desktop/awf-supervisor-report-2026-09-22.md`. Сценарий: шесть аудит-слоёв, у каждого свой пайплайн и роль; находки сведены в один план. Забег RUN3: 6 юнитов.
+
+⬜ **#1 Именованные пайплайны** — `awf pipeline-write` (CLI+MCP) и список пайплайнов; запись в `.agentic/pipelines/<имя>.yaml` без правки config и supervisor (`awf_start(pipeline=…)` имя уже принимает, создать его нечем).
+⬜ **#2 Пайплайн на элемент очереди забега** — `awf_run_start(queue=[{todo_id, pipeline}, …])` (строки — совместимость) + `pipeline=` в `awf_dispatch_todo` (пишется в TODO, читается при запуске); иначе шесть слоёв = шесть одиночных стартов без бюджета/нот/отчёта.
+⬜ **#3 Роль из глобального скилла** — `awf_add_role(..., from_skill="agent-security-auditor")` копирует содержимое скилла в `.agentic/roles/`; сейчас только пустой шаблон, а skill-файлы видны лишь форме setup.
+⬜ **#4 БАГ: перевыдача TODO не снимает старый BLOCKED** — stale `outbox/BLOCKED-<id>.ready` держит `todos.is_closed` → `awf_status` пуст, `awf_start` без закрепления: «No active TODO». Чинить: `awf unblock TODO-NNNN` + автоснятие stale-закрытия (BLOCKED/ACK) при перевыдаче того же номера.
+⬜ **#5 Убрать никогда не стартовавший TODO** — `awf todo-remove TODO-NNNN` (след в `done/`, лог) или `reset --stale`: `reset --orphans` требует `.ready`, а такие TODO инертны и путают.
+⬜ **#6 `no_checkpoints` на одиночный старт** — параметр у `awf_start`/`awf_continue` (CLI+MCP), сейчас флаг есть только у забега.
+⬜ **#7 `awf_current_step` на живом проекте** — пустой `goal` у настроенного проекта с архивом уводит в setup-ритуал; различать «новый» и «живой» проект.
+
 ### RUN2-2026-09-22 · Баг-репорт из topic-trainer (забег 2, awf 1.1.0)
 
 **Status:** закрыто 22.09 забегом RUN2 (3 юнита, 0 салважей). Источник: `~/Desktop/awf-bug-report-run2-checkpoints.md`.
