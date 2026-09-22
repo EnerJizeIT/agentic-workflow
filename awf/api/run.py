@@ -94,6 +94,7 @@ def run_brief(project_dir: Path) -> dict | None:
         "budget_left_minutes": left,
         "stop_reason": state.get("stop_reason", ""),
         "report_file": state.get("report_file", ""),
+        "no_checkpoints": bool(state.get("no_checkpoints")),
     }
 
 
@@ -105,6 +106,7 @@ def run_start(
     stop_flags: dict[str, list[str]] | None = None,
     note: str = "",
     force: bool = False,
+    no_checkpoints: bool = False,
 ) -> RunStartResult:
     """Start an autonomous run: record the queue and the mechanical gates.
 
@@ -112,6 +114,11 @@ def run_start(
     before calling :func:`run_next` for it; stop flags keyed by TODO id mark
     items awf must never auto-continue past (phase boundaries, external
     audits, owner-decision tasks).
+
+    ``no_checkpoints`` (B4): when True, the BD-36 plan checkpoint is skipped
+    for every pipeline launch of this run — the run does not expect the
+    owner at every TODO. The flag is stored in the run state and surfaced
+    by :func:`run_status` / :func:`run_brief`.
     """
     project_dir = _require_run_project(project_dir)
     ids = _validate_queue(queue)
@@ -145,6 +152,7 @@ def run_start(
         stop_reason="",
         report_file="",
         note=note.strip(),
+        no_checkpoints=bool(no_checkpoints),
     )
 
     budget_note = f", budget {int(budget_minutes)} min" if budget_minutes else ""
@@ -222,6 +230,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
         stop_reason=str(state.get("stop_reason", "") or ""),
         report_file=str(state.get("report_file", "") or ""),
         message=message,
+        no_checkpoints=bool(state.get("no_checkpoints")),
     )
 
 

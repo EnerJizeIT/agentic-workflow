@@ -20,11 +20,13 @@ agent-workflow-ui plugin being loaded.
 from __future__ import annotations
 
 import html as html_lib
+import json
 import os
 import tempfile
 import threading
 import time
 import webbrowser
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -103,14 +105,23 @@ def _cleanup_stale_temp_html(project_dir: Path) -> int:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
-def is_checkpoint_enabled(config: dict | None, auto: bool) -> bool:
+def is_checkpoint_enabled(
+    config: dict | None,
+    auto: bool,
+    *,
+    no_checkpoints: bool = False,
+) -> bool:
     """BD-36: should the checkpoint run for this pipeline?
 
     Disabled by (any one is enough):
+      - ``no_checkpoints=True`` (B4: run flag — an autonomous run that does
+        not expect checkpoints; passed by the engine from the active run)
       - ``auto=True`` (CI/tests via ``--auto``)
       - env ``AWF_PLAN_CHECKPOINT`` in (false/0/no)
       - config ``automation.plan_checkpoint`` falsy
     """
+    if no_checkpoints:
+        return False
     if auto:
         return False
     env_val = os.environ.get("AWF_PLAN_CHECKPOINT", "").lower()
@@ -123,6 +134,127 @@ def is_checkpoint_enabled(config: dict | None, auto: bool) -> bool:
         if val in (False, "false", "0", "no", "off"):
             return False
     return True
+
+
+# ── B1: decision survives pipeline death ─────────────────────────────────────
+
+
+def _checkpoint_decision_file(project_dir: Path, todo_id: str) -> Path:
+    """B1: where a submitted checkpoint decision is persisted so it survives
+    the pipeline process dying. Applied once, then renamed with a
+    ``.consumed`` suffix (audit trail)."""
+    return project_dir / ".agentic" / "context" / f"CHECKPOINT-{todo_id}.json"
+
+
+def _persist_checkpoint_decision(
+    decision_file: Path,
+    todo_id: str,
+    decision: str,
+    content: str,
+    logs_dir: Path | None,
+) -> None:
+    """B1: atomically save the form decision to disk (temp + rename).
+
+    Best-effort: a write failure degrades to the in-memory path only — the
+    live pipeline still applies the decision, only the survival guarantee
+    is lost.
+    """
+    payload = {
+        "decision": decision,
+        "todo_id": todo_id,
+        "content": content,
+        "submitted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    try:
+        decision_file.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            decision_file, json.dumps(payload, ensure_ascii=False, indent=2)
+        )
+    except OSError:
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                f"B1: failed to persist checkpoint decision to {decision_file}",
+            )
+
+
+def _consume_checkpoint_decision(
+    project_dir: Path, todo_id: str, logs_dir: Path | None
+) -> bool:
+    """B1: mark a saved decision as consumed.
+
+    ``os.replace`` is atomic on POSIX — race-free by construction: of two
+    concurrent gate entries only one wins the rename; the loser sees no file
+    and opens a fresh form. Returns True when a decision file was consumed.
+    """
+    f = _checkpoint_decision_file(project_dir, todo_id)
+    if not f.is_file():
+        return False
+    consumed = f.parent / (f.name + ".consumed")
+    try:
+        os.replace(f, consumed)
+    except OSError:
+        return False
+    if logs_dir is not None:
+        _log(logs_dir, f"B1: checkpoint decision consumed: {f.name} -> {consumed.name}")
+    return True
+
+
+def _apply_pending_checkpoint_decision(
+    todo_id: str, content_file: Path, project_dir: Path, logs_dir: Path
+) -> str | None:
+    """B1: apply an unconsumed saved decision without opening the form.
+
+    A previous checkpoint run may have died after the user's submit (timeout
+    teardown race, crash, manual stop) — the decision survived on disk.
+    Applying it here is the pending-signal path: the next pipeline entry
+    continues instead of re-asking a question the user already answered.
+
+    Returns the decision ("approve"/"edit"/"reject") or None (no valid saved
+    decision — the form opens as before).
+    """
+    f = _checkpoint_decision_file(project_dir, todo_id)
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        _log(
+            logs_dir,
+            f"B1: {f.name} is unreadable or corrupt — ignoring, opening a fresh form",
+        )
+        return None
+    if not isinstance(data, dict):
+        _log(
+            logs_dir,
+            f"B1: {f.name} is not a JSON object — ignoring, opening a fresh form",
+        )
+        return None
+    decision = str(data.get("decision", ""))
+    if decision not in ("approve", "edit", "reject"):
+        _log(
+            logs_dir,
+            f"B1: {f.name} has invalid decision {decision!r} "
+            f"— ignoring, opening a fresh form",
+        )
+        return None
+    content = str(data.get("content", ""))
+    if decision == "edit":
+        if not content.strip():
+            # BUG-3 parity: an empty edit must never wipe the TODO.
+            _log(
+                logs_dir,
+                f"B1: saved edit for {todo_id} has empty content — treated as approve",
+            )
+            decision = "approve"
+        else:
+            atomic_write_text(content_file, content)
+    _consume_checkpoint_decision(project_dir, todo_id, logs_dir)
+    _log(
+        logs_dir,
+        f"B1: applying saved checkpoint decision for {todo_id}: {decision} (no form)",
+    )
+    return decision
 
 
 def run_plan_checkpoint(
@@ -148,6 +280,16 @@ def run_plan_checkpoint(
     else:
         _log(logs_dir, f"BD-36: no {todo_id}.md to preview — auto-approve")
         return "approve"
+
+    # B1: a decision saved by a previous (died) checkpoint run is applied
+    # without re-opening the form — the user already answered this question.
+    # Runs BEFORE the P1 hash-skip so a pending edit is never shadowed by a
+    # matching pre-edit hash.
+    pending = _apply_pending_checkpoint_decision(
+        todo_id, content_file, project_dir, logs_dir
+    )
+    if pending is not None:
+        return pending
 
     # AUD03-07: preview content — a corrupted (non-UTF-8) file must degrade,
     # not crash the pipeline main-loop. errors="replace" keeps the preview
@@ -196,6 +338,9 @@ def run_plan_checkpoint(
                 decision_holder=decision_holder,
                 edited_holder=edited_holder,
                 decision_lock=decision_lock,
+                decision_file=_checkpoint_decision_file(project_dir, todo_id),
+                todo_id=todo_id,
+                logs_dir=logs_dir,
             )
             break
         except OSError:
@@ -267,7 +412,17 @@ def run_plan_checkpoint(
         if not decision_holder:
             # QA: orchestrator treats "timeout" as ABORT (returns 1), not
             # auto-approve. Log message must reflect that — was misleading.
-            _log(logs_dir, f"BD-36: checkpoint timeout for {todo_id} — pipeline will abort")
+            # B1: a submit that lands while the form is alive is persisted;
+            # the owner then continues with `awf continue` and the decision
+            # is applied on the next gate entry (policy unchanged: timeout
+            # is still NOT an auto-approve).
+            dec_file = _checkpoint_decision_file(project_dir, todo_id)
+            _log(
+                logs_dir,
+                f"BD-36: checkpoint timeout for {todo_id} — pipeline will abort. "
+                f"Форма сохранена: {dec_file}; после сабмита — `awf continue`, "
+                f"решение подхватится без повторной формы.",
+            )
             # AUD02-03: the form is dead now (the server shuts down in
             # finally) — clear the pending keys in the moment, so a later
             # awf_status/awf_wait_for_event between the abort and the next
@@ -284,6 +439,10 @@ def run_plan_checkpoint(
 
         decision = decision_holder["decision"]
         _log(logs_dir, f"BD-36: checkpoint decision for {todo_id}: {decision}")
+        # B1: the submit also persisted a decision file — consume it now so
+        # a later gate entry (kill+start loop) does not apply the same
+        # decision twice.
+        _consume_checkpoint_decision(project_dir, todo_id, logs_dir)
         # T4.1: persist checkpoint resolution (no longer pending).
         # AUD02-11: checkpoint_decision was written but never read — removed
         # (a dead key is a false contract signal; the decision is also in the
@@ -363,6 +522,9 @@ def _start_checkpoint_server(
     decision_holder: dict[str, str],
     edited_holder: dict[str, str],
     decision_lock: threading.Lock | None = None,
+    decision_file: Path | None = None,
+    todo_id: str | None = None,
+    logs_dir: Path | None = None,
 ) -> ThreadingHTTPServer:
     """Start one-shot HTTP server to receive form POST. Daemon thread.
 
@@ -372,6 +534,10 @@ def _start_checkpoint_server(
 
     AUD03-05: decision writing is first-wins, guarded by ``decision_lock``
     (shared across all handler instances of this server).
+
+    B1: when ``decision_file`` + ``todo_id`` are given, the first accepted
+    POST also persists the decision to disk (before publishing it in-memory)
+    so it survives the process dying.
     """
     if decision_lock is None:
         decision_lock = threading.Lock()
@@ -416,9 +582,21 @@ def _start_checkpoint_server(
                 if decision_holder:
                     already_decided = True
                 else:
+                    edited_content = params.get("edited_content", [""])[0]
+                    # B1: persist to disk BEFORE publishing in-memory — the
+                    # main loop wakes on the holder and consumes the file, so
+                    # the write must be visible first.
+                    if decision_file is not None and todo_id is not None:
+                        _persist_checkpoint_decision(
+                            decision_file,
+                            todo_id,
+                            decision,
+                            edited_content if decision == "edit" else "",
+                            logs_dir,
+                        )
                     decision_holder["decision"] = decision
                     if decision == "edit":
-                        edited_holder["content"] = params.get("edited_content", [""])[0]
+                        edited_holder["content"] = edited_content
 
             if already_decided:
                 first = decision_holder["decision"]

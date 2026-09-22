@@ -394,6 +394,35 @@ class TestRunNote:
             api.run_note(proj, "x")
 
 
+class TestNoCheckpointsFlag:
+    """B4: the run flag no_checkpoints is stored in state and surfaced."""
+
+    def test_flag_in_state_status_and_brief(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"], no_checkpoints=True)
+
+        assert run_state.read_run(proj)["no_checkpoints"] is True
+        assert api.run_status(proj).no_checkpoints is True
+        assert api.run_brief(proj)["no_checkpoints"] is True
+
+    def test_default_false(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"])
+
+        assert run_state.read_run(proj)["no_checkpoints"] is False
+        assert api.run_status(proj).no_checkpoints is False
+        assert api.run_brief(proj)["no_checkpoints"] is False
+
+    def test_flag_survives_merge_writes(self, tmp_git_repo):
+        """Later RMW writes (note, index, ...) must not clobber the flag."""
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=["TODO-0001"], no_checkpoints=True)
+
+        run_state.write_run(proj, note="update", index=1)
+
+        assert run_state.read_run(proj)["no_checkpoints"] is True
+
+
 class TestRunStartSafety:
     """A1/A6: ghost-proof start — path validation, force replace, path echo."""
 

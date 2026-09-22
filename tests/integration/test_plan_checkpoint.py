@@ -8,6 +8,7 @@ Coverage matrix:
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import urllib.error
@@ -70,6 +71,16 @@ class TestCheckpointEnabled:
         """Empty config → checkpoint on (default behavior)."""
         monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
         assert plan_checkpoint.is_checkpoint_enabled(config={}, auto=False) is True
+
+    def test_no_checkpoints_flag_disables(self, monkeypatch):
+        """B4: run flag no_checkpoints=true disables the gate (active run)."""
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        assert (
+            plan_checkpoint.is_checkpoint_enabled(
+                config=None, auto=False, no_checkpoints=True
+            )
+            is False
+        )
 
 
 # ── TestRenderHtml ───────────────────────────────────────────────────────────
@@ -1013,6 +1024,371 @@ class TestCheckpointFirstWins:
         finally:
             server.shutdown()
             server.server_close()
+
+
+# ── B1: POST persists the decision to disk (survives pipeline death) ───────
+
+
+class TestCheckpointDecisionFile:
+    """B1: the first accepted POST writes CHECKPOINT-<todo>.json atomically.
+
+    The file is what survives when the pipeline process dies after the
+    submit (timeout teardown race, crash). The live path still applies the
+    in-memory decision; the file is the backup for the next gate entry.
+    """
+
+    def _post(self, port: int, data: bytes) -> int:
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/checkpoint", data=data, timeout=2,
+            ) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def _server(self, tmp_path: Path, decision_file: Path | None):
+        decision: dict = {}
+        edited: dict = {}
+        server = plan_checkpoint._start_checkpoint_server(
+            port=0,
+            decision_holder=decision,
+            edited_holder=edited,
+            decision_file=decision_file,
+            todo_id="TODO-0001" if decision_file is not None else None,
+            logs_dir=tmp_path / "logs",
+        )
+        return server, decision, edited
+
+    def test_approve_persists_decision_file(self, tmp_path):
+        decision_file = tmp_path / "CHECKPOINT-TODO-0001.json"
+        server, decision, _ = self._server(tmp_path, decision_file)
+        try:
+            port = server.server_address[1]
+            assert self._post(port, b"decision=approve") == 200
+            assert decision["decision"] == "approve"
+            data = json.loads(decision_file.read_text(encoding="utf-8"))
+            assert data["decision"] == "approve"
+            assert data["todo_id"] == "TODO-0001"
+            assert data["content"] == ""
+            assert data["submitted_at"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_edit_persists_edited_content(self, tmp_path):
+        decision_file = tmp_path / "CHECKPOINT-TODO-0001.json"
+        server, _, edited = self._server(tmp_path, decision_file)
+        try:
+            port = server.server_address[1]
+            payload = (
+                b"decision=edit&edited_content="
+                + urllib.parse.quote("Edited by user").encode()
+            )
+            assert self._post(port, payload) == 200
+            assert edited["content"] == "Edited by user"
+            data = json.loads(decision_file.read_text(encoding="utf-8"))
+            assert data["decision"] == "edit"
+            assert data["content"] == "Edited by user"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_second_post_keeps_first_decision_on_disk(self, tmp_path):
+        """AUD03-05 parity: first-wins applies to the disk file too."""
+        decision_file = tmp_path / "CHECKPOINT-TODO-0001.json"
+        server, _, _ = self._server(tmp_path, decision_file)
+        try:
+            port = server.server_address[1]
+            assert self._post(port, b"decision=approve") == 200
+            assert self._post(port, b"decision=reject") == 200
+            data = json.loads(decision_file.read_text(encoding="utf-8"))
+            assert data["decision"] == "approve"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_no_file_when_not_configured(self, tmp_path):
+        """Legacy calls (no decision_file) must not create the file."""
+        server, _, _ = self._server(tmp_path, None)
+        try:
+            port = server.server_address[1]
+            assert self._post(port, b"decision=approve") == 200
+            assert not list(tmp_path.glob("CHECKPOINT-*.json"))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+# ── B1: saved decision is applied on the next gate entry ────────────────────
+
+
+class TestCheckpointDecisionSurvives:
+    """B1: an unconsumed saved decision is applied without opening the form.
+
+    Scenario: the pipeline died after the user's submit (timeout teardown
+    race). On the next entry the gate must apply the saved decision instead
+    of re-asking, and consume it so it is not applied twice.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
+    def _make_project(self, tmp_path: Path, content: str = "Original task") -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text(content, encoding="utf-8")
+        return tmp_path
+
+    def _save_decision(
+        self, project: Path, decision: str, content: str = ""
+    ) -> Path:
+        f = project / ".agentic" / "context" / "CHECKPOINT-TODO-0001.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            json.dumps(
+                {
+                    "decision": decision,
+                    "todo_id": "TODO-0001",
+                    "content": content,
+                    "submitted_at": "2026-09-22T12:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        return f
+
+    def test_saved_approve_applies_without_form(self, tmp_path, monkeypatch):
+        project = self._make_project(tmp_path)
+        self._save_decision(project, "approve")
+        opened: list[str] = []
+        monkeypatch.setattr(
+            plan_checkpoint.webbrowser, "open",
+            lambda url, **_kw: opened.append(url),
+        )
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+
+        assert result == "approve"
+        assert opened == [], "form must not open when a saved decision applies"
+        f = project / ".agentic" / "context" / "CHECKPOINT-TODO-0001.json"
+        assert not f.is_file()
+        assert f.with_name(f.name + ".consumed").is_file()
+
+    def test_saved_edit_rewrites_todo_and_consumes(self, tmp_path, monkeypatch):
+        project = self._make_project(tmp_path, content="Original")
+        self._save_decision(project, "edit", content="Edited by user")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+
+        assert result == "edit"
+        assert (
+            (project / ".agentic" / "inbox" / "TODO-0001.md").read_text(encoding="utf-8")
+            == "Edited by user"
+        )
+        f = project / ".agentic" / "context" / "CHECKPOINT-TODO-0001.json"
+        assert not f.is_file()
+
+    def test_saved_reject_returns_reject(self, tmp_path, monkeypatch):
+        project = self._make_project(tmp_path)
+        self._save_decision(project, "reject")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+
+        assert result == "reject"
+        f = project / ".agentic" / "context" / "CHECKPOINT-TODO-0001.json"
+        assert not f.is_file()
+
+    def test_consumed_decision_not_applied_twice(self, tmp_path, monkeypatch):
+        project = self._make_project(tmp_path)
+        self._save_decision(project, "approve")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        assert plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        ) == "approve"
+
+        # Second entry: no saved decision left → the form opens as before.
+        opened: list[str] = []
+        monkeypatch.setattr(
+            plan_checkpoint.webbrowser, "open",
+            lambda url, **_kw: opened.append(url),
+        )
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+        assert result == "timeout"
+        assert opened, "form must re-open when no saved decision remains"
+
+    def test_empty_saved_edit_treated_as_approve(self, tmp_path, monkeypatch):
+        """BUG-3 parity: an empty edit content must never wipe the TODO."""
+        project = self._make_project(tmp_path, content="# Important\ndo work")
+        todo_md = project / ".agentic" / "inbox" / "TODO-0001.md"
+        self._save_decision(project, "edit", content="   ")
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+
+        assert result == "approve"
+        assert todo_md.read_text(encoding="utf-8") == "# Important\ndo work"
+
+    def test_corrupt_decision_file_opens_form(self, tmp_path, monkeypatch):
+        """Garbage on disk degrades to a fresh form (never auto-approve)."""
+        project = self._make_project(tmp_path)
+        f = project / ".agentic" / "context" / "CHECKPOINT-TODO-0001.json"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("not-json{{", encoding="utf-8")
+        opened: list[str] = []
+        monkeypatch.setattr(
+            plan_checkpoint.webbrowser, "open",
+            lambda url, **_kw: opened.append(url),
+        )
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+
+        assert result == "timeout"
+        assert opened, "form must open when the saved decision is corrupt"
+        assert f.is_file(), "corrupt file is kept for inspection"
+
+    def test_timeout_log_mentions_saved_path_and_continue(self, tmp_path, monkeypatch):
+        """B1: the timeout log tells the owner where the decision lands and
+        that `awf continue` picks it up (policy: timeout still aborts)."""
+        project = self._make_project(tmp_path)
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", project, config=None,
+            logs_dir=project / ".agentic" / "logs", timeout=1,
+        )
+
+        assert result == "timeout"
+        log_text = (
+            project / ".agentic" / "logs" / "orchestrator.log"
+        ).read_text(encoding="utf-8")
+        assert "CHECKPOINT-TODO-0001.json" in log_text
+        assert "awf continue" in log_text
+
+
+# ── B4: engine gate honors the active run's no_checkpoints flag ─────────────
+
+
+class TestNoCheckpointsGate:
+    """B4: _run_plan_checkpoint_gate reads the flag from the RUN STATE."""
+
+    def _make_project(self, tmp_path: Path) -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text("# TODO-0001\nstub", encoding="utf-8")
+        return tmp_path
+
+    def test_active_run_flag_skips_gate(self, tmp_path, monkeypatch):
+        from awf import run_state
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
+
+        # Without delenv the session-wide AWF_PLAN_CHECKPOINT=false (conftest)
+        # disables the gate and the test would pass even without the flag.
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        project = self._make_project(tmp_path)
+        run_state.write_run(
+            project, active=True, queue=["TODO-0001"], no_checkpoints=True,
+        )
+
+        def _fail_if_called(*_a, **_kw):
+            raise AssertionError(
+                "run_plan_checkpoint must not be called when no_checkpoints=true"
+            )
+
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint", _fail_if_called,
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+        log_text = (
+            project / ".agentic" / "logs" / "orchestrator.log"
+        ).read_text(encoding="utf-8")
+        assert "no_checkpoints" in log_text
+
+    def test_inactive_run_flag_does_not_skip(self, tmp_path, monkeypatch):
+        """A finished run's flag must not skip the checkpoint of a later
+        manual start — only an ACTIVE run carries the flag."""
+        from awf import run_state
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        run_state.write_run(
+            project, active=False, queue=["TODO-0001"], no_checkpoints=True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.is_checkpoint_enabled", lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint",
+            lambda *_a, **_kw: "approve",
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
+    def test_no_run_state_behaves_as_before(self, tmp_path, monkeypatch):
+        """Without any run state the gate is unchanged (form path)."""
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
+
+        project = self._make_project(tmp_path)
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.is_checkpoint_enabled", lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint",
+            lambda *_a, **_kw: "approve",
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

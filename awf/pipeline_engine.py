@@ -441,9 +441,22 @@ def _run_plan_checkpoint_gate(
                  pipeline should continue.
       - ``1`` — checkpoint rejected (or other failure), pipeline must stop.
     """
+    from . import run_state as _run_state
     from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
 
-    if not is_checkpoint_enabled(config, auto):
+    # B4: an ACTIVE run started with no_checkpoints=true does not expect the
+    # owner at every TODO — the gate is skipped. The flag is read from the
+    # run state (a finished run must not skip checkpoints of a later manual
+    # start).
+    run = _run_state.read_run(project_dir)
+    no_checkpoints = bool(run and run.get("active") and run.get("no_checkpoints"))
+    if not is_checkpoint_enabled(config, auto, no_checkpoints=no_checkpoints):
+        if no_checkpoints:
+            print("BD-36: checkpoint skipped — run started with no_checkpoints=true (B4)")
+            _log(
+                logs_dir,
+                f"B4: checkpoint skipped for {current_todo} — run no_checkpoints=true",
+            )
         return 0
 
     decision = run_plan_checkpoint(current_todo, project_dir, config, logs_dir)

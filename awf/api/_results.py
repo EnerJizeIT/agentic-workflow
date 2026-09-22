@@ -328,6 +328,7 @@ class RunStatusResult:
     stop_reason: str
     report_file: str
     message: str
+    no_checkpoints: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

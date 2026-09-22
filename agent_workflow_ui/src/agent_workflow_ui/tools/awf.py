@@ -324,6 +324,7 @@ async def awf_run_start(
     stop_flags_json: str = "",
     note: str = "",
     force: bool = False,
+    no_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Start an autonomous run: a queue of TODOs with mechanical gates.
 
@@ -343,6 +344,10 @@ async def awf_run_start(
             Keep it fresh with awf_run_note on every stage change.
         force: Replace an already-active run state (recovery from a stale or
             wrong-directory run). Without it a second run_start is refused.
+        no_checkpoints: B4 — when True, the BD-36 plan checkpoint form is
+            skipped for every pipeline launch of this run. Use for autonomous
+            runs where the owner does not sit at every TODO. The flag is
+            stored in the run state and shown by awf_run_status.
 
     Returns:
         Dict with: active, queue, position, budget, stop_flags, next_action.
@@ -376,6 +381,7 @@ async def awf_run_start(
         stop_flags=flags,
         note=note,
         force=force,
+        no_checkpoints=no_checkpoints,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         result["next_action"] = (
