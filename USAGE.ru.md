@@ -169,7 +169,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-40 инструментов: 35 `awf_*` workflow + 5 UI (формы).
+42 инструмента: 37 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -186,6 +186,30 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_continue` | Возобновление прерванного пайплайна |
 | `awf_kill` | Чистая остановка пайплайна |
 | `awf_retry_stage` | Kill + retry со salvage-стадии |
+| `awf_write_pipeline` | Записать именованный пайплайн по стадиям (config/supervisor не трогает) |
+| `awf_pipelines` | Список пайплайнов в `.agentic/pipelines/` + активный |
+
+**Именованные пайплайны** (RUN3 #1). Несколько пайплайнов в одном проекте,
+запуск нужного по имени:
+
+```console
+$ awf pipeline-write audit-llm --role agent-implementer
+Wrote pipeline 'audit-llm' (3 stages) → .agentic/pipelines/audit-llm.yaml
+$ awf pipelines
+  audit-llm
+* default  (active)
+$ awf start --pipeline audit-llm
+```
+
+- `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP
+  `awf_write_pipeline`) пишет ТОЛЬКО `.agentic/pipelines/<name>.yaml` —
+  стадии генерируются как в setup-форме (plan → роли → verify);
+  config.yaml и supervisor.md не трогаются.
+- `awf pipelines` (MCP `awf_pipelines`) — список файлов + активный
+  (`default_pipeline` из config.yaml).
+- Неизвестное имя в `--pipeline` (или `awf_start(pipeline=...)`) — внятная
+  ошибка со списком доступных; молчаливого запуска `default` нет.
+- `awf status` показывает активный пайплайн и число доступных.
 
 ### TODO
 | Tool | Что делает |

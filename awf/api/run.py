@@ -88,6 +88,17 @@ def run_brief(project_dir: Path) -> dict | None:
     # B2: the budget is in PRODUCTIVE minutes — wall clock minus recorded
     # downtime (checkpoint waits, salvage handling, net-backoff pauses).
     left = max(0, int(budget - productive)) if budget else 0
+    # RUN3 #1: which pipeline the run launches + how many exist. Degrades
+    # to None/0 on a broken project instead of hiding the whole brief.
+    try:
+        from ..pipeline import active_pipeline_name, list_pipeline_names
+
+        pipeline_info = {
+            "active_pipeline": active_pipeline_name(project_dir),
+            "pipeline_count": len(list_pipeline_names(project_dir)),
+        }
+    except Exception:
+        pipeline_info = {"active_pipeline": None, "pipeline_count": 0}
     return {
         "active": bool(state.get("active")),
         "position": run_state.position(state),
@@ -102,6 +113,7 @@ def run_brief(project_dir: Path) -> dict | None:
         "stop_reason": state.get("stop_reason", ""),
         "report_file": state.get("report_file", ""),
         "no_checkpoints": bool(state.get("no_checkpoints")),
+        **pipeline_info,
     }
 
 

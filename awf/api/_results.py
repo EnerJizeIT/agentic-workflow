@@ -59,6 +59,10 @@ class StatusResult:
     # DF5-4: salvage state (worker didn't signal)
     salvage_needed: bool = False
     salvage_stage: str | None = None
+    # RUN3 #1: named pipelines — active (config default_pipeline, "default"
+    # when undeclared) + number of pipeline files in .agentic/pipelines/
+    active_pipeline: str | None = None
+    pipeline_count: int = 0
     # SPEC A-run: autonomous run state (active run only; None otherwise)
     run_state: dict[str, Any] | None = None
 
@@ -387,6 +391,31 @@ class RemoveTodoResult:
     todo_id: str
     trace_path: str
     message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class WritePipelineResult:
+    """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
+
+    name: str
+    file: str
+    stages: int  # stage count written
+    overwritten: bool  # True when force=True replaced an existing file
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ListPipelinesResult:
+    """Result of :func:`awf.api.list_pipelines` (RUN3 #1 named pipelines)."""
+
+    pipelines: list[str]  # names of .agentic/pipelines/*.yaml (sorted)
+    active: str  # name the runtime uses (config default_pipeline / "default")
+    active_exists: bool  # whether the active pipeline file is present
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

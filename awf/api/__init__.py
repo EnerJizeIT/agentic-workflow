@@ -22,6 +22,7 @@ Layout:
 - ``context``      — load_supervisor_context (aggregate bootstrap payload),
                      _extract_stage_info, _compute_expected_action
 - ``planning``     — apply_increment_plan (increment variant persistence)
+- ``pipelines``    — write_pipeline, list_pipelines (RUN3 #1 named pipelines)
 
 Error convention: every function returns a Result dataclass (success)
 or raises AwfApiError with a human-readable message. Callers wrap in
@@ -44,6 +45,7 @@ from ._results import (
     BaselineResult,
     DispatchTodoResult,
     InitResult,
+    ListPipelinesResult,
     RejectResult,
     RemoveTodoResult,
     ReportResult,
@@ -59,6 +61,7 @@ from ._results import (
     SupervisorContextResult,
     UnblockResult,
     WaitEventResult,
+    WritePipelineResult,
 )
 
 # Public functions — organized by submodule for clarity
@@ -86,6 +89,7 @@ from .pipeline import (
     rollback,
     start_pipeline,
 )
+from .pipelines import list_pipelines, write_pipeline
 from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
 from .run import run_brief, run_finish, run_next, run_note, run_start, run_status
@@ -122,6 +126,8 @@ __all__ = [
     "RestoreResult",
     "UnblockResult",
     "RemoveTodoResult",
+    "WritePipelineResult",
+    "ListPipelinesResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -165,6 +171,9 @@ __all__ = [
     "load_supervisor_context",
     # Increment planning (dogfood-7 — user picks decomposition variant)
     "apply_increment_plan",
+    # Named pipelines (RUN3 #1 — create/list, run by name via start/continue)
+    "write_pipeline",
+    "list_pipelines",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "TRANSPORT_CAP",
     "wait_for_event",

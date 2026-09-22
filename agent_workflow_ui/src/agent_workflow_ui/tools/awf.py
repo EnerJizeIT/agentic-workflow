@@ -1047,6 +1047,81 @@ async def awf_analyze_roles(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+# ─── RUN3 #1: named pipelines (create + list) ────────────────────────────
+
+
+async def awf_write_pipeline(
+    name: str,
+    stages: list[dict[str, Any]],
+    project_dir: str | None = None,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write a named pipeline file at .agentic/pipelines/<name>.yaml.
+
+    Side-effect contract: ONLY the pipeline file is written — config.yaml
+    and supervisor.md are NOT touched (unlike the project-setup form,
+    which patches them). An existing pipeline is refused without
+    ``force=True``. Run it afterwards with ``awf_start(pipeline=name)``
+    or CLI ``awf start --pipeline <name>``.
+
+    Stage schema (each item in ``stages`` — the pipeline YAML keys):
+    ``role`` (required), ``name`` (defaults to the role slug),
+    ``description``, ``on_blocked`` / ``on_approved`` / ``on_rejected`` /
+    ``on_failed``, ``max_retries``, ``max_rollbacks``. Unknown keys are
+    refused (the loader would ignore them).
+
+    Args:
+        name: Pipeline name — letters, digits, '_', '.', '-' (no path
+            separators or spaces), e.g. "audit-llm".
+        stages: Non-empty list of stage objects (pipeline YAML schema).
+            Typically: plan(supervisor) → worker stages → verify(supervisor).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        force: Overwrite an existing pipeline file (default: False).
+
+    Returns:
+        Dict with: name, file (path), stages (count written), overwritten.
+        On error: {status: "error", error: "..."}.
+    """
+    try:
+        result = api.write_pipeline(
+            _resolve_project_dir(project_dir),
+            name,
+            stages,
+            force=force,
+        )
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+async def awf_pipelines(project_dir: str | None = None) -> dict[str, Any]:
+    """List the pipeline files in .agentic/pipelines/ + the active one.
+
+    The active pipeline is ``default_pipeline`` from config.yaml
+    ("default" when undeclared) — the file the engine uses when no
+    explicit name is given.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: pipelines (sorted names), active, active_exists.
+        On error: {status: "error", error: "..."}.
+    """
+    try:
+        result = api.list_pipelines(_resolve_project_dir(project_dir))
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
 # ─── Dogfood-2 automation: dispatch + context ────────────────────────────
 
 

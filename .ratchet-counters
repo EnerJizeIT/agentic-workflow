@@ -6,4 +6,7 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # adds 156 TODO-NNNN identifiers (84 in tests/unit/test_todo_hygiene.py,
 # 19 in test_cli_entrypoints.py, the rest in code/docs). Test ids are the
 # same class as the 1957 already-counted ones in tests/ — not debt.
+# RUN3-2026-09-22 (#1): baseline raised 2794 -> 2796 — the named-pipelines
+# unit adds 2 TODO-NNNN test ids in tests/unit/test_pipelines_api.py
+# (run-state queue/current in the run_brief test). Same class as above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

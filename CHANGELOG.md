@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Named pipelines** (RUN3 #1) — `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP `awf_write_pipeline`) writes only `.agentic/pipelines/<name>.yaml` (config.yaml and supervisor.md untouched); `awf pipelines` (MCP `awf_pipelines`) lists them and marks the active one; `awf start --pipeline <name>` runs the named pipeline
+
+### Changed
+- An unknown explicit `--pipeline` / `awf_start(pipeline=...)` name is now a clear error with the list of available pipelines (previously it silently fell back to `default.yaml`)
+- `awf_status` / `awf_run_brief` show the active pipeline and the number of available ones
+
 ## [1.1.1] — 2026-09-22
 
 Post-audit additions (U8–U11) plus fixes from the first real autonomous run

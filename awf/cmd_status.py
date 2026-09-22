@@ -22,6 +22,11 @@ def run(args: Any) -> int:
 
     print("=== Agentic Workflow Status ===")
     print(f"Project: {result.project_name}")
+    if result.active_pipeline is not None:
+        print(
+            f"Pipelines: {result.active_pipeline} (active), "
+            f"{result.pipeline_count} available"
+        )
     print()
 
     # MCP-4: pipeline subprocess state (background awf start)

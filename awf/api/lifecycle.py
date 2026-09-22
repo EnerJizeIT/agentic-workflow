@@ -489,6 +489,15 @@ def get_status(project_dir: Path) -> StatusResult:
         else:
             suggestion = "No active tasks. Check awf_current_step for guidance."
 
+    # RUN3 #1: named pipelines — the active one (config) + how many exist.
+    # Same rules as resolve_pipeline_file, so status never disagrees with
+    # the file the engine would load.
+    from ..pipeline import active_pipeline_name as _active_name
+    from ..pipeline import list_pipeline_names as _list_names
+
+    active_pipeline = _active_name(project_dir, config_data)
+    pipeline_count = len(_list_names(project_dir))
+
     pipeline_running, pipeline_pid, log_tail = check_pipeline_running(project_dir)
 
     # Dogfood-2/6: stage visibility + expected action (only when pipeline running)
@@ -576,6 +585,8 @@ def get_status(project_dir: Path) -> StatusResult:
         checkpoint_form_url=checkpoint_form_url,
         salvage_needed=salvage_needed,
         salvage_stage=salvage_stage,
+        active_pipeline=active_pipeline,
+        pipeline_count=pipeline_count,
         run_state=_run_brief(project_dir),
     )
 

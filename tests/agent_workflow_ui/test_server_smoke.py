@@ -73,7 +73,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 40 tools are registered with correct names (5 UI + 35 awf).
+    """All 42 tools are registered with correct names (5 UI + 37 awf).
 
     AUD08-08: this number is a fact-check, not a label — if it drifts from
     ``server.py``, ``tool_names == expected`` below fails first. Update both
@@ -138,6 +138,9 @@ def test_all_tools_registered():
         "awf_verify_pack",
         # U8: token/cost metrics of the work program (report to desktop)
         "awf_metrics",
+        # RUN3 #1: named pipelines (create + list)
+        "awf_write_pipeline",
+        "awf_pipelines",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

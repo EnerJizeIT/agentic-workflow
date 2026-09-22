@@ -64,9 +64,18 @@ def _build_pipeline_context(
     config_data = _cfg_mod.load(project_dir)
     if not pipeline_name:
         pipeline_name = _cfg_mod.get(config_data, "default_pipeline", "default") or "default"
+    from .api._errors import AwfApiError  # lazy — same precedent as pipeline.py
+
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config_data)
     except FileNotFoundError:
+        return ""
+    except AwfApiError:
+        # RUN3 #1: the resolver now rejects an explicit-but-missing name
+        # (and invalid names) with AwfApiError. This caller passes the
+        # config-derived name explicitly, so a project without a pipeline
+        # file (or with an invalid default_pipeline) must degrade to "no
+        # pipeline context" — not crash the prompt build.
         return ""
     if not pipeline_file.is_file():
         return ""

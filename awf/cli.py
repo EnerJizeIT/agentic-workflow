@@ -450,6 +450,43 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    # RUN3 #1: named pipelines — create + list (run by name via --pipeline)
+    p_pipeline_write = sub.add_parser(
+        "pipeline-write",
+        help="Write .agentic/pipelines/<name>.yaml from roles (config/supervisor untouched)",
+    )
+    p_pipeline_write.add_argument(
+        "name",
+        help="Pipeline name (letters, digits, '_', '.', '-' — no path separators)",
+    )
+    p_pipeline_write.add_argument(
+        "--role",
+        action="append",
+        required=True,
+        help="Worker role for a stage (repeatable; supervisor plan/verify "
+             "stages are added automatically, as in the setup form)",
+    )
+    p_pipeline_write.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing pipeline file",
+    )
+    p_pipeline_write.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_pipelines = sub.add_parser(
+        "pipelines",
+        help="List pipelines in .agentic/pipelines/ (marks the active one)",
+    )
+    p_pipelines.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_analyze = sub.add_parser(
         "analyze-roles",
         help="BD-31: analyze team roles for overlaps, add pipeline-specific disambiguation",
@@ -518,6 +555,12 @@ def _run_command(args) -> int:
         if args.command == "report":
             from . import cmd_report
             return cmd_report.run(args)
+        if args.command == "pipeline-write":
+            from . import cmd_pipeline_write
+            return cmd_pipeline_write.run(args)
+        if args.command == "pipelines":
+            from . import cmd_pipelines
+            return cmd_pipelines.run(args)
         if args.command == "analyze-roles":
             from . import cmd_analyze_roles
             return cmd_analyze_roles.run(args)

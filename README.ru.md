@@ -18,7 +18,7 @@ AI-агенты для кода мощные, но хаотичные. Прыг�
 ## Возможности
 
 - 🎯 **State-Machine Orchestration (SMO)** — awf ведёт supervisor по фазам: `init → goal → form → normalize → brief → run → verify → done`. Каждый tool возвращает `next_action` — даже слабые модели (Qwen vLLM) проходят полный flow без ошибок.
-- 🔧 **38 MCP tools** — типизированное управление пайплайном: init, dispatch, start, approve, reject, rollback, dashboard, валидация моделей. Без bash, без ручного редактирования файлов.
+- 🔧 **42 MCP tools** — типизированное управление пайплайном: init, dispatch, start, approve, reject, rollback, dashboard, валидация моделей. Без bash, без ручного редактирования файлов.
 - 📊 **Живой Dashboard** — HTTP server с real-time опросом. Chat-стиль handoffs, содержимое TODO, timeline, статус воркера, браузерные уведомления. Без перезагрузки страницы.
 - 🧱 **Кастомные пайплайны** — любые роли, любая глубина. 1 стадия или 10. Аналитик → архитектор → разработчик → QA → аудит, или один воркер. Выбираешь в форме настройки.
 - ✅ **Approve / Reject** — симметричные tools для verify. Approve коммитит и архивирует. Reject убивает пайплайн и запрашивает исправления.
@@ -81,7 +81,7 @@ init → goal → form → normalize → brief → run → verify → done
 
 ```
 opencode (supervisor LLM)
-  ↕ MCP stdio (38 типизированных tools)
+  ↕ MCP stdio (42 типизированных tools)
 agent-workflow-ui plugin
   ↕ Python import
 awf orchestrator

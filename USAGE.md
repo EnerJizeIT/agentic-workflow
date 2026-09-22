@@ -238,6 +238,28 @@ stages:
     on_rejected: replan
 ```
 
+**Multiple pipelines side by side** (RUN3 #1). Keep several pipelines in one
+project and run the needed one by name:
+
+```console
+$ awf pipeline-write audit-llm --role agent-implementer
+Wrote pipeline 'audit-llm' (3 stages) → .agentic/pipelines/audit-llm.yaml
+$ awf pipelines
+  audit-llm
+* default  (active)
+$ awf start --pipeline audit-llm
+```
+
+- `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP
+  `awf_write_pipeline`) writes ONLY `.agentic/pipelines/<name>.yaml` —
+  stages are generated like in the setup form (plan → roles → verify);
+  config.yaml and supervisor.md are not touched.
+- `awf pipelines` (MCP `awf_pipelines`) lists the files and marks the
+  active one (`default_pipeline` from config.yaml).
+- An unknown `--pipeline` name (or `awf_start(pipeline=...)`) is a clear
+  error with the list of what exists — it never silently runs `default`.
+- `awf status` shows the active pipeline and how many are available.
+
 **Custom role file** (`.agentic/roles/my-custom-role.md`):
 ```markdown
 # My Custom Role
@@ -282,7 +304,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-40 tools: 35 `awf_*` workflow + 5 UI (forms).
+42 tools: 37 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -299,6 +321,8 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_continue` | Resume interrupted pipeline |
 | `awf_kill` | Kill running pipeline cleanly |
 | `awf_retry_stage` | Kill + retry from salvage stage |
+| `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |
+| `awf_pipelines` | List pipelines in `.agentic/pipelines/` + the active one |
 
 ### TODO
 | Tool | What it does |

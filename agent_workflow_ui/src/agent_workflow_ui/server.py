@@ -78,5 +78,8 @@ def create_server() -> FastMCP:
     mcp.add_tool(awf.awf_verify_pack, name="awf_verify_pack")
     # U8: token/cost metrics of the work program (report to desktop)
     mcp.add_tool(awf.awf_metrics, name="awf_metrics")
+    # RUN3 #1: named pipelines (create + list; run by name via awf_start)
+    mcp.add_tool(awf.awf_write_pipeline, name="awf_write_pipeline")
+    mcp.add_tool(awf.awf_pipelines, name="awf_pipelines")
 
     return mcp
