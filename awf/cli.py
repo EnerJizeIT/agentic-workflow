@@ -398,6 +398,46 @@ def _build_parser():
         help="U8c: do not copy the report to metrics.mirror_dir for this run",
     )
 
+    # RUN4 #2: feedback contour — friction with awf becomes a report on
+    # the owner's desktop (config feedback.dir, default ~/Desktop).
+    p_feedback = sub.add_parser(
+        "feedback",
+        help="RUN4 #2: write a bug/feature report about awf to the owner's desktop",
+    )
+    p_feedback.add_argument(
+        "--type",
+        dest="ftype",
+        required=True,
+        choices=("bug", "feature"),
+        help="Report kind: bug or feature",
+    )
+    p_feedback.add_argument(
+        "--title",
+        required=True,
+        help="One-line title (becomes the file slug)",
+    )
+    p_feedback.add_argument(
+        "--body",
+        default="",
+        help="Text for the «Что пытался» section",
+    )
+    p_feedback.add_argument(
+        "--severity",
+        default="",
+        choices=("", "low", "medium", "high"),
+        help="Severity (low|medium|high; empty = no mark)",
+    )
+    p_feedback.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print the report instead of writing a file",
+    )
+    p_feedback.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_tree_sha = sub.add_parser(
         "tree-sha",
         help="U11: print the working-tree fingerprint (verified-sha for approve)",
@@ -580,6 +620,9 @@ def _run_command(args) -> int:
         if args.command == "metrics":
             from . import cmd_metrics
             return cmd_metrics.run(args)
+        if args.command == "feedback":
+            from . import cmd_feedback
+            return cmd_feedback.run(args)
         if args.command == "tree-sha":
             from . import cmd_tree_sha
             return cmd_tree_sha.run(args)

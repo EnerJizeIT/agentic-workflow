@@ -141,6 +141,8 @@ def test_all_tools_registered():
         # RUN3 #1: named pipelines (create + list)
         "awf_write_pipeline",
         "awf_pipelines",
+        # RUN4 #2: feedback contour (report to owner)
+        "awf_feedback",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

@@ -81,5 +81,7 @@ def create_server() -> FastMCP:
     # RUN3 #1: named pipelines (create + list; run by name via awf_start)
     mcp.add_tool(awf.awf_write_pipeline, name="awf_write_pipeline")
     mcp.add_tool(awf.awf_pipelines, name="awf_pipelines")
+    # RUN4 #2: feedback contour (supervisor friction → report to owner)
+    mcp.add_tool(awf.awf_feedback, name="awf_feedback")
 
     return mcp

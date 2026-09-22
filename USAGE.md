@@ -105,6 +105,19 @@ network — a local index file only (default search: `<project>/`,
 `.agentic/context/`). An existing `--out` file is
 never overwritten without `--force`.
 
+**`awf feedback --type bug|feature --title "…" [--body "…"]
+[--severity low|medium|high] [--stdout]`** (MCP: `awf_feedback`) — the
+feedback contour: friction with awf becomes a report on the owner's
+desktop (config `feedback.dir`, default `~/Desktop`; the dir is created),
+file `awf-<bug|feature>-<YYYYMMDD>-<slug>.md` (same day + same slug →
+suffix `-2`, never an overwrite). The report assembles itself: facts
+(awf version, project, phase, run — position + no_checkpoints, current
+task, awf-repo git sha best-effort, date), the skeleton «Что пытался /
+Ожидал / Что получил / Почему мешает / Предложение» (`--body` fills
+«Что пытался»), and the tail of the newest project log (≤20 lines).
+`--stdout` prints the report without writing a file. The supervisor does
+not stay silent: silence does not fix the tool.
+
 ## Metrics
 
 `awf metrics` (MCP: `awf_metrics`) collects the work program on demand: worker

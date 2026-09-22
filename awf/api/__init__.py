@@ -23,6 +23,7 @@ Layout:
                      _extract_stage_info, _compute_expected_action
 - ``planning``     — apply_increment_plan (increment variant persistence)
 - ``pipelines``    — write_pipeline, list_pipelines (RUN3 #1 named pipelines)
+- ``feedback``     — feedback (RUN4 #2 feedback contour: report to owner)
 
 Error convention: every function returns a Result dataclass (success)
 or raises AwfApiError with a human-readable message. Callers wrap in
@@ -30,6 +31,7 @@ try/except.
 """
 from __future__ import annotations
 
+from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
 from ..verify_pack import VerifyPackResult, verify_pack
@@ -128,6 +130,7 @@ __all__ = [
     "RemoveTodoResult",
     "WritePipelineResult",
     "ListPipelinesResult",
+    "FeedbackResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -174,6 +177,8 @@ __all__ = [
     # Named pipelines (RUN3 #1 — create/list, run by name via start/continue)
     "write_pipeline",
     "list_pipelines",
+    # Feedback contour (RUN4 #2 — supervisor friction → report to owner)
+    "feedback",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "TRANSPORT_CAP",
     "wait_for_event",

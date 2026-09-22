@@ -19,6 +19,7 @@ YOU are the reviewer. Read the TODO (contract), check the work, decide.
      listing which criteria failed and what to fix
 7. Метрики: после закрытия юнита можно собрать метрики — `awf_metrics` /
    `awf metrics` (отчёт на рабочий стол, копия в `metrics.mirror_dir`, если задан).
+8. Фрикция с awf → `awf feedback --type bug|feature` (отчёт владельцу на рабочий стол); не молчи — молчание не чинит инструмент.
 
 ## Do NOT
 - Do NOT relay "pipeline waits for your decision" — that's YOUR call.

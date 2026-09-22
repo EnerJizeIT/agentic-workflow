@@ -1104,3 +1104,53 @@ class TestTodoRemoveEntrypoint:
         captured = capsys.readouterr()
         assert rc == 1, captured.out
         assert "not found" in captured.out + captured.err
+
+
+class TestFeedbackEntrypoint:
+    """RUN4 #2: `awf feedback` — real runs, no mocks (output redirected
+    to tmp via config feedback.dir, never the real desktop)."""
+
+    def _set_feedback_dir(self, repo: Path, dir_path: Path) -> None:
+        cfg_file = repo / ".agentic" / "config.yaml"
+        cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8")) or {}
+        cfg["feedback"] = {"dir": str(dir_path)}
+        cfg_file.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+
+    def test_feedback_writes_report_to_configured_dir(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliFeedback")
+        desk = tmp_path / "desk"
+        self._set_feedback_dir(repo, desk)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "feedback", "--type", "bug", "--title", "Cli report",
+            "--body", "что делал", "--project-dir", str(repo),
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        files = list(desk.glob("awf-bug-*.md"))
+        assert len(files) == 1
+        assert "Отчёт: " in out and files[0].name in out
+        text = files[0].read_text(encoding="utf-8")
+        assert "CliFeedback" in text
+        assert "## Что пытался" in text
+        assert "что делал" in text
+
+    def test_feedback_stdout_prints_and_writes_nothing(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliFeedbackStdout")
+        desk = tmp_path / "desk"
+        self._set_feedback_dir(repo, desk)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "feedback", "--type", "feature", "--title", "Only print",
+            "--project-dir", str(repo), "--stdout",
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "## Ожидал" in out
+        assert not desk.exists() or not list(desk.glob("*.md"))

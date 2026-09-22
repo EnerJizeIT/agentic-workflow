@@ -752,6 +752,59 @@ async def awf_metrics(
     )
 
 
+# ─── Feedback contour (RUN4 #2) ─────────────────────────────────────────
+
+
+async def awf_feedback(
+    project_dir: str | None = None,
+    type: str = "",
+    title: str = "",
+    *,
+    body: str = "",
+    severity: str = "",
+    stdout: bool = False,
+) -> dict[str, Any]:
+    """RUN4 #2: write a bug/feature report about awf friction (to the owner).
+
+    The feedback contour: friction with the tool becomes a structured
+    report on the owner's desktop (config ``feedback.dir``, default
+    ``~/Desktop``). The report is assembled automatically — header facts
+    (awf version, project, phase, run position/no_checkpoints, current
+    task, awf-repo git sha best-effort, date), the skeleton
+    «Что пытался / Ожидал / Что получил / Почему мешает / Предложение»
+    (``body`` fills «Что пытался»), and the tail of the project's newest
+    log (<=20 lines). File: ``awf-<bug|feature>-<YYYYMMDD>-<slug>.md``;
+    a repeat on the same day with the same slug gets a ``-2`` suffix.
+    Secrets: the report never reads the environment.
+
+    Do not stay silent: silence does not fix the tool.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        type: ``bug`` or ``feature``.
+        title: One-line title (becomes the file slug; ASCII passes,
+            Cyrillic is transliterated, letters-only fallback ``report``).
+        body: Text for the «Что пытался» section.
+        severity: ``low`` / ``medium`` / ``high`` (empty = no mark).
+        stdout: True — return the report text, write no file.
+
+    Returns:
+        Dict with: status, file ("" when stdout), report_dir, slug,
+        ftype, report (full text).
+        On error: {status: "error", error: "..."}.
+    """
+    return await _exec(
+        api.feedback,
+        project_dir=_resolve_project_dir(project_dir),
+        ftype=type,
+        title=title,
+        body=body,
+        severity=severity,
+        stdout=stdout,
+    )
+
+
 # ─── Auto-commit approval ───────────────────────────────────────────────
 
 

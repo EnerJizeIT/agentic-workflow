@@ -28,4 +28,8 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # TODO-0001/TODO.md archive fixtures in tests/unit/test_phase_live.py
 # and tests/agent_workflow_ui/test_awf_tools.py.
 # Same class as above: test identifiers, not debt.
+# RUN4-2026-09-22 (#2): baseline raised 2884 -> 2886 — the
+# feedback-contour unit adds 2 TODO-0001 test ids in
+# tests/unit/test_feedback.py (run-state fixture for the header fact).
+# Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

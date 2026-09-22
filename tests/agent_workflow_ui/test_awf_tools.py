@@ -1311,6 +1311,63 @@ class TestAwfMetricsParams:
         assert calls[0]["mirror"] is False
 
 
+class TestAwfFeedback:
+    """RUN4 #2: awf_feedback — MCP parity with `awf feedback` (CLI)."""
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_feedback(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "feedback", spy_feedback)
+
+        result = run(
+            awf.awf_feedback(
+                project_dir="/tmp",
+                type="bug",
+                title="Pipeline hangs",
+                body="что делал",
+                severity="high",
+                stdout=True,
+            )
+        )
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls, "api.feedback was not called"
+        assert calls[0]["ftype"] == "bug"
+        assert calls[0]["title"] == "Pipeline hangs"
+        assert calls[0]["body"] == "что делал"
+        assert calls[0]["severity"] == "high"
+        assert calls[0]["stdout"] is True
+
+    def test_defaults_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_feedback(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "feedback", spy_feedback)
+
+        run(awf.awf_feedback(project_dir="/tmp", type="feature", title="t"))
+
+        assert calls[0]["ftype"] == "feature"
+        assert calls[0]["title"] == "t"
+        assert calls[0]["body"] == ""
+        assert calls[0]["severity"] == ""
+        assert calls[0]["stdout"] is False
+
+    def test_bad_type_returns_error_dict(self, git_project):
+        """A validation refusal comes back as {status: error, error}, not a raise."""
+        result = run(
+            awf.awf_feedback(project_dir=str(git_project), type="hotfix", title="x")
+        )
+        assert result["status"] == "error"
+        assert "type" in result["error"]
+
+
 class TestCurrentStepLiveProject:
     """RUN3-7 (TODO-0049): awf_current_step distinguishes a NEW project
     (setup chain, phase 'goal') from a LIVE one (configured + completed
