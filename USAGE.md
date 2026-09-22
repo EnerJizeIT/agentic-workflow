@@ -238,6 +238,28 @@ stages:
     on_rejected: replan
 ```
 
+**Multiple pipelines side by side** (RUN3 #1). Keep several pipelines in one
+project and run the needed one by name:
+
+```console
+$ awf pipeline-write audit-llm --role agent-implementer
+Wrote pipeline 'audit-llm' (3 stages) → .agentic/pipelines/audit-llm.yaml
+$ awf pipelines
+  audit-llm
+* default  (active)
+$ awf start --pipeline audit-llm
+```
+
+- `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP
+  `awf_write_pipeline`) writes ONLY `.agentic/pipelines/<name>.yaml` —
+  stages are generated like in the setup form (plan → roles → verify);
+  config.yaml and supervisor.md are not touched.
+- `awf pipelines` (MCP `awf_pipelines`) lists the files and marks the
+  active one (`default_pipeline` from config.yaml).
+- An unknown `--pipeline` name (or `awf_start(pipeline=...)`) is a clear
+  error with the list of what exists — it never silently runs `default`.
+- `awf status` shows the active pipeline and how many are available.
+
 **Custom role file** (`.agentic/roles/my-custom-role.md`):
 ```markdown
 # My Custom Role
@@ -253,6 +275,20 @@ Review database migrations for safety.
 ## Prohibitions
 - Do not modify application code
 - Do not create new migrations
+```
+
+**Role from an opencode skill** (RUN3 #3) — one command instead of a
+hand-written file. The role receives the SKILL.md body (the skill's own
+YAML front-matter is stripped) under a provenance comment with the
+source path and date. Project skills (`.opencode/skills/`) are checked
+before global ones (`~/.config/opencode/skills/`); the role name
+defaults to the skill name; an existing role file is refused without
+`--force` (MCP: `awf_add_role(name, from_skill=..., force=...)`):
+
+```console
+$ awf add-role security-audit --from-skill agent-security-auditor
+Created: ./.agentic/roles/security-audit.md
+  (content copied from skill 'agent-security-auditor')
 ```
 
 ## Troubleshooting
@@ -282,7 +318,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-38 tools: 33 `awf_*` workflow + 5 UI (forms).
+42 tools: 37 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -299,6 +335,14 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_continue` | Resume interrupted pipeline |
 | `awf_kill` | Kill running pipeline cleanly |
 | `awf_retry_stage` | Kill + retry from salvage stage |
+| `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |
+| `awf_pipelines` | List pipelines in `.agentic/pipelines/` + the active one |
+
+**Single-launch checkpoint bypass (RUN3 #6).** `awf_start` / `awf_continue`
+accept `no_checkpoints=true` — the BD-36 plan form is skipped for that one
+launch only. It is process-scoped: not written to config or state, the next
+launch asks again (the run-level `awf_run_start(no_checkpoints=...)` is
+unchanged).
 
 ### TODO
 | Tool | What it does |
@@ -307,6 +351,22 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_baseline` | Snapshot git HEAD + tests + env |
 | `awf_rollback` | Reset to baseline (hard / soft / dry-run) |
 | `awf_restore` | Restore an archived TODO back to the inbox |
+| `awf_unblock` | Clear stale BLOCKED/ACK closures so a re-issued TODO is visible again |
+| `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
+
+**`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
+`BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
+list and `awf start` answers "No active TODO". Unblock moves those closure signals
+(canonical and legacy forms) to a `context/unblock-<id>-<ts>/` directory — the trace
+stays, the TODO is active again. DONE closures are never touched: an archived TODO
+comes back only via `awf restore`. `awf_dispatch_todo` clears stale BLOCKED/ACK
+closures on its own when re-issuing the same number, and refuses to re-issue a number
+whose DONE closure is still in the outbox.
+
+**`awf_todo_remove`** (CLI `awf todo-remove`). Removes a TODO that never started — no
+dispatch `.ready`, no signals, no progress. The file moves to
+`done/<id>/removed-<timestamp>.md`, the trace stays. A `.ready` or any signal/progress
+refuses the removal and points to `awf unblock` / `awf reset --orphans`.
 
 ### Verify
 | Tool | What it does |
@@ -330,6 +390,14 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_run_next` | Launch the next queue item, or stop on a gate |
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
+
+**Per-item pipeline (RUN3 #2).** The queue accepts
+`{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain
+id strings (mixed is fine); an empty/absent `pipeline` = the config default.
+`awf_dispatch_todo(..., pipeline=...)` writes the name into the TODO's
+front-matter, and `awf_run_next` reads it for items without a queue-level
+pipeline. An unknown name refuses the launch with the list of available
+pipelines (RUN3 #1).
 
 **Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
 the client timeout — ~55s with the default opencode.json. The tool says so
@@ -360,7 +428,7 @@ for every replan/split goes into the run report/note.
 ### Roles & Config
 | Tool | What it does |
 |---|---|
-| `awf_add_role` | Create role template at `.agentic/roles/{name}.md` |
+| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`) |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
 

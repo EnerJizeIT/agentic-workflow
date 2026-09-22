@@ -59,6 +59,10 @@ class StatusResult:
     # DF5-4: salvage state (worker didn't signal)
     salvage_needed: bool = False
     salvage_stage: str | None = None
+    # RUN3 #1: named pipelines — active (config default_pipeline, "default"
+    # when undeclared) + number of pipeline files in .agentic/pipelines/
+    active_pipeline: str | None = None
+    pipeline_count: int = 0
     # SPEC A-run: autonomous run state (active run only; None otherwise)
     run_state: dict[str, Any] | None = None
 
@@ -300,7 +304,9 @@ class RunStartResult:
     """Result of :func:`awf.api.run_start`."""
 
     active: bool
-    queue: list[str]
+    # RUN3 #2: normalized items {"todo_id", "pipeline"} (empty pipeline =
+    # the config default).
+    queue: list[dict[str, str]]
     position: str
     budget_minutes: int
     stop_flags: dict[str, list[str]]
@@ -317,7 +323,9 @@ class RunStatusResult:
 
     active: bool
     position: str
-    queue: list[str]
+    # RUN3 #2: normalized items {"todo_id", "pipeline"} (empty pipeline =
+    # the config default).
+    queue: list[dict[str, str]]
     index: int
     current: str
     completed: list[str]
@@ -368,6 +376,56 @@ class RestoreResult:
 
 
 @dataclass
+class UnblockResult:
+    """Result of :func:`awf.api.unblock_todo` (RUN3 #4 stale-closure clearing)."""
+
+    todo_id: str
+    moved: list[str]
+    trace: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RemoveTodoResult:
+    """Result of :func:`awf.api.remove_todo` (RUN3 #5 never-started removal)."""
+
+    todo_id: str
+    trace_path: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class WritePipelineResult:
+    """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
+
+    name: str
+    file: str
+    stages: int  # stage count written
+    overwritten: bool  # True when force=True replaced an existing file
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ListPipelinesResult:
+    """Result of :func:`awf.api.list_pipelines` (RUN3 #1 named pipelines)."""
+
+    pipelines: list[str]  # names of .agentic/pipelines/*.yaml (sorted)
+    active: str  # name the runtime uses (config default_pipeline / "default")
+    active_exists: bool  # whether the active pipeline file is present
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RunFinishResult:
     """Result of :func:`awf.api.run_finish`."""
 
@@ -402,4 +460,6 @@ __all__ = [
     "RunNextResult",
     "RunFinishResult",
     "RestoreResult",
+    "UnblockResult",
+    "RemoveTodoResult",
 ]

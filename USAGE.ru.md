@@ -169,7 +169,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-38 инструментов: 33 `awf_*` workflow + 5 UI (формы).
+42 инструмента: 37 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -186,6 +186,36 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_continue` | Возобновление прерванного пайплайна |
 | `awf_kill` | Чистая остановка пайплайна |
 | `awf_retry_stage` | Kill + retry со salvage-стадии |
+| `awf_write_pipeline` | Записать именованный пайплайн по стадиям (config/supervisor не трогает) |
+| `awf_pipelines` | Список пайплайнов в `.agentic/pipelines/` + активный |
+
+**Пропуск чекпоинта на один запуск (RUN3 #6).** `awf_start` / `awf_continue`
+принимают `no_checkpoints=true` — форма BD-36 пропускается только для этого
+запуска. Флаг живёт время процесса: в config и state не пишется, следующий
+запуск спросит снова (run-флаг `awf_run_start(no_checkpoints=...)` работает
+как раньше).
+
+**Именованные пайплайны** (RUN3 #1). Несколько пайплайнов в одном проекте,
+запуск нужного по имени:
+
+```console
+$ awf pipeline-write audit-llm --role agent-implementer
+Wrote pipeline 'audit-llm' (3 stages) → .agentic/pipelines/audit-llm.yaml
+$ awf pipelines
+  audit-llm
+* default  (active)
+$ awf start --pipeline audit-llm
+```
+
+- `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP
+  `awf_write_pipeline`) пишет ТОЛЬКО `.agentic/pipelines/<name>.yaml` —
+  стадии генерируются как в setup-форме (plan → роли → verify);
+  config.yaml и supervisor.md не трогаются.
+- `awf pipelines` (MCP `awf_pipelines`) — список файлов + активный
+  (`default_pipeline` из config.yaml).
+- Неизвестное имя в `--pipeline` (или `awf_start(pipeline=...)`) — внятная
+  ошибка со списком доступных; молчаливого запуска `default` нет.
+- `awf status` показывает активный пайплайн и число доступных.
 
 ### TODO
 | Tool | Что делает |
@@ -194,6 +224,22 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_baseline` | Снапшот git HEAD + тесты + окружение |
 | `awf_rollback` | Откат к baseline (hard / soft / dry-run) |
 | `awf_restore` | Вернуть заархивированный TODO обратно в inbox |
+| `awf_unblock` | Снять stale BLOCKED/ACK-закрытия — перевыданный TODO снова виден |
+| `awf_todo_remove` | Удалить не стартовавший TODO (след в `done/<id>/removed-<ts>.md`) |
+
+**`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
+лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой
+список, `awf start` отвечает «No active TODO». Unblock переносит эти закрывающие
+сигналы (каноническая и legacy-формы) в каталог `context/unblock-<id>-<ts>/` — след
+остаётся, TODO снова активен. DONE-закрытия не трогаются: заархивированный TODO
+возвращает только `awf restore`. `awf_dispatch_todo` сам снимает stale BLOCKED/ACK
+при перевыдаче того же номера и отказывается перевыдавать номер, чьё DONE-закрытие
+ещё лежит в outbox.
+
+**`awf_todo_remove`** (CLI `awf todo-remove`). Убирает TODO, который никогда не
+стартовал — нет dispatch-`.ready`, сигналов и прогресса. Файл переносится в
+`done/<id>/removed-<timestamp>.md`, след остаётся. Если есть `.ready` или любой
+сигнал/прогресс — отказ с подсказкой `awf unblock` / `awf reset --orphans`.
 
 ### Verify
 | Tool | Что делает |
@@ -217,6 +263,14 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_run_next` | Запустить след. пункт очереди, либо стоп по гейту |
 | `awf_run_finish` | Закрыть забег (записать RUN-REPORT) |
 | `awf_run_note` | Обновить живое описание забега для дашборда |
+
+**Пайплайн на элемент (RUN3 #2).** Очередь принимает объекты
+`{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` рядом со
+строками-идами (смешанно); пустой/отсутствующий `pipeline` = пайплайн из
+config. `awf_dispatch_todo(..., pipeline=...)` пишет имя во front-matter
+TODO, и `awf_run_next` читает его для элементов без пайплайна на уровне
+очереди. Неизвестное имя отказывает запуску со списком доступных
+пайплайнов (RUN3 #1).
 
 **Долгие ожидания.** Транспорт MCP рвёт один вызов `awf_wait_for_event` по
 таймауту клиента — ~55 с с дефолтным opencode.json. Инструмент говорит об
@@ -246,9 +300,22 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 ### Роли и конфиг
 | Tool | Что делает |
 |---|---|
-| `awf_add_role` | Создание шаблона роли в `.agentic/roles/` |
+| `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`) |
 | `awf_analyze_roles` | Детекция перекрытий зон ролей |
 | `awf_check_model_config` | Валидация моделей в config.yaml vs opencode.json |
+
+**Роль из opencode-скилла** (RUN3 #3) — одной командой вместо рукописного
+файла. Роль получает тело SKILL.md (YAML front-matter скилла вырезан) под
+комментарием-провенансом с путём к источнику и датой. Скиллы проекта
+(`.opencode/skills/`) ищутся раньше глобальных
+(`~/.config/opencode/skills/`); имя роли по умолчанию — имя скилла;
+занятое имя файла роли — отказ без `--force`:
+
+```console
+$ awf add-role security-audit --from-skill agent-security-auditor
+Created: ./.agentic/roles/security-audit.md
+  (content copied from skill 'agent-security-auditor')
+```
 
 ### UI (формы)
 | Tool | Что делает |

@@ -12,7 +12,11 @@ from types import SimpleNamespace
 
 from awf import api, paths
 from awf.agent_stage import collect_handoff
-from awf.unit_contract import parse_done_json, parse_todo_contract
+from awf.unit_contract import (
+    inject_pipeline_key,
+    parse_done_json,
+    parse_todo_contract,
+)
 
 # ─── parse_todo_contract: pure validation ──────────────────────────────
 
@@ -195,6 +199,93 @@ class TestParseTodoContract:
         assert contract is None
         assert unknown == []
 
+    def test_pipeline_name_is_a_contract_key(self):
+        # RUN3 #2: `pipeline` is first-class — no unknown-key warning.
+        content = '---\nverify: ["pytest -q"]\npipeline: audit-llm\n---\nbody\n'
+        contract, unknown = parse_todo_contract(content)
+        assert contract["pipeline"] == "audit-llm"
+        assert unknown == []
+
+    def test_pipeline_accepts_name_characters(self):
+        content = '---\npipeline: audit.llm-2_x\n---\nbody\n'
+        contract, unknown = parse_todo_contract(content)
+        assert contract["pipeline"] == "audit.llm-2_x"
+        assert unknown == []
+
+    def test_pipeline_not_a_string_raises(self):
+        content = '---\npipeline: ["audit-llm"]\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "'pipeline' must be a non-empty" in str(e)
+
+    def test_pipeline_empty_raises(self):
+        content = '---\npipeline: ""\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "'pipeline' must be a non-empty" in str(e)
+
+    def test_pipeline_bad_name_raises(self):
+        content = '---\npipeline: "../../evil"\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "invalid pipeline name" in str(e)
+
+
+class TestInjectPipelineKey:
+    def test_creates_block_when_absent(self):
+        out = inject_pipeline_key("# Task\n\nbody\n", "audit-llm")
+        assert out == "---\npipeline: audit-llm\n---\n# Task\n\nbody\n"
+        contract, unknown = parse_todo_contract(out)
+        assert contract == {"pipeline": "audit-llm"}
+        assert unknown == []
+
+    def test_creates_block_after_role_hint_comment(self):
+        out = inject_pipeline_key("<!-- role_hint: dev -->\n# Task\n", "audit-llm")
+        assert out == (
+            "<!-- role_hint: dev -->\n"
+            "---\n"
+            "pipeline: audit-llm\n"
+            "---\n"
+            "# Task\n"
+        )
+        contract, _unknown = parse_todo_contract(out)
+        assert contract == {"pipeline": "audit-llm"}
+
+    def test_inserts_into_existing_block(self):
+        content = '---\nverify: ["pytest -q"]\n---\nbody\n'
+        out = inject_pipeline_key(content, "audit-llm")
+        assert out == '---\npipeline: audit-llm\nverify: ["pytest -q"]\n---\nbody\n'
+
+    def test_replaces_existing_pipeline_key(self):
+        content = '---\npipeline: old-name\nverify: ["pytest -q"]\n---\nbody\n'
+        out = inject_pipeline_key(content, "new-name")
+        assert out == '---\npipeline: new-name\nverify: ["pytest -q"]\n---\nbody\n'
+
+    def test_preserves_missing_trailing_newline(self):
+        out = inject_pipeline_key("# Task", "audit-llm")
+        assert not out.endswith("\n")
+        assert out == "---\npipeline: audit-llm\n---\n# Task"
+
+    def test_invalid_name_raises_and_content_untouched(self):
+        try:
+            inject_pipeline_key("# Task\n", "../evil")
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "invalid pipeline name" in str(e)
+
+    def test_broken_block_raises(self):
+        try:
+            inject_pipeline_key("---\nverify: [unclosed\n# Task\n", "audit-llm")
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "no closing" in str(e)
+
 
 # ─── dispatch integration ───────────────────────────────────────────────
 
@@ -273,6 +364,58 @@ class TestDispatchContractValidation:
             raise AssertionError("expected AwfApiError despite role hint prefix")
         except api.AwfApiError as e:
             assert "unknown gate" in str(e)
+
+    def test_dispatch_pipeline_creates_block_in_file(self, tmp_git_repo):
+        """RUN3 #2 Part B: pipeline= writes the name into the front-matter."""
+        api.init_project(tmp_git_repo, project_name="CPipe")
+        result = api.dispatch_todo(
+            tmp_git_repo, "# Task\n\nbody\n", pipeline="audit-llm"
+        )
+        md = paths.inbox(tmp_git_repo) / f"{result.todo_id}.md"
+        text = md.read_text(encoding="utf-8")
+        assert "pipeline: audit-llm" in text
+        contract, unknown = parse_todo_contract(text)
+        assert contract["pipeline"] == "audit-llm"
+        assert unknown == []
+
+    def test_dispatch_pipeline_adds_to_existing_block(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="CPipeBlock")
+        result = api.dispatch_todo(
+            tmp_git_repo,
+            '---\nverify: ["pytest -q"]\ngates: ["contracts"]\n---\nbody\n',
+            pipeline="audit-llm",
+        )
+        md = paths.inbox(tmp_git_repo) / f"{result.todo_id}.md"
+        text = md.read_text(encoding="utf-8")
+        contract, unknown = parse_todo_contract(text)
+        assert contract["pipeline"] == "audit-llm"
+        assert contract["verify"] == ["pytest -q"]
+        assert contract["gates"] == ["contracts"]
+        assert unknown == []
+
+    def test_dispatch_pipeline_kwarg_beats_content_key(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="CPipeWins")
+        result = api.dispatch_todo(
+            tmp_git_repo,
+            '---\npipeline: old-name\n---\nbody\n',
+            pipeline="new-name",
+        )
+        md = paths.inbox(tmp_git_repo) / f"{result.todo_id}.md"
+        text = md.read_text(encoding="utf-8")
+        contract, _unknown = parse_todo_contract(text)
+        assert contract["pipeline"] == "new-name"
+        assert "old-name" not in text
+
+    def test_dispatch_pipeline_bad_name_raises_and_writes_nothing(self, tmp_git_repo):
+        api.init_project(tmp_git_repo, project_name="CPipeBad")
+        try:
+            api.dispatch_todo(
+                tmp_git_repo, "# Task\n", pipeline="../evil"
+            )
+            raise AssertionError("expected AwfApiError for bad pipeline name")
+        except api.AwfApiError as e:
+            assert "invalid pipeline name" in str(e)
+        assert not (paths.inbox(tmp_git_repo) / "TODO-0001.md").exists()
 
 
 # ─── DONE.json in the handoff ───────────────────────────────────────────

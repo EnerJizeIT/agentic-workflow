@@ -136,6 +136,7 @@ async def awf_start(
     auto: bool = False,
     timeout: int = 3600,
     todo_id: str = "",
+    no_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Start the pipeline from the beginning.
 
@@ -162,6 +163,10 @@ async def awf_start(
         todo_id: Pin the pipeline to a specific TODO (e.g. "TODO-0015").
             Without it the engine picks the "newest active" TODO — wrong
             pick when several TODOs are active (AUD08-02).
+        no_checkpoints: RUN3 #6 — when True, the BD-36 plan checkpoint form
+            is skipped for THIS launch only (single start, not a run).
+            Process-scoped: not written to config/state, the next launch
+            behaves as before.
 
     Returns:
         Dict with: run_mode ("background"|"foreground"|"noop"),
@@ -178,6 +183,7 @@ async def awf_start(
         timeout=timeout,
         # AUD08-02: signature parity with api.start_pipeline / CLI --todo.
         todo_id=todo_id,
+        no_checkpoints=no_checkpoints,
     )
     # SMO: deterministic dashboard opening — HTTP server started by
     # orchestrator. AUD08-05: one shared implementation, run in a worker
@@ -220,6 +226,7 @@ async def awf_continue(
     timeout: int = 3600,
     ack: str = "",
     background: bool = True,
+    no_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -239,6 +246,10 @@ async def awf_continue(
             default). Set ``background=False`` to block the call until the
             pipeline finishes (AUD08-02 — foreground continue was previously
             impossible from MCP).
+        no_checkpoints: RUN3 #6 — when True, the BD-36 plan checkpoint form
+            is skipped for THIS launch only (single continue, not a run).
+            Process-scoped: not written to config/state, the next launch
+            behaves as before.
 
     Returns:
         Same shape as :func:`awf_start`.
@@ -253,6 +264,7 @@ async def awf_continue(
         ack=ack,
         # AUD08-02: signature parity with api.continue_pipeline.
         background=background,
+        no_checkpoints=no_checkpoints,
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
         # AUD08-05: shared dashboard-open in a worker thread (no loop block).
@@ -319,7 +331,7 @@ async def awf_retry_stage(
 async def awf_run_start(
     project_dir: str | None = None,
     *,
-    queue: list[str] | None = None,
+    queue: list[str | dict[str, Any]] | None = None,
     budget_minutes: int = 0,
     stop_flags_json: str = "",
     note: str = "",
@@ -335,7 +347,10 @@ async def awf_run_start(
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
-        queue: Ordered TODO ids to run, e.g. ["TODO-0010", "TODO-0011"].
+        queue: Ordered queue items. Each item is either a TODO id string
+            (e.g. "TODO-0010" — the pipeline comes from config) or an object
+            {"todo_id": "TODO-0023", "pipeline": "audit-llm"} that pins the
+            item's own pipeline (RUN3 #2). Mixed lists are allowed.
         budget_minutes: Optional time budget (0 = unlimited).
         stop_flags_json: Optional JSON map of TODO id → [reason], e.g.
             '{"TODO-0012": ["phase-boundary", "external-audit"]}'. awf refuses
@@ -422,6 +437,44 @@ async def awf_restore(
     """
     return await _exec(
         api.restore_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+
+
+async def awf_unblock(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Clear stale BLOCKED/ACK closure signals so a re-issued TODO is active again.
+
+    RUN3 #4: a stale ``outbox/BLOCKED-<id>.ready`` outlives a re-issue and
+    keeps ``todos.is_closed`` true — ``awf_status`` shows an empty list and
+    ``awf_start`` without a pin answers "No active TODO". This moves the
+    closure signals (canonical and legacy forms) to a ``context/`` trace
+    directory. DONE closures are never touched — an archived TODO comes
+    back only via ``awf_restore``. Refused while the pipeline is running.
+    """
+    return await _exec(
+        api.unblock_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+
+
+async def awf_todo_remove(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Remove a TODO that never started; the file keeps a trace in done/.
+
+    RUN3 #5: an inert TODO (``.md`` without ``.ready``/signals/progress)
+    moves to ``done/<id>/removed-<timestamp>.md``. Refused when a
+    ``.ready`` or any signal/progress exists (hints: ``awf_unblock`` /
+    ``awf_reset(orphans=True)``).
+    """
+    return await _exec(
+        api.remove_todo,
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
     )
@@ -911,23 +964,36 @@ async def awf_reset(
 
 
 async def awf_add_role(
-    name: str,
+    name: str = "",
     project_dir: str | None = None,
     *,
     description: str = "",
     model: str = "",
+    from_skill: str = "",
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Generate a new role template at .agentic/roles/{name}.md.
+    """Generate a new role file at .agentic/roles/{name}.md.
 
-    Creates a placeholder role file with sections for responsibility,
-    input, actions, output, and prohibitions. Edit the file to specialize.
+    By default creates a placeholder role file with sections for
+    responsibility, input, actions, output, and prohibitions. With
+    ``from_skill`` the role is created from an opencode skill instead:
+    the SKILL.md body (its own YAML front-matter stripped) under a
+    provenance comment. Skill search: project ``.opencode/skills/<name>/``
+    first, then global ``~/.config/opencode/skills/<name>/``. An unknown
+    skill is an error listing the available skills.
 
     Args:
-        name: Role slug (e.g. "qa", "reviewer", "auditor").
+        name: Role slug (e.g. "qa", "reviewer", "auditor"). With
+            ``from_skill`` and empty ``name``, the skill name is used.
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
-        description: One-line role description (default: "new role").
-        model: Model ID for this role. If empty, placeholder inserted.
+        description: One-line role description (template mode only).
+        model: Model ID for this role (template mode only). If empty,
+            placeholder inserted.
+        from_skill: Skill slug to copy the role content from (e.g.
+            "agent-security-auditor").
+        force: Overwrite the role file if it already exists (default:
+            refuse — the file is user data).
 
     Returns:
         Dict with: role_name, role_file (path), model.
@@ -938,6 +1004,8 @@ async def awf_add_role(
             name,
             description=description,
             model=model,
+            from_skill=from_skill,
+            force=force,
         )
         return _ok(result)
     except api.AwfApiError as e:
@@ -1009,6 +1077,81 @@ async def awf_analyze_roles(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+# ─── RUN3 #1: named pipelines (create + list) ────────────────────────────
+
+
+async def awf_write_pipeline(
+    name: str,
+    stages: list[dict[str, Any]],
+    project_dir: str | None = None,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write a named pipeline file at .agentic/pipelines/<name>.yaml.
+
+    Side-effect contract: ONLY the pipeline file is written — config.yaml
+    and supervisor.md are NOT touched (unlike the project-setup form,
+    which patches them). An existing pipeline is refused without
+    ``force=True``. Run it afterwards with ``awf_start(pipeline=name)``
+    or CLI ``awf start --pipeline <name>``.
+
+    Stage schema (each item in ``stages`` — the pipeline YAML keys):
+    ``role`` (required), ``name`` (defaults to the role slug),
+    ``description``, ``on_blocked`` / ``on_approved`` / ``on_rejected`` /
+    ``on_failed``, ``max_retries``, ``max_rollbacks``. Unknown keys are
+    refused (the loader would ignore them).
+
+    Args:
+        name: Pipeline name — letters, digits, '_', '.', '-' (no path
+            separators or spaces), e.g. "audit-llm".
+        stages: Non-empty list of stage objects (pipeline YAML schema).
+            Typically: plan(supervisor) → worker stages → verify(supervisor).
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        force: Overwrite an existing pipeline file (default: False).
+
+    Returns:
+        Dict with: name, file (path), stages (count written), overwritten.
+        On error: {status: "error", error: "..."}.
+    """
+    try:
+        result = api.write_pipeline(
+            _resolve_project_dir(project_dir),
+            name,
+            stages,
+            force=force,
+        )
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+async def awf_pipelines(project_dir: str | None = None) -> dict[str, Any]:
+    """List the pipeline files in .agentic/pipelines/ + the active one.
+
+    The active pipeline is ``default_pipeline`` from config.yaml
+    ("default" when undeclared) — the file the engine uses when no
+    explicit name is given.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: pipelines (sorted names), active, active_exists.
+        On error: {status: "error", error: "..."}.
+    """
+    try:
+        result = api.list_pipelines(_resolve_project_dir(project_dir))
+        return _ok(result)
+    except api.AwfApiError as e:
+        return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
 # ─── Dogfood-2 automation: dispatch + context ────────────────────────────
 
 
@@ -1018,6 +1161,7 @@ async def awf_dispatch_todo(
     *,
     role: str | None = None,
     todo_id: str | None = None,
+    pipeline: str | None = None,
 ) -> dict[str, Any]:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -1038,6 +1182,9 @@ async def awf_dispatch_todo(
             determined by stage order in pipeline.yaml).
         todo_id: Override auto-generated id (e.g. "TODO-0007"). Must
             match pattern TODO-NNNN.
+        pipeline: Optional pipeline name (RUN3 #2) — written into the TODO's
+            front-matter as ``pipeline: <name>``. When awf_run_next launches
+            this TODO without a queue-level pipeline, it uses this one.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
@@ -1049,6 +1196,7 @@ async def awf_dispatch_todo(
             content,
             role=role,
             todo_id=todo_id,
+            pipeline=pipeline,
         )
         response = _ok(result)
         # SMO: next_action + pre-check warnings guide weak models

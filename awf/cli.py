@@ -159,6 +159,33 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # RUN3 #4: stale-closure clearing (a re-issued TODO stays hidden behind
+    # an old BLOCKED-<id>.ready until this moves the signals away).
+    p_unblock = sub.add_parser(
+        "unblock",
+        help="Clear stale BLOCKED/ACK closure signals for a TODO (trace in context/)",
+    )
+    p_unblock.add_argument("todo_id", help="TODO id (e.g. TODO-0018)")
+    p_unblock.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
+    # RUN3 #5: removal of a TODO that never started (trace in done/<id>/).
+    p_todo_remove = sub.add_parser(
+        "todo-remove",
+        help="Remove a TODO that never started (no .ready/signals/progress; trace in done/)",
+    )
+    p_todo_remove.add_argument("todo_id", help="TODO id (e.g. TODO-0018)")
+    p_todo_remove.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -218,6 +245,19 @@ def _build_parser():
     p_add_role.add_argument("name")
     p_add_role.add_argument("--description", default="")
     p_add_role.add_argument("--model", default="")
+    p_add_role.add_argument(
+        "--from-skill",
+        dest="from_skill",
+        default="",
+        metavar="NAME",
+        help="Create the role from an opencode skill: SKILL.md body "
+        "(front-matter stripped) instead of the empty template",
+    )
+    p_add_role.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the role file if it already exists",
+    )
     p_add_role.add_argument(
         "--project-dir",
         default=".",
@@ -423,6 +463,43 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    # RUN3 #1: named pipelines — create + list (run by name via --pipeline)
+    p_pipeline_write = sub.add_parser(
+        "pipeline-write",
+        help="Write .agentic/pipelines/<name>.yaml from roles (config/supervisor untouched)",
+    )
+    p_pipeline_write.add_argument(
+        "name",
+        help="Pipeline name (letters, digits, '_', '.', '-' — no path separators)",
+    )
+    p_pipeline_write.add_argument(
+        "--role",
+        action="append",
+        required=True,
+        help="Worker role for a stage (repeatable; supervisor plan/verify "
+             "stages are added automatically, as in the setup form)",
+    )
+    p_pipeline_write.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing pipeline file",
+    )
+    p_pipeline_write.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_pipelines = sub.add_parser(
+        "pipelines",
+        help="List pipelines in .agentic/pipelines/ (marks the active one)",
+    )
+    p_pipelines.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_analyze = sub.add_parser(
         "analyze-roles",
         help="BD-31: analyze team roles for overlaps, add pipeline-specific disambiguation",
@@ -454,6 +531,12 @@ def _run_command(args) -> int:
         if args.command == "restore":
             from . import cmd_restore
             return cmd_restore.run(args)
+        if args.command == "unblock":
+            from . import cmd_unblock
+            return cmd_unblock.run(args)
+        if args.command == "todo-remove":
+            from . import cmd_todo_remove
+            return cmd_todo_remove.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):
@@ -485,6 +568,12 @@ def _run_command(args) -> int:
         if args.command == "report":
             from . import cmd_report
             return cmd_report.run(args)
+        if args.command == "pipeline-write":
+            from . import cmd_pipeline_write
+            return cmd_pipeline_write.run(args)
+        if args.command == "pipelines":
+            from . import cmd_pipelines
+            return cmd_pipelines.run(args)
         if args.command == "analyze-roles":
             from . import cmd_analyze_roles
             return cmd_analyze_roles.run(args)

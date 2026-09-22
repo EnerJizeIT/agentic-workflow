@@ -391,6 +391,83 @@ class TestAwfAddRole:
         ))
         assert result["status"] == "error"
 
+    def _make_global_skill(self, mcp_project, monkeypatch, name="demo-skill"):
+        """Private XDG_CONFIG_HOME with one skill; returns its SKILL.md path."""
+        monkeypatch.setenv(
+            "XDG_CONFIG_HOME", str(mcp_project / "xdg-home")
+        )
+        skill_dir = mcp_project / "xdg-home" / "opencode" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: demo-skill\n---\n\n# Demo Skill\n\nDemo body line.\n",
+            encoding="utf-8",
+        )
+        return skill_file
+
+    def test_from_skill_ok(self, mcp_project, monkeypatch):
+        skill_file = self._make_global_skill(mcp_project, monkeypatch)
+        result = run(awf.awf_add_role(
+            name="demo-role",
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+        ))
+        assert result["status"] == "ok", result
+        role_file = mcp_project / ".agentic" / "roles" / "demo-role.md"
+        assert role_file.is_file()
+        content = role_file.read_text(encoding="utf-8")
+        assert "Demo body line." in content
+        assert str(skill_file) in content
+        assert not content.startswith("---")
+
+    def test_from_skill_name_defaults_to_skill(
+        self, mcp_project, monkeypatch
+    ):
+        self._make_global_skill(mcp_project, monkeypatch)
+        result = run(awf.awf_add_role(
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+        ))
+        assert result["status"] == "ok", result
+        assert (mcp_project / ".agentic" / "roles" / "demo-skill.md").is_file()
+
+    def test_from_skill_unknown_lists_available(
+        self, mcp_project, monkeypatch
+    ):
+        self._make_global_skill(mcp_project, monkeypatch)
+        result = run(awf.awf_add_role(
+            name="x",
+            project_dir=str(mcp_project),
+            from_skill="ghost-skill",
+        ))
+        assert result["status"] == "error"
+        assert "ghost-skill" in result["error"]
+        assert "demo-skill" in result["error"]
+
+    def test_from_skill_occupied_refused_then_force(
+        self, mcp_project, monkeypatch
+    ):
+        self._make_global_skill(mcp_project, monkeypatch)
+        run(awf.awf_add_role(name="demo-skill", project_dir=str(mcp_project),
+                             model="m"))
+        result = run(awf.awf_add_role(
+            name="demo-skill",
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+        ))
+        assert result["status"] == "error"
+        assert "already exists" in result["error"]
+        result = run(awf.awf_add_role(
+            name="demo-skill",
+            project_dir=str(mcp_project),
+            from_skill="demo-skill",
+            force=True,
+        ))
+        assert result["status"] == "ok", result
+        content = (mcp_project / ".agentic" / "roles" / "demo-skill.md"
+                   ).read_text(encoding="utf-8")
+        assert "Demo body line." in content
+
 
 # ─── awf_analyze_roles ──────────────────────────────────────────────────
 
@@ -1232,3 +1309,46 @@ class TestAwfMetricsParams:
         assert result["status"] == "error"
         assert calls and calls[0]["refresh_subscriptions"] is True
         assert calls[0]["mirror"] is False
+
+
+class TestCurrentStepLiveProject:
+    """RUN3-7 (TODO-0049): awf_current_step distinguishes a NEW project
+    (setup chain, phase 'goal') from a LIVE one (configured + completed
+    work → working phase 'run'), without changing the response shape."""
+
+    def _make_live(self, project: Path) -> None:
+        """Pipeline with a worker stage + one archived TODO."""
+        pipes = project / ".agentic" / "pipelines"
+        pipes.mkdir(parents=True, exist_ok=True)
+        (pipes / "default.yaml").write_text(
+            "name: default\nstages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n"
+            "  - name: worker\n    role: worker\n    kind: execute\n"
+            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            encoding="utf-8",
+        )
+        done = project / ".agentic" / "done" / "TODO-0001"
+        done.mkdir(parents=True, exist_ok=True)
+        (done / "TODO.md").write_text("# Task\n", encoding="utf-8")
+
+    def test_live_project_no_goal_returns_run(self, mcp_project):
+        self._make_live(mcp_project)
+        result = run(awf.awf_current_step(project_dir=str(mcp_project)))
+        assert result["status"] == "ok"
+        assert result["phase"] == "run"
+        assert result["goal"] is None
+        # Response shape unchanged: exactly these keys.
+        assert set(result) == {"status", "phase", "prompt", "goal"}
+        # The one explanatory line for a live project without a stored goal.
+        assert "setup chain" in result["prompt"]
+
+    def test_new_project_no_goal_returns_goal(self, mcp_project):
+        """No pipeline, empty done/ → the setup chain as before. The
+        init-time config (models: {supervisor: stub}) must NOT count as
+        'configured with work' on its own."""
+        result = run(awf.awf_current_step(project_dir=str(mcp_project)))
+        assert result["status"] == "ok"
+        assert result["phase"] == "goal"
+        assert result["goal"] is None
+        assert set(result) == {"status", "phase", "prompt", "goal"}
+        assert "setup chain" not in result["prompt"]

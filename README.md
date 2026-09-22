@@ -56,7 +56,7 @@ pip install awf agent-workflow-ui
 ## Features
 
 - 🎯 **State-Machine Orchestration (SMO)** — awf guides the supervisor through phases: `init → goal → form → normalize → brief → run → verify → done`. Every tool returns a `next_action` hint — even weak models follow the full flow without getting lost.
-- 🔧 **38 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
+- 🔧 **42 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
 - 📊 **Live Dashboard** — HTTP server with real-time polling. Chat-style agent handoffs, TODO content, TODO timeline, worker status, browser notifications. No page reloads.
 - 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. You choose in the setup form.
 - ✅ **Approve / Reject** — symmetric verify tools. Approve commits and archives. Reject kills the pipeline and asks for fixes.
@@ -99,7 +99,7 @@ graph LR
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 38 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 42 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf orchestrator]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]

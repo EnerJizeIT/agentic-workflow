@@ -2,4 +2,30 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
 # identifiers (backlog item references), and every docs reword there
 # shifted the count (see "reword to keep the todos ratchet at baseline").
+# RUN3-2026-09-22 (#4/#5): baseline raised 2641 -> 2794 — the hygiene unit
+# adds 156 TODO-NNNN identifiers (84 in tests/unit/test_todo_hygiene.py,
+# 19 in test_cli_entrypoints.py, the rest in code/docs). Test ids are the
+# same class as the 1957 already-counted ones in tests/ — not debt.
+# RUN3-2026-09-22 (#1): baseline raised 2794 -> 2796 — the named-pipelines
+# unit adds 2 TODO-NNNN test ids in tests/unit/test_pipelines_api.py
+# (run-state queue/current in the run_brief test). Same class as above.
+# RUN3-2026-09-22 (#2): baseline raised 2796 -> 2855 — the per-item-pipeline
+# unit adds 59 TODO-NNNN test ids + doc references (12 queue-pipeline tests
+# in tests/unit/test_run.py, 4 dispatch/contract pipeline tests in
+# tests/unit/test_unit_contract.py, USAGE EN/RU + unit-contract wording).
+# Test ids are the same class as the already-counted ones in tests/ — not debt.
+# RUN3-2026-09-22 (#2, QA): baseline raised 2855 -> 2861 — the
+# refused-launch-no-side-effects regression test adds 6 TODO mentions
+# (5 test lines in tests/unit/test_run.py, 1 code comment in
+# awf/api/run.py). Same class as above.
+# RUN3-2026-09-22 (#6): baseline raised 2861 -> 2868 — the
+# single-launch no_checkpoints unit adds 7 TODO-0001 test ids in
+# tests/integration/test_plan_checkpoint.py (gate + plumbing fixtures).
+# Same class as above: test identifiers, not debt.
+# RUN3-2026-09-22 (#7): baseline raised 2868 -> 2884 — the
+# live-project phase unit adds 16 TODO-bearing lines: unit-id
+# references in awf/phase.py comments/docstrings, test docstrings, and
+# TODO-0001/TODO.md archive fixtures in tests/unit/test_phase_live.py
+# and tests/agent_workflow_ui/test_awf_tools.py.
+# Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

@@ -12,6 +12,10 @@ Bypass:
   - ``--auto`` mode (CI/tests): checkpoint skipped automatically.
   - ``automation.plan_checkpoint: false`` in ``config.yaml``.
   - ``AWF_PLAN_CHECKPOINT=false`` env var for one-shot override.
+  - ``no_checkpoints=True`` on ``awf_start`` / ``awf_continue`` (RUN3 #6):
+    a single-launch parameter — ``AWF_NO_CHECKPOINTS=1`` is set for the
+    duration of the pipeline process and dies with it (not written to
+    config or state, the next launch is unaffected).
 
 Architecture: awf-core runs a one-shot HTTP server on a random port to
 receive the form POST. Self-contained — does not depend on the
@@ -134,6 +138,30 @@ def is_checkpoint_enabled(
         if val in (False, "false", "0", "no", "off"):
             return False
     return True
+
+
+LAUNCH_NO_CHECKPOINTS_ENV = "AWF_NO_CHECKPOINTS"
+
+
+def launch_no_checkpoints() -> bool:
+    """RUN3 #6: the single-launch ``no_checkpoints`` parameter, as env.
+
+    ``start_pipeline`` / ``continue_pipeline`` set ``AWF_NO_CHECKPOINTS=1``
+    for the duration of the pipeline process when called with
+    ``no_checkpoints=True`` (background: on the child at spawn, next to
+    ``AWF_BACKGROUND_CHILD``; foreground: around ``run_pipeline``, restored
+    on every exit path — same pattern as ``AWF_SUPERVISOR_TIMEOUT``). The
+    engine gate reads it here, so the flag cannot survive the launch: no
+    config, no state file, the next launch is unaffected.
+
+    Truthy values: 1 / true / yes (case-insensitive) — the same set the
+    ``AWF_PLAN_CHECKPOINT`` override understands in its false form.
+    """
+    return os.environ.get(LAUNCH_NO_CHECKPOINTS_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 # ── B1: decision survives pipeline death ─────────────────────────────────────

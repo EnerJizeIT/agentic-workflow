@@ -236,6 +236,23 @@ class TestResolvePipelineFile:
         with pytest.raises(FileNotFoundError):
             resolve_pipeline_file(tmp_path, config=cfg)
 
+    def test_explicit_missing_name_is_clear_error(self, tmp_pipeline_file) -> None:
+        """RUN3 #1: an explicit name that does not exist fails with the list
+        of available pipelines — no silent fallback to default.yaml (that
+        would run the wrong pipeline)."""
+        tmp_path, _ = tmp_pipeline_file
+        from awf.api._errors import AwfApiError
+
+        with pytest.raises(AwfApiError) as exc:
+            resolve_pipeline_file(tmp_path, "audit-llm")
+
+        msg = str(exc.value)
+        assert "audit-llm" in msg
+        # all existing files are listed — the next action is obvious
+        assert "default" in msg and "simple" in msg and "full" in msg
+
+
+
 
 class TestComputeKind:
     """BD-29: _compute_kind edge cases."""

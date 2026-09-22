@@ -781,6 +781,7 @@ def start_pipeline(
     auto: bool = False,
     timeout: int = 3600,
     todo_id: str = "",
+    no_checkpoints: bool = False,
 ) -> StartResult:
     """Start the pipeline from the beginning.
 
@@ -790,6 +791,12 @@ def start_pipeline(
 
     ``background=True`` launches a detached subprocess and returns immediately
     with a PID. Otherwise runs synchronously and returns the final exit code.
+
+    ``no_checkpoints`` (RUN3 #6): skip the BD-36 plan checkpoint form for
+    THIS launch only. Process-scoped (env for the duration of the pipeline
+    process) — not written to config or state, the next launch behaves as
+    before. The run-level flag (``run_start(no_checkpoints=...)``) and the
+    config/env bypasses keep working; any one of them is enough.
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
@@ -838,7 +845,11 @@ def start_pipeline(
     from ..plan_checkpoint import is_checkpoint_enabled
 
     config_data = cfg_mod.load(project_dir)
-    checkpoint_active = is_checkpoint_enabled(config_data, auto)
+    # RUN3 #6: with the launch parameter the checkpoint is off for this run,
+    # so the foreground incompatibility guard below must not refuse it.
+    checkpoint_active = is_checkpoint_enabled(
+        config_data, auto, no_checkpoints=no_checkpoints
+    )
 
     if background:
         pid, log_file, _pid_file = start_in_background(
@@ -848,6 +859,7 @@ def start_pipeline(
             auto=auto,
             timeout=timeout,
             todo_id=todo_id,
+            no_checkpoints=no_checkpoints,
         )
 
         # DF5-10: wait briefly, then check if child died immediately.
@@ -908,6 +920,7 @@ def start_pipeline(
         auto=auto,
         timeout=timeout,
         todo_id=todo_id,
+        no_checkpoints=no_checkpoints,
     )
     try:
         exit_code = run_pipeline(args)
@@ -937,6 +950,7 @@ def continue_pipeline(
     timeout: int = 3600,
     background: bool = True,
     ack: str = "",
+    no_checkpoints: bool = False,
 ) -> StartResult:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -955,6 +969,10 @@ def continue_pipeline(
     was "closed" by the signal and `awf continue` answered "No active TODO
     found". ``ack="TODO-NNNN"`` writes the ACK for a blocked TODO before
     resuming (no manual ``touch`` needed).
+
+    ``no_checkpoints`` (RUN3 #6): skip the BD-36 plan checkpoint form for
+    THIS launch only — process-scoped, not written to config or state
+    (same semantics as :func:`start_pipeline`).
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
@@ -1075,6 +1093,7 @@ def continue_pipeline(
             # AUD04-01: pin the resolved TODO — resuming from verify with an
             # empty todo_id skips the ACK/APPROVE check and hangs until timeout.
             todo_id=current_todo,
+            no_checkpoints=no_checkpoints,
         )
         child_alive = _verify_child_alive(pid, log_file)
         if not child_alive:
@@ -1119,6 +1138,7 @@ def continue_pipeline(
         timeout=timeout,
         # AUD04-01: pin the resolved TODO (same reason as the background branch).
         todo_id=current_todo,
+        no_checkpoints=no_checkpoints,
     )
     try:
         exit_code = run_pipeline(args)

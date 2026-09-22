@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf import api, cli
@@ -430,6 +431,49 @@ class TestAddRoleEntrypoint:
         assert not (repo / "evil.md").exists()
         assert not (tmp_path / "evil.md").exists()
 
+    def _project_skill(self, repo: Path, name: str = "demo-skill") -> None:
+        skill_dir = repo / ".opencode" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo-skill\n---\n\n# Demo Skill\n\nCLI demo body line.\n",
+            encoding="utf-8",
+        )
+
+    def test_add_role_from_skill_flag(self, tmp_path, capsys):
+        """RUN3 #3: --from-skill copies the skill body, no model prompt."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliAddRoleSkill")
+        self._project_skill(repo)
+        capsys.readouterr()
+
+        rc = cli.main(["add-role", "demo-role", "--from-skill", "demo-skill",
+                       "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "content copied from skill" in out
+        role_file = repo / ".agentic" / "roles" / "demo-role.md"
+        assert role_file.is_file()
+        content = role_file.read_text(encoding="utf-8")
+        assert "CLI demo body line." in content
+        assert not content.startswith("---")
+
+    def test_add_role_from_skill_unknown_no_traceback(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliAddRoleSkillMiss")
+        self._project_skill(repo)
+        capsys.readouterr()
+
+        rc = cli.main(["add-role", "x", "--from-skill", "ghost",
+                       "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "Traceback" not in captured.out + captured.err
+        assert "ghost" in captured.out
+        assert "demo-skill" in captured.out  # available skills listed
+        assert not (repo / ".agentic" / "roles" / "x.md").exists()
+
 
 class TestReportEntrypoint:
     """AUD12-07: cmd_report CLI smoke (wrapper was at 68%)."""
@@ -832,3 +876,231 @@ class TestMetricsEntrypoint:
 
         assert rc in (0, 1)
         assert out_file.is_file()
+
+
+class TestPipelineWriteEntrypoint:
+    """RUN3 #1: `awf pipeline-write` + `awf pipelines` — real runs, no mocks."""
+
+    def test_pipeline_write_creates_file_keeps_config_and_supervisor(
+        self, tmp_path, capsys
+    ):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliPipeWrite")
+        (repo / ".agentic" / "roles" / "agent-implementer.md").write_text("# r\n")
+        config_before = (repo / ".agentic" / "config.yaml").read_text(encoding="utf-8")
+        sup_before = (repo / ".agentic" / "roles" / "supervisor.md").read_text(
+            encoding="utf-8"
+        )
+        capsys.readouterr()
+
+        rc = cli.main(
+            [
+                "pipeline-write", "audit-probe",
+                "--role", "agent-implementer",
+                "--project-dir", str(repo),
+            ]
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        target = repo / ".agentic" / "pipelines" / "audit-probe.yaml"
+        assert target.is_file()
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
+        # stages generated like the setup form: plan → roles → verify
+        assert [s["role"] for s in data["stages"]] == [
+            "supervisor",
+            "agent-implementer",
+            "supervisor",
+        ]
+        # contract: config.yaml and supervisor.md byte-identical
+        assert (repo / ".agentic" / "config.yaml").read_text(encoding="utf-8") == (
+            config_before
+        )
+        assert (repo / ".agentic" / "roles" / "supervisor.md").read_text(
+            encoding="utf-8"
+        ) == sup_before
+
+    def test_pipeline_write_refuses_existing_then_force(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliPipeForce")
+        (repo / ".agentic" / "roles" / "worker.md").write_text("# w\n")
+        capsys.readouterr()
+
+        rc = cli.main(
+            ["pipeline-write", "dup", "--role", "worker", "--project-dir", str(repo)]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+        rc = cli.main(
+            ["pipeline-write", "dup", "--role", "worker", "--project-dir", str(repo)]
+        )
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "already exists" in captured.out + captured.err
+
+        rc = cli.main(
+            [
+                "pipeline-write", "dup", "--role", "worker", "--force",
+                "--project-dir", str(repo),
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "Overwrote" in out
+
+    def test_pipeline_write_traversal_rejected(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliPipeTrav")
+        capsys.readouterr()
+
+        rc = cli.main(
+            [
+                "pipeline-write", "../../evil", "--role", "worker",
+                "--project-dir", str(repo),
+            ]
+        )
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "Invalid pipeline name" in captured.out + captured.err
+        assert not (repo / "evil.yaml").exists()
+        assert not (tmp_path / "evil.yaml").exists()
+
+    def test_pipelines_lists_and_marks_active(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliPipeList")
+        (repo / ".agentic" / "roles" / "worker.md").write_text("# w\n")
+        capsys.readouterr()
+
+        rc = cli.main(
+            ["pipeline-write", "audit-llm", "--role", "worker", "--project-dir", str(repo)]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+        # init doesn't create default.yaml — the active name is still
+        # reported (as a note), audit-llm is the only file
+        rc = cli.main(["pipelines", "--project-dir", str(repo)])
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "  audit-llm" in out
+        assert "default" in out
+
+        # config-declared active pipeline is starred
+        config = repo / ".agentic" / "config.yaml"
+        config.write_text(
+            config.read_text(encoding="utf-8") + "default_pipeline: audit-llm\n"
+        )
+        rc = cli.main(["pipelines", "--project-dir", str(repo)])
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "* audit-llm  (active)" in out
+
+    def test_start_missing_pipeline_name_errors_cleanly(self, tmp_path, capsys):
+        """Part B: an unknown --pipeline name is a clear error with the
+        available list — not a silent run of default.yaml."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliPipeStart")
+        (repo / ".agentic" / "roles" / "worker.md").write_text("# w\n")
+        capsys.readouterr()
+        rc = cli.main(
+            ["pipeline-write", "audit-llm", "--role", "worker", "--project-dir", str(repo)]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+        rc = cli.main(
+            ["start", "--pipeline", "no-such-pipeline", "--project-dir", str(repo)]
+        )
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        text = captured.out + captured.err
+        assert "no-such-pipeline" in text
+        assert "not found" in text
+        # the available pipelines are listed — the next action is obvious
+        assert "Available pipelines: audit-llm" in text
+
+
+class TestUnblockEntrypoint:
+    """RUN3 #4: `awf unblock` — real runs, no mocks."""
+
+    def test_unblock_cli_clears_stale_blocked(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUnblock")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        outbox = repo / ".agentic" / "outbox"
+        (inbox / "TODO-0001.md").write_text("task")
+        (inbox / "TODO-0001.ready").touch()
+        (outbox / "BLOCKED-TODO-0001.md").write_text("stale reason")
+        (outbox / "BLOCKED-TODO-0001.ready").touch()
+
+        rc = cli.main(["unblock", "TODO-0001", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert not (outbox / "BLOCKED-TODO-0001.ready").exists()
+        assert not (outbox / "BLOCKED-TODO-0001.md").exists()
+        # the re-issued TODO is visible again
+        rc2 = cli.main(["status", "--project-dir", str(repo)])
+        out2 = capsys.readouterr().out
+        assert rc2 == 0
+        assert "TODO-0001" in out2
+
+    def test_unblock_cli_without_closures_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliUnblock2")
+        capsys.readouterr()
+
+        rc = cli.main(["unblock", "TODO-0042", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "nothing to unblock" in captured.out + captured.err
+
+
+class TestTodoRemoveEntrypoint:
+    """RUN3 #5: `awf todo-remove` — real runs, no mocks."""
+
+    def test_todo_remove_cli_removes_never_started(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0003.md").write_text("never started")
+
+        rc = cli.main(["todo-remove", "TODO-0003", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert not (inbox / "TODO-0003.md").exists()
+        traces = list((repo / ".agentic" / "done" / "TODO-0003").glob("removed-*.md"))
+        assert len(traces) == 1
+        assert "never started" in traces[0].read_text()
+
+    def test_todo_remove_cli_refuses_armed(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove2")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0003.md").write_text("armed")
+        (inbox / "TODO-0003.ready").touch()
+
+        rc = cli.main(["todo-remove", "TODO-0003", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert (inbox / "TODO-0003.md").exists()
+
+    def test_todo_remove_cli_missing_is_error(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove3")
+        capsys.readouterr()
+
+        rc = cli.main(["todo-remove", "TODO-0077", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "not found" in captured.out + captured.err

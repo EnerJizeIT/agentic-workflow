@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from .. import config as cfg_mod
 from .. import paths
 from .._atomic import atomic_write_text
+from ..xdg import xdg_config_home
 from ._errors import AwfApiError
 from ._helpers import require_agentic
 from ._results import AddRoleResult, AnalyzeRolesResult
@@ -24,6 +26,78 @@ log = logging.getLogger(__name__)
 
 # ─── add_role ───────────────────────────────────────────────────────────
 
+_SKILL_FILENAME = "SKILL.md"
+
+
+def _skill_roots(project_dir: Path) -> list[Path]:
+    """Candidate skill roots, project-local first.
+
+    Mirrors ``resolve_role_file`` (awf/supervisor.py): a project skill in
+    ``.opencode/skills/`` of the same name shadows the global one in
+    ``$XDG_CONFIG_HOME/opencode/skills/``.
+    """
+    return [
+        project_dir / ".opencode" / "skills",
+        xdg_config_home() / "opencode" / "skills",
+    ]
+
+
+def _list_available_skills(project_dir: Path) -> list[str]:
+    """Skill names found in the candidate roots (sorted, deduped).
+
+    Never raises: missing or unreadable roots are skipped, so an empty
+    home yields a usable "(none)" listing instead of a crash.
+    """
+    names: set[str] = set()
+    for root in _skill_roots(project_dir):
+        if not root.is_dir():
+            continue
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir() and (entry / _SKILL_FILENAME).is_file():
+                    names.add(entry.name)
+            except OSError:
+                continue
+    return sorted(names)
+
+
+def _find_skill_file(skill_name: str, project_dir: Path) -> Path:
+    """Locate ``<root>/<skill_name>/SKILL.md`` or raise with the listing.
+
+    ``skill_name`` must already be slug-validated by the caller (public
+    input — see add_role).
+    """
+    roots = _skill_roots(project_dir)
+    for root in roots:
+        candidate = root / skill_name / _SKILL_FILENAME
+        if candidate.is_file():
+            return candidate
+    available = ", ".join(_list_available_skills(project_dir)) or "(none)"
+    raise AwfApiError(
+        f"Skill {skill_name!r} not found. Looked in: "
+        + "; ".join(str(r) for r in roots)
+        + f". Available skills: {available}."
+    )
+
+
+def _strip_yaml_frontmatter(content: str) -> str:
+    """Drop a leading ``---`` YAML block if present; keep the rest verbatim.
+
+    A SKILL.md starts with its own front-matter (name/description/
+    metadata); a role file must not inherit it as YAML (RUN3 #3).
+    """
+    lines = content.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return content
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "\n".join(lines[i + 1 :]).lstrip("\n")
+    return content  # opening fence without a closing one — not frontmatter
+
 
 def add_role(
     project_dir: Path,
@@ -31,38 +105,60 @@ def add_role(
     *,
     description: str = "",
     model: str = "",
+    from_skill: str = "",
+    force: bool = False,
 ) -> AddRoleResult:
-    """Generate a new role template at ``.agentic/roles/{role_name}.md``.
+    """Generate a new role at ``.agentic/roles/{role_name}.md``.
 
-    AUD06-07: raises AwfApiError when the role file already exists — an
-    existing file is user data (hand-edited instructions) and is never
-    silently replaced by the template.
+    Two content sources:
+    - default (no ``from_skill``): a placeholder template
+      (``description``/``model`` fill its sections);
+    - ``from_skill="name"``: an opencode skill — the SKILL.md body with
+      its own YAML front-matter stripped, under a one-line provenance
+      comment (source path + date). ``description``/``model`` are ignored
+      for that source. Search order: project-local
+      ``.opencode/skills/<name>/SKILL.md`` first, then global
+      ``$XDG_CONFIG_HOME/opencode/skills/<name>/SKILL.md``.
+
+    AUD06-07: an existing role file is user data — refused without
+    ``force``; ``force=True`` overwrites it (both sources).
+
+    RUN3 #3: an empty ``role_name`` together with ``from_skill`` takes the
+    skill name as the role name; an empty ``role_name`` without it is an
+    error as before.
     """
+    # RUN3 #3: from_skill is public input — slug-validated first, because
+    # it also supplies the default role name.
+    skill_name = ""
+    if from_skill:
+        skill_name = from_skill.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", skill_name):
+            raise AwfApiError(
+                f"Invalid skill name {from_skill!r}: use lowercase letters, "
+                "digits, '-' or '_', starting with a letter or digit."
+            )
+
     if not role_name:
-        raise AwfApiError("role_name is required")
-    # AUD06-06: role_name is public input (MCP awf_add_role / CLI). Normalize
-    # (strip + lowercase) then validate as a slug — "../../x", "a/b" or an
-    # absolute path must not be able to write outside .agentic/roles/.
-    role_name = role_name.strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", role_name):
-        raise AwfApiError(
-            f"Invalid role name {role_name!r}: use lowercase letters, digits, "
-            "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
-        )
+        if not skill_name:
+            raise AwfApiError("role_name is required")
+        role_name = skill_name
+    else:
+        # AUD06-06: role_name is public input (MCP awf_add_role / CLI).
+        # Normalize (strip + lowercase) then validate as a slug —
+        # "../../x", "a/b" or an absolute path must not be able to write
+        # outside .agentic/roles/.
+        role_name = role_name.strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", role_name):
+            raise AwfApiError(
+                f"Invalid role name {role_name!r}: use lowercase letters, digits, "
+                "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
+            )
+
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
-    if not model:
-        model = "<set-me-in-.agentic/config.yaml>"
-
     roles_dir = project_dir / ".agentic" / "roles"
     roles_dir.mkdir(parents=True, exist_ok=True)
-
-    content = _ROLE_TEMPLATE.format(
-        role_name=role_name,
-        description=description or "new role",
-        model=model,
-    )
     role_file = roles_dir / f"{role_name}.md"
     # AUD06-06: defense in depth — even a slug that passed validation must
     # resolve back inside roles/ (guards against future validation drift).
@@ -70,10 +166,31 @@ def add_role(
         raise AwfApiError(
             f"Invalid role name {role_name!r}: resolves outside .agentic/roles/."
         )
+
+    if skill_name:
+        skill_file = _find_skill_file(skill_name, project_dir)
+        try:
+            raw = skill_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise AwfApiError(f"Cannot read skill file {skill_file}: {e}") from e
+        body = _strip_yaml_frontmatter(raw).strip("\n")
+        content = (
+            f"<!-- copied from skill `{skill_name}` ({skill_file}) "
+            f"on {date.today().isoformat()} -->\n{body}\n"
+        )
+    else:
+        if not model:
+            model = "<set-me-in-.agentic/config.yaml>"
+        content = _ROLE_TEMPLATE.format(
+            role_name=role_name,
+            description=description or "new role",
+            model=model,
+        )
+
     # AUD06-07: an existing role file is user data (hand-edited instructions)
-    # — silently replacing it with the template lost it without a trace or a
-    # backup. Refuse; the caller edits the file instead.
-    if role_file.exists():
+    # — silently replacing it lost it without a trace or a backup. Refuse;
+    # the caller edits the file instead (or passes force to overwrite).
+    if role_file.exists() and not force:
         raise AwfApiError(
             f"Role file already exists: {role_file} — edit it in place "
             "(add_role only creates new roles)."
@@ -83,7 +200,7 @@ def add_role(
     return AddRoleResult(
         role_name=role_name,
         role_file=str(role_file),
-        model=model,
+        model=model if not skill_name else "",
     )
 
 

@@ -727,6 +727,149 @@ class TestAddRole:
             api.add_role(tmp_git_repo, "qa")
 
 
+# ─── add_role from_skill (RUN3 #3) ──────────────────────────────────────
+
+_SKILL_WITH_FRONTMATTER = """---
+name: demo-skill
+description: "A demo skill for tests."
+metadata:
+  sandbox_mode: workspace-write
+---
+
+# Demo Skill
+
+## Instructions
+
+Do the demo thing.
+"""
+
+_SKILL_GLOBAL_BODY = "GLOBAL-SKILL-BODY"
+_SKILL_PROJECT_BODY = "PROJECT-SKILL-BODY"
+
+
+@pytest.fixture
+def skill_env(tmp_git_repo, monkeypatch):
+    """Project + global skills dir under a private XDG_CONFIG_HOME.
+
+    Returns (repo, global_skill_file) for a skill named "demo-skill".
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_git_repo / "xdg-home"))
+    api.init_project(tmp_git_repo, project_name="FromSkill")
+    skill_dir = tmp_git_repo / "xdg-home" / "opencode" / "skills" / "demo-skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(_SKILL_WITH_FRONTMATTER, encoding="utf-8")
+    return tmp_git_repo, skill_file
+
+
+class TestAddRoleFromSkill:
+    def test_copies_body_without_frontmatter(self, skill_env):
+        repo, skill_file = skill_env
+        result = api.add_role(repo, "demo-skill", from_skill="demo-skill")
+        role_file = repo / ".agentic" / "roles" / "demo-skill.md"
+        assert result.role_file == str(role_file)
+        assert role_file.is_file()
+        content = role_file.read_text(encoding="utf-8")
+        # skill body is there
+        assert "# Demo Skill" in content
+        assert "Do the demo thing." in content
+        # the skill's own YAML front-matter is NOT
+        assert not content.startswith("---")
+        assert "sandbox_mode" not in content
+        assert 'description: "A demo skill for tests."' not in content
+        # provenance: source path + date
+        assert content.startswith("<!--")
+        assert "copied from skill `demo-skill`" in content
+        assert str(skill_file) in content
+        from datetime import date
+
+        assert date.today().isoformat() in content
+        # model slot is not part of a skill-sourced role
+        assert result.model == ""
+
+    def test_role_name_defaults_to_skill_name(self, skill_env):
+        repo, _ = skill_env
+        result = api.add_role(repo, "", from_skill="demo-skill")
+        assert result.role_name == "demo-skill"
+        assert (repo / ".agentic" / "roles" / "demo-skill.md").is_file()
+
+    def test_project_skill_shadows_global(self, skill_env):
+        repo, _ = skill_env
+        proj_dir = repo / ".opencode" / "skills" / "demo-skill"
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "SKILL.md").write_text(
+            f"# Project Skill\n\n{_SKILL_PROJECT_BODY}\n", encoding="utf-8"
+        )
+        # global skill body marker for contrast
+        global_file = repo / "xdg-home" / "opencode" / "skills" / "demo-skill" / "SKILL.md"
+        global_file.write_text(
+            f"# Global Skill\n\n{_SKILL_GLOBAL_BODY}\n", encoding="utf-8"
+        )
+        result = api.add_role(repo, "demo-skill", from_skill="demo-skill")
+        content = Path(result.role_file).read_text(encoding="utf-8")
+        assert _SKILL_PROJECT_BODY in content
+        assert _SKILL_GLOBAL_BODY not in content
+
+    def test_not_found_lists_available(self, skill_env):
+        repo, _ = skill_env
+        extra = repo / "xdg-home" / "opencode" / "skills" / "beta-skill"
+        extra.mkdir(parents=True)
+        (extra / "SKILL.md").write_text("# Beta\n", encoding="utf-8")
+        with pytest.raises(api.AwfApiError, match=r"Skill 'nope-skill' not found") as exc:
+            api.add_role(repo, "x", from_skill="nope-skill")
+        msg = str(exc.value)
+        assert "demo-skill" in msg
+        assert "beta-skill" in msg
+
+    def test_not_found_empty_home_does_not_crash(self, tmp_git_repo, monkeypatch):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_git_repo / "empty-xdg"))
+        api.init_project(tmp_git_repo, project_name="FromSkillEmpty")
+        with pytest.raises(api.AwfApiError, match=r"Skill 'ghost' not found") as exc:
+            api.add_role(tmp_git_repo, "x", from_skill="ghost")
+        assert "(none)" in str(exc.value)
+
+    def test_occupied_name_refused_without_force(self, skill_env):
+        repo, _ = skill_env
+        api.add_role(repo, "demo-skill", model="m")  # template first
+        with pytest.raises(api.AwfApiError, match="already exists"):
+            api.add_role(repo, "demo-skill", from_skill="demo-skill")
+
+    def test_force_overwrites_with_skill(self, skill_env):
+        repo, _ = skill_env
+        api.add_role(repo, "demo-skill", model="m")  # template first
+        result = api.add_role(
+            repo, "demo-skill", from_skill="demo-skill", force=True
+        )
+        content = Path(result.role_file).read_text(encoding="utf-8")
+        assert "copied from skill `demo-skill`" in content
+        assert "ROLE: demo-skill" not in content  # template gone
+
+    def test_empty_from_skill_uses_template_as_before(self, skill_env):
+        repo, _ = skill_env
+        result = api.add_role(repo, "plain", from_skill="")
+        content = Path(result.role_file).read_text(encoding="utf-8")
+        assert "ROLE: plain" in content
+        assert "copied from skill" not in content
+
+    def test_description_model_ignored_for_skill(self, skill_env):
+        repo, _ = skill_env
+        result = api.add_role(
+            repo, "demo-skill", from_skill="demo-skill",
+            description="Custom desc", model="custom-model",
+        )
+        content = Path(result.role_file).read_text(encoding="utf-8")
+        assert "Custom desc" not in content
+        assert "custom-model" not in content
+        assert "ROLE: demo-skill" not in content
+
+    def test_unreadable_skill_file_is_clean_error(self, skill_env):
+        repo, skill_file = skill_env
+        skill_file.write_bytes(b"\xff\xfe\x00not-utf8")
+        with pytest.raises(api.AwfApiError, match="Cannot read skill file"):
+            api.add_role(repo, "demo-skill", from_skill="demo-skill")
+        assert not (repo / ".agentic" / "roles" / "demo-skill.md").exists()
+
+
 # ─── analyze_roles ──────────────────────────────────────────────────────
 
 

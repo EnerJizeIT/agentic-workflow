@@ -269,6 +269,42 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     return result
 
 
+def active_pipeline_name(
+    project_dir: str | Path,
+    config: dict | None = None,
+) -> str:
+    """The pipeline name the runtime uses when none is given explicitly.
+
+    Mirrors :func:`resolve_pipeline_file` (step 2): ``default_pipeline``
+    from config.yaml wins over "default"; a value that is not a valid
+    pipeline name (AUD14-05 rule) falls back to "default". Shared by
+    ``awf_status`` / ``run_brief`` (RUN3 #1) so the displayed name always
+    agrees with the file the engine would load.
+    """
+    if config is None:
+        config = cfg_mod.load(Path(project_dir).resolve())
+    declared = str(
+        cfg_mod.get(config, "default_pipeline", "default") or "default"
+    ).strip()
+    if not declared or declared == "default":
+        return "default"
+    if declared in {".", ".."} or not re.fullmatch(r"[\w.-]+", declared):
+        return "default"
+    return declared
+
+
+def list_pipeline_names(project_dir: str | Path) -> list[str]:
+    """Sorted names of the pipeline files in .agentic/pipelines/.
+
+    Only ``*.yaml`` files count — ``.bak`` backups (setup form, AUD06-04)
+    are not pipelines. Returns an empty list when the directory is absent.
+    """
+    pipelines_dir = paths.agentic_dir(Path(project_dir).resolve()) / "pipelines"
+    if not pipelines_dir.is_dir():
+        return []
+    return sorted(p.stem for p in pipelines_dir.glob("*.yaml") if p.is_file())
+
+
 def resolve_pipeline_file(
     project_dir: str | Path,
     pipeline_name: str | None = None,
@@ -305,6 +341,23 @@ def resolve_pipeline_file(
     candidate = pipelines_dir / f"{name}.yaml"
     if candidate.exists():
         return candidate
+
+    # RUN3 #1: an EXPLICIT name (awf_start(pipeline=...), awf start
+    # --pipeline, continue --pipeline) that does not exist is a user error.
+    # The old silent fallback to default.yaml ran the wrong pipeline — the
+    # user asked for 'audit-llm' and got 'default'. Now: a clear error with
+    # the list of what actually exists. A config-declared name
+    # (default_pipeline) keeps the legacy fallback (pinned by
+    # test_fallback_to_default_yaml).
+    if pipeline_name:
+        from .api._errors import AwfApiError
+
+        available = list_pipeline_names(project_dir)
+        raise AwfApiError(
+            f"Pipeline {name!r} not found: no {candidate.name} in "
+            f"{pipelines_dir}. "
+            f"Available pipelines: {', '.join(available) if available else '(none)'}."
+        )
 
     if name != "default":
         fallback = pipelines_dir / "default.yaml"

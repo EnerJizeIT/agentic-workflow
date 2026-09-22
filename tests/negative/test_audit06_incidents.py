@@ -70,6 +70,31 @@ class TestAddRoleSlugValidation:
         assert result.role_name == "myrole"
 
 
+class TestAddRoleSkillNameValidation:
+    """RUN3 #3: from_skill is public input — same slug rule as role name.
+
+    A "../../x" skill name must not read a file outside the skills roots;
+    validation happens before any filesystem access.
+    """
+
+    def test_dotdot_skill_name_rejected(self, awf_project):
+        with pytest.raises(AwfApiError):
+            api.add_role(awf_project, "x", from_skill="../../x")
+
+    def test_slash_skill_name_rejected(self, awf_project):
+        with pytest.raises(AwfApiError):
+            api.add_role(awf_project, "x", from_skill="a/b")
+
+    def test_absolute_skill_name_rejected(self, awf_project):
+        with pytest.raises(AwfApiError):
+            api.add_role(awf_project, "x", from_skill="/etc/cron.d/awf")
+
+    def test_empty_skill_name_without_role_name_rejected(self, awf_project):
+        """from_skill='' is the template path — empty name errors as before."""
+        with pytest.raises(AwfApiError, match="role_name is required"):
+            api.add_role(awf_project, "", from_skill="")
+
+
 class TestCorruptedPipelineDegrades:
     """AUD06-16: a broken pipelines/default.yaml must degrade, not traceback.
 

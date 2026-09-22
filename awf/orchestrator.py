@@ -154,6 +154,16 @@ def run_pipeline(args: Any) -> int:
     if agent_hard_timeout:
         os.environ["AWF_SUPERVISOR_TIMEOUT"] = str(agent_hard_timeout)
 
+    # RUN3 #6: the single-launch no_checkpoints parameter — same pattern as
+    # the timeout above: set at the process boundary, restored on EVERY exit
+    # path so a later in-process launch (same MCP server process) sees a
+    # clean environment. Background children already carry it in their env
+    # from spawn (start_in_background); the getattr default keeps callers
+    # without the attribute (old arg objects) working.
+    _prev_no_checkpoints = os.environ.get("AWF_NO_CHECKPOINTS")
+    if bool(getattr(args, "no_checkpoints", False)):
+        os.environ["AWF_NO_CHECKPOINTS"] = "1"
+
     try:
         while 0 <= stage_idx < total:
             stage = stages[stage_idx]
@@ -242,6 +252,11 @@ def run_pipeline(args: Any) -> int:
                 os.environ["AWF_SUPERVISOR_TIMEOUT"] = _prev_timeout
             else:
                 os.environ.pop("AWF_SUPERVISOR_TIMEOUT", None)
+        # RUN3 #6: same save/restore for the single-launch bypass.
+        if _prev_no_checkpoints is not None:
+            os.environ["AWF_NO_CHECKPOINTS"] = _prev_no_checkpoints
+        else:
+            os.environ.pop("AWF_NO_CHECKPOINTS", None)
         # AUD10-05: the dashboard server is a daemon of THIS process — once
         # we exit the port is dead, and a stale port file makes
         # awf_open_pipeline_dashboard open a dead URL (no file:// fallback,
