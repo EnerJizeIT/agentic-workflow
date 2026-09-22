@@ -153,6 +153,7 @@ Opens automatically in browser when pipeline starts:
 | **📊 События** | Pipeline events (stage starts, completions, signals) |
 
 - **TODO timeline** at top: `[✅ TODO-0001] ─ [✅ TODO-0002] ─ [🔄 TODO-0003]`
+- **Pipeline chip** next to the TODO: the pipeline the stage list actually draws (a run pinned on a non-default pipeline shows its own stages, not the default's)
 - **Worker status** in sidebar: PID, CPU, last log line
 - **Browser notification** when verify is ready
 - **Elapsed timer** from first agent start, freezes on verify

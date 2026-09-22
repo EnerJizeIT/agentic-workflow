@@ -92,4 +92,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # awf/api/wait_event.py (259 -> 426 — the done-detection helpers) and
 # tests/unit/test_wait_event.py (335 -> 524 — its test suite), same class
 # as the test_brief.py / test_todo_hygiene.py raises above.
+# RUN6-2026-09-22 (#2): baseline raised 3215 -> 3235 — the
+# actual-pipeline unit (TODO-0057) adds 20 TODO-bearing lines, one
+# removed: 16 test ids in tests/unit/test_dashboard.py
+# (TestActualPipeline: TODO-0010/TODO-0009/TODO-0001 queue/state
+# fixtures + the contract-block TODO-0010.md fixture), 3
+# docstring/comment references in awf/api/dashboard.py (the
+# _display_pipeline_name chain wording), and the pipeline-chip line in
+# USAGE EN/RU (1+1, the chip is described "next to the TODO"); the
+# removed line is the old "# TODO id + worker status" comment in
+# generate_state_dict.
+# Same class as above: test identifiers and unit-id references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

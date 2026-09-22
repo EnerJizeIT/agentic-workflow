@@ -54,10 +54,13 @@ def write_state(
         project_dir: awf project root.
         logs_dir: optional, for logging write failures.
         **fields: keys to set (stage_idx, stage_name, stage_kind, todo_id,
-            pipeline_pid, phase, goal, normalized, last_signal,
+            pipeline_pid, pipeline, phase, goal, normalized, last_signal,
             checkpoint_pending, checkpoint_form_url, checkpoint_port,
-            salvage_needed, salvage_stage, ...). Note: ``started_at`` lives
-            in run.yaml (run_state), NOT here.
+            salvage_needed, salvage_stage, ...). ``pipeline`` is the name
+            of the ACTUAL (resolved) pipeline the run was launched with —
+            the dashboard draws its stages, not the default pipeline's
+            (RUN6 #2). Note: ``started_at`` lives in run.yaml (run_state),
+            NOT here.
 
     Example::
 
