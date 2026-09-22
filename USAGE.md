@@ -59,6 +59,15 @@ Awf guides the supervisor through a deterministic flow:
 
 Every tool returns `next_action` — a hint for the next step. Even weak models follow it.
 
+**New session or lost context** → `awf brief` (MCP `awf_brief`, CLI `awf brief`,
+`--json` for the machine variant). One card assembled from the LIVE state, so it
+does not go stale: header (awf version, project, phase, date), what's next, state
+(run, active TODOs, blocked/salvage, last signal), the tool map by situation
+(launch / check / run / hygiene / forms / metrics / context), rituals, recovery
+recipes, what's new. Deterministic — the same state gives the same card (except
+the date line). An empty or new project gets the setup-chain hint instead of the
+working cycle.
+
 ## Verify: approve or reject
 
 | You say | What happens |
@@ -104,6 +113,19 @@ plus explicit «супервизор дополняет замысел» placeho
 network — a local index file only (default search: `<project>/`,
 `.agentic/context/`). An existing `--out` file is
 never overwritten without `--force`.
+
+**`awf feedback --type bug|feature --title "…" [--body "…"]
+[--severity low|medium|high] [--stdout]`** (MCP: `awf_feedback`) — the
+feedback contour: friction with awf becomes a report on the owner's
+desktop (config `feedback.dir`, default `~/Desktop`; the dir is created),
+file `awf-<bug|feature>-<YYYYMMDD>-<slug>.md` (same day + same slug →
+suffix `-2`, never an overwrite). The report assembles itself: facts
+(awf version, project, phase, run — position + no_checkpoints, current
+task, awf-repo git sha best-effort, date), the skeleton «Что пытался /
+Ожидал / Что получил / Почему мешает / Предложение» (`--body` fills
+«Что пытался»), and the tail of the newest project log (≤20 lines).
+`--stdout` prints the report without writing a file. The supervisor does
+not stay silent: silence does not fix the tool.
 
 ## Metrics
 
@@ -318,13 +340,14 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-42 tools: 37 `awf_*` workflow + 5 UI (forms).
+43 tools: 38 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
 |---|---|
 | `awf_init` | Create `.agentic/`, detect stack, return phase prompt |
 | `awf_status` | Active TODOs, pipeline state, stage info, suggestion |
+| `awf_brief` | RUN4 #1: onboarding/recovery card — live state, tool map, rituals, recovery recipes |
 | `awf_report` | Task statuses + git diff + latest test log |
 | `awf_reset` | Clear runtime data (tasks_only / full / orphans) |
 

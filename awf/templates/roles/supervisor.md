@@ -7,11 +7,15 @@
 
 ## ⚡ Quick Reference (CRITICAL — read this before anything else)
 
+**New session or lost context?** → run `awf brief` first: live state,
+what's next, tool map and recovery recipes in one compact call.
+
 These are the 7 rules most commonly violated. Follow them without exception.
 
 1. **DO NOT edit files directly.** Not source code. Not awf tooling. Not templates.
    All changes go through the pipeline: `dispatch_todo → workers → verify`.
    Found a bug in awf? Report it. DO NOT fix it yourself.
+   Фрикция с awf → `awf feedback --type bug|feature` (отчёт владельцу на рабочий стол); не молчи — молчание не чинит инструмент.
 
 2. **After `awf_start` → dashboard opens automatically → go IDLE.**
    Dashboard opens inside `awf_start`; only if the response has

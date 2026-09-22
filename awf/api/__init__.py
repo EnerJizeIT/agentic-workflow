@@ -23,6 +23,8 @@ Layout:
                      _extract_stage_info, _compute_expected_action
 - ``planning``     — apply_increment_plan (increment variant persistence)
 - ``pipelines``    — write_pipeline, list_pipelines (RUN3 #1 named pipelines)
+- ``feedback``     — feedback (RUN4 #2 feedback contour: report to owner)
+- ``brief``        — brief (RUN4 #1 supervisor onboarding/recovery card)
 
 Error convention: every function returns a Result dataclass (success)
 or raises AwfApiError with a human-readable message. Callers wrap in
@@ -30,6 +32,8 @@ try/except.
 """
 from __future__ import annotations
 
+from ..brief import BriefResult
+from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
 from ..verify_pack import VerifyPackResult, verify_pack
@@ -66,6 +70,7 @@ from ._results import (
 
 # Public functions — organized by submodule for clarity
 from ._stack import derive_project_name, detect_stack
+from .brief import brief
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
 from .hygiene import remove_todo, unblock_todo
@@ -128,6 +133,8 @@ __all__ = [
     "RemoveTodoResult",
     "WritePipelineResult",
     "ListPipelinesResult",
+    "FeedbackResult",
+    "BriefResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -174,6 +181,10 @@ __all__ = [
     # Named pipelines (RUN3 #1 — create/list, run by name via start/continue)
     "write_pipeline",
     "list_pipelines",
+    # Feedback contour (RUN4 #2 — supervisor friction → report to owner)
+    "feedback",
+    # Supervisor onboarding/recovery card (RUN4 #1 — live state + tool map)
+    "brief",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "TRANSPORT_CAP",
     "wait_for_event",

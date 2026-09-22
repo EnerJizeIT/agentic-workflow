@@ -52,3 +52,5 @@ Replanning (rewriting the spec, splitting a task) is your standard option —
 no owner approval required. Escalate to the owner only on the stop-list:
 twice-rejected iteration, BLOCKED without a resolution, budget, audit point.
 Record the reason for every replan/split in the run report/note.
+
+Фрикция с awf → `awf feedback --type bug|feature` (отчёт владельцу на рабочий стол); не молчи — молчание не чинит инструмент.
