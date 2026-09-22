@@ -38,6 +38,9 @@ class PipelineArgs:
     auto: bool = False
     timeout: int = 3600
     todo_id: str = ""
+    # RUN3 #6: single-launch checkpoint bypass — the orchestrator turns it
+    # into AWF_NO_CHECKPOINTS for the process duration (see run_pipeline).
+    no_checkpoints: bool = False
 
 
 def start_in_background(
@@ -48,12 +51,18 @@ def start_in_background(
     auto: bool,
     timeout: int,
     todo_id: str = "",
+    no_checkpoints: bool = False,
 ) -> tuple[int, Path, Path]:
     """Launch ``awf start`` detached, return ``(pid, log_file, pid_file)``.
 
-    Caller wraps the returned values into a :class:`awf.api.StartResult`.
+    Caller wraps the returned values into :class:`awf.api.StartResult`.
     Writes PID file atomically so :func:`check_pipeline_running` can detect
     the subprocess later.
+
+    ``no_checkpoints`` (RUN3 #6): the single-launch checkpoint bypass is
+    passed to the child as ``AWF_NO_CHECKPOINTS=1`` in its environment —
+    process-scoped by construction, it dies with the child and cannot leak
+    into the next launch.
     """
     logs_dir = paths.agentic_dir(project_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +87,12 @@ def start_in_background(
         child_argv.append("--auto")
     child_argv += ["--timeout", str(timeout)]
 
+    # RUN3 #6: single-launch checkpoint bypass — env for the child's
+    # duration only (never in argv: the child is a plain `awf start`).
+    child_env = {**os.environ, "AWF_BACKGROUND_CHILD": "1"}
+    if no_checkpoints:
+        child_env["AWF_NO_CHECKPOINTS"] = "1"
+
     # AUD14-06c: awf-start.out carries stage crash tracebacks (which embed
     # the worker prompt) — born 0600, not 0644 via open("ab").
     log_fd = os.open(log_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -92,7 +107,7 @@ def start_in_background(
             # DF6-5: signal child that it's a background process.
             # orchestrator's foreground+checkpoint check reads this env
             # to allow checkpoint (form opens in browser, stdout goes to file).
-            env={**os.environ, "AWF_BACKGROUND_CHILD": "1"},
+            env=child_env,
         )
 
     atomic_write_text(pid_file, f"{proc.pid}\n")

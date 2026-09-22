@@ -1391,5 +1391,308 @@ class TestNoCheckpointsGate:
         assert rc == 0
 
 
+# ── RUN3 #6: no_checkpoints on a single start/continue launch ───────────────
+
+
+class TestLaunchNoCheckpoints:
+    """RUN3 #6: the single-launch no_checkpoints parameter.
+
+    Transport: AWF_NO_CHECKPOINTS env for the pipeline process's duration
+    (background: child env at spawn; foreground: set around run_pipeline,
+    restored on every exit path). The gate combines it with the B4 run
+    flag (OR) — the config/env/auto bypasses stay in is_checkpoint_enabled.
+    """
+
+    def _make_project(self, tmp_path: Path) -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text("# TODO-0001\nstub", encoding="utf-8")
+        return tmp_path
+
+    @pytest.mark.parametrize("val", ["1", "true", "yes", "TRUE", " Yes "])
+    def test_helper_truthy(self, monkeypatch, val):
+        monkeypatch.setenv("AWF_NO_CHECKPOINTS", val)
+        assert plan_checkpoint.launch_no_checkpoints() is True
+
+    @pytest.mark.parametrize("val", ["", "0", "false", "no", "off", "2"])
+    def test_helper_falsy(self, monkeypatch, val):
+        monkeypatch.setenv("AWF_NO_CHECKPOINTS", val)
+        assert plan_checkpoint.launch_no_checkpoints() is False
+
+    def test_helper_unset(self, monkeypatch):
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+        assert plan_checkpoint.launch_no_checkpoints() is False
+
+    def test_launch_flag_skips_gate(self, tmp_path, monkeypatch):
+        """Env set, no run state → gate skips, the form never opens, and
+        the log carries the RUN3-6 line (dogfood evidence)."""
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
+
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.setenv("AWF_NO_CHECKPOINTS", "1")
+        project = self._make_project(tmp_path)
+
+        def _fail_if_called(*_a, **_kw):
+            raise AssertionError("run_plan_checkpoint must not open the form")
+
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint", _fail_if_called,
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+        log_text = (
+            project / ".agentic" / "logs" / "orchestrator.log"
+        ).read_text(encoding="utf-8")
+        assert "start no_checkpoints=true" in log_text
+
+    def test_without_flag_form_opens_as_before(self, tmp_path, monkeypatch):
+        """No env, no run state → the gate runs the form path (unchanged)."""
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
+
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+        project = self._make_project(tmp_path)
+        calls: list = []
+
+        def _fake_form(*_a, **_kw):
+            calls.append(1)
+            return "approve"
+
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint", _fake_form,
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+        assert calls, "form path must run without the launch flag"
+
+    def test_launch_flag_wins_over_inactive_run(self, tmp_path, monkeypatch):
+        """OR semantics: a FINISHED run's flag is ignored (B4 rule), but the
+        launch parameter still skips the gate."""
+        from awf import run_state
+        from awf.pipeline_engine import _run_plan_checkpoint_gate
+
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.setenv("AWF_NO_CHECKPOINTS", "true")
+        project = self._make_project(tmp_path)
+        run_state.write_run(
+            project, active=False, queue=["TODO-0001"], no_checkpoints=True,
+        )
+
+        def _fail_if_called(*_a, **_kw):
+            raise AssertionError("run_plan_checkpoint must not open the form")
+
+        monkeypatch.setattr(
+            "awf.plan_checkpoint.run_plan_checkpoint", _fail_if_called,
+        )
+
+        rc = _run_plan_checkpoint_gate(
+            current_todo="TODO-0001",
+            project_dir=project,
+            config={},
+            auto=False,
+            logs_dir=project / ".agentic" / "logs",
+        )
+        assert rc == 0
+
+
+class TestLaunchNoCheckpointsPlumbing:
+    """start/continue pass the param to the pipeline process as env, and the
+    flag does not survive the launch: parent env, state files and config
+    stay clean, the next launch carries nothing."""
+
+    def _setup_project(self, tmp_path: Path) -> Path:
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (proj / ".agentic").mkdir()
+        (proj / ".agentic" / "config.yaml").write_text(
+            "project:\n  name: test\n", encoding="utf-8"
+        )
+        inbox = proj / ".agentic" / "inbox"
+        inbox.mkdir()
+        (inbox / "TODO-0001.ready").touch()
+        (inbox / "TODO-0001.md").write_text("# Task", encoding="utf-8")
+        return proj
+
+    def _capture_popen(self, monkeypatch):
+        """Fake Popen at the background launcher — captures child argv/env.
+
+        Also mocks the child liveness check (DF5-10) so tests don't sleep
+        on a fake PID.
+        """
+        captured: dict = {}
+
+        class _CapturingPopen:
+            pid = 2**31  # outside the OS range — never alive (probe_alive)
+
+            def __init__(self, args, **kwargs):
+                captured["argv"] = list(args)
+                captured["env"] = dict(kwargs.get("env") or {})
+
+        from awf.api import _background
+        monkeypatch.setattr(_background.subprocess, "Popen", _CapturingPopen)
+        monkeypatch.setattr(
+            "awf.api.pipeline._verify_child_alive",
+            lambda pid, log_file=None: True,
+        )
+        return captured
+
+    def test_start_background_sets_child_env(self, tmp_path, monkeypatch):
+        """awf_start(no_checkpoints=True, background) → child env has the
+        flag; the parent process env is untouched."""
+        import os
+
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+
+        result = api.start_pipeline(proj, background=True, no_checkpoints=True)
+        assert result.run_mode == "background"
+        assert captured["env"].get("AWF_NO_CHECKPOINTS") == "1"
+        assert captured["env"].get("AWF_BACKGROUND_CHILD") == "1"
+        assert "AWF_NO_CHECKPOINTS" not in os.environ
+
+    def test_start_background_second_launch_not_sticky(self, tmp_path, monkeypatch):
+        """The flag dies with the launch: the NEXT background start (without
+        the param) must not carry it."""
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+
+        r1 = api.start_pipeline(proj, background=True, no_checkpoints=True)
+        env1 = dict(captured["env"])
+        assert r1.run_mode == "background"
+        assert env1.get("AWF_NO_CHECKPOINTS") == "1"
+
+        r2 = api.start_pipeline(proj, background=True)
+        env2 = dict(captured["env"])
+        assert r2.run_mode == "background"
+        assert "AWF_NO_CHECKPOINTS" not in env2
+
+    def test_continue_background_sets_child_env(self, tmp_path, monkeypatch):
+        """awf_continue(no_checkpoints=True, background) → child env has it."""
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+
+        result = api.continue_pipeline(proj, background=True, no_checkpoints=True)
+        assert result.run_mode == "background"
+        assert captured["env"].get("AWF_NO_CHECKPOINTS") == "1"
+
+    def test_continue_background_without_flag_clean(self, tmp_path, monkeypatch):
+        """continue without the param → child env has no AWF_NO_CHECKPOINTS."""
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        captured = self._capture_popen(monkeypatch)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+
+        result = api.continue_pipeline(proj, background=True)
+        assert result.run_mode == "background"
+        assert "AWF_NO_CHECKPOINTS" not in captured["env"]
+
+    def test_start_foreground_env_set_during_restored_after(self, tmp_path, monkeypatch):
+        """Foreground: the env is visible DURING the real run_pipeline (the
+        gate reads it) and restored on the clean exit path — the next
+        in-process launch starts from a clean environment. The supervisor
+        stage is short-circuited (no opencode subprocess in unit tests)."""
+        import os
+
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        pipes = proj / ".agentic" / "pipelines"
+        pipes.mkdir()
+        (pipes / "default.yaml").write_text(
+            "stages:\n"
+            "  - name: plan\n    role: supervisor\n    kind: plan\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+        monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+
+        seen: dict = {}
+
+        def _fake_supervisor_stage(
+            stage, current_todo, auto, project_dir, config, logs_dir,
+            pipeline_name=None,
+        ):
+            seen["env"] = os.environ.get("AWF_NO_CHECKPOINTS")
+            return current_todo, 1, 0
+
+        monkeypatch.setattr(
+            "awf.orchestrator.execute_supervisor_stage", _fake_supervisor_stage,
+        )
+
+        result = api.start_pipeline(proj, background=False, no_checkpoints=True)
+        assert result.run_mode == "foreground"
+        assert result.exit_code == 0
+        assert seen["env"] == "1"
+        assert "AWF_NO_CHECKPOINTS" not in os.environ
+
+    def test_start_foreground_without_flag_refused_as_before(self, tmp_path, monkeypatch):
+        """Guard unchanged (DF6-5): foreground + enabled checkpoint + no
+        param → the refusal, run_pipeline never reached."""
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+        monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+
+        def _must_not_run(_args):
+            raise AssertionError("refusal must happen before run_pipeline")
+
+        monkeypatch.setattr("awf.orchestrator.run_pipeline", _must_not_run)
+
+        result = api.start_pipeline(proj, background=False)
+        assert result.run_mode == "noop"
+        assert result.exit_code == 1
+        assert "checkpoint" in result.message.lower()
+
+    def test_launch_flag_not_written_to_state_or_config(self, tmp_path, monkeypatch):
+        """Process-scoped: config.yaml and every state file must not gain a
+        no_checkpoints key, and a single launch creates no run state."""
+        from awf import api
+
+        proj = self._setup_project(tmp_path)
+        self._capture_popen(monkeypatch)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+
+        config_before = (proj / ".agentic" / "config.yaml").read_text(encoding="utf-8")
+        api.start_pipeline(proj, background=True, no_checkpoints=True)
+
+        assert (proj / ".agentic" / "config.yaml").read_text(encoding="utf-8") == config_before
+        state_dir = proj / ".agentic" / "state"
+        if state_dir.is_dir():
+            for f in state_dir.glob("*"):
+                if f.is_file():
+                    text = f.read_text(encoding="utf-8", errors="replace")
+                    assert "no_checkpoints" not in text, f.name
+        assert not (proj / ".agentic" / "state" / "run.yaml").is_file()
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 # _free_port — imported from the root conftest (AUD12-09).

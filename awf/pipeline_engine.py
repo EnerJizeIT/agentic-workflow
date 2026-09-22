@@ -442,16 +442,36 @@ def _run_plan_checkpoint_gate(
       - ``1`` — checkpoint rejected (or other failure), pipeline must stop.
     """
     from . import run_state as _run_state
-    from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
+    from .plan_checkpoint import (
+        is_checkpoint_enabled,
+        launch_no_checkpoints,
+        run_plan_checkpoint,
+    )
 
+    # The effective skip flag is computed ONCE here — the single place that
+    # combines the two launch-scoped sources (config/env/auto stay inside
+    # is_checkpoint_enabled):
+    #   RUN3 #6: the no_checkpoints start/continue parameter — env for the
+    #   duration of THIS pipeline process, dies with it.
+    launch_flag = launch_no_checkpoints()
     # B4: an ACTIVE run started with no_checkpoints=true does not expect the
-    # owner at every TODO — the gate is skipped. The flag is read from the
-    # run state (a finished run must not skip checkpoints of a later manual
-    # start).
+    # owner at every TODO. The flag is read from the run state (a finished
+    # run must not skip checkpoints of a later manual start).
     run = _run_state.read_run(project_dir)
-    no_checkpoints = bool(run and run.get("active") and run.get("no_checkpoints"))
+    run_flag = bool(run and run.get("active") and run.get("no_checkpoints"))
+    no_checkpoints = launch_flag or run_flag
     if not is_checkpoint_enabled(config, auto, no_checkpoints=no_checkpoints):
-        if no_checkpoints:
+        if launch_flag:
+            print(
+                "BD-36: checkpoint skipped — start passed no_checkpoints=true "
+                "(single launch)"
+            )
+            _log(
+                logs_dir,
+                f"RUN3-6: checkpoint skipped for {current_todo} — "
+                "start no_checkpoints=true",
+            )
+        elif run_flag:
             print("BD-36: checkpoint skipped — run started with no_checkpoints=true (B4)")
             _log(
                 logs_dir,

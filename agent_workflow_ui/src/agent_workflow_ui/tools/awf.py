@@ -136,6 +136,7 @@ async def awf_start(
     auto: bool = False,
     timeout: int = 3600,
     todo_id: str = "",
+    no_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Start the pipeline from the beginning.
 
@@ -162,6 +163,10 @@ async def awf_start(
         todo_id: Pin the pipeline to a specific TODO (e.g. "TODO-0015").
             Without it the engine picks the "newest active" TODO — wrong
             pick when several TODOs are active (AUD08-02).
+        no_checkpoints: RUN3 #6 — when True, the BD-36 plan checkpoint form
+            is skipped for THIS launch only (single start, not a run).
+            Process-scoped: not written to config/state, the next launch
+            behaves as before.
 
     Returns:
         Dict with: run_mode ("background"|"foreground"|"noop"),
@@ -178,6 +183,7 @@ async def awf_start(
         timeout=timeout,
         # AUD08-02: signature parity with api.start_pipeline / CLI --todo.
         todo_id=todo_id,
+        no_checkpoints=no_checkpoints,
     )
     # SMO: deterministic dashboard opening — HTTP server started by
     # orchestrator. AUD08-05: one shared implementation, run in a worker
@@ -220,6 +226,7 @@ async def awf_continue(
     timeout: int = 3600,
     ack: str = "",
     background: bool = True,
+    no_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -239,6 +246,10 @@ async def awf_continue(
             default). Set ``background=False`` to block the call until the
             pipeline finishes (AUD08-02 — foreground continue was previously
             impossible from MCP).
+        no_checkpoints: RUN3 #6 — when True, the BD-36 plan checkpoint form
+            is skipped for THIS launch only (single continue, not a run).
+            Process-scoped: not written to config/state, the next launch
+            behaves as before.
 
     Returns:
         Same shape as :func:`awf_start`.
@@ -253,6 +264,7 @@ async def awf_continue(
         ack=ack,
         # AUD08-02: signature parity with api.continue_pipeline.
         background=background,
+        no_checkpoints=no_checkpoints,
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
         # AUD08-05: shared dashboard-open in a worker thread (no loop block).

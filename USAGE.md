@@ -338,6 +338,12 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |
 | `awf_pipelines` | List pipelines in `.agentic/pipelines/` + the active one |
 
+**Single-launch checkpoint bypass (RUN3 #6).** `awf_start` / `awf_continue`
+accept `no_checkpoints=true` — the BD-36 plan form is skipped for that one
+launch only. It is process-scoped: not written to config or state, the next
+launch asks again (the run-level `awf_run_start(no_checkpoints=...)` is
+unchanged).
+
 ### TODO
 | Tool | What it does |
 |---|---|
