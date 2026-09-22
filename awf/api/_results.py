@@ -427,6 +427,18 @@ class RetireTodoResult:
 
 
 @dataclass
+class UpdateTodoResult:
+    """Result of :func:`awf.api.update_todo` (RUN6 #4 reword, keep the number)."""
+
+    todo_id: str
+    backup: str  # project-relative context/TODO-<id>.md.bak-<ts>
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class WritePipelineResult:
     """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
 
@@ -489,4 +501,5 @@ __all__ = [
     "UnblockResult",
     "RemoveTodoResult",
     "RetireTodoResult",
+    "UpdateTodoResult",
 ]

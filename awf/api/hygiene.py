@@ -15,6 +15,9 @@ operations that leave a trace:
   ``.ready`` signal, so the TODO stays "active" forever) — the files move
   to ``done/<id>/`` with a ``RETIRED-<ts>.md`` note; no DONE signal is
   written, and ``awf restore`` still works.
+- :func:`update_todo` rewords a not-started TODO in place, keeping the
+  number, ``.ready`` and the baseline (previous content backed up to
+  ``context/TODO-<id>.md.bak-<ts>``); started TODOs are refused.
 - :func:`clear_stale_closures` is the shared helper — ``dispatch_todo``
   calls it automatically on re-dispatch of the same number.
 """
@@ -32,7 +35,7 @@ from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import require_agentic
-from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult
+from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult, UpdateTodoResult
 
 _ID_RE = re.compile(r"^TODO-\d{4,}$")
 
@@ -369,6 +372,102 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
     )
 
 
+def update_todo(
+    project_dir: Path, todo_id: str, content: str, reason: str = ""
+) -> UpdateTodoResult:
+    """Reword a not-started TODO, keeping the number (RUN6 #4).
+
+    Replaces the content of ``inbox/TODO-<id>.md`` in place: the number,
+    the dispatch ``.ready`` signal and the baseline snapshot stay
+    untouched (the baseline pins a git sha, not the text). The previous
+    content is backed up byte-identical to
+    ``context/TODO-<id>.md.bak-<timestamp>`` (unique name, never
+    overwritten) and the operation is logged to the orchestrator log
+    (with ``reason``, when given).
+
+    Refusals (clear errors, nothing written):
+    - no ``TODO-<id>.md`` in the inbox;
+    - empty ``content``;
+    - the TODO already started — any outbox signal (``PROGRESS-*``,
+      ``BLOCKED-*``, ``DONE-*``, ``REVIEW-*``, canonical or legacy), an
+      inbox ``ACK-``/``APPROVE-`` closure, or a non-empty ``PROGRESS`` —
+      the unit is in flight: fix it via REVIEW/replan, or retire it and
+      re-dispatch;
+    - a live pipeline on this id (the engine owns the file right now —
+      a pipeline on another id does not touch this TODO's files).
+    """
+    _validate_id(todo_id)
+    content = content or ""
+    if not content.strip():
+        raise AwfApiError("content is empty — nothing to update with")
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    md = paths.inbox(project_dir) / f"{todo_id}.md"
+    if not md.is_file():
+        raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to update.")
+
+    # Live pipeline on THIS id: the engine owns the files right now.
+    # A pipeline on another id does not touch this TODO's files — allowed.
+    running, pid, _tail = check_pipeline_running(project_dir)
+    if running:
+        state = read_state(project_dir)
+        if isinstance(state, dict) and state.get("todo_id") == todo_id:
+            raise AwfApiError(
+                f"a live pipeline is running on {todo_id} (pid {pid}) — "
+                "wait for it to finish or awf kill first"
+            )
+
+    outbox = paths.outbox(project_dir)
+    short = short_id(todo_id)
+    ids = (todo_id, short) if short != todo_id else (todo_id,)
+    outbox_signals = [
+        p
+        for tid in ids
+        for p in sorted(outbox.glob(f"*-{tid}.*"))
+        if p.is_file()
+    ]
+    inbox_signals = [
+        p
+        for tid in ids
+        for prefix in ("ACK-", "APPROVE-")
+        if (p := paths.inbox(project_dir) / f"{prefix}{tid}.ready").is_file()
+    ]
+    if outbox_signals or inbox_signals or todos.has_progress(outbox, todo_id):
+        names = ", ".join(p.name for p in outbox_signals + inbox_signals) or "PROGRESS"
+        raise AwfApiError(
+            f"{todo_id} has signals: {names} — it is in flight. Fix the unit "
+            "via REVIEW/replan, or retire it (awf todo-retire) and "
+            "re-dispatch."
+        )
+
+    old_content = md.read_text(encoding="utf-8")
+    context_dir = paths.context_dir(project_dir)
+    context_dir.mkdir(parents=True, exist_ok=True)
+    ts = _timestamp()
+    bak_name = _unique_name(context_dir, f"{todo_id}.md.bak-{ts}")
+    backup = context_dir / bak_name
+    backup.write_text(old_content, encoding="utf-8")
+    backup_rel = backup.relative_to(project_dir).as_posix()
+
+    md.write_text(content, encoding="utf-8")
+
+    why = f", reason: {reason.strip()}" if reason.strip() else ""
+    _log(
+        paths.logs_dir(project_dir),
+        f"todo-update: {todo_id} — content replaced ({len(content)} chars, "
+        f"backup: {backup_rel}{why})",
+    )
+    return UpdateTodoResult(
+        todo_id=todo_id,
+        backup=backup_rel,
+        message=(
+            f"{todo_id} updated: content replaced, number/.ready/baseline "
+            f"kept (backup: {backup_rel})."
+        ),
+    )
+
+
 __all__ = [
     "closure_files",
     "clear_stale_closures",
@@ -376,4 +475,5 @@ __all__ = [
     "remove_todo",
     "retire_todo",
     "unblock_todo",
+    "update_todo",
 ]

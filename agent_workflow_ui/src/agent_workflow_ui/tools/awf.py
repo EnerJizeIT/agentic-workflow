@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from awf import api
+from awf import api, git_utils
 
 log = logging.getLogger(__name__)
 
@@ -506,6 +506,57 @@ async def awf_todo_retire(
         todo_id=todo_id,
         reason=reason,
     )
+
+
+async def awf_todo_update(
+    todo_id: str,
+    content: str = "",
+    project_dir: str | None = None,
+    reason: str = "",
+) -> dict[str, Any]:
+    """Reword a not-started TODO, keeping the number (RUN6 #4).
+
+    Replaces the content of ``inbox/TODO-<id>.md`` in place — the number,
+    the dispatch ``.ready`` and the baseline stay untouched (the baseline
+    pins a git sha, not the text). The previous content is backed up to
+    ``context/TODO-<id>.md.bak-<timestamp>``. Refusals: no TODO file in
+    the inbox; empty ``content``; a started TODO (PROGRESS/signals/
+    closure — fix the unit via REVIEW/replan, or retire + re-dispatch);
+    a live pipeline on this id.
+    """
+    return await _exec(
+        api.update_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        content=content,
+        reason=reason,
+    )
+
+
+async def awf_tree_sha(project_dir: str | None = None) -> dict[str, Any]:
+    """Working-tree fingerprint for ``awf_approve(verified_sha=...)``.
+
+    Same semantics as the CLI ``awf tree-sha`` (``awf.git_utils.
+    tree_fingerprint``): HEAD + every tracked change + untracked files;
+    same tree → same sha, at any time. Non-repo or a repo without
+    commits → ``{status: "error", error: ...}`` (the CLI's message).
+    """
+    try:
+        sha = await asyncio.to_thread(
+            git_utils.tree_fingerprint, _resolve_project_dir(project_dir)
+        )
+    except RuntimeError as e:
+        msg = str(e).splitlines()[0] if str(e) else "git failure"
+        return {
+            "status": "error",
+            "error": (
+                f"cannot compute the tree fingerprint: {msg}. Is the "
+                "project a git repo with at least one commit?"
+            ),
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return {"status": "ok", "sha": sha}
 
 
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:

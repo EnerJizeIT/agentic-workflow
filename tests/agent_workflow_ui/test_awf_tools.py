@@ -1622,3 +1622,133 @@ class TestCurrentStepLiveProject:
         assert result["goal"] is None
         assert set(result) == {"status", "phase", "prompt", "goal"}
         assert "setup chain" not in result["prompt"]
+
+
+class TestAwfTodoUpdate:
+    """RUN6 #4: awf_todo_update — MCP parity with `awf todo-update` (CLI)."""
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_update(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "update_todo", spy_update)
+
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="new text",
+                project_dir="/tmp",
+                reason="scope cut",
+            )
+        )
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls, "api.update_todo was not called"
+        assert calls[0]["todo_id"] == "TODO-0001"
+        assert calls[0]["content"] == "new text"
+        assert calls[0]["reason"] == "scope cut"
+
+    def test_update_keeps_number_and_ready(self, mcp_project):
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="# Task v2",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["todo_id"] == "TODO-0001"
+        inbox = mcp_project / ".agentic" / "inbox"
+        assert (inbox / "TODO-0001.md").read_text() == "# Task v2"
+        assert (inbox / "TODO-0001.ready").is_file()
+        backup = mcp_project / result["backup"]
+        assert backup.is_file()
+        assert backup.read_text() == "# Task"
+
+    def test_started_todo_returns_error_dict(self, mcp_project):
+        outbox = mcp_project / ".agentic" / "outbox"
+        outbox.mkdir(exist_ok=True)
+        (outbox / "PROGRESS-TODO-0001.md").write_text("half done")
+
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="v2",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "in flight" in result["error"]
+        assert (
+            mcp_project / ".agentic" / "inbox" / "TODO-0001.md"
+        ).read_text() == "# Task"
+
+    def test_missing_todo_returns_error_dict(self, mcp_project):
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0099",
+                content="v2",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "not found" in result["error"]
+
+    def test_empty_content_returns_error_dict(self, mcp_project):
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                content="   ",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "error"
+        assert "content is empty" in result["error"]
+
+
+class TestAwfTreeSha:
+    """RUN6 #4: awf_tree_sha — MCP parity with `awf tree-sha` (CLI)."""
+
+    def test_returns_git_utils_fingerprint(self, git_project):
+        from awf import git_utils
+
+        result = run(awf.awf_tree_sha(project_dir=str(git_project)))
+
+        assert result["status"] == "ok"
+        assert result["sha"] == git_utils.tree_fingerprint(git_project)
+        assert len(result["sha"]) == 64
+
+    def test_stable_and_changes_after_edit(self, git_project):
+        first = run(awf.awf_tree_sha(project_dir=str(git_project)))
+        second = run(awf.awf_tree_sha(project_dir=str(git_project)))
+        assert first["sha"] == second["sha"]
+
+        (git_project / "README.md").write_text("tampered\n")
+        third = run(awf.awf_tree_sha(project_dir=str(git_project)))
+        assert third["sha"] != first["sha"]
+
+    def test_non_repo_returns_error_dict(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+
+        result = run(awf.awf_tree_sha(project_dir=str(plain)))
+
+        assert result["status"] == "error"
+        assert "git repo" in result["error"]
+
+    def test_repo_without_commits_returns_error_dict(self, tmp_path):
+        repo = tmp_path / "nocommits"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+        result = run(awf.awf_tree_sha(project_dir=str(repo)))
+
+        assert result["status"] == "error"
+        assert "fingerprint" in result["error"]

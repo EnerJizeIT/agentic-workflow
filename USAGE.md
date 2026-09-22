@@ -86,10 +86,11 @@ pipeline gates:
 
 **`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — «что
 проверили = что коммитим». At the verify stage, BEFORE the checks, run
-`awf tree-sha` and keep the working-tree hash (HEAD + all tracked changes
-+ untracked files; same tree → same hash, at any time). After the checks,
-pass it to approve — `awf approve <todo-id> --verified-sha <hash>` (MCP:
-`awf_approve(verified_sha=...)`). If the tree moved meanwhile (new commit,
+`awf tree-sha` (MCP: `awf_tree_sha`) and keep the working-tree hash (HEAD
++ all tracked changes + untracked files; same tree → same hash, at any
+time). After the checks, pass it to approve — `awf approve <todo-id>
+--verified-sha <hash>` (MCP: `awf_approve(verified_sha=...)`). If the tree
+moved meanwhile (new commit,
 edited file, new file), approve refuses with «the tree changed after
 verification». The hash is stored to
 `.agentic/context/VERIFIED-<todo-id>.sha`, and the run report lists both
@@ -378,6 +379,7 @@ unchanged).
 | `awf_unblock` | Clear stale BLOCKED/ACK closures so a re-issued TODO is visible again |
 | `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Retire a rejected/abandoned TODO that stays "active" (RETIRED note in `done/<id>/`) |
+| `awf_todo_update` | Reword a not-started TODO, keeping the number (backup in `context/`, `.ready` + baseline untouched) |
 
 **`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
 `BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
@@ -402,6 +404,17 @@ without `.ready`, `REVIEW-*`) to `done/<id>/` and writes
 Refusals: no TODO file in inbox or `done/`; already archived (`done/<id>/TODO.md`);
 a live pipeline on this id (`awf kill` or wait first); empty `--reason` (required).
 `awf restore` still brings a retired TODO back.
+
+**`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |
+--content "…"`). Reword a TODO that has NOT started: the content of
+`inbox/TODO-<id>.md` is replaced in place while the number, the dispatch
+`.ready` and the baseline stay untouched (the baseline pins a git sha, not
+the text). The previous content is backed up byte-identical to
+`context/TODO-<id>.md.bak-<timestamp>`; `--reason` goes to the orchestrator
+log. Refusals: no TODO file in the inbox; empty content; a started TODO
+(any outbox signal, an inbox `ACK-`/`APPROVE-`, or a non-empty `PROGRESS` —
+the unit is in flight: fix it via REVIEW/replan, or retire it and
+re-dispatch); a live pipeline on this id.
 
 ### Verify
 | Tool | What it does |

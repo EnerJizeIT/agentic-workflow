@@ -525,3 +525,167 @@ class TestRetireTodo:
     def test_invalid_id_rejected(self, project):
         with pytest.raises(api.AwfApiError, match="invalid todo_id"):
             api.retire_todo(project, "garbage", "reason")
+
+
+# ─── D: update_todo (RUN6 #4 — reword a not-started TODO, keep the number)
+#
+
+class TestUpdateTodo:
+    """``update_todo`` — reword the content in place; the number, the
+    dispatch ``.ready`` and the baseline survive, the old content is
+    backed up to ``context/TODO-<id>.md.bak-<ts>``.
+    """
+
+    def _write_baseline(self, project: Path, todo_id: str) -> None:
+        (paths.context_dir(project) / f"BASELINE-{todo_id}.sha").write_text("a" * 40)
+
+    def test_update_keeps_number_ready_baseline(self, project):
+        _arm(project, "TODO-0001")
+        self._write_baseline(project, "TODO-0001")
+        old = (paths.inbox(project) / "TODO-0001.md").read_text()
+
+        result = api.update_todo(project, "TODO-0001", "new text")
+
+        inbox = paths.inbox(project)
+        # number + dispatch shape + baseline untouched
+        assert (inbox / "TODO-0001.md").is_file()
+        assert (inbox / "TODO-0001.md").read_text() == "new text"
+        assert (inbox / "TODO-0001.ready").is_file()
+        assert (paths.context_dir(project) / "BASELINE-TODO-0001.sha").read_text() == "a" * 40
+        assert result.todo_id == "TODO-0001"
+        # TODO is still active under the same number
+        assert "TODO-0001" in todos.list_active_todos(
+            inbox, paths.outbox(project)
+        )
+
+    def test_backup_holds_old_content(self, project):
+        _arm(project, "TODO-0001")
+        old = (paths.inbox(project) / "TODO-0001.md").read_text()
+
+        result = api.update_todo(project, "TODO-0001", "v2")
+
+        backup = project / result.backup
+        assert backup.is_file()
+        assert backup.parent == paths.context_dir(project)
+        assert backup.name.startswith("TODO-0001.md.bak-")
+        assert backup.read_text() == old
+
+    def test_second_update_keeps_both_backups(self, project):
+        _arm(project, "TODO-0001")
+        first = api.update_todo(project, "TODO-0001", "v2")
+        second = api.update_todo(project, "TODO-0001", "v3")
+
+        backups = sorted(paths.context_dir(project).glob("TODO-0001.md.bak-*"))
+        assert len(backups) == 2
+        assert {b.read_text() for b in backups} == {"task body", "v2"}
+        assert first.backup != second.backup
+        assert (paths.inbox(project) / "TODO-0001.md").read_text() == "v3"
+
+    def test_update_without_ready_is_allowed(self, project):
+        """A never-dispatched TODO (.md only) is not started — it may be
+        reworded; there is no .ready to preserve."""
+        (paths.inbox(project) / "TODO-0007.md").write_text("draft")
+
+        result = api.update_todo(project, "TODO-0007", "draft v2")
+
+        assert result.todo_id == "TODO-0007"
+        assert (paths.inbox(project) / "TODO-0007.md").read_text() == "draft v2"
+        assert not (paths.inbox(project) / "TODO-0007.ready").exists()
+
+    def test_reason_goes_to_log(self, project):
+        _arm(project, "TODO-0001")
+        api.update_todo(project, "TODO-0001", "v2", reason="scope cut at plan")
+
+        log = paths.logs_dir(project) / "orchestrator.log"
+        text = log.read_text()
+        assert "todo-update: TODO-0001" in text
+        assert "scope cut at plan" in text
+
+    def test_refuses_started_with_progress(self, project):
+        _arm(project, "TODO-0002")
+        (paths.outbox(project) / "PROGRESS-TODO-0002.md").write_text("half done")
+
+        with pytest.raises(api.AwfApiError, match="in flight"):
+            api.update_todo(project, "TODO-0002", "v2")
+
+        # untouched, no backup
+        assert (paths.inbox(project) / "TODO-0002.md").read_text() == "task body"
+        assert not list(paths.context_dir(project).glob("TODO-0002.md.bak-*"))
+
+    def test_refuses_started_with_outbox_signal(self, project):
+        _arm(project, "TODO-0002")
+        (paths.outbox(project) / "BLOCKED-TODO-0002.ready").touch()
+
+        with pytest.raises(api.AwfApiError, match="in flight"):
+            api.update_todo(project, "TODO-0002", "v2")
+
+    def test_refuses_started_with_done_closure(self, project):
+        _arm(project, "TODO-0002")
+        (paths.outbox(project) / "DONE-TODO-0002.ready").touch()
+
+        with pytest.raises(api.AwfApiError, match="in flight"):
+            api.update_todo(project, "TODO-0002", "v2")
+
+    def test_refuses_started_with_inbox_signal(self, project):
+        _arm(project, "TODO-0002")
+        (paths.inbox(project) / "APPROVE-TODO-0002.ready").touch()
+
+        with pytest.raises(api.AwfApiError, match="in flight"):
+            api.update_todo(project, "TODO-0002", "v2")
+
+    def test_does_not_touch_longer_id(self, project):
+        """TODO-0001 vs TODO-00010: rewording 0001 must not see 00010's
+        outbox signals."""
+        _arm(project, "TODO-0001")
+        (paths.inbox(project) / "TODO-00010.md").write_text("long id")
+        (paths.outbox(project) / "DONE-TODO-00010.ready").touch()
+
+        result = api.update_todo(project, "TODO-0001", "v2")
+
+        assert result.todo_id == "TODO-0001"
+        assert (paths.inbox(project) / "TODO-00010.md").is_file()
+
+    def test_missing_todo_is_error(self, project):
+        with pytest.raises(api.AwfApiError, match="not found"):
+            api.update_todo(project, "TODO-0099", "v2")
+
+    def test_empty_content_refused(self, project):
+        _arm(project, "TODO-0001")
+        for bad in ("", "   \n"):
+            with pytest.raises(api.AwfApiError, match="content is empty"):
+                api.update_todo(project, "TODO-0001", bad)
+        assert (paths.inbox(project) / "TODO-0001.md").read_text() == "task body"
+        assert not list(paths.context_dir(project).glob("TODO-0001.md.bak-*"))
+
+    def test_invalid_id_rejected(self, project):
+        with pytest.raises(api.AwfApiError, match="invalid todo_id"):
+            api.update_todo(project, "garbage", "v2")
+
+    def test_live_pipeline_on_this_id_refused(self, project, monkeypatch):
+        _arm(project, "TODO-0001")
+        from awf import pipeline_state
+
+        pipeline_state.write_state(project, todo_id="TODO-0001", pipeline_pid=1)
+        monkeypatch.setattr(
+            hygiene, "check_pipeline_running", lambda *a, **k: (True, 1234, "")
+        )
+
+        with pytest.raises(api.AwfApiError, match="live pipeline"):
+            api.update_todo(project, "TODO-0001", "v2")
+
+        assert (paths.inbox(project) / "TODO-0001.md").read_text() == "task body"
+        assert not list(paths.context_dir(project).glob("TODO-0001.md.bak-*"))
+
+    def test_live_pipeline_on_other_id_allowed(self, project, monkeypatch):
+        _arm(project, "TODO-0001")
+        from awf import pipeline_state
+
+        pipeline_state.write_state(project, todo_id="TODO-0099", pipeline_pid=1)
+        monkeypatch.setattr(
+            hygiene, "check_pipeline_running", lambda *a, **k: (True, 1234, "")
+        )
+
+        result = api.update_todo(project, "TODO-0001", "v2")
+
+        assert result.todo_id == "TODO-0001"
+        assert (paths.inbox(project) / "TODO-0001.md").read_text() == "v2"

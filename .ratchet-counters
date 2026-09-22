@@ -111,4 +111,19 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # in awf/api/lifecycle.py (the neutral run-queue warning names "each TODO is
 # pinned by awf_run_next"). Same class as above: test identifiers and
 # message wording, not debt.
+# RUN6-2026-09-22 (#4): baseline raised 3242 -> 3377, files_over_400
+# raised 51 -> 52 — the todo-update + tree-sha-MCP unit (TODO-0059) adds
+# 135 TODO-bearing lines: TODO-0001/0002/0007/0010/0035/0099 test ids in
+# tests/unit/test_todo_hygiene.py (TestUpdateTodo, 67),
+# tests/agent_workflow_ui/test_awf_tools.py (TestAwfTodoUpdate +
+# TestAwfTreeSha, 11), tests/integration/test_cli_entrypoints.py
+# (TestTodoUpdateEntrypoint, 21); unit-id references in awf/api/hygiene.py
+# (update_todo docstring, 9), awf/api/_results.py (1),
+# awf/cmd_todo_update.py (new module, 4), awf/cli.py (help, 3),
+# tools/awf.py (awf_todo_update/awf_tree_sha docstrings, 4),
+# server.py (registration comment, 1), tool_map.yaml (1), USAGE EN/RU
+# (6+6), test_server_smoke.py (expected-tools comment, 1). Same class as
+# above: test identifiers and unit-id references, not debt. The +1 file
+# over 400 is awf/api/hygiene.py (379 -> 479 — the update_todo helper),
+# same class as the wait_event.py / brief.py raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

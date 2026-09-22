@@ -84,10 +84,10 @@ Awf ведёт supervisor по детерминированному flow:
 Три CLI-инструмента для ритуала проверки — ими пользуется супервизор, это не гейты пайплайна:
 
 **`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — «что проверили = что коммитим». На стадии
-проверки, ДО своих проб, снимите отпечаток дерева (`awf tree-sha`); после проверок передайте его в approve
-(MCP: `awf_approve(verified_sha=...)`). Если дерево изменилось (новый коммит, правка, новый файл) — approve
-откажет: «the tree changed after verification». Отпечаток сохраняется в `.agentic/context/VERIFIED-<todo-id>.sha`.
-Без `--verified-sha` поведение прежнее.
+проверки, ДО своих проб, снимите отпечаток дерева (`awf tree-sha`, MCP: `awf_tree_sha`); после проверок
+передайте его в approve (MCP: `awf_approve(verified_sha=...)`). Если дерево изменилось (новый коммит,
+правка, новый файл) — approve откажет: «the tree changed after verification». Отпечаток сохраняется в
+`.agentic/context/VERIFIED-<todo-id>.sha`. Без `--verified-sha` поведение прежнее.
 
 **`awf mutations [--list]`** — мутационный smoke по `scripts/mutations.txt` на покоящемся дереве (грязное
 `git status` → отказ): убитые / выжившие / таймауты с хвостами логов, файлы всегда восстанавливаются.
@@ -250,6 +250,7 @@ $ awf start --pipeline audit-llm
 | `awf_unblock` | Снять stale BLOCKED/ACK-закрытия — перевыданный TODO снова виден |
 | `awf_todo_remove` | Удалить не стартовавший TODO (след в `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Вывести отклонённый/брошенный TODO, застрявший «активным» (RETIRED-заметка в `done/<id>/`) |
+| `awf_todo_update` | Переписать текст не стартовавшего TODO, сохранив номер (бэкап в `context/`, `.ready` + baseline не трогаются) |
 
 **`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
 лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой
@@ -274,6 +275,16 @@ $ awf start --pipeline audit-llm
 ни в `done/`; уже архивирован (`done/<id>/TODO.md`); живой пайплайн на этом id
 (`awf kill` или дождаться); пустая `--reason` (обязательна). `awf restore` по-прежнему
 возвращает retired-TODO.
+
+**`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |
+--content "…"`). Переписать текст TODO, который НЕ стартовал: содержимое
+`inbox/TODO-<id>.md` заменяется на месте, а номер, dispatch-`.ready` и baseline
+остаются нетронутыми (baseline фиксирует git sha, не текст). Прежнее содержимое
+бэкапится побайтово в `context/TODO-<id>.md.bak-<timestamp>`; `--reason` пишется в
+лог оркестратора. Отказы: нет файла TODO в inbox; пустой content; TODO уже стартовал
+(любой сигнал в outbox, `ACK-`/`APPROVE-` в inbox или непустой `PROGRESS` — юнит в
+работе: править через REVIEW/replan либо retire + перевыпуск); живой пайплайн на этом
+id.
 
 ### Verify
 | Tool | Что делает |

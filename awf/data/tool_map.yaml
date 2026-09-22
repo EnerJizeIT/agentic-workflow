@@ -67,6 +67,9 @@ groups:
       - mcp: awf_todo_retire
         cli: todo-retire
         when: "retire a rejected TODO stuck active"
+      - mcp: awf_todo_update
+        cli: todo-update
+        when: "reword a not-started TODO, keep the number"
       - mcp: awf_restore
         cli: restore
         when: "archived TODO back to the inbox"
@@ -137,7 +140,8 @@ groups:
         when: "statuses + diff + test log"
       - mcp: awf_open_pipeline_dashboard
         when: "open the live dashboard"
-      - cli: tree-sha
+      - mcp: awf_tree_sha
+        cli: tree-sha
         when: "tree fingerprint for --verified-sha"
       - cli: mutations
         when: "mutation smoke on a quiet tree"
