@@ -363,3 +363,144 @@ class TestCleanupStaleTempHtml:
             monkeypatch.undo()
             if stale.exists():
                 original_unlink(stale)
+
+
+# ── B2: downtime accounting (run budget = productive minutes) ──────────────
+
+
+class TestDowntimeAccounting:
+    """B2: the engine records non-working time (checkpoint wait, net backoff,
+    salvage window) into the ACTIVE run state. Without an active run nothing
+    is created or touched (hard rule: behavior outside a run is unchanged)."""
+
+    def _make_project(self, tmp_path: Path) -> Path:
+        inbox = tmp_path / ".agentic" / "inbox"
+        phases = tmp_path / ".agentic" / "phases"
+        logs = tmp_path / ".agentic" / "logs"
+        inbox.mkdir(parents=True)
+        phases.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (inbox / "TODO-0001.md").write_text("Task", encoding="utf-8")
+        (phases / "plan.md").write_text("- [ ] step\n", encoding="utf-8")
+        return tmp_path
+
+    def test_checkpoint_wait_records_downtime(self, tmp_path, monkeypatch):
+        """The full checkpoint form wait (no submit) is run downtime."""
+        import tempfile
+
+        from awf import plan_checkpoint, run_state
+
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+        self._make_project(tmp_path)
+        run_state.write_run(tmp_path, active=True, queue=["TODO-0001"])
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", tmp_path, config=None,
+            logs_dir=tmp_path / ".agentic" / "logs",
+            timeout=2,
+        )
+
+        assert result == "timeout"
+        dt = run_state.read_run(tmp_path)["downtime_seconds"]
+        assert dt >= 2.0, f"checkpoint wait (~2s) must be recorded, got {dt}"
+
+    def test_checkpoint_wait_without_run_creates_no_file(self, tmp_path, monkeypatch):
+        """No active run → the checkpoint wait must not create run.yaml."""
+        import tempfile
+
+        from awf import plan_checkpoint, run_state
+
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        monkeypatch.setattr(plan_checkpoint.webbrowser, "open", lambda *_a, **_kw: None)
+        self._make_project(tmp_path)
+
+        result = plan_checkpoint.run_plan_checkpoint(
+            "TODO-0001", tmp_path, config=None,
+            logs_dir=tmp_path / ".agentic" / "logs",
+            timeout=1,
+        )
+
+        assert result == "timeout"
+        assert not run_state.run_file(tmp_path).exists()
+
+    def test_net_backoff_records_downtime(self, tmp_path, monkeypatch):
+        """U6c: a scheduled network backoff pause is run downtime."""
+        from awf import _net, run_state
+        from awf.pipeline_engine import _handle_net_death
+
+        monkeypatch.setattr(_net, "NET_RETRY_BACKOFFS", (1, 1, 1))
+        outbox = tmp_path / ".agentic" / "outbox"
+        logs = tmp_path / ".agentic" / "logs"
+        outbox.mkdir(parents=True, exist_ok=True)
+        logs.mkdir(parents=True, exist_ok=True)
+        run_state.write_run(tmp_path, active=True, queue=["TODO-0001"])
+
+        retries, scheduled = _handle_net_death(
+            s_name="implementer", net_retries=0, net_limit=3,
+            net_key="TODO-0001:implementer",
+            project_dir=tmp_path, logs_dir=logs,
+            outbox=outbox, todo_id="TODO-0001",
+            prefixes=("DONE-TODO-0001",),
+        )
+
+        assert scheduled is True
+        assert retries == 1
+        dt = run_state.read_run(tmp_path)["downtime_seconds"]
+        assert dt >= 0.9, f"1s backoff must be recorded, got {dt}"
+
+    def test_net_backoff_without_run_creates_no_file(self, tmp_path, monkeypatch):
+        from awf import _net, run_state
+        from awf.pipeline_engine import _handle_net_death
+
+        monkeypatch.setattr(_net, "NET_RETRY_BACKOFFS", (1, 1, 1))
+        outbox = tmp_path / ".agentic" / "outbox"
+        logs = tmp_path / ".agentic" / "logs"
+        outbox.mkdir(parents=True, exist_ok=True)
+        logs.mkdir(parents=True, exist_ok=True)
+
+        _handle_net_death(
+            s_name="implementer", net_retries=0, net_limit=3,
+            net_key="TODO-0001:implementer",
+            project_dir=tmp_path, logs_dir=logs,
+            outbox=outbox, todo_id="TODO-0001",
+            prefixes=("DONE-TODO-0001",),
+        )
+
+        assert not run_state.run_file(tmp_path).exists()
+
+    def test_salvage_window_records_downtime(self, tmp_path, monkeypatch):
+        """From worker-death detection to the written salvage prompt is run
+        downtime. A dead worker (no signal, no work) drives the path with
+        auto=True so no supervisor stage runs."""
+        from conftest import _git_init
+
+        from awf import pipeline_engine, run_state
+        from awf.pipeline import Stage
+
+        _git_init(tmp_path)
+        for sub in ("inbox", "outbox", "context", "logs", "state"):
+            (tmp_path / ".agentic" / sub).mkdir(parents=True, exist_ok=True)
+        inbox = tmp_path / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("Task", encoding="utf-8")
+        (inbox / "TODO-0001.ready").write_text("", encoding="utf-8")
+        logs = tmp_path / ".agentic" / "logs"
+        run_state.write_run(tmp_path, active=True, queue=["TODO-0001"])
+
+        monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **k: None)
+        monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **k: None)
+
+        stage = Stage(name="implementer", role="developer", kind="agent")
+        pipeline_engine.execute_agent_stage(
+            stage, "TODO-0001", tmp_path, {}, logs,
+            [stage], 0, [0], auto=True, agent_hard_timeout=None,
+        )
+
+        # the salvage prompt was written and the window was counted
+        assert (inbox / "SALVAGE-TODO-0001.md").is_file()
+        dt = run_state.read_run(tmp_path)["downtime_seconds"]
+        assert dt > 0, f"salvage window must be recorded, got {dt}"

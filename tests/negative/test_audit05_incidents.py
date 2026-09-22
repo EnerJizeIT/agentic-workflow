@@ -4,8 +4,8 @@ The internal write_run lock (FU-09 first pass) serializes the write itself,
 but the CALLERS computed whole keys (outcomes / rejects / index / current)
 from a snapshot read BEFORE the lock — the shallow merge then clobbered a
 concurrent writer's update. Acceptance criteria from the audit report
-(~/Desktop/awf-audit/reports/AUD-05-api-verbs.md, AUD05-05) + the supervisor
-repro (REVIEW-TODO-0006: 17/30 inconsistent):
+(AUD-05, finding AUD05-05) + the supervisor repro (REVIEW-TODO-0006: 17/30
+inconsistent):
 
 - in ANY interleaving of parallel approve_commit + reject_commit the final
   run.yaml is internally consistent: verdict=='approved' ⇒ rejects == 0;

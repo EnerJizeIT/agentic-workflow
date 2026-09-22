@@ -97,13 +97,13 @@ class RollbackResult:
 
 @dataclass
 class ApproveResult:
-    """Result of :func:`awf.api.approve_commit`."""
+    """Result of :func:`awf.api.approve_commit` (U11: +verified_sha_file)."""
 
     todo_id: str
     signal_file: str
     evidence_file: str = ""
-    # AUD05-05 (rest): non-empty when a concurrent reject won the race and
-    # the verdict stayed 'rejected' (hard invariant: 'approved' ⇒ rejects == 0).
+    verified_sha_file: str = ""  # U11 (B5): context/VERIFIED-{todo}.sha, on match
+    # AUD05-05 (rest): non-empty when a reject won the race ('approved' ⇒ rejects == 0)
     message: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -284,7 +284,8 @@ class WaitEventResult:
     message: str
     state_snapshot: dict[str, Any] = field(default_factory=dict)
     # SPEC A-run: recommended wait size for the next call (median stage/3,
-    # clamped [60, 300]); 0 when not computed for this event type.
+    # clamped to the MCP transport cap, wait_event.TRANSPORT_CAP); 0 when
+    # not computed for this event type.
     suggested_timeout: int = 0
 
     def as_dict(self) -> dict[str, Any]:
@@ -328,6 +329,10 @@ class RunStatusResult:
     stop_reason: str
     report_file: str
     message: str
+    no_checkpoints: bool = False
+    # B2: the budget counts productive minutes (elapsed − downtime)
+    downtime_minutes: int = 0
+    productive_minutes: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

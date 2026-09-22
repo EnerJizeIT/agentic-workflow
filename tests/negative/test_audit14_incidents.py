@@ -1,7 +1,7 @@
 """AUD14-02/03/07, AUD04-06/10/11, AUD01-02: process, timeout, quoting, env.
 
-Each test reproduces a real audit finding
-(~/Desktop/awf-audit/reports/) and asserts the SAFE behavior. On the
+Each test reproduces a real 2026-09 audit finding
+and asserts the SAFE behavior. On the
 current code the process-group / timeout / quoting / env tests are RED —
 that is the point of the suite: the audited bug must be caught by the
 test suite, not by a live incident.

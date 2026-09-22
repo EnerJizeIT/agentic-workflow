@@ -294,6 +294,16 @@ def _build_parser():
              "the commands you actually ran and your verdict.",
     )
     p_approve.add_argument(
+        "--verified-sha",
+        dest="verified_sha",
+        default="",
+        # U11 (B5): the tree fingerprint recorded at verify time (awf
+        # tree-sha). Without it — behavior as before; with it — the API
+        # refuses when the tree moved since verification.
+        help="U11: tree fingerprint from verify time (`awf tree-sha`). "
+             "Approve is refused if the tree changed after verification.",
+    )
+    p_approve.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
@@ -301,6 +311,113 @@ def _build_parser():
 
     p_report = sub.add_parser("report", help="Show summary report")
     p_report.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_metrics = sub.add_parser(
+        "metrics", help="U8: token/cost metrics of the work program (report to desktop)"
+    )
+    p_metrics.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    p_metrics.add_argument(
+        "--out",
+        default="",
+        help="Output file or directory (default: metrics.output_dir / ~/Desktop)",
+    )
+    p_metrics.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    p_metrics.add_argument(
+        "--reference-model",
+        dest="reference_model",
+        default="",
+        help="Model for cost conversion "
+             "(default: metrics.reference_model / anthropic/claude-sonnet-4-6)",
+    )
+    p_metrics.add_argument(
+        "--since",
+        default="",
+        help="Start of the statistics window (ISO date/datetime or epoch)",
+    )
+    p_metrics.add_argument(
+        "--refresh-subscriptions",
+        dest="refresh_subscriptions",
+        action="store_true",
+        help="U8b: update the subscriptions table from metrics.subscriptions_url "
+             "before computing (fallback to the built-in table on failure)",
+    )
+    p_metrics.add_argument(
+        "--no-mirror",
+        dest="no_mirror",
+        action="store_true",
+        help="U8c: do not copy the report to metrics.mirror_dir for this run",
+    )
+
+    p_tree_sha = sub.add_parser(
+        "tree-sha",
+        help="U11: print the working-tree fingerprint (verified-sha for approve)",
+    )
+    p_tree_sha.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_mutations = sub.add_parser(
+        "mutations",
+        help="U11/B6: run scripts/mutations.txt on a quiet tree (supervisor tool)",
+    )
+    p_mutations.add_argument(
+        "--list",
+        action="store_true",
+        help="List the mutations without running them",
+    )
+    p_mutations.add_argument(
+        "--file",
+        default="scripts/mutations.txt",
+        help="Mutations file (default: scripts/mutations.txt)",
+    )
+    p_mutations.add_argument(
+        "--timeout",
+        type=int,
+        default=1800,
+        help="Test-command timeout per mutation, seconds (default: 1800)",
+    )
+    p_mutations.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_todo_draft = sub.add_parser(
+        "todo-draft",
+        help="U11/E3: generate a task-file skeleton from AUDIT-INDEX.md",
+    )
+    p_todo_draft.add_argument(
+        "query", help="Finding id (e.g. AUD02-03) or unit id (e.g. FU-13)"
+    )
+    p_todo_draft.add_argument(
+        "--index",
+        default="",
+        help="Path to AUDIT-INDEX.md (default: project dir, .agentic/context/)",
+    )
+    p_todo_draft.add_argument(
+        "--out",
+        default="",
+        help="Write the draft to a file (default: stdout; an existing file "
+        "is not overwritten without --force)",
+    )
+    p_todo_draft.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing --out file",
+    )
+    p_todo_draft.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
@@ -371,6 +488,18 @@ def _run_command(args) -> int:
         if args.command == "analyze-roles":
             from . import cmd_analyze_roles
             return cmd_analyze_roles.run(args)
+        if args.command == "metrics":
+            from . import cmd_metrics
+            return cmd_metrics.run(args)
+        if args.command == "tree-sha":
+            from . import cmd_tree_sha
+            return cmd_tree_sha.run(args)
+        if args.command == "mutations":
+            from . import cmd_mutations
+            return cmd_mutations.run(args)
+        if args.command == "todo-draft":
+            from . import cmd_todo_draft
+            return cmd_todo_draft.run(args)
         return 1
     except AwfApiError as e:
         print(f"ERROR: {e}", file=sys.stderr)

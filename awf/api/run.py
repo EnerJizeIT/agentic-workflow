@@ -83,7 +83,11 @@ def run_brief(project_dir: Path) -> dict | None:
         return None
     budget = int(state.get("budget_minutes", 0) or 0)
     elapsed = run_state.elapsed_minutes(state)
-    left = max(0, int(budget - elapsed)) if budget else 0
+    downtime = run_state.downtime_minutes(state)
+    productive = run_state.productive_minutes(state)
+    # B2: the budget is in PRODUCTIVE minutes — wall clock minus recorded
+    # downtime (checkpoint waits, salvage handling, net-backoff pauses).
+    left = max(0, int(budget - productive)) if budget else 0
     return {
         "active": bool(state.get("active")),
         "position": run_state.position(state),
@@ -92,8 +96,12 @@ def run_brief(project_dir: Path) -> dict | None:
         "completed": list(state.get("completed") or []),
         "budget_minutes": budget,
         "budget_left_minutes": left,
+        "elapsed_minutes": int(elapsed),
+        "downtime_minutes": int(downtime),
+        "productive_minutes": int(productive),
         "stop_reason": state.get("stop_reason", ""),
         "report_file": state.get("report_file", ""),
+        "no_checkpoints": bool(state.get("no_checkpoints")),
     }
 
 
@@ -105,6 +113,7 @@ def run_start(
     stop_flags: dict[str, list[str]] | None = None,
     note: str = "",
     force: bool = False,
+    no_checkpoints: bool = False,
 ) -> RunStartResult:
     """Start an autonomous run: record the queue and the mechanical gates.
 
@@ -112,6 +121,11 @@ def run_start(
     before calling :func:`run_next` for it; stop flags keyed by TODO id mark
     items awf must never auto-continue past (phase boundaries, external
     audits, owner-decision tasks).
+
+    ``no_checkpoints`` (B4): when True, the BD-36 plan checkpoint is skipped
+    for every pipeline launch of this run — the run does not expect the
+    owner at every TODO. The flag is stored in the run state and surfaced
+    by :func:`run_status` / :func:`run_brief`.
     """
     project_dir = _require_run_project(project_dir)
     ids = _validate_queue(queue)
@@ -141,10 +155,15 @@ def run_start(
         outcomes={},
         stop_flags=flags,
         budget_minutes=int(budget_minutes or 0),
+        # B2: a fresh run has a fresh downtime counter — a force replace
+        # merges over the previous run.yaml, so the counter is reset here
+        # or the old run's downtime would leak into the new budget.
+        downtime_seconds=0,
         started_at=run_state.now_iso(),
         stop_reason="",
         report_file="",
         note=note.strip(),
+        no_checkpoints=bool(no_checkpoints),
     )
 
     budget_note = f", budget {int(budget_minutes)} min" if budget_minutes else ""
@@ -190,7 +209,10 @@ def run_status(project_dir: Path) -> RunStatusResult:
     active = bool(state.get("active"))
     budget = int(state.get("budget_minutes", 0) or 0)
     elapsed = run_state.elapsed_minutes(state) if state else 0.0
-    left = max(0, int(budget - elapsed)) if budget else 0
+    downtime = run_state.downtime_minutes(state) if state else 0.0
+    productive = run_state.productive_minutes(state) if state else 0.0
+    # B2: the budget is in PRODUCTIVE minutes (elapsed − recorded downtime).
+    left = max(0, int(budget - productive)) if budget else 0
     current = str(state.get("current", "") or "")
     position = run_state.position(state) if state else "0/0"
 
@@ -199,7 +221,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
     elif active:
         message = (
             f"Run active: {position}, current {current or '—'}"
-            + (f", budget left ~{left} min" if budget else "")
+            + (f", budget left ~{left} min (productive)" if budget else "")
         )
     else:
         message = (
@@ -219,9 +241,12 @@ def run_status(project_dir: Path) -> RunStatusResult:
         budget_minutes=budget,
         budget_left_minutes=left,
         elapsed_minutes=int(elapsed),
+        downtime_minutes=int(downtime),
+        productive_minutes=int(productive),
         stop_reason=str(state.get("stop_reason", "") or ""),
         report_file=str(state.get("report_file", "") or ""),
         message=message,
+        no_checkpoints=bool(state.get("no_checkpoints")),
     )
 
 
@@ -262,6 +287,7 @@ def _write_report(
     rejects = state.get("rejects") or {}
     outcomes = state.get("outcomes") or {}
     rejects_note = ", ".join(f"{k}×{v}" for k, v in rejects.items()) or "—"
+    budget = int(state.get("budget_minutes", 0) or 0)
     salvage = _salvage_events(project_dir, str(state.get("started_at") or ""))
     health_note = ""
     if salvage >= 3:
@@ -279,8 +305,15 @@ def _write_report(
         f"**Salvage events:** {salvage}{health_note}",
         f"**Elapsed:** {int(run_state.elapsed_minutes(state))} min "
         f"(budget {state.get('budget_minutes', 0)} min)",
-        "",
     ]
+    # B2: the budget is in productive minutes (elapsed − downtime); show the
+    # split so the owner sees how much of the run was incident, not work.
+    if budget:
+        lines.append(
+            f"**Budget:** {int(run_state.productive_minutes(state))} of {budget} min "
+            f"productive, {int(run_state.downtime_minutes(state))} min downtime"
+        )
+    lines += [""]
     if outcomes:
         ctx_dir = paths.context_dir(project_dir)
         lines += ["## Run diary (verdicts)", ""]
@@ -289,9 +322,16 @@ def _write_report(
                 note = verdict.get("reason") or ""
                 extra = ""
                 if verdict.get("verdict") == "approved":
+                    # U11: surface both audit facts — what was checked
+                    # (evidence) and on which tree (verified-sha).
+                    bits: list[str] = []
                     ev = ctx_dir / f"RUN-EVIDENCE-{todo}.md"
                     if ev.is_file():
-                        extra = f" (evidence: {ev.name})"
+                        bits.append(f"evidence: {ev.name}")
+                    vf = ctx_dir / f"VERIFIED-{todo}.sha"
+                    if vf.is_file():
+                        bits.append(f"verified: {vf.name}")
+                    extra = f" ({', '.join(bits)})" if bits else ""
                 lines.append(
                     f"- {todo}: {verdict.get('verdict', '?')}"
                     + (f" — {note[:200]}" if note else "")
@@ -385,7 +425,11 @@ def run_next(
                 "run state corrupted (started_at unparseable) — "
                 f"budget {budget} min cannot be verified",
             )
-        if run_state.elapsed_minutes(state) > budget:
+        # B2: the budget is in PRODUCTIVE minutes — wall clock minus recorded
+        # downtime (checkpoint waits, salvage handling, net-backoff pauses).
+        # The run is a guard against "the autonomous run lives forever", not
+        # a punishment for incidents.
+        if run_state.productive_minutes(state) > budget:
             return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
 
     next_id = queue[index]

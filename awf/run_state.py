@@ -220,6 +220,68 @@ def elapsed_minutes(state: dict) -> float:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
 
 
+def downtime_minutes(state: dict) -> float:
+    """B2: recorded non-working minutes (checkpoint waits, salvage handling,
+    net-backoff pauses). Defensive: a corrupt value degrades to 0.0."""
+    try:
+        return float(state.get("downtime_seconds", 0) or 0) / 60.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def productive_minutes(state: dict) -> float:
+    """B2: elapsed minus recorded downtime, clamped at 0.
+
+    The budget gate counts THIS, not wall clock: a run that spent an hour on
+    a checkpoint timeout and three silent worker deaths is not one hour of
+    autonomous work. (A corrupt clock still stops the run via
+    :func:`started_at_ok` — downtime never resurrects a dead clock.)
+    """
+    return max(0.0, elapsed_minutes(state) - downtime_minutes(state))
+
+
+def add_downtime(
+    project_dir: Path,
+    seconds: float,
+    reason: str = "",
+    logs_dir: Path | None = None,
+) -> None:
+    """B2: accumulate ``seconds`` into the ACTIVE run's ``downtime_seconds``.
+
+    No-op when seconds is not a positive number, when there is no run state
+    (absent or corrupt), or when the run is not active — a pipeline outside
+    a run must not create or touch run.yaml (hard rule: behavior without an
+    active run is unchanged).
+
+    The read-then-write is deliberate: ``update_run`` overwrites the file
+    with an empty dict when ``read_run`` returns None, which would destroy a
+    corrupt run.yaml kept for inspection (AUD02-06).
+    """
+    try:
+        secs = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if secs <= 0:
+        return
+    if read_run(project_dir) is None:
+        return
+
+    def _mut(state: dict) -> dict:
+        if not state.get("active"):
+            return state
+        try:
+            current = float(state.get("downtime_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            current = 0.0
+        state["downtime_seconds"] = current + secs
+        return state
+
+    update_run(project_dir, _mut)
+    if logs_dir is not None:
+        suffix = f" ({reason})" if reason else ""
+        _log(logs_dir, f"B2: downtime +{secs:.0f}s{suffix}")
+
+
 def position(state: dict) -> str:
     """Human position like ``1/3`` — the RUNNING item's number.
 

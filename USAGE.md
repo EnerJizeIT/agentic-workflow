@@ -70,6 +70,56 @@ Every tool returns `next_action` — a hint for the next step. Even weak models 
 
 **After approve:** pipeline exits. Say *"continue"* to dispatch next TODO, or *"stop"* to pause.
 
+## Supervisor tools (U11): tree-sha, mutations, todo-draft
+
+Three CLI tools for the verify ritual — supervisor instruments, not
+pipeline gates:
+
+**`awf tree-sha`** + **`awf approve --verified-sha <hash>`** — «что
+проверили = что коммитим». At the verify stage, BEFORE the checks, run
+`awf tree-sha` and keep the working-tree hash (HEAD + all tracked changes
++ untracked files; same tree → same hash, at any time). After the checks,
+pass it to approve — `awf approve <todo-id> --verified-sha <hash>` (MCP:
+`awf_approve(verified_sha=...)`). If the tree moved meanwhile (new commit,
+edited file, new file), approve refuses with «the tree changed after
+verification». The hash is stored to
+`.agentic/context/VERIFIED-<todo-id>.sha`, and the run report lists both
+the evidence and the verified tree. Without `--verified-sha` the behavior
+is exactly as before.
+
+**`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
+over `scripts/mutations.txt` (same format as `mutation-smoke.sh`, which
+stays the CI step). Runs on a QUIET tree only (dirty `git status` →
+refusal), reports killed/survived/timeout per mutation with test tails,
+and always restores the mutated files (content + mtime, even on crash).
+It is a «once per wave / before release» tool, not an auto-gate. Exit
+codes: 0 = all killed, 1 = a mutation survived or the run was refused,
+2 = configuration error (bad line, stale mutation, empty list).
+
+**`awf todo-draft <AUDIT-ID|FU-NN> [--index PATH] [--out PATH]
+[--force]`** — task-file skeleton from an `AUDIT-INDEX.md` registry:
+facts (finding ids, sev, essence, unit, file scope extracted from titles)
+plus explicit «супервизор дополняет замысел» placeholders for the intent
+(criteria, verify commands, scope). It invents no criteria and touches no
+network — a local index file only (default search: `<project>/`,
+`.agentic/context/`). An existing `--out` file is
+never overwritten without `--force`.
+
+## Metrics
+
+`awf metrics` (MCP: `awf_metrics`) collects the work program on demand: worker
+tokens (in/out/cache-read) and compactions per unit from opencode.db, supervisor
+tokens attributed to unit windows, +/− code lines per unit commit, and the cost
+conversion "if workers had run on model X" (models.dev prices).
+
+The markdown report lands in `metrics.output_dir` (default: ~/Desktop) as
+`awf-metrics-<YYYYMMDD-HHMM>.md`. Set `metrics.mirror_dir` in
+`.agentic/config.yaml` to keep an archive copy of every report (a failed copy
+is a warning, not an error); `--no-mirror` skips the copy for one run. Update
+the subscriptions table (💳 section of the report) with
+`awf metrics --refresh-subscriptions` — it fetches `metrics.subscriptions_url`
+and falls back to the built-in table on failure.
+
 ## Dashboard
 
 Opens automatically in browser when pipeline starts:
@@ -122,6 +172,7 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 ├── config.yaml              # Project config (roles, models, pipeline)
 ├── pipelines/default.yaml   # Pipeline stages definition
 ├── roles/                   # Role files (supervisor.md, worker roles)
+├── doctrine/                # Project lessons (U9) — auto-injected into every role's prompt
 ├── phases/plan.md           # Project plan — steps with [x] checkmarks
 ├── inbox/                   # TODO files + dispatch signals
 ├── outbox/                  # Worker signals (DONE, BLOCKED, REVIEW)
@@ -231,7 +282,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-37 tools: 32 `awf_*` workflow + 5 UI (forms).
+38 tools: 33 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -266,6 +317,11 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_prove_red` | Prove declared tests are red on the baseline sha |
 | `awf_verify_pack` | One deterministic verify report (GATES file) |
 
+### Metrics
+| Tool | What it does |
+|---|---|
+| `awf_metrics` | U8: token/cost metrics of the work program; report to desktop + "if workers ran on model X" cost |
+
 ### Run (autonomous queue)
 | Tool | What it does |
 |---|---|
@@ -274,6 +330,17 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_run_next` | Launch the next queue item, or stop on a gate |
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
+
+**Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
+the client timeout — ~55s with the default opencode.json. The tool says so
+in every `next_action`. To wait longer, raise the mcp timeout in
+`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}`.
+
+**Supervisor authority.** Replanning, rewriting the spec, and splitting a
+task are a standard supervisor option — no owner approval required.
+Escalation to the owner happens only on the stop-list: a twice-rejected
+iteration, BLOCKED without a resolution, budget, an audit point. The reason
+for every replan/split goes into the run report/note.
 
 ### SMO
 | Tool | What it does |

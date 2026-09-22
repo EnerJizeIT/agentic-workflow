@@ -441,9 +441,22 @@ def _run_plan_checkpoint_gate(
                  pipeline should continue.
       - ``1`` — checkpoint rejected (or other failure), pipeline must stop.
     """
+    from . import run_state as _run_state
     from .plan_checkpoint import is_checkpoint_enabled, run_plan_checkpoint
 
-    if not is_checkpoint_enabled(config, auto):
+    # B4: an ACTIVE run started with no_checkpoints=true does not expect the
+    # owner at every TODO — the gate is skipped. The flag is read from the
+    # run state (a finished run must not skip checkpoints of a later manual
+    # start).
+    run = _run_state.read_run(project_dir)
+    no_checkpoints = bool(run and run.get("active") and run.get("no_checkpoints"))
+    if not is_checkpoint_enabled(config, auto, no_checkpoints=no_checkpoints):
+        if no_checkpoints:
+            print("BD-36: checkpoint skipped — run started with no_checkpoints=true (B4)")
+            _log(
+                logs_dir,
+                f"B4: checkpoint skipped for {current_todo} — run no_checkpoints=true",
+            )
         return 0
 
     decision = run_plan_checkpoint(current_todo, project_dir, config, logs_dir)
@@ -818,7 +831,15 @@ def _handle_net_death(
             f"{backoff:.0f}s (net retry {net_retries}/{net_limit})",
         )
         clean_stage_signals(outbox, todo_id, *prefixes)
+        # B2: the backoff pause is downtime — the endpoint is down, no work
+        # can happen until it recovers.
+        backoff_start = _time.monotonic()
         _time.sleep(backoff)
+        from . import run_state as _run_state
+        _run_state.add_downtime(
+            project_dir, _time.monotonic() - backoff_start,
+            reason=f"net-backoff:{todo_id}:{s_name}", logs_dir=logs_dir,
+        )
         return net_retries, True
     print(
         f"U6b: network retries exhausted ({net_limit}/{net_limit}) "
@@ -1036,6 +1057,12 @@ def execute_agent_stage(
     if not signal:
         # Salvage path
         baseline_sha = stage_baseline_sha
+        # B2: death-detection moment — from here to the written salvage
+        # prompt is the measurable part of the salvage handling (log
+        # classification, git diff collection, prompt write). The worker's
+        # own run above was real work time and is NOT counted.
+        import time as _time
+        salvage_detect = _time.monotonic()
         print(f"WARNING: No signal after agent stage '{s_name}'.", file=sys.stderr)
         _log(logs_dir, f"No signal after {s_name} — salvage path")
 
@@ -1056,6 +1083,12 @@ def execute_agent_stage(
         _write_salvage_prompt(
             project_dir, current_todo, s_name, baseline_sha, logs_dir,
             attempt=attempt, auto_retries=attempt_no,
+        )
+        # B2: the salvage window is over — the prompt is written.
+        from . import run_state as _run_state
+        _run_state.add_downtime(
+            project_dir, _time.monotonic() - salvage_detect,
+            reason=f"salvage:{current_todo}:{s_name}", logs_dir=logs_dir,
         )
         _ws(
             project_dir,

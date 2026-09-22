@@ -17,6 +17,8 @@ YOU are the reviewer. Read the TODO (contract), check the work, decide.
      without evidence is ignored by the engine)
    - ANY criterion not met → write `.agentic/outbox/REVIEW-{todo_id}.md`
      listing which criteria failed and what to fix
+7. Метрики: после закрытия юнита можно собрать метрики — `awf_metrics` /
+   `awf metrics` (отчёт на рабочий стол, копия в `metrics.mirror_dir`, если задан).
 
 ## Do NOT
 - Do NOT relay "pipeline waits for your decision" — that's YOUR call.

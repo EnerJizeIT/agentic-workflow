@@ -24,14 +24,21 @@ from ..pipeline_state import read_state
 from ._helpers import require_agentic
 from ._results import WaitEventResult
 
+# B3 (run2 report): the default MCP client transport (~60s timeout) cuts a
+# single wait at ~55s — the measured working cap. suggested_timeout must
+# stay at or under it, or the supervisor's next call dies mid-wait (-32001).
+TRANSPORT_CAP = 55
+MIN_WAIT = 30
 
-def _suggest_timeout(project_dir: Path, *, default: int = 180) -> int:
+
+def _suggest_timeout(project_dir: Path, *, default: int = TRANSPORT_CAP) -> int:
     """SPEC A-run: size the next wait from measured stage durations.
 
     Consecutive ``Stage N/M:`` lines in orchestrator.log give the duration of
     the previous stage. Median of the last few, divided by 3 (wake ~3x per
-    stage), clamped to [60, 300] seconds. Falls back to ``default`` when the
-    log is missing or has too little history.
+    stage), clamped to [MIN_WAIT, TRANSPORT_CAP] seconds — never above the
+    MCP transport cap, which would cut the next call mid-wait. Falls back to
+    ``default`` (capped) when the log is missing or has too little history.
 
     AUD15-08: the stage stamps come from the shared incremental reader
     (awf/_log_reader.py) — no 5th full read of the log per wait_for_event.
@@ -42,14 +49,22 @@ def _suggest_timeout(project_dir: Path, *, default: int = 180) -> int:
     log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
     stamps = read_log_snapshot(log_file).stage_stamps
     if len(stamps) < 2:
-        return default
+        return min(default, TRANSPORT_CAP)
     deltas = [b - a for a, b in zip(stamps, stamps[1:])]
     deltas = [d for d in deltas if 0 < d < 3600][-5:]
     if not deltas:
-        return default
+        return min(default, TRANSPORT_CAP)
     deltas.sort()
     median = deltas[len(deltas) // 2]
-    return max(60, min(300, int(median / 3)))
+    return max(MIN_WAIT, min(TRANSPORT_CAP, int(median / 3)))
+
+
+def _cap_advice() -> str:
+    """B3: the suggested wait hit the transport cap — advise smaller steps."""
+    return (
+        f" Transport cap: a single wait above {TRANSPORT_CAP}s is cut by the "
+        "MCP client (-32001) — wait in smaller steps (suggested_timeout)."
+    )
 
 
 def wait_for_event(
@@ -71,9 +86,10 @@ def wait_for_event(
     - Timeout reached → event_type ``timeout``
 
     SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous
-    result's ``suggested_timeout`` (computed from measured stage durations).
-    The call runs in a worker thread, so long waits do NOT freeze other MCP
-    tools — the old "single-thread limit" note was stale.
+    result's ``suggested_timeout`` (computed from measured stage durations,
+    never above ``TRANSPORT_CAP`` — the MCP client transport cuts longer
+    single waits, B3). The call runs in a worker thread, so long waits do
+    NOT freeze other MCP tools — the old "single-thread limit" note was stale.
 
     Args:
         project_dir: awf project root.
@@ -130,12 +146,15 @@ def wait_for_event(
         prev_stage = prev_state.get("stage_name") if prev_state else None
         curr_stage = current_state.get("stage_name")
         if prev_stage and curr_stage and prev_stage != curr_stage and not actionable_only:
+            message = (
+                f"Stage transition: '{prev_stage}' → '{curr_stage}'. "
+                f"Previous stage completed. Poll again to wait for next event."
+            )
+            if suggested >= TRANSPORT_CAP:
+                message += _cap_advice()
             return WaitEventResult(
                 event_type="stage_changed",
-                message=(
-                    f"Stage transition: '{prev_stage}' → '{curr_stage}'. "
-                    f"Previous stage completed. Poll again to wait for next event."
-                ),
+                message=message,
                 state_snapshot=_state_to_dict(current_state),
                 suggested_timeout=suggested,
             )
@@ -144,9 +163,15 @@ def wait_for_event(
 
     # Timeout
     final_state = read_state(project_dir) or {}
+    message = (
+        f"No event within {timeout}s. Current stage: {final_state.get('stage_name', '?')}. "
+        f"Poll again."
+    )
+    if suggested >= TRANSPORT_CAP:
+        message += _cap_advice()
     return WaitEventResult(
         event_type="timeout",
-        message=f"No event within {timeout}s. Current stage: {final_state.get('stage_name', '?')}. Poll again.",
+        message=message,
         state_snapshot=_state_to_dict(final_state),
         suggested_timeout=suggested,
     )

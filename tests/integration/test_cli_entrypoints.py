@@ -595,3 +595,240 @@ class TestResetHelpMatchesBehavior:
         for d in ("inbox", "outbox", "context", "logs",
                   "handoff", "inputs", "dashboards"):
             assert d in help_out, f"reset --help does not name cleaned dir {d!r}"
+
+
+class TestTreeShaEntrypoint:
+    """U11: `awf tree-sha` — the supervisor's one-liner for verified-sha."""
+
+    def test_prints_stable_hex64(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        capsys.readouterr()
+
+        rc1 = cli.main(["tree-sha", "--project-dir", str(repo)])
+        out1 = capsys.readouterr().out
+        rc2 = cli.main(["tree-sha", "--project-dir", str(repo)])
+        out2 = capsys.readouterr().out
+
+        assert rc1 == 0 and rc2 == 0
+        assert len(out1.strip()) == 64
+        assert out1.strip() == out2.strip()
+
+    def test_changes_after_edit(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        capsys.readouterr()
+        rc = cli.main(["tree-sha", "--project-dir", str(repo)])
+        fp1 = capsys.readouterr().out.strip()
+        (repo / "README.md").write_text("tampered\n")
+        rc = cli.main(["tree-sha", "--project-dir", str(repo)])
+        fp2 = capsys.readouterr().out.strip()
+        assert rc == 0
+        assert fp1 != fp2
+
+
+class TestApproveVerifiedShaCli:
+    """U11: `awf approve --verified-sha` (parity with the MCP tool)."""
+
+    TID = "TODO-0001"
+
+    def test_matching_sha_ok(self, tmp_path, capsys):
+        from awf import git_utils
+
+        repo = _git_repo(tmp_path)
+        (repo / ".agentic").mkdir()
+        fp = git_utils.tree_fingerprint(repo)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "approve", self.TID, "--verified-sha", fp,
+            "--project-dir", str(repo),
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert (repo / ".agentic" / "inbox" / f"APPROVE-{self.TID}.ready").is_file()
+        verified = repo / ".agentic" / "context" / f"VERIFIED-{self.TID}.sha"
+        assert verified.is_file()
+        assert verified.read_text(encoding="utf-8").strip() == fp
+
+    def test_mismatch_returns_1_with_text(self, tmp_path, capsys):
+        from awf import git_utils
+
+        repo = _git_repo(tmp_path)
+        (repo / ".agentic").mkdir()
+        fp = git_utils.tree_fingerprint(repo)
+        (repo / "README.md").write_text("moved after verify\n")
+        capsys.readouterr()
+
+        rc = cli.main([
+            "approve", self.TID, "--verified-sha", fp,
+            "--project-dir", str(repo),
+        ])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "tree changed after verification" in captured.out + captured.err
+        assert not (repo / ".agentic" / "inbox" / f"APPROVE-{self.TID}.ready").is_file()
+
+
+class TestMutationsEntrypoint:
+    """U11/B6: `awf mutations` CLI surface (list, refusal, real small run)."""
+
+    _MUTATIONS = (
+        "target.py @@ x = 1 @@ x = 2 @@ false\n"
+        "target.py @@ x = 1 @@ x = 1 @@ true\n"
+    )
+
+    def _repo_with_mutations(self, tmp_path) -> Path:
+        repo = _git_repo(tmp_path)
+        (repo / "target.py").write_text("x = 1\n")
+        scripts = repo / "scripts"
+        scripts.mkdir()
+        (scripts / "mutations.txt").write_text(self._MUTATIONS, encoding="utf-8")
+        from subprocess import run as _run
+
+        _run(["git", "add", "-A"], cwd=repo, check=True)
+        _run(["git", "commit", "-qm", "add mutations"], cwd=repo, check=True)
+        return repo
+
+    def test_list_prints_mutations(self, tmp_path, capsys):
+        repo = self._repo_with_mutations(tmp_path)
+        capsys.readouterr()
+
+        rc = cli.main(["mutations", "--list", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "target.py" in out
+        assert "x = 1" in out
+        assert "2" in out  # total line
+
+    def test_dirty_tree_refused(self, tmp_path, capsys):
+        repo = self._repo_with_mutations(tmp_path)
+        (repo / "target.py").write_text("x = 999\n")  # uncommitted
+        capsys.readouterr()
+
+        rc = cli.main(["mutations", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "dirty" in captured.out + captured.err
+
+    def test_not_a_repo_refused(self, tmp_path, capsys):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        (plain / "m.txt").write_text("a.py @@ one @@ two @@ true\n")
+        capsys.readouterr()
+
+        rc = cli.main(["mutations", "--file", "m.txt", "--project-dir", str(plain)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "git repo" in captured.out + captured.err
+
+    def test_real_run_reports_killed_and_survived(self, tmp_path, capsys):
+        """`false`-command mutation is killed (tests went red), the
+        no-op mutation (`x = 1` → `x = 1`) survives: rc must be 1."""
+        repo = self._repo_with_mutations(tmp_path)
+        capsys.readouterr()
+
+        rc = cli.main(["mutations", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert "killed" in out
+        assert "survived" in out
+        # the tree must be back to the committed state
+        from subprocess import run as _run
+
+        diff = _run(
+            ["git", "diff", "--quiet"], cwd=repo, capture_output=True, check=False
+        )
+        assert diff.returncode == 0, "mutation run left the tree modified"
+
+
+class TestTodoDraftEntrypoint:
+    """U11/E3: `awf todo-draft` CLI surface."""
+
+    _INDEX = (
+        "| ID | Sev | Тип | Заголовок | Итерация | Фикс | Статус |\n"
+        "|----|-----|-----|-----------|----------|------|--------|\n"
+        "| DEMO-01 | P1 | BUG | порча run.yaml (awf/run_state.py:55) | 02 | S | ✅ FU-13 (abc1234) |\n"
+        "\n"
+        "| Юнит | Тема | ID (суммарно) | Фикс | Волна |\n"
+        "|------|------|---------------|------|-------|\n"
+        "| FU-13 | Гигиена state | 1 | M | 3 |\n"
+    )
+
+    def _repo_with_index(self, tmp_path) -> Path:
+        repo = _git_repo(tmp_path)
+        (repo / "AUDIT-INDEX.md").write_text(self._INDEX, encoding="utf-8")
+        return repo
+
+    def test_out_writes_skeleton(self, tmp_path, capsys):
+        repo = self._repo_with_index(tmp_path)
+        out = tmp_path / "draft.md"
+        capsys.readouterr()
+
+        rc = cli.main([
+            "todo-draft", "FU-13", "--out", str(out), "--project-dir", str(repo),
+        ])
+
+        outtext = capsys.readouterr().out
+        assert rc == 0, outtext
+        assert out.is_file()
+        body = out.read_text(encoding="utf-8")
+        assert "FU-13" in body
+        assert "DEM" in body or "run_state" in body
+        assert "awf/run_state.py" in body
+
+    def test_existing_out_refused_then_force(self, tmp_path, capsys):
+        repo = self._repo_with_index(tmp_path)
+        out = tmp_path / "draft.md"
+        out.write_text("old")
+        capsys.readouterr()
+
+        rc = cli.main([
+            "todo-draft", "FU-13", "--out", str(out), "--project-dir", str(repo),
+        ])
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "old" == out.read_text(encoding="utf-8")
+
+        rc = cli.main([
+            "todo-draft", "FU-13", "--out", str(out), "--force",
+            "--project-dir", str(repo),
+        ])
+        captured = capsys.readouterr()
+        assert rc == 0, captured.out
+        assert "FU-13" in out.read_text(encoding="utf-8")
+
+    def test_unknown_id_returns_1(self, tmp_path, capsys):
+        repo = self._repo_with_index(tmp_path)
+        capsys.readouterr()
+
+        rc = cli.main(["todo-draft", "FU-99", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "not found" in captured.out + captured.err or \
+            "не найден" in captured.out + captured.err
+
+
+class TestMetricsEntrypoint:
+    def test_no_mirror_flag_is_accepted(self, tmp_path, capsys):
+        """U8c: `awf metrics --no-mirror` — the flag exists and the run
+        completes. rc is 0 or 1 depending on whether the machine's
+        opencode.db has measurable sessions; the report is written either
+        way, and an unrecognized flag would SystemExit(2) instead."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliMetrics")
+        capsys.readouterr()
+        out_file = tmp_path / "report.md"
+
+        rc = cli.main([
+            "metrics", "--project-dir", str(repo),
+            "--no-mirror", "--out", str(out_file),
+        ])
+
+        assert rc in (0, 1)
+        assert out_file.is_file()

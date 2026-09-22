@@ -10,6 +10,10 @@ Validates that:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from awf.supervisor import (
     _SNIPPET_ALWAYS,
     _SNIPPET_PLAN,
@@ -57,6 +61,13 @@ class TestSnippetContent:
         lower = _SNIPPET_SALVAGE.lower()
         assert "split the work" in lower
         assert "output budget" in lower
+
+    def test_verify_prompt_has_metrics(self):
+        """U8c: the supervisor's prompts point to awf_metrics (the ALWAYS
+        snippet is injected into every supervisor stage prompt)."""
+        assert "awf_metrics" in _SNIPPET_ALWAYS
+        assert "awf metrics" in _SNIPPET_ALWAYS
+        assert "metrics.mirror_dir" in _SNIPPET_ALWAYS
 
     def test_snippets_are_concise(self):
         """Each snippet should be under 30 lines (focused, not a wall of text)."""
@@ -175,3 +186,41 @@ class TestWorkspaceDiscipline:
         assert "WORKSPACE DISCIPLINE" in prompt
         assert "/tmp/opencode" in prompt
         assert "Live runs of external processes" in prompt
+
+
+# ─── B (run2 report): supervisor authority phrase in both copies ──────────
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+SUPERVISOR_TEMPLATE_COPIES = (
+    "awf/templates/roles/supervisor.md",
+    "templates/roles/supervisor.md",
+)
+PHASE_RUN_TEMPLATE_COPIES = (
+    "awf/templates/roles/supervisor/phase-run.md",
+    "templates/roles/supervisor/phase-run.md",
+)
+
+
+def _read_template(rel: str) -> str:
+    return (REPO_ROOT / rel).read_text(encoding="utf-8")
+
+
+class TestSupervisorAuthorityPhrase:
+    """Owner-confirmed right (run2 report): replan / spec rewrite / split
+    is a standard supervisor option — no owner approval. The phrase must
+    live in BOTH template copies (test_template_sync keeps them identical)."""
+
+    @pytest.mark.parametrize("rel", SUPERVISOR_TEMPLATE_COPIES)
+    def test_supervisor_md_has_authority_phrase(self, rel):
+        text = _read_template(rel)
+        assert "Replanning is your standard option" in text
+        assert "does NOT require owner approval" in text
+        assert "stop-list" in text
+
+    @pytest.mark.parametrize("rel", PHASE_RUN_TEMPLATE_COPIES)
+    def test_phase_run_has_authority_phrase(self, rel):
+        text = _read_template(rel)
+        assert "standard option" in text
+        assert "owner approval" in text
+        assert "stop-list" in text

@@ -324,6 +324,7 @@ async def awf_run_start(
     stop_flags_json: str = "",
     note: str = "",
     force: bool = False,
+    no_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Start an autonomous run: a queue of TODOs with mechanical gates.
 
@@ -343,6 +344,10 @@ async def awf_run_start(
             Keep it fresh with awf_run_note on every stage change.
         force: Replace an already-active run state (recovery from a stale or
             wrong-directory run). Without it a second run_start is refused.
+        no_checkpoints: B4 — when True, the BD-36 plan checkpoint form is
+            skipped for every pipeline launch of this run. Use for autonomous
+            runs where the owner does not sit at every TODO. The flag is
+            stored in the run state and shown by awf_run_status.
 
     Returns:
         Dict with: active, queue, position, budget, stop_flags, next_action.
@@ -376,6 +381,7 @@ async def awf_run_start(
         stop_flags=flags,
         note=note,
         force=force,
+        no_checkpoints=no_checkpoints,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         result["next_action"] = (
@@ -632,6 +638,67 @@ async def awf_verify_pack(
     )
 
 
+# ─── Metrics (U8) ───────────────────────────────────────────────────────
+
+
+async def awf_metrics(
+    project_dir: str | None = None,
+    *,
+    reference_model: str | None = None,
+    since: str | None = None,
+    out: str | None = None,
+    refresh_subscriptions: bool = False,
+    mirror: bool = True,
+) -> dict[str, Any]:
+    """U8: collect token/cost metrics of the work program (report to desktop).
+
+    Aggregates worker sessions (titles ``awf-<role>-TODO-NNNN``) and
+    supervisor sessions (config ``metrics.supervisor_titles``) from
+    opencode.db, unit windows (baseline sha → verify commit), code lines
+    per unit (git shortstat), and the cost conversion: "if workers had
+    run on <reference model>, the cost would be $Y" (models.dev prices).
+
+    The markdown report is written by default to ``metrics.output_dir``
+    (default: ~/Desktop) as ``awf-metrics-<YYYYMMDD-HHMM>.md``.
+
+    U8c: the report can be mirrored to an archive location (config
+    ``metrics.mirror_dir``) — the copy lands there after the report is
+    written successfully (copy failure is a warning, not an error).
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        reference_model: Model id for the cost conversion
+            (default: config ``metrics.reference_model`` /
+            ``anthropic/claude-sonnet-4-6``).
+        since: Start of the statistics window (ISO date/datetime or epoch;
+            default: config ``metrics.since``, no filter).
+        out: Output file or directory (default: ``metrics.output_dir``).
+        refresh_subscriptions: U8b — update the subscriptions table from
+            config ``metrics.subscriptions_url`` before computing
+            (fallback to the built-in table on failure).
+        mirror: U8c — copy the report to config ``metrics.mirror_dir``
+            after it is written (default: True; pass False to skip the
+            copy for this run).
+
+    Returns:
+        Dict with: status, report_path, mirror_path, units, totals,
+        workers_by_role, supervisor_outside, conversion (line + costs),
+        warnings, exit_code (0 = measured something, 1 = nothing
+        measurable).
+        On error: {status: "error", error: "..."}.
+    """
+    return await _exec(
+        api.collect_metrics,
+        project_dir=_resolve_project_dir(project_dir),
+        reference_model=reference_model,
+        since=since,
+        out=out,
+        refresh_subscriptions=refresh_subscriptions,
+        mirror=mirror,
+    )
+
+
 # ─── Auto-commit approval ───────────────────────────────────────────────
 
 
@@ -640,6 +707,7 @@ async def awf_approve(
     project_dir: str | None = None,
     *,
     evidence: str = "",
+    verified_sha: str = "",
 ) -> dict[str, Any]:
     """Approve auto-commit for a TODO in --auto mode.
 
@@ -655,13 +723,22 @@ async def awf_approve(
             commands you actually ran and your verdict, e.g.
             "pytest -q → 348 passed; ruff → clean; diff checked; verdict: approve".
             Stored to .agentic/context/RUN-EVIDENCE-{todo}.md for owner audit.
+        verified_sha: U11 (B5) — the working-tree fingerprint recorded at
+            verify time (`awf tree-sha`). If passed, approve is REFUSED
+            when the tree moved since verification (new commit, edited
+            file, new untracked file). Without it the behavior is as
+            before. On match the fingerprint is stored to
+            .agentic/context/VERIFIED-{todo}.sha.
 
     Returns:
-        Dict with: todo_id, signal_file (path to APPROVE-*.ready).
+        Dict with: todo_id, signal_file (path to APPROVE-*.ready),
+        verified_sha_file (when verified_sha matched).
     """
     try:
         pd = _resolve_project_dir(project_dir)
-        result = api.approve_commit(pd, todo_id, evidence=evidence)
+        result = api.approve_commit(
+            pd, todo_id, evidence=evidence, verified_sha=verified_sha
+        )
         response = _ok(result)
         # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat).
         # AUD05-03: the old fixed text promised "approved and committed.
@@ -1289,6 +1366,28 @@ async def awf_open_pipeline_dashboard(
 
 # ─── DASH Phase 3: supervisor wake-up (no more polling) ─────────────────
 
+# Wrapper-side cap for a single wait. The ACTUAL cap is lower: the MCP
+# client transport (default ~60s timeout) cuts a wait at ~55s (B3, run2
+# report) — awf.api.TRANSPORT_CAP. next_action says so on every response.
+MAX_WAIT = 600
+
+
+def _wait_cap_note(clamped: bool, requested: int) -> str:
+    """B3: append the actual single-wait cap to every next_action.
+
+    The supervisor used to wait with timeout=180 and get the transport
+    cut at ~55s (-32001), then hammer retries. The note makes the working
+    cap explicit; when the request was clamped to MAX_WAIT it says so.
+    """
+    note = (
+        f" Single wait <= {api.TRANSPORT_CAP}s (MCP client transport cap; "
+        "to wait longer, raise the mcp timeout in opencode.json, "
+        f"e.g. 600000 ms; wrapper cap {MAX_WAIT}s)."
+    )
+    if clamped:
+        note = f" Requested {requested}s was clamped to {MAX_WAIT}s." + note
+    return note
+
 
 async def awf_wait_for_event(
     project_dir: str | None = None,
@@ -1319,11 +1418,16 @@ async def awf_wait_for_event(
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
 
     R3 (NEG-2026-09-19): the MCP transport cuts long tool calls (JSON-RPC
-    -32001) — the default client timeout is ~60s. This wrapper clamps the
-    wait to MAX_WAIT (600s). For longer single waits set the MCP server
-    timeout in opencode.json::
+    -32001) — the default client timeout is ~60s, so a single wait works
+    up to ~55s (B3, run2 report). This wrapper clamps the wait to MAX_WAIT
+    (600s). For longer single waits set the MCP server timeout in
+    opencode.json::
 
         "mcp": {"agent-workflow-ui": {..., "timeout": 600000}}
+
+    B3: ``next_action`` of EVERY response carries the actual single-wait
+    cap (MCP client transport, ~55s by default) and how to raise it; when
+    ``timeout_clamped`` is true the same advice comes with the clamp fact.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
@@ -1337,10 +1441,10 @@ async def awf_wait_for_event(
         Dict with: event_type (verify/blocked/salvage/checkpoint/done/
         timeout/stage_changed/idle), message (instruction for supervisor),
         state_snapshot, suggested_timeout (recommended wait size for the
-        next call), timeout_clamped (true when the requested timeout
-        exceeded the cap).
+        next call, never above the transport cap), next_action (instruction
+        + the actual single-wait cap and how to raise it), timeout_clamped
+        (true when the requested timeout exceeded the wrapper cap).
     """
-    MAX_WAIT = 600
     # AUD08-07: a non-numeric timeout used to raise ValueError OUTSIDE the
     # try below — the module contract is "never escape with an exception".
     try:
@@ -1368,7 +1472,7 @@ async def awf_wait_for_event(
         # next_action was stuck on the timeout instruction. _ok() already
         # carries event_type via as_dict().
         et = response.get("event_type") or "timeout"
-        suggested = response.get("suggested_timeout") or 180
+        suggested = response.get("suggested_timeout") or api.TRANSPORT_CAP
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;
         # outside it stays idle (R6 reactive mode).
@@ -1406,6 +1510,10 @@ async def awf_wait_for_event(
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
             }
         response["next_action"] = _EVENT_ACTIONS.get(et, "Check awf_status, then wait for user.")
+        # B3: every response carries the actual single-wait cap (transport
+        # cuts at ~55s by default) + how to raise it; clamped requests say
+        # so explicitly.
+        response["next_action"] += _wait_cap_note(clamped, requested)
         return response
     except api.AwfApiError as e:
         return _err(e)

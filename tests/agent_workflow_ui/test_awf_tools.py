@@ -656,6 +656,76 @@ class TestWaitForEventClamp:
         assert "Continue the run loop" not in result["next_action"]
 
 
+class TestWaitForEventCapNote:
+    """B3 (run2 report): every next_action carries the ACTUAL single-wait
+    cap — the MCP client transport cuts a wait at ~55s by default, so the
+    supervisor stops hammering 180s waits that die at ~55s (-32001)."""
+
+    @staticmethod
+    def _run(event_type: str, timeout, monkeypatch, run_active: bool = False):
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            class _R:
+                def as_dict(self):
+                    return {"event_type": event_type, "message": "x",
+                            "state_snapshot": {}, "suggested_timeout": 45}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(
+            api, "run_brief", lambda *a, **kw: {"active": run_active}
+        )
+        return asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=timeout))
+
+    def test_next_action_carries_transport_cap(self, monkeypatch):
+        result = self._run("timeout", 30, monkeypatch)
+
+        cap = api.TRANSPORT_CAP
+        assert f"<= {cap}s" in result["next_action"]
+        assert "MCP client transport cap" in result["next_action"]
+        assert "opencode.json" in result["next_action"]
+        assert "600000 ms" in result["next_action"]
+
+    def test_next_action_cap_present_for_every_event(self, monkeypatch):
+        """The note is on EVERY response, not just timeout/stage_changed."""
+        for event_type in ("verify", "blocked", "salvage", "checkpoint", "done", "idle"):
+            result = self._run(event_type, 30, monkeypatch)
+            assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"], event_type
+
+    def test_run_mode_next_action_carries_cap_too(self, monkeypatch):
+        result = self._run("timeout", 30, monkeypatch, run_active=True)
+
+        assert "Continue the run loop" in result["next_action"]
+        assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
+
+    def test_clamped_next_action_says_so_explicitly(self, monkeypatch):
+        result = self._run("timeout", 9999, monkeypatch)
+
+        assert result["timeout_clamped"] is True
+        assert "clamped to 600" in result["next_action"]
+        assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
+        assert "opencode.json" in result["next_action"]
+
+    def test_suggested_fallback_respects_cap(self, monkeypatch):
+        """A result without suggested_timeout must not push a 180s wait."""
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            class _R:
+                def as_dict(self):
+                    return {"event_type": "timeout", "message": "x",
+                            "state_snapshot": {}}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+
+        result = asyncio.run(
+            awf.awf_wait_for_event(project_dir="/tmp", timeout=10, actionable_only=True)
+        )
+
+        assert f"timeout={api.TRANSPORT_CAP}" in result["next_action"]
+
+
 # ─── FU-19 (TODO-0023): Part B — AUD-08 wrapper parity ──────────────────
 
 
@@ -1123,3 +1193,42 @@ class TestStartNextActionDashboard:
         assert result["status"] == "ok"
         assert result["dashboard_opened"] is True
         assert "GO IDLE" in result["next_action"]
+
+
+class TestAwfMetricsParams:
+    """U8c: awf_metrics gained refresh_subscriptions + mirror (MCP parity
+    with `awf metrics --refresh-subscriptions` / `--no-mirror`)."""
+
+    def test_defaults_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_metrics(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "collect_metrics", spy_metrics)
+
+        result = run(awf.awf_metrics(project_dir="/tmp"))
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls and calls[0]["refresh_subscriptions"] is False
+        assert calls[0]["mirror"] is True
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_metrics(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "collect_metrics", spy_metrics)
+
+        result = run(
+            awf.awf_metrics(
+                project_dir="/tmp", refresh_subscriptions=True, mirror=False
+            )
+        )
+
+        assert result["status"] == "error"
+        assert calls and calls[0]["refresh_subscriptions"] is True
+        assert calls[0]["mirror"] is False

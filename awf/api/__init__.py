@@ -29,6 +29,7 @@ try/except.
 """
 from __future__ import annotations
 
+from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
 from ..verify_pack import VerifyPackResult, verify_pack
 
@@ -86,7 +87,7 @@ from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
 from .run import run_brief, run_finish, run_next, run_note, run_start, run_status
 from .setup import apply_project_setup
-from .wait_event import wait_for_event
+from .wait_event import TRANSPORT_CAP, wait_for_event
 
 __all__ = [
     # Exception
@@ -98,6 +99,7 @@ __all__ = [
     "RollbackResult",
     "ProveRedResult",
     "VerifyPackResult",
+    "MetricsResult",
     "ApproveResult",
     "RejectResult",
     "ReportResult",
@@ -133,6 +135,7 @@ __all__ = [
     "rollback",
     "prove_red",
     "verify_pack",
+    "collect_metrics",
     "approve_commit",
     "reject_commit",
     "retry_stage",
@@ -155,6 +158,7 @@ __all__ = [
     # Increment planning (dogfood-7 — user picks decomposition variant)
     "apply_increment_plan",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
+    "TRANSPORT_CAP",
     "wait_for_event",
     # Model configuration validation
     "check_model_config",

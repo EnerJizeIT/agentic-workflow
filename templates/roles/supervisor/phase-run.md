@@ -47,3 +47,8 @@ Stop gates (the engine stops the run itself and writes `RUN-REPORT-*.md`
 to the outbox): budget exhausted, stop-flag on the next TODO, queue
 exhausted, two rejections of one TODO. After a stop — hand the report to
 the owner; do NOT start the next TODO past a stop-flag.
+
+Replanning (rewriting the spec, splitting a task) is your standard option —
+no owner approval required. Escalate to the owner only on the stop-list:
+twice-rejected iteration, BLOCKED without a resolution, budget, audit point.
+Record the reason for every replan/split in the run report/note.

@@ -9,6 +9,14 @@
 Контракт юнита (опциональный блок verify/gates/prove_red в TODO +
 `DONE-<id>.json`): формат в `docs/unit-contract.md`.
 
+Метрики программы: `awf metrics` — отчёт токенов/компрессий/строк +
+конверсия стоимости воркеров на референс-модель; по умолчанию кладёт
+markdown-отчёт на рабочий стол (U8).
+
+Доктрина: `.agentic/doctrine/*.md` подключается к промптам всех ролей
+автоматически (раздел «Доктрина проекта» — между инструкциями роли и
+задачей); бюджет инструкций учитывает её.
+
 ## Safety invariants (инцидент 2026-09-20)
 
 - Guard `proc.pid > 1` в `awf/_proc.py` и tripwire `_forbid_session_kill`
@@ -16,4 +24,4 @@
   это `kill(-1, sig)`, вся сессия пользователя.
 - Перед полным `pytest tests/` — green-light:
   `grep -n "pid > 1" awf/_proc.py` и `grep -n "_forbid_session_kill" tests/conftest.py`.
-- Разбор: `~/Desktop/session-crash-report-2026-09-20.md`.
+- Разбор — в архиве программы аудита 2026-09.

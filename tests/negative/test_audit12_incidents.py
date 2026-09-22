@@ -1,7 +1,7 @@
 """AUD12-04 / AUD12-05: regression tests for the audited incidents.
 
-Each test reproduces a real incident from the audit reports
-(~/Desktop/awf-audit/reports/) and asserts the SAFE behavior. On the
+Each test reproduces a real incident from the 2026-09 audit
+reports and asserts the SAFE behavior. On the
 current code these tests are RED — that is the point of the suite: the
 audited bug must be caught by the test suite, not by a live incident.
 
