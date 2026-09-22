@@ -186,6 +186,25 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # RUN5 #2: retire a rejected/abandoned TODO that stays "active"
+    # (DONE-{id}.{md,json} without the .ready signal — see awf todo-retire).
+    p_todo_retire = sub.add_parser(
+        "todo-retire",
+        help="Retire a rejected/abandoned TODO to done/<id>/ (RETIRED note, no fake signal)",
+    )
+    p_todo_retire.add_argument("todo_id", help="TODO id (e.g. TODO-0035)")
+    p_todo_retire.add_argument(
+        "--reason",
+        required=True,
+        help="Why the TODO is retired (written to the RETIRED note)",
+    )
+    p_todo_retire.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -591,6 +610,9 @@ def _run_command(args) -> int:
         if args.command == "todo-remove":
             from . import cmd_todo_remove
             return cmd_todo_remove.run(args)
+        if args.command == "todo-retire":
+            from . import cmd_todo_retire
+            return cmd_todo_retire.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):

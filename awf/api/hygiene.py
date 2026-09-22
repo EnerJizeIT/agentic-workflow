@@ -10,6 +10,11 @@ operations that leave a trace:
   never touched — an archived TODO comes back only via ``awf restore``.
 - :func:`remove_todo` deletes a TODO that never started (no ``.ready``, no
   signals, no progress); the file moves to ``done/<id>/removed-<ts>.md``.
+- :func:`retire_todo` archives a rejected/abandoned ACTIVE TODO (battle
+  case TODO-0035: reject leaves ``DONE-<id>.{md,json}`` without the
+  ``.ready`` signal, so the TODO stays "active" forever) — the files move
+  to ``done/<id>/`` with a ``RETIRED-<ts>.md`` note; no DONE signal is
+  written, and ``awf restore`` still works.
 - :func:`clear_stale_closures` is the shared helper — ``dispatch_todo``
   calls it automatically on re-dispatch of the same number.
 """
@@ -22,11 +27,12 @@ from pathlib import Path
 
 from .. import paths, todos
 from .._log import log as _log
+from ..pipeline_state import read_state
 from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import require_agentic
-from ._results import RemoveTodoResult, UnblockResult
+from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult
 
 _ID_RE = re.compile(r"^TODO-\d{4,}$")
 
@@ -211,10 +217,163 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
     )
 
 
+def _unique_name(dest_dir: Path, name: str) -> str:
+    """A name that does not exist in ``dest_dir`` yet (never overwrite).
+
+    ``PROGRESS-TODO-0001.md`` → ``PROGRESS-TODO-0001.md``, then
+    ``PROGRESS-TODO-0001-1.md``, ``PROGRESS-TODO-0001-2.md``, ...
+    """
+    candidate = name
+    stem, dot, ext = name.partition(".")
+    i = 1
+    while (dest_dir / candidate).exists():
+        candidate = f"{stem}-{i}.{ext}" if dot else f"{name}-{i}"
+        i += 1
+    return candidate
+
+
+def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResult:
+    """Archive a rejected/abandoned ACTIVE TODO — no fake DONE signal.
+
+    RUN5 #2 (battle case TODO-0035): the reject path writes
+    ``DONE-<id>.{md,json}`` / ``PROGRESS-<id>.md`` / ``REVIEW-<id>.md`` to
+    the outbox but NOT ``DONE-<id>.ready`` — ``todos.is_closed`` stays
+    false, so ``awf status`` / ``awf brief`` keep listing the TODO as
+    active forever. Neither ``unblock`` (only BLOCKED/ACK), ``todo-remove``
+    (refuses with ``.ready``) nor ``reset --orphans`` (it has PROGRESS)
+    covers this state.
+
+    Moves the TODO's files to ``done/<id>/`` — the same archive
+    ``awf restore`` reads, so the recovery path survives:
+
+    - ``inbox/TODO-<id>.md``      → ``done/<id>/TODO.md`` (restore shape)
+    - ``inbox/TODO-<id>.ready``   → ``done/<id>/`` (kept, not deleted)
+    - ``outbox/PROGRESS-<id>.*``  → ``done/<id>/``
+    - ``outbox/DONE-<id>.{md,json}`` (NOT ``.ready``) → ``done/<id>/``
+    - ``outbox/REVIEW-<id>.*``    → ``done/<id>/``
+
+    (canonical and legacy short id forms). Writes
+    ``done/<id>/RETIRED-<timestamp>.md`` with the reason, who (supervisor),
+    time and the moved-file list, and logs to the orchestrator log.
+
+    Refusals (clear errors, nothing moved):
+    - no ``TODO-<id>.md`` in inbox and no ``done/<id>/TODO.md`` — not found;
+    - ``done/<id>/TODO.md`` exists — already archived (use ``awf restore``);
+    - a live pipeline on this id (PID alive + ``state/current.yaml``
+      ``todo_id``) — ``awf kill`` or wait first;
+    - empty ``reason`` — required (it becomes the RETIRED note body).
+    """
+    _validate_id(todo_id)
+    reason = (reason or "").strip()
+    if not reason:
+        raise AwfApiError(
+            "reason is required — it is written to the RETIRED note "
+            "(why the TODO is retired)"
+        )
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    inbox = paths.inbox(project_dir)
+    outbox = paths.outbox(project_dir)
+    md = inbox / f"{todo_id}.md"
+    done_dir = paths.done_dir(project_dir) / todo_id
+    archived_md = done_dir / "TODO.md"
+
+    if archived_md.is_file():
+        extra = (
+            f" and a second copy sits in inbox/{md.name} — inspect manually"
+            if md.is_file()
+            else ""
+        )
+        raise AwfApiError(
+            f"{todo_id} is already archived (done/{todo_id}/TODO.md{extra}) — "
+            "use awf restore to bring an archived TODO back."
+        )
+    if not md.is_file():
+        raise AwfApiError(
+            f"{todo_id}.md not found in inbox and no done/{todo_id}/TODO.md — "
+            "nothing to retire."
+        )
+
+    # Live pipeline on THIS id: the engine owns the files right now.
+    # A pipeline on another id does not touch this TODO's files — allowed.
+    running, pid, _tail = check_pipeline_running(project_dir)
+    if running:
+        state = read_state(project_dir)
+        if isinstance(state, dict) and state.get("todo_id") == todo_id:
+            raise AwfApiError(
+                f"a live pipeline is running on {todo_id} (pid {pid}) — "
+                "wait for it to finish or awf kill first"
+            )
+
+    short = short_id(todo_id)
+    ids = (todo_id, short) if short != todo_id else (todo_id,)
+
+    # (source, archive name) pairs — inbox first, then outbox artifacts.
+    candidates: list[tuple[Path, str]] = [(md, "TODO.md")]
+    ready = inbox / f"{todo_id}.ready"
+    if ready.is_file():
+        candidates.append((ready, ready.name))
+    for tid in ids:
+        candidates.extend(
+            (p, p.name) for p in sorted(outbox.glob(f"PROGRESS-{tid}.*")) if p.is_file()
+        )
+        for ext in (".md", ".json"):
+            p = outbox / f"DONE-{tid}{ext}"
+            if p.is_file():
+                candidates.append((p, p.name))
+        candidates.extend(
+            (p, p.name) for p in sorted(outbox.glob(f"REVIEW-{tid}.*")) if p.is_file()
+        )
+
+    done_dir.mkdir(parents=True, exist_ok=True)
+    moved: list[str] = []
+    pairs: list[tuple[str, str]] = []  # (from, to) — project-relative
+    for src, name in candidates:
+        target = done_dir / _unique_name(done_dir, name)
+        shutil.move(str(src), str(target))
+        to_rel = target.relative_to(project_dir).as_posix()
+        moved.append(to_rel)
+        pairs.append((src.relative_to(project_dir).as_posix(), to_rel))
+
+    ts = _timestamp()
+    note = done_dir / f"RETIRED-{ts}.md"
+    note_lines = [
+        f"# RETIRED: {todo_id}",
+        "",
+        f"- when: {ts}",
+        "- by: supervisor (awf todo-retire)",
+        f"- reason: {reason}",
+        "",
+        "## Moved to archive",
+        "",
+    ]
+    note_lines += [f"- {src} → {to}" for src, to in pairs]
+    note_lines.append("")
+    note.write_text("\n".join(note_lines), encoding="utf-8")
+    note_rel = note.relative_to(project_dir).as_posix()
+
+    _log(
+        paths.logs_dir(project_dir),
+        f"retire: {todo_id} — {len(moved)} file(s) → "
+        f"done/{todo_id}/ (note: RETIRED-{ts}.md, reason: {reason})",
+    )
+    return RetireTodoResult(
+        todo_id=todo_id,
+        moved=moved,
+        retired_note=note_rel,
+        message=(
+            f"{todo_id} retired: {len(moved)} file(s) → done/{todo_id}/ "
+            f"(note: RETIRED-{ts}.md)."
+        ),
+    )
+
+
 __all__ = [
     "closure_files",
     "clear_stale_closures",
     "has_done_closure",
     "remove_todo",
+    "retire_todo",
     "unblock_todo",
 ]

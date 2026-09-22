@@ -723,6 +723,12 @@ def execute_supervisor_stage(
             rejected_todo = current_todo  # AUD04-04: the REVIEW belongs to THIS todo
             print(f"Supervisor REJECTED work on {current_todo} (REVIEW signal).", file=sys.stderr)
             _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
+            # RUN5 #1 (leak-gate): the REVIEW-signal path rejects without
+            # api.reject_commit — snapshot the attempt's untracked files
+            # here too (best-effort, never fails the cycle).
+            from .reject_files import snapshot_rejected_files
+
+            snapshot_rejected_files(project_dir, rejected_todo, logs_dir)
             replan_stage = Stage(name="replan", role="supervisor", kind="replan")
             try:
                 _run_supervisor_stage(

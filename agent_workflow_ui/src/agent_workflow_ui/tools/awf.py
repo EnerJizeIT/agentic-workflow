@@ -480,6 +480,34 @@ async def awf_todo_remove(
     )
 
 
+async def awf_todo_retire(
+    todo_id: str,
+    reason: str = "",
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Retire a rejected/abandoned TODO that stays "active" (RUN5 #2).
+
+    The reject path writes ``DONE-{id}.{md,json}`` to the outbox WITHOUT the
+    ``DONE-{id}.ready`` signal, so ``todos.is_closed`` stays false and
+    ``awf_status``/``awf_brief`` keep listing the TODO as active forever
+    (battle case TODO-0035). This moves the TODO's files (``.md``,
+    ``.ready``, ``PROGRESS-*``, ``DONE-*.md/.json`` without ``.ready``,
+    ``REVIEW-*``) to ``done/<id>/`` and writes a ``RETIRED-<timestamp>.md``
+    note with the reason — no fake closure signal is written, and
+    ``awf_restore`` still brings the TODO back.
+
+    Refusals: no TODO file in inbox or done/; already archived
+    (``done/<id>/TODO.md``); a live pipeline on this id (kill/wait first);
+    empty ``reason`` (required — it is the RETIRED note body).
+    """
+    return await _exec(
+        api.retire_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        reason=reason,
+    )
+
+
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     """Current run (забег) state: position, budget left, rejects, stop reason."""
     return await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
@@ -883,6 +911,17 @@ async def awf_approve(
                     "the next run. Check awf_status. Wait for the user before "
                     "the next TODO."
                 )
+        # RUN5 #1 (Part B): failsafe — rejected-attempt files that would be
+        # SILENTLY excluded from this commit. Warning only: the approve went
+        # through, nothing is auto-committed.
+        orphaned = list(getattr(result, "orphaned_files", None) or [])
+        if orphaned:
+            response["orphaned_files"] = orphaned
+            response["warning"] = (
+                f"{len(orphaned)} file(s) of a rejected attempt would NOT be "
+                f"committed: {', '.join(orphaned)}. Re-issue the unit with "
+                "carry_over_from=<rejected id>, or commit them consciously."
+            )
         return response
     except api.AwfApiError as e:
         return _err(e)
@@ -934,6 +973,16 @@ async def awf_reject(
                 "the REVIEW stays in the outbox: the next awf_continue reports it, "
                 "so dispatch the refined TODO and continue."
             )
+        # RUN5 #1 (leak-gate): the rejected attempt's untracked files were
+        # recorded — tell the supervisor how the retry keeps them.
+        reject_files = list(getattr(result, "reject_files", None) or [])
+        if reject_files:
+            next_action += (
+                f" When re-issuing the retry, pass carry_over_from={todo_id} — "
+                f"{len(reject_files)} untracked file(s) of the rejected attempt "
+                f"were recorded (REJECT-{todo_id}.files) and will join the "
+                "retry's commit."
+            )
         return {
             "status": "ok",
             "todo_id": todo_id,
@@ -941,6 +990,7 @@ async def awf_reject(
             "rejects": result.rejects,
             "run_stopped": result.run_stopped,
             "report_file": result.report_file,
+            "reject_files": reject_files,
             "next_action": next_action,
         }
     except api.AwfApiError as e:
@@ -1215,6 +1265,7 @@ async def awf_dispatch_todo(
     role: str | None = None,
     todo_id: str | None = None,
     pipeline: str | None = None,
+    carry_over_from: str | None = None,
 ) -> dict[str, Any]:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -1238,10 +1289,17 @@ async def awf_dispatch_todo(
         pipeline: Optional pipeline name (RUN3 #2) — written into the TODO's
             front-matter as ``pipeline: <name>``. When awf_run_next launches
             this TODO without a queue-level pipeline, it uses this one.
+        carry_over_from: RUN5 #1 (leak-gate) — id of a REJECTED TODO whose
+            untracked files this retry re-claims. Its
+            ``.agentic/context/REJECT-<origin>.files`` paths are excluded
+            from the new baseline's untracked snapshot, so the retry's
+            commit includes them. Use this when re-issuing a rejected unit.
+            Refused (no side effects) when the origin TODO or its REJECT
+            file is missing.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
-        of paths created).
+        of paths created), carry_over_from, carry_over_files.
     """
     try:
         result = api.dispatch_todo(
@@ -1250,6 +1308,7 @@ async def awf_dispatch_todo(
             role=role,
             todo_id=todo_id,
             pipeline=pipeline,
+            carry_over_from=carry_over_from,
         )
         response = _ok(result)
         # SMO: next_action + pre-check warnings guide weak models
@@ -1264,6 +1323,13 @@ async def awf_dispatch_todo(
         else:
             response["next_action"] = (
                 f"{result.todo_id} dispatched. Call awf_start(background=True) to launch pipeline."
+            )
+        if getattr(result, "carry_over_files", None):
+            response["next_action"] = (
+                f"{result.todo_id} dispatched with carry-over from "
+                f"{result.carry_over_from}: {len(result.carry_over_files)} "
+                "file(s) of the rejected attempt will join the retry commit. "
+                "Call awf_start(background=True) to launch pipeline."
             )
         return response
     except api.AwfApiError as e:

@@ -190,7 +190,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-43 инструмента: 38 `awf_*` workflow + 5 UI (формы).
+45 инструментов: 40 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -248,6 +248,7 @@ $ awf start --pipeline audit-llm
 | `awf_restore` | Вернуть заархивированный TODO обратно в inbox |
 | `awf_unblock` | Снять stale BLOCKED/ACK-закрытия — перевыданный TODO снова виден |
 | `awf_todo_remove` | Удалить не стартовавший TODO (след в `done/<id>/removed-<ts>.md`) |
+| `awf_todo_retire` | Вывести отклонённый/брошенный TODO, застрявший «активным» (RETIRED-заметка в `done/<id>/`) |
 
 **`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
 лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой
@@ -262,6 +263,16 @@ $ awf start --pipeline audit-llm
 стартовал — нет dispatch-`.ready`, сигналов и прогресса. Файл переносится в
 `done/<id>/removed-<timestamp>.md`, след остаётся. Если есть `.ready` или любой
 сигнал/прогресс — отказ с подсказкой `awf unblock` / `awf reset --orphans`.
+
+**`awf_todo_retire`** (CLI `awf todo-retire TODO-NNNN --reason "…"`). Reject-путь
+пишет в outbox `DONE-<id>.{md,json}`, но НЕ сигнал `DONE-<id>.ready` — из-за этого
+отклонённый TODO вечно «активен» в `awf status` (нет закрытия, нет архива). Retire
+переносит файлы TODO (`TODO-<id>.md`, `.ready`, `PROGRESS-*`, `DONE-*.md/.json` без
+`.ready`, `REVIEW-*`) в `done/<id>/` и пишет `done/<id>/RETIRED-<timestamp>.md` с
+причиной, кем и когда — без фейкового DONE-сигнала. Отказы: нет файла TODO ни в inbox,
+ни в `done/`; уже архивирован (`done/<id>/TODO.md`); живой пайплайн на этом id
+(`awf kill` или дождаться); пустая `--reason` (обязательна). `awf restore` по-прежнему
+возвращает retired-TODO.
 
 ### Verify
 | Tool | Что делает |

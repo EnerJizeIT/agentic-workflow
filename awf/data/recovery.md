@@ -5,6 +5,7 @@ One recipe per situation. Check `awf_status` first.
 - **Stale BLOCKED holds a task** → `awf_unblock TODO-NNNN`, or answer with `awf_continue --ack TODO-NNNN`.
 - **TODO archived without work** → `awf_restore TODO-NNNN`.
 - **TODO never started** → `awf_todo_remove TODO-NNNN`.
+- **Rejected/abandoned TODO stuck active** (DONE without the `.ready` signal) → `awf todo-retire TODO-NNNN --reason "…"`; back via `awf_restore`.
 - **No checkpoint needed** → `no_checkpoints=True` on `awf_start` or `awf_run_start`.
 - **MCP / network hangs** → bash: `python3 -m awf <command> --project-dir <path>`.
 - **Lost context / new session** → `awf brief`.

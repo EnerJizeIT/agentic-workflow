@@ -286,3 +286,70 @@ class TestArchiveDoneJson:
         assert (dest / "DONE.json").is_file()
         assert not (outbox / f"DONE-{TODOS}.json").exists()
         assert list(outbox.iterdir()) == []
+
+
+# ─── reject-leak warning (RUN5 #1, TODO-0052) ────────────────────────────
+
+
+class TestRejectLeakSection:
+    """Part B: the pack must loudly warn about rejected-attempt files that
+    would be silently excluded from the commit."""
+
+    RETRY = "TODO-0002"
+
+    def _with_leak(self, repo: Path, baseline_untracked: str | None = "src/a.py\n") -> None:
+        (repo / ".agentic" / "context" / f"REJECT-{TODOS}.files").write_text("src/a.py\n")
+        if baseline_untracked is not None:
+            (repo / ".agentic" / "context" / f"BASELINE-{self.RETRY}.untracked").write_text(
+                baseline_untracked
+            )
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "a.py").write_text("x\n")
+
+    def test_warns_on_orphaned_files(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        self._with_leak(repo)
+
+        section = vp._reject_leak_section(repo, self.RETRY)
+        assert section.status == "pass"  # a warning, not a verdict failure
+        assert section.measured is True
+        assert any("WARNING" in ln for ln in section.lines)
+        assert any("src/a.py" in ln for ln in section.lines)
+        assert "carry_over_from" in " ".join(section.lines)
+
+    def test_skipped_without_reject_files(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        section = vp._reject_leak_section(repo, self.RETRY)
+        assert section.status == "skipped"
+        assert section.measured is False
+
+    def test_no_warning_after_carry_over(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        self._with_leak(repo, baseline_untracked="stale.txt\n")  # a.py excluded
+
+        section = vp._reject_leak_section(repo, self.RETRY)
+        assert section.status == "pass"
+        assert section.measured is True
+        assert not any("WARNING" in ln for ln in section.lines)
+
+    def test_no_warning_without_baseline_untracked(self, tmp_path: Path) -> None:
+        """No BASELINE-<todo>.untracked → the gate would include all
+        untracked → nothing is lost → no warning."""
+        repo = _proj(tmp_path)
+        self._with_leak(repo, baseline_untracked=None)
+        section = vp._reject_leak_section(repo, self.RETRY)
+        assert section.status == "pass"
+        assert not any("WARNING" in ln for ln in section.lines)
+
+    def test_full_pack_carries_the_warning(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        self._with_leak(repo)
+
+        res = vp.verify_pack(repo, self.RETRY)
+        assert res.sections["reject_leak"] == "pass"
+        report = (repo / ".agentic" / "context" / f"GATES-{self.RETRY}.md").read_text(
+            encoding="utf-8"
+        )
+        assert "reject_leak" in report
+        assert "WARNING" in report and "src/a.py" in report
+        assert "carry_over_from" in report

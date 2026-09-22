@@ -40,4 +40,44 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/unit/test_brief.py; the TODO-0051.md dispatch file) and two files
 # over 400 lines (awf/brief.py — card assembly; tests/unit/test_brief.py
 # — its test suite). Same class as above: identifiers, not debt.
+# RUN5-2026-09-22 (#1): baseline raised 2911 -> 2978 — the leak-gate unit
+# (TODO-0052) adds 68 TODO-bearing lines (one removed in awf/verify_pack.py
+# docstring renumbering): TODO-0052/TODO-0001/TODO-0002 test ids in
+# tests/unit/test_reject_files.py (22), tests/unit/test_commit_gate.py (10),
+# test_awf_tools.py (+9), test_api.py (+4), test_verify_pack.py (+3), unit-id
+# references in awf/reject_files.py (new module, 13), api/pipeline.py,
+# api/dispatch.py, api/_results.py, pipeline_engine.py, tools/awf.py.
+# Same class as above: test identifiers and unit-id references, not debt.
+# RUN5-2026-09-22 (#1) QA: baseline raised 2978 -> 2993 — the run_next
+# leak-gate fix adds 15 TODO-bearing test ids: TestRunNextCarryOver in
+# tests/unit/test_run.py (TODO-0001/TODO-0002 dispatch+run ids) and
+# TestCarryOverLinkLifecycle in tests/unit/test_reject_files.py (TODO-0002).
+# The production fix (api/run.py, api/dispatch.py) carries no TODO id.
+# Same class as above: test identifiers, not debt.
+# RUN5-2026-09-22 (#2): baseline raised 2993 -> 3157, files_over_400
+# raised 48 -> 49 — the todo-retire unit (TODO-0053) adds 164 TODO-bearing
+# lines: TestRetireTodo in tests/unit/test_todo_hygiene.py (88, battle-case
+# ids TODO-0035/TODO-0001/TODO-00010/TODO-0099), TestTodoRetireEntrypoint in
+# test_cli_entrypoints.py (13), TestAwfTodoRetire in test_awf_tools.py (12),
+# unit-id references in awf/api/hygiene.py docstrings/comments (20), USAGE
+# EN/RU (13), tools/awf.py + cli.py + cmd_todo_retire.py + api/__init__.py
+# docstrings (15), tool_map/recovery/server/smoke entries (5). Same class as
+# above: test identifiers and unit-id references, not debt. The +1 file over
+# 400 is tests/unit/test_todo_hygiene.py (259 -> 495 — its test suite, same
+# class as tests/unit/test_brief.py in the RUN4 #1 raise).
+# RUN5-2026-09-22 (#2) QA: baseline raised 3157 -> 3172 — the QA round adds
+# test_retire_restore_retire_roundtrip_keeps_history in
+# tests/unit/test_todo_hygiene.py (15 TODO-bearing lines, battle-case id
+# TODO-0035) locking the retire → restore → retire cycle: suffixed copies,
+# two RETIRED notes, no overwrite. Same class as above: test identifiers,
+# not debt.
+# RUN5-2026-09-22 (#3): baseline raised 3172 -> 3176 — the release-prep unit
+# (TODO-0054) expands the CHANGELOG [Unreleased] section into the full [1.2.0]
+# section. The new section adds 5 TODO-bearing lines (the intro's "TODO
+# retirement", the per-item-pipeline example TODO-0023 + "the TODO's
+# front-matter", state-hygiene's "a re-issued TODO" / "a TODO that never
+# started", the brief's "active TODOs", the retire's "a rejected/abandoned
+# TODO"), replacing the old [Unreleased]'s one such line (the brief's "active
+# TODOs", kept verbatim). Net +4. Same class as above: unit identifiers in the
+# changelog, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

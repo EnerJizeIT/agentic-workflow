@@ -312,6 +312,98 @@ class TestAwfReject:
         assert "todo_id" in result["error"]
 
 
+# ─── awf_dispatch_todo carry_over_from (RUN5 #1, TODO-0052) ──────────────
+
+
+class TestDispatchCarryOverParam:
+    """The MCP dispatch tool must expose carry_over_from and proxy it to the
+    api (so a retry can pull the rejected attempt's files into its commit)."""
+
+    def test_param_proxied_to_api(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            carry_over_from = "TODO-0001"
+            carry_over_files = ["src/a.py"]
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "carry_over_from": self.carry_over_from,
+                    "carry_over_files": self.carry_over_files,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None):
+            captured["carry_over_from"] = carry_over_from
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# retry",
+            project_dir=str(mcp_project),
+            carry_over_from="TODO-0001",
+        ))
+        assert result["status"] == "ok"
+        assert captured["carry_over_from"] == "TODO-0001", (
+            "carry_over_from must be proxied to api.dispatch_todo"
+        )
+        assert result["carry_over_files"] == ["src/a.py"]
+
+    def test_absent_param_defaults_none(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            carry_over_from = None
+            carry_over_files = []
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "carry_over_from": self.carry_over_from,
+                    "carry_over_files": self.carry_over_files,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None):
+            captured["carry_over_from"] = carry_over_from
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        run(awf.awf_dispatch_todo(content="# t", project_dir=str(mcp_project)))
+        assert captured["carry_over_from"] is None
+
+    def test_error_propagates(self, mcp_project, monkeypatch):
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None):
+            raise api.AwfApiError("REJECT-TODO-0001.files not found")
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# retry",
+            project_dir=str(mcp_project),
+            carry_over_from="TODO-0001",
+        ))
+        assert result["status"] == "error"
+        assert "REJECT-TODO-0001" in result["error"]
+
+
 # ─── awf_report ─────────────────────────────────────────────────────────
 
 
@@ -1366,6 +1458,73 @@ class TestAwfFeedback:
         )
         assert result["status"] == "error"
         assert "type" in result["error"]
+
+
+class TestAwfTodoRetire:
+    """RUN5 #2: awf_todo_retire — MCP parity with `awf todo-retire` (CLI)."""
+
+    def _ghost(self, project: Path) -> None:
+        """mcp_project ships TODO-0001 (md + .ready); add the reject tail."""
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(exist_ok=True)
+        (outbox / "DONE-TODO-0001.md").write_text("worker claim")
+        (outbox / "REVIEW-TODO-0001.md").write_text("rejected")
+
+    def test_params_are_proxied(self, monkeypatch):
+        calls: list[dict] = []
+
+        def spy_retire(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "retire_todo", spy_retire)
+
+        result = run(
+            awf.awf_todo_retire(
+                todo_id="TODO-0035",
+                reason="rejected at verify",
+                project_dir="/tmp",
+            )
+        )
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls, "api.retire_todo was not called"
+        assert calls[0]["todo_id"] == "TODO-0035"
+        assert calls[0]["reason"] == "rejected at verify"
+
+    def test_empty_reason_returns_error_dict(self, mcp_project):
+        self._ghost(mcp_project)
+
+        result = run(
+            awf.awf_todo_retire(todo_id="TODO-0001", project_dir=str(mcp_project))
+        )
+
+        assert result["status"] == "error"
+        assert "reason" in result["error"]
+        assert (mcp_project / ".agentic" / "inbox" / "TODO-0001.md").is_file()
+
+    def test_retire_ghost_ok(self, mcp_project):
+        self._ghost(mcp_project)
+
+        result = run(
+            awf.awf_todo_retire(
+                todo_id="TODO-0001",
+                reason="rejected at verify",
+                project_dir=str(mcp_project),
+            )
+        )
+
+        assert result["status"] == "ok"
+        inbox = mcp_project / ".agentic" / "inbox"
+        assert not (inbox / "TODO-0001.md").exists()
+        assert not (inbox / "TODO-0001.ready").exists()
+        done_dir = mcp_project / ".agentic" / "done" / "TODO-0001"
+        assert (done_dir / "TODO.md").is_file()
+        assert list(done_dir.glob("RETIRED-*.md"))
+        assert (
+            [t["todo_id"] for t in api.get_status(mcp_project).active_todos]
+            == []
+        )
 
 
 class TestCurrentStepLiveProject:

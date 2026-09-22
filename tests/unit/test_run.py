@@ -1070,3 +1070,74 @@ class TestQueuePipelines:
 
         report = Path(result.report_file).read_text(encoding="utf-8")
         assert "**Queue:** TODO-0001 (audit-llm), TODO-0002 — 0/2 done" in report
+
+
+# ─── run_next × leak-gate carry-over (RUN5 #1) ────────────────────────────
+
+
+class TestRunNextCarryOver:
+    """RUN5 #1 (leak-gate): run_next re-baselines the TODO it launches. For a
+    carry-over retry that re-baseline must KEEP the exclusion dispatch set —
+    otherwise the rejected attempt's files land back in
+    BASELINE-{id}.untracked and the commit gate drops them from the retry
+    commit (the original leak, back through the run path)."""
+
+    def _setup_retry(self, proj: Path) -> None:
+        (proj / ".gitignore").write_text(".agentic/\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=proj, check=True)
+        # rejected attempt: baseline before the file, then the file, then reject
+        _write_todo(proj, "TODO-0001")
+        api.create_baseline(proj, "TODO-0001")
+        (proj / "src").mkdir()
+        (proj / "src" / "a.py").write_text("attempt\n", encoding="utf-8")
+        rejected = api.reject_commit(proj, "TODO-0001", "nope")
+        assert rejected.reject_files == ["src/a.py"]
+        # retry dispatched with carry-over
+        api.dispatch_todo(
+            proj,
+            "# TODO-0002\nretry\n",
+            todo_id="TODO-0002",
+            carry_over_from="TODO-0001",
+        )
+
+    def test_carry_over_survives_run_next_rebaseline(
+        self, tmp_git_repo, monkeypatch
+    ):
+        proj = _project(tmp_git_repo)
+        self._setup_retry(proj)
+        untracked_file = (
+            proj / ".agentic" / "context" / "BASELINE-TODO-0002.untracked"
+        )
+        assert "src/a.py" not in untracked_file.read_text(encoding="utf-8")
+
+        api.run_start(proj, queue=["TODO-0002"])
+        _fake_start(monkeypatch, proj)
+        result = api.run_next(proj)
+        assert result.action == "started"
+
+        lines = untracked_file.read_text(encoding="utf-8").splitlines()
+        assert "src/a.py" not in lines, (
+            "RUN5 #1: run_next re-baseline wiped the carry-over exclusion — "
+            "the rejected attempt's file drops out of the retry commit"
+        )
+
+    def test_plain_dispatch_unchanged_by_run_next(self, tmp_git_repo, monkeypatch):
+        """Without carry-over the re-baseline lists all untracked (legacy)."""
+        proj = _project(tmp_git_repo)
+        (proj / ".gitignore").write_text(".agentic/\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=proj, check=True)
+        (proj / "stale.txt").write_text("pre-existing\n", encoding="utf-8")
+        api.dispatch_todo(proj, "# TODO-0001\nplain\n", todo_id="TODO-0001")
+
+        api.run_start(proj, queue=["TODO-0001"])
+        _fake_start(monkeypatch, proj)
+        result = api.run_next(proj)
+        assert result.action == "started"
+
+        lines = (
+            proj / ".agentic" / "context" / "BASELINE-TODO-0001.untracked"
+        ).read_text(encoding="utf-8").splitlines()
+        assert "stale.txt" in lines
+        assert not (proj / ".agentic" / "context" / "BASELINE-TODO-0001.carry_over").exists()

@@ -62,6 +62,7 @@ def dispatch_todo(
     role: str | None = None,
     todo_id: str | None = None,
     pipeline: str | None = None,
+    carry_over_from: str | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -83,6 +84,12 @@ def dispatch_todo(
             the TODO's contract block as ``pipeline: <name>`` (the block is
             created when absent). When an ``awf_run_next`` launch has no
             queue-level pipeline, it uses this one.
+        carry_over_from: RUN5 #1 (leak-gate) — the id of a REJECTED TODO
+            whose untracked files this retry re-claims. The paths recorded
+            in ``.agentic/context/REJECT-<origin>.files`` are excluded from
+            the new baseline's untracked snapshot, so the retry's commit
+            includes them. Refused (before any side effect) when the origin
+            TODO or its REJECT file does not exist.
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
@@ -92,8 +99,9 @@ def dispatch_todo(
         DispatchTodoResult with todo_id, baseline_sha, files written.
 
     Raises:
-        AwfApiError: if .agentic/ missing, content empty, or a DONE
-            closure for ``todo_id`` is still in the outbox.
+        AwfApiError: if .agentic/ missing, content empty, a DONE
+            closure for ``todo_id`` is still in the outbox, or a
+            ``carry_over_from`` origin cannot be validated.
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -118,6 +126,16 @@ def dispatch_todo(
 
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # RUN5 #1 (leak-gate): validate the carry-over BEFORE reserving the id —
+    # a refused carry-over must leave no side effects (no TODO, no baseline).
+    carry_over: set[str] = set()
+    carry_over_files: list[str] = []
+    if carry_over_from:
+        from ..reject_files import resolve_carry_over
+
+        carry_over_files = resolve_carry_over(project_dir, carry_over_from)
+        carry_over = set(carry_over_files)
 
     # Whether the CALLER fixed the id (explicit collisions must raise,
     # auto-picked ones may retry with the next free id).
@@ -240,11 +258,41 @@ def dispatch_todo(
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status)
     try:
-        baseline = create_baseline(project_dir, todo_id)
+        baseline = create_baseline(project_dir, todo_id, carry_over=carry_over)
     except Exception:
         # Rollback: remove TODO .md if baseline fails (prevents orphan TODO)
         md_path.unlink(missing_ok=True)
         raise
+
+    # RUN5 #1 (leak-gate): audit trail — which rejected origin this retry's
+    # baseline carried over. Best-effort: a failed write must not undo the
+    # dispatch (the baseline already excluded the paths).
+    if carry_over:
+        from .._log import log as _log
+
+        try:
+            atomic_write_text(
+                paths.context_dir(project_dir) / f"BASELINE-{todo_id}.carry_over",
+                f"{carry_over_from}\n",
+            )
+            _log(
+                paths.logs_dir(project_dir),
+                f"dispatch: {todo_id} — carried over {len(carry_over_files)} "
+                f"untracked file(s) from rejected {carry_over_from} (leak-gate)",
+            )
+        except OSError as e:
+            _log(
+                paths.logs_dir(project_dir),
+                f"dispatch: {todo_id} — carry-over audit link not written: {e}",
+            )
+    else:
+        # RUN5 #1 (leak-gate): a non-carry-over (re-)dispatch rewrites the
+        # baseline WITHOUT the exclusion — drop any stale link from an earlier
+        # carry-over dispatch of the same id, so a later re-baseline (awf
+        # run_next) does not re-apply an exclusion that no longer holds.
+        (
+            paths.context_dir(project_dir) / f"BASELINE-{todo_id}.carry_over"
+        ).unlink(missing_ok=True)
 
     # RUN3 #4: re-dispatch of the same number must not stay hidden behind
     # stale BLOCKED/ACK closures — clear them via the shared helper.
@@ -275,6 +323,8 @@ def dispatch_todo(
             *baseline.files_created,
         ],
         pre_check_warnings=pre_check_warnings,
+        carry_over_from=carry_over_from,
+        carry_over_files=carry_over_files,
     )
 
 
