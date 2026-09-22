@@ -403,6 +403,21 @@ def approve_commit(
         paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)
         atomic_write_text(verified_file, f"{verified_fp}\n")
 
+    # RUN5 #1 (Part B): failsafe — list rejected-attempt files that would be
+    # SILENTLY excluded from this commit (still untracked AND in the
+    # baseline's untracked snapshot). Warning only: the approve is NOT
+    # blocked and nothing is auto-committed — the supervisor re-issues with
+    # carry_over_from or commits consciously.
+    orphaned: list[str] = []
+    try:
+        from ..reject_files import orphaned_reject_files
+
+        orphaned = sorted(
+            {p for _origin, ps in orphaned_reject_files(project_dir, todo_id) for p in ps}
+        )
+    except Exception:
+        orphaned = []  # best-effort failsafe — never blocks the approve
+
     return ApproveResult(
         todo_id=todo_id,
         signal_file=str(signal),
@@ -415,6 +430,7 @@ def approve_commit(
             if conflict
             else ""
         ),
+        orphaned_files=orphaned,
     )
 
 
@@ -441,6 +457,15 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
     review_file = outbox / f"REVIEW-{todo_id}.md"
     atomic_write_text(
         review_file, f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n"
+    )
+
+    # RUN5 #1 (Part A.1): record the attempt's untracked new files so a
+    # re-dispatch can carry them over (leak-gate). Best-effort by design —
+    # the snapshot never fails the reject, it logs and returns [].
+    from ..reject_files import snapshot_rejected_files
+
+    rejected_files = snapshot_rejected_files(
+        project_dir, todo_id, paths.logs_dir(project_dir)
     )
 
     from .. import run_state as _run_state
@@ -495,17 +520,28 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         run_stopped=run_stopped,
         report_file=report_file,
         message=message,
+        reject_files=rejected_files,
     )
 
 
 # ─── create_baseline ────────────────────────────────────────────────────
 
 
-def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
+def create_baseline(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    carry_over: set[str] | None = None,
+) -> BaselineResult:
     """Create BASELINE-{todo_id}.{sha,status,tests.log,env.log} snapshot.
 
     Captures git HEAD SHA, working tree status, test output, and Python
     environment. Used for A1 commit isolation and rollback targets.
+
+    ``carry_over`` (RUN5 #1, leak-gate): paths to EXCLUDE from the
+    ``BASELINE-{todo_id}.untracked`` snapshot — files of a rejected attempt
+    the caller deliberately re-claims, so the commit gate includes them in
+    this unit's commit instead of treating them as pre-existing.
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
@@ -538,6 +574,14 @@ def create_baseline(project_dir: Path, todo_id: str) -> BaselineResult:
         untracked = git_utils.git_stdout(
             project_dir, "ls-files", "--others", "--exclude-standard", check=False,
         )
+        # RUN5 #1 (leak-gate): drop carried-over paths from the snapshot so
+        # the commit gate treats them as THIS unit's work (it would
+        # otherwise exclude them as "pre-existing" and silently lose the
+        # rejected attempt's files from the retry commit).
+        if carry_over:
+            untracked = "\n".join(
+                ln for ln in untracked.splitlines() if ln.strip() not in carry_over
+            )
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
     else:
         sha = "(not a git repo)"

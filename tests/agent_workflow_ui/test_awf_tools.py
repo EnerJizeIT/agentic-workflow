@@ -312,6 +312,98 @@ class TestAwfReject:
         assert "todo_id" in result["error"]
 
 
+# ─── awf_dispatch_todo carry_over_from (RUN5 #1, TODO-0052) ──────────────
+
+
+class TestDispatchCarryOverParam:
+    """The MCP dispatch tool must expose carry_over_from and proxy it to the
+    api (so a retry can pull the rejected attempt's files into its commit)."""
+
+    def test_param_proxied_to_api(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            carry_over_from = "TODO-0001"
+            carry_over_files = ["src/a.py"]
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "carry_over_from": self.carry_over_from,
+                    "carry_over_files": self.carry_over_files,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None):
+            captured["carry_over_from"] = carry_over_from
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# retry",
+            project_dir=str(mcp_project),
+            carry_over_from="TODO-0001",
+        ))
+        assert result["status"] == "ok"
+        assert captured["carry_over_from"] == "TODO-0001", (
+            "carry_over_from must be proxied to api.dispatch_todo"
+        )
+        assert result["carry_over_files"] == ["src/a.py"]
+
+    def test_absent_param_defaults_none(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            carry_over_from = None
+            carry_over_files = []
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "carry_over_from": self.carry_over_from,
+                    "carry_over_files": self.carry_over_files,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None):
+            captured["carry_over_from"] = carry_over_from
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        run(awf.awf_dispatch_todo(content="# t", project_dir=str(mcp_project)))
+        assert captured["carry_over_from"] is None
+
+    def test_error_propagates(self, mcp_project, monkeypatch):
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None):
+            raise api.AwfApiError("REJECT-TODO-0001.files not found")
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# retry",
+            project_dir=str(mcp_project),
+            carry_over_from="TODO-0001",
+        ))
+        assert result["status"] == "error"
+        assert "REJECT-TODO-0001" in result["error"]
+
+
 # ─── awf_report ─────────────────────────────────────────────────────────
 
 

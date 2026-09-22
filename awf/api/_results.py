@@ -109,6 +109,11 @@ class ApproveResult:
     verified_sha_file: str = ""  # U11 (B5): context/VERIFIED-{todo}.sha, on match
     # AUD05-05 (rest): non-empty when a reject won the race ('approved' ⇒ rejects == 0)
     message: str = ""
+    # RUN5 #1 (Part B): rejected-attempt files that would be SILENTLY
+    # excluded from this commit (still untracked AND in the baseline's
+    # untracked list). The approve itself is NOT blocked — the list is the
+    # loud warning (re-issue with carry_over_from, or commit consciously).
+    orphaned_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -124,6 +129,10 @@ class RejectResult:
     run_stopped: bool = False
     report_file: str = ""
     message: str = ""
+    # RUN5 #1 (Part A.1): untracked NEW files of the rejected attempt,
+    # recorded to context/REJECT-{todo}.files (leak-gate). Empty when the
+    # attempt created no new files or the snapshot could not be taken.
+    reject_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -217,6 +226,9 @@ class DispatchTodoResult:
     role_hint: str | None
     files_written: list[str]
     pre_check_warnings: list[str] = field(default_factory=list)
+    # RUN5 #1 (Part A.2): leak-gate carry-over for a retry.
+    carry_over_from: str | None = None  # the rejected origin TODO id
+    carry_over_files: list[str] = field(default_factory=list)  # paths pulled in
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

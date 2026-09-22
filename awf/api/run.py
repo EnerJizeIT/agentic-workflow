@@ -621,7 +621,24 @@ def run_next(
 
         from .pipeline import create_baseline
 
-        create_baseline(project_dir, next_id)
+        # RUN5 #1 (leak-gate): this re-baseline would wipe the carry-over
+        # exclusion dispatch set for a retry — re-apply it from the
+        # BASELINE-{id}.carry_over link (the origin's recorded paths).
+        # Link-read failure must not kill the re-baseline (best-effort).
+        carry_over: set[str] | None = None
+        link = paths.context_dir(project_dir) / f"BASELINE-{next_id}.carry_over"
+        try:
+            if link.is_file():
+                origin = link.read_text(encoding="utf-8").strip()
+                if origin:
+                    from ..reject_files import read_reject_files
+
+                    recorded = read_reject_files(project_dir, origin)
+                    if recorded is not None:
+                        carry_over = set(recorded)
+        except OSError:
+            carry_over = None
+        create_baseline(project_dir, next_id, carry_over=carry_over)
     except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 

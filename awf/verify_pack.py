@@ -17,13 +17,18 @@ Sections (each: status + details + denominator):
 3. ``diff`` — files changed vs ``BASELINE-<todo>.sha`` (list +
    insertions/deletions), cross-checked with the TODO contract's ``files``
    list when declared.
-4. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
+4. ``reject_leak`` — RUN5 #1 failsafe: files of a REJECTED attempt
+   (``REJECT-*.files``) that would be SILENTLY excluded from this unit's
+   commit (still untracked AND in ``BASELINE-<todo>.untracked``) are listed
+   as a WARNING with the fix (``carry_over_from``). A warning, not a
+   verdict failure — the pack never commits anything.
+5. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
    each with a timeout (``run_tree``).
-5. ``prove_red`` — the contract's ``prove_red`` list through
+6. ``prove_red`` — the contract's ``prove_red`` list through
    :func:`awf.prove_red.prove_red`; the verdict goes into the report.
-6. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
+7. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
    explicitly marked as executor data (unverified).
-7. ``lint`` — ``ruff check .``.
+8. ``lint`` — ``ruff check .``.
 
 Verdict / exit code: 0 = every measured check passed, 1 = at least one
 failure, 2 = nothing was measured at all (no baseline, no contract, no
@@ -324,6 +329,58 @@ def _diff_section(project: Path, todo_id: str, contract: dict | None) -> Section
     return s
 
 
+def _reject_leak_section(project: Path, todo_id: str) -> Section:
+    """RUN5 #1 (Part B): warn about rejected-attempt files that would be
+    silently excluded from this unit's commit.
+
+    A path is "orphaned" when it is listed in some ``REJECT-<origin>.files``,
+    is still untracked, AND is in ``BASELINE-<todo_id>.untracked`` — the exact
+    triple the commit gate uses to drop it from the commit. The section is a
+    WARNING (status "pass", not "fail"): it surfaces the leak and the fix
+    (``carry_over_from``) but never blocks or commits anything.
+    """
+    ctx = paths.context_dir(project)
+    has_reject = ctx.is_dir() and any(ctx.glob("REJECT-*.files"))
+    if not has_reject:
+        return Section(
+            name="reject_leak",
+            status="skipped",
+            lines=["skipped — no REJECT-*.files (nothing rejected with untracked work)"],
+        )
+
+    from .reject_files import orphaned_reject_files
+
+    orphaned = orphaned_reject_files(project, todo_id)
+    if not orphaned:
+        return Section(
+            name="reject_leak",
+            status="pass",
+            measured=True,
+            lines=["no orphaned rejected-attempt files"],
+            detail="no leak",
+        )
+
+    lines = [
+        f"WARNING: files of a rejected attempt would be SILENTLY EXCLUDED from "
+        f"the {todo_id} commit (still untracked AND in BASELINE-{todo_id}.untracked):"
+    ]
+    for origin, files in orphaned:
+        for f in files:
+            lines.append(f"- {f}  (from {origin})")
+    lines.append(
+        "Fix: re-issue with carry_over_from=<origin> so the retry commit "
+        "includes them, or commit them consciously. Nothing is auto-committed."
+    )
+    n = sum(len(f) for _o, f in orphaned)
+    return Section(
+        name="reject_leak",
+        status="pass",
+        measured=True,
+        lines=lines,
+        detail=f"WARNING: {n} orphaned file(s) would be excluded from the commit",
+    )
+
+
 def _contract_tests_section(project: Path, contract: dict | None, timeout: int) -> Section:
     cmds = (contract or {}).get("verify")
     if not isinstance(cmds, list) or not cmds:
@@ -564,6 +621,7 @@ def verify_pack(
         _gates_section(project, gate_timeout),
         _safety_section(project),
         _diff_section(project, todo_id, contract),
+        _reject_leak_section(project, todo_id),
         _contract_tests_section(project, contract, cmd_timeout),
         _prove_red_section(project, todo_id, contract, tmp_base),
         _done_json_section(project, todo_id, logs_dir),

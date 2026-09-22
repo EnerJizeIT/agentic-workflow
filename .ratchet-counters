@@ -40,4 +40,18 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/unit/test_brief.py; the TODO-0051.md dispatch file) and two files
 # over 400 lines (awf/brief.py — card assembly; tests/unit/test_brief.py
 # — its test suite). Same class as above: identifiers, not debt.
+# RUN5-2026-09-22 (#1): baseline raised 2911 -> 2978 — the leak-gate unit
+# (TODO-0052) adds 68 TODO-bearing lines (one removed in awf/verify_pack.py
+# docstring renumbering): TODO-0052/TODO-0001/TODO-0002 test ids in
+# tests/unit/test_reject_files.py (22), tests/unit/test_commit_gate.py (10),
+# test_awf_tools.py (+9), test_api.py (+4), test_verify_pack.py (+3), unit-id
+# references in awf/reject_files.py (new module, 13), api/pipeline.py,
+# api/dispatch.py, api/_results.py, pipeline_engine.py, tools/awf.py.
+# Same class as above: test identifiers and unit-id references, not debt.
+# RUN5-2026-09-22 (#1) QA: baseline raised 2978 -> 2993 — the run_next
+# leak-gate fix adds 15 TODO-bearing test ids: TestRunNextCarryOver in
+# tests/unit/test_run.py (TODO-0001/TODO-0002 dispatch+run ids) and
+# TestCarryOverLinkLifecycle in tests/unit/test_reject_files.py (TODO-0002).
+# The production fix (api/run.py, api/dispatch.py) carries no TODO id.
+# Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

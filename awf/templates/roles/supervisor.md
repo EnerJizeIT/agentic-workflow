@@ -390,6 +390,10 @@ Use `awf_dispatch_todo(project_dir, content, role=...)` — writes TODO-NNNN.md
 + creates BASELINE snapshot + writes .ready signal in ONE call. Replaces
 manual 3-step workflow.
 
+When re-issuing a rejected unit, pass `carry_over_from=<rejected id>` — the
+rejected attempt's untracked files (REJECT-<id>.files) join the retry commit;
+without the parameter they silently drop out of it.
+
 ### Step 5 · Start pipeline → dashboard auto-opens → go idle
 
 1. `awf_start(project_dir, background=True)` — pipeline launches detached,

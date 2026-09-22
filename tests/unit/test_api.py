@@ -206,6 +206,24 @@ class TestApproveCommit:
         with pytest.raises(api.AwfApiError, match="No .agentic/"):
             api.approve_commit(tmp_git_repo, "TODO-0010")
 
+    def test_orphaned_reject_files_are_reported(self, tmp_git_repo):
+        """RUN5 #1 (Part B): approve must loudly list rejected-attempt files
+        that would be silently excluded from the commit."""
+        ctx = tmp_git_repo / ".agentic" / "context"
+        ctx.mkdir(parents=True)
+        (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
+        (tmp_git_repo / "a.py").write_text("x\n")
+        (ctx / "REJECT-TODO-0001.files").write_text("a.py\n")
+        (ctx / "BASELINE-TODO-0001.untracked").write_text("a.py\n")
+
+        result = api.approve_commit(tmp_git_repo, "TODO-0001")
+        assert result.orphaned_files == ["a.py"]
+
+    def test_no_orphaned_files_by_default(self, tmp_git_repo):
+        (tmp_git_repo / ".agentic").mkdir()
+        result = api.approve_commit(tmp_git_repo, "TODO-0001")
+        assert result.orphaned_files == []
+
 
 # ─── create_baseline ────────────────────────────────────────────────────
 
