@@ -424,6 +424,59 @@ class TestNoCheckpointsFlag:
         assert run_state.read_run(proj)["no_checkpoints"] is True
 
 
+class TestRunNextForegroundNoCheckpoints:
+    """TODO-0067 (RUN9 #3): the run's no_checkpoints flag must also silence
+    the foreground BD-36 guard in start_pipeline — the guard saw only the
+    launch parameter, so the direct API path run_next(background=False)
+    got a false refusal even though the engine skips the checkpoint for
+    no_checkpoints runs anyway (pipeline_engine run_flag)."""
+
+    def test_no_checkpoints_run_foreground_reaches_launch(self, tmp_git_repo, monkeypatch):
+        proj = _project(tmp_git_repo)
+        _write_todo(proj)
+        api.run_start(proj, queue=["TODO-0001"], no_checkpoints=True)
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+        # The guard is bypassed inside a background child — the test must be
+        # deterministic whether it runs in a plain shell or a pipeline worker.
+        monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+
+        calls: list = []
+
+        def fake_run_pipeline(args):
+            calls.append(args)
+            return 0
+
+        monkeypatch.setattr("awf.orchestrator.run_pipeline", fake_run_pipeline)
+
+        result = api.run_next(proj, background=False)
+
+        assert result.action == "started"
+        assert "Foreground mode incompatible" not in result.message
+        assert len(calls) == 1
+        assert calls[0].no_checkpoints is True
+
+    def test_run_without_flag_foreground_still_refused(self, tmp_git_repo, monkeypatch):
+        """DF6-5 behavior for checkpointed runs: the refusal stays."""
+        proj = _project(tmp_git_repo)
+        _write_todo(proj)
+        api.run_start(proj, queue=["TODO-0001"])
+        monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
+        monkeypatch.delenv("AWF_NO_CHECKPOINTS", raising=False)
+        # Same determinism note as the sibling test above.
+        monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+
+        def fake_run_pipeline(args):
+            raise AssertionError("refusal must fire before run_pipeline")
+
+        monkeypatch.setattr("awf.orchestrator.run_pipeline", fake_run_pipeline)
+
+        result = api.run_next(proj, background=False)
+
+        assert result.action == "refused"
+        assert "Foreground mode incompatible" in result.message
+
+
 class TestRunStartSafety:
     """A1/A6: ghost-proof start — path validation, force replace, path echo."""
 

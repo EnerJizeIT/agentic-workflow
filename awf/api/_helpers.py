@@ -12,6 +12,33 @@ from pathlib import Path
 from .. import git_utils, paths
 from ._errors import AwfApiError
 
+# Cyrillic transliteration for role slugs. Canonical home (FU-14): the
+# plugin's _slugify imports slugify() from here, so core and plugin
+# produce one slug for the same name. The JS slugify() in
+# project-setup.html.j2 must keep the same map (cross-check:
+# tests/agent_workflow_ui/test_slugify.py).
+_CYRILLIC_MAP = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
+    "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
+    "й": "y", "к": "k", "л": "l", "м": "m", "н": "n",
+    "о": "o", "п": "p", "р": "r", "с": "s", "т": "t",
+    "у": "u", "ф": "f", "х": "h", "ц": "ts", "ч": "ch",
+    "ш": "sh", "щ": "sch", "ъ": "", "ы": "y", "ь": "",
+    "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def slugify(name: str) -> str:
+    """Transliterate Cyrillic to Latin, then reduce to a filesystem slug.
+
+    Lowercases, maps Cyrillic via ``_CYRILLIC_MAP``, replaces every
+    remaining character outside ``[a-z0-9_-]`` with a dash (no collapse),
+    strips edge dashes. Returns ``""`` when nothing usable remains.
+    """
+    lower = name.strip().lower()
+    transliterated = "".join(_CYRILLIC_MAP.get(c, c) for c in lower)
+    return re.sub(r"[^a-z0-9_-]", "-", transliterated).strip("-")
+
 
 def slugify_role(name: str) -> str:
     """Normalize a role name to its saved file slug.
@@ -20,12 +47,13 @@ def slugify_role(name: str) -> str:
     stages, the config.yaml ``models.<role>`` keys, and the role-file
     lookup must all agree on the same slug, or runtime lookups miss.
 
-    Custom roles are saved by the plugin as ``auditor.md`` (lowercased,
-    non-alphanumerics dashed). Mirrors the ASCII subset of the plugin's
-    ``_slugify``; falls back to the raw name when nothing usable remains
-    (the pipeline loader warns about the mismatch).
+    Custom roles are saved by the plugin via the same transliteration
+    (FU-14: the plugin's ``_slugify`` delegates to :func:`slugify`), so
+    both sides produce one slug — ``QA Лид`` → ``qa-lid`` everywhere.
+    Falls back to the raw name when nothing usable remains (the pipeline
+    loader warns about the mismatch).
     """
-    slug = re.sub(r"[^a-z0-9_-]", "-", name.strip().lower()).strip("-")
+    slug = slugify(name)
     return slug or name.strip()
 
 

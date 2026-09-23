@@ -31,6 +31,7 @@ AI-агенты для кода мощные, но хаотичные. Прыг�
 ```bash
 # 1. Установка
 pip install awf agent-workflow-ui
+# После установки доступна консольная команда `awf` (или `python -m awf`)
 
 # 2. Настройка opencode — добавь в ~/.config/opencode/opencode.json:
 # {

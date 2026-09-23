@@ -10,6 +10,8 @@
 # this is the fix for issue #1. The AWF_FRAMEWORK_DIR env var provides an
 # escape hatch for users who `cp bin/awf` somewhere else and remove the
 # source tree.
+# For installed users the `awf` console command comes from the wheel
+# ([project.scripts] in pyproject.toml), not from this wrapper.
 set -euo pipefail
 
 if ! command -v python3 &>/dev/null; then

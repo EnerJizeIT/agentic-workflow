@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
+import time
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +20,7 @@ import yaml
 from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf import api, cli
+from awf.pipeline_state import write_state
 
 
 def _git_repo(tmp_path: Path) -> Path:
@@ -511,6 +515,103 @@ class TestReportEntrypoint:
         assert rc == 1, out
         assert "Traceback" not in out
         assert ".agentic" in out
+
+
+class TestKillEntrypoint:
+    """RUN9 #1: ``awf kill`` — the CLI twin of the MCP ``awf_kill`` tool.
+
+    Recovery without MCP: with the MCP server down a stuck pipeline had to
+    be killed from the terminal; the command calls the same
+    ``api.kill_pipeline`` the MCP tool uses (RUN8 #2: pipeline + worker).
+    """
+
+    def test_kill_without_agentic_returns_1(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        capsys.readouterr()
+
+        rc = cli.main(["kill", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert "Traceback" not in out
+        assert ".agentic" in out
+
+    def test_kill_no_pipeline_returns_0(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliKill")
+        capsys.readouterr()
+
+        rc = cli.main(["kill", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "No running pipeline" in out
+
+    def test_kill_kills_live_dummy_pipeline(self, tmp_path, capsys):
+        """A live dummy with a ``python -m awf start`` argv: the real
+        liveness identity check must accept it (QA .14 — a bare
+        ``sleep 300`` would be refused as a recycled PID)."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliKillLive")
+
+        # A fake ``awf`` package: from its directory ``python -m awf start``
+        # is a real living process whose /proc cmdline is exactly what
+        # _liveness.resolve looks for (``-m awf start|continue``).
+        fake = tmp_path / "fake_awf"
+        (fake / "awf").mkdir(parents=True)
+        (fake / "awf" / "__main__.py").write_text(
+            "import time\ntime.sleep(300)\n", encoding="utf-8"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "awf", "start", "--project-dir", "/x"],
+            cwd=str(fake),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            write_state(repo, pipeline_pid=proc.pid)
+            capsys.readouterr()
+
+            rc = cli.main(["kill", "--project-dir", str(repo)])
+
+            out = capsys.readouterr().out
+            assert rc == 0, out
+            assert str(proc.pid) in out
+            assert "killed" in out.lower()
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and proc.poll() is None:
+                time.sleep(0.2)
+            assert proc.poll() is not None, "dummy pipeline survived awf kill"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_kill_failure_returns_1(self, tmp_path, capsys):
+        """An explicit kill failure is an error (rc=1), not a silent no-op.
+
+        No process involved: the API result is pinned, the contract under
+        test is the CLI's rc mapping (Part A.1 of the unit: «Failed to
+        kill» → rc=1)."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliKillFail")
+        capsys.readouterr()
+
+        with patch(
+            "awf.cmd_kill.api.kill_pipeline",
+            return_value={
+                "killed": False,
+                "pid": 4242,
+                "workers": {},
+                "message": "Failed to kill PID 4242.",
+            },
+        ):
+            rc = cli.main(["kill", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert "Failed to kill" in out
 
 
 class TestApproveEvidenceFlag:

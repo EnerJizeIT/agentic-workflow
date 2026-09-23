@@ -32,6 +32,11 @@ Homepage = "https://github.com/EnerJizeIT/agentic-workflow"
 Repository = "https://github.com/EnerJizeIT/agentic-workflow"
 Issues = "https://github.com/EnerJizeIT/agentic-workflow/issues"
 
+[project.scripts]
+# Console entry: pip install awf → `awf` (same main as `python -m awf`,
+# awf/cli.py::main). bin/awf is the in-repo wrapper and stays untouched.
+awf = "awf.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",

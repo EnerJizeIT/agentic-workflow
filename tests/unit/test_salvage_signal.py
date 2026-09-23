@@ -128,12 +128,29 @@ class TestSalvageSignalDetection:
                 timeout=1,
             )
 
-    def test_verify_still_works_after_salvage_fix(self, project):
-        """Regression: verify kind still detects signals (not broken by salvage fix)."""
+    def test_verify_still_works_after_salvage_fix(self, project, monkeypatch):
+        """Regression: verify kind still detects signals (not broken by salvage fix).
+
+        TODO-0068: the signal is written on the first poll iteration (time.sleep
+        hook, pattern from tests/negative/test_run_evidence_gate.py) — i.e.
+        strictly after the wait's wall_start. The old version pre-wrote the
+        file, which raced the AUD04-04 whole-second freshness gate
+        (_decision_signal_fresh): if the write and the call straddled a second
+        boundary the just-written signal read stale and the wait timed out —
+        a 2s TimeoutError flake under xdist -n auto, never standalone.
+        timeout=10 is a safety margin only: the wait ends on the second
+        poll iteration.
+        """
         inbox = project / ".agentic" / "inbox"
         todo_id = "TODO-0001"
+        written = {"n": 0}
 
-        (inbox / f"APPROVE-{todo_id}.ready").write_text("")
+        def fake_sleep(*_a, **_kw):
+            if written["n"] == 0:
+                written["n"] = 1
+                (inbox / f"APPROVE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr("time.sleep", fake_sleep)
 
         result = wait_for_supervisor_signal(
             kind="verify",
@@ -141,7 +158,7 @@ class TestSalvageSignalDetection:
             project_dir=project,
             logs_dir=project / ".agentic" / "logs",
             poll_interval=0,
-            timeout=2,
+            timeout=10,
         )
 
         assert result == f"APPROVE-{todo_id}"

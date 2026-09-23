@@ -77,3 +77,4 @@ jobs:
           /tmp/pip-smoke/bin/pip install --quiet "${GITHUB_WORKSPACE}"/dist/awf-*.whl
           /tmp/pip-smoke/bin/python -c "import awf, pathlib; p = pathlib.Path(awf.__file__).parent / 'data' / 'role_zones.yaml'; assert p.is_file(), f'missing {p} — package-data drift'; print('awf', awf.__version__)"
           /tmp/pip-smoke/bin/python -m awf --help
+          /tmp/pip-smoke/bin/awf --help
