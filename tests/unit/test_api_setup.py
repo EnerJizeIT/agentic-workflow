@@ -385,11 +385,11 @@ class TestRoleSlugify:
         stages = api.setup.build_pipeline_stages([{"agent": "agent-qa-review"}])
         assert "agent-qa-review" in [s["role"] for s in stages]
 
-    def test_cyrillic_falls_back_to_raw(self):
-        """Cyrillic is transliterated by the plugin; the loader warns if not."""
+    def test_cyrillic_transliterated(self):
+        """FU-14: core transliterates Cyrillic like the plugin (one slug)."""
         from awf.api.setup import _slugify_role
 
-        assert _slugify_role("Аудитор") == "Аудитор"
+        assert _slugify_role("Аудитор") == "auditor"
 
 
 # ─── AUD06-02/03: corrupted config.yaml must survive a submit ─────────────
