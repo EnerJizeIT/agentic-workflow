@@ -243,7 +243,8 @@ class TestCardSections:
         assert "## What's new" in r.text
         section = latest_changelog()
         if section:  # repo layout: CHANGELOG.md is present
-            assert "## [Unreleased]" in r.text
+            heading = section.splitlines()[0].strip()
+            assert heading in r.text
 
     def test_feedback_line(self, live_project):
         r = api.brief(live_project)
