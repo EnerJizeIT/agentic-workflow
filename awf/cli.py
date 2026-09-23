@@ -403,6 +403,18 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    # RUN9 #1: the CLI twin of the MCP awf_kill tool — a stuck pipeline
+    # is stoppable from the terminal even when the MCP server is down.
+    p_kill = sub.add_parser(
+        "kill",
+        help="Kill the running pipeline AND its stage worker (recovery without MCP)",
+    )
+    p_kill.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_metrics = sub.add_parser(
         "metrics", help="U8: token/cost metrics of the work program (report to desktop)"
     )
@@ -675,6 +687,9 @@ def _run_command(args) -> int:
         if args.command == "report":
             from . import cmd_report
             return cmd_report.run(args)
+        if args.command == "kill":
+            from . import cmd_kill
+            return cmd_kill.run(args)
         if args.command == "pipeline-write":
             from . import cmd_pipeline_write
             return cmd_pipeline_write.run(args)

@@ -22,6 +22,7 @@ groups:
       - mcp: awf_retry_stage
         when: "retry the salvage stage"
       - mcp: awf_kill
+        cli: kill
         when: "stop a stuck pipeline"
   - title: check
     tools:

@@ -8,5 +8,5 @@ One recipe per situation. Check `awf_status` first.
 - **Unit never started** → `awf_todo_remove <id>`.
 - **Rejected unit stuck active** (DONE without `.ready`) → `awf todo-retire <id> --reason "…"`.
 - **No checkpoint needed** → `no_checkpoints=True` (Defaults, above).
-- **MCP / network hangs** → bash: `python3 -m awf <command> --project-dir <path>`.
+- **MCP / network hangs** → bash: `python3 -m awf <command> --project-dir <path>` — stuck pipeline: `awf kill --project-dir <path>` (the CLI twin of `awf_kill`).
 - **Lost context / new session** → `awf brief`.
