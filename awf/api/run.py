@@ -654,6 +654,13 @@ def run_next(
         timeout=timeout,
         pipeline=launch_pipeline,  # RUN3 #2: per-item pipeline (None = config)
         todo_id=next_id,  # NEG-2026-09-19 R1: queue order is pinned, not "newest active"
+        # RUN9 #3 (TODO-0067): the RUN flag — the engine skips the BD-36
+        # checkpoint for no_checkpoints runs anyway (pipeline_engine
+        # run_flag), so the pre-launch foreground guard must see it too or
+        # the direct API path run_next(background=False) gets a false
+        # refusal. Background behavior is unchanged (flag was a no-op there:
+        # the engine's run_flag already covered the checkpoint).
+        no_checkpoints=bool(state.get("no_checkpoints")),
     )
 
     if result.run_mode in ("noop", "error"):
