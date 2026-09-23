@@ -2,4 +2,4 @@
 
 # AUD16-07: must match [project] version in pyproject.toml —
 # tests/unit/test_version_sync.py pins both.
-__version__ = "1.2.0"
+__version__ = "1.3.0"

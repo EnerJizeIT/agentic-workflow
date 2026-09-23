@@ -5,7 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] — 2026-09-23
+
+Four autonomous work programs (RUN6–RUN9): supervisor-focused polish. `awf brief`
+gains defaults and scenarios; recovery paths pin their unit and terminate the
+stage worker; the `awf` console command and the wait cap become first-class.
+
+### Added
+- **`done` event** — `awf_wait_for_event` answers `done` with the exact next command when a cycle completes (state cleared + process gone + a finished commit/archive); no more `git log` to know the pipeline finished
+- **Onboarding** — `awf brief` carries Defaults (checkpoint on/off, what "pipeline finished" means, `run_next` gating, several active tasks in a run are normal, USAGE link) and five Scenarios with exact steps; the plugin system-prompt block has a single source in the repo (`agents_md.py`, self-healing on plugin start, "start with `awf_brief`"); the global skill `awf-supervisor` ships the full doctrine; tool descriptions and responses lead to the next step
+- **`awf todo-update <id>`** (MCP `awf_todo_update`) — edit an existing task keeping its number (backup in `context/`, refuses once started)
+- **MCP `awf_tree_sha`** — the verify-ritual fingerprint inside the typed contour (same value as the CLI twin)
+- **`awf kill` in the CLI** — recovery without MCP; the same guarded API as the tool
+- **Console command `awf`** — the wheel installs the entry point (CI smoke included); `python -m awf` still works
+- **Wait cap from config** — `wait.cap_seconds` / `AWF_WAIT_CAP` (default 55s); `suggested_timeout` adapts to measured stage durations up to the cap
+
+### Changed
+- **Dashboard renders the actual pipeline of the running task** — the engine records the resolved pipeline name; state → run queue → task front-matter → default; a pipeline chip shows the name (fixes roles from another pipeline appearing)
+- **`awf_status` in a run** — a waiting run queue is reported neutrally ("items wait for a turn") instead of the destructive stale warning; the stale "raise the mcp timeout" advice appears only at the default cap
+- **`awf_continue --ack` pins its own unit** — priority: explicit `todo_id` > ack > state > newest active; `todo_id` parity added
+- **`awf_retry_stage` pins the salvaged unit** — no more "newest active" pick after a salvage
+
+### Fixed
+- **`awf_kill` terminates the stage worker** — `kill_pid_tree` (pid>1 guard intact; the group is signaled only for the worker's own session leader) with survivor and orphan warnings; a worker that outlives a kill no longer commits into the next unit
+- **False `done` after a pipeline death** — a marker-less or salvage-counter leftover never counts as an exited cycle; an old completed cycle is not reported as the finished unit
+- **Foreground `run_next` + `no_checkpoints`** — the run flag reaches the launch guard; no false BD-36 refusal
+- **Cyrillic role slugs** — core and plugin share one transliteration (`QA Лид` → `qa-lid`)
+- **Atomic log rotation** — unique archive names (`<name>.<µs-stamp>-<pid>`) plus prune; concurrent rotators no longer lose lines
+- **Salvage-signal test flake** — the real freshness-gate race removed (the signal is written after the wait starts)
 
 ## [1.2.0] — 2026-09-22
 
