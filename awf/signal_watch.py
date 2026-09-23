@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from . import _net, _proc
@@ -138,6 +139,7 @@ def run_subprocess_until_signal(
     no_output_timeout: float | None = None,
     opencode_config: str | Path | None = None,
     log_name: str | None = None,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess:
     """BD-20: run subprocess, watch for signal files, wait for natural exit.
 
@@ -185,6 +187,12 @@ def run_subprocess_until_signal(
             exactly, so the name no longer is guessed from argv (which used
             to produce three forms the dashboard glob could not match).
             None → ``worker-output.out``.
+        on_spawn: RUN8 #2 — optional callback invoked with the worker pid
+            right after Popen (BEFORE the wait loop). Callers use it to
+            record the pid in state: the worker lives in its own process
+            group, so a pipeline-only kill leaves it running (the
+            2026-09-23 orphan incident). Best-effort: a raising callback
+            is swallowed — recording must never break the run.
     """
     watch_paths = watch_paths or []
     # KAUD-4: handle hard_timeout=None (use default)
@@ -267,6 +275,13 @@ def run_subprocess_until_signal(
             # whole tree (MCP servers, node children), not just opencode.
             **_proc.start_new_session_kwargs(),
         )
+        if on_spawn is not None:
+            # RUN8 #2: record the worker pid while it is provably OUR child
+            # (the caller writes it to state for kill_pipeline).
+            try:
+                on_spawn(proc.pid)
+            except Exception:
+                pass  # best-effort — the run goes on without the record
         deadline = time.monotonic() + hard_timeout
         signal_seen_at: float | None = None
 
