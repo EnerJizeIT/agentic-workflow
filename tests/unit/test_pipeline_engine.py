@@ -257,6 +257,8 @@ class TestP2RetryStage:
 
         write_state(tmp_git_repo, salvage_stage="implement")
 
+        from awf.api._results import StartResult
+
         monkeypatch.setattr(
             api_pipeline, "kill_pipeline", lambda *a, **kw: {"killed": False}
         )
@@ -264,7 +266,13 @@ class TestP2RetryStage:
 
         def fake_continue(project_dir, **kw):
             captured.update(kw)
-            return "started"
+            return StartResult(
+                run_mode="background",
+                run_id=1234,
+                log_file=None,
+                exit_code=None,
+                message="awf continue running in background (PID 1234).",
+            )
 
         monkeypatch.setattr(api_pipeline, "continue_pipeline", fake_continue)
 
@@ -275,6 +283,113 @@ class TestP2RetryStage:
             "glob never sees it"
         )
         assert captured.get("from_stage") == "implement"
+
+    @staticmethod
+    def _mock_restart(monkeypatch, api_pipeline):
+        """Common mock: kill is a no-op, continue captures kwargs."""
+        from awf.api._results import StartResult
+
+        monkeypatch.setattr(
+            api_pipeline, "kill_pipeline", lambda *a, **kw: {"killed": False}
+        )
+        captured: dict = {}
+
+        def fake_continue(project_dir, **kw):
+            captured.update(kw)
+            return StartResult(
+                run_mode="background",
+                run_id=1234,
+                log_file=None,
+                exit_code=None,
+                message="awf continue running in background (PID 1234).",
+            )
+
+        monkeypatch.setattr(api_pipeline, "continue_pipeline", fake_continue)
+        return captured
+
+    def test_retry_stage_pins_salvage_todo(self, tmp_git_repo, monkeypatch):
+        """RUN7 #2: restart the salvaged TODO, not "newest active".
+
+        RUN5 incident: retry_stage cleared the state via the kill, and the
+        continue fell back to newest_active() — a newer TODO (0054) started
+        from QA while the salvaged one (0052) sat untouched (AUD08-02 class).
+        """
+        import awf.api.pipeline as api_pipeline
+        from awf.pipeline_state import write_state
+
+        inbox = tmp_git_repo / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        for n in ("0001", "0002", "0003"):
+            (inbox / f"TODO-{n}.md").write_text(f"# TODO-{n}\nstub\n", encoding="utf-8")
+            (inbox / f"TODO-{n}.ready").write_text("")
+
+        # Salvage state on the OLDEST active TODO.
+        write_state(
+            tmp_git_repo,
+            salvage_needed=True,
+            salvage_stage="implement",
+            todo_id="TODO-0001",
+        )
+
+        captured = self._mock_restart(monkeypatch, api_pipeline)
+        result = api_pipeline.retry_stage(tmp_git_repo, background=False)
+
+        assert captured["todo_id"] == "TODO-0001", (
+            f"retry_stage must pin the salvaged TODO, got {captured['todo_id']!r}"
+        )
+        assert captured["from_stage"] == "implement"
+        assert "TODO-0001" in result.message, (
+            f"the answer must name the restarted unit: {result.message!r}"
+        )
+
+    def test_retry_stage_falls_back_to_salvage_note(self, tmp_git_repo, monkeypatch):
+        """State has salvage_stage but no todo_id → the SALVAGE note filename is the pin."""
+        import awf.api.pipeline as api_pipeline
+        from awf.pipeline_state import write_state
+
+        inbox = tmp_git_repo / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        for n in ("0001", "0002", "0003"):
+            (inbox / f"TODO-{n}.md").write_text(f"# TODO-{n}\nstub\n", encoding="utf-8")
+            (inbox / f"TODO-{n}.ready").write_text("")
+        (inbox / "SALVAGE-TODO-0002.md").write_text("# salvage note\n", encoding="utf-8")
+
+        write_state(
+            tmp_git_repo,
+            salvage_needed=True,
+            salvage_stage="implement",
+        )
+
+        captured = self._mock_restart(monkeypatch, api_pipeline)
+        result = api_pipeline.retry_stage(tmp_git_repo, background=False)
+
+        assert captured["todo_id"] == "TODO-0002"
+        assert "TODO-0002" in result.message
+        assert not (inbox / "SALVAGE-TODO-0002.md").exists()
+
+    def test_retry_stage_without_salvage_todo_warns(self, tmp_git_repo, monkeypatch):
+        """No todo_id in state and no SALVAGE note → old unpinned behavior + a warning."""
+        import awf.api.pipeline as api_pipeline
+        from awf.pipeline_state import write_state
+
+        inbox = tmp_git_repo / ".agentic" / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        for n in ("0001", "0002", "0003"):
+            (inbox / f"TODO-{n}.md").write_text(f"# TODO-{n}\nstub\n", encoding="utf-8")
+            (inbox / f"TODO-{n}.ready").write_text("")
+
+        write_state(
+            tmp_git_repo,
+            salvage_needed=True,
+            salvage_stage="implement",
+        )
+
+        captured = self._mock_restart(monkeypatch, api_pipeline)
+        result = api_pipeline.retry_stage(tmp_git_repo, background=False)
+
+        assert captured["todo_id"] == ""  # old behavior — no pin to pass
+        assert "WARNING" in result.message
+        assert "newest-active fallback" in result.message
 
 
 class TestE2BIGGuard:

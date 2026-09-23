@@ -995,6 +995,7 @@ def continue_pipeline(
     background: bool = True,
     ack: str = "",
     no_checkpoints: bool = False,
+    todo_id: str = "",
 ) -> StartResult:
     """Resume an interrupted pipeline. Finds newest active TODO and continues.
 
@@ -1002,6 +1003,11 @@ def continue_pipeline(
     If state file has ``stage_name``, uses it as ``from_stage`` — so the
     pipeline resumes from the stage that was running when it stopped,
     NOT from stage 0 (plan).
+
+    ``todo_id``: explicit pin — the TODO to resume, overriding both the
+    state-file id and the "newest active" heuristic. ``retry_stage`` uses
+    it to restart exactly the salvaged unit (AUD08-02 class, RUN5
+    incident 2026-09-22).
 
     ``background=True`` (default) launches a detached subprocess — same
     infrastructure as ``start_pipeline``. Without this, MCP tool would
@@ -1055,10 +1061,12 @@ def continue_pipeline(
 
     # KAUD-8: Prefer todo_id from state file (accurate crash recovery)
     # over newest_active() heuristic (might pick wrong TODO if multiple active).
+    # An explicit pin (retry_stage) wins over both — the salvage unit is
+    # exactly the unit to restart, whatever "newest active" says.
     state = read_state(project_dir)
     state_todo_id = state.get("todo_id") if state else None
 
-    current_todo = state_todo_id or todos.newest_active(project_dir)
+    current_todo = (todo_id or "").strip() or state_todo_id or todos.newest_active(project_dir)
     resolution_note = ""
 
     # Day-2 review follow-up: a REVIEW left by the supervisor (the process died
@@ -1293,6 +1301,23 @@ def kill_pipeline(
     return {"killed": killed, "pid": pid, "message": msg}
 
 
+def _salvage_todo_from_inbox(project_dir: Path) -> str:
+    """TODO id from the SALVAGE-``{todo_id}``.md inbox filename (fallback).
+
+    The engine writes ``SALVAGE-{current_todo}.md`` at salvage time, so the
+    filename itself carries the unit identity even when the state file is
+    gone. Multiple notes (stale ones from earlier units) → newest by mtime.
+    """
+    inbox = paths.inbox(project_dir)
+    if not inbox.is_dir():
+        return ""
+    notes = [p for p in inbox.glob("SALVAGE-*.md") if p.is_file()]
+    if not notes:
+        return ""
+    newest = max(notes, key=lambda p: p.stat().st_mtime)
+    return newest.name[len("SALVAGE-") : -len(".md")]
+
+
 def retry_stage(
     project_dir: Path,
     *,
@@ -1306,12 +1331,22 @@ def retry_stage(
     Reads ``salvage_stage`` from state. Kills pipeline if alive. Then
     continues from that stage — effectively retrying the failed agent stage.
 
+    The restart is PINNED to the salvaged TODO (state ``todo_id``, fallback:
+    the SALVAGE note filename). Without the pin, the kill wipes the state
+    (AUD04-08 keeps only the salvage counter) and continue falls back to
+    the "newest active" heuristic — the AUD08-02 class that in the RUN5
+    incident (2026-09-22) restarted TODO-0054 from QA instead of the
+    salvaged TODO-0052. If no salvage TODO can be found the old behavior
+    stands, with a warning in the answer.
+
     Use when salvage is triggered and supervisor wants to retry instead of
     ACK (accept) or REVIEW (reject).
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    # Read the salvage state BEFORE the kill: kill_pipeline clears the state
+    # (AUD04-08 keeps only the salvage counter), and todo_id goes with it.
     state = read_state(project_dir)
     salvage_stage = state.get("salvage_stage") if state else None
 
@@ -1320,6 +1355,10 @@ def retry_stage(
             "No salvage_stage in state. awf_retry_stage only works when pipeline "
             "is in salvage. Use awf_continue(from_stage=...) for manual restart."
         )
+
+    salvage_todo = str(state.get("todo_id") or "").strip()
+    if not salvage_todo:
+        salvage_todo = _salvage_todo_from_inbox(project_dir)
 
     # Kill if running
     kill_pipeline(project_dir)
@@ -1333,14 +1372,28 @@ def retry_stage(
         except OSError:
             pass
 
-    return continue_pipeline(
+    result = continue_pipeline(
         project_dir,
         pipeline=pipeline,
         from_stage=salvage_stage,
         auto=auto,
         timeout=timeout,
         background=background,
+        todo_id=salvage_todo,
     )
+    # The answer must name what was restarted — a silently wrong pin was
+    # the incident; the supervisor sees the unit in the reply.
+    if salvage_todo:
+        result.message = (
+            f"retry_stage: restarting {salvage_todo} from stage "
+            f"'{salvage_stage}'. {result.message}"
+        )
+    else:
+        result.message = (
+            "WARNING: no salvage todo_id in state or SALVAGE note — no pin, "
+            "newest-active fallback. " + result.message
+        )
+    return result
 
 
 __all__ = [
