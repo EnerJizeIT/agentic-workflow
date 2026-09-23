@@ -14,6 +14,7 @@ from ._atomic import atomic_write_text
 from ._log import log as _log
 from .doctrine import materialize_doctrine
 from .pipeline import Stage
+from .pipeline_state import write_state
 from .signals import clean_stage_signals, expected_signal_prefixes, read_signal_for_todo
 from .supervisor import (
     build_prompt,
@@ -141,12 +142,29 @@ def run_agent_stage(
 
     if log_holder is None:
         log_holder = {}
+
+    # RUN8 #2: record the worker pid in state AT SPAWN TIME (the callback
+    # fires before the wait loop) — kill_pipeline kills the worker's
+    # process group with the pipeline (a pipeline-only kill left the
+    # orphan worker finishing the unit after the stop and its edits
+    # landing in the NEXT unit's commit). Best-effort: a failed write
+    # only degrades kill to the /proc child scan.
+    def _record_worker_pid(pid: int) -> None:
+        try:
+            write_state(
+                project_dir, logs_dir=logs_dir,
+                worker_pid=pid, worker_role=role, worker_todo=todo_id,
+            )
+        except Exception:
+            pass
+
     agent_start = time.monotonic()
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         env=awf_subprocess_env(),
         hard_timeout=hard_timeout,
         log_holder=log_holder,
+        on_spawn=_record_worker_pid,
         # AUD16-06: explicit worker log name — role and todo_id are known
         # exactly here. The dashboard glob awf-*-{todo_id}.out matches any
         # role (previously only agent-* roles were visible).

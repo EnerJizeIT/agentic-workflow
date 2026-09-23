@@ -6,6 +6,7 @@ detached subprocess via :func:`awf.api._background.start_in_background`.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -18,7 +19,7 @@ from pathlib import Path
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
-from .._proc import run_tree
+from .._proc import child_pids, kill_pid_tree, ppid_of, run_tree
 from ..pipeline_state import read_state
 from . import _liveness
 from ._background import PipelineArgs, start_in_background
@@ -31,6 +32,10 @@ from ._results import (
     RollbackResult,
     StartResult,
 )
+
+# RUN8 #2: kill_pipeline's record of what it touched — survives the state
+# clear (a separate file) and feeds the next launch's orphan warning.
+LAST_KILL_FILE = "last-kill.json"
 
 
 def _read_pid_cmdline(pid: int) -> str | None:
@@ -895,6 +900,10 @@ def start_pipeline(
         config_data, auto, no_checkpoints=no_checkpoints
     )
 
+    # RUN8 #2: a worker that outlived a previous kill may still be writing
+    # — the new unit's commit would absorb its edits. Say so in the answer.
+    orphan_warn = orphan_worker_warning(project_dir)
+
     if background:
         pid, log_file, _pid_file = start_in_background(
             project_dir,
@@ -929,6 +938,8 @@ def start_pipeline(
         # SMO: message tells supervisor to GO IDLE (not poll).
         # Dogfood #4: old message said "call awf_wait_for_event" → model polled.
         msg = f"awf start running in background (PID {pid}). GO IDLE — wait for user."
+        if orphan_warn:
+            msg = orphan_warn + " " + msg
         return StartResult(
             run_mode="background",
             run_id=pid,
@@ -976,12 +987,15 @@ def start_pipeline(
             exit_code=1,
             message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
         )
+    message = f"Pipeline completed with exit code {exit_code}"
+    if orphan_warn:
+        message = orphan_warn + " " + message
     return StartResult(
         run_mode="foreground",
         run_id=None,
         log_file=None,
         exit_code=exit_code,
-        message=f"Pipeline completed with exit code {exit_code}",
+        message=message,
     )
 
 
@@ -1237,6 +1251,11 @@ def continue_pipeline(
         if ack_note:
             msg += f" {ack_note}"
         msg += ". GO IDLE — wait for user."
+        # RUN8 #2: same orphan warning as start_pipeline — a worker that
+        # outlived a previous kill may still be writing into the resumed unit.
+        orphan_warn = orphan_worker_warning(project_dir)
+        if orphan_warn:
+            msg = orphan_warn + " " + msg
         return StartResult(
             run_mode="background",
             run_id=pid,
@@ -1270,6 +1289,10 @@ def continue_pipeline(
     message = f"Continued {current_todo}, exit code {exit_code}"
     if ack_note:
         message += f" {ack_note}"
+    # RUN8 #2: orphan warning — same rule as the background branch.
+    orphan_warn = orphan_worker_warning(project_dir)
+    if orphan_warn:
+        message = orphan_warn + " " + message
     return StartResult(
         run_mode="foreground",
         run_id=None,
@@ -1304,15 +1327,132 @@ def _clear_state_keep_salvage(project_dir: Path) -> None:
         )
 
 
+def _collect_worker_pids(
+    project_dir: Path, pipeline_pid: int
+) -> tuple[list[int], list[int]]:
+    """RUN8 #2: the stage's worker pids — collected BEFORE the pipeline dies.
+
+    Two sources, merged:
+    1. state ``worker_pid`` — recorded at spawn time (with ``worker_role``
+       / ``worker_todo`` for the report);
+    2. /proc direct children of the pipeline (Linux) — catches a worker
+       whose state record is missing (state write failed, older awf).
+
+    Every candidate must be a LIVE direct child of the pipeline at this
+    moment (the ppid check is the PID-reuse defense: a recycled number
+    that is not our child is never signaled). ``pid <= 1`` and the
+    pipeline itself are excluded. The second tuple element: live recorded
+    pids that FAILED the child check (the pipeline already died → the
+    worker was reparented — the incident's exact shape, or the number was
+    recycled). They are never signaled here — only tracked for the orphan
+    warning. Without /proc (non-Linux) the state record is accepted on
+    liveness alone (degradation, documented).
+    """
+    state = read_state(project_dir) or {}
+    try:
+        recorded = int(state.get("worker_pid"))
+    except (TypeError, ValueError):
+        recorded = 0
+    candidates = [recorded] if recorded else []
+    candidates.extend(child_pids(pipeline_pid))
+
+    verified: list[int] = []
+    unverified: list[int] = []
+    for cand in candidates:
+        if cand in verified or cand in unverified:
+            continue
+        if cand == pipeline_pid or cand <= 1:
+            continue
+        if not _liveness.probe_alive(cand):
+            continue
+        parent = ppid_of(cand)
+        if parent is None or parent == pipeline_pid:
+            verified.append(cand)
+        else:
+            unverified.append(cand)
+    return verified, unverified
+
+
+def _write_last_kill(
+    project_dir: Path,
+    pipeline_pid: int,
+    worker_results: dict[int, str],
+) -> None:
+    """RUN8 #2: persist what this kill touched — input for the next
+    launch's orphan warning (the state file itself is cleared by the
+    kill, so a separate one). Best-effort: a failed write only loses the
+    warning, never the kill."""
+    try:
+        state_dir = paths.agentic_dir(project_dir) / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pipeline_pid": pipeline_pid,
+            "workers": {str(k): v for k, v in worker_results.items()},
+        }
+        atomic_write_text(state_dir / LAST_KILL_FILE, json.dumps(record))
+    except OSError:
+        pass
+
+
+def orphan_worker_warning(project_dir: Path) -> str:
+    """RUN8 #2: warn at launch when a worker from a previous kill is alive.
+
+    Reads ``.agentic/state/last-kill.json`` (written by kill_pipeline) and
+    probes the recorded worker pids. A live pid whose cmdline still says
+    ``opencode`` (when /proc is readable) means the previous kill left an
+    orphan whose edits may land in the NEW unit. Best-effort: no file, no
+    /proc, a corrupt record → no warning, never an error.
+    """
+    try:
+        rec_file = paths.agentic_dir(project_dir) / "state" / LAST_KILL_FILE
+        record = json.loads(rec_file.read_text(encoding="utf-8"))
+        workers = record.get("workers") or {}
+        if not isinstance(workers, dict):
+            return ""
+    except (OSError, ValueError):
+        return ""
+    live: list[int] = []
+    for wpid_s in workers:
+        try:
+            wpid = int(wpid_s)
+        except (TypeError, ValueError):
+            continue
+        if wpid <= 1 or not _liveness.probe_alive(wpid):
+            continue
+        cmdline = _liveness.read_cmdline(wpid)
+        if cmdline is not None and "opencode" not in cmdline:
+            # The number was recycled for a foreign process — not our orphan.
+            continue
+        live.append(wpid)
+    if not live:
+        return ""
+    pids = ", ".join(str(p) for p in sorted(live))
+    return (
+        f"WARNING: possible orphaned worker PID {pids} from a previous kill "
+        "is still alive — its edits may land in this unit. Check it "
+        "(ps) and stop it manually if it is not part of this start."
+    )
+
+
 def kill_pipeline(
     project_dir: Path,
 ) -> dict:
-    """SELF-2: Kill running pipeline cleanly.
+    """SELF-2 / RUN8 #2: kill the running pipeline AND its stage worker.
 
-    Reads pipeline_pid from state, sends SIGTERM, waits 5s,
-    SIGKILL if still alive, clears state.
+    Reads pipeline_pid from state, sends SIGTERM, waits 5s, SIGKILL if
+    still alive, clears state. Before the pipeline is signaled the stage
+    worker is collected (state ``worker_pid`` + /proc direct children,
+    ppid re-check as PID-reuse defense); after the pipeline dies, the
+    worker's process group is killed the same way (TERM → grace → KILL,
+    pid > 1 guard). The answer names what was killed; a worker that
+    survives TERM + KILL is called out by pid — no silent orphans (the
+    2026-09-23 incident: a surviving worker finished the unit after the
+    kill and its edits landed in the NEXT unit's commit). A
+    ``last-kill.json`` record feeds the next launch's orphan warning.
 
-    Returns dict with killed (bool), pid, message.
+    Returns dict with killed (bool), pid, workers ({pid: status}),
+    message.
     """
     import os
     import signal as _signal
@@ -1327,15 +1467,22 @@ def kill_pipeline(
         _clear_state_keep_salvage(project_dir)
         return {"killed": False, "pid": None, "message": "No running pipeline found."}
 
+    # RUN8 #2: collect the worker(s) BEFORE signaling the pipeline — once
+    # the pipeline dies, children are reparented (the ppid identity check
+    # no longer works) and the state file is cleared below.
+    workers, unverified = _collect_worker_pids(project_dir, pid)
+
     killed = False
     signaled = False
     try:
         os.kill(pid, _signal.SIGTERM)
         signaled = True
-    except (ProcessLookupError, PermissionError, OSError):
+    except (ProcessLookupError, PermissionError, OverflowError, OSError):
         # AUD04-07: the process died between the liveness check and our
         # signal (a concurrent kill won the race). We did NOT kill it —
         # claiming success would hide the real killer from the log.
+        # OverflowError: a garbage pid outside the OS range (a corrupt
+        # state) — the process cannot be alive either.
         signaled = False
 
     if signaled:
@@ -1345,7 +1492,7 @@ def kill_pipeline(
                 _time.sleep(0.5)
                 try:
                     os.kill(pid, 0)
-                except (ProcessLookupError, PermissionError, OSError):
+                except (ProcessLookupError, PermissionError, OverflowError, OSError):
                     killed = True
                     break
 
@@ -1353,20 +1500,57 @@ def kill_pipeline(
                 os.kill(pid, _signal.SIGKILL)
                 _time.sleep(0.5)
                 killed = True
-        except OSError:
+        except (OverflowError, OSError):
             pass
+
+    # RUN8 #2: the worker lives in its own process group (start_new_session)
+    # and survives a pipeline-only kill — kill it explicitly, with the same
+    # TERM → grace → KILL escalation and the pid > 1 guard.
+    worker_results: dict[int, str] = {}
+    for wpid in workers:
+        worker_results[wpid] = kill_pid_tree(wpid)
+    for wpid in unverified:
+        worker_results[wpid] = "unverified"
 
     # Clear state (AUD04-08: salvage counter survives the kill)
     _clear_state_keep_salvage(project_dir)
+
+    _write_last_kill(project_dir, pid, worker_results)
+
+    if worker_results:
+        bits = [f"PID {wpid} {status}" for wpid, status in sorted(worker_results.items())]
+        worker_msg = " Workers: " + ", ".join(bits) + "."
+    else:
+        worker_msg = " Worker: not found."
+    warnings = ""
+    for wpid, status in sorted(worker_results.items()):
+        if status == "survived":
+            warnings += f" WARNING: worker PID {wpid} still alive — stop it manually."
+        elif status == "unverified":
+            warnings += (
+                f" WARNING: worker PID {wpid} from the state record is alive "
+                "but not a child of the pipeline — possible orphan, check it "
+                "manually."
+            )
 
     if not signaled:
         return {
             "killed": False,
             "pid": pid,
-            "message": f"PID {pid} already exited — nothing was killed.",
+            "workers": {str(k): v for k, v in worker_results.items()},
+            "message": (
+                f"PID {pid} already exited — nothing was killed.{worker_msg}{warnings}"
+            ),
         }
-    msg = f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
-    return {"killed": killed, "pid": pid, "message": msg}
+    msg = (
+        f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
+    ) + worker_msg + warnings
+    return {
+        "killed": killed,
+        "pid": pid,
+        "workers": {str(k): v for k, v in worker_results.items()},
+        "message": msg,
+    }
 
 
 def _salvage_todo_from_inbox(project_dir: Path) -> str:

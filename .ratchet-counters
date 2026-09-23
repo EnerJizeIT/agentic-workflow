@@ -175,4 +175,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # The +1 file over 400 is tests/unit/test_continue_resume.py
 # (337 -> 491 — its test suite), same class as the
 # test_wait_event.py / test_brief.py raises above.
+# RUN8-2026-09-23 (#2): baseline raised 3520 -> 3527, files_over_400
+# raised 53 -> 54 — the kill-kills-worker unit (TODO-0064) adds 7
+# TODO-bearing lines, all in the new tests/integration/test_kill_worker.py
+# (unit id in the module docstring, the TODO-0064 test ids: worker_todo
+# state fixture, the inbox TODO-0064.md/.ready fixtures of the
+# start-message test). Same class as above: test identifiers, not debt.
+# The +1 file over 400 is that same test file (417 — its test suite),
+# same class as the test_continue_resume.py / test_wait_event.py raises
+# above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

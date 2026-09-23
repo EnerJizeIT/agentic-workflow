@@ -1023,9 +1023,22 @@ def run_supervisor_via_subprocess(
         ]
 
     from ._env import awf_subprocess_env
+    from .pipeline_state import write_state
     from .signal_watch import run_subprocess_until_signal
 
     signal_holder: dict[str, str] = {}
+
+    # RUN8 #2: same worker-pid record as the agent stage — the supervisor
+    # subprocess is an opencode process in its own group and an
+    # awf_kill mid-stage would orphan it the same way.
+    def _record_worker_pid(pid: int) -> None:
+        try:
+            write_state(
+                project_dir, logs_dir=logs_dir,
+                worker_pid=pid, worker_role="supervisor", worker_todo=todo_id,
+            )
+        except Exception:
+            pass
 
     result = run_subprocess_until_signal(
         cmd,
@@ -1040,6 +1053,7 @@ def run_supervisor_via_subprocess(
         # preflight either — keep the supervisor flow exactly as before.
         preflight_timeout=0,
         no_output_timeout=0,
+        on_spawn=_record_worker_pid,
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")

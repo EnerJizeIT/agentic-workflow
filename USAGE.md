@@ -186,6 +186,7 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 |---|---|
 | Worker didn't signal (no DONE/BLOCKED) | Salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
+| `awf_kill` while the worker runs | Kill stops the stage TOGETHER WITH the worker (its process group). The answer names the pipeline + worker pids; a worker that survived gets a loud warning with its pid. The next `awf_start`/`awf_continue` warns about a live orphan from a previous kill — its edits would land in the new unit |
 | Orphan TODO (failed dispatch) | Not auto-cleaned. Remove with `awf_reset(orphans=True)` |
 | Commit failed (pre-commit hook) | TODO NOT archived, changes left for manual review |
 
@@ -358,7 +359,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 |---|---|
 | `awf_start` | Launch pipeline (background), dashboard opens |
 | `awf_continue` | Resume interrupted pipeline — the ack pins its own unit; for an explicit pin — `todo_id` |
-| `awf_kill` | Kill running pipeline cleanly |
+| `awf_kill` | Kill the pipeline **and the stage worker** (its process group) — the answer names both pids; a surviving worker is warned by pid |
 | `awf_retry_stage` | Kill + retry from salvage stage — restarts EXACTLY the salvage unit (TODO pinned, not "newest active") |
 | `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |
 | `awf_pipelines` | List pipelines in `.agentic/pipelines/` + the active one |

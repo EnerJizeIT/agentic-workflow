@@ -2035,17 +2035,21 @@ async def awf_check_model_config(
 async def awf_kill(
     project_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Kill running pipeline cleanly.
+    """Kill the running pipeline AND its stage worker.
 
     Reads pipeline_pid from state, sends SIGTERM, waits 5s, SIGKILL if
-    still alive, clears state. Use when pipeline is stuck or needs to stop.
+    still alive, clears state — and kills the stage worker's process group
+    the same way (RUN8 #2: a pipeline-only kill left the orphaned worker
+    writing the unit's DONE after the stop). The answer names the pipeline
+    and worker pids; a worker that survives is called out by pid. Use when
+    the pipeline is stuck or needs to stop.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
-        Dict with: killed (bool), pid, message.
+        Dict with: killed (bool), pid, workers ({pid: status}), message.
     """
     try:
         result = await asyncio.to_thread(
@@ -2053,11 +2057,24 @@ async def awf_kill(
         )
         response = {"status": "ok", **result}
         if result.get("killed"):
-            response["next_action"] = (
-                "Pipeline stopped. Check awf_status — resume with "
-                "awf_continue, or replan (awf_dispatch_todo) if the unit "
-                "needs new shape."
-            )
+            worker_flags = [
+                f"PID {wpid} ({status})"
+                for wpid, status in (result.get("workers") or {}).items()
+                if status in ("survived", "unverified")
+            ]
+            if worker_flags:
+                response["next_action"] = (
+                    "Pipeline stopped, but a worker survived — "
+                    + ", ".join(worker_flags)
+                    + ". Stop it manually (kill), check its edits, then "
+                    "resume with awf_continue."
+                )
+            else:
+                response["next_action"] = (
+                    "Pipeline stopped. Check awf_status — resume with "
+                    "awf_continue, or replan (awf_dispatch_todo) if the unit "
+                    "needs new shape."
+                )
         else:
             response["next_action"] = (
                 "No pipeline was running (nothing to stop) — start one: "
