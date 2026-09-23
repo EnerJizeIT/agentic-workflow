@@ -62,6 +62,13 @@ def _write_log(proj: Path, lines: list[str]) -> Path:
     return f
 
 
+def _archive_files(logs: Path) -> list[Path]:
+    """All rotated archives (FU-17b2: unique <name>.<stamp>-<pid> targets)."""
+    return sorted(
+        p for p in logs.iterdir() if p.name.startswith("orchestrator.log.")
+    )
+
+
 class TestIncrementalReader:
     """AUD15-01/AUD10-11: one parse of new bytes, not four full reads."""
 
@@ -237,12 +244,12 @@ class TestLogRotation:
             log(logs, f"line {i} " + "y" * 90)
 
         live = logs / "orchestrator.log"
-        archive = logs / "orchestrator.log.1"
-        assert archive.is_file()
+        archives = _archive_files(logs)
+        assert 1 <= len(archives) <= 3  # several rotations at this volume
         assert live.stat().st_size < 1024  # bounded, not 20 lines
         content = live.read_text(encoding="utf-8")
         assert "line 19" in content
-        assert "line 0" not in content  # rotated into the archive
+        assert "line 0" not in content  # rotated out of the live file
 
     def test_default_limit_without_config(self, tmp_git_repo, monkeypatch):
         import awf._log as log_mod
@@ -256,7 +263,7 @@ class TestLogRotation:
         for i in range(12):
             log(logs, f"line {i} " + "y" * 90)
 
-        assert (logs / "orchestrator.log.1").is_file()
+        assert len(_archive_files(logs)) >= 1  # rotation triggered
         assert logs.joinpath("orchestrator.log").stat().st_size < 1024
 
     def test_reader_survives_rotation(self, tmp_git_repo):
@@ -273,19 +280,22 @@ class TestLogRotation:
 
         # write until exactly ONE rotation has happened (line length varies
         # by digit count — do not hard-code "how many lines rotate")
-        archive = logs / "orchestrator.log.1"
         i = 0
-        while not archive.is_file():
+        while not _archive_files(logs):
             log(logs, f"Transition: fill {i} (rotating)")
             i += 1
             assert i < 100, "rotation never triggered"
-        assert "Pipeline complete" in archive.read_text(encoding="utf-8")
+        archives = _archive_files(logs)
+        assert len(archives) == 1  # exactly one rotation at this volume
+        assert "Pipeline complete" in "".join(
+            p.read_text(encoding="utf-8") for p in archives
+        )
 
         snap2 = read_log_snapshot(live)
 
         # bounded size + one archive copy
         assert live.stat().st_size < 512 + 64
-        assert archive.is_file()
+        assert len(_archive_files(logs)) == 1
         # pre-rotation history survived via the cold pass over the archive
         assert any(e["msg"] == "✅ Pipeline complete" for e in snap2.events)
         assert live.read_text(encoding="utf-8").count(f"fill {i - 1}") == 1

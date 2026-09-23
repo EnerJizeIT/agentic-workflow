@@ -6,9 +6,10 @@ Before this module every /api/state poll read the WHOLE log four times
 appended since the previous snapshot are parsed, and the aggregates
 (events, run spans, stage stamps, total elapsed) accumulate.
 
-Rotation (AUD15-04, orchestrator.log.1) is handled by inode tracking:
-a new inode triggers a one-time cold pass over archive + current file,
-so multi-run history survives rotation.
+Rotation (AUD15-04, orchestrator.log.<stamp>-<pid>, FU-17b2) is handled
+by inode tracking: a new inode triggers a one-time cold pass over all
+rotated archives (oldest first) + the current file, so multi-run
+history survives rotation.
 
 The writer (awf/_log.py) opens the file per line with O_APPEND — the
 file is append-only between rotations, which is what makes offset
@@ -21,6 +22,8 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from awf._log import archive_files
 
 # Event lines: [2026-08-05T15:42:19Z] message  (Z optional, as in the
 # original _parse_log_events — the fallback branch relies on it).
@@ -271,8 +274,10 @@ class OrchestratorLogReader:
         self._agg = _Aggregates()
         self._pending = b""
         self._tail = b""
-        archive = log_file.parent / (log_file.name + ".1")
-        if archive.is_file():
+        # FU-17b2: rotation now keeps several uniquely-named archives
+        # (oldest first) instead of a single .1 — feed them all so the
+        # multi-run history survives multiple rotations.
+        for archive in archive_files(log_file):
             try:
                 self._feed(archive.read_bytes())
             except OSError:

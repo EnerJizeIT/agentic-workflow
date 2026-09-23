@@ -189,4 +189,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # in the fixed test's docstring (tests/unit/test_salvage_signal.py,
 # test_verify_still_works_after_salvage_fix). Same class as above: unit
 # identifier, not debt.
+# RUN9-2026-09-23 (#6): baseline raised 3532 -> 3535, files_over_400
+# raised 54 -> 55 — the atomic-rotation unit (TODO-0070) adds 3
+# TODO-bearing lines: the TODO-0070 unit reference in the new module
+# docstring (tests/unit/test_log_rotation.py) and in awf/_log.py (the
+# DEFAULT_LOG_ARCHIVE_KEEP comment), plus the TODO-0001 worker-log
+# fixture name in the prune decoy (tests/unit/test_log_rotation.py).
+# Same class as above: unit identifiers and test fixtures, not debt.
+# The +1 file over 400 is tests/unit/test_log_reader.py (400 -> 410 —
+# the _archive_files helper after the archive-name change), same class
+# as the test suites in the raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
