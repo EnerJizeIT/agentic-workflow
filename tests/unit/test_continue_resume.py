@@ -95,6 +95,27 @@ class TestContinuePipelineResume:
 
         assert captured_args[0].from_stage == "verify"
 
+    def test_explicit_todo_pin_overrides_state_and_newest(self, project):
+        """RUN7 #2: the explicit pin (retry_stage) wins over the state todo_id
+        and the "newest active" heuristic."""
+        inbox = project / ".agentic" / "inbox"
+        (inbox / "TODO-0002.md").write_text("# TODO-0002\nstub task\n")
+        (inbox / "TODO-0002.ready").write_text("")
+        # State names the OLDER TODO; the pin says the newer one.
+        write_state(project, stage_name="implement", todo_id="TODO-0001")
+
+        captured_args: list = []
+
+        def mock_run_pipeline(args):
+            captured_args.append(args)
+            return 0
+
+        with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
+            result = continue_pipeline(project, background=False, todo_id="TODO-0002")
+
+        assert captured_args[0].todo_id == "TODO-0002"
+        assert "TODO-0002" in result.message
+
     def test_no_state_starts_from_beginning(self, project):
         """No state file → from_stage stays None → pipeline starts from 0."""
         state_file = project / ".agentic" / "state" / "current.yaml"

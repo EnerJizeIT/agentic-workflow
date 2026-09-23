@@ -158,6 +158,38 @@ def _state_describes_live_pipeline(state: dict[str, Any] | None) -> bool:
     )
 
 
+def _state_is_exited(state: dict[str, Any] | None) -> bool:
+    """RUN7 #1: does this state shape mean 'the pipeline cycle ended'?
+
+    Only two shapes count as exited:
+
+    - state is ABSENT (the file was removed — ``clear_state``), or
+    - the clean-exit leftover: no stage markers but ``phase == "done"``
+      (the orchestrator's exit rewrites the file with phase=done —
+      AUD02-04 / RUN6 #1).
+
+    A marker-less leftover WITHOUT ``phase=done`` is NOT exited — notably
+    the kill leftover from ``_clear_state_keep_salvage`` (awf/api/
+    pipeline.py): a kill after a salvage attempt clears the stage state
+    but keeps only salvage_count/salvage_count_key. The cycle evidence
+    behind a ``done`` (``done/<id>/`` or an awf commit) is project-wide,
+    not cycle-scoped, so declaring such a state exited would hand the
+    supervisor a FALSE ``done`` for a PREVIOUS cycle's TODO; in a run the
+    loop would then call awf_run_next, which refuses (the killed TODO is
+    not finished). That shape keeps the old wait behavior (idle/timeout)
+    — never a ``done`` (TODO-0061, the QA TODO-0056 finding).
+
+    Do not collapse this into ``not _state_describes_live_pipeline`` — the
+    kill leftover is exactly the marker-less shape that predicate cannot
+    tell apart from a clean exit.
+    """
+    if not state:
+        return True
+    if _state_describes_live_pipeline(state):
+        return False
+    return state.get("phase") == "done"
+
+
 def _last_completed_todo(project_dir: Path) -> tuple[str, str] | None:
     """Newest completed-cycle sign: ``(todo_id, kind)`` or None.
 
@@ -216,17 +248,25 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
 
     Fires ONLY when the pipeline is provably not running — no stage
     markers in state AND the process is dead (shared liveness resolver) —
-    AND the project shows a completed cycle (``done/<id>/`` or an awf
-    commit). Otherwise returns None and the caller keeps the old behavior
-    (idle / timeout), so a live pipeline or a mid-run state can never get
-    a false ``done``. The message carries the completed TODO and the
-    exact next command: ``awf_run_next`` inside a run,
+    AND the state shape means the cycle ended (``_state_is_exited``,
+    RUN7 #1) AND the project shows a completed cycle (``done/<id>/`` or an
+    awf commit). Otherwise returns None and the caller keeps the old
+    behavior (idle / timeout), so a live pipeline or a mid-run state can
+    never get a false ``done``. The message carries the completed TODO and
+    the exact next command: ``awf_run_next`` inside a run,
     ``awf_dispatch_todo`` outside it.
     """
     from ._liveness import resolve
 
     running, _pid, _source = resolve(project_dir)
     if running:
+        return None
+    state = read_state(project_dir)
+    if not _state_is_exited(state):
+        # RUN7 #1: a marker-less kill leftover (the salvage counter only)
+        # is not a finished cycle — the project-wide evidence would name a
+        # PREVIOUS cycle's TODO. Keep the old wait behavior, never a
+        # false 'done' for a past cycle.
         return None
     evidence = _last_completed_todo(project_dir)
     if evidence is None:
@@ -247,7 +287,7 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
             "Next step: awf_dispatch_todo(project_dir, content) for the next task."
         )
 
-    snapshot = _state_to_dict(read_state(project_dir) or {})
+    snapshot = _state_to_dict(state or {})
     snapshot["todo_id"] = todo_id
     return WaitEventResult(
         event_type="done",
@@ -278,6 +318,9 @@ def wait_for_event(
       command — ``awf_run_next`` inside a run, ``awf_dispatch_todo``
       outside it. Without a confirmed cycle the pipeline is simply not
       running → event_type ``idle`` (no more full-timeout-on-null-state).
+      A marker-less kill leftover without ``phase=done`` (only the salvage
+      counter — RUN7 #1) is NOT a finished cycle: the old wait behavior
+      (timeout), never a ``done`` for a past cycle.
     - Timeout reached → event_type ``timeout``
 
     SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous
@@ -309,14 +352,21 @@ def wait_for_event(
     deadline = time.monotonic() + timeout
     prev_state: dict[str, Any] | None = read_state(project_dir)
 
-    # No stage markers — either the state file is absent or only the
-    # clean-exit leftover (phase=done) remains (RUN6 #1). A finished cycle
-    # answers 'done' immediately; with a dead process and no sign the
-    # pipeline is simply not running ('idle') — the old
-    # full-timeout-on-null-state drain. A LIVE process without markers is
-    # mid-shutdown — the old wait behavior is kept (fall through to the
-    # poll loop), no false 'done', no false 'not running'.
-    if not _state_describes_live_pipeline(prev_state):
+    # No stage markers AND the state shape means 'cycle ended' — either the
+    # file is absent or only the clean-exit leftover (phase=done) remains
+    # (RUN6 #1 / RUN7 #1). A finished cycle answers 'done' immediately;
+    # with a dead process and no sign the pipeline is simply not running
+    # ('idle') — the old full-timeout-on-null-state drain. A marker-less
+    # leftover WITHOUT phase=done (the kill leftover with only the salvage
+    # counter, _clear_state_keep_salvage) is NOT exited — it falls through
+    # to the poll loop (the pre-RUN6 wait: timeout), never a 'done' for a
+    # past cycle. A LIVE process without markers is mid-shutdown — the old
+    # wait behavior is kept (fall through to the poll loop), no false
+    # 'done', no false 'not running'.
+    if (
+        not _state_describes_live_pipeline(prev_state)
+        and _state_is_exited(prev_state)
+    ):
         from ._liveness import resolve
 
         running, _pid, _source = resolve(project_dir)
@@ -349,15 +399,18 @@ def wait_for_event(
         # Stage markers gone (file cleared, or only the phase=done leftover
         # remains — RUN6 #1). A confirmed finished cycle answers with the
         # TODO + next step. Without a sign, declare "exited" only when the
-        # process is actually dead — a live process is mid-shutdown (the
-        # clear happens a moment before the exit), so keep polling.
+        # process is actually dead AND the state shape means the cycle
+        # ended — a live process is mid-shutdown (the clear happens a
+        # moment before the exit), and a marker-less kill leftover (the
+        # salvage counter only — RUN7 #1) keeps polling: a 'done' there
+        # would name a PREVIOUS cycle's TODO.
         if not _state_describes_live_pipeline(current_state):
             done = _cycle_done_event(project_dir)
             if done:
                 return done
             from ._liveness import resolve
 
-            if not resolve(project_dir)[0]:
+            if not resolve(project_dir)[0] and _state_is_exited(current_state):
                 return WaitEventResult(
                     event_type="done",
                     message="Pipeline exited (state file cleared). Check awf_report.",

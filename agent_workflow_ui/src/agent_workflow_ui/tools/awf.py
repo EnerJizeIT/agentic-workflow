@@ -308,7 +308,10 @@ async def awf_retry_stage(
 
     P2: When pipeline is in salvage, supervisor calls this instead of
     manual kill + continue. Reads salvage_stage from state, kills pipeline,
-    cleans salvage signals, restarts from that stage.
+    cleans salvage signals, restarts from that stage — pinned to the
+    salvaged TODO (state ``todo_id``, fallback: the SALVAGE note filename),
+    so it restarts exactly the salvage unit, not "newest active". The
+    answer names the restarted ``todo_id``.
 
     Only works when state has salvage_stage (pipeline stopped on salvage).
     For other restart scenarios, use ``awf_kill`` + ``awf_continue``.

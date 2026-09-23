@@ -359,7 +359,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_start` | Launch pipeline (background), dashboard opens |
 | `awf_continue` | Resume interrupted pipeline |
 | `awf_kill` | Kill running pipeline cleanly |
-| `awf_retry_stage` | Kill + retry from salvage stage |
+| `awf_retry_stage` | Kill + retry from salvage stage — restarts EXACTLY the salvage unit (TODO pinned, not "newest active") |
 | `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |
 | `awf_pipelines` | List pipelines in `.agentic/pipelines/` + the active one |
 

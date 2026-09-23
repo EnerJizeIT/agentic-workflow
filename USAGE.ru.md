@@ -208,7 +208,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_start` | Запуск пайплайна (background), дашборд открывается |
 | `awf_continue` | Возобновление прерванного пайплайна |
 | `awf_kill` | Чистая остановка пайплайна |
-| `awf_retry_stage` | Kill + retry со salvage-стадии |
+| `awf_retry_stage` | Kill + retry со salvage-стадии — перезапускает именно salvage-единицу (TODO закреплён, не «самый свежий активный») |
 | `awf_write_pipeline` | Записать именованный пайплайн по стадиям (config/supervisor не трогает) |
 | `awf_pipelines` | Список пайплайнов в `.agentic/pipelines/` + активный |
 
