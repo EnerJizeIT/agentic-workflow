@@ -20,6 +20,7 @@ You stay in control. The agent stays on rails.
 ```bash
 # 1. Install
 pip install awf agent-workflow-ui
+# After install the `awf` console command is available (or `python -m awf`)
 
 # 2. Configure opencode — add to ~/.config/opencode/opencode.json:
 # {
