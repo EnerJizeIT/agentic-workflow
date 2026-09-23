@@ -161,4 +161,18 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # in USAGE EN/RU (1+1), tools/awf.py docstring (1), recovery.md
 # recipe (1). Same class as above: test identifiers and unit-id
 # references, not debt.
+# RUN8-2026-09-23 (#1): baseline raised 3468 -> 3520, files_over_400
+# raised 52 -> 53 — the ack-pin unit (TODO-0063) adds 52 TODO-bearing
+# lines: TODO-0001/0002/0003/0099 test ids in
+# tests/unit/test_continue_resume.py (39 — TestAckPinsUnit battle-case
+# fixtures + the class docstring's TODO-0034/TODO-0037 incident ids),
+# tests/agent_workflow_ui/test_awf_tools.py (6 — TestAwfContinue
+# TODO-0007 proxy test + the TODO-0063 unit reference); net +5 in
+# awf/api/pipeline.py (the RUN8 #1 (TODO-0063) ack-pinning
+# comments/docstrings with the TODO-0034/TODO-0037 incident wording) and
+# net +2 in tools/awf.py (the awf_continue ack/todo_id docstrings).
+# Same class as above: test identifiers and unit-id references, not debt.
+# The +1 file over 400 is tests/unit/test_continue_resume.py
+# (337 -> 491 — its test suite), same class as the
+# test_wait_event.py / test_brief.py raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

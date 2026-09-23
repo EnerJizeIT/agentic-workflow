@@ -997,17 +997,28 @@ def continue_pipeline(
     no_checkpoints: bool = False,
     todo_id: str = "",
 ) -> StartResult:
-    """Resume an interrupted pipeline. Finds newest active TODO and continues.
+    """Resume an interrupted pipeline, pinned to the right unit.
+
+    Unit resolution: explicit ``todo_id`` > ``ack`` > state-file todo_id >
+    "newest active" TODO. The answer names the unit it resumes.
 
     DF5-2: reads ``pipeline_state`` to determine which stage to resume from.
     If state file has ``stage_name``, uses it as ``from_stage`` — so the
     pipeline resumes from the stage that was running when it stopped,
     NOT from stage 0 (plan).
 
-    ``todo_id``: explicit pin — the TODO to resume, overriding both the
-    state-file id and the "newest active" heuristic. ``retry_stage`` uses
-    it to restart exactly the salvaged unit (AUD08-02 class, RUN5
+    ``todo_id``: explicit pin — the TODO to resume, winning over the ack,
+    the state-file id and the "newest active" heuristic. ``retry_stage``
+    uses it to restart exactly the salvaged unit (AUD08-02 class, RUN5
     incident 2026-09-22).
+
+    ``ack`` (RUN8 #1): the supervisor's answer to a specific unit — it PINS
+    exactly that unit (topic-trainer incident 2026-09-23: an ack for
+    TODO-0034 restarted the newest active TODO-0037 and stranded the ACK
+    as a stale closure). The ACK is consumed on the way in, so no stale
+    closure is left. An explicit ``todo_id`` for another unit wins the pin
+    and the ack is not written (the answer says so); a missing TODO file
+    or a completed (DONE) unit is a clear refusal — no ACK is written.
 
     ``background=True`` (default) launches a detached subprocess — same
     infrastructure as ``start_pipeline``. Without this, MCP tool would
@@ -1038,10 +1049,52 @@ def continue_pipeline(
             exit_code=1,
             message=f"Invalid TODO id for --ack: {ack!r} (expected TODO-NNNN).",
         )
+
+    # RUN8 #1 (TODO-0063): an ack is the supervisor's answer to a specific
+    # unit — it pins exactly that unit. Validate the target BEFORE writing
+    # the signal: a stranded ACK is the stale-closure bug this fixes
+    # (topic-trainer incident 2026-09-23).
+    explicit_pin = (todo_id or "").strip()
+    ack_note = ""
     if ack:
-        ack_inbox = paths.inbox(project_dir)
-        ack_inbox.mkdir(parents=True, exist_ok=True)
-        (ack_inbox / f"ACK-{ack}.ready").touch()
+        if explicit_pin and explicit_pin != ack:
+            # The explicit pin wins — but the ack answers ANOTHER unit;
+            # writing its ACK would strand a closure for that unit, so the
+            # signal is skipped and the answer says so.
+            ack_note = f"(ack {ack} not applied — the explicit pin {explicit_pin} wins)"
+        else:
+            ack_md = paths.inbox(project_dir) / f"{ack}.md"
+            if not ack_md.is_file() or ack_md.stat().st_size == 0:
+                return StartResult(
+                    run_mode="noop",
+                    run_id=None,
+                    log_file=None,
+                    exit_code=1,
+                    message=(
+                        f"ack targets {ack}, but there is no TODO file in the "
+                        f"inbox — nothing to accept. Check the id; an archived "
+                        f"unit comes back via awf_restore."
+                    ),
+                )
+            from ..signals import short_id
+
+            outbox = paths.outbox(project_dir)
+            if any(
+                (outbox / f"DONE-{cid}.ready").exists() for cid in (ack, short_id(ack))
+            ):
+                return StartResult(
+                    run_mode="noop",
+                    run_id=None,
+                    log_file=None,
+                    exit_code=1,
+                    message=(
+                        f"{ack} is already completed (DONE in the outbox) — "
+                        f"nothing to accept."
+                    ),
+                )
+            ack_inbox = paths.inbox(project_dir)
+            ack_inbox.mkdir(parents=True, exist_ok=True)
+            (ack_inbox / f"ACK-{ack}.ready").touch()
 
     # DF6-2: reconcile state before continuing
     _reconcile(project_dir)
@@ -1063,10 +1116,17 @@ def continue_pipeline(
     # over newest_active() heuristic (might pick wrong TODO if multiple active).
     # An explicit pin (retry_stage) wins over both — the salvage unit is
     # exactly the unit to restart, whatever "newest active" says.
+    # RUN8 #1: an ack pins its OWN unit (the answer belongs to exactly that
+    # TODO) — priority: explicit todo_id > ack > state > newest_active.
     state = read_state(project_dir)
     state_todo_id = state.get("todo_id") if state else None
 
-    current_todo = (todo_id or "").strip() or state_todo_id or todos.newest_active(project_dir)
+    current_todo = (
+        (todo_id or "").strip()
+        or (ack or "").strip()
+        or state_todo_id
+        or todos.newest_active(project_dir)
+    )
     resolution_note = ""
 
     # Day-2 review follow-up: a REVIEW left by the supervisor (the process died
@@ -1164,13 +1224,18 @@ def continue_pipeline(
                     f"Last log output:\n{log_tail}"
                 ),
             )
+        # RUN8 #1: the answer names the unit — a silently wrong pin was the
+        # incident (same rule as retry_stage after RUN7).
         msg = (
-            f"awf continue running in background (PID {pid})"
+            f"awf continue running in background (PID {pid}), "
+            f"continuing {current_todo}"
         )
         if from_stage:
             msg += f", resuming from stage '{from_stage}'"
         if resolution_note:
             msg += f" ({resolution_note})"
+        if ack_note:
+            msg += f" {ack_note}"
         msg += ". GO IDLE — wait for user."
         return StartResult(
             run_mode="background",
@@ -1202,12 +1267,15 @@ def continue_pipeline(
             exit_code=1,
             message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
         )
+    message = f"Continued {current_todo}, exit code {exit_code}"
+    if ack_note:
+        message += f" {ack_note}"
     return StartResult(
         run_mode="foreground",
         run_id=None,
         log_file=None,
         exit_code=exit_code,
-        message=f"Continued {current_todo}, exit code {exit_code}",
+        message=message,
     )
 
 

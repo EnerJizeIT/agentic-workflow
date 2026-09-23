@@ -243,10 +243,14 @@ async def awf_continue(
     auto: bool = False,
     timeout: int = 3600,
     ack: str = "",
+    todo_id: str = "",
     background: bool = True,
     no_checkpoints: bool = False,
 ) -> dict[str, Any]:
-    """Resume an interrupted pipeline. Finds newest active TODO and continues.
+    """Resume an interrupted pipeline, pinned to the right unit.
+
+    Unit resolution: explicit ``todo_id`` > ``ack`` > state > newest active
+    TODO. The answer names the unit it resumes.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
@@ -257,9 +261,14 @@ async def awf_continue(
         timeout: Agent stage timeout in seconds (default: 3600).
         ack: Accept a BLOCKED TODO and resume (e.g. "TODO-0009"). Writes
             ACK-{todo}.ready and clears the BLOCKED closure — the supervisor's
-            answer survives process death. Without it, a pending ACK/APPROVE
-            is still picked up; a blocked TODO with no answer returns a clear
-            instruction instead of "No active TODO found".
+            answer survives process death. The ack also PINS its own unit:
+            the resumed TODO is the acked one, not "newest active". Without
+            it, a pending ACK/APPROVE is still picked up; a blocked TODO with
+            no answer returns a clear instruction instead of "No active TODO
+            found".
+        todo_id: Explicit pin — the TODO to resume (same as awf_start).
+            Wins over the ack, the state and "newest active". When only
+            ``ack`` is set, the pin is taken from the ack.
         background: Detach and return immediately (default: True, the API
             default). Set ``background=False`` to block the call until the
             pipeline finishes (AUD08-02 — foreground continue was previously
@@ -280,6 +289,7 @@ async def awf_continue(
         auto=auto,
         timeout=timeout,
         ack=ack,
+        todo_id=todo_id,
         # AUD08-02: signature parity with api.continue_pipeline.
         background=background,
         no_checkpoints=no_checkpoints,

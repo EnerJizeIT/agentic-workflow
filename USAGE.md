@@ -357,7 +357,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | Tool | What it does |
 |---|---|
 | `awf_start` | Launch pipeline (background), dashboard opens |
-| `awf_continue` | Resume interrupted pipeline |
+| `awf_continue` | Resume interrupted pipeline — the ack pins its own unit; for an explicit pin — `todo_id` |
 | `awf_kill` | Kill running pipeline cleanly |
 | `awf_retry_stage` | Kill + retry from salvage stage — restarts EXACTLY the salvage unit (TODO pinned, not "newest active") |
 | `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |

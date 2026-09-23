@@ -646,6 +646,43 @@ class TestAwfContinue:
         assert result["run_mode"] == "noop"
         assert "No active TODO" in result["message"]
 
+    def test_todo_id_proxied_to_api(self, mcp_project, monkeypatch):
+        """RUN8 #1 (TODO-0063): the MCP tool exposes todo_id (parity with
+        awf_start) and proxies it to api.continue_pipeline."""
+        captured = {}
+
+        class _R:
+            run_mode = "noop"
+            run_id = None
+            log_file = None
+            exit_code = 0
+            message = "No active TODO found."
+
+            def as_dict(self):
+                return {
+                    "run_mode": self.run_mode,
+                    "run_id": self.run_id,
+                    "log_file": self.log_file,
+                    "exit_code": self.exit_code,
+                    "message": self.message,
+                }
+
+        def fake_continue(project_dir, **kwargs):
+            captured.update(kwargs)
+            return _R()
+
+        monkeypatch.setattr(api, "continue_pipeline", fake_continue)
+        result = run(awf.awf_continue(
+            project_dir=str(mcp_project),
+            todo_id="TODO-0007",
+            ack="TODO-0007",
+        ))
+        assert result["status"] == "ok"
+        assert captured["todo_id"] == "TODO-0007", (
+            "todo_id must be proxied to api.continue_pipeline"
+        )
+        assert captured["ack"] == "TODO-0007"
+
 
 # ─── Tool registration ──────────────────────────────────────────────────
 

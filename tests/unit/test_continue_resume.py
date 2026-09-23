@@ -181,6 +181,160 @@ class TestContinuePipelineResume:
         assert "implement" in result.message
 
 
+class TestAckPinsUnit:
+    """RUN8 #1 (TODO-0063): continue(ack=...) pins the acked unit.
+
+    Battle case (topic-trainer, 2026-09-23): ``awf_continue(ack="TODO-0034")``
+    restarted the NEWEST active TODO-0037 — the ACK was written for 0034 and
+    stranded in the inbox as a stale closure. The ack is the supervisor's
+    answer to a specific unit; the resume must go to exactly that unit.
+    """
+
+    @staticmethod
+    def _activate(inbox, todo_id: str) -> None:
+        (inbox / f"{todo_id}.md").write_text(f"# {todo_id}\nstub task\n")
+        (inbox / f"{todo_id}.ready").write_text("")
+
+    def test_ack_pins_acked_unit_not_newest(self, project):
+        """Battle case: 0001 BLOCKED, 0002/0003 active, state names 0003.
+        ack="TODO-0001" restarts 0001 (not 0003); the ACK is consumed and
+        the BLOCKED closure is cleared — no stale closure left."""
+        inbox = project / ".agentic" / "inbox"
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        self._activate(inbox, "TODO-0002")
+        self._activate(inbox, "TODO-0003")
+        (outbox / "BLOCKED-TODO-0001.ready").write_text("")
+        # State names the newest unit — the pre-fix resolution source.
+        write_state(project, stage_name="implement", todo_id="TODO-0003")
+
+        captured_args: list = []
+
+        def mock_run_pipeline(args):
+            captured_args.append(args)
+            return 0
+
+        with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
+            result = continue_pipeline(project, background=False, ack="TODO-0001")
+
+        assert result.run_mode == "foreground"
+        assert captured_args[0].todo_id == "TODO-0001", (
+            f"ack must pin its own unit, got {captured_args[0].todo_id!r}"
+        )
+        assert "TODO-0001" in result.message
+        # The answer is consumed on the way in — no stale closure.
+        assert not (inbox / "ACK-TODO-0001.ready").exists()
+        assert not (outbox / "BLOCKED-TODO-0001.ready").exists()
+
+    def test_ack_on_active_unit_pins_it_and_consumes_ack(self, project):
+        """All active: ack="TODO-0001" pins 0001 (not newest 0003); the
+        just-written ACK is consumed on the way in — nothing left behind."""
+        inbox = project / ".agentic" / "inbox"
+        self._activate(inbox, "TODO-0002")
+        self._activate(inbox, "TODO-0003")
+
+        captured_args: list = []
+
+        def mock_run_pipeline(args):
+            captured_args.append(args)
+            return 0
+
+        with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
+            result = continue_pipeline(project, background=False, ack="TODO-0001")
+
+        assert captured_args[0].todo_id == "TODO-0001"
+        assert "TODO-0001" in result.message
+        assert not (inbox / "ACK-TODO-0001.ready").exists()
+
+    def test_no_ack_keeps_newest_active(self, project):
+        """Without ack — the old behavior: newest active wins."""
+        inbox = project / ".agentic" / "inbox"
+        self._activate(inbox, "TODO-0002")
+        self._activate(inbox, "TODO-0003")
+
+        captured_args: list = []
+
+        def mock_run_pipeline(args):
+            captured_args.append(args)
+            return 0
+
+        with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
+            result = continue_pipeline(project, background=False)
+
+        assert captured_args[0].todo_id == "TODO-0003"
+        assert "TODO-0003" in result.message
+
+    def test_explicit_todo_id_wins_over_ack(self, project):
+        """The explicit pin is above the ack pin; the contradictory ack is
+        not written — no stranded signal for the other unit."""
+        inbox = project / ".agentic" / "inbox"
+        self._activate(inbox, "TODO-0002")
+
+        captured_args: list = []
+
+        def mock_run_pipeline(args):
+            captured_args.append(args)
+            return 0
+
+        with patch("awf.orchestrator.run_pipeline", mock_run_pipeline):
+            result = continue_pipeline(
+                project, background=False, ack="TODO-0001", todo_id="TODO-0002",
+            )
+
+        assert captured_args[0].todo_id == "TODO-0002"
+        assert "TODO-0002" in result.message
+        assert "ack TODO-0001 not applied" in result.message
+        assert not (inbox / "ACK-TODO-0001.ready").exists()
+
+    def test_ack_without_todo_file_is_clear_error(self, project):
+        """ack on a unit whose file is missing → clear refusal, no ACK
+        signal written (a stranded ACK is the bug this unit fixes)."""
+        inbox = project / ".agentic" / "inbox"
+
+        result = continue_pipeline(project, background=False, ack="TODO-0099")
+
+        assert result.run_mode == "noop"
+        assert result.exit_code == 1
+        assert "TODO-0099" in result.message
+        assert "no TODO file" in result.message
+        assert not (inbox / "ACK-TODO-0099.ready").exists()
+
+    def test_ack_on_done_unit_is_clear_error(self, project):
+        """ack on a completed (DONE) unit → clear refusal, no ACK written."""
+        inbox = project / ".agentic" / "inbox"
+        outbox = project / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        (outbox / "DONE-TODO-0001.ready").write_text("")
+
+        result = continue_pipeline(project, background=False, ack="TODO-0001")
+
+        assert result.run_mode == "noop"
+        assert result.exit_code == 1
+        assert "already completed" in result.message
+        assert not (inbox / "ACK-TODO-0001.ready").exists()
+
+    def test_background_message_names_the_unit(self, project, monkeypatch):
+        """RUN7-style: the answer names the unit it continues."""
+        write_state(project, stage_name="implement")
+
+        class _FakeProc:
+            pid = 54321
+
+            def __init__(self, args, **kwargs):
+                pass
+
+        from awf.api import _background
+        monkeypatch.setattr(_background.subprocess, "Popen", _FakeProc)
+        monkeypatch.setattr(
+            "awf.api.pipeline._verify_child_alive", lambda pid, log_file=None: True,
+        )
+
+        result = continue_pipeline(project, background=True, ack="TODO-0001")
+
+        assert result.run_mode == "background"
+        assert "continuing TODO-0001" in result.message
+
+
 class TestContinueReconcile:
     """DF6-2: reconcile runs before continue_pipeline."""
 
