@@ -17,7 +17,7 @@
 ✅ **#4+#5 `awf todo-update` + MCP `awf_tree_sha`** — правка TODO с сохранением номера (бэкап, отказ на стартовавшем); tree-sha в типизированном контуре (MCP == CLI). `b9332b8`
 ✅ **#6 Онбординг без подсказок** — бриф: Defaults + Scenarios + ссылка USAGE; `agents_md.py` (единый источник блока в глобальном AGENTS.md, «начни с awf_brief», самолечение при старте плагина); глобальный SKILL `awf-supervisor` (роль/цикл/ритуалы/карта/5 сценариев); описания всех тулов и next_action-свип под тестами. `2407f27`
 
-⬜ **Хвост RUN6 (из QA 0056): ложный `done` после kill на остатках salvage.** Kill после salvage-попытки оставляет в state только `salvage_count`/`salvage_count_key` (маркеры стёрты) — при наличии прошлого цикла (архив/коммит) `wait_for_event` отдаёт `done` за СТАРЫЙ TODO. Восстановление работает (`run_next` откажет), но сообщение вводит в заблуждение. Фикс: «exited» = state отсутствует ИЛИ `phase=done` (без остатков salvage) + тест сценария «TODO-0001 завершён, TODO-0002 убит после salvage».
+✅ **Хвост RUN6 (из QA 0056): ложный `done` после kill на остатках salvage** — закрыт RUN7: `_state_is_exited` (exited = state отсутствует ИЛИ `phase=done`; kill-остаток со `salvage_count` → старое ожидание, без `done` за прошлый цикл). `5025961`
 
 ### RUN5-2026-09-22 · leak-гейт + todo-retire + релиз 1.2.0
 
@@ -27,7 +27,7 @@
 ✅ **#2 `awf todo-retire`** — архив отклонённого/брошенного активного TODO в `done/<id>/` с RETIRED-заметкой; наш призрак TODO-0035 убран этим инструментом. `2c37d3f`
 ✅ **#3 Релиз 1.2.0** — версии в 5 пиннингах, CHANGELOG [1.2.0] (14 пунктов), счётчики 45; PR #6 влит (`683e5f4`), тег `v1.2.0`. `9aa074a`
 
-⬜ **БАГ: `retry_stage` не закрепляет TODO.** Воскресил salvage-стадию TODO-0052, но движок подхватил новейший активный TODO (0054) и запустил его сразу с QA, минуя implementer; run.yaml и current.yaml разошлись. Пришлось kill → `unblock` → пинованный `start --todo … --from-stage …`. Фикс: пиновать todo_id из salvage-состояния (класс AUD08-02 в retry-пути) + тест «несколько активных TODO — тот же id». Отчёт: `~/Desktop/awf-bug-20260922-retry-stage-voskreshaet-stadiyu-no-ne-zakreplyaet-todo.md`
+✅ **БАГ: `retry_stage` не закреплял TODO** — закрыт RUN7: salvage-состояние читается ДО kill, явный пин уходит в `continue_pipeline` («wins over both»), ответ называет перезапущённую единицу; без salvage — прежнее поведение + WARNING. `10059fc`
 
 ℹ️ Из практики: `awf_kill` нет в CLI (только MCP) — при недоступном MCP остаётся искать PID руками.
 
