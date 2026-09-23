@@ -184,4 +184,9 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # The +1 file over 400 is that same test file (417 — its test suite),
 # same class as the test_continue_resume.py / test_wait_event.py raises
 # above.
+# RUN9-2026-09-23 (#4): baseline raised 3531 -> 3532 — the salvage-flake
+# unit (TODO-0068) adds 1 TODO-bearing line: the TODO-0068 unit reference
+# in the fixed test's docstring (tests/unit/test_salvage_signal.py,
+# test_verify_still_works_after_salvage_fix). Same class as above: unit
+# identifier, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
