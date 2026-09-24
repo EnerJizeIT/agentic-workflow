@@ -638,7 +638,23 @@ def run_next(
                         carry_over = set(recorded)
         except OSError:
             carry_over = None
-        create_baseline(project_dir, next_id, carry_over=carry_over)
+        # RUN10 #4 (TODO-0074): same for the inclusion list — re-apply the
+        # dispatch's re-claimed paths from the BASELINE-{id}.include link,
+        # or the re-baseline would silently drop them from the unit commit.
+        # Link-read failure must not kill the re-baseline (best-effort).
+        include: set[str] | None = None
+        inc_link = paths.context_dir(project_dir) / f"BASELINE-{next_id}.include"
+        try:
+            if inc_link.is_file():
+                inc = {
+                    ln.strip()
+                    for ln in inc_link.read_text(encoding="utf-8").splitlines()
+                    if ln.strip()
+                }
+                include = inc or None
+        except OSError:
+            include = None
+        create_baseline(project_dir, next_id, carry_over=carry_over, include=include)
     except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 

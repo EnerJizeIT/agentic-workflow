@@ -199,4 +199,44 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # The +1 file over 400 is tests/unit/test_log_reader.py (400 -> 410 —
 # the _archive_files helper after the archive-name change), same class
 # as the test suites in the raises above.
+# RUN10-2026-09-24 (#1): baseline raised 3535 -> 3568 — the
+# run-hints + phase + false-done-fuse unit (TODO-0071) adds 33
+# TODO-bearing lines: TODO-0001/TODO-0002/TODO-0009 test ids in
+# tests/unit/test_wait_event.py (TestRunDoneFuse battle-case fixtures),
+# tests/unit/test_phase.py (TestDetectPhaseRunActive),
+# tests/unit/test_run.py (TestRunIsActive) and
+# tests/agent_workflow_ui/test_awf_tools.py (the updated
+# run-mode next_action tests); "TODO"-bearing wording in
+# awf/api/wait_event.py, awf/phase.py, awf/run_state.py comments/
+# docstrings and tools/awf.py docstrings. Same class as above: test
+# identifiers and unit-id references, not debt.
+# RUN10-2026-09-24 (#3): baseline raised 3568 -> 3579 — the
+# metrics-project-scope unit (TODO-0073) adds 11 TODO-bearing lines,
+# all in tests/unit/test_metrics.py: make_db_two_projects worker-title
+# fixtures (TODO-0001/TODO-0009/TODO-0005 session titles, 3 lines) and
+# TestRun10ProjectScope assertions/comments naming those ids (8 lines).
+# Same class as above: test identifiers, not debt.
+# RUN10-2026-09-24 (#3, QA): baseline raised 3579 -> 3580 — QA review
+# adds one supervisor-gate test (test_foreign_supervisor_excluded_by_
+# default); its comment names the TODO-0001 baseline offset (1 line).
+# Same class: test identifier reference, not debt.
+# RUN10-2026-09-24 (#4): baseline raised 3580 -> 3643 — the
+# untracked-visibility + include_untracked unit (TODO-0074) adds 63
+# TODO-bearing lines: TODO-0042/TODO-0041 test ids in
+# tests/unit/test_api.py (TestDispatchIncludeUntracked, 31),
+# TODO-0074 unit references in tests/unit/test_verify_pack.py (6),
+# tests/unit/test_commit_gate.py (5), tests/agent_workflow_ui/
+# test_awf_tools.py (4, the TestDispatchIncludeUntrackedParam ids),
+# TODO-0074 references in awf/api/dispatch.py (6), awf/verify_pack.py
+# (3), awf/api/pipeline.py (2), awf/api/run.py (1), awf/api/_results.py
+# (1), awf/include_untracked.py (new module, 1), tools/awf.py (1) and
+# USAGE EN/RU (1+1). Same class as above: test identifiers and unit-id
+# references, not debt.
+# RUN10-2026-09-24 (#5): baseline raised 3643 -> 3648 — the kill-fuses
+# unit (TODO-0075) adds 5 TODO-bearing lines, all in
+# tests/integration/test_kill_worker.py: the two new class docstrings
+# (TestKillSelfPipelineRefusal / TestLateWorkerSweep unit references)
+# and the fake-pipeline worker fixtures (two worker_todo='TODO-0075'
+# state writes + the stub opencode prompt 'TODO-0075'). Same class as
+# above: test identifiers and fixtures, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

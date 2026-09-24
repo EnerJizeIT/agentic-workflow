@@ -1413,5 +1413,33 @@ class TestFeedbackEntrypoint:
 
         out = capsys.readouterr().out
         assert rc == 0, out
-        assert "## Ожидал" in out
+        # RUN10 #2: без текстов — ни одной пустой секции в отчёте
+        for section in ("Что пытался", "Ожидал", "Что получил",
+                        "Почему мешает", "Предложение"):
+            assert f"## {section}" not in out
+        assert "Only print" in out
+        assert not desk.exists() or not list(desk.glob("*.md"))
+
+    def test_feedback_section_flags_print_their_sections(self, tmp_path, capsys):
+        """RUN10 #2: --expected/--got/--why/--proposal печатают секции."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliFeedbackFlags")
+        desk = tmp_path / "desk"
+        self._set_feedback_dir(repo, desk)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "feedback", "--type", "bug", "--title", "All sections",
+            "--body", "b", "--expected", "e", "--got", "g",
+            "--why", "w", "--proposal", "p",
+            "--project-dir", str(repo), "--stdout",
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        for heading in (
+            "## Что пытался", "## Ожидал", "## Что получил",
+            "## Почему мешает", "## Предложение",
+        ):
+            assert heading in out
         assert not desk.exists() or not list(desk.glob("*.md"))

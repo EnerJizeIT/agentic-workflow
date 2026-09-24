@@ -353,3 +353,47 @@ class TestRejectLeakSection:
         assert "reject_leak" in report
         assert "WARNING" in report and "src/a.py" in report
         assert "carry_over_from" in report
+
+
+# ─── untracked-excluded section (RUN10 #4, TODO-0074) ────────────────────
+
+
+class TestUntrackedExcludedSection:
+    """The pack lists the pre-existing untracked files the commit gate
+    excludes from the commit — informational, never a verdict failure."""
+
+    def _with_pre_existing(self, repo: Path, listing: str = "x.md\nstale.txt\n") -> None:
+        (repo / ".agentic" / "context" / f"BASELINE-{TODOS}.untracked").write_text(listing)
+        (repo / "x.md").write_text("pre-existing\n")
+        (repo / "stale.txt").write_text("pre-existing\n")
+
+    def test_lists_excluded_files(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        self._with_pre_existing(repo)
+        section = vp._untracked_excluded_section(repo, TODOS)
+        assert section.status == "pass"
+        assert section.measured is True
+        assert any("x.md" in ln for ln in section.lines)
+        assert any("stale.txt" in ln for ln in section.lines)
+        assert not any("WARNING" in ln for ln in section.lines), "informational, not a warning"
+
+    def test_skipped_without_baseline_snapshot(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        section = vp._untracked_excluded_section(repo, TODOS)
+        assert section.status == "skipped"
+        assert section.measured is False
+
+    def test_empty_snapshot_passes(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        self._with_pre_existing(repo, listing="")
+        section = vp._untracked_excluded_section(repo, TODOS)
+        assert section.status == "pass"
+        assert section.measured is True
+        assert not any("x.md" in ln for ln in section.lines)
+
+    def test_full_pack_carries_the_section(self, tmp_path: Path) -> None:
+        repo = _proj(tmp_path)
+        self._with_pre_existing(repo, listing="x.md\n")
+        res = vp.verify_pack(repo, TODOS)
+        assert res.sections["untracked_excluded"] == "pass"
+        assert "untracked_excluded" in _report(repo) and "x.md" in _report(repo)

@@ -22,6 +22,7 @@ def run(args: Any) -> int:
         out=args.out or None,
         refresh_subscriptions=getattr(args, "refresh_subscriptions", False),
         mirror=not getattr(args, "no_mirror", False),
+        all_projects=getattr(args, "all_projects", False),
     )
     if getattr(args, "json", False):
         print(json.dumps(result.as_dict(), indent=2, ensure_ascii=False))

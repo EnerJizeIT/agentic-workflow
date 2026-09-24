@@ -342,7 +342,7 @@ class TestDispatchCarryOverParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -381,7 +381,7 @@ class TestDispatchCarryOverParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -391,7 +391,7 @@ class TestDispatchCarryOverParam:
 
     def test_error_propagates(self, mcp_project, monkeypatch):
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None):
             raise api.AwfApiError("REJECT-TODO-0001.files not found")
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
@@ -402,6 +402,85 @@ class TestDispatchCarryOverParam:
         ))
         assert result["status"] == "error"
         assert "REJECT-TODO-0001" in result["error"]
+
+
+# ─── awf_dispatch_todo include_untracked (RUN10 #4, TODO-0074) ───────────
+
+
+class TestDispatchIncludeUntrackedParam:
+    """The MCP dispatch tool must expose include_untracked, proxy it to the
+    api, and carry the pre-existing-untracked warning in the answer."""
+
+    def test_param_proxied_to_api(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0042"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            pre_existing_untracked = ["y.md"]
+            untracked_warning = "⚠️ 1 file(s) ... will NOT be included in the TODO-0042 commit: y.md."
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "pre_existing_untracked": self.pre_existing_untracked,
+                    "untracked_warning": self.untracked_warning,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None):
+            captured["include_untracked"] = include_untracked
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# t",
+            project_dir=str(mcp_project),
+            include_untracked=["x.md"],
+        ))
+        assert result["status"] == "ok"
+        assert captured["include_untracked"] == ["x.md"], (
+            "include_untracked must be proxied to api.dispatch_todo"
+        )
+        assert result["pre_existing_untracked"] == ["y.md"]
+        assert "y.md" in result["next_action"], "the warning must reach the supervisor"
+
+    def test_absent_param_defaults_none(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0042"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            pre_existing_untracked = []
+            untracked_warning = ""
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "pre_existing_untracked": self.pre_existing_untracked,
+                    "untracked_warning": self.untracked_warning,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None):
+            captured["include_untracked"] = include_untracked
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        run(awf.awf_dispatch_todo(content="# t", project_dir=str(mcp_project)))
+        assert captured["include_untracked"] is None
 
 
 # ─── awf_report ─────────────────────────────────────────────────────────
@@ -794,7 +873,7 @@ class TestWaitForEventClamp:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir="/tmp", timeout=9999, actionable_only=True)
@@ -818,7 +897,7 @@ class TestWaitForEventClamp:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=55))
 
@@ -841,7 +920,7 @@ class TestWaitForEventClamp:
         """AUD08-01 regression: a verify event must get the approve
         instruction, not the stuck 'timeout' one (dataclass vs dict bug)."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("verify"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -853,7 +932,7 @@ class TestWaitForEventClamp:
         """AUD08-01 regression: a blocked event must get the unblock
         instruction, not the stuck 'timeout' one."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("blocked"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -865,7 +944,7 @@ class TestWaitForEventClamp:
         """RUN6 #1: a done event inside a run must carry the exact next
         command — awf_run_next (the owner had to read git log instead)."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -873,11 +952,37 @@ class TestWaitForEventClamp:
         assert "awf_run_next" in result["next_action"]
         assert "awf_dispatch_todo" not in result["next_action"]
 
+    def test_timeout_in_active_run_says_continue_not_wait_for_user(self, monkeypatch):
+        """RUN10 #1 (bug 2026-09-24): a timeout INSIDE an active run must
+        offer the next loop call — never 'Wait for user' or 'DO NOT call
+        again' (an agent following those literally stops the run)."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
+
+        assert "No event yet. Continue the run loop" in result["next_action"]
+        assert "awf_wait_for_event(timeout=" in result["next_action"]
+        assert "actionable_only=True" in result["next_action"]
+        assert "Wait for user" not in result["next_action"]
+        assert "DO NOT call" not in result["next_action"]
+
+    def test_timeout_without_run_keeps_reactive_text(self, monkeypatch):
+        """RUN10 #1 hard rule: outside a run the reactive wording is
+        UNCHANGED."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
+
+        assert "DO NOT call awf_wait_for_event again. Wait for user." in result["next_action"]
+        assert "Continue the run loop" not in result["next_action"]
+
     def test_done_event_gets_dispatch_next_action(self, monkeypatch):
         """RUN6 #1: a done event outside a run (single start) must lead to
         awf_dispatch_todo, not awf_run_next."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -903,18 +1008,44 @@ class TestWaitForEventCapNote:
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
         monkeypatch.setattr(
-            api, "run_brief", lambda *a, **kw: {"active": run_active}
+            api, "run_is_active", lambda *a, **kw: run_active
         )
         return asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=timeout))
 
-    def test_next_action_carries_transport_cap(self, monkeypatch):
+    def test_next_action_default_cap_names_tool_setting(self, monkeypatch):
+        """RUN10 #2: default cap — the note names the EXACT setting with
+        the CONCRETE value (mcp timeout 600000 ms → wait.cap_seconds: 570)
+        and never claims it is the transport cap."""
+        import awf.api.wait_event as wait_event_mod
+
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: 600000
+        )
         result = self._run("timeout", 30, monkeypatch)
 
         cap = api.TRANSPORT_CAP
         assert f"<= {cap}s" in result["next_action"]
-        assert "MCP client transport cap" in result["next_action"]
-        assert "opencode.json" in result["next_action"]
-        assert "600000 ms" in result["next_action"]
+        assert "not the transport" in result["next_action"]
+        assert "wait.cap_seconds: 570" in result["next_action"]
+        assert "AWF_WAIT_CAP=570" in result["next_action"]
+        assert "MCP client transport cap" not in result["next_action"]
+        assert "raise the mcp timeout" not in result["next_action"]
+
+    def test_next_action_default_cap_unknown_transport(self, monkeypatch):
+        """RUN10 #2: opencode.json unreadable — no number, still the tool
+        setting; the mcp-timeout clause is allowed back (unknown)."""
+        import awf.api.wait_event as wait_event_mod
+
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: None
+        )
+        result = self._run("timeout", 30, monkeypatch)
+
+        assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
+        assert "not the transport" in result["next_action"]
+        assert "wait.cap_seconds" in result["next_action"]
+        assert "wait.cap_seconds: " not in result["next_action"]
+        assert "raise the mcp timeout in opencode.json" in result["next_action"]
 
     def test_next_action_cap_present_for_every_event(self, monkeypatch):
         """The note is on EVERY response, not just timeout/stage_changed."""
@@ -926,15 +1057,22 @@ class TestWaitForEventCapNote:
         result = self._run("timeout", 30, monkeypatch, run_active=True)
 
         assert "Continue the run loop" in result["next_action"]
+        assert "Wait for user" not in result["next_action"]
         assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
 
     def test_clamped_next_action_says_so_explicitly(self, monkeypatch):
+        import awf.api.wait_event as wait_event_mod
+
+        # unknown transport → deterministic note with the tool setting
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: None
+        )
         result = self._run("timeout", 9999, monkeypatch)
 
         assert result["timeout_clamped"] is True
         assert "clamped to 600" in result["next_action"]
         assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
-        assert "opencode.json" in result["next_action"]
+        assert "wait.cap_seconds" in result["next_action"]
 
     def test_suggested_fallback_respects_cap(self, monkeypatch):
         """A result without suggested_timeout must not push a 180s wait."""
@@ -947,7 +1085,7 @@ class TestWaitForEventCapNote:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir="/tmp", timeout=10, actionable_only=True)
@@ -974,7 +1112,7 @@ class TestWaitForEventCapNote:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir=str(tmp_path), timeout=10)
@@ -1387,6 +1525,8 @@ class TestApproveNextActionFacts:
     T = "TODO-0001"
 
     def test_active_run_continues_run_loop(self, mcp_project):
+        """RUN10 #1 (bug 2026-09-24): approve inside a run leads to
+        awf_run_next — never 'Wait for the user before the next TODO'."""
         from awf import run_state
 
         run_state.write_run(
@@ -1397,7 +1537,8 @@ class TestApproveNextActionFacts:
             evidence="pytest -q → 348 passed; verdict: approve",
         ))
         assert result["status"] == "ok"
-        assert "awf_run_next" in result["next_action"]
+        assert "Continue the run loop: awf_run_next" in result["next_action"]
+        assert "Wait for the user" not in result["next_action"]
         assert "committed" not in result["next_action"]
         assert "exited" not in result["next_action"].lower()
 
@@ -1473,6 +1614,7 @@ class TestAwfMetricsParams:
         assert result["status"] == "error"  # spy aborted the call
         assert calls and calls[0]["refresh_subscriptions"] is False
         assert calls[0]["mirror"] is True
+        assert calls[0]["all_projects"] is False  # RUN10 #3: default scope
 
     def test_params_are_proxied(self, monkeypatch):
         calls: list[dict] = []
@@ -1485,13 +1627,17 @@ class TestAwfMetricsParams:
 
         result = run(
             awf.awf_metrics(
-                project_dir="/tmp", refresh_subscriptions=True, mirror=False
+                project_dir="/tmp",
+                refresh_subscriptions=True,
+                mirror=False,
+                all_projects=True,  # RUN10 #3
             )
         )
 
         assert result["status"] == "error"
         assert calls and calls[0]["refresh_subscriptions"] is True
         assert calls[0]["mirror"] is False
+        assert calls[0]["all_projects"] is True
 
 
 class TestAwfFeedback:

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import paths
+from . import paths, run_state
 from .pipeline import load_stages, resolve_pipeline_file
 from .pipeline_state import read_state, state_trusted
 
@@ -34,11 +34,21 @@ def detect_phase(project_dir: Path) -> str:
     """Determine current supervisor phase from project state.
 
     Priority:
-    1. Explicit `phase` in non-stale state file
-    2. Pipeline stage kind (plan/execute/verify)
-    3. Setup-flow detection (init→goal→form→normalize→brief)
+    1. Active run (забег) → "run" (RUN10 #1)
+    2. Explicit `phase` in non-stale state file
+    3. Pipeline stage kind (plan/execute/verify)
+    4. Setup-flow detection (init→goal→form→normalize→brief)
     """
     project_dir = Path(project_dir).resolve()
+
+    # RUN10 #1: an active run IS the supervisor's phase. Checked FIRST —
+    # before the state-file phase (a clean-exit leftover phase=done must
+    # not show during a run: the feedback header read "done" at position
+    # 4/6), before stage inference and the goal/live setup branches.
+    # Outside a run the detection below is unchanged.
+    if run_state.run_is_active(project_dir):
+        return "run"
+
     state = read_state(project_dir)
 
     # Check explicit phase in state.

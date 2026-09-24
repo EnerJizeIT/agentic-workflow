@@ -36,6 +36,7 @@ from ..brief import BriefResult
 from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
+from ..run_state import run_is_active
 from ..verify_pack import VerifyPackResult, verify_pack
 
 # Public types
@@ -101,7 +102,15 @@ from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
 from .run import run_brief, run_finish, run_next, run_note, run_start, run_status
 from .setup import apply_project_setup
-from .wait_event import TRANSPORT_CAP, wait_cap, wait_for_event
+from .wait_event import (
+    TRANSPORT_CAP,
+    WAIT_CAP_MARGIN,
+    cap_advice,
+    default_suggested_timeout,
+    mcp_transport_timeout_ms,
+    wait_cap,
+    wait_for_event,
+)
 
 __all__ = [
     # Exception
@@ -175,6 +184,8 @@ __all__ = [
     "run_finish",
     "run_brief",
     "run_note",
+    # RUN10 #1: the single "run active" source (hints + done fuse + phase)
+    "run_is_active",
     # Roles
     "add_role",
     "analyze_roles",
@@ -194,6 +205,10 @@ __all__ = [
     "brief",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "TRANSPORT_CAP",
+    "WAIT_CAP_MARGIN",
+    "cap_advice",
+    "default_suggested_timeout",
+    "mcp_transport_timeout_ms",
     "wait_cap",
     "wait_for_event",
     # Model configuration validation

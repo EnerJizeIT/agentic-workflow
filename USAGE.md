@@ -135,6 +135,17 @@ tokens (in/out/cache-read) and compactions per unit from opencode.db, supervisor
 tokens attributed to unit windows, +/− code lines per unit commit, and the cost
 conversion "if workers had run on model X" (models.dev prices).
 
+Scope (RUN10 #3-fix): by default only the current project's sessions are
+collected — a session belongs to the project when its content (`part.data` in
+opencode.db) contains the project path; `session.directory` is not a
+discriminator because workers (and the supervisor) run from $HOME. The report
+header says `Область: проект: …`. Sessions of other projects are excluded
+from the default scope with an honest count in a report warning, never
+silently; a project whose path is found in no session yields empty session
+data plus a warning (explicit "no data", not foreign numbers).
+`--all-projects` (MCP: `all_projects=True`) collects the whole shared
+opencode.db, data mixed across projects (the pre-RUN10 behavior).
+
 The markdown report lands in `metrics.output_dir` (default: ~/Desktop) as
 `awf-metrics-<YYYYMMDD-HHMM>.md`. Set `metrics.mirror_dir` in
 `.agentic/config.yaml` to keep an archive copy of every report (a failed copy
@@ -417,6 +428,23 @@ log. Refusals: no TODO file in the inbox; empty content; a started TODO
 the unit is in flight: fix it via REVIEW/replan, or retire it and
 re-dispatch); a live pipeline on this id.
 
+**Untracked files and the unit commit (RUN10 #4).** The commit gate commits
+only changes since the unit baseline — a file that was already untracked
+BEFORE the dispatch is not the unit's work, so it is excluded from the unit
+commit by design. That protection used to be silent; now it is visible:
+
+- `awf_dispatch_todo` answers with a warning listing the pre-existing
+  untracked files that will NOT join the unit commit (capped at 10, the rest
+  as "…N more"; no line when the tree is clean).
+- `awf_verify_pack` has an informational `untracked_excluded` section with
+  the same list — pass, not fail, the exclusion is normal behavior.
+- To include a pre-existing file consciously, dispatch with
+  `awf_dispatch_todo(..., include_untracked=["docs/notes.md", ...])` (MCP).
+  Every path must exist, be untracked, not gitignored, and stay inside the
+  project; any invalid path refuses the dispatch before any side effect
+  (no TODO, no baseline). The re-claimed paths are traced in
+  `.agentic/context/BASELINE-<id>.include` and join the unit commit.
+
 ### Verify
 | Tool | What it does |
 |---|---|
@@ -448,14 +476,26 @@ front-matter, and `awf_run_next` reads it for items without a queue-level
 pipeline. An unknown name refuses the launch with the list of available
 pipelines (RUN3 #1).
 
-**Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
-the client timeout — ~55s with the default opencode.json. The tool says so
-in every `next_action`. To wait longer, raise the mcp timeout in
-`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}` — and
-tell awf the new ceiling via `wait.cap_seconds` in `.agentic/config.yaml`
-(or env `AWF_WAIT_CAP`, which wins). While the cap is the default 55s the
-tool advises raising the mcp timeout; once you raise the cap in config or
-env, the advice goes away and `suggested_timeout` is clamped to your value.
+**Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
+cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`
+(or env `AWF_WAIT_CAP`, which wins). The 55s default is the tool's OWN cap,
+not the transport: a raised mcp timeout in opencode.json does not lift it.
+The tool says so in every `next_action` and names the exact lever: while the
+cap is the default it advises `wait.cap_seconds: <T>` / `AWF_WAIT_CAP=<T>`
+(T = your `agent-workflow-ui` mcp timeout from opencode.json minus ~30s, when
+readable). The "raise the mcp timeout in opencode.json" clause appears only
+when that timeout is unknown or below the cap — never once the cap is raised
+in config or env, and `suggested_timeout` then follows your cap (no stage
+history: ~90% of it, 55 → 55, 600 → 540).
+
+**Per-mode hints (RUN10 #1).** The response hints of `awf_wait_for_event` /
+`awf_approve` depend on the mode. With an active run: a timeout offers the
+next loop call (`awf_wait_for_event(timeout=<suggested>, actionable_only=True)`)
+and the step after approve is `awf_run_next` — "wait for the user" appears
+only when NO run is active. The phase reads `run` while a run is active
+(not the previous cycle's `done`), and a `done` event inside a run fires
+only when the run's current element is really finished (archived/committed)
+— a pipeline death mid-iteration keeps the wait (timeout/idle).
 
 **Supervisor authority.** Replanning, rewriting the spec, and splitting a
 task are a standard supervisor option — no owner approval required.

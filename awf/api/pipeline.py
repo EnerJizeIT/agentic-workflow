@@ -19,7 +19,7 @@ from pathlib import Path
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
-from .._proc import child_pids, kill_pid_tree, ppid_of, run_tree
+from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
 from ..pipeline_state import read_state
 from . import _liveness
 from ._background import PipelineArgs, start_in_background
@@ -537,6 +537,7 @@ def create_baseline(
     todo_id: str,
     *,
     carry_over: set[str] | None = None,
+    include: set[str] | None = None,
 ) -> BaselineResult:
     """Create BASELINE-{todo_id}.{sha,status,tests.log,env.log} snapshot.
 
@@ -547,6 +548,12 @@ def create_baseline(
     ``BASELINE-{todo_id}.untracked`` snapshot — files of a rejected attempt
     the caller deliberately re-claims, so the commit gate includes them in
     this unit's commit instead of treating them as pre-existing.
+
+    ``include`` (RUN10 #4, TODO-0074): pre-existing untracked paths the
+    caller deliberately re-claims into the unit's commit. Same mechanism as
+    ``carry_over`` (excluded from the untracked snapshot) but a separate
+    parameter — the two are independent mechanisms with different audit
+    trails (BASELINE-{todo}.carry_over / BASELINE-{todo}.include).
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
@@ -579,13 +586,14 @@ def create_baseline(
         untracked = git_utils.git_stdout(
             project_dir, "ls-files", "--others", "--exclude-standard", check=False,
         )
-        # RUN5 #1 (leak-gate): drop carried-over paths from the snapshot so
-        # the commit gate treats them as THIS unit's work (it would
-        # otherwise exclude them as "pre-existing" and silently lose the
-        # rejected attempt's files from the retry commit).
-        if carry_over:
+        # RUN5 #1 (leak-gate) + RUN10 #4 (TODO-0074): drop re-claimed paths
+        # (carry-over and/or include) from the snapshot so the commit gate
+        # treats them as THIS unit's work (it would otherwise exclude them
+        # as "pre-existing" and silently lose them from the unit commit).
+        excluded = set(carry_over or ()) | set(include or ())
+        if excluded:
             untracked = "\n".join(
-                ln for ln in untracked.splitlines() if ln.strip() not in carry_over
+                ln for ln in untracked.splitlines() if ln.strip() not in excluded
             )
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
     else:
@@ -1373,6 +1381,63 @@ def _collect_worker_pids(
     return verified, unverified
 
 
+def _collect_late_workers(
+    project_dir: Path, pipeline_pid: int, already: set[int]
+) -> tuple[list[int], list[int]]:
+    """RUN10 #5 (Part B): the second sweep — workers that appeared in the
+    kill window.
+
+    The first pass (``_collect_worker_pids``) ran BEFORE the pipeline was
+    signaled; a worker spawned in that gap is not in it (state held the
+    previous pid, the child was not born yet). This re-reads state
+    ``worker_pid`` and re-scans the pipeline's /proc children NOW, after
+    the pipeline is dead, dropping pids ``already`` handled.
+
+    The verification rule differs from the first pass: the pipeline is
+    dead, so a true late worker is REPARENTED (ppid = init, the nearest
+    subreaper, or the pipeline still dying) — the incident's exact shape —
+    and stands on the state record written at spawn. A live candidate
+    whose parent is some other live foreign process is a recycled number
+    unless its own identity (an opencode-shaped cmdline, the same rule as
+    :func:`orphan_worker_warning`) says it is a worker — otherwise
+    unverified: never signaled, only tracked for the warning.
+    """
+    state = read_state(project_dir) or {}
+    try:
+        recorded = int(state.get("worker_pid"))
+    except (TypeError, ValueError):
+        recorded = 0
+    candidates = [recorded] if recorded else []
+    candidates.extend(child_pids(pipeline_pid))
+
+    verified: list[int] = []
+    unverified: list[int] = []
+    for cand in candidates:
+        if cand in already or cand in verified or cand in unverified:
+            continue
+        if cand == pipeline_pid or cand <= 1:
+            continue
+        if not _liveness.probe_alive(cand):
+            continue
+        parent = ppid_of(cand)
+        if parent is None or parent in (1, pipeline_pid):
+            # No /proc (degradation), reparented to init, or the pipeline
+            # still dying — the state record is the identity.
+            verified.append(cand)
+        elif not _liveness.probe_alive(parent):
+            # Parent already gone — reparenting in flight.
+            verified.append(cand)
+        else:
+            cmdline = _liveness.read_cmdline(cand)
+            if cmdline is not None and "opencode" in cmdline:
+                # A live foreign parent can be the nearest subreaper — the
+                # worker's own identity stands on its own.
+                verified.append(cand)
+            else:
+                unverified.append(cand)
+    return verified, unverified
+
+
 def _write_last_kill(
     project_dir: Path,
     pipeline_pid: int,
@@ -1438,7 +1503,8 @@ def orphan_worker_warning(project_dir: Path) -> str:
 def kill_pipeline(
     project_dir: Path,
 ) -> dict:
-    """SELF-2 / RUN8 #2: kill the running pipeline AND its stage worker.
+    """SELF-2 / RUN8 #2 / RUN10 #5: kill the running pipeline AND its
+    stage worker.
 
     Reads pipeline_pid from state, sends SIGTERM, waits 5s, SIGKILL if
     still alive, clears state. Before the pipeline is signaled the stage
@@ -1451,8 +1517,19 @@ def kill_pipeline(
     kill and its edits landed in the NEXT unit's commit). A
     ``last-kill.json`` record feeds the next launch's orphan warning.
 
+    RUN10 #5 (a): the kill is REFUSED when the calling process is inside
+    the pipeline it is trying to kill (own pid → ppid → … → init via
+    /proc hits the pipeline or a known worker) — the 0065 dogfood: a
+    stage worker called the kill and died with its own pipeline. Answer:
+    killed=false, reason="ancestry", pid=target. Without /proc the check
+    degrades to an "ancestry check unavailable" note — never a block.
+    RUN10 #5 (b): after the pipeline dies a SECOND sweep re-reads state
+    and /proc and terminates a worker spawned during the kill window
+    (the incident's late spawn); it is named in the answer ("worker PID
+    N spawned during kill") and in the last-kill record.
+
     Returns dict with killed (bool), pid, workers ({pid: status}),
-    message.
+    message; reason ("ancestry") on refusal.
     """
     import os
     import signal as _signal
@@ -1471,6 +1548,24 @@ def kill_pipeline(
     # the pipeline dies, children are reparented (the ppid identity check
     # no longer works) and the state file is cleared below.
     workers, unverified = _collect_worker_pids(project_dir, pid)
+
+    # RUN10 #5 (Part A): refuse when the CALLER is inside the pipeline it
+    # is trying to kill — a stage worker calling awf_kill (the 0065
+    # dogfood) took down its own pipeline and itself. The supervisor is
+    # never an ancestor of the pipeline, so a legitimate stop is never
+    # blocked. Without /proc the check degrades to a note in the answer.
+    ancestry_hit, ancestry_ok = caller_ancestry({pid, *workers, *unverified})
+    if ancestry_hit is not None:
+        return {
+            "killed": False,
+            "reason": "ancestry",
+            "pid": pid,
+            "message": (
+                "refusing: this process is inside the pipeline it is "
+                f"trying to kill (ancestor PID {ancestry_hit}). Run kill "
+                "from the supervisor session."
+            ),
+        }
 
     killed = False
     signaled = False
@@ -1512,6 +1607,22 @@ def kill_pipeline(
     for wpid in unverified:
         worker_results[wpid] = "unverified"
 
+    # RUN10 #5 (Part B): the second sweep — a worker spawned in the kill
+    # window (between the first collection and the pipeline's death)
+    # missed the first pass. Re-read state and /proc now that the
+    # pipeline is dead and terminate what is new. Not an error: a
+    # routine finishing pass (the incident's late spawn).
+    late_verified, late_unverified = _collect_late_workers(
+        project_dir, pid, set(worker_results)
+    )
+    late_pids: list[int] = []
+    for wpid in late_verified:
+        worker_results[wpid] = kill_pid_tree(wpid)
+        late_pids.append(wpid)
+    for wpid in late_unverified:
+        worker_results[wpid] = "unverified"
+        late_pids.append(wpid)
+
     # Clear state (AUD04-08: salvage counter survives the kill)
     _clear_state_keep_salvage(project_dir)
 
@@ -1522,6 +1633,17 @@ def kill_pipeline(
         worker_msg = " Workers: " + ", ".join(bits) + "."
     else:
         worker_msg = " Worker: not found."
+    late_msg = ""
+    for wpid in late_pids:
+        status = worker_results.get(wpid)
+        if status == "killed":
+            late_msg += (
+                f" Late worker: worker PID {wpid} spawned during kill — terminated."
+            )
+        elif status == "dead":
+            late_msg += (
+                f" Late worker: worker PID {wpid} spawned during kill — already gone."
+            )
     warnings = ""
     for wpid, status in sorted(worker_results.items()):
         if status == "survived":
@@ -1532,6 +1654,7 @@ def kill_pipeline(
                 "but not a child of the pipeline — possible orphan, check it "
                 "manually."
             )
+    ancestry_note = "" if ancestry_ok else " (ancestry check unavailable)"
 
     if not signaled:
         return {
@@ -1539,12 +1662,13 @@ def kill_pipeline(
             "pid": pid,
             "workers": {str(k): v for k, v in worker_results.items()},
             "message": (
-                f"PID {pid} already exited — nothing was killed.{worker_msg}{warnings}"
+                f"PID {pid} already exited — nothing was killed."
+                f"{worker_msg}{late_msg}{warnings}{ancestry_note}"
             ),
         }
     msg = (
         f"Pipeline killed (PID {pid})." if killed else f"Failed to kill PID {pid}."
-    ) + worker_msg + warnings
+    ) + worker_msg + late_msg + warnings + ancestry_note
     return {
         "killed": killed,
         "pid": pid,

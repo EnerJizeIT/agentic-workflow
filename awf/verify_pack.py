@@ -22,13 +22,18 @@ Sections (each: status + details + denominator):
    commit (still untracked AND in ``BASELINE-<todo>.untracked``) are listed
    as a WARNING with the fix (``carry_over_from``). A warning, not a
    verdict failure — the pack never commits anything.
-5. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
+5. ``untracked_excluded`` — RUN10 #4 (TODO-0074): the pre-existing
+   untracked files (``BASELINE-<todo>.untracked``) that the commit gate
+   will exclude from this unit's commit. Informational (status "pass"):
+   the exclusion is the default commit isolation, nothing is lost — no
+   fix advice.
+6. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
    each with a timeout (``run_tree``).
-6. ``prove_red`` — the contract's ``prove_red`` list through
+7. ``prove_red`` — the contract's ``prove_red`` list through
    :func:`awf.prove_red.prove_red`; the verdict goes into the report.
-7. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
+8. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
    explicitly marked as executor data (unverified).
-8. ``lint`` — ``ruff check .``.
+9. ``lint`` — ``ruff check .``.
 
 Verdict / exit code: 0 = every measured check passed, 1 = at least one
 failure, 2 = nothing was measured at all (no baseline, no contract, no
@@ -381,6 +386,56 @@ def _reject_leak_section(project: Path, todo_id: str) -> Section:
     )
 
 
+def _untracked_excluded_section(project: Path, todo_id: str) -> Section:
+    """RUN10 #4 (TODO-0074): list the pre-existing untracked files the
+    commit gate will exclude from this unit's commit.
+
+    Informational, modeled on ``reject_leak`` but WITHOUT the fix advice —
+    the exclusion is the default commit isolation (changes since baseline
+    only), so the status is always "pass" (or "skipped" when there is no
+    baseline snapshot to measure against). Never a verdict failure.
+    """
+    baseline_listing = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
+    if not baseline_listing.is_file():
+        return Section(
+            name="untracked_excluded",
+            status="skipped",
+            lines=[f"skipped — no BASELINE-{todo_id}.untracked snapshot"],
+        )
+    try:
+        excluded = sorted(
+            ln.strip()
+            for ln in baseline_listing.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        )
+    except OSError:
+        excluded = []
+    if not excluded:
+        return Section(
+            name="untracked_excluded",
+            status="pass",
+            measured=True,
+            lines=["no pre-existing untracked files — nothing excluded from the commit"],
+            detail="nothing excluded",
+        )
+    lines = [
+        f"INFO: {len(excluded)} pre-existing untracked file(s) are EXCLUDED from "
+        f"the {todo_id} commit (listed in BASELINE-{todo_id}.untracked — they "
+        "existed before the baseline):"
+    ]
+    lines.extend(f"- {f}" for f in excluded)
+    lines.append(
+        "Default commit isolation (changes since baseline only) — nothing is lost."
+    )
+    return Section(
+        name="untracked_excluded",
+        status="pass",
+        measured=True,
+        lines=lines,
+        detail=f"{len(excluded)} pre-existing untracked file(s) excluded from the commit",
+    )
+
+
 def _contract_tests_section(project: Path, contract: dict | None, timeout: int) -> Section:
     cmds = (contract or {}).get("verify")
     if not isinstance(cmds, list) or not cmds:
@@ -622,6 +677,7 @@ def verify_pack(
         _safety_section(project),
         _diff_section(project, todo_id, contract),
         _reject_leak_section(project, todo_id),
+        _untracked_excluded_section(project, todo_id),
         _contract_tests_section(project, contract, cmd_timeout),
         _prove_red_section(project, todo_id, contract, tmp_base),
         _done_json_section(project, todo_id, logs_dir),

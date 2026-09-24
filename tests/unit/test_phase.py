@@ -102,6 +102,71 @@ class TestDetectPhase:
         assert phase.detect_phase(project) == "verify"
 
 
+class TestDetectPhaseRunActive:
+    """RUN10 #1 (bug 2026-09-24): an active run (забег) IS the phase.
+
+    The feedback header read "done" while the run was at position 4/6 —
+    the clean-exit leftover phase=done won over the active run. The run
+    check goes first, before the explicit-phase, stage-kind and
+    goal/live branches. Without a run the detection is unchanged."""
+
+    @staticmethod
+    def _active_run(project: Path) -> None:
+        from awf import run_state
+
+        run_state.write_run(
+            project,
+            queue=["TODO-0001", "TODO-0002"],
+            index=1,
+            current="TODO-0002",
+            active=True,
+        )
+
+    def test_active_run_wins_over_done_leftover(self, tmp_path):
+        """(в) The bug case: clean-exit leftover phase=done + active run
+        → 'run', not 'done'."""
+        project = _setup_project(tmp_path)
+        write_state(project, phase="done", goal="g", normalized=True)
+        self._active_run(project)
+        assert phase.detect_phase(project) == "run"
+
+    def test_active_run_without_state(self, tmp_path):
+        """Active run, no state file at all → 'run' (before the
+        goal/setup branches)."""
+        project = _setup_project(tmp_path)
+        self._active_run(project)
+        assert phase.detect_phase(project) == "run"
+
+    def test_active_run_over_stage_kind(self, tmp_path):
+        """Active run + live execute markers → 'run' (the run loop owns
+        the cycle, including its verify step)."""
+        project = _setup_project(tmp_path)
+        write_state(
+            project,
+            stage_name="agent-impl",
+            stage_kind="execute",
+            stage_idx=2,
+            todo_id="TODO-0002",
+        )
+        self._active_run(project)
+        assert phase.detect_phase(project) == "run"
+
+    def test_inactive_run_does_not_force_run(self, tmp_path):
+        """A FINISHED run (active: false) must not pin the phase to
+        'run' — the previous detection applies."""
+        from awf import run_state
+
+        project = _setup_project(tmp_path)
+        run_state.write_run(project, queue=["TODO-0001"], index=1, active=False)
+        assert phase.detect_phase(project) == "goal"
+
+    def test_no_run_behavior_unchanged(self, tmp_path):
+        """No run state: the explicit phase still wins (pre-RUN10 case)."""
+        project = _setup_project(tmp_path)
+        write_state(project, phase="done", goal="g", normalized=True)
+        assert phase.detect_phase(project) == "done"
+
+
 class TestGetPhasePrompt:
     """Phase prompt assembly."""
 

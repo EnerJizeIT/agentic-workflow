@@ -881,6 +881,7 @@ async def awf_metrics(
     out: str | None = None,
     refresh_subscriptions: bool = False,
     mirror: bool = True,
+    all_projects: bool = False,
 ) -> dict[str, Any]:
     """Collect token/cost metrics of the work program and write the report (U8).
 
@@ -889,6 +890,13 @@ async def awf_metrics(
     opencode.db, unit windows (baseline sha → verify commit), code lines
     per unit (git shortstat), and the cost conversion: "if workers had
     run on <reference model>, the cost would be $Y" (models.dev prices).
+
+    RUN10 #3-fix: by default only the current project's sessions are
+    collected — a session belongs to the project when its ``part.data``
+    contains the project path (``session.directory`` is not a
+    discriminator: workers and the supervisor run from $HOME); the report
+    header names the scope. ``all_projects=True`` — the whole shared
+    opencode.db, data mixed (the pre-RUN10 behavior).
 
     The markdown report is written by default to ``metrics.output_dir``
     (default: ~/Desktop) as ``awf-metrics-<YYYYMMDD-HHMM>.md``.
@@ -912,6 +920,9 @@ async def awf_metrics(
         mirror: U8c — copy the report to config ``metrics.mirror_dir``
             after it is written (default: True; pass False to skip the
             copy for this run).
+        all_projects: RUN10 #3 — collect sessions from all projects of the
+            shared opencode.db instead of only the current project
+            (default: False — current project only).
 
     Returns:
         Dict with: status, report_path, mirror_path, units, totals,
@@ -928,6 +939,7 @@ async def awf_metrics(
         out=out,
         refresh_subscriptions=refresh_subscriptions,
         mirror=mirror,
+        all_projects=all_projects,
     )
 
 
@@ -941,6 +953,10 @@ async def awf_feedback(
     *,
     body: str = "",
     severity: str = "",
+    expected: str = "",
+    got: str = "",
+    why: str = "",
+    proposal: str = "",
     stdout: bool = False,
 ) -> dict[str, Any]:
     """Write a bug/feature report about awf friction to the owner (RUN4 #2).
@@ -951,9 +967,12 @@ async def awf_feedback(
     (awf version, project, phase, run position/no_checkpoints, current
     task, awf-repo git sha best-effort, date), the skeleton
     «Что пытался / Ожидал / Что получил / Почему мешает / Предложение»
-    (``body`` fills «Что пытался»), and the tail of the project's newest
-    log (<=20 lines). File: ``awf-<bug|feature>-<YYYYMMDD>-<slug>.md``;
-    a repeat on the same day with the same slug gets a ``-2`` suffix.
+    (``body`` fills «Что пытался», ``expected``/``got``/``why``/
+    ``proposal`` fill the rest), and the tail of the project's newest
+    log (<=20 lines). EMPTY sections are not printed at all — a one-text
+    report has no empty headings (RUN10 #2). File:
+    ``awf-<bug|feature>-<YYYYMMDD>-<slug>.md``; a repeat on the same day
+    with the same slug gets a ``-2`` suffix.
     Secrets: the report never reads the environment.
 
     Do not stay silent: silence does not fix the tool.
@@ -966,6 +985,10 @@ async def awf_feedback(
             Cyrillic is transliterated, letters-only fallback ``report``).
         body: Text for the «Что пытался» section.
         severity: ``low`` / ``medium`` / ``high`` (empty = no mark).
+        expected: Text for the «Ожидал» section (empty = not printed).
+        got: Text for the «Что получил» section (empty = not printed).
+        why: Text for the «Почему мешает» section (empty = not printed).
+        proposal: Text for the «Предложение» section (empty = not printed).
         stdout: True — return the report text, write no file.
 
     Returns:
@@ -980,6 +1003,10 @@ async def awf_feedback(
         title=title,
         body=body,
         severity=severity,
+        expected=expected,
+        got=got,
+        why=why,
+        proposal=proposal,
         stdout=stdout,
     )
 
@@ -1029,10 +1056,11 @@ async def awf_approve(
         # AUD05-03: the old fixed text promised "approved and committed.
         # Pipeline exited." — approve only writes the signal; neither the
         # commit nor the exit is guaranteed by it. Build the hint from facts.
+        # RUN10 #1: "run active" comes from the single source
+        # (api.run_is_active → awf.run_state), not a duplicated run_brief probe.
         run_active = False
         try:
-            brief = api.run_brief(pd)
-            run_active = bool(brief and brief.get("active"))
+            run_active = bool(api.run_is_active(pd))
         except Exception:
             pass
         if run_active:
@@ -1422,6 +1450,7 @@ async def awf_dispatch_todo(
     todo_id: str | None = None,
     pipeline: str | None = None,
     carry_over_from: str | None = None,
+    include_untracked: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -1452,10 +1481,22 @@ async def awf_dispatch_todo(
             commit includes them. Use this when re-issuing a rejected unit.
             Refused (no side effects) when the origin TODO or its REJECT
             file is missing.
+        include_untracked: RUN10 #4 — project-relative paths of pre-existing
+            untracked files to include in this unit's commit (e.g.
+            ["docs/notes.md"]). The commit gate otherwise excludes files
+            that were untracked BEFORE the dispatch; with this parameter
+            they join the unit commit. Each path must exist, be untracked,
+            not gitignored, and stay inside the project — any invalid path
+            refuses the dispatch (no side effects). Traced in
+            ``.agentic/context/BASELINE-<id>.include``. The answer ALSO
+            lists the files that stay excluded (``pre_existing_untracked``
+            + ``untracked_warning``).
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
-        of paths created), carry_over_from, carry_over_files.
+        of paths created), carry_over_from, carry_over_files,
+        pre_existing_untracked (list, excluded from the commit),
+        untracked_warning (one line, "" when nothing is excluded).
     """
     try:
         result = api.dispatch_todo(
@@ -1465,6 +1506,7 @@ async def awf_dispatch_todo(
             todo_id=todo_id,
             pipeline=pipeline,
             carry_over_from=carry_over_from,
+            include_untracked=include_untracked,
         )
         response = _ok(result)
         # SMO: next_action + pre-check warnings guide weak models
@@ -1486,6 +1528,13 @@ async def awf_dispatch_todo(
                 f"{result.carry_over_from}: {len(result.carry_over_files)} "
                 "file(s) of the rejected attempt will join the retry commit. "
                 "Call awf_start(background=True) to launch pipeline."
+            )
+        # RUN10 #4 (TODO-0074): the excluded pre-existing untracked files
+        # must not be invisible — the warning reaches next_action.
+        untracked_warning = getattr(result, "untracked_warning", "") or ""
+        if untracked_warning:
+            response["next_action"] = (
+                f"{response['next_action']} {untracked_warning}"
             )
         return response
     except api.AwfApiError as e:
@@ -1798,27 +1847,37 @@ MAX_WAIT = 600
 
 
 def _wait_cap_note(project_dir, clamped: bool, requested: int) -> str:
-    """B3 / RUN6 #3: append the actual single-wait cap to every next_action.
+    """B3 / RUN6 #3 / RUN10 #2: append the ACTUAL single-wait cap to
+    every next_action.
 
-    The supervisor used to wait with timeout=180 and get the transport
-    cut at ~55s (-32001), then hammer retries. The note makes the working
-    cap explicit; when the request was clamped to MAX_WAIT it says so.
+    The supervisor used to wait with timeout=180 and get the wait cut at
+    ~55s, then hammer retries. The note makes the working cap explicit;
+    when the request was clamped to MAX_WAIT it says so.
 
     RUN6 #3: the cap is project-aware (wait_cap: env AWF_WAIT_CAP / config
-    wait.cap_seconds, default TRANSPORT_CAP). The "raise the mcp timeout in
-    opencode.json" advice is shown ONLY while the cap is the default — once
-    the owner raised it in config/env, the advice is stale and is dropped.
+    wait.cap_seconds, default TRANSPORT_CAP).
+
+    RUN10 #2: while the cap is the default the note names the EXACT tool
+    setting with the CONCRETE value (api.cap_advice reads the mcp timeout
+    from opencode.json: T = timeout ms / 1000 - 30). The "raise the mcp
+    timeout in opencode.json" clause appears ONLY when that timeout is
+    unknown or below the cap — never when the cap is no longer the
+    default (the owner already raised the ceiling, the advice is stale).
     """
     try:
         cap = api.wait_cap(project_dir)
     except Exception:
         cap = api.TRANSPORT_CAP
     if cap == api.TRANSPORT_CAP:
-        note = (
-            f" Single wait <= {cap}s (MCP client transport cap; "
-            "to wait longer, raise the mcp timeout in opencode.json, "
-            f"e.g. 600000 ms; wrapper cap {MAX_WAIT}s)."
-        )
+        try:
+            advice = api.cap_advice(project_dir)
+        except Exception:
+            advice = (
+                f"{cap}s is the tool's own cap, not the transport — to "
+                "wait longer set wait.cap_seconds in .agentic/config.yaml "
+                "or AWF_WAIT_CAP — wait in smaller steps"
+            )
+        note = f" Single wait <= {cap}s ({advice})."
     else:
         note = (
             f" Single wait <= {cap}s (project wait cap: wait.cap_seconds "
@@ -1865,19 +1924,20 @@ async def awf_wait_for_event(
     up to ~55s (B3, run2 report). This wrapper clamps the wait to MAX_WAIT
     (600s). The single-wait cap is project-aware (RUN6 #3): env
     ``AWF_WAIT_CAP`` > ``.agentic/config.yaml`` ``wait.cap_seconds`` > the
-    default 55s. For longer single waits raise the MCP server timeout in
-    opencode.json::
+    default 55s.
 
-        "mcp": {"agent-workflow-ui": {..., "timeout": 600000}}
-
-    ...and set ``wait.cap_seconds`` in the project config so the tool stops
-    under-selling the wait.
-
-    B3 / RUN6 #3: ``next_action`` of EVERY response carries the actual
-    single-wait cap (default MCP client transport ~55s, or the project's
-    wait.cap_seconds / AWF_WAIT_CAP when raised) — the "raise the mcp
-    timeout" advice is shown only while the cap is the default. When
-    ``timeout_clamped`` is true the note comes with the clamp fact.
+    RUN10 #2 (honest advice): the 55s default is the tool's OWN cap, not
+    the transport — a raised mcp timeout in opencode.json does not lift
+    it. ``next_action`` of EVERY response names the exact lever: while
+    the cap is the default it says to set ``wait.cap_seconds: <T>`` in
+    ``.agentic/config.yaml`` or ``AWF_WAIT_CAP=<T>`` (T = the
+    ``agent-workflow-ui`` mcp timeout from opencode.json minus ~30s, when
+    readable; without the number when it is not). The "raise the mcp
+    timeout in opencode.json" clause appears ONLY when that timeout is
+    unknown or below the cap — and NEVER once the cap is raised in
+    config/env. ``suggested_timeout`` with no stage history follows the
+    actual cap (~90% of it: 55 → 55, 600 → 540), not the 55s default.
+    When ``timeout_clamped`` is true the note comes with the clamp fact.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
@@ -1923,17 +1983,25 @@ async def awf_wait_for_event(
         # carries event_type via as_dict().
         et = response.get("event_type") or "timeout"
         # RUN6 #3: the fallback cap is project-aware (wait.cap_seconds /
-        # AWF_WAIT_CAP), not the hardcoded transport default.
-        suggested = response.get("suggested_timeout") or api.wait_cap(
-            _resolve_project_dir(project_dir)
+        # AWF_WAIT_CAP), not the hardcoded transport default. RUN10 #2:
+        # the no-history fallback follows the cap (~90% of it), not the
+        # 55s transport default.
+        try:
+            cap = api.wait_cap(_resolve_project_dir(project_dir))
+        except Exception:
+            cap = api.TRANSPORT_CAP
+        suggested = response.get("suggested_timeout") or (
+            api.default_suggested_timeout(cap)
         )
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;
         # outside it stays idle (R6 reactive mode).
+        # RUN10 #1: the "run active" decision comes from the single source
+        # (awf.run_state.run_is_active, exported as api.run_is_active) —
+        # the old run_brief probe was a duplicated, heavier check.
         run_active = False
         try:
-            brief = api.run_brief(_resolve_project_dir(project_dir))
-            run_active = bool(brief and brief.get("active"))
+            run_active = bool(api.run_is_active(_resolve_project_dir(project_dir)))
         except Exception:
             pass
 
@@ -1970,7 +2038,15 @@ async def awf_wait_for_event(
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
             }
-        response["next_action"] = _EVENT_ACTIONS.get(et, "Check awf_status, then wait for user.")
+        # RUN10 #1: an UNKNOWN event type inside a run must not advise
+        # "wait for user" either — the run loop keeps waiting.
+        default_action = (
+            f"Check awf_status, then continue the run loop: "
+            f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
+            if run_active
+            else "Check awf_status, then wait for user."
+        )
+        response["next_action"] = _EVENT_ACTIONS.get(et, default_action)
         # B3 / RUN6 #3: every response carries the actual single-wait cap
         # (project-aware: config/env, default ~55s transport cap); clamped
         # requests say so explicitly.
@@ -2049,7 +2125,8 @@ async def awf_kill(
             NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
-        Dict with: killed (bool), pid, workers ({pid: status}), message.
+        Dict with: killed (bool), pid, workers ({pid: status}), message;
+        reason ("ancestry") on refusal.
     """
     try:
         result = await asyncio.to_thread(
@@ -2076,10 +2153,17 @@ async def awf_kill(
                     "needs new shape."
                 )
         else:
-            response["next_action"] = (
-                "No pipeline was running (nothing to stop) — start one: "
-                "awf_start(project_dir), or awf_run_next inside a run."
-            )
+            if result.get("reason") == "ancestry":
+                response["next_action"] = (
+                    "Kill refused: this process is inside the pipeline it "
+                    "is trying to kill. Run awf_kill from the supervisor "
+                    "session, not from inside the pipeline."
+                )
+            else:
+                response["next_action"] = (
+                    "No pipeline was running (nothing to stop) — start one: "
+                    "awf_start(project_dir), or awf_run_next inside a run."
+                )
         return response
     except api.AwfApiError as e:
         return _err(e)

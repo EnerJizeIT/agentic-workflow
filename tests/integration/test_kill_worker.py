@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -30,11 +31,12 @@ from awf.api.pipeline import (
     kill_pipeline,
     orphan_worker_warning,
 )
-from awf.pipeline_state import write_state
+from awf.pipeline_state import read_state, write_state
 
 AWF_ARGV = "python\x00-m\x00awf\x00start\x00--project-dir\x00/x\x00"
 OPENCODE_ARGV = "opencode\x00run\x00--auto\x00--agent\x00worker\x00"
 NGINX_ARGV = "nginx\x00worker\x00"
+STUBS_DIR = Path(__file__).resolve().parents[2] / "tests" / "stubs"
 
 
 @pytest.fixture
@@ -415,3 +417,253 @@ class TestOrphanWarningAtStart:
         finally:
             orphan.kill()
             orphan.wait()
+
+
+class TestKillSelfPipelineRefusal:
+    """RUN10 #5 Part A (TODO-0075): kill_pipeline refuses when the CALLER
+    is inside the pipeline it is trying to kill.
+
+    Dogfood incident: worker 0065 called the kill from inside a live
+    project and took down its own pipeline and itself. The supervisor is
+    never an ancestor of the pipeline, so a legitimate stop is never
+    blocked; a caller inside it is, by definition, part of what is being
+    stopped.
+    """
+
+    def test_refusal_from_inside_pipeline(self, project):
+        """A child of the fake pipeline calls kill_pipeline → refusal;
+        the pipeline and the caller survive, the state is untouched."""
+        child_code = (
+            "import json, sys, time\n"
+            "from awf.api import _liveness\n"
+            "_liveness.read_cmdline = lambda pid: chr(0).join(\n"
+            "    ['python', '-m', 'awf', 'start', '--project-dir', '/x'])\n"
+            "from awf.api.pipeline import kill_pipeline\n"
+            "time.sleep(3)  # the parent writes state (worker_pid = us) first\n"
+            "res = kill_pipeline(sys.argv[1])\n"
+            "print(json.dumps(res), flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        pipe_code = (
+            "import subprocess, sys, time\n"
+            "child = subprocess.Popen(\n"
+            "    [sys.executable, '-c', sys.argv[2], sys.argv[1]],\n"
+            "    stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "print('CHILD', child.pid, flush=True)\n"
+            "line = child.stdout.readline()\n"
+            "print('RESULT', line.decode(), flush=True)\n"
+            "time.sleep(300)\n"
+        )
+        pipe = subprocess.Popen(
+            [sys.executable, "-c", pipe_code, str(project), child_code],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        child_pid = None
+        try:
+            try:
+                line = pipe.stdout.readline().decode().split()
+                child_pid = int(line[1])
+            except (ValueError, IndexError):
+                pipe.kill()
+                pipe.wait()
+                raise
+            write_state(project, pipeline_pid=pipe.pid, worker_pid=child_pid)
+            line = pipe.stdout.readline().decode().split(None, 1)
+            assert line[0] == "RESULT"
+            res = json.loads(line[1].strip())
+
+            assert res["killed"] is False
+            assert res.get("reason") == "ancestry"
+            assert res["pid"] == pipe.pid
+            assert "refusing" in res["message"]
+            assert "supervisor session" in res["message"]
+
+            assert pipe.poll() is None, "the pipeline died despite the refusal"
+            assert _alive(child_pid), "the caller died with the pipeline"
+            state = read_state(project)
+            assert state is not None
+            assert int(state["pipeline_pid"]) == pipe.pid
+        finally:
+            if pipe.poll() is None:
+                pipe.kill()
+                pipe.wait()
+            if pipe.stdout is not None:
+                try:
+                    pipe.stdout.close()
+                except OSError:
+                    pass
+            if child_pid is not None and _alive(child_pid):
+                try:
+                    os.kill(child_pid, 9)
+                except OSError:
+                    pass
+
+    def test_kill_from_outside_pipeline_still_works(self, project, monkeypatch):
+        """The refusal must not over-block: a caller that is NOT an
+        ancestor of the pipeline (the supervisor's case — here the pytest
+        process, the pipeline's parent) still kills."""
+        pipe, wpid = _start_pipeline_with_worker()
+        try:
+            write_state(project, pipeline_pid=pipe.pid, worker_pid=wpid)
+            monkeypatch.setattr(_liveness, "read_cmdline", lambda pid: AWF_ARGV)
+
+            res = kill_pipeline(project)
+
+            assert res["killed"] is True
+            assert res.get("reason") is None
+            assert res["workers"] == {str(wpid): "killed"}
+        finally:
+            _cleanup(pipe, wpid)
+
+    def test_ancestry_degrades_without_proc(self, project, monkeypatch):
+        """/proc unreadable → the kill still proceeds; the answer carries
+        the 'ancestry check unavailable' note (degradation, not a block)."""
+        pipe, wpid = _start_pipeline_with_worker()
+        try:
+            write_state(project, pipeline_pid=pipe.pid, worker_pid=wpid)
+            monkeypatch.setattr(_liveness, "read_cmdline", lambda pid: AWF_ARGV)
+            monkeypatch.setattr(_proc, "ppid_of", lambda pid: None)
+
+            res = kill_pipeline(project)
+
+            assert res["killed"] is True
+            assert "ancestry check unavailable" in res["message"]
+            assert res.get("reason") is None
+        finally:
+            _cleanup(pipe, wpid)
+
+
+class TestLateWorkerSweep:
+    """RUN10 #5 Part B (TODO-0075): a worker spawned during the kill
+    window is caught by the second sweep.
+
+    Incident: the kill landed in a network pause; the worker spawned a
+    second before the kill outlived it and the supervisor stopped it by
+    hand. Now: after the pipeline dies, kill_pipeline re-reads state and
+    /proc, terminates the late worker, names it in the answer and in
+    last-kill.json.
+    """
+
+    def test_late_worker_spawned_during_kill_is_terminated(self, project, monkeypatch):
+        env = os.environ.copy()
+        env["PATH"] = f"{STUBS_DIR}:{env.get('PATH', '')}"
+        env["AWF_TEST_OPENCODE_BEHAVIOR"] = "sleep"
+        env["AWF_TEST_OPENCODE_SLEEP_SECONDS"] = "300"
+        pipe_code = (
+            "import signal, subprocess, sys, time\n"
+            "from awf.pipeline_state import write_state\n"
+            "project = sys.argv[1]\n"
+            "old = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'import time; time.sleep(300)'],\n"
+            "    start_new_session=True,\n"
+            "    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "write_state(project, worker_pid=old.pid,\n"
+            "             worker_role='worker', worker_todo='TODO-0075')\n"
+            "print('READY', old.pid, flush=True)\n"
+            "def on_term(signum, frame):\n"
+            "    late = subprocess.Popen(\n"
+            "        ['opencode', 'run', '--auto', '--agent', 'worker', '--', 'TODO-0075'],\n"
+            "        start_new_session=True,\n"
+            "        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,\n"
+            "        cwd=project,\n"
+            "    )\n"
+            "    write_state(project, worker_pid=late.pid,\n"
+            "                 worker_role='worker', worker_todo='TODO-0075')\n"
+            "    print('LATE', late.pid, flush=True)\n"
+            "    time.sleep(2.0)\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, on_term)\n"
+            "time.sleep(300)\n"
+        )
+        pipe = subprocess.Popen(
+            [sys.executable, "-c", pipe_code, str(project)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        late_pid = None
+        try:
+            line = pipe.stdout.readline().decode().split()
+            assert line[0] == "READY"
+            old_pid = int(line[1])
+            write_state(project, pipeline_pid=pipe.pid)
+            real_cmdline = _liveness.read_cmdline
+            monkeypatch.setattr(
+                _liveness, "read_cmdline",
+                lambda pid: AWF_ARGV if pid == pipe.pid else real_cmdline(pid),
+            )
+
+            res = kill_pipeline(project)
+
+            line = pipe.stdout.readline().decode().split()
+            assert line[0] == "LATE"
+            late_pid = int(line[1])
+
+            assert res["killed"] is True
+            assert res["pid"] == pipe.pid
+            assert res["workers"].get(str(old_pid)) in ("killed", "dead")
+            assert res["workers"].get(str(late_pid)) == "killed"
+            assert f"worker PID {late_pid} spawned during kill" in res["message"]
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and _alive(late_pid):
+                time.sleep(0.2)
+            assert not _alive(late_pid), (
+                "the late worker survived the second sweep (the incident)"
+            )
+            rec = json.loads(
+                (project / ".agentic" / "state" / LAST_KILL_FILE).read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert rec["workers"].get(str(late_pid)) == "killed"
+        finally:
+            if pipe.poll() is None:
+                pipe.kill()
+                pipe.wait()
+            if pipe.stdout is not None:
+                try:
+                    pipe.stdout.close()
+                except OSError:
+                    pass
+            if late_pid is not None and _alive(late_pid):
+                try:
+                    os.kill(late_pid, 9)
+                except OSError:
+                    pass
+
+
+class TestCallerAncestry:
+    """The /proc ancestor walk itself (RUN10 #5 Part A helper)."""
+
+    def test_walk_reaches_init_without_hit(self):
+        from awf._proc import caller_ancestry
+
+        hit, available = caller_ancestry({2**30})
+        assert hit is None
+        assert available is True
+
+    def test_own_pid_is_hit(self):
+        from awf._proc import caller_ancestry
+
+        hit, available = caller_ancestry({os.getpid()})
+        assert hit == os.getpid()
+        assert available is True
+
+    def test_parent_seen_from_child(self):
+        code = (
+            "import os\n"
+            "from awf._proc import caller_ancestry\n"
+            "print(caller_ancestry({os.getppid()})[0])\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert int(out) == os.getpid()

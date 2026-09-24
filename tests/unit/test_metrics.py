@@ -43,35 +43,52 @@ def _ms(sec: int) -> int:
     return sec * 1000
 
 
-def make_db(path: Path, *, supervisor_title: str = "Audit supervisor session") -> Path:
-    """Синтетическая база: 2 юнита, 3 воркерские сессии, 1 супервизор."""
+_SCHEMA = """
+CREATE TABLE session (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL,
+    directory TEXT NOT NULL DEFAULT '',
+    cost REAL DEFAULT 0 NOT NULL,
+    tokens_input INTEGER DEFAULT 0, tokens_output INTEGER DEFAULT 0,
+    tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
+    time_created INTEGER, time_updated INTEGER
+);
+CREATE TABLE message (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+    time_created INTEGER, data TEXT NOT NULL
+);
+CREATE TABLE part (
+    id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, time_created INTEGER, data TEXT NOT NULL
+);
+"""
+
+
+# RUN10 #3-fix: реальная модель данных — directory сессий НЕ дискриминатор
+# проекта: воркеров спавнит MCP-сервер из $HOME, у супервизора тот же
+# directory. Признак проекта — путь в содержимом part.data.
+_FAKE_HOME = "/home/awf"
+
+
+def make_db(
+    path: Path,
+    *,
+    supervisor_title: str = "Audit supervisor session",
+    proj_dir: str = "/proj/test",
+    home_dir: str = _FAKE_HOME,
+) -> Path:
+    """Синтетическая база: 2 юнита, 3 воркерские сессии, 1 супервизор.
+
+    Фикстура отражает реальность (RUN10 #3-fix): directory всех сессий —
+    $HOME-подобный каталог (не путь проекта), путь проекта встречается
+    в содержимом part.
+    """
     con = sqlite3.connect(path)
-    con.executescript(
-        """
-        CREATE TABLE session (
-            id TEXT PRIMARY KEY, title TEXT NOT NULL,
-            directory TEXT NOT NULL DEFAULT '',
-            cost REAL DEFAULT 0 NOT NULL,
-            tokens_input INTEGER DEFAULT 0, tokens_output INTEGER DEFAULT 0,
-            tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
-            time_created INTEGER, time_updated INTEGER
-        );
-        CREATE TABLE message (
-            id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
-            time_created INTEGER, data TEXT NOT NULL
-        );
-        CREATE TABLE part (
-            id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
-            session_id TEXT NOT NULL, time_created INTEGER, data TEXT NOT NULL
-        );
-        """
-    )
-    proj_dir = "/proj/test"
+    con.executescript(_SCHEMA)
 
     def sess(sid, title, tin, tout, tcr, tcw, cost, tc):
         con.execute(
             "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (sid, title, proj_dir, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
+            (sid, title, home_dir, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
         )
 
     # TODO-0001: две сессии (implementer + qa-review)
@@ -87,6 +104,12 @@ def make_db(path: Path, *, supervisor_title: str = "Audit supervisor session") -
     def msg(mid, sid, ts, data):
         con.execute("INSERT INTO message VALUES (?,?,?,?)", (mid, sid, ts, data))
 
+    def text_part(pid, mid, sid, ts, text):
+        con.execute(
+            "INSERT INTO part VALUES (?,?,?,?,?)",
+            (pid, mid, sid, ts, json.dumps({"type": "text", "text": text})),
+        )
+
     msg("m1", "sup", _ms(T0 + 1000), json.dumps(
         {"tokens": {"input": 1000, "output": 100, "cache": {"read": 2000, "write": 50}}, "cost": 0.01}
     ))
@@ -99,6 +122,11 @@ def make_db(path: Path, *, supervisor_title: str = "Audit supervisor session") -
     con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p2", "m1", "s1", _ms(T0), json.dumps({"type": "compaction"})))
     con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p3", "m1", "s2", _ms(T0), json.dumps({"type": "compaction"})))
     con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p4", "m1", "s2", _ms(T0), json.dumps({"type": "text"})))
+    # части с путём проекта — признак принадлежности сессий к проекту
+    text_part("pt1", "m1", "s1", _ms(T0), f"Read {proj_dir}/.agentic/config.yaml")
+    text_part("pt2", "m2", "s2", _ms(T0 + 1800), f"cd {proj_dir} && git status")
+    text_part("pt3", "m1", "s3", _ms(T0 + 4000), f"git -C {proj_dir} log --oneline")
+    text_part("pt4", "m2", "sup", _ms(T0), f"supervisor session in {proj_dir}")
     con.commit()
     con.close()
     return path
@@ -151,7 +179,10 @@ def env(tmp_path: Path):
     proj = tmp_path / "proj"
     proj.mkdir()
     make_repo(proj)
-    db = make_db(tmp_path / "opencode.db")
+    # RUN10 #3-fix: directory сессий — $HOME-подобный (не дискриминатор);
+    # путь проекта в part.data — дефолтная область отчёта (только текущий
+    # проект) находит сессии по содержимому.
+    db = make_db(tmp_path / "opencode.db", proj_dir=str(proj))
     models = make_models(tmp_path / "models.json")
     return {"proj": proj, "db": db, "models": models, "tmp": tmp_path}
 
@@ -1065,3 +1096,242 @@ class TestU8dSubsCache:
         assert res.subscriptions["source"] == "builtin"
         assert any("кэш подписок бит" in w for w in res.warnings)
         assert len(res.subscriptions["plans"]) >= 6  # встроенная таблица
+
+
+def make_db_two_projects(
+    path: Path,
+    *,
+    proj_a: str,
+    proj_b: str,
+    supervisor_title: str = "Audit supervisor session",
+    sup_b: bool = False,
+    home_dir: str = _FAKE_HOME,
+) -> Path:
+    """RUN10 #3-fix: два проекта в одной общей базе + сессия без признака.
+
+    Реальная модель данных: directory всех сессий — $HOME-подобный
+    каталог (спавн из $HOME), признак проекта — путь в part.data: сессии A
+    называют proj_a, сессии B — proj_b, у «старой записи» пути проекта в
+    содержимом нет вовсе.
+
+    ``sup_b=True`` — ещё и сессия супервизора проекта B с сообщением вне
+    окон юнитов A (проверка гейта collect_supervisor, не только воркеров).
+    """
+    con = sqlite3.connect(path)
+    con.executescript(_SCHEMA)
+
+    def sess(sid, title, tin, tout, tcr, tcw, cost, tc):
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (sid, title, home_dir, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
+        )
+
+    def text_part(pid, sid, ts, text):
+        con.execute(
+            "INSERT INTO part VALUES (?,?,?,?,?)",
+            (pid, "m0", sid, ts, json.dumps({"type": "text", "text": text})),
+        )
+
+    # проект A (тестируемый): воркерская сессия называет proj_a
+    sess("a1", "awf-agent-implementer-TODO-0001",
+         1_000_000, 100_000, 2_000_000, 100_000, 0.0, _ms(T0))
+    text_part("pa1", "a1", _ms(T0), f"Read {proj_a}/.agentic/config.yaml")
+    # проект B: юнит того же класса (нет в репо A), называет proj_b
+    sess("b1", "awf-agent-implementer-TODO-0009",
+         7_000_000, 700_000, 0, 0, 1.5, _ms(T0 + 1000))
+    text_part("pb1", "b1", _ms(T0 + 1000), f"Read {proj_b}/.agentic/config.yaml")
+    # старая запись: пути проекта в содержимом сессии нет
+    sess("u1", "awf-agent-qa-review-TODO-0005",
+         4_000_000, 400_000, 0, 0, 0.4, _ms(T0 + 2000))
+    # супервизор проекта A
+    sess("sup", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0))
+    text_part("psup", "sup", _ms(T0), f"supervisor session in {proj_a}")
+    if sup_b:
+        # супервизор проекта B: сессия + сообщение с токенами, которое в
+        # дефолтной области должно быть исключено (путь B, не A).
+        # ts раньше всех окон юнитов A (T0-60 — baseline TODO-0001),
+        # чтобы попадать в «вне окон», а не в окно чужого юнита
+        sess("sup_b", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0))
+        text_part("psupb", "sup_b", _ms(T0), f"supervisor session in {proj_b}")
+        con.execute(
+            "INSERT INTO message VALUES (?,?,?,?)",
+            (
+                "sup_b_m1", "sup_b", _ms(T0 - 100_000),
+                json.dumps(
+                    {"tokens": {"input": 88_000, "output": 8_000,
+                                "cache": {"read": 0, "write": 0}},
+                     "cost": 0.08}
+                ),
+            ),
+        )
+    con.commit()
+    con.close()
+    return path
+
+
+class TestRun10ProjectScope:
+    """RUN10 #3: метрики не смешивают юниты разных проектов."""
+
+    def _two_project_env(self, env, tmp_db: Path):
+        db = make_db_two_projects(
+            tmp_db, proj_a=str(env["proj"]), proj_b="/proj/other"
+        )
+        env["db"] = db
+        return db
+
+    def test_default_scope_only_current_project(self, env):
+        self._two_project_env(env, env["tmp"] / "db2.db")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        todos = [u["todo"] for u in res.units]
+        # юниты чужого проекта (TODO-0009) и без признака (TODO-0005)
+        # в отчёте не появляются; юниты репо A — на месте
+        assert "TODO-0009" not in todos
+        assert "TODO-0005" not in todos
+        assert "TODO-0001" in todos and "TODO-0002" in todos
+        # токены — только сессия проекта A
+        assert res.totals["win"] == 1_000_000
+        assert res.totals["wout"] == 100_000
+        # шапка называет область
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert f"Область: проект: {res.project_dir}." in text
+        # честное предупреждение: 2 исключённые (чужой проект + без пути
+        # проекта в содержимом), без выдуманного каталога
+        excl = [w for w in res.warnings if "исключены сессии других проектов" in w]
+        assert any("2" in w for w in excl)
+        assert not any("/proj/other" in w for w in excl)
+
+    def test_all_projects_mixes_everything(self, env):
+        self._two_project_env(env, env["tmp"] / "db2.db")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", all_projects=True,
+        )
+        todos = [u["todo"] for u in res.units]
+        assert set(todos) == {"TODO-0001", "TODO-0002", "TODO-0005", "TODO-0009"}
+        # все три воркерские сессии общей базы
+        assert res.totals["win"] == 12_000_000
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "Область: все проекты (данные смешаны)." in text
+        # без фильтра исключений нет — предупреждений о них нет
+        assert not any("исключены сессии других проектов" in w for w in res.warnings)
+
+    def test_no_match_empty_sessions_with_warning(self, env):
+        # путь текущего проекта не в содержимом ни одной сессии — не
+        # падать: данные сессий пустые + предупреждение «не удалось
+        # сопоставить сессии» (явное «нет данных», а не чужие цифры);
+        # коммиты юнитов (локальные по природе) при этом измерены
+        db = make_db_two_projects(
+            env["tmp"] / "db5.db",
+            proj_a="/proj/somewhere-else", proj_b="/proj/other",
+        )
+        env["db"] = db
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        assert res.totals["win"] == 0
+        assert all(u["sessions"] == 0 for u in res.units)
+        assert res.totals["ins"] == 14  # коммиты репо A измерены
+        assert any("не удалось сопоставить сессии" in w for w in res.warnings)
+        assert Path(res.report_path).exists()  # отчёт пишется с пометками
+
+    def test_header_names_scope_by_default(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert f"Область: проект: {res.project_dir}." in text
+        assert "все проекты" not in text
+
+    def test_explicit_config_directory_wins_over_default(self, env):
+        # явный metrics.directory — legacy-фильтр по session.directory;
+        # он побеждает content-область: все сессии лежат в одном
+        # $HOME-каталоге, и чужой проект B попадает в отчёт
+        self._two_project_env(env, env["tmp"] / "db2.db")
+        _set_metrics_cfg(env, f"  directory: {_FAKE_HOME}\n")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        todos = [u["todo"] for u in res.units]
+        assert "TODO-0009" in todos
+        assert res.totals["win"] == 12_000_000
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert f"Область: проект: {_FAKE_HOME}." in text
+        assert not any("исключены сессии других проектов" in w for w in res.warnings)
+
+    def test_path_in_content_trailing_slash(self, env):
+        # путь проекта в part.data с хвостовым слэшем — тот же проект
+        db = make_db_two_projects(
+            env["tmp"] / "db3.db",
+            proj_a=str(env["proj"]) + "/",
+            proj_b="/proj/other",
+        )
+        env["db"] = db
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        # a1 (путь с хвостовым слэшем) сопоставился; исключены только
+        # сессия B (b1) и без пути (u1) — 2, не 3
+        assert res.totals["win"] == 1_000_000
+        excl = [w for w in res.warnings if "исключены сессии других проектов" in w]
+        assert any("2" in w for w in excl)
+        assert not any("3" in w for w in excl)
+
+    def test_foreign_supervisor_excluded_by_default(self, env):
+        # гейт collect_supervisor: сессия супервизора чужого проекта не
+        # должна подмешивать свои токены в отчёт (аналог воркерского случая)
+        db = make_db_two_projects(
+            env["tmp"] / "db4.db",
+            proj_a=str(env["proj"]), proj_b="/proj/other", sup_b=True,
+        )
+        env["db"] = db
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        # сообщение sup_b (88_000 in) вне окон юнитов — в дефолтной
+        # области путь проекта B, а не A, токены не подмешиваются
+        assert res.supervisor_outside["in"] == 0
+        # с all_projects=True та же сессия уже считается: токены вне окон
+        res_all = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", all_projects=True,
+        )
+        assert res_all.supervisor_outside["in"] == 88_000
+
+
+class TestContentMatchEscaping:
+    """RUN10 #3-fix: LIKE-спецсимволы пути проекта не расширяют область."""
+
+    def test_like_escape_specials(self):
+        assert M._like_escape("/a_b/c%d\\e") == "/a\\_b/c\\%d\\\\e"
+
+    def test_underscore_path_not_overmatched(self, env):
+        # имя проекта с подчёркиванием: без экранирования паттерн
+        # «proj_under» совпал бы с соседним «projXunder» (LIKE: _ =
+        # любой символ) и подмешал бы чужой проект
+        proj2 = env["tmp"] / "proj_under"
+        proj2.mkdir()
+        make_repo(proj2)
+        db = make_db_two_projects(
+            env["tmp"] / "db6.db",
+            proj_a=str(proj2),
+            proj_b=str(proj2).replace("_under", "Xunder"),
+        )
+        env["db"] = db
+        res = M.collect_metrics(
+            proj2, db_path=db, models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        # сопоставился только a1 (точный путь); сосед projXunder и
+        # без пути (u1) — исключены
+        assert res.totals["win"] == 1_000_000
+        excl = [w for w in res.warnings if "исключены сессии других проектов" in w]
+        assert any("2" in w for w in excl)
+        assert not any("3" in w for w in excl)

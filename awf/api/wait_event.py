@@ -38,6 +38,9 @@ from ._results import WaitEventResult
 # the supervisor's next call dies mid-wait (-32001).
 TRANSPORT_CAP = 55
 MIN_WAIT = 30
+# RUN10 #2: the safety gap between the mcp timeout (opencode.json) and the
+# wait cap advised from it — the transport cut lands mid-wait otherwise.
+WAIT_CAP_MARGIN = 30
 
 
 def _parse_cap(value: Any) -> int | None:
@@ -90,6 +93,96 @@ def wait_cap(project_dir: Path | None = None) -> int:
     return TRANSPORT_CAP
 
 
+def mcp_transport_timeout_ms(project_dir: Path | None = None) -> int | None:
+    """RUN10 #2: the ``agent-workflow-ui`` mcp timeout (ms) from opencode.json.
+
+    Reads ``mcp["agent-workflow-ui"]["timeout"]`` from the user's
+    opencode.json (``awf.xdg.opencode_config_file``, XDG-aware). Returns
+    None when the file is missing or unreadable, the root is not a dict,
+    the server or its timeout is absent, or the value is not a positive
+    number — the cap advice then drops the concrete number.
+    """
+    import json
+
+    try:
+        from ..xdg import opencode_config_file
+
+        cfg_path = opencode_config_file()
+        if not cfg_path.is_file():
+            return None
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    mcp = cfg.get("mcp")
+    if not isinstance(mcp, dict):
+        return None
+    server = mcp.get("agent-workflow-ui")
+    if not isinstance(server, dict):
+        return None
+    raw = server.get("timeout")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    n = int(raw)
+    return n if n > 0 else None
+
+
+def default_suggested_timeout(cap: int) -> int:
+    """RUN10 #2: the no-history suggestion, sized from the ACTUAL cap.
+
+    ``min(cap, max(55, int(0.9*cap)))`` — 55 → 55, 300 → 270, 600 → 540.
+    The old ``min(55, cap)`` stuck the suggestion at 55s while the owner's
+    cap was 600 (the "strange 55 seconds" from the 24.09 feature report).
+    """
+    return min(cap, max(TRANSPORT_CAP, int(0.9 * cap)))
+
+
+def cap_advice(project_dir: Path | None = None) -> str:
+    """RUN10 #2: the honest single-wait cap advice.
+
+    Default cap: names the EXACT tool setting with the CONCRETE value —
+    ``wait.cap_seconds: <T>`` in ``.agentic/config.yaml`` or
+    ``AWF_WAIT_CAP=<T>`` (T = the mcp timeout from opencode.json minus
+    ~30s) when the transport timeout is readable, without the number when
+    it is not. The "raise the mcp timeout in opencode.json" clause is
+    shown ONLY when that timeout is unknown or too small to carry the cap
+    (below cap + margin) — and NEVER when the cap is no longer the
+    default (the owner already raised the ceiling, the advice is stale
+    then).
+    """
+    cap = wait_cap(project_dir)
+    if cap != TRANSPORT_CAP:
+        return (
+            f"a single wait above {cap}s is cut on this setup "
+            "(wait.cap_seconds / AWF_WAIT_CAP) — wait in smaller steps"
+        )
+    transport_ms = mcp_transport_timeout_ms(project_dir)
+    if transport_ms is None:
+        return (
+            f"{cap}s is the tool's own cap, not the transport — to wait "
+            "longer set wait.cap_seconds in .agentic/config.yaml or "
+            "AWF_WAIT_CAP (raise the mcp timeout in opencode.json first "
+            "if it is still the default ~60s) — wait in smaller steps"
+        )
+    t = transport_ms // 1000 - WAIT_CAP_MARGIN
+    if t < TRANSPORT_CAP:
+        # Not "below the cap" — the timeout can sit above the cap (e.g. the
+        # 60s opencode default) yet still leave no room for cap + margin.
+        return (
+            f"the mcp timeout in opencode.json ({transport_ms} ms) cannot "
+            f"carry the {cap}s cap plus the ~{WAIT_CAP_MARGIN}s margin — "
+            "raise it, then set wait.cap_seconds to the new value minus "
+            f"~{WAIT_CAP_MARGIN}s — wait in smaller steps"
+        )
+    return (
+        f"{cap}s is the tool's own cap, not the transport (the mcp timeout "
+        f"already allows {transport_ms} ms) — to wait longer set "
+        f"wait.cap_seconds: {t} in .agentic/config.yaml or "
+        f"AWF_WAIT_CAP={t} — wait in smaller steps"
+    )
+
+
 # RUN6 #1: the signs of a completed pipeline cycle. The commit comes from
 # commit_gate.maybe_commit (``awf(<stage>): TODO-NNNN``), the archive from
 # todos.archive_todo (``.agentic/done/<todo>/``) — either one is enough.
@@ -97,15 +190,16 @@ _TODO_ID_RE = re.compile(r"^TODO-\d{4,}$")
 _AWF_COMMIT_RE = re.compile(r"^awf\([^)]+\):\s*(TODO-\d{4,})\s*$")
 
 
-def _suggest_timeout(project_dir: Path, *, default: int = TRANSPORT_CAP) -> int:
+def _suggest_timeout(project_dir: Path) -> int:
     """SPEC A-run: size the next wait from measured stage durations.
 
     Consecutive ``Stage N/M:`` lines in orchestrator.log give the duration of
     the previous stage. Median of the last few, divided by 3 (wake ~3x per
     stage), clamped to [MIN_WAIT, cap] seconds — never above the project's
     wait cap (wait_cap: env/config, default TRANSPORT_CAP), which would cut
-    the next call mid-wait. Falls back to ``default`` (capped) when the log
-    is missing or has too little history.
+    the next call mid-wait. With no history falls back to
+    ``default_suggested_timeout(cap)`` (RUN10 #2: sized from the actual
+    cap, not stuck at the 55s transport default).
 
     AUD15-08: the stage stamps come from the shared incremental reader
     (awf/_log_reader.py) — no 5th full read of the log per wait_for_event.
@@ -114,32 +208,25 @@ def _suggest_timeout(project_dir: Path, *, default: int = TRANSPORT_CAP) -> int:
     from .._log_reader import read_log_snapshot
 
     cap = wait_cap(project_dir)
+    # RUN10 #2: no history — size from the actual cap (55→55, 600→540),
+    # not from the 55s transport default.
+    fallback = default_suggested_timeout(cap)
     log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
     stamps = read_log_snapshot(log_file).stage_stamps
     if len(stamps) < 2:
-        return min(default, cap)
+        return fallback
     deltas = [b - a for a, b in zip(stamps, stamps[1:])]
     deltas = [d for d in deltas if 0 < d < 3600][-5:]
     if not deltas:
-        return min(default, cap)
+        return fallback
     deltas.sort()
     median = deltas[len(deltas) // 2]
     return max(MIN_WAIT, min(cap, int(median / 3)))
 
 
 def _cap_advice(project_dir: Path | None = None) -> str:
-    """B3/RUN6 #3: the suggested wait hit the cap — advise smaller steps."""
-    cap = wait_cap(project_dir)
-    if cap == TRANSPORT_CAP:
-        return (
-            f" Transport cap: a single wait above {cap}s is cut by the "
-            "MCP client (-32001) — wait in smaller steps (suggested_timeout)."
-        )
-    return (
-        f" Wait cap: a single wait above {cap}s is cut on this setup "
-        "(wait.cap_seconds / AWF_WAIT_CAP) — wait in smaller steps "
-        "(suggested_timeout)."
-    )
+    """B3/RUN6 #3/RUN10 #2: the suggested wait hit the cap — advise next."""
+    return " " + cap_advice(project_dir) + "."
 
 
 def _state_describes_live_pipeline(state: dict[str, Any] | None) -> bool:
@@ -234,12 +321,32 @@ def _last_completed_todo(project_dir: Path) -> tuple[str, str] | None:
     return None
 
 
-def _run_is_active(project_dir: Path) -> bool:
-    """SPEC A-run: is an autonomous run (забег) active in this project?"""
-    from ..run_state import read_run
+def _run_allows_done(project_dir: Path) -> bool:
+    """RUN10 #1 fuse (RUN9 incident): may a ``done`` be handed out now?
 
+    Outside a run: yes — the previous behavior, unchanged. Inside an ACTIVE
+    run: only when the run's current element itself is finished (archived
+    and not active again). Otherwise the pipeline DIED mid-iteration: the
+    project-wide cycle evidence (``done/<id>/`` or an awf commit) belongs to
+    a PREVIOUS cycle, and a ``done`` would drag the run loop into
+    ``awf_run_next`` — which refuses ("previous TODO is not finished") and
+    stops the run (RUN9: the false done after the kill-race death).
+
+    A run without a recorded ``current`` (hand-written/legacy state) is
+    treated as "not finished" too — ``run_next`` always records it.
+    """
+    from ..run_state import read_run, run_is_active
+
+    if not run_is_active(project_dir):
+        return True
     run = read_run(project_dir)
-    return bool(run and run.get("active"))
+    current = str((run or {}).get("current") or "")
+    if not current:
+        return False
+    # Same finished definition the run gates use (awf/api/run.py).
+    from .run import _todo_finished
+
+    return _todo_finished(project_dir, current)
 
 
 def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
@@ -255,7 +362,13 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
     never get a false ``done``. The message carries the completed TODO and
     the exact next command: ``awf_run_next`` inside a run,
     ``awf_dispatch_todo`` outside it.
+
+    RUN10 #1 fuse: inside an ACTIVE run the finished-cycle sign must be
+    the run's CURRENT element, and that element must be finished
+    (``_run_allows_done``) — a dead pipeline mid-iteration never yields a
+    ``done`` for a previous cycle (RUN9 incident).
     """
+    from ..run_state import read_run, run_is_active
     from ._liveness import resolve
 
     running, _pid, _source = resolve(project_dir)
@@ -268,17 +381,28 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
         # PREVIOUS cycle's TODO. Keep the old wait behavior, never a
         # false 'done' for a past cycle.
         return None
+    if not _run_allows_done(project_dir):
+        # RUN10 #1 fuse: an active run whose current element is NOT finished
+        # means the pipeline died mid-iteration — never a 'done' for a
+        # previous cycle (the caller keeps the old wait: idle/timeout).
+        return None
     evidence = _last_completed_todo(project_dir)
     if evidence is None:
         return None
     todo_id, kind = evidence
+    if run_is_active(project_dir):
+        # The finished-cycle sign must be the run's CURRENT element — a
+        # sign for any other TODO is a previous cycle, not this one.
+        run = read_run(project_dir)
+        if todo_id != str((run or {}).get("current") or ""):
+            return None
 
     verb = {
         "commit+archive": "committed and archived",
         "commit": "committed",
         "archive": "archived",
     }[kind]
-    if _run_is_active(project_dir):
+    if run_is_active(project_dir):
         next_step = (
             "Next step: awf_run_next(project_dir) to launch the next queued TODO."
         )
@@ -320,7 +444,11 @@ def wait_for_event(
       running → event_type ``idle`` (no more full-timeout-on-null-state).
       A marker-less kill leftover without ``phase=done`` (only the salvage
       counter — RUN7 #1) is NOT a finished cycle: the old wait behavior
-      (timeout), never a ``done`` for a past cycle.
+      (timeout), never a ``done`` for a past cycle. RUN10 #1 fuse: inside
+      an ACTIVE run a ``done`` requires the run's CURRENT element to be
+      finished (archived, not active again) — a pipeline death mid-
+      iteration keeps the old wait behavior (timeout/idle), never a
+      ``done`` for a previous cycle. Outside a run: unchanged.
     - Timeout reached → event_type ``timeout``
 
     SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous
@@ -410,7 +538,14 @@ def wait_for_event(
                 return done
             from ._liveness import resolve
 
-            if not resolve(project_dir)[0] and _state_is_exited(current_state):
+            if (
+                not resolve(project_dir)[0]
+                and _state_is_exited(current_state)
+                # RUN10 #1 fuse: this evidence-free 'done' must not fire
+                # inside an active run whose current element is not
+                # finished either — same death-mid-iteration shape.
+                and _run_allows_done(project_dir)
+            ):
                 return WaitEventResult(
                     event_type="done",
                     message="Pipeline exited (state file cleared). Check awf_report.",
@@ -426,7 +561,7 @@ def wait_for_event(
         # Only returned when no actionable event is pending — avoids masking
         # verify/blocked events that happen to coincide with a stage transition.
         prev_stage = prev_state.get("stage_name") if prev_state else None
-        curr_stage = current_state.get("stage_name")
+        curr_stage = current_state.get("stage_name") if current_state else None
         if prev_stage and curr_stage and prev_stage != curr_stage and not actionable_only:
             message = (
                 f"Stage transition: '{prev_stage}' → '{curr_stage}'. "
@@ -465,8 +600,12 @@ def wait_for_event(
     )
 
 
-def _check_for_event(state: dict[str, Any], project_dir: Path | None = None) -> WaitEventResult | None:
+def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = None) -> WaitEventResult | None:
     """Check if current state has an interesting event. Return result or None."""
+    # RUN10 #1: a fully cleared state file (None) now reaches this check on
+    # the run-fuse path (the old code answered 'done' before it) — treat
+    # absent state as 'no event'.
+    state = state or {}
     stage_kind = state.get("stage_kind", "")
     last_signal = state.get("last_signal", "")
     checkpoint_pending = bool(state.get("checkpoint_pending", False))

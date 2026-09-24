@@ -134,6 +134,41 @@ def ppid_of(pid: int) -> int | None:
         return None
 
 
+def caller_ancestry(candidates: set[int], max_depth: int = 64) -> tuple[int | None, bool]:
+    """(hit, available) — walk the CALLER's ancestor chain via /proc.
+
+    RUN10 #5: kill_pipeline's self-kill guard. The chain starts at the
+    caller's own pid and follows ppid up to init; ``hit`` is the first
+    member in ``candidates`` (the pipeline being killed or a known worker
+    of it). A hit means the caller is inside the pipeline it is trying
+    to kill — signaling it takes the caller down with the pipeline (the
+    0065 dogfood: a stage worker called the kill and died with its own
+    pipeline).
+
+    ``available`` is False when the chain cannot be read (no /proc, or an
+    unreadable entry while the caller is obviously alive) — the caller
+    must proceed with the kill and mark the answer "ancestry check
+    unavailable" (degradation, never a block: a false refusal would leave
+    a stuck pipeline unkillable from the same machine). The depth cap
+    defeats a cycle in /proc data.
+    """
+    pid = os.getpid()
+    for _ in range(max_depth):
+        if pid in candidates:
+            return pid, True
+        parent = ppid_of(pid)
+        if parent is None:
+            # A missing parent at the top (init, ppid_of(1) is None by
+            # rule) means the chain walked clean; a missing parent
+            # mid-chain (we are alive, so it cannot be "gone") means /proc
+            # cannot be read.
+            return None, pid == 1
+        if parent == pid:  # defensive: a cycle in /proc data
+            return None, True
+        pid = parent
+    return None, True
+
+
 def child_pids(pid: int) -> list[int]:
     """Direct children of ``pid`` from /proc (Linux); [] elsewhere or on
     any error.

@@ -47,6 +47,19 @@ U8d: GLM — кредитная модель (лимиты кредитов/не
   ``.agentic/state/metrics_models_cache.json``, относительно project_dir);
   ``metrics.output_dir`` — каталог отчёта (дефолт ``~/Desktop``, если
   существует, иначе project_dir);
+  (RUN10 #3-fix) по умолчанию собираются только сессии текущего проекта:
+  сессия принадлежит проекту, когда её ``part.data`` содержит путь
+  проекта (нормализованный ``project_dir``) — ``session.directory`` НЕ
+  дискриминатор: воркеров спавнит MCP-сервер из $HOME, у сессий
+  супервизора тот же directory. Сопоставление — один проход по ``part``
+  (LIKE) для кандидатов по заголовкам, затем пересечение.
+  ``all_projects=True`` (CLI ``--all-projects``) — все проекты общей
+  opencode.db, данные смешаны; явный ``metrics.directory`` в конфиге —
+  legacy-фильтр по ``session.directory``, побеждает оба варианта.
+  Исключённые сессии других проектов считаются и называются
+  предупреждением в отчёт — без тихого вычета; путь проекта без единого
+  совпадения — пустые данные сессий + предупреждение (явное «нет
+  данных», а не чужие цифры).
   ``metrics.mirror_dir`` — U8c: архивное зеркало отчёта (путь; пусто =
   выключено). После успешной записи отчёта копия с тем же именем
   складывается туда (каталог создаётся; ошибка копирования —
@@ -213,38 +226,183 @@ def _open_db(db_path: Path, warnings: list[str]) -> sqlite3.Connection | None:
         return None
 
 
+def _norm_dir(p: Any) -> str:
+    """Нормализация пути для сравнения ``session.directory`` (RUN10 #3):
+    resolve + без хвостового слэша. Пустое → пустая строка."""
+    s = str(p or "").strip()
+    if not s:
+        return ""
+    if s == "/":
+        return "/"
+    try:
+        return str(Path(s).resolve())
+    except (OSError, RuntimeError):
+        return s.rstrip("/")
+
+
+class _DirGate:
+    """Фильтр сессий по каталогу с честным счётом исключённых (RUN10 #3).
+
+    Сравнение — после :func:`_norm_dir` (resolve, без хвостового слэша),
+    а не строковое: запись с ``/path/`` и фильтр ``/path`` — один проект.
+    Два случая исключений — отдельно: пустой ``directory`` (проект
+    неизвестен — старые записи) и другие каталоги (чужие проекты).
+    Тихое исключение ложилось бы в отчёт скрытой погрешностью, поэтому
+    ``finish()`` дописывает предупреждения.
+    """
+
+    def __init__(self, keep_dir: str | None, label: str, warnings: list[str]):
+        self.keep = _norm_dir(keep_dir) if keep_dir else None
+        self._label = label
+        self._warnings = warnings
+        self._unknown = 0
+        self._others: dict[str, int] = {}
+
+    def allowed(self, directory: str) -> bool:
+        if self.keep is None:
+            return True
+        nd = _norm_dir(directory)
+        if nd == self.keep:
+            return True
+        if not nd:
+            self._unknown += 1
+        else:
+            self._others[nd] = self._others.get(nd, 0) + 1
+        return False
+
+    def finish(self) -> None:
+        if self._unknown:
+            self._warnings.append(
+                f"нет признака проекта: сессий {self._label} с пустым "
+                f"directory — {self._unknown} (проект неизвестен; исключены "
+                "из отчёта, --all-projects включает их)"
+            )
+        if self._others:
+            total = sum(self._others.values())
+            dirs_txt = ", ".join(sorted(self._others)[:3])
+            if len(self._others) > 3:
+                dirs_txt += "…"
+            self._warnings.append(
+                f"другие проекты: сессий {self._label} из других каталогов — "
+                f"{total} ({dirs_txt}) — исключены из отчёта"
+            )
+
+
+def _like_escape(value: str) -> str:
+    """Экранирование LIKE-спецсимволов пути для паттерна (``ESCAPE '\\``)."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def candidate_session_ids(
+    con: sqlite3.Connection,
+    titles: list[str],
+    warnings: list[str],
+) -> list[str]:
+    """Кандидаты области отчёта (RUN10 #3-fix): заголовки воркеров и
+    подстроки заголовков супервизора.
+
+    Грубый LIKE-предфильтр одним запросом — точная сверка заголовков
+    (regex ``awf-<роль>-TODO-NNNN`` / подстроки) остаётся в
+    :func:`collect_workers` и :func:`collect_supervisor`.
+    """
+    clauses = ["title LIKE 'awf-%-TODO-%'"]
+    params: list[Any] = []
+    for t in titles:
+        clauses.append("title LIKE ?")
+        params.append(f"%{_like_escape(t)}%")
+    try:
+        rows = con.execute(
+            "SELECT id FROM session WHERE " + " OR ".join(clauses), params
+        ).fetchall()
+    except sqlite3.Error as e:
+        warnings.append(f"запрос по кандидатам упал: {e} — сессии не сопоставляются")
+        return []
+    return [r[0] for r in rows]
+
+
+def matched_session_ids(
+    con: sqlite3.Connection,
+    candidate_ids: list[str],
+    project_dir: str,
+    warnings: list[str],
+) -> frozenset[str]:
+    """Один проход по ``part``: чьё содержимое называет путь проекта.
+
+    RUN10 #3-fix: сессия принадлежит проекту, если в её ``part.data``
+    встречается путь проекта (нормализованный абсолютный путь).
+    ``session.directory`` — не дискриминатор: воркеров спавнит MCP-сервер
+    из $HOME, у сессий супервизора тот же directory. Проход ограничен
+    кандидатами (``IN``) и чанкуется — лимит параметров SQLite.
+    """
+    matched: set[str] = set()
+    if not candidate_ids:
+        return frozenset(matched)
+    pattern = f"%{_like_escape(str(project_dir))}%"
+    chunk = 500
+    for i in range(0, len(candidate_ids), chunk):
+        ids = candidate_ids[i : i + chunk]
+        marks = ",".join("?" * len(ids))
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT session_id FROM part "
+                f"WHERE data LIKE ? ESCAPE '\\' AND session_id IN ({marks})",
+                (pattern, *ids),
+            ).fetchall()
+        except sqlite3.Error as e:
+            warnings.append(
+                f"запрос по содержимому сессий упал: {e} — "
+                "сессии не сопоставляются"
+            )
+            return frozenset()
+        matched.update(r[0] for r in rows)
+    return frozenset(matched)
+
+
 def collect_workers(
     con: sqlite3.Connection,
     since_ms: int | None,
     directory: str | None,
+    matched: frozenset[str] | None,
     warnings: list[str],
 ) -> dict[str, dict]:
-    """Воркерские сессии (``awf-<роль>-TODO-NNNN``), сгруппированные по TODO."""
+    """Воркерские сессии (``awf-<роль>-TODO-NNNN``), сгруппированные по TODO.
+
+    ``directory`` — legacy-фильтр по ``session.directory`` (явный
+    ``metrics.directory``); ``matched`` — content-область (RUN10 #3-fix):
+    сессия входит, если её id в наборе, чьё содержимое называет путь
+    проекта. ``None``/``None`` — все проекты, без фильтра.
+    """
     sql = (
-        "SELECT id, title, COALESCE(tokens_input,0), COALESCE(tokens_output,0), "
-        "COALESCE(tokens_cache_read,0), COALESCE(tokens_cache_write,0), "
-        "COALESCE(cost,0), time_created, time_updated FROM session"
+        "SELECT id, title, COALESCE(directory,''), COALESCE(tokens_input,0), "
+        "COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0), "
+        "COALESCE(tokens_cache_write,0), COALESCE(cost,0), time_created, "
+        "time_updated FROM session"
     )
     where, params = [], []
     if since_ms is not None:
         where.append("time_created >= ?")
         params.append(since_ms)
-    if directory:
-        where.append("directory = ?")
-        params.append(directory)
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY time_created"
 
     workers: dict[str, dict] = {}
+    gate = _DirGate(directory, "воркеров", warnings)
+    excluded = 0
     try:
         rows = con.execute(sql, params).fetchall()
     except sqlite3.Error as e:
         warnings.append(f"запрос по сессиям упал: {e} — воркеры не измеряются")
         return workers
-    for sid, title, tin, tout, tcr, tcw, cost, tc, tu in rows:
+    for sid, title, sdir, tin, tout, tcr, tcw, cost, tc, tu in rows:
         m = _WORKER_TITLE_RE.match(title or "")
         if not m:
+            continue
+        if directory is not None:
+            if not gate.allowed(sdir):
+                continue
+        elif matched is not None and sid not in matched:
+            excluded += 1
             continue
         todo = f"TODO-{m.group(1)}"
         d = workers.setdefault(
@@ -282,6 +440,13 @@ def collect_workers(
         d["first"] = min(d["first"] or tc, tc)
         d["last"] = max(d["last"] or tu, tu)
         d["ids"].append(sid)
+
+    gate.finish()
+    if matched is not None and excluded:
+        warnings.append(
+            f"исключены сессии других проектов: {excluded} (путь проекта "
+            "не найден в содержимом воркерских сессий)"
+        )
 
     id2todo = {sid: todo for todo, d in workers.items() for sid in d["ids"]}
     if id2todo:
@@ -362,10 +527,16 @@ def collect_supervisor(
     titles: list[str],
     since_ms: int | None,
     directory: str | None,
+    matched: frozenset[str] | None,
     windows: dict[str, tuple[int, int]],
     warnings: list[str],
 ) -> tuple[dict[str, dict], dict[str, float], int]:
-    """Сессии супервизора: атрибутация сообщений по окнам юнитов."""
+    """Сессии супервизора: атрибутация сообщений по окнам юнитов.
+
+    ``directory``/``matched`` — то же, что в :func:`collect_workers`
+    (legacy-фильтр / content-область). У сессий супервизора directory
+    тоже $HOME — content-область для них обязательна (RUN10 #3-fix).
+    """
     per_todo: dict[str, dict] = {
         t: {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0} for t in windows
     }
@@ -374,22 +545,27 @@ def collect_supervisor(
     if not titles:
         return per_todo, outside, session_count
 
-    sql = "SELECT id, title FROM session WHERE 1=1"
+    sql = "SELECT id, title, COALESCE(directory, '') FROM session WHERE 1=1"
     params: list[Any] = []
     if since_ms is not None:
         sql += " AND time_created >= ?"
         params.append(since_ms)
-    if directory:
-        sql += " AND directory = ?"
-        params.append(directory)
+    gate = _DirGate(directory, "супервизора", warnings)
+    excluded = 0
     try:
         candidates = con.execute(sql, params).fetchall()
     except sqlite3.Error as e:
         warnings.append(f"запрос по сессиям упал: {e} — супервизор не измеряется")
         return per_todo, outside, session_count
 
-    for sid, title in candidates:
+    for sid, title, sdir in candidates:
         if not any(t in (title or "") for t in titles):
+            continue
+        if directory is not None:
+            if not gate.allowed(sdir):
+                continue
+        elif matched is not None and sid not in matched:
+            excluded += 1
             continue
         session_count += 1
         try:
@@ -429,6 +605,12 @@ def collect_supervisor(
             if not placed:
                 for k in vals:
                     outside[k] += vals[k]
+    gate.finish()
+    if matched is not None and excluded:
+        warnings.append(
+            f"исключены сессии других проектов: {excluded} (путь проекта "
+            "не найден в содержимом сессий супервизора)"
+        )
     return per_todo, outside, session_count
 
 
@@ -1014,9 +1196,12 @@ def render_report(
     tier_tables: dict[str, list[dict]] | None = None,
     subscriptions: dict | None = None,
     model_price_source: str = "",
+    scope: str = "",
 ) -> str:
     lines = [f"# Метрики программы — снимок: {project_name}", ""]
     lines.append(f"Дата снимка: {generated_at}. Источник: opencode.db + git.")
+    if scope:
+        lines.append(f"Область: {scope}.")
     for w in warnings:
         lines.append(f"ПРЕДУПРЕЖДЕНИЕ: {w}")
     lines.append("")
@@ -1232,6 +1417,7 @@ def collect_metrics(
     out: str | None = None,
     refresh_subscriptions: bool = False,
     mirror: bool = True,
+    all_projects: bool = False,
 ) -> MetricsResult:
     """Собрать метрики программы и записать markdown-отчёт.
 
@@ -1242,6 +1428,15 @@ def collect_metrics(
     U8c: ``mirror=True`` (дефолт) + заданный ``metrics.mirror_dir`` — после
     успешной записи отчёт копируется в зеркало (``mirror_path`` в результате).
     ``mirror=False`` отключает копирование на один запуск.
+
+    RUN10 #3-fix: ``all_projects=False`` (дефолт) — в отчёт попадают только
+    сессии текущего проекта: их ``part.data`` содержит путь проекта
+    (``session.directory`` — не дискриминатор, спавн из $HOME);
+    ``all_projects=True`` — все проекты общей opencode.db (данные смешаны),
+    поведение до RUN10 #3. Явный ``metrics.directory`` в конфиге —
+    legacy-фильтр по ``session.directory``, побеждает оба варианта.
+    Исключённые сессии других проектов — с предупреждением в отчёте;
+    путь проекта без совпадений — пустые данные сессий + предупреждение.
     """
     project_dir = Path(project_dir).resolve()
     warnings: list[str] = []
@@ -1253,7 +1448,19 @@ def collect_metrics(
         since if since not in (None, "") else config_mod.get(cfg, "metrics.since"),
         warnings,
     )
+    # RUN10 #3-fix: область отчёта. Явный metrics.directory — legacy-
+    # фильтр по session.directory, побеждает; иначе дефолт — только
+    # текущий проект (сопоставление по содержимому сессий),
+    # --all-projects — все.
     directory = config_mod.get(cfg, "metrics.directory") or None
+    directory = directory if isinstance(directory, str) and directory else None
+    content_scope = not directory and not all_projects
+    if directory:
+        scope = f"проект: {directory}"
+    elif all_projects:
+        scope = "все проекты (данные смешаны)"
+    else:
+        scope = f"проект: {project_dir}"
     titles = config_mod.get(cfg, "metrics.supervisor_titles") or []
     if not isinstance(titles, list):
         warnings.append("metrics.supervisor_titles не список — супервизор не измеряется")
@@ -1297,8 +1504,19 @@ def collect_metrics(
     sup_per_todo: dict[str, dict] = {}
     sup_outside: dict[str, float] = {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0}
     sup_sessions = 0
+    # RUN10 #3-fix: content-область — один проход по part для кандидатов.
+    matched: frozenset[str] | None = None
+    if con is not None and content_scope:
+        cands = candidate_session_ids(con, titles, warnings)
+        matched = matched_session_ids(con, cands, str(project_dir), warnings)
+        if not matched:
+            warnings.append(
+                "не удалось сопоставить сессии: путь проекта не найден ни в "
+                "одной сессии — данные сессий не измеряются (коммиты юнитов "
+                "измеряются)"
+            )
     if con is not None:
-        workers = collect_workers(con, since_ms, directory, warnings)
+        workers = collect_workers(con, since_ms, directory, matched, warnings)
     commits = collect_commit_info(project_dir, warnings)
 
     todos = sorted(set(workers) | set(commits))
@@ -1310,7 +1528,7 @@ def collect_metrics(
 
     if con is not None:
         sup_per_todo, sup_outside, sup_sessions = collect_supervisor(
-            con, titles, since_ms, directory, windows, warnings
+            con, titles, since_ms, directory, matched, windows, warnings
         )
         con.close()
 
@@ -1410,7 +1628,7 @@ def collect_metrics(
         str(project_name), generated_at, units, tot, by_role,
         sup_outside, conversion, notes, warnings,
         tier_tables=tier_tables, subscriptions=subscriptions,
-        model_price_source=model_price_source,
+        model_price_source=model_price_source, scope=scope,
     )
     result = MetricsResult(
         project_dir=str(project_dir),

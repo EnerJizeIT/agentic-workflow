@@ -59,7 +59,8 @@ class TestFacts:
         assert "Текущая задача: " in text  # текущая задача
         assert "Дата: " in text  # дата
 
-    def test_skeleton_sections_present(self, project, tmp_path, capsys):
+    def test_body_only_prints_no_empty_headings(self, project, tmp_path, capsys):
+        """RUN10 #2: один текст — только «Что пытался», пустых заголовков нет."""
         out_dir = tmp_path / "desk"
         _set_feedback_dir(project, out_dir)
         capsys.readouterr()
@@ -69,10 +70,33 @@ class TestFacts:
         files = list(out_dir.glob("awf-feature-*.md"))
         assert len(files) == 1
         text = files[0].read_text(encoding="utf-8")
-        for section in ("Что пытался", "Ожидал", "Что получил", "Почему мешает", "Предложение"):
-            assert section in text
-        assert "## Что получил" in text
-        assert "тело" in text  # --body вставлен в отчёт
+        assert "## Что пытался" in text
+        assert "тело" in text  # body вставлен в отчёт
+        for section in ("Ожидал", "Что получил", "Почему мешает", "Предложение"):
+            assert f"## {section}" not in text
+
+    def test_section_params_fill_their_sections(self, project, tmp_path, capsys):
+        """RUN10 #2: expected/got/why/proposal заполняют свои секции."""
+        out_dir = tmp_path / "desk"
+        _set_feedback_dir(project, out_dir)
+        capsys.readouterr()
+
+        api.feedback(
+            project, ftype="bug", title="All sections",
+            body="тело", expected="ожидал", got="получил",
+            why="мешает", proposal="предложение",
+        )
+
+        text = list(out_dir.glob("awf-bug-*.md"))[0].read_text(encoding="utf-8")
+        for heading, content in (
+            ("## Что пытался", "тело"),
+            ("## Ожидал", "ожидал"),
+            ("## Что получил", "получил"),
+            ("## Почему мешает", "мешает"),
+            ("## Предложение", "предложение"),
+        ):
+            assert heading in text
+            assert content in text
 
     def test_severity_in_header(self, project, tmp_path, capsys):
         out_dir = tmp_path / "desk"
@@ -192,8 +216,9 @@ class TestStdout:
         out = capsys.readouterr().out
         assert not list(out_dir.glob("*.md")) if out_dir.exists() else True
         assert result.file == ""
-        assert "## Что пытался" in result.report
-        assert "No file" in result.report
+        # RUN10 #2: без body секция «Что пытался» не печатается вовсе
+        assert "## Что пытался" not in result.report
+        assert "No file" in result.report  # заголовок H1 на месте
         # CLI печатает отчёт
         rc = cli.main(
             [
@@ -203,7 +228,8 @@ class TestStdout:
         )
         out2 = capsys.readouterr().out
         assert rc == 0
-        assert "## Что пытался" in out2
+        assert "## Что пытался" not in out2
+        assert "No file" in out2
 
     def test_cli_stdout_writes_no_file(self, project, tmp_path, capsys):
         out_dir = tmp_path / "desk"
@@ -219,6 +245,51 @@ class TestStdout:
         capsys.readouterr()
         assert rc == 0
         assert not out_dir.exists() or not list(out_dir.glob("*.md"))
+
+
+class TestSectionFlags:
+    """RUN10 #2: CLI-флаги под секции + совместимость со старым вызовом."""
+
+    def test_cli_section_flags_fill_sections(self, project, tmp_path, capsys):
+        out_dir = tmp_path / "desk"
+        _set_feedback_dir(project, out_dir)
+        capsys.readouterr()
+
+        rc = cli.main(
+            [
+                "feedback", "--type", "feature", "--title", "Cli sections",
+                "--body", "b", "--expected", "e", "--got", "g",
+                "--why", "w", "--proposal", "p",
+                "--project-dir", str(project), "--stdout",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        for heading in (
+            "## Что пытался", "## Ожидал", "## Что получил",
+            "## Почему мешает", "## Предложение",
+        ):
+            assert heading in out
+
+    def test_cli_old_call_shape_still_works(self, project, tmp_path, capsys):
+        """Совместимость: вызов в старом виде (только --body) — та же
+        семантика: одна секция, без пустых заголовков."""
+        out_dir = tmp_path / "desk"
+        _set_feedback_dir(project, out_dir)
+        capsys.readouterr()
+
+        rc = cli.main(
+            [
+                "feedback", "--type", "bug", "--title", "Old shape",
+                "--body", "old body", "--project-dir", str(project),
+            ]
+        )
+        assert rc == 0
+        text = list(out_dir.glob("awf-bug-*.md"))[0].read_text(encoding="utf-8")
+        assert "## Что пытался" in text
+        assert "old body" in text
+        assert "## Ожидал" not in text
+        assert "## Предложение" not in text
 
 
 class TestLogTail:
