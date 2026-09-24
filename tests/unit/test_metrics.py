@@ -43,30 +43,35 @@ def _ms(sec: int) -> int:
     return sec * 1000
 
 
-def make_db(path: Path, *, supervisor_title: str = "Audit supervisor session") -> Path:
+_SCHEMA = """
+CREATE TABLE session (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL,
+    directory TEXT NOT NULL DEFAULT '',
+    cost REAL DEFAULT 0 NOT NULL,
+    tokens_input INTEGER DEFAULT 0, tokens_output INTEGER DEFAULT 0,
+    tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
+    time_created INTEGER, time_updated INTEGER
+);
+CREATE TABLE message (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+    time_created INTEGER, data TEXT NOT NULL
+);
+CREATE TABLE part (
+    id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, time_created INTEGER, data TEXT NOT NULL
+);
+"""
+
+
+def make_db(
+    path: Path,
+    *,
+    supervisor_title: str = "Audit supervisor session",
+    proj_dir: str = "/proj/test",
+) -> Path:
     """Синтетическая база: 2 юнита, 3 воркерские сессии, 1 супервизор."""
     con = sqlite3.connect(path)
-    con.executescript(
-        """
-        CREATE TABLE session (
-            id TEXT PRIMARY KEY, title TEXT NOT NULL,
-            directory TEXT NOT NULL DEFAULT '',
-            cost REAL DEFAULT 0 NOT NULL,
-            tokens_input INTEGER DEFAULT 0, tokens_output INTEGER DEFAULT 0,
-            tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
-            time_created INTEGER, time_updated INTEGER
-        );
-        CREATE TABLE message (
-            id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
-            time_created INTEGER, data TEXT NOT NULL
-        );
-        CREATE TABLE part (
-            id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
-            session_id TEXT NOT NULL, time_created INTEGER, data TEXT NOT NULL
-        );
-        """
-    )
-    proj_dir = "/proj/test"
+    con.executescript(_SCHEMA)
 
     def sess(sid, title, tin, tout, tcr, tcw, cost, tc):
         con.execute(
@@ -151,7 +156,9 @@ def env(tmp_path: Path):
     proj = tmp_path / "proj"
     proj.mkdir()
     make_repo(proj)
-    db = make_db(tmp_path / "opencode.db")
+    # RUN10 #3: сессии «из» реального каталога проекта — дефолтная
+    # область отчёта (только текущий проект) находит их.
+    db = make_db(tmp_path / "opencode.db", proj_dir=str(proj))
     models = make_models(tmp_path / "models.json")
     return {"proj": proj, "db": db, "models": models, "tmp": tmp_path}
 
@@ -1065,3 +1072,170 @@ class TestU8dSubsCache:
         assert res.subscriptions["source"] == "builtin"
         assert any("кэш подписок бит" in w for w in res.warnings)
         assert len(res.subscriptions["plans"]) >= 6  # встроенная таблица
+
+
+def make_db_two_projects(
+    path: Path,
+    *,
+    proj_a: str,
+    proj_b: str,
+    supervisor_title: str = "Audit supervisor session",
+    sup_b: bool = False,
+) -> Path:
+    """RUN10 #3: два проекта в одной общей базе + сессия без признака проекта.
+
+    ``sup_b=True`` — ещё и сессия супервизора проекта B с сообщением вне
+    окон юнитов A (проверка гейта collect_supervisor, не только воркеров).
+    """
+    con = sqlite3.connect(path)
+    con.executescript(_SCHEMA)
+
+    def sess(sid, title, directory, tin, tout, tcr, tcw, cost, tc):
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (sid, title, directory, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
+        )
+
+    # проект A (тестируемый): воркерская сессия
+    sess("a1", "awf-agent-implementer-TODO-0001", proj_a,
+         1_000_000, 100_000, 2_000_000, 100_000, 0.0, _ms(T0))
+    # проект B: юнит, которого нет в репо A
+    sess("b1", "awf-agent-implementer-TODO-0009", proj_b,
+         7_000_000, 700_000, 0, 0, 1.5, _ms(T0 + 1000))
+    # старая запись: признак проекта (directory) отсутствует
+    sess("u1", "awf-agent-qa-review-TODO-0005", "",
+         4_000_000, 400_000, 0, 0, 0.4, _ms(T0 + 2000))
+    # супервизор проекта A
+    sess("sup", supervisor_title, proj_a, 0, 0, 0, 0, 0.0, _ms(T0))
+    if sup_b:
+        # супервизор проекта B: сессия + сообщение с токенами, которое в
+        # дефолтной области должно быть исключено гейтом по каталогу.
+        # ts раньше всех окон юнитов A (T0-60 — baseline TODO-0001),
+        # чтобы попадать в «вне окон», а не в окно чужого юнита
+        sess("sup_b", supervisor_title, proj_b, 0, 0, 0, 0, 0.0, _ms(T0))
+        con.execute(
+            "INSERT INTO message VALUES (?,?,?,?)",
+            (
+                "sup_b_m1", "sup_b", _ms(T0 - 100_000),
+                json.dumps(
+                    {"tokens": {"input": 88_000, "output": 8_000,
+                                "cache": {"read": 0, "write": 0}},
+                     "cost": 0.08}
+                ),
+            ),
+        )
+    con.commit()
+    con.close()
+    return path
+
+
+class TestRun10ProjectScope:
+    """RUN10 #3: метрики не смешивают юниты разных проектов."""
+
+    def _two_project_env(self, env, tmp_db: Path):
+        db = make_db_two_projects(
+            tmp_db, proj_a=str(env["proj"]), proj_b="/proj/other"
+        )
+        env["db"] = db
+        return db
+
+    def test_default_scope_only_current_project(self, env):
+        self._two_project_env(env, env["tmp"] / "db2.db")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        todos = [u["todo"] for u in res.units]
+        # юниты чужого проекта (TODO-0009) и без признака (TODO-0005)
+        # в отчёте не появляются; юниты репо A — на месте
+        assert "TODO-0009" not in todos
+        assert "TODO-0005" not in todos
+        assert "TODO-0001" in todos and "TODO-0002" in todos
+        # токены — только сессия проекта A
+        assert res.totals["win"] == 1_000_000
+        assert res.totals["wout"] == 100_000
+        # шапка называет область
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert f"Область: проект: {res.project_dir}." in text
+        # честные предупреждения: чужой проект + пустой directory
+        assert any("других каталогов" in w and "/proj/other" in w for w in res.warnings)
+        assert any("пустым directory" in w for w in res.warnings)
+
+    def test_all_projects_mixes_everything(self, env):
+        self._two_project_env(env, env["tmp"] / "db2.db")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", all_projects=True,
+        )
+        todos = [u["todo"] for u in res.units]
+        assert set(todos) == {"TODO-0001", "TODO-0002", "TODO-0005", "TODO-0009"}
+        # все три воркерские сессии общей базы
+        assert res.totals["win"] == 12_000_000
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "Область: все проекты (данные смешаны)." in text
+        # без фильтра исключений нет — предупреждений о них нет
+        assert not any("других каталогов" in w for w in res.warnings)
+        assert not any("пустым directory" in w for w in res.warnings)
+
+    def test_header_names_scope_by_default(self, env):
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert f"Область: проект: {res.project_dir}." in text
+        assert "все проекты" not in text
+
+    def test_explicit_config_directory_wins_over_default(self, env):
+        self._two_project_env(env, env["tmp"] / "db2.db")
+        _set_metrics_cfg(env, "  directory: /proj/other\n")
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        # сессия TODO-0009 попала, хотя её каталог != project_dir:
+        # явный metrics.directory победил дефолт «только текущий проект».
+        # (TODO-0001/0002 — verify-коммиты репо A, коммиты локальны по своей природе)
+        todos = [u["todo"] for u in res.units]
+        assert "TODO-0009" in todos
+        assert res.totals["win"] == 7_000_000
+        text = Path(res.report_path).read_text(encoding="utf-8")
+        assert "Область: проект: /proj/other." in text
+
+    def test_normalization_resolved_path_and_trailing_slash(self, env):
+        # запись с хвостовым слэшем = тот же проект
+        db = make_db_two_projects(
+            env["tmp"] / "db3.db",
+            proj_a=str(env["proj"]) + "/",
+            proj_b="/proj/other",
+        )
+        env["db"] = db
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        assert res.totals["win"] == 1_000_000
+        assert not any("других каталогов" in w and str(env["proj"]) in w
+                       for w in res.warnings)
+
+    def test_foreign_supervisor_excluded_by_default(self, env):
+        # гейт collect_supervisor: сессия супервизора чужого проекта не
+        # должна подмешивать свои токены в отчёт (аналог воркерского случая)
+        db = make_db_two_projects(
+            env["tmp"] / "db4.db",
+            proj_a=str(env["proj"]), proj_b="/proj/other", sup_b=True,
+        )
+        env["db"] = db
+        res = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md",
+        )
+        # сообщение sup_b (88_000 in) вне окон юнитов — в дефолтной
+        # области его каталог чужой, токены не подмешиваются
+        assert res.supervisor_outside["in"] == 0
+        # с all_projects=True та же сессия уже считается: токены вне окон
+        res_all = M.collect_metrics(
+            env["proj"], db_path=env["db"], models_path=env["models"],
+            out=env["tmp"] / "r.md", all_projects=True,
+        )
+        assert res_all.supervisor_outside["in"] == 88_000

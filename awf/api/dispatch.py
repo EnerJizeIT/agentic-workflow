@@ -63,6 +63,7 @@ def dispatch_todo(
     todo_id: str | None = None,
     pipeline: str | None = None,
     carry_over_from: str | None = None,
+    include_untracked: list[str] | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -90,6 +91,16 @@ def dispatch_todo(
             the new baseline's untracked snapshot, so the retry's commit
             includes them. Refused (before any side effect) when the origin
             TODO or its REJECT file does not exist.
+        include_untracked: RUN10 #4 (TODO-0074) — pre-existing untracked
+            files to include in this unit's commit. Each path must exist,
+            be untracked, be not gitignored, and stay inside the project;
+            ANY invalid path refuses the dispatch before any side effect
+            (no TODO, no baseline). The paths are excluded from the
+            baseline's untracked snapshot, so the commit gate commits them
+            with the unit. The trace lives in
+            ``.agentic/context/BASELINE-<id>.include``. Independently, the
+            answer always lists the files that STAY excluded
+            (``pre_existing_untracked`` + ``untracked_warning``).
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
@@ -100,8 +111,9 @@ def dispatch_todo(
 
     Raises:
         AwfApiError: if .agentic/ missing, content empty, a DONE
-            closure for ``todo_id`` is still in the outbox, or a
-            ``carry_over_from`` origin cannot be validated.
+            closure for ``todo_id`` is still in the outbox, a
+            ``carry_over_from`` origin cannot be validated, or an
+            ``include_untracked`` path is invalid.
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -136,6 +148,15 @@ def dispatch_todo(
 
         carry_over_files = resolve_carry_over(project_dir, carry_over_from)
         carry_over = set(carry_over_files)
+
+    # RUN10 #4 (TODO-0074): validate include_untracked BEFORE reserving the
+    # id — a refused path must leave no side effects (no TODO, no baseline),
+    # the same all-or-nothing contract as the leak-gate carry-over.
+    include_files: list[str] = []
+    if include_untracked is not None:
+        from ..include_untracked import resolve_include_untracked
+
+        include_files = resolve_include_untracked(project_dir, include_untracked)
 
     # Whether the CALLER fixed the id (explicit collisions must raise,
     # auto-picked ones may retry with the next free id).
@@ -256,9 +277,14 @@ def dispatch_todo(
     # placeholder — the id is already claimed, no one else can take it).
     atomic_write_text(md_path, body)
 
-    # Step 2: create baseline snapshot (sha + tests.log + env.log + status)
+    # Step 2: create baseline snapshot (sha + tests.log + env.log + status).
+    # RUN10 #4: include files are excluded from the untracked snapshot by a
+    # SEPARATE parameter — the leak-gate carry-over stays its own mechanism.
     try:
-        baseline = create_baseline(project_dir, todo_id, carry_over=carry_over)
+        baseline = create_baseline(
+            project_dir, todo_id, carry_over=carry_over,
+            include=set(include_files) or None,
+        )
     except Exception:
         # Rollback: remove TODO .md if baseline fails (prevents orphan TODO)
         md_path.unlink(missing_ok=True)
@@ -294,6 +320,16 @@ def dispatch_todo(
             paths.context_dir(project_dir) / f"BASELINE-{todo_id}.carry_over"
         ).unlink(missing_ok=True)
 
+    # RUN10 #4 (TODO-0074): audit trail — which pre-existing untracked files
+    # this unit re-claims; a (re-)dispatch without include_untracked drops
+    # the stale link (same lifecycle as the carry-over link above).
+    from ..include_untracked import clear_include_audit, write_include_audit
+
+    if include_files:
+        write_include_audit(project_dir, todo_id, include_files)
+    else:
+        clear_include_audit(project_dir, todo_id)
+
     # RUN3 #4: re-dispatch of the same number must not stay hidden behind
     # stale BLOCKED/ACK closures — clear them via the shared helper.
     # (Only reachable when inbox had no .md for this id, i.e. a re-issue;
@@ -313,6 +349,14 @@ def dispatch_todo(
     ready_path = inbox / f"{todo_id}.ready"
     ready_path.touch()
 
+    # RUN10 #4 (TODO-0074): visibility — the files the commit gate will
+    # exclude (still untracked, recorded in the fresh baseline snapshot,
+    # NOT re-claimed via carry_over/include_untracked).
+    from ..include_untracked import format_untracked_warning, pre_existing_untracked
+
+    pre_existing = pre_existing_untracked(project_dir, todo_id)
+    untracked_warning = format_untracked_warning(todo_id, pre_existing)
+
     return DispatchTodoResult(
         todo_id=todo_id,
         baseline_sha=baseline.sha,
@@ -325,6 +369,8 @@ def dispatch_todo(
         pre_check_warnings=pre_check_warnings,
         carry_over_from=carry_over_from,
         carry_over_files=carry_over_files,
+        pre_existing_untracked=pre_existing,
+        untracked_warning=untracked_warning,
     )
 
 

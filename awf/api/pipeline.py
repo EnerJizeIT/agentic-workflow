@@ -537,6 +537,7 @@ def create_baseline(
     todo_id: str,
     *,
     carry_over: set[str] | None = None,
+    include: set[str] | None = None,
 ) -> BaselineResult:
     """Create BASELINE-{todo_id}.{sha,status,tests.log,env.log} snapshot.
 
@@ -547,6 +548,12 @@ def create_baseline(
     ``BASELINE-{todo_id}.untracked`` snapshot — files of a rejected attempt
     the caller deliberately re-claims, so the commit gate includes them in
     this unit's commit instead of treating them as pre-existing.
+
+    ``include`` (RUN10 #4, TODO-0074): pre-existing untracked paths the
+    caller deliberately re-claims into the unit's commit. Same mechanism as
+    ``carry_over`` (excluded from the untracked snapshot) but a separate
+    parameter — the two are independent mechanisms with different audit
+    trails (BASELINE-{todo}.carry_over / BASELINE-{todo}.include).
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
@@ -579,13 +586,14 @@ def create_baseline(
         untracked = git_utils.git_stdout(
             project_dir, "ls-files", "--others", "--exclude-standard", check=False,
         )
-        # RUN5 #1 (leak-gate): drop carried-over paths from the snapshot so
-        # the commit gate treats them as THIS unit's work (it would
-        # otherwise exclude them as "pre-existing" and silently lose the
-        # rejected attempt's files from the retry commit).
-        if carry_over:
+        # RUN5 #1 (leak-gate) + RUN10 #4 (TODO-0074): drop re-claimed paths
+        # (carry-over and/or include) from the snapshot so the commit gate
+        # treats them as THIS unit's work (it would otherwise exclude them
+        # as "pre-existing" and silently lose them from the unit commit).
+        excluded = set(carry_over or ()) | set(include or ())
+        if excluded:
             untracked = "\n".join(
-                ln for ln in untracked.splitlines() if ln.strip() not in carry_over
+                ln for ln in untracked.splitlines() if ln.strip() not in excluded
             )
         atomic_write_text(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
     else:

@@ -1405,4 +1405,146 @@ class TestContinueAckInvalidTodo:
         api.init_project(tmp_git_repo, project_name="AckNoop")
         result = api.continue_pipeline(tmp_git_repo)
         assert result.exit_code == 0
-        assert "No active TODO" in result.message or "no active todo" in result.message.lower()
+
+
+# ─── dispatch include_untracked (RUN10 #4, TODO-0074) ────────────────────
+
+
+class TestDispatchIncludeUntracked:
+    """RUN10 #4: pre-existing untracked — visibility in the dispatch answer
+    + conscious inclusion via include_untracked (sibling of the leak-gate
+    carry-over, kept independent)."""
+
+    TODO = "TODO-0042"
+
+    @pytest.fixture
+    def proj(self, tmp_git_repo: Path) -> Path:
+        """Committed repo + .agentic skeleton; .agentic is gitignored."""
+        for sub in ("inbox", "outbox", "context", "logs"):
+            (tmp_git_repo / ".agentic" / sub).mkdir(parents=True)
+        (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
+        subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=tmp_git_repo, check=True)
+        return tmp_git_repo
+
+    def _baseline_untracked(self, repo: Path) -> list[str]:
+        f = repo / ".agentic" / "context" / f"BASELINE-{self.TODO}.untracked"
+        return [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    def test_dispatch_lists_pre_existing_untracked(self, proj: Path) -> None:
+        for i in range(1, 13):
+            (proj / f"pre-{i:02d}.txt").write_text(f"pre-existing {i}\n")
+        res = api.dispatch_todo(proj, "# t\nunit body\n", todo_id=self.TODO)
+        assert res.pre_existing_untracked == [f"pre-{i:02d}.txt" for i in range(1, 13)]
+        # warning: capped at 10, the rest as "…N more"
+        assert "pre-01.txt" in res.untracked_warning
+        assert "pre-10.txt" in res.untracked_warning
+        assert "pre-11.txt" not in res.untracked_warning
+        assert "2 more" in res.untracked_warning
+        assert "TODO-0042" in res.untracked_warning
+
+    def test_no_untracked_no_warning(self, proj: Path) -> None:
+        res = api.dispatch_todo(proj, "# t\nclean tree\n", todo_id=self.TODO)
+        assert res.pre_existing_untracked == []
+        assert res.untracked_warning == ""
+        assert not (proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.include").exists()
+
+    def test_include_excluded_from_baseline_and_traced(self, proj: Path) -> None:
+        (proj / "x.md").write_text("re-claimed\n")
+        (proj / "y.md").write_text("stays excluded\n")
+        res = api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                                include_untracked=["x.md"])
+        lines = self._baseline_untracked(proj)
+        assert "y.md" in lines, "the other pre-existing file stays listed"
+        assert "x.md" not in lines, "the included file must not look pre-existing"
+        link = proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.include"
+        assert link.read_text(encoding="utf-8").splitlines() == ["x.md"]
+        # the visibility warning now lists only what really stays excluded
+        assert res.pre_existing_untracked == ["y.md"]
+        assert "y.md" in res.untracked_warning and "x.md" not in res.untracked_warning
+
+    def test_included_file_lands_in_commit_gate(self, proj: Path) -> None:
+        """End-to-end consequence: dispatch(include_untracked=[x]) → x is in
+        the commit gate's files_changed (and the other file is not)."""
+        from awf.commit_gate import _files_changed_since_baseline
+
+        (proj / "x.md").write_text("re-claimed\n")
+        (proj / "y.md").write_text("stays excluded\n")
+        res = api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                                include_untracked=["x.md"])
+        files = _files_changed_since_baseline(proj, res.baseline_sha, todo_id=self.TODO)
+        assert "x.md" in files
+        assert "y.md" not in files
+
+    def test_refused_missing_path_no_side_effects(self, proj: Path) -> None:
+        with pytest.raises(api.AwfApiError, match="no such file"):
+            api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                              include_untracked=["ghost.md"])
+        assert not (proj / ".agentic" / "inbox" / f"{self.TODO}.md").exists()
+        assert not (proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.untracked").exists()
+
+    def test_refused_tracked_path(self, proj: Path) -> None:
+        (proj / "tracked.txt").write_text("tracked\n")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=proj, check=True)
+        subprocess.run(["git", "commit", "-qm", "tracked"], cwd=proj, check=True)
+        with pytest.raises(api.AwfApiError, match="already tracked"):
+            api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                              include_untracked=["tracked.txt"])
+        assert not (proj / ".agentic" / "inbox" / f"{self.TODO}.md").exists()
+
+    def test_refused_gitignored_path(self, proj: Path) -> None:
+        (proj / ".gitignore").write_text(".agentic/\nlogdir/\n")
+        (proj / "logdir").mkdir()
+        (proj / "logdir" / "a.log").write_text("ignored\n")
+        with pytest.raises(api.AwfApiError, match="gitignored"):
+            api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                              include_untracked=["logdir/a.log"])
+        assert not (proj / ".agentic" / "inbox" / f"{self.TODO}.md").exists()
+
+    def test_refused_outside_project_and_absolute(self, proj: Path) -> None:
+        (proj.parent / "outside.txt").write_text("outside\n")
+        with pytest.raises(api.AwfApiError, match="'..'"):
+            api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                              include_untracked=["../outside.txt"])
+        with pytest.raises(api.AwfApiError, match="absolute"):
+            api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                              include_untracked=[str(proj / "x.md")])
+        assert not (proj / ".agentic" / "inbox" / f"{self.TODO}.md").exists()
+
+    def test_refused_empty_list(self, proj: Path) -> None:
+        (proj / "x.md").write_text("x\n")
+        with pytest.raises(api.AwfApiError, match="empty list"):
+            api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                              include_untracked=[])
+        assert not (proj / ".agentic" / "inbox" / f"{self.TODO}.md").exists()
+
+    def test_include_and_carry_over_union(self, proj: Path) -> None:
+        """Both mechanisms at once: the exclusion is the union, both audit
+        traces are written, the two stay independent."""
+        origin = "TODO-0041"
+        (proj / ".agentic" / "inbox" / f"{origin}.md").write_text(f"# {origin}\nold\n")
+        (proj / ".agentic" / "context" / f"REJECT-{origin}.files").write_text("src/a.py\n")
+        (proj / "src").mkdir()
+        (proj / "src" / "a.py").write_text("rejected attempt\n")
+        (proj / "x.md").write_text("re-claimed\n")
+        (proj / "y.md").write_text("stays excluded\n")
+        api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                          carry_over_from=origin, include_untracked=["x.md"])
+        lines = self._baseline_untracked(proj)
+        assert "src/a.py" not in lines and "x.md" not in lines
+        assert "y.md" in lines
+        assert (proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.carry_over").read_text(
+            encoding="utf-8").strip() == origin
+        assert (proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.include").read_text(
+            encoding="utf-8").splitlines() == ["x.md"]
+
+    def test_plain_redispatch_clears_stale_include_link(self, proj: Path) -> None:
+        (proj / "x.md").write_text("re-claimed\n")
+        api.dispatch_todo(proj, "# t\nunit\n", todo_id=self.TODO,
+                          include_untracked=["x.md"])
+        link = proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.include"
+        assert link.is_file()
+        (proj / ".agentic" / "inbox" / f"{self.TODO}.md").unlink()
+        api.dispatch_todo(proj, "# t\nunit again\n", todo_id=self.TODO)
+        assert not link.exists(), "non-include re-dispatch must drop the stale link"
+        assert "x.md" in self._baseline_untracked(proj), "baseline lists it as pre-existing again"

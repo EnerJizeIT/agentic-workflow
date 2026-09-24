@@ -342,7 +342,7 @@ class TestDispatchCarryOverParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -381,7 +381,7 @@ class TestDispatchCarryOverParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -391,7 +391,7 @@ class TestDispatchCarryOverParam:
 
     def test_error_propagates(self, mcp_project, monkeypatch):
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None):
             raise api.AwfApiError("REJECT-TODO-0001.files not found")
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
@@ -402,6 +402,85 @@ class TestDispatchCarryOverParam:
         ))
         assert result["status"] == "error"
         assert "REJECT-TODO-0001" in result["error"]
+
+
+# ─── awf_dispatch_todo include_untracked (RUN10 #4, TODO-0074) ───────────
+
+
+class TestDispatchIncludeUntrackedParam:
+    """The MCP dispatch tool must expose include_untracked, proxy it to the
+    api, and carry the pre-existing-untracked warning in the answer."""
+
+    def test_param_proxied_to_api(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0042"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            pre_existing_untracked = ["y.md"]
+            untracked_warning = "⚠️ 1 file(s) ... will NOT be included in the TODO-0042 commit: y.md."
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "pre_existing_untracked": self.pre_existing_untracked,
+                    "untracked_warning": self.untracked_warning,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None):
+            captured["include_untracked"] = include_untracked
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# t",
+            project_dir=str(mcp_project),
+            include_untracked=["x.md"],
+        ))
+        assert result["status"] == "ok"
+        assert captured["include_untracked"] == ["x.md"], (
+            "include_untracked must be proxied to api.dispatch_todo"
+        )
+        assert result["pre_existing_untracked"] == ["y.md"]
+        assert "y.md" in result["next_action"], "the warning must reach the supervisor"
+
+    def test_absent_param_defaults_none(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0042"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            pre_existing_untracked = []
+            untracked_warning = ""
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "pre_existing_untracked": self.pre_existing_untracked,
+                    "untracked_warning": self.untracked_warning,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None):
+            captured["include_untracked"] = include_untracked
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        run(awf.awf_dispatch_todo(content="# t", project_dir=str(mcp_project)))
+        assert captured["include_untracked"] is None
 
 
 # ─── awf_report ─────────────────────────────────────────────────────────
@@ -1535,6 +1614,7 @@ class TestAwfMetricsParams:
         assert result["status"] == "error"  # spy aborted the call
         assert calls and calls[0]["refresh_subscriptions"] is False
         assert calls[0]["mirror"] is True
+        assert calls[0]["all_projects"] is False  # RUN10 #3: default scope
 
     def test_params_are_proxied(self, monkeypatch):
         calls: list[dict] = []
@@ -1547,13 +1627,17 @@ class TestAwfMetricsParams:
 
         result = run(
             awf.awf_metrics(
-                project_dir="/tmp", refresh_subscriptions=True, mirror=False
+                project_dir="/tmp",
+                refresh_subscriptions=True,
+                mirror=False,
+                all_projects=True,  # RUN10 #3
             )
         )
 
         assert result["status"] == "error"
         assert calls and calls[0]["refresh_subscriptions"] is True
         assert calls[0]["mirror"] is False
+        assert calls[0]["all_projects"] is True
 
 
 class TestAwfFeedback:

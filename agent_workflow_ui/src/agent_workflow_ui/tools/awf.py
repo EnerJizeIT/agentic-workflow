@@ -881,6 +881,7 @@ async def awf_metrics(
     out: str | None = None,
     refresh_subscriptions: bool = False,
     mirror: bool = True,
+    all_projects: bool = False,
 ) -> dict[str, Any]:
     """Collect token/cost metrics of the work program and write the report (U8).
 
@@ -889,6 +890,11 @@ async def awf_metrics(
     opencode.db, unit windows (baseline sha → verify commit), code lines
     per unit (git shortstat), and the cost conversion: "if workers had
     run on <reference model>, the cost would be $Y" (models.dev prices).
+
+    RUN10 #3: by default only the current project's sessions are collected
+    (``session.directory`` == resolved project_dir); the report header names
+    the scope. ``all_projects=True`` — the whole shared opencode.db, data
+    mixed (the pre-RUN10 behavior).
 
     The markdown report is written by default to ``metrics.output_dir``
     (default: ~/Desktop) as ``awf-metrics-<YYYYMMDD-HHMM>.md``.
@@ -912,6 +918,9 @@ async def awf_metrics(
         mirror: U8c — copy the report to config ``metrics.mirror_dir``
             after it is written (default: True; pass False to skip the
             copy for this run).
+        all_projects: RUN10 #3 — collect sessions from all projects of the
+            shared opencode.db instead of only the current project
+            (default: False — current project only).
 
     Returns:
         Dict with: status, report_path, mirror_path, units, totals,
@@ -928,6 +937,7 @@ async def awf_metrics(
         out=out,
         refresh_subscriptions=refresh_subscriptions,
         mirror=mirror,
+        all_projects=all_projects,
     )
 
 
@@ -1438,6 +1448,7 @@ async def awf_dispatch_todo(
     todo_id: str | None = None,
     pipeline: str | None = None,
     carry_over_from: str | None = None,
+    include_untracked: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -1468,10 +1479,22 @@ async def awf_dispatch_todo(
             commit includes them. Use this when re-issuing a rejected unit.
             Refused (no side effects) when the origin TODO or its REJECT
             file is missing.
+        include_untracked: RUN10 #4 — project-relative paths of pre-existing
+            untracked files to include in this unit's commit (e.g.
+            ["docs/notes.md"]). The commit gate otherwise excludes files
+            that were untracked BEFORE the dispatch; with this parameter
+            they join the unit commit. Each path must exist, be untracked,
+            not gitignored, and stay inside the project — any invalid path
+            refuses the dispatch (no side effects). Traced in
+            ``.agentic/context/BASELINE-<id>.include``. The answer ALSO
+            lists the files that stay excluded (``pre_existing_untracked``
+            + ``untracked_warning``).
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
-        of paths created), carry_over_from, carry_over_files.
+        of paths created), carry_over_from, carry_over_files,
+        pre_existing_untracked (list, excluded from the commit),
+        untracked_warning (one line, "" when nothing is excluded).
     """
     try:
         result = api.dispatch_todo(
@@ -1481,6 +1504,7 @@ async def awf_dispatch_todo(
             todo_id=todo_id,
             pipeline=pipeline,
             carry_over_from=carry_over_from,
+            include_untracked=include_untracked,
         )
         response = _ok(result)
         # SMO: next_action + pre-check warnings guide weak models
@@ -1502,6 +1526,13 @@ async def awf_dispatch_todo(
                 f"{result.carry_over_from}: {len(result.carry_over_files)} "
                 "file(s) of the rejected attempt will join the retry commit. "
                 "Call awf_start(background=True) to launch pipeline."
+            )
+        # RUN10 #4 (TODO-0074): the excluded pre-existing untracked files
+        # must not be invisible — the warning reaches next_action.
+        untracked_warning = getattr(result, "untracked_warning", "") or ""
+        if untracked_warning:
+            response["next_action"] = (
+                f"{response['next_action']} {untracked_warning}"
             )
         return response
     except api.AwfApiError as e:

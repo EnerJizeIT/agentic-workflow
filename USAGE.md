@@ -135,6 +135,13 @@ tokens (in/out/cache-read) and compactions per unit from opencode.db, supervisor
 tokens attributed to unit windows, +/− code lines per unit commit, and the cost
 conversion "if workers had run on model X" (models.dev prices).
 
+Scope (RUN10 #3): by default only the current project's sessions are collected
+(`session.directory` matches the project path) — the report header says
+`Область: проект: …`. `--all-projects` (MCP: `all_projects=True`) collects the
+whole shared opencode.db, data mixed across projects; sessions with an empty or
+foreign `directory` are excluded from the default scope with a warning in the
+report, never silently.
+
 The markdown report lands in `metrics.output_dir` (default: ~/Desktop) as
 `awf-metrics-<YYYYMMDD-HHMM>.md`. Set `metrics.mirror_dir` in
 `.agentic/config.yaml` to keep an archive copy of every report (a failed copy
@@ -416,6 +423,23 @@ log. Refusals: no TODO file in the inbox; empty content; a started TODO
 (any outbox signal, an inbox `ACK-`/`APPROVE-`, or a non-empty `PROGRESS` —
 the unit is in flight: fix it via REVIEW/replan, or retire it and
 re-dispatch); a live pipeline on this id.
+
+**Untracked files and the unit commit (RUN10 #4).** The commit gate commits
+only changes since the unit baseline — a file that was already untracked
+BEFORE the dispatch is not the unit's work, so it is excluded from the unit
+commit by design. That protection used to be silent; now it is visible:
+
+- `awf_dispatch_todo` answers with a warning listing the pre-existing
+  untracked files that will NOT join the unit commit (capped at 10, the rest
+  as "…N more"; no line when the tree is clean).
+- `awf_verify_pack` has an informational `untracked_excluded` section with
+  the same list — pass, not fail, the exclusion is normal behavior.
+- To include a pre-existing file consciously, dispatch with
+  `awf_dispatch_todo(..., include_untracked=["docs/notes.md", ...])` (MCP).
+  Every path must exist, be untracked, not gitignored, and stay inside the
+  project; any invalid path refuses the dispatch before any side effect
+  (no TODO, no baseline). The re-claimed paths are traced in
+  `.agentic/context/BASELINE-<id>.include` and join the unit commit.
 
 ### Verify
 | Tool | What it does |

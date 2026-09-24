@@ -229,6 +229,11 @@ class DispatchTodoResult:
     # RUN5 #1 (Part A.2): leak-gate carry-over for a retry.
     carry_over_from: str | None = None  # the rejected origin TODO id
     carry_over_files: list[str] = field(default_factory=list)  # paths pulled in
+    # RUN10 #4 (TODO-0074): pre-existing untracked visibility — what the
+    # commit gate will EXCLUDE from this unit's commit (fresh baseline
+    # snapshot minus carry-over/include re-claims). Empty = nothing to say.
+    pre_existing_untracked: list[str] = field(default_factory=list)
+    untracked_warning: str = ""  # capped one-line warning; "" when the list is empty
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -100,3 +100,36 @@ class TestCarriedOverFiles:
             ["git", "ls-files", "--others", "--exclude-standard"],
             cwd=repo, capture_output=True, text=True, check=True,
         ).stdout.splitlines() == ["stale.txt"]
+
+
+class TestIncludeUntracked:
+    """RUN10 #4 (TODO-0074): commit-gate view of include_untracked.
+
+    The gate is unchanged: it commits untracked files that are NOT listed
+    in BASELINE-<todo>.untracked. include_untracked works by removing the
+    re-claimed paths from that list at baseline time (awf/api/dispatch.py)
+    — same mechanism as the leak-gate carry-over."""
+
+    def test_included_file_lands_in_files_changed(self, gate_repo: tuple[Path, str]) -> None:
+        repo, sha = gate_repo
+        # The baseline did NOT list x.md (include_untracked excluded it).
+        (repo / ".agentic" / "context" / f"BASELINE-{TODO}.untracked").write_text("stale.txt\n")
+        (repo / "x.md").write_text("pre-existing, re-claimed\n")
+        (repo / "stale.txt").write_text("pre-existing\n")
+
+        files = _files_changed_since_baseline(repo, sha, todo_id=TODO)
+        assert "x.md" in files, (
+            "RUN10 #4: a consciously included pre-existing file joins the unit commit"
+        )
+        assert "stale.txt" not in files, "the other pre-existing file stays out"
+
+    def test_not_included_stays_excluded(self, gate_repo: tuple[Path, str]) -> None:
+        repo, sha = gate_repo
+        (repo / ".agentic" / "context" / f"BASELINE-{TODO}.untracked").write_text(
+            "x.md\nstale.txt\n"
+        )
+        (repo / "x.md").write_text("pre-existing\n")
+        (repo / "stale.txt").write_text("pre-existing\n")
+
+        files = _files_changed_since_baseline(repo, sha, todo_id=TODO)
+        assert files == [], "default behavior: pre-existing untracked stays excluded"

@@ -456,6 +456,13 @@ def _build_parser():
         action="store_true",
         help="U8c: do not copy the report to metrics.mirror_dir for this run",
     )
+    p_metrics.add_argument(
+        "--all-projects",
+        dest="all_projects",
+        action="store_true",
+        help="RUN10 #3: do not filter sessions by project — collect the whole "
+             "shared opencode.db (default: only the current project)",
+    )
 
     # RUN4 #2: feedback contour — friction with awf becomes a report on
     # the owner's desktop (config feedback.dir, default ~/Desktop).
