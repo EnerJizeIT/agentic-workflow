@@ -891,10 +891,12 @@ async def awf_metrics(
     per unit (git shortstat), and the cost conversion: "if workers had
     run on <reference model>, the cost would be $Y" (models.dev prices).
 
-    RUN10 #3: by default only the current project's sessions are collected
-    (``session.directory`` == resolved project_dir); the report header names
-    the scope. ``all_projects=True`` — the whole shared opencode.db, data
-    mixed (the pre-RUN10 behavior).
+    RUN10 #3-fix: by default only the current project's sessions are
+    collected — a session belongs to the project when its ``part.data``
+    contains the project path (``session.directory`` is not a
+    discriminator: workers and the supervisor run from $HOME); the report
+    header names the scope. ``all_projects=True`` — the whole shared
+    opencode.db, data mixed (the pre-RUN10 behavior).
 
     The markdown report is written by default to ``metrics.output_dir``
     (default: ~/Desktop) as ``awf-metrics-<YYYYMMDD-HHMM>.md``.

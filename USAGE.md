@@ -135,12 +135,16 @@ tokens (in/out/cache-read) and compactions per unit from opencode.db, supervisor
 tokens attributed to unit windows, +/− code lines per unit commit, and the cost
 conversion "if workers had run on model X" (models.dev prices).
 
-Scope (RUN10 #3): by default only the current project's sessions are collected
-(`session.directory` matches the project path) — the report header says
-`Область: проект: …`. `--all-projects` (MCP: `all_projects=True`) collects the
-whole shared opencode.db, data mixed across projects; sessions with an empty or
-foreign `directory` are excluded from the default scope with a warning in the
-report, never silently.
+Scope (RUN10 #3-fix): by default only the current project's sessions are
+collected — a session belongs to the project when its content (`part.data` in
+opencode.db) contains the project path; `session.directory` is not a
+discriminator because workers (and the supervisor) run from $HOME. The report
+header says `Область: проект: …`. Sessions of other projects are excluded
+from the default scope with an honest count in a report warning, never
+silently; a project whose path is found in no session yields empty session
+data plus a warning (explicit "no data", not foreign numbers).
+`--all-projects` (MCP: `all_projects=True`) collects the whole shared
+opencode.db, data mixed across projects (the pre-RUN10 behavior).
 
 The markdown report lands in `metrics.output_dir` (default: ~/Desktop) as
 `awf-metrics-<YYYYMMDD-HHMM>.md`. Set `metrics.mirror_dir` in
