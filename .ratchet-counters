@@ -239,4 +239,8 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # and the fake-pipeline worker fixtures (two worker_todo='TODO-0075'
 # state writes + the stub opencode prompt 'TODO-0075'). Same class as
 # above: test identifiers and fixtures, not debt.
-todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
+# RUN10-2026-09-24 (owner): BACKLOG.md is open-work only; closed history
+# moved to BACKLOG-archive.md. The archive carries intentional TODO-NNNN
+# unit ids — excluded from the todos counter for the same reason as
+# BACKLOG.md (FU-21 D1).
+todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
