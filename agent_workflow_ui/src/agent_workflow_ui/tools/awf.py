@@ -2123,7 +2123,8 @@ async def awf_kill(
             NOT your project; always pass it explicitly (AUD08-12).
 
     Returns:
-        Dict with: killed (bool), pid, workers ({pid: status}), message.
+        Dict with: killed (bool), pid, workers ({pid: status}), message;
+        reason ("ancestry") on refusal.
     """
     try:
         result = await asyncio.to_thread(
@@ -2150,10 +2151,17 @@ async def awf_kill(
                     "needs new shape."
                 )
         else:
-            response["next_action"] = (
-                "No pipeline was running (nothing to stop) — start one: "
-                "awf_start(project_dir), or awf_run_next inside a run."
-            )
+            if result.get("reason") == "ancestry":
+                response["next_action"] = (
+                    "Kill refused: this process is inside the pipeline it "
+                    "is trying to kill. Run awf_kill from the supervisor "
+                    "session, not from inside the pipeline."
+                )
+            else:
+                response["next_action"] = (
+                    "No pipeline was running (nothing to stop) — start one: "
+                    "awf_start(project_dir), or awf_run_next inside a run."
+                )
         return response
     except api.AwfApiError as e:
         return _err(e)

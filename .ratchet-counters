@@ -232,4 +232,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # (1), awf/include_untracked.py (new module, 1), tools/awf.py (1) and
 # USAGE EN/RU (1+1). Same class as above: test identifiers and unit-id
 # references, not debt.
+# RUN10-2026-09-24 (#5): baseline raised 3643 -> 3648 — the kill-fuses
+# unit (TODO-0075) adds 5 TODO-bearing lines, all in
+# tests/integration/test_kill_worker.py: the two new class docstrings
+# (TestKillSelfPipelineRefusal / TestLateWorkerSweep unit references)
+# and the fake-pipeline worker fixtures (two worker_todo='TODO-0075'
+# state writes + the stub opencode prompt 'TODO-0075'). Same class as
+# above: test identifiers and fixtures, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
