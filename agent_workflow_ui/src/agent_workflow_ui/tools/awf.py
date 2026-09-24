@@ -941,6 +941,10 @@ async def awf_feedback(
     *,
     body: str = "",
     severity: str = "",
+    expected: str = "",
+    got: str = "",
+    why: str = "",
+    proposal: str = "",
     stdout: bool = False,
 ) -> dict[str, Any]:
     """Write a bug/feature report about awf friction to the owner (RUN4 #2).
@@ -951,9 +955,12 @@ async def awf_feedback(
     (awf version, project, phase, run position/no_checkpoints, current
     task, awf-repo git sha best-effort, date), the skeleton
     «Что пытался / Ожидал / Что получил / Почему мешает / Предложение»
-    (``body`` fills «Что пытался»), and the tail of the project's newest
-    log (<=20 lines). File: ``awf-<bug|feature>-<YYYYMMDD>-<slug>.md``;
-    a repeat on the same day with the same slug gets a ``-2`` suffix.
+    (``body`` fills «Что пытался», ``expected``/``got``/``why``/
+    ``proposal`` fill the rest), and the tail of the project's newest
+    log (<=20 lines). EMPTY sections are not printed at all — a one-text
+    report has no empty headings (RUN10 #2). File:
+    ``awf-<bug|feature>-<YYYYMMDD>-<slug>.md``; a repeat on the same day
+    with the same slug gets a ``-2`` suffix.
     Secrets: the report never reads the environment.
 
     Do not stay silent: silence does not fix the tool.
@@ -966,6 +973,10 @@ async def awf_feedback(
             Cyrillic is transliterated, letters-only fallback ``report``).
         body: Text for the «Что пытался» section.
         severity: ``low`` / ``medium`` / ``high`` (empty = no mark).
+        expected: Text for the «Ожидал» section (empty = not printed).
+        got: Text for the «Что получил» section (empty = not printed).
+        why: Text for the «Почему мешает» section (empty = not printed).
+        proposal: Text for the «Предложение» section (empty = not printed).
         stdout: True — return the report text, write no file.
 
     Returns:
@@ -980,6 +991,10 @@ async def awf_feedback(
         title=title,
         body=body,
         severity=severity,
+        expected=expected,
+        got=got,
+        why=why,
+        proposal=proposal,
         stdout=stdout,
     )
 
@@ -1799,27 +1814,37 @@ MAX_WAIT = 600
 
 
 def _wait_cap_note(project_dir, clamped: bool, requested: int) -> str:
-    """B3 / RUN6 #3: append the actual single-wait cap to every next_action.
+    """B3 / RUN6 #3 / RUN10 #2: append the ACTUAL single-wait cap to
+    every next_action.
 
-    The supervisor used to wait with timeout=180 and get the transport
-    cut at ~55s (-32001), then hammer retries. The note makes the working
-    cap explicit; when the request was clamped to MAX_WAIT it says so.
+    The supervisor used to wait with timeout=180 and get the wait cut at
+    ~55s, then hammer retries. The note makes the working cap explicit;
+    when the request was clamped to MAX_WAIT it says so.
 
     RUN6 #3: the cap is project-aware (wait_cap: env AWF_WAIT_CAP / config
-    wait.cap_seconds, default TRANSPORT_CAP). The "raise the mcp timeout in
-    opencode.json" advice is shown ONLY while the cap is the default — once
-    the owner raised it in config/env, the advice is stale and is dropped.
+    wait.cap_seconds, default TRANSPORT_CAP).
+
+    RUN10 #2: while the cap is the default the note names the EXACT tool
+    setting with the CONCRETE value (api.cap_advice reads the mcp timeout
+    from opencode.json: T = timeout ms / 1000 - 30). The "raise the mcp
+    timeout in opencode.json" clause appears ONLY when that timeout is
+    unknown or below the cap — never when the cap is no longer the
+    default (the owner already raised the ceiling, the advice is stale).
     """
     try:
         cap = api.wait_cap(project_dir)
     except Exception:
         cap = api.TRANSPORT_CAP
     if cap == api.TRANSPORT_CAP:
-        note = (
-            f" Single wait <= {cap}s (MCP client transport cap; "
-            "to wait longer, raise the mcp timeout in opencode.json, "
-            f"e.g. 600000 ms; wrapper cap {MAX_WAIT}s)."
-        )
+        try:
+            advice = api.cap_advice(project_dir)
+        except Exception:
+            advice = (
+                f"{cap}s is the tool's own cap, not the transport — to "
+                "wait longer set wait.cap_seconds in .agentic/config.yaml "
+                "or AWF_WAIT_CAP — wait in smaller steps"
+            )
+        note = f" Single wait <= {cap}s ({advice})."
     else:
         note = (
             f" Single wait <= {cap}s (project wait cap: wait.cap_seconds "
@@ -1866,19 +1891,20 @@ async def awf_wait_for_event(
     up to ~55s (B3, run2 report). This wrapper clamps the wait to MAX_WAIT
     (600s). The single-wait cap is project-aware (RUN6 #3): env
     ``AWF_WAIT_CAP`` > ``.agentic/config.yaml`` ``wait.cap_seconds`` > the
-    default 55s. For longer single waits raise the MCP server timeout in
-    opencode.json::
+    default 55s.
 
-        "mcp": {"agent-workflow-ui": {..., "timeout": 600000}}
-
-    ...and set ``wait.cap_seconds`` in the project config so the tool stops
-    under-selling the wait.
-
-    B3 / RUN6 #3: ``next_action`` of EVERY response carries the actual
-    single-wait cap (default MCP client transport ~55s, or the project's
-    wait.cap_seconds / AWF_WAIT_CAP when raised) — the "raise the mcp
-    timeout" advice is shown only while the cap is the default. When
-    ``timeout_clamped`` is true the note comes with the clamp fact.
+    RUN10 #2 (honest advice): the 55s default is the tool's OWN cap, not
+    the transport — a raised mcp timeout in opencode.json does not lift
+    it. ``next_action`` of EVERY response names the exact lever: while
+    the cap is the default it says to set ``wait.cap_seconds: <T>`` in
+    ``.agentic/config.yaml`` or ``AWF_WAIT_CAP=<T>`` (T = the
+    ``agent-workflow-ui`` mcp timeout from opencode.json minus ~30s, when
+    readable; without the number when it is not). The "raise the mcp
+    timeout in opencode.json" clause appears ONLY when that timeout is
+    unknown or below the cap — and NEVER once the cap is raised in
+    config/env. ``suggested_timeout`` with no stage history follows the
+    actual cap (~90% of it: 55 → 55, 600 → 540), not the 55s default.
+    When ``timeout_clamped`` is true the note comes with the clamp fact.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
@@ -1924,9 +1950,15 @@ async def awf_wait_for_event(
         # carries event_type via as_dict().
         et = response.get("event_type") or "timeout"
         # RUN6 #3: the fallback cap is project-aware (wait.cap_seconds /
-        # AWF_WAIT_CAP), not the hardcoded transport default.
-        suggested = response.get("suggested_timeout") or api.wait_cap(
-            _resolve_project_dir(project_dir)
+        # AWF_WAIT_CAP), not the hardcoded transport default. RUN10 #2:
+        # the no-history fallback follows the cap (~90% of it), not the
+        # 55s transport default.
+        try:
+            cap = api.wait_cap(_resolve_project_dir(project_dir))
+        except Exception:
+            cap = api.TRANSPORT_CAP
+        suggested = response.get("suggested_timeout") or (
+            api.default_suggested_timeout(cap)
         )
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;

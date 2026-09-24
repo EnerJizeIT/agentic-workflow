@@ -38,6 +38,9 @@ from ._results import WaitEventResult
 # the supervisor's next call dies mid-wait (-32001).
 TRANSPORT_CAP = 55
 MIN_WAIT = 30
+# RUN10 #2: the safety gap between the mcp timeout (opencode.json) and the
+# wait cap advised from it — the transport cut lands mid-wait otherwise.
+WAIT_CAP_MARGIN = 30
 
 
 def _parse_cap(value: Any) -> int | None:
@@ -90,6 +93,96 @@ def wait_cap(project_dir: Path | None = None) -> int:
     return TRANSPORT_CAP
 
 
+def mcp_transport_timeout_ms(project_dir: Path | None = None) -> int | None:
+    """RUN10 #2: the ``agent-workflow-ui`` mcp timeout (ms) from opencode.json.
+
+    Reads ``mcp["agent-workflow-ui"]["timeout"]`` from the user's
+    opencode.json (``awf.xdg.opencode_config_file``, XDG-aware). Returns
+    None when the file is missing or unreadable, the root is not a dict,
+    the server or its timeout is absent, or the value is not a positive
+    number — the cap advice then drops the concrete number.
+    """
+    import json
+
+    try:
+        from ..xdg import opencode_config_file
+
+        cfg_path = opencode_config_file()
+        if not cfg_path.is_file():
+            return None
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    mcp = cfg.get("mcp")
+    if not isinstance(mcp, dict):
+        return None
+    server = mcp.get("agent-workflow-ui")
+    if not isinstance(server, dict):
+        return None
+    raw = server.get("timeout")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    n = int(raw)
+    return n if n > 0 else None
+
+
+def default_suggested_timeout(cap: int) -> int:
+    """RUN10 #2: the no-history suggestion, sized from the ACTUAL cap.
+
+    ``min(cap, max(55, int(0.9*cap)))`` — 55 → 55, 300 → 270, 600 → 540.
+    The old ``min(55, cap)`` stuck the suggestion at 55s while the owner's
+    cap was 600 (the "strange 55 seconds" from the 24.09 feature report).
+    """
+    return min(cap, max(TRANSPORT_CAP, int(0.9 * cap)))
+
+
+def cap_advice(project_dir: Path | None = None) -> str:
+    """RUN10 #2: the honest single-wait cap advice.
+
+    Default cap: names the EXACT tool setting with the CONCRETE value —
+    ``wait.cap_seconds: <T>`` in ``.agentic/config.yaml`` or
+    ``AWF_WAIT_CAP=<T>`` (T = the mcp timeout from opencode.json minus
+    ~30s) when the transport timeout is readable, without the number when
+    it is not. The "raise the mcp timeout in opencode.json" clause is
+    shown ONLY when that timeout is unknown or too small to carry the cap
+    (below cap + margin) — and NEVER when the cap is no longer the
+    default (the owner already raised the ceiling, the advice is stale
+    then).
+    """
+    cap = wait_cap(project_dir)
+    if cap != TRANSPORT_CAP:
+        return (
+            f"a single wait above {cap}s is cut on this setup "
+            "(wait.cap_seconds / AWF_WAIT_CAP) — wait in smaller steps"
+        )
+    transport_ms = mcp_transport_timeout_ms(project_dir)
+    if transport_ms is None:
+        return (
+            f"{cap}s is the tool's own cap, not the transport — to wait "
+            "longer set wait.cap_seconds in .agentic/config.yaml or "
+            "AWF_WAIT_CAP (raise the mcp timeout in opencode.json first "
+            "if it is still the default ~60s) — wait in smaller steps"
+        )
+    t = transport_ms // 1000 - WAIT_CAP_MARGIN
+    if t < TRANSPORT_CAP:
+        # Not "below the cap" — the timeout can sit above the cap (e.g. the
+        # 60s opencode default) yet still leave no room for cap + margin.
+        return (
+            f"the mcp timeout in opencode.json ({transport_ms} ms) cannot "
+            f"carry the {cap}s cap plus the ~{WAIT_CAP_MARGIN}s margin — "
+            "raise it, then set wait.cap_seconds to the new value minus "
+            f"~{WAIT_CAP_MARGIN}s — wait in smaller steps"
+        )
+    return (
+        f"{cap}s is the tool's own cap, not the transport (the mcp timeout "
+        f"already allows {transport_ms} ms) — to wait longer set "
+        f"wait.cap_seconds: {t} in .agentic/config.yaml or "
+        f"AWF_WAIT_CAP={t} — wait in smaller steps"
+    )
+
+
 # RUN6 #1: the signs of a completed pipeline cycle. The commit comes from
 # commit_gate.maybe_commit (``awf(<stage>): TODO-NNNN``), the archive from
 # todos.archive_todo (``.agentic/done/<todo>/``) — either one is enough.
@@ -97,15 +190,16 @@ _TODO_ID_RE = re.compile(r"^TODO-\d{4,}$")
 _AWF_COMMIT_RE = re.compile(r"^awf\([^)]+\):\s*(TODO-\d{4,})\s*$")
 
 
-def _suggest_timeout(project_dir: Path, *, default: int = TRANSPORT_CAP) -> int:
+def _suggest_timeout(project_dir: Path) -> int:
     """SPEC A-run: size the next wait from measured stage durations.
 
     Consecutive ``Stage N/M:`` lines in orchestrator.log give the duration of
     the previous stage. Median of the last few, divided by 3 (wake ~3x per
     stage), clamped to [MIN_WAIT, cap] seconds — never above the project's
     wait cap (wait_cap: env/config, default TRANSPORT_CAP), which would cut
-    the next call mid-wait. Falls back to ``default`` (capped) when the log
-    is missing or has too little history.
+    the next call mid-wait. With no history falls back to
+    ``default_suggested_timeout(cap)`` (RUN10 #2: sized from the actual
+    cap, not stuck at the 55s transport default).
 
     AUD15-08: the stage stamps come from the shared incremental reader
     (awf/_log_reader.py) — no 5th full read of the log per wait_for_event.
@@ -114,32 +208,25 @@ def _suggest_timeout(project_dir: Path, *, default: int = TRANSPORT_CAP) -> int:
     from .._log_reader import read_log_snapshot
 
     cap = wait_cap(project_dir)
+    # RUN10 #2: no history — size from the actual cap (55→55, 600→540),
+    # not from the 55s transport default.
+    fallback = default_suggested_timeout(cap)
     log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"
     stamps = read_log_snapshot(log_file).stage_stamps
     if len(stamps) < 2:
-        return min(default, cap)
+        return fallback
     deltas = [b - a for a, b in zip(stamps, stamps[1:])]
     deltas = [d for d in deltas if 0 < d < 3600][-5:]
     if not deltas:
-        return min(default, cap)
+        return fallback
     deltas.sort()
     median = deltas[len(deltas) // 2]
     return max(MIN_WAIT, min(cap, int(median / 3)))
 
 
 def _cap_advice(project_dir: Path | None = None) -> str:
-    """B3/RUN6 #3: the suggested wait hit the cap — advise smaller steps."""
-    cap = wait_cap(project_dir)
-    if cap == TRANSPORT_CAP:
-        return (
-            f" Transport cap: a single wait above {cap}s is cut by the "
-            "MCP client (-32001) — wait in smaller steps (suggested_timeout)."
-        )
-    return (
-        f" Wait cap: a single wait above {cap}s is cut on this setup "
-        "(wait.cap_seconds / AWF_WAIT_CAP) — wait in smaller steps "
-        "(suggested_timeout)."
-    )
+    """B3/RUN6 #3/RUN10 #2: the suggested wait hit the cap — advise next."""
+    return " " + cap_advice(project_dir) + "."
 
 
 def _state_describes_live_pipeline(state: dict[str, Any] | None) -> bool:

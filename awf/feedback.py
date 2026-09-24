@@ -8,7 +8,9 @@
   no_checkpoints), текущая задача, git sha awf-репо (best-effort:
   editable-путь → ``git rev-parse --short HEAD``), дата;
 - **скелет** «Что пытался / Ожидал / Что получил / Почему мешает /
-  Предложение» — ``body`` вставляется в «Что пытался»;
+  Предложение» — ``body`` вставляется в «Что пытался»,
+  ``expected``/``got``/``why``/``proposal`` — в остальные секции;
+  пустые секции не печатаются (RUN10 #2 — никаких пустых заголовков);
 - **хвост последнего лога** проекта (≤20 строк, если файл есть).
 
 Имя файла: ``awf-<bug|feature>-<YYYYMMDD>-<slug>.md``; повторный вызов в
@@ -37,13 +39,14 @@ _TYPE_TITLES = {
     "feature": "Фича-реквест awf",
 }
 
-# Скелет тела: body вставляется в первую секцию.
+# Скелет тела: (заголовок, имя параметра, который его заполняет).
+# RUN10 #2: секция с пустым текстом не печатается вовсе.
 _SKELETON_SECTIONS = (
-    "Что пытался",
-    "Ожидал",
-    "Что получил",
-    "Почему мешает",
-    "Предложение",
+    ("Что пытался", "body"),
+    ("Ожидал", "expected"),
+    ("Что получил", "got"),
+    ("Почему мешает", "why"),
+    ("Предложение", "proposal"),
 )
 
 _LOG_TAIL_LINES = 20
@@ -165,9 +168,23 @@ def _log_tail(project_dir: Path) -> tuple[str, list[str]] | None:
 
 
 def render_report(
-    project_dir: Path, *, ftype: str, title: str, body: str = "", severity: str = ""
+    project_dir: Path,
+    *,
+    ftype: str,
+    title: str,
+    body: str = "",
+    severity: str = "",
+    expected: str = "",
+    got: str = "",
+    why: str = "",
+    proposal: str = "",
 ) -> str:
-    """Собрать текст отчёта (факты + скелет + хвост лога)."""
+    """Собрать текст отчёта (факты + скелет + хвост лога).
+
+    RUN10 #2: ``expected``/``got``/``why``/``proposal`` заполняют секции
+    «Ожидал»/«Что получил»/«Почему мешает»/«Предложение»; секция с пустым
+    текстом не печатается (ни заголовок, ни пустое тело).
+    """
     import awf as _awf
 
     from . import config as _config
@@ -197,13 +214,21 @@ def render_report(
     lines.extend(facts)
     lines.append("")
 
-    body = (body or "").strip()
-    for section in _SKELETON_SECTIONS:
+    section_texts = {
+        "body": body,
+        "expected": expected,
+        "got": got,
+        "why": why,
+        "proposal": proposal,
+    }
+    for section, field in _SKELETON_SECTIONS:
+        text = (section_texts[field] or "").strip()
+        if not text:
+            continue  # RUN10 #2: пустые секции не печатаются
         lines.append(f"## {section}")
         lines.append("")
-        if section == _SKELETON_SECTIONS[0] and body:
-            lines.append(body)
-            lines.append("")
+        lines.append(text)
+        lines.append("")
 
     tail = _log_tail(project_dir)
     if tail:
@@ -230,6 +255,10 @@ def feedback(
     title: str,
     body: str = "",
     severity: str = "",
+    expected: str = "",
+    got: str = "",
+    why: str = "",
+    proposal: str = "",
     stdout: bool = False,
 ) -> FeedbackResult:
     """Написать отчёт фидбек-контура (или вернуть текст, если ``stdout``).
@@ -240,7 +269,14 @@ def feedback(
         title: заголовок в одну строку (из него — слаг имени файла).
         body: текст секции «Что пытался».
         severity: ``low|medium|high`` (пусто — без пометки).
+        expected: текст секции «Ожидал» (RUN10 #2).
+        got: текст секции «Что получил» (RUN10 #2).
+        why: текст секции «Почему мешает» (RUN10 #2).
+        proposal: текст секции «Предложение» (RUN10 #2).
         stdout: True — вернуть текст в ``report``, файл не писать.
+
+    Пустые секции (включая «Что пытался» без ``body``) не печатаются —
+    в отчёте нет пустых заголовков (RUN10 #2).
 
     Raises:
         AwfApiError: неверный ``ftype``/``severity``, пустой ``title``.
@@ -266,7 +302,15 @@ def feedback(
         )
 
     report = render_report(
-        project_dir, ftype=ftype, title=title, body=body, severity=severity
+        project_dir,
+        ftype=ftype,
+        title=title,
+        body=body,
+        severity=severity,
+        expected=expected,
+        got=got,
+        why=why,
+        proposal=proposal,
     )
     slug = slugify(title)
 

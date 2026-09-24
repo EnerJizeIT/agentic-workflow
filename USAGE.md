@@ -448,14 +448,17 @@ front-matter, and `awf_run_next` reads it for items without a queue-level
 pipeline. An unknown name refuses the launch with the list of available
 pipelines (RUN3 #1).
 
-**Long waits.** The MCP transport cuts a single `awf_wait_for_event` call at
-the client timeout — ~55s with the default opencode.json. The tool says so
-in every `next_action`. To wait longer, raise the mcp timeout in
-`opencode.json`: `"mcp": {"agent-workflow-ui": {"timeout": 600000}}` — and
-tell awf the new ceiling via `wait.cap_seconds` in `.agentic/config.yaml`
-(or env `AWF_WAIT_CAP`, which wins). While the cap is the default 55s the
-tool advises raising the mcp timeout; once you raise the cap in config or
-env, the advice goes away and `suggested_timeout` is clamped to your value.
+**Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
+cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`
+(or env `AWF_WAIT_CAP`, which wins). The 55s default is the tool's OWN cap,
+not the transport: a raised mcp timeout in opencode.json does not lift it.
+The tool says so in every `next_action` and names the exact lever: while the
+cap is the default it advises `wait.cap_seconds: <T>` / `AWF_WAIT_CAP=<T>`
+(T = your `agent-workflow-ui` mcp timeout from opencode.json minus ~30s, when
+readable). The "raise the mcp timeout in opencode.json" clause appears only
+when that timeout is unknown or below the cap — never once the cap is raised
+in config or env, and `suggested_timeout` then follows your cap (no stage
+history: ~90% of it, 55 → 55, 600 → 540).
 
 **Per-mode hints (RUN10 #1).** The response hints of `awf_wait_for_event` /
 `awf_approve` depend on the mode. With an active run: a timeout offers the

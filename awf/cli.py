@@ -481,6 +481,26 @@ def _build_parser():
         help="Text for the «Что пытался» section",
     )
     p_feedback.add_argument(
+        "--expected",
+        default="",
+        help="Text for the «Ожидал» section (empty = section not printed)",
+    )
+    p_feedback.add_argument(
+        "--got",
+        default="",
+        help="Text for the «Что получил» section (empty = section not printed)",
+    )
+    p_feedback.add_argument(
+        "--why",
+        default="",
+        help="Text for the «Почему мешает» section (empty = section not printed)",
+    )
+    p_feedback.add_argument(
+        "--proposal",
+        default="",
+        help="Text for the «Предложение» section (empty = section not printed)",
+    )
+    p_feedback.add_argument(
         "--severity",
         default="",
         choices=("", "low", "medium", "high"),

@@ -228,12 +228,19 @@ class TestSuggestedTimeout:
         assert suggested == 40
         assert MIN_WAIT <= suggested <= TRANSPORT_CAP
 
-    def test_suggestion_default_without_log(self, awf_project):
+    def test_suggestion_default_without_log(self, awf_project, monkeypatch):
+        """RUN10 #2: no history — the suggestion follows the ACTUAL cap
+        (min(cap, max(55, int(0.9*cap)))), not the 55s transport default."""
         from awf.api.wait_event import TRANSPORT_CAP, _suggest_timeout
 
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        # default cap 55 → 55
         assert _suggest_timeout(awf_project) == TRANSPORT_CAP
-        # A stale caller default (180) must not escape the cap either.
-        assert _suggest_timeout(awf_project, default=180) == TRANSPORT_CAP
+        # raised cap 600 → 540, not stuck at 55 (the 24.09 report)
+        monkeypatch.setenv("AWF_WAIT_CAP", "600")
+        assert _suggest_timeout(awf_project) == 540
+        monkeypatch.setenv("AWF_WAIT_CAP", "300")
+        assert _suggest_timeout(awf_project) == 270
 
     def test_timeout_event_carries_suggestion(self, awf_project):
         from awf.api.wait_event import MIN_WAIT, TRANSPORT_CAP
@@ -245,13 +252,18 @@ class TestSuggestedTimeout:
         assert result.event_type == "timeout"
         assert MIN_WAIT <= result.suggested_timeout <= TRANSPORT_CAP
 
-    def test_clamped_suggestion_advises_smaller_steps(self, awf_project):
-        """B3: the suggestion hit the transport cap → the message advises
-        waiting in smaller steps instead of one long cut-off wait."""
+    def test_clamped_suggestion_advises_smaller_steps(self, awf_project, monkeypatch):
+        """B3/RUN10 #2: the suggestion hit the cap → the message advises
+        waiting in smaller steps; the default-cap advice names the tool
+        setting (wait.cap_seconds / AWF_WAIT_CAP), not the transport."""
         from datetime import datetime, timedelta
 
+        import awf.api.wait_event as wait_event_mod
         from awf.api.wait_event import TRANSPORT_CAP
 
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: None
+        )
         logs = awf_project / ".agentic" / "logs"
         logs.mkdir(parents=True, exist_ok=True)
         base = datetime(2026, 9, 18, 8, 0, 0)
@@ -266,7 +278,10 @@ class TestSuggestedTimeout:
 
         assert result.event_type == "timeout"
         assert result.suggested_timeout == TRANSPORT_CAP
-        assert "Transport cap" in result.message
+        assert "tool's own cap" in result.message
+        assert "not the transport" in result.message
+        assert "wait.cap_seconds" in result.message
+        assert "Transport cap" not in result.message
         assert "smaller steps" in result.message
 
 
@@ -962,12 +977,18 @@ class TestWaitCap:
         assert "Transport cap" not in result.message
         assert "smaller steps" in result.message
 
-    def test_timeout_message_default_cap_unchanged(self, awf_project, monkeypatch):
-        """No config/env → cap stays 55 and the B3 message is intact.
+    def test_timeout_message_default_cap_names_tool_setting(self, awf_project, monkeypatch):
+        """RUN10 #2: no config/env → cap stays 55 and the advice is HONEST —
+        the tool's own cap (not the transport) with the exact lever
+        (wait.cap_seconds / AWF_WAIT_CAP).
         20-min stage → raw 400s → clamped to the 55s cap → advice fires."""
+        import awf.api.wait_event as wait_event_mod
         from awf.api.wait_event import TRANSPORT_CAP
 
         monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: None
+        )
         self._write_stage_log(awf_project, minutes=20)
 
         write_state(
@@ -977,5 +998,126 @@ class TestWaitCap:
 
         assert result.event_type == "timeout"
         assert result.suggested_timeout == TRANSPORT_CAP
-        assert "Transport cap" in result.message
+        assert "tool's own cap" in result.message
+        assert "not the transport" in result.message
+        assert "wait.cap_seconds" in result.message
+        assert "AWF_WAIT_CAP" in result.message
+        assert "Transport cap" not in result.message
         assert "smaller steps" in result.message
+
+
+class TestHonestCapAdvice:
+    """RUN10 #2: the advice names the EXACT setting with the CONCRETE
+    value; the mcp-timeout reader degrades to None, never raises."""
+
+    @staticmethod
+    def _write_opencode_json(monkeypatch, tmp_path, content):
+        xdg = tmp_path / "xdg"
+        (xdg / "opencode").mkdir(parents=True, exist_ok=True)
+        (xdg / "opencode" / "opencode.json").write_text(content, encoding="utf-8")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+
+    def test_mcp_timeout_read_from_opencode_json(self, monkeypatch, tmp_path):
+        from awf.api.wait_event import mcp_transport_timeout_ms
+
+        self._write_opencode_json(
+            monkeypatch, tmp_path,
+            '{"mcp": {"agent-workflow-ui": {"timeout": 600000}}}',
+        )
+        assert mcp_transport_timeout_ms() == 600000
+
+    def test_mcp_timeout_degrades_to_none(self, monkeypatch, tmp_path):
+        from awf.api.wait_event import mcp_transport_timeout_ms
+
+        # non-dict root
+        self._write_opencode_json(monkeypatch, tmp_path, "[1, 2, 3]")
+        assert mcp_transport_timeout_ms() is None
+        # no server
+        self._write_opencode_json(monkeypatch, tmp_path, '{"mcp": {}}')
+        assert mcp_transport_timeout_ms() is None
+        # non-numeric timeout
+        self._write_opencode_json(
+            monkeypatch, tmp_path,
+            '{"mcp": {"agent-workflow-ui": {"timeout": "600000"}}}',
+        )
+        assert mcp_transport_timeout_ms() is None
+        # no file at all
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+        assert mcp_transport_timeout_ms() is None
+
+    def test_default_cap_advice_names_setting_and_value(self, awf_project, monkeypatch, tmp_path):
+        """Readable opencode.json (600000 ms) → concrete T = 600 − 30 = 570,
+        and NO 'raise the mcp timeout' (the transport already allows it)."""
+        from awf.api.wait_event import cap_advice
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._write_opencode_json(
+            monkeypatch, tmp_path,
+            '{"mcp": {"agent-workflow-ui": {"timeout": 600000}}}',
+        )
+        advice = cap_advice(awf_project)
+
+        assert "wait.cap_seconds: 570" in advice
+        assert "AWF_WAIT_CAP=570" in advice
+        assert "not the transport" in advice
+        assert "raise the mcp timeout" not in advice
+
+    def test_default_cap_advice_without_opencode_json(self, awf_project, monkeypatch, tmp_path):
+        """Unreadable opencode.json → no number, still the tool setting;
+        the mcp-timeout clause is allowed back (unknown transport)."""
+        from awf.api.wait_event import cap_advice
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "empty"))
+        advice = cap_advice(awf_project)
+
+        assert "wait.cap_seconds" in advice
+        assert "AWF_WAIT_CAP" in advice
+        assert "not the transport" in advice
+        assert "raise the mcp timeout in opencode.json" in advice
+        assert "wait.cap_seconds: " not in advice
+
+    def test_default_cap_advice_transport_too_small_for_cap(self, awf_project, monkeypatch, tmp_path):
+        """Transport timeout that cannot carry cap + margin → the advice is
+        to raise the mcp timeout, no concrete wait.cap_seconds value yet.
+        Covers both sides of the band: truly below the cap (40000 ms) and
+        above it (60000 ms, the opencode default) — the latter must NOT be
+        claimed 'below the 55s cap' (honesty, the point of RUN10 #2)."""
+        from awf.api.wait_event import cap_advice
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        self._write_opencode_json(
+            monkeypatch, tmp_path,
+            '{"mcp": {"agent-workflow-ui": {"timeout": 40000}}}',
+        )
+        advice = cap_advice(awf_project)
+
+        assert "40000 ms" in advice
+        assert "raise" in advice
+        assert "wait.cap_seconds: " not in advice
+
+        self._write_opencode_json(
+            monkeypatch, tmp_path,
+            '{"mcp": {"agent-workflow-ui": {"timeout": 60000}}}',
+        )
+        advice = cap_advice(awf_project)
+
+        assert "60000 ms" in advice
+        assert "raise" in advice
+        assert "below the 55s cap" not in advice
+        assert "wait.cap_seconds: " not in advice
+
+    def test_raised_cap_advice_never_mentions_mcp_timeout(self, awf_project, monkeypatch):
+        """Cap raised in config → no transport advice at all (stale)."""
+        from awf.api.wait_event import cap_advice
+
+        monkeypatch.delenv("AWF_WAIT_CAP", raising=False)
+        (awf_project / ".agentic" / "config.yaml").write_text(
+            "wait:\n  cap_seconds: 300\n", encoding="utf-8"
+        )
+        advice = cap_advice(awf_project)
+
+        assert "300s" in advice
+        assert "smaller steps" in advice
+        assert "opencode.json" not in advice
+        assert "raise the mcp timeout" not in advice

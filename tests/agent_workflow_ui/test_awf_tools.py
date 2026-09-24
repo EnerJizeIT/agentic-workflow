@@ -933,14 +933,40 @@ class TestWaitForEventCapNote:
         )
         return asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=timeout))
 
-    def test_next_action_carries_transport_cap(self, monkeypatch):
+    def test_next_action_default_cap_names_tool_setting(self, monkeypatch):
+        """RUN10 #2: default cap — the note names the EXACT setting with
+        the CONCRETE value (mcp timeout 600000 ms → wait.cap_seconds: 570)
+        and never claims it is the transport cap."""
+        import awf.api.wait_event as wait_event_mod
+
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: 600000
+        )
         result = self._run("timeout", 30, monkeypatch)
 
         cap = api.TRANSPORT_CAP
         assert f"<= {cap}s" in result["next_action"]
-        assert "MCP client transport cap" in result["next_action"]
-        assert "opencode.json" in result["next_action"]
-        assert "600000 ms" in result["next_action"]
+        assert "not the transport" in result["next_action"]
+        assert "wait.cap_seconds: 570" in result["next_action"]
+        assert "AWF_WAIT_CAP=570" in result["next_action"]
+        assert "MCP client transport cap" not in result["next_action"]
+        assert "raise the mcp timeout" not in result["next_action"]
+
+    def test_next_action_default_cap_unknown_transport(self, monkeypatch):
+        """RUN10 #2: opencode.json unreadable — no number, still the tool
+        setting; the mcp-timeout clause is allowed back (unknown)."""
+        import awf.api.wait_event as wait_event_mod
+
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: None
+        )
+        result = self._run("timeout", 30, monkeypatch)
+
+        assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
+        assert "not the transport" in result["next_action"]
+        assert "wait.cap_seconds" in result["next_action"]
+        assert "wait.cap_seconds: " not in result["next_action"]
+        assert "raise the mcp timeout in opencode.json" in result["next_action"]
 
     def test_next_action_cap_present_for_every_event(self, monkeypatch):
         """The note is on EVERY response, not just timeout/stage_changed."""
@@ -956,12 +982,18 @@ class TestWaitForEventCapNote:
         assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
 
     def test_clamped_next_action_says_so_explicitly(self, monkeypatch):
+        import awf.api.wait_event as wait_event_mod
+
+        # unknown transport → deterministic note with the tool setting
+        monkeypatch.setattr(
+            wait_event_mod, "mcp_transport_timeout_ms", lambda *a, **k: None
+        )
         result = self._run("timeout", 9999, monkeypatch)
 
         assert result["timeout_clamped"] is True
         assert "clamped to 600" in result["next_action"]
         assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
-        assert "opencode.json" in result["next_action"]
+        assert "wait.cap_seconds" in result["next_action"]
 
     def test_suggested_fallback_respects_cap(self, monkeypatch):
         """A result without suggested_timeout must not push a 180s wait."""

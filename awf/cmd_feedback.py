@@ -15,6 +15,10 @@ def run(args: Any) -> int:
         title=args.title,
         body=args.body or "",
         severity=args.severity or "",
+        expected=args.expected or "",
+        got=args.got or "",
+        why=args.why or "",
+        proposal=args.proposal or "",
         stdout=args.stdout,
     )
     if args.stdout:
