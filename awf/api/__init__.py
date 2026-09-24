@@ -36,6 +36,7 @@ from ..brief import BriefResult
 from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
+from ..run_state import run_is_active
 from ..verify_pack import VerifyPackResult, verify_pack
 
 # Public types
@@ -175,6 +176,8 @@ __all__ = [
     "run_finish",
     "run_brief",
     "run_note",
+    # RUN10 #1: the single "run active" source (hints + done fuse + phase)
+    "run_is_active",
     # Roles
     "add_role",
     "analyze_roles",

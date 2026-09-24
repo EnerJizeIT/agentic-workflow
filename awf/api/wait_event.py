@@ -234,12 +234,32 @@ def _last_completed_todo(project_dir: Path) -> tuple[str, str] | None:
     return None
 
 
-def _run_is_active(project_dir: Path) -> bool:
-    """SPEC A-run: is an autonomous run (забег) active in this project?"""
-    from ..run_state import read_run
+def _run_allows_done(project_dir: Path) -> bool:
+    """RUN10 #1 fuse (RUN9 incident): may a ``done`` be handed out now?
 
+    Outside a run: yes — the previous behavior, unchanged. Inside an ACTIVE
+    run: only when the run's current element itself is finished (archived
+    and not active again). Otherwise the pipeline DIED mid-iteration: the
+    project-wide cycle evidence (``done/<id>/`` or an awf commit) belongs to
+    a PREVIOUS cycle, and a ``done`` would drag the run loop into
+    ``awf_run_next`` — which refuses ("previous TODO is not finished") and
+    stops the run (RUN9: the false done after the kill-race death).
+
+    A run without a recorded ``current`` (hand-written/legacy state) is
+    treated as "not finished" too — ``run_next`` always records it.
+    """
+    from ..run_state import read_run, run_is_active
+
+    if not run_is_active(project_dir):
+        return True
     run = read_run(project_dir)
-    return bool(run and run.get("active"))
+    current = str((run or {}).get("current") or "")
+    if not current:
+        return False
+    # Same finished definition the run gates use (awf/api/run.py).
+    from .run import _todo_finished
+
+    return _todo_finished(project_dir, current)
 
 
 def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
@@ -255,7 +275,13 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
     never get a false ``done``. The message carries the completed TODO and
     the exact next command: ``awf_run_next`` inside a run,
     ``awf_dispatch_todo`` outside it.
+
+    RUN10 #1 fuse: inside an ACTIVE run the finished-cycle sign must be
+    the run's CURRENT element, and that element must be finished
+    (``_run_allows_done``) — a dead pipeline mid-iteration never yields a
+    ``done`` for a previous cycle (RUN9 incident).
     """
+    from ..run_state import read_run, run_is_active
     from ._liveness import resolve
 
     running, _pid, _source = resolve(project_dir)
@@ -268,17 +294,28 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
         # PREVIOUS cycle's TODO. Keep the old wait behavior, never a
         # false 'done' for a past cycle.
         return None
+    if not _run_allows_done(project_dir):
+        # RUN10 #1 fuse: an active run whose current element is NOT finished
+        # means the pipeline died mid-iteration — never a 'done' for a
+        # previous cycle (the caller keeps the old wait: idle/timeout).
+        return None
     evidence = _last_completed_todo(project_dir)
     if evidence is None:
         return None
     todo_id, kind = evidence
+    if run_is_active(project_dir):
+        # The finished-cycle sign must be the run's CURRENT element — a
+        # sign for any other TODO is a previous cycle, not this one.
+        run = read_run(project_dir)
+        if todo_id != str((run or {}).get("current") or ""):
+            return None
 
     verb = {
         "commit+archive": "committed and archived",
         "commit": "committed",
         "archive": "archived",
     }[kind]
-    if _run_is_active(project_dir):
+    if run_is_active(project_dir):
         next_step = (
             "Next step: awf_run_next(project_dir) to launch the next queued TODO."
         )
@@ -320,7 +357,11 @@ def wait_for_event(
       running → event_type ``idle`` (no more full-timeout-on-null-state).
       A marker-less kill leftover without ``phase=done`` (only the salvage
       counter — RUN7 #1) is NOT a finished cycle: the old wait behavior
-      (timeout), never a ``done`` for a past cycle.
+      (timeout), never a ``done`` for a past cycle. RUN10 #1 fuse: inside
+      an ACTIVE run a ``done`` requires the run's CURRENT element to be
+      finished (archived, not active again) — a pipeline death mid-
+      iteration keeps the old wait behavior (timeout/idle), never a
+      ``done`` for a previous cycle. Outside a run: unchanged.
     - Timeout reached → event_type ``timeout``
 
     SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous
@@ -410,7 +451,14 @@ def wait_for_event(
                 return done
             from ._liveness import resolve
 
-            if not resolve(project_dir)[0] and _state_is_exited(current_state):
+            if (
+                not resolve(project_dir)[0]
+                and _state_is_exited(current_state)
+                # RUN10 #1 fuse: this evidence-free 'done' must not fire
+                # inside an active run whose current element is not
+                # finished either — same death-mid-iteration shape.
+                and _run_allows_done(project_dir)
+            ):
                 return WaitEventResult(
                     event_type="done",
                     message="Pipeline exited (state file cleared). Check awf_report.",
@@ -426,7 +474,7 @@ def wait_for_event(
         # Only returned when no actionable event is pending — avoids masking
         # verify/blocked events that happen to coincide with a stage transition.
         prev_stage = prev_state.get("stage_name") if prev_state else None
-        curr_stage = current_state.get("stage_name")
+        curr_stage = current_state.get("stage_name") if current_state else None
         if prev_stage and curr_stage and prev_stage != curr_stage and not actionable_only:
             message = (
                 f"Stage transition: '{prev_stage}' → '{curr_stage}'. "
@@ -465,8 +513,12 @@ def wait_for_event(
     )
 
 
-def _check_for_event(state: dict[str, Any], project_dir: Path | None = None) -> WaitEventResult | None:
+def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = None) -> WaitEventResult | None:
     """Check if current state has an interesting event. Return result or None."""
+    # RUN10 #1: a fully cleared state file (None) now reaches this check on
+    # the run-fuse path (the old code answered 'done' before it) — treat
+    # absent state as 'no event'.
+    state = state or {}
     stage_kind = state.get("stage_kind", "")
     last_signal = state.get("last_signal", "")
     checkpoint_pending = bool(state.get("checkpoint_pending", False))

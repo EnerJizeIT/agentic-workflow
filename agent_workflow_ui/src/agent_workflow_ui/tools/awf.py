@@ -1029,10 +1029,11 @@ async def awf_approve(
         # AUD05-03: the old fixed text promised "approved and committed.
         # Pipeline exited." — approve only writes the signal; neither the
         # commit nor the exit is guaranteed by it. Build the hint from facts.
+        # RUN10 #1: "run active" comes from the single source
+        # (api.run_is_active → awf.run_state), not a duplicated run_brief probe.
         run_active = False
         try:
-            brief = api.run_brief(pd)
-            run_active = bool(brief and brief.get("active"))
+            run_active = bool(api.run_is_active(pd))
         except Exception:
             pass
         if run_active:
@@ -1930,10 +1931,12 @@ async def awf_wait_for_event(
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;
         # outside it stays idle (R6 reactive mode).
+        # RUN10 #1: the "run active" decision comes from the single source
+        # (awf.run_state.run_is_active, exported as api.run_is_active) —
+        # the old run_brief probe was a duplicated, heavier check.
         run_active = False
         try:
-            brief = api.run_brief(_resolve_project_dir(project_dir))
-            run_active = bool(brief and brief.get("active"))
+            run_active = bool(api.run_is_active(_resolve_project_dir(project_dir)))
         except Exception:
             pass
 
@@ -1970,7 +1973,15 @@ async def awf_wait_for_event(
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
             }
-        response["next_action"] = _EVENT_ACTIONS.get(et, "Check awf_status, then wait for user.")
+        # RUN10 #1: an UNKNOWN event type inside a run must not advise
+        # "wait for user" either — the run loop keeps waiting.
+        default_action = (
+            f"Check awf_status, then continue the run loop: "
+            f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
+            if run_active
+            else "Check awf_status, then wait for user."
+        )
+        response["next_action"] = _EVENT_ACTIONS.get(et, default_action)
         # B3 / RUN6 #3: every response carries the actual single-wait cap
         # (project-aware: config/env, default ~55s transport cap); clamped
         # requests say so explicitly.

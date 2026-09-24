@@ -205,6 +205,22 @@ def update_run(project_dir: Path, mutator) -> dict:
     return new_state
 
 
+def run_is_active(project_dir: Path) -> bool:
+    """RUN10 #1: the single source for the "run (забег) is active" decision.
+
+    Every hint and gate that depends on it goes through this one function —
+    wait_for_event (timeout wording + the false-``done`` fuse), the
+    ``awf_approve``/``awf_wait_for_event`` MCP next_action hints, and
+    ``detect_phase``. The duplicated ``read_run(...).get("active")`` checks
+    (and the heavy ``run_brief`` probe on the MCP side) are gone.
+
+    Returns False when no run exists or the file is corrupt (the reader
+    degrades to "no run" — same as before).
+    """
+    run = read_run(project_dir)
+    return bool(run and run.get("active"))
+
+
 def clear_run(project_dir: Path) -> None:
     """Remove the run state file (soft reset)."""
     try:

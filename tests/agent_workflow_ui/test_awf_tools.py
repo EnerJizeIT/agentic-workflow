@@ -794,7 +794,7 @@ class TestWaitForEventClamp:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir="/tmp", timeout=9999, actionable_only=True)
@@ -818,7 +818,7 @@ class TestWaitForEventClamp:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=55))
 
@@ -841,7 +841,7 @@ class TestWaitForEventClamp:
         """AUD08-01 regression: a verify event must get the approve
         instruction, not the stuck 'timeout' one (dataclass vs dict bug)."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("verify"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -853,7 +853,7 @@ class TestWaitForEventClamp:
         """AUD08-01 regression: a blocked event must get the unblock
         instruction, not the stuck 'timeout' one."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("blocked"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -865,7 +865,7 @@ class TestWaitForEventClamp:
         """RUN6 #1: a done event inside a run must carry the exact next
         command — awf_run_next (the owner had to read git log instead)."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -873,11 +873,37 @@ class TestWaitForEventClamp:
         assert "awf_run_next" in result["next_action"]
         assert "awf_dispatch_todo" not in result["next_action"]
 
+    def test_timeout_in_active_run_says_continue_not_wait_for_user(self, monkeypatch):
+        """RUN10 #1 (bug 2026-09-24): a timeout INSIDE an active run must
+        offer the next loop call — never 'Wait for user' or 'DO NOT call
+        again' (an agent following those literally stops the run)."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
+
+        assert "No event yet. Continue the run loop" in result["next_action"]
+        assert "awf_wait_for_event(timeout=" in result["next_action"]
+        assert "actionable_only=True" in result["next_action"]
+        assert "Wait for user" not in result["next_action"]
+        assert "DO NOT call" not in result["next_action"]
+
+    def test_timeout_without_run_keeps_reactive_text(self, monkeypatch):
+        """RUN10 #1 hard rule: outside a run the reactive wording is
+        UNCHANGED."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
+
+        assert "DO NOT call awf_wait_for_event again. Wait for user." in result["next_action"]
+        assert "Continue the run loop" not in result["next_action"]
+
     def test_done_event_gets_dispatch_next_action(self, monkeypatch):
         """RUN6 #1: a done event outside a run (single start) must lead to
         awf_dispatch_todo, not awf_run_next."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: None)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -903,7 +929,7 @@ class TestWaitForEventCapNote:
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
         monkeypatch.setattr(
-            api, "run_brief", lambda *a, **kw: {"active": run_active}
+            api, "run_is_active", lambda *a, **kw: run_active
         )
         return asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=timeout))
 
@@ -926,6 +952,7 @@ class TestWaitForEventCapNote:
         result = self._run("timeout", 30, monkeypatch, run_active=True)
 
         assert "Continue the run loop" in result["next_action"]
+        assert "Wait for user" not in result["next_action"]
         assert f"<= {api.TRANSPORT_CAP}s" in result["next_action"]
 
     def test_clamped_next_action_says_so_explicitly(self, monkeypatch):
@@ -947,7 +974,7 @@ class TestWaitForEventCapNote:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir="/tmp", timeout=10, actionable_only=True)
@@ -974,7 +1001,7 @@ class TestWaitForEventCapNote:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_brief", lambda *a, **kw: {"active": True})
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir=str(tmp_path), timeout=10)
@@ -1387,6 +1414,8 @@ class TestApproveNextActionFacts:
     T = "TODO-0001"
 
     def test_active_run_continues_run_loop(self, mcp_project):
+        """RUN10 #1 (bug 2026-09-24): approve inside a run leads to
+        awf_run_next — never 'Wait for the user before the next TODO'."""
         from awf import run_state
 
         run_state.write_run(
@@ -1397,7 +1426,8 @@ class TestApproveNextActionFacts:
             evidence="pytest -q → 348 passed; verdict: approve",
         ))
         assert result["status"] == "ok"
-        assert "awf_run_next" in result["next_action"]
+        assert "Continue the run loop: awf_run_next" in result["next_action"]
+        assert "Wait for the user" not in result["next_action"]
         assert "committed" not in result["next_action"]
         assert "exited" not in result["next_action"].lower()
 

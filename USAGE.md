@@ -457,6 +457,15 @@ tell awf the new ceiling via `wait.cap_seconds` in `.agentic/config.yaml`
 tool advises raising the mcp timeout; once you raise the cap in config or
 env, the advice goes away and `suggested_timeout` is clamped to your value.
 
+**Per-mode hints (RUN10 #1).** The response hints of `awf_wait_for_event` /
+`awf_approve` depend on the mode. With an active run: a timeout offers the
+next loop call (`awf_wait_for_event(timeout=<suggested>, actionable_only=True)`)
+and the step after approve is `awf_run_next` — "wait for the user" appears
+only when NO run is active. The phase reads `run` while a run is active
+(not the previous cycle's `done`), and a `done` event inside a run fires
+only when the run's current element is really finished (archived/committed)
+— a pipeline death mid-iteration keeps the wait (timeout/idle).
+
 **Supervisor authority.** Replanning, rewriting the spec, and splitting a
 task are a standard supervisor option — no owner approval required.
 Escalation to the owner happens only on the stop-list: a twice-rejected

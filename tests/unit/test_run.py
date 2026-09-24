@@ -48,6 +48,35 @@ class TestRunState:
         assert run_state.read_run(proj) is None
 
 
+class TestRunIsActive:
+    """RUN10 #1: run_is_active is the SINGLE source of the 'run active'
+    decision (wait_for_event hints + done fuse, awf_approve/
+    awf_wait_for_event MCP next_action, detect_phase)."""
+
+    def test_active(self, tmp_git_repo):
+        run_state.write_run(tmp_git_repo, active=True, queue=["TODO-0001"])
+        assert run_state.run_is_active(tmp_git_repo) is True
+
+    def test_no_run_file(self, tmp_git_repo):
+        assert run_state.run_is_active(tmp_git_repo) is False
+
+    def test_inactive_run(self, tmp_git_repo):
+        run_state.write_run(tmp_git_repo, active=False, queue=["TODO-0001"])
+        assert run_state.run_is_active(tmp_git_repo) is False
+
+    def test_corrupt_file_degrades_to_false(self, tmp_git_repo):
+        f = run_state.run_file(tmp_git_repo)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("queue: [TODO-", encoding="utf-8")  # broken YAML
+        assert run_state.run_is_active(tmp_git_repo) is False
+
+    def test_exported_on_api(self, tmp_git_repo):
+        """The MCP wrappers call it through awf.api — the re-export
+        must exist and agree with the run_state source."""
+        run_state.write_run(tmp_git_repo, active=True, queue=["TODO-0001"])
+        assert api.run_is_active(tmp_git_repo) is True
+
+
 class TestRunStart:
     def test_validates_queue(self, tmp_git_repo):
         proj = _project(tmp_git_repo)

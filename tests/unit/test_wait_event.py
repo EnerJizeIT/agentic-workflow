@@ -374,7 +374,11 @@ class TestDoneCycleDetection:
         assert elapsed < 1.0, "done must come from the initial check, not the poll loop"
 
     def test_done_message_next_step_run_next_when_run_active(self, awf_project):
-        """Inside a run (забег) the message leads to awf_run_next."""
+        """Inside a run (забег) the message leads to awf_run_next.
+
+        The run state carries ``current`` — the shape ``run_next`` always
+        records at launch. RUN10 #1 fuse: a 'done' inside a run requires
+        the current element to be finished (see TestRunDoneFuse)."""
         from awf.run_state import write_run
 
         self._simulate_clean_exit(awf_project)
@@ -382,6 +386,7 @@ class TestDoneCycleDetection:
             awf_project,
             queue=["TODO-0001", "TODO-0002"],
             index=1,
+            current="TODO-0001",
             active=True,
         )
         result = api.wait_for_event(awf_project, timeout=2)
@@ -607,6 +612,162 @@ class TestSalvageKillLeftover:
         assert result.event_type == "done"
         assert "TODO-0002" in result.message
         assert "TODO-0001" not in result.message
+
+
+class TestRunDoneFuse:
+    """RUN10 #1 (RUN9 incident, bug 2026-09-24): inside an ACTIVE run a
+    'done' is only valid when the run's CURRENT element is finished
+    (archived + not active again). Otherwise the pipeline DIED
+    mid-iteration and the project-wide cycle evidence belongs to a
+    PREVIOUS cycle — a 'done' there drags the run loop into awf_run_next,
+    which refuses and stops the run. Outside a run: unchanged behavior."""
+
+    @staticmethod
+    def _finish_cycle(project, todo_id: str) -> None:
+        """The cycle's signs: the verify commit + the done/<id>/ archive."""
+        import subprocess
+
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-qm", f"awf(verify): {todo_id}"],
+            cwd=project, check=True,
+        )
+        d = project / ".agentic" / "done" / todo_id
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "TODO.md").write_text(f"# {todo_id}\n", encoding="utf-8")
+
+    @staticmethod
+    def _active_run(project, current: str = "TODO-0002") -> None:
+        """The run shape run_next records at launch: index advanced,
+        current = the launched item, previous item completed."""
+        from awf.run_state import write_run
+
+        write_run(
+            project,
+            queue=["TODO-0001", "TODO-0002"],
+            index=1,
+            current=current,
+            completed=[] if current == "" else ["TODO-0001"],
+            active=True,
+        )
+
+    def test_no_done_for_previous_cycle_in_active_run(self, awf_project):
+        """(д) State cleared + dead pid + an OLD cycle's evidence + an
+        active run with an UNFINISHED current → NOT 'done' (the old
+        wait behavior: idle/timeout, never a past-cycle 'done')."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._active_run(awf_project)
+        from awf.pipeline_state import clear_state
+
+        clear_state(awf_project)
+        write_state(awf_project, phase="done", goal="g", normalized=True)
+
+        result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
+
+        assert result.event_type != "done"
+        assert result.event_type in ("idle", "timeout")
+        assert "TODO-0001" not in result.message
+
+    def test_done_after_current_element_finishes(self, awf_project):
+        """(д) The same run, after the current element REALLY finishes
+        (commit + archive, no longer active) → 'done' names it and leads
+        to awf_run_next."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._active_run(awf_project)
+        self._finish_cycle(awf_project, "TODO-0002")
+        from awf.pipeline_state import clear_state
+
+        clear_state(awf_project)
+        write_state(awf_project, phase="done", goal="g", normalized=True)
+
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0002" in result.message
+        assert "awf_run_next" in result.message
+
+    def test_no_done_on_kill_during_wait_in_active_run(self, awf_project):
+        """The RUN9 shape: the pipeline dies mid-wait (state fully
+        cleared, pid dead) while the run's current element is unfinished —
+        the poll loop must keep the old wait (timeout), not hand out the
+        evidence-based or the bare 'Pipeline exited' done."""
+        import threading
+        import time as _time
+
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._active_run(awf_project)
+        write_state(
+            awf_project,
+            stage_name="agent-impl",
+            stage_kind="execute",
+            stage_idx=2,
+            todo_id="TODO-0002",
+            pipeline_pid=99999,
+        )
+
+        def kill_later():
+            _time.sleep(0.3)
+            from awf.pipeline_state import clear_state
+
+            clear_state(awf_project)
+
+        threading.Thread(target=kill_later, daemon=True).start()
+        result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
+
+        assert result.event_type == "timeout"
+        assert "TODO-0001" not in result.message
+
+    def test_no_done_without_current_in_active_run(self, awf_project):
+        """A run state without ``current`` (hand-written/legacy — run_next
+        always records it) is treated as not-finished: no 'done'."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._active_run(awf_project, current="")
+        from awf.pipeline_state import clear_state
+
+        clear_state(awf_project)
+        write_state(awf_project, phase="done", goal="g", normalized=True)
+
+        result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
+
+        assert result.event_type != "done"
+        assert "TODO-0001" not in result.message
+
+    def test_done_refused_when_evidence_is_not_current(self, awf_project):
+        """The current element IS finished, but the newest cycle sign
+        names a DIFFERENT TODO (e.g. an older manual awf commit on top) —
+        still no 'done': the sign must be the current element's."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        self._active_run(awf_project)
+        self._finish_cycle(awf_project, "TODO-0002")
+        import subprocess
+
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-qm", "awf(verify): TODO-0009"],
+            cwd=awf_project, check=True,
+        )
+        from awf.pipeline_state import clear_state
+
+        clear_state(awf_project)
+        write_state(awf_project, phase="done", goal="g", normalized=True)
+
+        result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
+
+        assert result.event_type != "done"
+        assert "TODO-0009" not in result.message
+
+    def test_outside_run_behavior_unchanged(self, awf_project):
+        """Hard rule: WITHOUT a run the previous-cycle evidence still
+        yields 'done' (the RUN6 #1 behavior)."""
+        self._finish_cycle(awf_project, "TODO-0001")
+        from awf.pipeline_state import clear_state
+
+        clear_state(awf_project)
+        write_state(awf_project, phase="done", goal="g", normalized=True)
+
+        result = api.wait_for_event(awf_project, timeout=2)
+
+        assert result.event_type == "done"
+        assert "TODO-0001" in result.message
+        assert "awf_dispatch_todo" in result.message
 
 
 class TestStateIsExited:

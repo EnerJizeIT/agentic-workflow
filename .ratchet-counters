@@ -199,4 +199,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # The +1 file over 400 is tests/unit/test_log_reader.py (400 -> 410 —
 # the _archive_files helper after the archive-name change), same class
 # as the test suites in the raises above.
+# RUN10-2026-09-24 (#1): baseline raised 3535 -> 3568 — the
+# run-hints + phase + false-done-fuse unit (TODO-0071) adds 33
+# TODO-bearing lines: TODO-0001/TODO-0002/TODO-0009 test ids in
+# tests/unit/test_wait_event.py (TestRunDoneFuse battle-case fixtures),
+# tests/unit/test_phase.py (TestDetectPhaseRunActive),
+# tests/unit/test_run.py (TestRunIsActive) and
+# tests/agent_workflow_ui/test_awf_tools.py (the updated
+# run-mode next_action tests); "TODO"-bearing wording in
+# awf/api/wait_event.py, awf/phase.py, awf/run_state.py comments/
+# docstrings and tools/awf.py docstrings. Same class as above: test
+# identifiers and unit-id references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
