@@ -283,4 +283,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # identifiers, not debt. The production fix (awf/todos.py —
 # the _suffixed_name helper + the reserved canonical name in the
 # versioning loop) carries no TODO id.
+# 2026-09-25 (stabilization, A-01, REVIEW fix): baseline raised
+# 3644 -> 3648 — the commit-gate index unit (TODO-0080) adds 4
+# TODO-bearing lines, all in the new
+# tests/negative/test_audit25_a01_index.py: the module docstring
+# (TODO-0080 reference) + the three "awf(implement): TODO-0080"
+# commit-message fixtures (one per test, the commit message awf
+# itself would write). Same class as above: test identifiers and
+# fixtures, not debt. The production fix (awf/commit_gate.py —
+# index check + targeted unstage) carries no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

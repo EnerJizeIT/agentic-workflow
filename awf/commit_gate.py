@@ -146,6 +146,69 @@ def _files_changed_since_baseline(
     return combined
 
 
+def _index_has_foreign_staged(project_dir: Path) -> bool | None:
+    """A-01: staged entries already in the index before the gate touches it.
+
+    True — foreign staged changes are present: the unit commit must be
+    refused (they would leak into the commit, or a failure rollback would
+    unstage them).
+    False — index clean, safe to stage the unit files.
+    None — could not determine (git error); caller refuses (fail closed).
+    """
+    try:
+        if subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", "HEAD"],
+            cwd=project_dir,
+            capture_output=True,
+            timeout=30,  # AUD04-11
+        ).returncode == 0:
+            result = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,  # AUD04-11
+            )
+            if result.returncode not in (0, 1):
+                return None
+            return result.returncode == 1
+        # No commits yet (first-commit case): "foreign staged" is any
+        # entry in the index.
+        result = subprocess.run(
+            ["git", "ls-files", "--stage"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,  # AUD04-11
+        )
+        if result.returncode != 0:
+            return None
+        return bool(result.stdout.strip())
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def _unstage_unit_files(project_dir: Path, files: list[str]) -> None:
+    """A-01: undo exactly the staging this gate did — never a wide reset.
+
+    A plain ``git reset`` on commit failure unstaged the user's foreign
+    staged changes (audit 2026-09-25, A-01); restoring only the unit files
+    leaves the rest of the index untouched.
+    """
+    if not files:
+        return
+    try:
+        subprocess.run(
+            ["git", "restore", "--staged", "--"] + files,
+            cwd=project_dir,
+            capture_output=True,
+            timeout=30,  # AUD04-11
+        )
+    except (subprocess.SubprocessError, OSError):
+        pass  # best effort; the failure is reported by the caller
+
+
 def _commit_specific_files(
     project_dir: Path,
     files: list[str],
@@ -153,9 +216,22 @@ def _commit_specific_files(
 ) -> bool:
     """A1 fix: commit ONLY the listed files (no `git add -A`).
 
-    Returns True if commit succeeded, False if nothing to commit or error.
+    A-01: refuses when the index already holds staged changes, and on any
+    failure unstages only the files this gate added (no wide ``git reset``
+    that would drop the user's foreign staged entries).
+
+    Returns True if commit succeeded, False if refused, nothing to commit,
+    or error.
     """
     if not files:
+        return False
+    if _index_has_foreign_staged(project_dir) is not False:
+        print(
+            "refusing unit commit: the git index already has staged changes. "
+            "They would leak into the unit commit or be unstaged on failure; "
+            "unstage or commit them first. The index is left untouched.",
+            file=sys.stderr,
+        )
         return False
     try:
         # Stage only specific files
@@ -176,13 +252,8 @@ def _commit_specific_files(
         )
         if result.returncode != 0:
             # AUD-2026-08-09.4: commit failed (e.g. pre-commit hook rejection).
-            # Unstage to prevent next run from picking up stale staged files.
-            subprocess.run(
-                ["git", "reset"],
-                cwd=project_dir,
-                capture_output=True,
-                timeout=30,  # AUD04-11
-            )
+            # A-01: unstage exactly the unit files, nothing broader.
+            _unstage_unit_files(project_dir, files)
             print(
                 f"git commit failed (rc={result.returncode}): "
                 f"{result.stderr.strip() or result.stdout.strip()}",
@@ -191,6 +262,7 @@ def _commit_specific_files(
             return False
         return True
     except (subprocess.SubprocessError, OSError):
+        _unstage_unit_files(project_dir, files)
         return False
 
 
