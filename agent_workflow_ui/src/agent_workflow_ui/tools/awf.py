@@ -66,11 +66,13 @@ async def awf_init(
     the full supervisor context (role instructions, vision excerpt, plan.md
     content). Caller is now ready to act as supervisor.
 
-    **R1 warning (AUD05-04):** if ``.agentic/`` already exists and
-    ``force=False``, the runtime directories (inbox/outbox/handoff/done/
-    state/logs/context/dashboards/inputs) are DELETED and config.yaml is
-    preserved — calling this on a live project drops active TODOs and
-    state. ``dry_run=True`` is a pure read.
+    **A-11 (audit 2026-09-25):** re-init is non-destructive. If
+    ``.agentic/`` already exists and ``force=False``, nothing is deleted
+    or overwritten — active TODOs, the done/ archive, state and logs stay
+    byte-for-byte as they were (only missing empty skeleton directories
+    are created). ``force=True`` is the explicit destructive path (cleans
+    runtime + rewrites the skeleton) and is REFUSED with an error while a
+    pipeline is live. ``dry_run=True`` is a pure read.
 
     All command parameters are optional — auto-detected when not provided.
     Project name is derived from directory name when not provided.
@@ -78,7 +80,9 @@ async def awf_init(
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
-        force: Overwrite existing .agentic/ if present (default: False).
+        force: Explicit destructive path — cleans runtime dirs and
+            rewrites the skeleton. Refused while a pipeline is live
+            (default: False).
         project_name: Override auto-derived name (default: from dir name).
         test_cmd: Override auto-detected test command.
         lint_cmd: Override auto-detected lint command.

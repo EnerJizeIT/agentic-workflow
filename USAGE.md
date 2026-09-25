@@ -337,7 +337,7 @@ Created: ./.agentic/roles/security-audit.md
 | **Commit failed (pre-commit hook)** | TODO is NOT archived. Fix hook issue, then `awf_approve` again |
 | **Worker didn't signal** | Salvage path triggers automatically. Supervisor reads SALVAGE prompt and decides |
 | **Supervisor paused on verify >1 h** | Stage times out → salvage. Extend the window: `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200` |
-| **Phase stuck** | Check current state with `awf_current_step`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs); a full reset is a last resort, see below |
+| **Phase stuck** | Check current state with `awf_current_step`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs) and is refused while a pipeline is live. Re-running `awf_init` without `force` is safe: it deletes nothing and preserves the project byte-for-byte. A full reset is a last resort, see below |
 | **Wrong roles after setup** | `awf_analyze_roles` to re-check overlaps, `awf_confirm_normalized` to advance |
 
 To **hard reset** everything: this deletes all runtime data (TODOs, signals, logs, state).

@@ -251,4 +251,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # comment in awf/api/_background.py (2), module docstring in
 # tests/unit/test_runner_dir.py (1), the engine-pin paragraph in USAGE EN/RU
 # (1+1). Same class as above: unit identifier, not debt.
+# 2026-09-25 (stabilization, A-11): baseline raised 3586 -> 3596 — the
+# re-init-preserves-runtime unit (TODO-0078) adds 10 TODO-bearing lines:
+# 6 in the new tests/negative/test_audit25_a11_init.py (module docstring +
+# TODO-0001 inbox/done/state fixtures) and net +4 in
+# tests/unit/test_api.py (+2, the renamed preservation test's
+# TODO-0001/DONE-TODO-0001 asserts), tests/negative/test_audit12_incidents.py
+# (+1, the A-11 pin comment + DONE/TODO.md preservation asserts),
+# awf/api/lifecycle.py (+1, the A-11 docstring). Same class as above:
+# test identifiers and unit-id references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

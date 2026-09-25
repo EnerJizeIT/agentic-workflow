@@ -14,6 +14,7 @@ from typing import Any
 from .. import config as cfg_mod
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
+from . import _liveness
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import read_file_text, require_agentic, require_git_repo
@@ -34,9 +35,17 @@ _RUNTIME_DIRS = [
     "logs", "context", "dashboards", "inputs",
 ]
 
+# A-11: the full skeleton (fresh-init dirs + runtime dirs). A re-init
+# without force only re-creates the ones that are missing.
+_SKELETON_DIRS = [
+    "roles", "pipelines", "phases",
+    "inbox", "outbox", "context", "logs",
+    "handoff", "done", "state", "dashboards", "inputs",
+]
+
 
 def _clean_runtime(project_dir: Path) -> list[str]:
-    """R1: Remove runtime directories, preserve config. Returns cleaned list."""
+    """A-11: destructive path only. Remove runtime dirs, preserve config."""
     agentic = project_dir / ".agentic"
     cleaned: list[str] = []
     for name in _RUNTIME_DIRS:
@@ -64,11 +73,15 @@ def init_project(
     not provided explicitly. Project name is derived from directory when
     not provided.
 
-    **R1 (AUD05-04):** when ``.agentic/`` already exists and
-    ``force=False``, the runtime directories (inbox/outbox/handoff/done/
-    state/logs/context/dashboards/inputs) are deleted and config.yaml is
-    preserved — calling this on a live project drops active TODOs and
-    state. ``dry_run=True`` is a pure read and changes nothing.
+    **A-11 (audit 2026-09-25):** re-init is non-destructive. When
+    ``.agentic/`` already exists and ``force=False``, nothing is deleted
+    or overwritten — active TODOs, the done/ archive, state and logs stay
+    byte-for-byte as they were; only missing empty skeleton directories
+    are created. ``force=True`` is the explicit destructive path (cleans
+    runtime + rewrites the skeleton) and is REFUSED with
+    :class:`AwfApiError` while a pipeline is live (shared resolver
+    :func:`awf.api._liveness.resolve`, same as ``start_pipeline``).
+    ``dry_run=True`` is a pure read and changes nothing.
 
     Returns :class:`InitResult` with supervisor.md, vision excerpt, plan.md
     content — caller (CLI/MCP) has everything needed to assume the supervisor
@@ -78,9 +91,13 @@ def init_project(
     require_git_repo(project_dir)
 
     agentic = project_dir / ".agentic"
-    if agentic.exists() and not force:
+    if agentic.exists():
         if dry_run:
-            # AUD05-01: dry-run is a pure read — return BEFORE _clean_runtime.
+            # AUD05-01 + A-11 QA pin: dry-run is a pure read in EVERY
+            # combination — including force=True (the CLI passes both
+            # flags together, awf/cmd_init.py:43). Must return BEFORE the
+            # liveness check and before _clean_runtime, so force+dry-run
+            # deletes nothing.
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
             vision_path = paths.find_vision_file(project_dir)
@@ -96,52 +113,78 @@ def init_project(
                 next_action="[dry-run] .agentic/ already exists — nothing written, runtime untouched.",
                 warnings=[],
             )
-        # R1: Clean runtime dirs, preserve config.
-        cleaned = _clean_runtime(project_dir)
-        config = cfg_mod.load(project_dir)
-        project_name_val = config.get("project", {}).get("name", project_dir.name)
-        vision_path = paths.find_vision_file(project_dir)
-        phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
-        supervisor_md_path = project_dir / ".agentic" / "roles" / "supervisor.md"
-        plan_md = ""
-        plan_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
-        if plan_path.is_file():
-            plan_md = plan_path.read_text(encoding="utf-8")
-        # SMO: detect phase for compact prompt + next_action
-        try:
-            from ..phase import detect_phase, get_phase_prompt
-            phase_r1 = detect_phase(project_dir)
-            supervisor_md = get_phase_prompt(phase_r1, project_dir)
-        except Exception:
-            phase_r1 = "goal"
-            supervisor_md = supervisor_md_path.read_text(encoding="utf-8") if supervisor_md_path.is_file() else ""
+        if force:
+            # A-11 (audit 2026-09-25): force is the ONLY destructive path.
+            # Refuse while a pipeline is live — the shared resolver, same
+            # as start_pipeline — BEFORE anything is deleted, so a refusal
+            # never leaves a partially cleaned project behind.
+            running, live_pid, _source = _liveness.resolve(project_dir)
+            if running:
+                raise AwfApiError(
+                    f"Pipeline already running (PID {live_pid}) — "
+                    "awf_init(force=True) would delete the live run's "
+                    "runtime data (inbox/outbox/done/state/logs). "
+                    "Kill it first (awf_kill), then retry."
+                )
+            _clean_runtime(project_dir)
+            # fall through: rewrite the skeleton below (config.yaml,
+            # supervisor.md, plan.md) — the explicit destructive path
+        else:
+            # A-11 (audit 2026-09-25): re-init without force is
+            # non-destructive — active TODOs, the done/ archive, state and
+            # logs stay byte-for-byte as they were. Only missing empty
+            # skeleton directories are re-created.
+            created_dirs: list[str] = []
+            for d in _SKELETON_DIRS:
+                dirpath = agentic / d
+                if not dirpath.exists():
+                    dirpath.mkdir(parents=True, exist_ok=True)
+                    created_dirs.append(f".agentic/{d}/")
+            config = cfg_mod.load(project_dir)
+            project_name_val = config.get("project", {}).get("name", project_dir.name)
+            vision_path = paths.find_vision_file(project_dir)
+            phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
+            supervisor_md_path = project_dir / ".agentic" / "roles" / "supervisor.md"
+            plan_md = ""
+            plan_path = project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
+            if plan_path.is_file():
+                plan_md = plan_path.read_text(encoding="utf-8")
+            # SMO: detect phase for compact prompt + next_action
+            try:
+                from ..phase import detect_phase, get_phase_prompt
+                phase_r1 = detect_phase(project_dir)
+                supervisor_md = get_phase_prompt(phase_r1, project_dir)
+            except Exception:
+                phase_r1 = "goal"
+                supervisor_md = supervisor_md_path.read_text(encoding="utf-8") if supervisor_md_path.is_file() else ""
 
-        _NEXT_ACTIONS_R1 = {
-            "goal": "Спроси пользователя о цели сессии. После ответа — awf_set_goal.",
-            "form": "Открой project-setup форму через awf_open_project_setup_form.",
-            "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
-            "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
-            "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
-            "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
-            "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
-        }
-        next_action_r1 = _NEXT_ACTIONS_R1.get(
-            phase_r1,
-            f"Runtime cleaned ({', '.join(cleaned)}). Config preserved. "
-            "Pipeline ready — use awf_dispatch_todo to start next iteration.",
-        )
-        return InitResult(
-            project_name=project_name_val,
-            project_dir=str(project_dir),
-            stack="(preserved)",
-            vision_path=str(vision_path) if vision_path else None,
-            vision_excerpt="",
-            supervisor_md=supervisor_md,
-            plan_md=plan_md,
-            pipeline_configured=bool(config.get("default_pipeline")),
-            next_action=next_action_r1,
-            warnings=[],
-        )
+            _NEXT_ACTIONS_R1 = {
+                "goal": "Спроси пользователя о цели сессии. После ответа — awf_set_goal.",
+                "form": "Открой project-setup форму через awf_open_project_setup_form.",
+                "normalize": "Выполни normalize checklist, затем awf_confirm_normalized.",
+                "brief": "Изучи vision и план, напиши TODO-NNNN.md (awf_dispatch_todo) и запусти пайплайн.",
+                "run": "Проверь awf_status, при необходимости dispatch_todo + awf_start.",
+                "verify": "Проверь handoffs + git diff, реши ACK или REVIEW.",
+                "done": "Pipeline завершён. Спроси пользователя о следующем шаге.",
+            }
+            next_action_r1 = _NEXT_ACTIONS_R1.get(
+                phase_r1,
+                "Project already initialized — runtime untouched. "
+                "Pipeline ready — use awf_dispatch_todo to start next iteration.",
+            )
+            return InitResult(
+                project_name=project_name_val,
+                project_dir=str(project_dir),
+                stack="(preserved)",
+                vision_path=str(vision_path) if vision_path else None,
+                vision_excerpt="",
+                supervisor_md=supervisor_md,
+                plan_md=plan_md,
+                pipeline_configured=bool(config.get("default_pipeline")),
+                next_action=next_action_r1,
+                warnings=[],
+                created_files=created_dirs,
+            )
 
     if project_name is None:
         project_name = derive_project_name(project_dir)
