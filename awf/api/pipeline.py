@@ -21,7 +21,7 @@ from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
 from ..pipeline_state import read_state
-from . import _liveness
+from . import _lease, _liveness
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import require_agentic
@@ -883,38 +883,128 @@ def start_pipeline(
                 ),
             )
 
-    # DF5-6 + AUD04-07: refuse to start if a pipeline is already running
-    # (shared resolver: background PID file AND state.pipeline_pid).
-    live_pid = _liveness.resolve(project_dir)[1]
-    if live_pid and background:
-        return StartResult(
-            run_mode="noop",
-            run_id=None,
-            log_file=None,
-            exit_code=0,
-            message=(
-                f"Pipeline already running (PID {live_pid}). "
-                f"Use awf_status to check progress, or kill PID {live_pid} to force restart."
-            ),
+    # A-02: launch lease — the single owner of the window "liveness check
+    # → spawn → PID file write". A concurrent call while a live launch is
+    # in progress is refused (non-blocking, not a wait); a dead owner's
+    # lease is taken over automatically (staleness = process liveness,
+    # never file age).
+    lease = None
+    if background:
+        try:
+            lease = _lease.acquire(project_dir)
+        except _lease.LeaseHeldError as e:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=f"Launch refused: {e}",
+            )
+
+    # F-1 (REVIEW A-02): everything after acquire runs under ONE try/finally
+    # — any error in the window (liveness, config, closure resolution,
+    # spawn) releases the lease, so a failed call can never strand a
+    # live-pid lease and block the project until the caller process dies.
+    # release() is idempotent and ownership-checked — one unconditional
+    # release in finally covers every path (success, refusal, error).
+    try:
+        # DF5-6 + AUD04-07: refuse to start if a pipeline is already running
+        # (shared resolver: background PID file AND state.pipeline_pid).
+        live_pid = _liveness.resolve(project_dir)[1]
+        if live_pid and background:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=(
+                    f"Pipeline already running (PID {live_pid}). "
+                    f"Use awf_status to check progress, or kill PID {live_pid} to force restart."
+                ),
+            )
+
+        # Dogfood-8: detect BD-36 checkpoint state + build appropriate warning
+        from ..plan_checkpoint import is_checkpoint_enabled
+
+        config_data = cfg_mod.load(project_dir)
+        # RUN3 #6: with the launch parameter the checkpoint is off for this run,
+        # so the foreground incompatibility guard below must not refuse it.
+        checkpoint_active = is_checkpoint_enabled(
+            config_data, auto, no_checkpoints=no_checkpoints
         )
 
-    # Dogfood-8: detect BD-36 checkpoint state + build appropriate warning
-    from ..plan_checkpoint import is_checkpoint_enabled
+        # RUN8 #2: a worker that outlived a previous kill may still be writing
+        # — the new unit's commit would absorb its edits. Say so in the answer.
+        orphan_warn = orphan_worker_warning(project_dir)
 
-    config_data = cfg_mod.load(project_dir)
-    # RUN3 #6: with the launch parameter the checkpoint is off for this run,
-    # so the foreground incompatibility guard below must not refuse it.
-    checkpoint_active = is_checkpoint_enabled(
-        config_data, auto, no_checkpoints=no_checkpoints
-    )
+        if background:
+            # A-02: the PID file is written inside start_in_background, so
+            # the shared liveness resolver now sees the child.
+            pid, log_file, _pid_file = start_in_background(
+                project_dir,
+                pipeline=pipeline,
+                from_stage=from_stage,
+                auto=auto,
+                timeout=timeout,
+                todo_id=todo_id,
+                no_checkpoints=no_checkpoints,
+            )
 
-    # RUN8 #2: a worker that outlived a previous kill may still be writing
-    # — the new unit's commit would absorb its edits. Say so in the answer.
-    orphan_warn = orphan_worker_warning(project_dir)
+            # DF5-10: wait briefly, then check if child died immediately.
+            child_alive = _verify_child_alive(pid, log_file)
 
-    if background:
-        pid, log_file, _pid_file = start_in_background(
-            project_dir,
+            if not child_alive:
+                log_tail = ""
+                try:
+                    log_tail = log_file.read_text(encoding="utf-8")[-500:] if log_file else ""
+                except OSError:
+                    pass
+                return StartResult(
+                    run_mode="error",
+                    run_id=pid,
+                    log_file=str(log_file) if log_file else None,
+                    exit_code=1,
+                    message=(
+                        f"Pipeline started (PID {pid}) but exited immediately. "
+                        f"Last log output:\n{log_tail}"
+                    ),
+                )
+
+            # SMO: message tells supervisor to GO IDLE (not poll).
+            # Dogfood #4: old message said "call awf_wait_for_event" → model polled.
+            msg = f"awf start running in background (PID {pid}). GO IDLE — wait for user."
+            if orphan_warn:
+                msg = orphan_warn + " " + msg
+            return StartResult(
+                run_mode="background",
+                run_id=pid,
+                log_file=str(log_file),
+                exit_code=None,
+                message=msg,
+            )
+
+        # Dogfood-8: foreground + checkpoint enabled = incompatible
+        # DF6-5: EXCEPT when this process is a background child (AWF_BACKGROUND_CHILD=1).
+        # In background mode, stdout goes to a log file, not MCP stdio — so the
+        # checkpoint form can safely open in browser without conflicts.
+        if checkpoint_active and not os.environ.get("AWF_BACKGROUND_CHILD"):
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=1,
+                message=(
+                    "Foreground mode incompatible with BD-36 interactive checkpoint "
+                    "(stdout conflicts with MCP stdio, form won't display). "
+                    "Use background=True (default) or disable checkpoint via "
+                    "AWF_PLAN_CHECKPOINT=false env var."
+                ),
+            )
+
+        from ..orchestrator import run_pipeline
+
+        args = PipelineArgs(
+            project_dir=str(project_dir),
             pipeline=pipeline,
             from_stage=from_stage,
             auto=auto,
@@ -922,89 +1012,29 @@ def start_pipeline(
             todo_id=todo_id,
             no_checkpoints=no_checkpoints,
         )
-
-        # DF5-10: wait briefly, then check if child died immediately.
-        child_alive = _verify_child_alive(pid, log_file)
-
-        if not child_alive:
-            log_tail = ""
-            try:
-                log_tail = log_file.read_text(encoding="utf-8")[-500:] if log_file else ""
-            except OSError:
-                pass
+        try:
+            exit_code = run_pipeline(args)
+        except Exception as e:
             return StartResult(
-                run_mode="error",
-                run_id=pid,
-                log_file=str(log_file) if log_file else None,
+                run_mode="foreground",
+                run_id=None,
+                log_file=None,
                 exit_code=1,
-                message=(
-                    f"Pipeline started (PID {pid}) but exited immediately. "
-                    f"Last log output:\n{log_tail}"
-                ),
+                message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
             )
-
-        # SMO: message tells supervisor to GO IDLE (not poll).
-        # Dogfood #4: old message said "call awf_wait_for_event" → model polled.
-        msg = f"awf start running in background (PID {pid}). GO IDLE — wait for user."
+        message = f"Pipeline completed with exit code {exit_code}"
         if orphan_warn:
-            msg = orphan_warn + " " + msg
-        return StartResult(
-            run_mode="background",
-            run_id=pid,
-            log_file=str(log_file),
-            exit_code=None,
-            message=msg,
-        )
-
-    # Dogfood-8: foreground + checkpoint enabled = incompatible
-    # DF6-5: EXCEPT when this process is a background child (AWF_BACKGROUND_CHILD=1).
-    # In background mode, stdout goes to a log file, not MCP stdio — so the
-    # checkpoint form can safely open in browser without conflicts.
-    if checkpoint_active and not os.environ.get("AWF_BACKGROUND_CHILD"):
-        return StartResult(
-            run_mode="noop",
-            run_id=None,
-            log_file=None,
-            exit_code=1,
-            message=(
-                "Foreground mode incompatible with BD-36 interactive checkpoint "
-                "(stdout conflicts with MCP stdio, form won't display). "
-                "Use background=True (default) or disable checkpoint via "
-                "AWF_PLAN_CHECKPOINT=false env var."
-            ),
-        )
-
-    from ..orchestrator import run_pipeline
-
-    args = PipelineArgs(
-        project_dir=str(project_dir),
-        pipeline=pipeline,
-        from_stage=from_stage,
-        auto=auto,
-        timeout=timeout,
-        todo_id=todo_id,
-        no_checkpoints=no_checkpoints,
-    )
-    try:
-        exit_code = run_pipeline(args)
-    except Exception as e:
+            message = orphan_warn + " " + message
         return StartResult(
             run_mode="foreground",
             run_id=None,
             log_file=None,
-            exit_code=1,
-            message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
+            exit_code=exit_code,
+            message=message,
         )
-    message = f"Pipeline completed with exit code {exit_code}"
-    if orphan_warn:
-        message = orphan_warn + " " + message
-    return StartResult(
-        run_mode="foreground",
-        run_id=None,
-        log_file=None,
-        exit_code=exit_code,
-        message=message,
-    )
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def continue_pipeline(
@@ -1118,196 +1148,226 @@ def continue_pipeline(
             ack_inbox.mkdir(parents=True, exist_ok=True)
             (ack_inbox / f"ACK-{ack}.ready").touch()
 
-    # DF6-2: reconcile state before continuing
-    _reconcile(project_dir)
-    # AUD04-07: shared liveness resolver (PID file + state), same as start.
-    live_pid = _liveness.resolve(project_dir)[1]
-    if live_pid:
-        return StartResult(
-            run_mode="noop",
-            run_id=None,
-            log_file=None,
-            exit_code=0,
-            message=(
-                f"Pipeline already running (PID {live_pid}). "
-                f"Use awf_status to check progress. If stuck, kill PID {live_pid} first."
-            ),
-        )
-
-    # KAUD-8: Prefer todo_id from state file (accurate crash recovery)
-    # over newest_active() heuristic (might pick wrong TODO if multiple active).
-    # An explicit pin (retry_stage) wins over both — the salvage unit is
-    # exactly the unit to restart, whatever "newest active" says.
-    # RUN8 #1: an ack pins its OWN unit (the answer belongs to exactly that
-    # TODO) — priority: explicit todo_id > ack > state > newest_active.
-    state = read_state(project_dir)
-    state_todo_id = state.get("todo_id") if state else None
-
-    current_todo = (
-        (todo_id or "").strip()
-        or (ack or "").strip()
-        or state_todo_id
-        or todos.newest_active(project_dir)
-    )
-    resolution_note = ""
-
-    # Day-2 review follow-up: a REVIEW left by the supervisor (the process died
-    # before anyone consumed it) must be visible in the answer, not a silent stop.
-    review_todo = _pending_review_todo(project_dir)
-    review_hint = ""
-    if review_todo:
-        review_hint = (
-            f" REVIEW for {review_todo} is waiting in the outbox — refine the TODO, "
-            f"then resume with `awf continue --ack {review_todo}` "
-            f"(or refresh {review_todo}.ready for a replan)."
-        )
-
-    def _blocked_result(todo: str) -> StartResult:
-        return StartResult(
-            run_mode="noop",
-            run_id=None,
-            log_file=None,
-            exit_code=0,
-            message=(
-                f"TODO {todo} is BLOCKED — no supervisor answer yet. "
-                f"Accept it with `awf continue --ack {todo}` (or write "
-                f".agentic/inbox/ACK-{todo}.ready); replan by creating or "
-                f"refreshing TODO-*.ready, then run awf continue again."
-                + review_hint
-            ),
-        )
-
-    # Day-2 B3: a pending supervisor answer (ACK/APPROVE) must resume the TODO
-    # it belongs to — even when closure signals hide it from newest_active().
-    # Consume the answer, clear a BLOCKED closure, then resume.
-    if current_todo:
-        if _todo_closed(project_dir, current_todo):
-            resolved, note = _resolve_pending_closure(project_dir, todo_id=current_todo)
-            if resolved:
-                resolution_note = note
-            else:
-                blocked_todo = _newest_blocked_todo(project_dir)
-                if blocked_todo:
-                    return _blocked_result(blocked_todo)
-                return StartResult(
-                    run_mode="noop",
-                    run_id=None,
-                    log_file=None,
-                    exit_code=0,
-                    message=f"TODO {current_todo} is closed — nothing to resume." + review_hint,
-                )
-        # Active TODO — resume as-is; a pending APPROVE belongs to the commit gate.
-    else:
-        current_todo, resolution_note = _resolve_pending_closure(project_dir)
-    if not current_todo:
-        blocked_todo = _newest_blocked_todo(project_dir)
-        if blocked_todo:
-            return _blocked_result(blocked_todo)
-        return StartResult(
-            run_mode="noop",
-            run_id=None,
-            log_file=None,
-            exit_code=0,
-            message="No active TODO found." + review_hint,
-        )
-
-    # DF5-2: read pipeline state to determine resume point.
-    # KAUD-8: state already read above for todo_id — reuse for from_stage.
-    if not from_stage and state:
-        if state.get("stage_name"):
-            from_stage = state["stage_name"]
-
+    # A-02: launch lease (same as start_pipeline) — one owner of the
+    # window "liveness check → spawn → PID file write". Acquired AFTER the
+    # ack block on purpose: an ack that gets refused by a concurrent
+    # launch stays in the inbox as the supervisor's pending answer (the
+    # next continue consumes it) instead of being dropped.
+    lease = None
     if background:
-        pid, log_file, _pid_file = start_in_background(
-            project_dir,
+        try:
+            lease = _lease.acquire(project_dir)
+        except _lease.LeaseHeldError as e:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=f"Launch refused: {e}",
+            )
+
+    # F-1 (REVIEW A-02): everything after acquire runs under ONE try/finally
+    # — any error in the window (reconcile, liveness, closure resolution,
+    # spawn) releases the lease, so a failed call can never strand a
+    # live-pid lease and block the project until the caller process dies.
+    # release() is idempotent and ownership-checked — one unconditional
+    # release in finally covers every path (success, refusal, error).
+    try:
+        # DF6-2: reconcile state before continuing
+        _reconcile(project_dir)
+        # AUD04-07: shared liveness resolver (PID file + state), same as start.
+        live_pid = _liveness.resolve(project_dir)[1]
+        if live_pid:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=(
+                    f"Pipeline already running (PID {live_pid}). "
+                    f"Use awf_status to check progress. If stuck, kill PID {live_pid} first."
+                ),
+            )
+
+        # KAUD-8: Prefer todo_id from state file (accurate crash recovery)
+        # over newest_active() heuristic (might pick wrong TODO if multiple active).
+        # An explicit pin (retry_stage) wins over both — the salvage unit is
+        # exactly the unit to restart, whatever "newest active" says.
+        # RUN8 #1: an ack pins its OWN unit (the answer belongs to exactly that
+        # TODO) — priority: explicit todo_id > ack > state > newest_active.
+        state = read_state(project_dir)
+        state_todo_id = state.get("todo_id") if state else None
+
+        current_todo = (
+            (todo_id or "").strip()
+            or (ack or "").strip()
+            or state_todo_id
+            or todos.newest_active(project_dir)
+        )
+        resolution_note = ""
+
+        # Day-2 review follow-up: a REVIEW left by the supervisor (the process died
+        # before anyone consumed it) must be visible in the answer, not a silent stop.
+        review_todo = _pending_review_todo(project_dir)
+        review_hint = ""
+        if review_todo:
+            review_hint = (
+                f" REVIEW for {review_todo} is waiting in the outbox — refine the TODO, "
+                f"then resume with `awf continue --ack {review_todo}` "
+                f"(or refresh {review_todo}.ready for a replan)."
+            )
+
+        def _blocked_result(todo: str) -> StartResult:
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message=(
+                    f"TODO {todo} is BLOCKED — no supervisor answer yet. "
+                    f"Accept it with `awf continue --ack {todo}` (or write "
+                    f".agentic/inbox/ACK-{todo}.ready); replan by creating or "
+                    f"refreshing TODO-*.ready, then run awf continue again."
+                    + review_hint
+                ),
+            )
+
+        # Day-2 B3: a pending supervisor answer (ACK/APPROVE) must resume the TODO
+        # it belongs to — even when closure signals hide it from newest_active().
+        # Consume the answer, clear a BLOCKED closure, then resume.
+        if current_todo:
+            if _todo_closed(project_dir, current_todo):
+                resolved, note = _resolve_pending_closure(project_dir, todo_id=current_todo)
+                if resolved:
+                    resolution_note = note
+                else:
+                    blocked_todo = _newest_blocked_todo(project_dir)
+                    if blocked_todo:
+                        return _blocked_result(blocked_todo)
+                    return StartResult(
+                        run_mode="noop",
+                        run_id=None,
+                        log_file=None,
+                        exit_code=0,
+                        message=f"TODO {current_todo} is closed — nothing to resume." + review_hint,
+                    )
+            # Active TODO — resume as-is; a pending APPROVE belongs to the commit gate.
+        else:
+            current_todo, resolution_note = _resolve_pending_closure(project_dir)
+        if not current_todo:
+            blocked_todo = _newest_blocked_todo(project_dir)
+            if blocked_todo:
+                return _blocked_result(blocked_todo)
+            return StartResult(
+                run_mode="noop",
+                run_id=None,
+                log_file=None,
+                exit_code=0,
+                message="No active TODO found." + review_hint,
+            )
+
+        # DF5-2: read pipeline state to determine resume point.
+        # KAUD-8: state already read above for todo_id — reuse for from_stage.
+        if not from_stage and state:
+            if state.get("stage_name"):
+                from_stage = state["stage_name"]
+
+        if background:
+            # A-02: the PID file is written inside start_in_background, so
+            # the shared liveness resolver now sees the child.
+            pid, log_file, _pid_file = start_in_background(
+                project_dir,
+                pipeline=pipeline,
+                from_stage=from_stage,
+                auto=auto,
+                timeout=timeout,
+                # AUD04-01: pin the resolved TODO — resuming from verify with an
+                # empty todo_id skips the ACK/APPROVE check and hangs until timeout.
+                todo_id=current_todo,
+                no_checkpoints=no_checkpoints,
+            )
+            child_alive = _verify_child_alive(pid, log_file)
+            if not child_alive:
+                log_tail = ""
+                try:
+                    log_tail = log_file.read_text(encoding="utf-8")[-500:] if log_file else ""
+                except OSError:
+                    pass
+                return StartResult(
+                    run_mode="error",
+                    run_id=pid,
+                    log_file=str(log_file) if log_file else None,
+                    exit_code=1,
+                    message=(
+                        f"Pipeline started (PID {pid}) but exited immediately. "
+                        f"Last log output:\n{log_tail}"
+                    ),
+                )
+            # RUN8 #1: the answer names the unit — a silently wrong pin was the
+            # incident (same rule as retry_stage after RUN7).
+            msg = (
+                f"awf continue running in background (PID {pid}), "
+                f"continuing {current_todo}"
+            )
+            if from_stage:
+                msg += f", resuming from stage '{from_stage}'"
+            if resolution_note:
+                msg += f" ({resolution_note})"
+            if ack_note:
+                msg += f" {ack_note}"
+            msg += ". GO IDLE — wait for user."
+            # RUN8 #2: same orphan warning as start_pipeline — a worker that
+            # outlived a previous kill may still be writing into the resumed unit.
+            orphan_warn = orphan_worker_warning(project_dir)
+            if orphan_warn:
+                msg = orphan_warn + " " + msg
+            return StartResult(
+                run_mode="background",
+                run_id=pid,
+                log_file=str(log_file),
+                exit_code=None,
+                message=msg,
+            )
+
+        from ..orchestrator import run_pipeline
+
+        args = PipelineArgs(
+            project_dir=str(project_dir),
             pipeline=pipeline,
             from_stage=from_stage,
             auto=auto,
             timeout=timeout,
-            # AUD04-01: pin the resolved TODO — resuming from verify with an
-            # empty todo_id skips the ACK/APPROVE check and hangs until timeout.
+            # AUD04-01: pin the resolved TODO (same reason as the background branch).
             todo_id=current_todo,
             no_checkpoints=no_checkpoints,
         )
-        child_alive = _verify_child_alive(pid, log_file)
-        if not child_alive:
-            log_tail = ""
-            try:
-                log_tail = log_file.read_text(encoding="utf-8")[-500:] if log_file else ""
-            except OSError:
-                pass
+        try:
+            exit_code = run_pipeline(args)
+        except Exception as e:
             return StartResult(
-                run_mode="error",
-                run_id=pid,
-                log_file=str(log_file) if log_file else None,
+                run_mode="foreground",
+                run_id=None,
+                log_file=None,
                 exit_code=1,
-                message=(
-                    f"Pipeline started (PID {pid}) but exited immediately. "
-                    f"Last log output:\n{log_tail}"
-                ),
+                message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
             )
-        # RUN8 #1: the answer names the unit — a silently wrong pin was the
-        # incident (same rule as retry_stage after RUN7).
-        msg = (
-            f"awf continue running in background (PID {pid}), "
-            f"continuing {current_todo}"
-        )
-        if from_stage:
-            msg += f", resuming from stage '{from_stage}'"
-        if resolution_note:
-            msg += f" ({resolution_note})"
+        message = f"Continued {current_todo}, exit code {exit_code}"
         if ack_note:
-            msg += f" {ack_note}"
-        msg += ". GO IDLE — wait for user."
-        # RUN8 #2: same orphan warning as start_pipeline — a worker that
-        # outlived a previous kill may still be writing into the resumed unit.
+            message += f" {ack_note}"
+        # RUN8 #2: orphan warning — same rule as the background branch.
         orphan_warn = orphan_worker_warning(project_dir)
         if orphan_warn:
-            msg = orphan_warn + " " + msg
-        return StartResult(
-            run_mode="background",
-            run_id=pid,
-            log_file=str(log_file),
-            exit_code=None,
-            message=msg,
-        )
-
-    from ..orchestrator import run_pipeline
-
-    args = PipelineArgs(
-        project_dir=str(project_dir),
-        pipeline=pipeline,
-        from_stage=from_stage,
-        auto=auto,
-        timeout=timeout,
-        # AUD04-01: pin the resolved TODO (same reason as the background branch).
-        todo_id=current_todo,
-        no_checkpoints=no_checkpoints,
-    )
-    try:
-        exit_code = run_pipeline(args)
-    except Exception as e:
+            message = orphan_warn + " " + message
         return StartResult(
             run_mode="foreground",
             run_id=None,
             log_file=None,
-            exit_code=1,
-            message=f"Pipeline crashed: {e}\n{traceback.format_exc()}",
+            exit_code=exit_code,
+            message=message,
         )
-    message = f"Continued {current_todo}, exit code {exit_code}"
-    if ack_note:
-        message += f" {ack_note}"
-    # RUN8 #2: orphan warning — same rule as the background branch.
-    orphan_warn = orphan_worker_warning(project_dir)
-    if orphan_warn:
-        message = orphan_warn + " " + message
-    return StartResult(
-        run_mode="foreground",
-        run_id=None,
-        log_file=None,
-        exit_code=exit_code,
-        message=message,
-    )
+    finally:
+        if lease is not None:
+            lease.release()
 
 
 def _clear_state_keep_salvage(project_dir: Path) -> None:
