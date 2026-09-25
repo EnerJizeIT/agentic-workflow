@@ -243,4 +243,7 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # moved to BACKLOG-archive.md. The archive carries intentional TODO-NNNN
 # unit ids — excluded from the todos counter for the same reason as
 # BACKLOG.md (FU-21 D1).
-todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
+# 2026-09-25 (stabilization): docs/audit-* — отчёты аудита и планы программ
+# (аудит 2026-09-25 добавляет 64 упоминания TODO-NNNN), не долг. Та же
+# причина, что у BACKLOG (FU-21 D1). Счётчик с исключением = baseline 3581.
+todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
