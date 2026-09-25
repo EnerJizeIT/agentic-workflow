@@ -292,4 +292,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # itself would write). Same class as above: test identifiers and
 # fixtures, not debt. The production fix (awf/commit_gate.py —
 # index check + targeted unstage) carries no TODO id.
+# 2026-09-25 (stabilization, A-13): baseline raised 3650 -> 3669,
+# files_over_400 raised 55 -> 56 — the run-CAS unit (TODO-0082) adds
+# 19 TODO-bearing lines, all in the new
+# tests/negative/test_audit25_a13_run_cas.py: the module docstring
+# (unit reference) + the TODO-0001/TODO-0002 queue fixtures of the
+# two concurrency tests and the four regressions. Same class as
+# above: test identifiers, not debt. The +1 file over 400 is
+# awf/run_state.py (354 -> 442 — the A-13 CAS primitives
+# generation_of / cas_match / update_run_cas with their docstrings),
+# same class as the wait_event.py production-module raise above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

@@ -219,41 +219,62 @@ def run_start(
     items = _validate_queue(queue)
     ids = [i["todo_id"] for i in items]
 
-    existing = run_state.read_run(project_dir)
-    if existing and existing.get("active") and not force:
+    flags = {str(k): list(v) for k, v in (stop_flags or {}).items() if k}
+    outcome: dict = {}
+
+    def _start_mutator(st: dict) -> dict:
+        # A-13: the inactive → active transition is checked AND written in
+        # ONE lock hold. Before: the active check read the state BEFORE
+        # the lock and the write had no condition — two concurrent
+        # run_start(force=False) both passed the guard and the second one
+        # silently clobbered the first queue.
+        if st.get("active") and not force:
+            outcome["conflict"] = st
+            return st
+        outcome["replaced"] = bool(st.get("active"))
+        new_state = dict(st)
+        new_state.update(
+            active=True,
+            # AUD02-11: project_root was written here but never read — a
+            # dead key is a false contract signal. The run state file
+            # already lives under the project's .agentic/, so the root is
+            # implicit.
+            queue=items,
+            index=0,
+            current="",
+            completed=[],
+            rejects={},
+            outcomes={},
+            stop_flags=flags,
+            budget_minutes=int(budget_minutes or 0),
+            # B2: a fresh run has a fresh downtime counter — a force
+            # replace merges over the previous run.yaml, so the counter is
+            # reset here or the old run's downtime would leak into the new
+            # budget.
+            downtime_seconds=0,
+            started_at=run_state.now_iso(),
+            # A-13: the run generation — identity of the run for the
+            # conditional run_next transitions. A fresh run is always one
+            # older than whatever existed (absent = 0).
+            generation=run_state.generation_of(st) + 1,
+            stop_reason="",
+            report_file="",
+            note=note.strip(),
+            no_checkpoints=bool(no_checkpoints),
+        )
+        return new_state
+
+    state = run_state.update_run(project_dir, _start_mutator)
+
+    if "conflict" in outcome:
+        existing = outcome["conflict"]
         age = int(run_state.elapsed_minutes(existing))
         raise AwfApiError(
             f"Run already active ({run_state.position(existing)}, current "
             f"{existing.get('current') or '—'}, started {age} min ago). "
             f"Finish it with awf_run_finish, or pass force=true to replace it."
         )
-
-    flags = {str(k): list(v) for k, v in (stop_flags or {}).items() if k}
-    replaced = bool(existing and existing.get("active") and force)
-    state = run_state.write_run(
-        project_dir,
-        active=True,
-        # AUD02-11: project_root was written here but never read — a dead
-        # key is a false contract signal. The run state file already lives
-        # under the project's .agentic/, so the root is implicit.
-        queue=items,
-        index=0,
-        current="",
-        completed=[],
-        rejects={},
-        outcomes={},
-        stop_flags=flags,
-        budget_minutes=int(budget_minutes or 0),
-        # B2: a fresh run has a fresh downtime counter — a force replace
-        # merges over the previous run.yaml, so the counter is reset here
-        # or the old run's downtime would leak into the new budget.
-        downtime_seconds=0,
-        started_at=run_state.now_iso(),
-        stop_reason="",
-        report_file="",
-        note=note.strip(),
-        no_checkpoints=bool(no_checkpoints),
-    )
+    replaced = bool(outcome.get("replaced"))
 
     budget_note = f", budget {int(budget_minutes)} min" if budget_minutes else ""
     replace_note = " (previous run replaced)" if replaced else ""
@@ -612,6 +633,54 @@ def run_next(
             )
         launch_pipeline = pipeline_name
 
+    # A-13: the queue position is RESERVED before the launch window. The
+    # reservation, the commit below, and the release on refusal all compare
+    # (generation, index, current) — a concurrent run_next (or a force
+    # replace) can no longer clobber the launch: the loser's CAS misses and
+    # it refuses with the index untouched.
+    gen = run_state.generation_of(state)
+    cur = str(state.get("current", "") or "")
+
+    def _reserve_mutator(st: dict) -> dict:
+        st["current"] = next_id
+        return st
+
+    _, reserved = run_state.update_run_cas(
+        project_dir,
+        _reserve_mutator,
+        generation=gen,
+        index=index,
+        current=cur,
+    )
+    if not reserved:
+        return RunNextResult(
+            action="refused",
+            todo_id=next_id,
+            message=(
+                f"Cannot launch {next_id}: the run changed between the gate "
+                "check and the launch reservation (another run_next owns "
+                "this queue position, or the run was replaced). The index "
+                "is not moved."
+            ),
+            next_action="Check awf_run_status, then retry awf_run_next.",
+        )
+
+    def _release_reservation() -> None:
+        # A-13: restore the pre-reservation `current` — only while we still
+        # own the position (the same CAS tuple). A run closed or
+        # force-replaced inside the launch window is not written back.
+        def _release_mutator(st: dict) -> dict:
+            st["current"] = cur
+            return st
+
+        run_state.update_run_cas(
+            project_dir,
+            _release_mutator,
+            generation=gen,
+            index=index,
+            current=next_id,
+        )
+
     # Baseline before the signal (same order as dispatch_todo).
     # AUD05-08: best-effort — ANY failure here (no commits, git timeout,
     # permissions) must not kill the run; the orchestrator ensures a
@@ -683,6 +752,9 @@ def run_next(
         # AUD02-02: the launch failed — the run position stays put, so the
         # retry targets the same item instead of skipping it (and the
         # unlaunched TODO is not counted as completed).
+        # A-13: the reservation is released too — a refused launch must
+        # not leave the item owned by a run that launched nothing.
+        _release_reservation()
         return RunNextResult(
             action="refused",
             todo_id=next_id,
@@ -691,18 +763,18 @@ def run_next(
         )
 
     # AUD02-02: advance the run position only AFTER a successful launch.
-    # AUD05-05 (rest): the commit is re-checked UNDER THE LOCK. If the run
-    # closed (run_finish / stop_run) during the launch window, the item is
-    # NOT recorded as current: a closed run cannot own the verify cycle of
-    # a launched pipeline. The orphaned pipeline is the accepted
+    # AUD05-05 (rest) + A-13: the commit is re-checked UNDER THE LOCK by
+    # (generation, index, current) — and on `active`. If the run closed
+    # (run_finish / stop_run) or was force-replaced during the launch
+    # window, the item is NOT recorded: a closed run cannot own the verify
+    # cycle of a launched pipeline. The orphaned pipeline is the accepted
     # consequence (documented in the result) — the owner inspects it via
     # awf_status and decides (kill + fresh run, or take it over).
-    advance = {"closed": False}
+    advance = {"applied": False}
 
     def _advance_mutator(st: dict) -> dict:
         if not st.get("active"):
-            advance["closed"] = True
-            return st
+            return st  # closed during the window — veto, nothing written
         completed = list(st.get("completed") or [])
         # RUN3 #2: queue items are {"todo_id", "pipeline"} dicts — credit
         # the previous item by its id string (prev, computed above).
@@ -711,20 +783,35 @@ def run_next(
         st["index"] = index + 1
         st["current"] = next_id
         st["completed"] = completed
+        advance["applied"] = True
         return st
 
-    run_state.update_run(project_dir, _advance_mutator)
+    committed = run_state.update_run_cas(
+        project_dir,
+        _advance_mutator,
+        generation=gen,
+        index=index,
+        current=next_id,
+    )[1]
 
-    if advance["closed"]:
+    if not committed or not advance["applied"]:
+        # A-13: the ownership was lost in the launch window (the run
+        # closed, or was force-replaced — the CAS tuple no longer matches)
+        # — the reservation dies with it: restore the pre-launch state so
+        # a closed run does not own a current item (the audit05 forbidden
+        # combination) and a retry does not see a position someone else
+        # no longer owns. A force-replaced state is untouched: the
+        # release CAS misses, exactly as it must.
+        _release_reservation()
         return RunNextResult(
             action="started",
             todo_id=next_id,
             message=(
                 f"Run item {index + 1}/{len(queue)} launched: {next_id} "
-                f"({result.run_mode}) — but the run was closed during the "
-                "launch window, so index/current were NOT recorded. The "
-                "launched pipeline is orphaned (accepted consequence): no "
-                "run will finish its verify cycle."
+                f"({result.run_mode}) — but the run was closed or replaced "
+                "during the launch window, so index/current were NOT "
+                "recorded. The launched pipeline is orphaned (accepted "
+                "consequence): no run will finish its verify cycle."
             ),
             run_mode=result.run_mode,
             run_id=result.run_id,
