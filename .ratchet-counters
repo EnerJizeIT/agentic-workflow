@@ -246,4 +246,9 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # 2026-09-25 (stabilization): docs/audit-* — отчёты аудита и планы программ
 # (аудит 2026-09-25 добавляет 64 упоминания TODO-NNNN), не долг. Та же
 # причина, что у BACKLOG (FU-21 D1). Счётчик с исключением = baseline 3581.
+# 2026-09-25 (stabilization, runner_dir): baseline raised 3581 -> 3586 —
+# the engine-pin unit (TODO-0077) adds 5 TODO-0077 lines: docstring +
+# comment in awf/api/_background.py (2), module docstring in
+# tests/unit/test_runner_dir.py (1), the engine-pin paragraph in USAGE EN/RU
+# (1+1). Same class as above: unit identifier, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

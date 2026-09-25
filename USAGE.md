@@ -381,6 +381,15 @@ launch only. It is process-scoped: not written to config or state, the next
 launch asks again (the run-level `awf_run_start(no_checkpoints=...)` is
 unchanged).
 
+**Engine pin (TODO-0077).** When the project IS awf (or otherwise the engine
+must not import the working tree — `python -m awf` puts cwd first on
+`sys.path`), set `automation.runner_dir` in `.agentic/config.yaml` to a
+directory containing `awf/__init__.py`. The background child of
+`awf_start` / `awf_continue` then runs from that pinned checkout;
+`--project-dir` and the rest of the child argv are unchanged. The value is
+validated before spawn (invalid path → `AwfApiError`, no process, no PID
+file). Without the key, behavior is unchanged (`cwd` = project directory).
+
 ### TODO
 | Tool | What it does |
 |---|---|

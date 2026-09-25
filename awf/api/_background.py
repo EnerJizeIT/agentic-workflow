@@ -18,8 +18,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import config as cfg_mod
 from .. import paths
 from .._atomic import atomic_write_text
+from ._errors import AwfApiError
 from ._helpers import read_log_tail
 
 
@@ -63,7 +65,39 @@ def start_in_background(
     passed to the child as ``AWF_NO_CHECKPOINTS=1`` in its environment —
     process-scoped by construction, it dies with the child and cannot leak
     into the next launch.
+
+    ``automation.runner_dir`` (TODO-0077): when set in the project's
+    config.yaml, the child's cwd is that directory instead of
+    ``project_dir`` — the engine imports the pinned checkout rather than
+    the project tree (awf editing itself: ``python -m awf`` puts cwd first
+    on sys.path). The value is validated before spawn; an invalid value
+    raises :class:`AwfApiError` with no process, no log file, no PID file.
     """
+    # TODO-0077: engine checkout pin — resolved and validated BEFORE
+    # anything is created (no process, no log file, no PID file on error).
+    child_cwd = str(project_dir)
+    runner_dir = cfg_mod.get(cfg_mod.load(project_dir), "automation.runner_dir")
+    if runner_dir is not None:
+        if not isinstance(runner_dir, str) or not runner_dir:
+            raise AwfApiError(
+                "automation.runner_dir must be a non-empty path string to a "
+                f"directory containing awf/__init__.py, got {runner_dir!r}"
+            )
+        runner_path = Path(runner_dir).expanduser()
+        if not runner_path.is_absolute():
+            runner_path = Path(project_dir) / runner_path
+        if not runner_path.is_dir():
+            raise AwfApiError(
+                "automation.runner_dir does not exist or is not a "
+                f"directory: {runner_path}"
+            )
+        if not (runner_path / "awf" / "__init__.py").is_file():
+            raise AwfApiError(
+                "automation.runner_dir is not an awf checkout "
+                f"(missing awf/__init__.py): {runner_path}"
+            )
+        child_cwd = str(runner_path)
+
     logs_dir = paths.agentic_dir(project_dir) / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = logs_dir / "awf-start.out"
@@ -99,7 +133,7 @@ def start_in_background(
     with os.fdopen(log_fd, "ab") as out:
         proc = subprocess.Popen(
             child_argv,
-            cwd=str(project_dir),
+            cwd=child_cwd,
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=subprocess.STDOUT,
