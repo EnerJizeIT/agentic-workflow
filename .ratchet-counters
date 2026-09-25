@@ -302,4 +302,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # awf/run_state.py (354 -> 442 — the A-13 CAS primitives
 # generation_of / cas_match / update_run_cas with their docstrings),
 # same class as the wait_event.py production-module raise above.
+# 2026-09-25 (stabilization, A-21): baseline raised 3669 -> 3689 — the
+# refused-launch-signal unit (TODO-0083) adds 20 TODO-bearing lines: 19 in
+# the new tests/negative/test_audit25_a21_refused_signal.py (module
+# docstring + the TODO-0001 inbox fixtures and assertions of the four
+# tests) and +1 in awf/api/run.py (the A-21 rollback comment naming the
+# unlaunched TODO). Same class as above: test identifiers and a
+# unit comment, not debt. The production fix (awf/api/run.py — had_ready
+# snapshot + unlink on the refused branch) carries no TODO id in code.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

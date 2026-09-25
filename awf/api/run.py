@@ -727,7 +727,14 @@ def run_next(
     except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 
-    (paths.inbox(project_dir) / f"{next_id}.ready").touch()
+    # A-21: remember the signal state BEFORE publishing — a refused launch
+    # must restore the pre-launch state: no .ready before → none after the
+    # refusal; a pre-existing one (dispatch, manual touch) stays. Without
+    # this, a refused run_next leaves a stale {id}.ready behind and
+    # newest_active marks the unlaunched TODO active.
+    ready_path = paths.inbox(project_dir) / f"{next_id}.ready"
+    had_ready = ready_path.exists()
+    ready_path.touch()
 
     from .pipeline import start_pipeline
 
@@ -754,6 +761,15 @@ def run_next(
         # unlaunched TODO is not counted as completed).
         # A-13: the reservation is released too — a refused launch must
         # not leave the item owned by a run that launched nothing.
+        # A-21: and the signal this launch created is rolled back — a
+        # pre-existing .ready is left untouched. Best-effort like the
+        # baseline above: a cleanup failure must not turn the refusal
+        # into an error.
+        if not had_ready:
+            try:
+                ready_path.unlink()
+            except OSError:
+                pass
         _release_reservation()
         return RunNextResult(
             action="refused",
