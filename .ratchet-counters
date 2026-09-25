@@ -260,4 +260,27 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # (+1, the A-11 pin comment + DONE/TODO.md preservation asserts),
 # awf/api/lifecycle.py (+1, the A-11 docstring). Same class as above:
 # test identifiers and unit-id references, not debt.
+# 2026-09-25 (stabilization, A-12): baseline raised 3596 -> 3628 — the
+# id-collision unit (TODO-0079) adds 32 TODO-bearing lines: 31 in the new
+# tests/negative/test_audit25_a12_ids.py (module docstring + the
+# TODO-0001 inbox/done/outbox fixtures of the four tests) and +1 in
+# awf/api/lifecycle.py (the A-12 restore-refusal comment). Same class as
+# above: test identifiers and unit-id references, not debt.
+# 2026-09-25 (stabilization, A-12, REVIEW F1): baseline raised
+# 3628 -> 3638 — the versioning rework of the same unit adds 10
+# TODO-bearing lines: the rewritten test_archive_into_occupied_done_
+# preserves_both and the new test_restore_rerun_rearchive_cycle_
+# completes in tests/negative/test_audit25_a12_ids.py (+9 — TODO-0001
+# inbox/done/outbox fixtures), plus a net +1 in awf/todos.py
+# (the A-12/REVIEW-F1 docstring). Same class as above: test identifiers
+# and unit-id references, not debt.
+# 2026-09-25 (stabilization, A-12, REVIEW F2): baseline raised
+# 3638 -> 3644 — the QA P1 regression test
+# test_archive_two_different_sources_both_preserved adds 6
+# TODO-bearing lines in tests/negative/test_audit25_a12_ids.py
+# (the DONE-TODO-NNNN.md docstring line + the TODO-0001
+# inbox/outbox/archive fixtures). Same class as above: test
+# identifiers, not debt. The production fix (awf/todos.py —
+# the _suffixed_name helper + the reserved canonical name in the
+# versioning loop) carries no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

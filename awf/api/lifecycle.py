@@ -434,7 +434,16 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
 
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(md), str(inbox / f"{todo_id}.md"))
+    # A-12 (audit 2026-09-25): a restore must never overwrite an active
+    # TODO — the archived copy and the live task are different units
+    # sharing a number. Refuse before any move; both stay byte-for-byte.
+    target = inbox / f"{todo_id}.md"
+    if target.exists():
+        raise AwfApiError(
+            f"inbox/{todo_id}.md already exists — {todo_id} is active. "
+            "Refusing to overwrite it with the archived copy."
+        )
+    shutil.move(str(md), str(target))
     (inbox / f"{todo_id}.ready").touch()
 
     restored_handoffs = 0
