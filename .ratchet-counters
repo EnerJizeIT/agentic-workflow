@@ -485,4 +485,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/infra/opencode_shim/README.md (the invocation table and the
 # TODO-0001 plan-todo id). Same class as above: test identifiers and
 # shim contract wording, not debt.
+# TODO-0110 (A-14, проверочный юнит): baseline raised 3997 -> 4013 — the
+# new tests/negative/test_audit25_a14_execute_refusal.py adds 16
+# TODO-bearing lines: the module docstring (the DONE-TODO-0110.md
+# reference), the TODO = "TODO-0001" constant and its fixture/assert
+# use-sites in the two top-level tests. Same class as above: test
+# identifiers, not debt. No production code changed — check unit (the
+# A-14 fix already landed with R-03, TODO-0087).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
