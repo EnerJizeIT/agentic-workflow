@@ -111,8 +111,23 @@ SUBSCRIPTIONS_TIMEOUT = 10.0
 # U8d: недель в месяце (GLM: недельные кредитные лимиты → месячная доля).
 WEEKS_PER_MONTH = 4.345
 
-_WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4})$")
-_TODO_RE = re.compile(r"TODO-(\d{4})")
+# A-10: общий парсер TODO ID — 4+ цифры с явной правой границей
+# (не-словарный символ или конец строки). TODO-10000 не усекается до
+# TODO-1000, TODO-10000x не читается как ID вовсе.
+_TODO_ID_RE = re.compile(r"TODO-(\d{4,})(?!\w)")
+_WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4,})$")  # правая граница — `$`
+
+
+def _todo_id_from_title(title: str | None) -> str | None:
+    """Заголовок воркер-сессии ``awf-<роль>-TODO-NNNN`` → TODO ID или None."""
+    m = _WORKER_TITLE_RE.match(title or "")
+    return f"TODO-{m.group(1)}" if m else None
+
+
+def _todo_id_from_subject(subject: str | None) -> str | None:
+    """Коммит-субъект → TODO ID или None (явная правая граница)."""
+    m = _TODO_ID_RE.search(subject or "")
+    return m.group(0) if m else None
 _SHORTSTAT_INS = re.compile(r"(\d+) insertions?")
 _SHORTSTAT_DEL = re.compile(r"(\d+) deletions?")
 
@@ -395,8 +410,8 @@ def collect_workers(
         warnings.append(f"запрос по сессиям упал: {e} — воркеры не измеряются")
         return workers
     for sid, title, sdir, tin, tout, tcr, tcw, cost, tc, tu in rows:
-        m = _WORKER_TITLE_RE.match(title or "")
-        if not m:
+        todo = _todo_id_from_title(title)
+        if not todo:
             continue
         if directory is not None:
             if not gate.allowed(sdir):
@@ -404,7 +419,6 @@ def collect_workers(
         elif matched is not None and sid not in matched:
             excluded += 1
             continue
-        todo = f"TODO-{m.group(1)}"
         d = workers.setdefault(
             todo,
             {
@@ -476,10 +490,10 @@ def collect_commit_info(repo: Path, warnings: list[str]) -> dict[str, list[tuple
         if len(parts) < 3:
             continue
         sha, ct, subj = parts
-        m = _TODO_RE.search(subj)
-        if m and "verify" in subj:
+        todo = _todo_id_from_subject(subj)
+        if todo and "verify" in subj:
             try:
-                commits.setdefault(m.group(0), []).append((sha, int(ct)))
+                commits.setdefault(todo, []).append((sha, int(ct)))
             except ValueError:
                 continue
     return commits
