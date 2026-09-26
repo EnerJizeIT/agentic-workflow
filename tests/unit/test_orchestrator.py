@@ -1677,7 +1677,7 @@ class TestStageStartCheckpointClear:
         (proj / ".agentic" / "phases" / "plan.md").write_text("- [ ] Step 1\n")
         (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
             "name: default\nstages:\n"
-            "  - name: worker\n    role: worker\n    kind: execute\n"
+            "  - name: worker\n    role: worker\n"
         )
         return proj
 
@@ -1764,7 +1764,7 @@ class TestPipelineNameInState:
     state where pipeline_pid is written — the dashboard then draws THAT
     pipeline's stages (a run queue item can pin a non-default one)."""
 
-    STAGE = "stages:\n  - name: {name}-work\n    role: worker\n    kind: execute\n"
+    STAGE = "stages:\n  - name: {name}-work\n    role: worker\n"
 
     def _make_proj(self, tmp_path: Path, pipelines: dict[str, str]) -> Path:
         proj = tmp_path / "proj"

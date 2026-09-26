@@ -245,10 +245,10 @@ def _git_project(tmp_path: Path) -> Path:
     (pipes / "default.yaml").write_text(
         'name: "default"\n'
         'stages:\n'
-        '  - name: "plan"\n    role: "supervisor"\n    kind: "plan"\n'
-        '  - name: "worker"\n    role: "worker"\n    kind: "execute"\n'
+        '  - name: "plan"\n    role: "supervisor"\n'
+        '  - name: "worker"\n    role: "worker"\n'
         '    on_blocked: "escalate"\n    max_retries: 3\n'
-        '  - name: "verify"\n    role: "supervisor"\n    kind: "verify"\n'
+        '  - name: "verify"\n    role: "supervisor"\n'
         '    on_approved: "commit_and_next"\n    on_rejected: "replan"\n',
         encoding="utf-8",
     )

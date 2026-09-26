@@ -385,7 +385,7 @@ def _proj_with_pipeline(tmp_path: Path) -> Path:
     (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
         'name: "default"\n'
         'stages:\n'
-        '  - name: "worker"\n    role: "worker"\n    kind: "execute"\n',
+        '  - name: "worker"\n    role: "worker"\n',
     )
     return proj
 

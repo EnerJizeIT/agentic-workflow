@@ -416,4 +416,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # class as above: test identifiers, not debt. The production fix
 # (awf/prove_red.py — _split_test_id + the source/dest boundary checks)
 # carries no TODO id.
+# 2026-09-26 (stabilization, A-06): files_over_400 raised 57 -> 58 — the
+# YAML-form-validation unit (TODO-0097) pushes awf/pipeline.py over 400
+# lines (370 -> 432): the shared validate_pipeline_stages /
+# validate_pipeline_document validators (root/stages/role/policies/budgets/
+# unknown keys) live next to the Stage schema they check, and the write
+# path imports them. No new TODO-bearing lines (the todos counter is
+# untouched at 3881). Same class as the run_state.py / commit_gate.py
+# production-module raises above: the schema and its validator belong in
+# one file.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

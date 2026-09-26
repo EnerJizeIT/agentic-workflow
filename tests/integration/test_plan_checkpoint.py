@@ -1705,7 +1705,7 @@ class TestLaunchNoCheckpointsPlumbing:
         pipes.mkdir()
         (pipes / "default.yaml").write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n",
+            "  - name: plan\n    role: supervisor\n",
             encoding="utf-8",
         )
         monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)
