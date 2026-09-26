@@ -419,14 +419,19 @@ def approve_commit(
             ),
         )
 
+    # A-15: the fingerprint is written BEFORE the APPROVE signal becomes
+    # visible. The commit gate enforces the file only while it exists, so
+    # a gate that sees the signal must also see the fingerprint (atomic
+    # rename); the old order left a window where the gate could start on
+    # the bare signal and skip the re-check.
+    if verified_fp:
+        paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)
+        atomic_write_text(verified_file, f"{verified_fp}\n")
+
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
     signal = inbox / f"APPROVE-{todo_id}.ready"
     signal.touch()
-
-    if verified_fp:
-        paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)
-        atomic_write_text(verified_file, f"{verified_fp}\n")
 
     # RUN5 #1 (Part B): failsafe — list rejected-attempt files that would be
     # SILENTLY excluded from this commit (still untracked AND in the

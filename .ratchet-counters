@@ -321,4 +321,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # unit comments, not debt. The +1 file over 400 is awf/commit_gate.py
 # (359 -> 413 — the A-04 _verdict_refusal helper), same class as the
 # run_state.py / wait_event.py production-module raises above.
+# 2026-09-26 (stabilization, A-15): baseline raised 3709 -> 3718 — the
+# verified-sha commit-window unit (TODO-0085) adds 9 TODO-bearing lines,
+# all in the new tests/negative/test_audit25_a15_verified_sha.py: the
+# TODO = "TODO-0001" constant and its eight use-sites in the three tests
+# (approve_commit / maybe_commit calls, VERIFIED path asserts). Same class
+# as above: test identifiers, not debt. The production fix
+# (awf/commit_gate.py — _verified_refusal + the two check points,
+# awf/api/pipeline.py — the VERIFIED-before-signal order) carries no TODO
+# id in code.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

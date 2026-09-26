@@ -8,6 +8,7 @@ Supervisor's mid-flight edits stay out of worker commits.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -213,12 +214,19 @@ def _commit_specific_files(
     project_dir: Path,
     files: list[str],
     message: str,
+    todo_id: str = "",
 ) -> bool:
     """A1 fix: commit ONLY the listed files (no `git add -A`).
 
     A-01: refuses when the index already holds staged changes, and on any
     failure unstages only the files this gate added (no wide ``git reset``
     that would drop the user's foreign staged entries).
+
+    A-15: when ``todo_id`` is given and the approve carried verified_sha,
+    re-checks the tree against VERIFIED-{todo_id}.sha immediately before
+    the stage+commit sequence. The check runs PRE-STAGING on purpose:
+    this gate's own ``git add`` flips the fingerprint (staging-sensitive),
+    so a post-add comparison would refuse the success path.
 
     Returns True if commit succeeded, False if refused, nothing to commit,
     or error.
@@ -230,6 +238,14 @@ def _commit_specific_files(
             "refusing unit commit: the git index already has staged changes. "
             "They would leak into the unit commit or be unstaged on failure; "
             "unstage or commit them first. The index is left untouched.",
+            file=sys.stderr,
+        )
+        return False
+    refusal = _verified_refusal(project_dir, todo_id)
+    if refusal:
+        print(
+            f"refusing unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
             file=sys.stderr,
         )
         return False
@@ -307,6 +323,62 @@ def _verdict_refusal(project_dir: Path, todo_id: str) -> str:
     )
 
 
+def _verified_refusal(project_dir: Path, todo_id: str) -> str:
+    """A-15 (audit 2026-09-25, layer 4): re-check the tree against VERIFIED.
+
+    ``approve_commit(verified_sha=...)`` stores the verified tree
+    fingerprint to ``.agentic/context/VERIFIED-{todo_id}.sha``. Between the
+    approve and the commit the tree may still move (an edit, a new file, a
+    commit by someone else) — the gate would then commit something that was
+    not verified. When the file exists, the fingerprint is recomputed
+    (``git_utils.tree_fingerprint``, the same mechanism approve uses) and a
+    mismatch refuses the commit. No file (the approve carried no
+    ``verified_sha``) — the legacy behavior: nothing is checked.
+
+    Must run while the tree is still PRE-STAGING: ``tree_fingerprint`` is
+    staging-sensitive (``git add`` flips the status flags and drops the
+    files from the untracked list), so a post-add comparison would refuse
+    the gate's own staging and break the verified success path.
+
+    Returns a refusal reason, or "" when the commit may proceed.
+    """
+    if not todo_id:
+        return ""
+    verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
+    if not verified_file.is_file():
+        return ""
+    try:
+        expected = verified_file.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return (
+            f"the verified fingerprint file {verified_file.name} exists but "
+            "could not be read — refuse to commit unverified (fail closed)"
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return (
+            f"the verified fingerprint file {verified_file.name} does not "
+            "hold a 64-hex tree fingerprint — refuse to commit unverified "
+            "(fail closed); re-verify and re-approve with a fresh "
+            "`awf tree-sha`"
+        )
+    try:
+        current = git_utils.tree_fingerprint(project_dir)
+    except RuntimeError:
+        return (
+            f"the verified fingerprint {expected[:12]}… exists but the tree "
+            "fingerprint could not be recomputed — refuse to commit "
+            "unverified (fail closed)"
+        )
+    if current != expected:
+        return (
+            f"the tree changed after verification (verified {expected[:12]}…, "
+            f"now {current[:12]}…) — the commit gate would commit something "
+            "that was not verified. Re-verify on the current tree "
+            "(`awf tree-sha`) and re-approve with the fresh fingerprint."
+        )
+    return ""
+
+
 def maybe_commit(
     stage_name: str,
     todo_id: str,
@@ -325,6 +397,11 @@ def maybe_commit(
     A1 fix: if baseline_sha is provided, commits ONLY files changed since
     baseline (avoids mixing supervisor's edits into worker commit).
     Falls back to `git add -A` if no baseline (back-compat).
+
+    A-15: when the approve carried verified_sha (VERIFIED-{todo_id}.sha
+    exists), the tree is re-checked against the stored fingerprint before
+    staging and again inside the commit path — a mismatch refuses the
+    commit. Without the file the behavior is exactly as before.
     """
     if policy not in ("commit_and_next", "commit_and_report"):
         return True
@@ -374,6 +451,18 @@ def maybe_commit(
         which = "APPROVE" if approve_signal.exists() else "ACK"
         _log(logs_dir, f"{which} signal received for {todo_id}")
 
+    # A-15: when the approve carried verified_sha, re-check the tree against
+    # VERIFIED-{todo_id}.sha BEFORE staging — the approve-to-commit window.
+    refusal = _verified_refusal(project_dir, todo_id)
+    if refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"A-15: commit refused for {todo_id} — {refusal}")
+        return False
+
     # A1 fix: commit only baseline-diff files (isolate worker changes)
     if baseline_sha:
         changed = _files_changed_since_baseline(project_dir, baseline_sha, todo_id=todo_id)
@@ -381,7 +470,9 @@ def maybe_commit(
             print(f"No changes since baseline — skip commit at '{stage_name}'.", file=sys.stderr)
             _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
             return True
-        committed = _commit_specific_files(project_dir, changed, f"awf({stage_name}): {todo_id}")
+        committed = _commit_specific_files(
+            project_dir, changed, f"awf({stage_name}): {todo_id}", todo_id=todo_id
+        )
         _log(logs_dir, f"A1: committed {len(changed)} files (vs baseline {baseline_sha[:8]})")
     else:
         # Back-compat: no baseline → git add -A (legacy behavior)
