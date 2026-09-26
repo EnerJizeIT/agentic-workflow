@@ -92,6 +92,8 @@ def test_valid_minimal_pipeline_loads_unchanged(tmp_path):
 def test_repo_default_pipeline_loads_unchanged(tmp_path):
     """A-06.3: реальный .agentic/pipelines/default.yaml репозитория."""
     src = REPO_ROOT / ".agentic" / "pipelines" / "default.yaml"
+    if not src.is_file():
+        pytest.skip("repo .agentic absent (gitignored in clean CI checkout)")
     dst = tmp_path / ".agentic" / "pipelines" / "default.yaml"
     dst.parent.mkdir(parents=True)
     dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
