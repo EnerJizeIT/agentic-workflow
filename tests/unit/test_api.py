@@ -1118,8 +1118,8 @@ class TestInitProject:
             "verification.coverage_cmd had no readers — remove from template"
         )
 
-    def test_existing_agentic_without_force_cleans_runtime(self, tmp_git_repo):
-        """R1: awf init without force cleans runtime, preserves config."""
+    def test_existing_agentic_without_force_preserves_runtime(self, tmp_git_repo):
+        """A-11: awf init without force preserves runtime and config."""
         agentic = tmp_git_repo / ".agentic"
         # Create config layer
         agentic.mkdir()
@@ -1136,13 +1136,15 @@ class TestInitProject:
 
         result = api.init_project(tmp_git_repo, project_name="Test")
 
-        # Runtime cleaned
-        assert not (agentic / "inbox").exists()
-        assert not (agentic / "outbox").exists()
-        assert not (agentic / "logs").exists()
+        # Runtime preserved (A-11: re-init without force is non-destructive)
+        assert (agentic / "inbox" / "TODO-0001.ready").is_file()
+        assert (agentic / "outbox" / "DONE-TODO-0001.md").is_file()
+        assert (agentic / "logs").is_dir()
+        assert (agentic / "state").is_dir()
         # Config preserved
-        assert (agentic / "config.yaml").exists()
-        assert (agentic / "roles" / "worker.md").exists()
+        assert (agentic / "config.yaml").is_file()
+        assert (agentic / "roles" / "worker.md").is_file()
+        assert result.project_name == "Test"
 
     def test_force_overwrites_existing(self, tmp_git_repo):
         (tmp_git_repo / ".agentic").mkdir()
@@ -1466,7 +1468,7 @@ class TestDispatchIncludeUntracked:
     def test_included_file_lands_in_commit_gate(self, proj: Path) -> None:
         """End-to-end consequence: dispatch(include_untracked=[x]) → x is in
         the commit gate's files_changed (and the other file is not)."""
-        from awf.commit_gate import _files_changed_since_baseline
+        from awf.commit_plan import _files_changed_since_baseline
 
         (proj / "x.md").write_text("re-claimed\n")
         (proj / "y.md").write_text("stays excluded\n")

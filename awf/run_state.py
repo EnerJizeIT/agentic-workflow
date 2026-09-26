@@ -93,6 +93,13 @@ def _run_shape_ok(state: dict) -> bool:
     active = state.get("active")
     if active is not None and not isinstance(active, bool):
         return False
+    # A-13: generation — additive run-identity field (absent = 0). A
+    # present-but-garbage value is corrupt the same way a garbage index is.
+    gen = state.get("generation")
+    if gen is not None and (
+        isinstance(gen, bool) or not isinstance(gen, int) or gen < 0
+    ):
+        return False
     return True
 
 
@@ -203,6 +210,87 @@ def update_run(project_dir: Path, mutator) -> dict:
             yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
         )
     return new_state
+
+
+def generation_of(state: dict) -> int:
+    """A-13: the run generation — the identity of a run (забег) for
+    conditional queue transitions. Additive run.yaml field: absent (old
+    state files) = 0; a garbage value degrades to 0 (a mismatch with the
+    expected int is a safe refusal, not a crash)."""
+    try:
+        return int(state.get("generation", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def cas_match(
+    state: dict,
+    *,
+    generation: int | None = None,
+    index: int | None = None,
+    current: str | None = None,
+) -> bool:
+    """A-13: does the state match the expected (generation, index, current)
+    tuple — the compare of compare-and-swap? An absent (None) component is
+    not checked. The swap (``update_run_cas``) happens only when every
+    given component matches the state exactly."""
+    if generation is not None and generation_of(state) != int(generation):
+        return False
+    if index is not None:
+        try:
+            disk_index = int(state.get("index", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if disk_index != int(index):
+            return False
+    if current is not None and str(state.get("current", "") or "") != str(current):
+        return False
+    return True
+
+
+def update_run_cas(
+    project_dir: Path,
+    mutator,
+    *,
+    generation: int | None = None,
+    index: int | None = None,
+    current: str | None = None,
+) -> tuple[dict | None, bool]:
+    """A-13: conditional read → mutate → write in ONE lock hold.
+
+    The mutator runs only when the on-disk state matches the expected
+    tuple (:func:`cas_match`). Match: returns ``(state_written, True)``.
+    Mismatch (or a missing/corrupt run.yaml, which never matches): nothing
+    is written, returns ``(None, False)`` — the caller treats this as
+    "another caller owns this run position" and refuses, not retries.
+
+    ``update_run`` stays for unconditional RMW (approve/reject diary); the
+    run queue transitions (reserve → launch → commit/release in
+    ``awf/api/run.py``) need the condition, because their check used to
+    run BEFORE the lock and the write clobbered a concurrent winner.
+    """
+    from ._lock import locked
+
+    _ensure_lock_file(project_dir)
+    with locked(project_dir):
+        state = read_run(project_dir)
+        if state is None or not cas_match(
+            state, generation=generation, index=index, current=current
+        ):
+            return None, False
+        new_state = mutator(state)
+        if new_state is None:
+            new_state = state
+        if not isinstance(new_state, dict):
+            raise TypeError(
+                "update_run_cas mutator must return a dict (or None) — "
+                f"got {type(new_state).__name__}"
+            )
+        atomic_write_text(
+            run_file(project_dir),
+            yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
+        )
+        return new_state, True
 
 
 def run_is_active(project_dir: Path) -> bool:

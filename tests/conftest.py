@@ -253,15 +253,12 @@ def initialized_project(empty_project: Path, awf_bin: str, awf_env: dict) -> Pat
         'stages:\n'
         '  - name: "plan"\n'
         '    role: "supervisor"\n'
-        '    action: "create_todo"\n'
         '  - name: "implement"\n'
         '    role: "worker"\n'
-        '    action: "execute_todo"\n'
         '    on_blocked: "escalate"\n'
         '    max_retries: 3\n'
         '  - name: "verify"\n'
         '    role: "supervisor"\n'
-        '    action: "verify_result"\n'
         '    on_approved: "commit_and_next"\n'
         '    on_rejected: "replan"\n',
         encoding="utf-8",

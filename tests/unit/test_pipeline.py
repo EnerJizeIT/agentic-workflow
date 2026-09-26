@@ -82,12 +82,14 @@ class TestLoadStages:
         assert review.max_retries == 2
 
     def test_full_test_stage(self, tmp_pipeline_file) -> None:
+        """A-06: on_failed is a reserved policy — the fixture carries a
+        plain allowed word (rollback_to: on on_failed is refused now)."""
         tmp_path, _ = tmp_pipeline_file
         stages = load_stages(tmp_path / ".agentic" / "pipelines" / "full.yaml")
         test = stages[3]
         assert test.name == "test"
         assert test.role == "tester"
-        assert test.on_failed == "rollback_to:implement"
+        assert test.on_failed == "escalate"
 
     def test_full_finalize_stage(self, tmp_pipeline_file) -> None:
         tmp_path, _ = tmp_pipeline_file
@@ -120,10 +122,12 @@ class TestLoadStages:
         assert s.max_retries == 1
         assert s.max_rollbacks == 3
 
-    def test_loader_ignores_legacy_on_passed(self, tmp_path, capsys) -> None:
-        """AUD16-03: load_stages does not accept on_passed — a YAML key with
-        that name is dropped (no Stage field, no policy check), while the
-        stage itself loads normally."""
+    def test_loader_rejects_legacy_on_passed(self, tmp_path) -> None:
+        """A-06: load_stages does not accept on_passed — a YAML key with
+        that name is an unknown key and the load is refused (the same rule
+        as awf_write_pipeline, AUD13-04)."""
+        from awf.api._errors import AwfApiError
+
         pipe = tmp_path / "pipeline.yaml"
         pipe.write_text(
             "stages:\n"
@@ -132,30 +136,25 @@ class TestLoadStages:
             "  - name: verify\n    role: supervisor\n",
             encoding="utf-8",
         )
-        stages = load_stages(pipe)
-        assert len(stages) == 3
-        assert not hasattr(stages[1], "on_passed")
+        with pytest.raises(AwfApiError, match="on_passed"):
+            load_stages(pipe)
 
-    def test_invalid_policy_word_warns_at_load(self, tmp_path, capsys) -> None:
-        """AUD04-02: an unknown policy word must warn at load time instead of
-        being silently reinterpreted by the resolver (typos like
-        'on_blocked: halt' used to behave as 'escalate' with no hint)."""
+    def test_invalid_policy_word_rejected_at_load(self, tmp_path) -> None:
+        """A-06: an unknown policy word is refused at load (AUD04-02 used to
+        warn; typos like 'on_blocked: halt' now fail instead of being
+        silently reinterpreted by the resolver)."""
+        from awf.api._errors import AwfApiError
+
         pipe = tmp_path / "pipeline.yaml"
         pipe.write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: implement\n    role: worker\n    kind: execute\n"
-            "    on_blocked: halt\n"
-            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n    on_blocked: halt\n"
+            "  - name: verify\n    role: supervisor\n",
             encoding="utf-8",
         )
-        stages = load_stages(pipe)
-        err = capsys.readouterr().err
-        assert "on_blocked" in err and "halt" in err, (
-            f"invalid policy word must be flagged at load, got stderr:\n{err}"
-        )
-        # the value is still loaded verbatim — the resolver fallback applies
-        assert stages[1].on_blocked == "halt"
+        with pytest.raises(AwfApiError, match="on_blocked='halt'"):
+            load_stages(pipe)
 
     def test_duplicate_stage_names_warn_at_load(self, tmp_path, capsys) -> None:
         """AUD03-06: two stages named 'impl' used to load silently — the
@@ -176,8 +175,11 @@ class TestLoadStages:
             f"duplicate stage name must be flagged at load, got stderr:\n{err}"
         )
 
-    def test_negative_max_retries_warns_at_load(self, tmp_path, capsys) -> None:
-        """AUD03-06: max_retries: -3 was accepted without a hint."""
+    def test_negative_max_retries_rejected_at_load(self, tmp_path) -> None:
+        """A-06: max_retries: -3 is refused at load (AUD03-06 used to warn;
+        a negative budget is meaningless, so the file fails)."""
+        from awf.api._errors import AwfApiError
+
         pipe = tmp_path / "pipeline.yaml"
         pipe.write_text(
             "stages:\n"
@@ -186,11 +188,8 @@ class TestLoadStages:
             "  - name: verify\n    role: supervisor\n",
             encoding="utf-8",
         )
-        load_stages(pipe)
-        err = capsys.readouterr().err
-        assert "max_retries" in err and "-3" in err, (
-            f"negative max_retries must be flagged at load, got stderr:\n{err}"
-        )
+        with pytest.raises(AwfApiError, match="max_retries must be non-negative"):
+            load_stages(pipe)
 
     def test_valid_pipeline_stays_quiet_on_new_checks(self, tmp_path, capsys) -> None:
         """AUD03-06: a clean pipeline must not trigger the new warnings."""
@@ -283,15 +282,16 @@ class TestComputeKind:
 
 
 class TestLoadStagesWithNonDict:
-    """BD-29: load_stages handles non-dict entries in stages list."""
+    """A-06: non-dict entries in stages list are refused (BD-29 used to skip
+    them — a typo'd stage silently vanished and the pipeline misbehaved)."""
 
-    def test_non_dict_entries_skipped(self, tmp_path: Path) -> None:
-        """Non-dict entries in stages list are skipped; kind computed from
-        dict-only position."""
+    def test_non_dict_entries_rejected(self, tmp_path: Path) -> None:
+        """A non-dict entry mixed into stages is a form error."""
+        from awf.api._errors import AwfApiError
+
         agentic = tmp_path / ".agentic" / "pipelines"
         agentic.mkdir(parents=True)
         pipeline = agentic / "test.yaml"
-        # YAML with a non-dict entry (string) mixed in
         pipeline.write_text(
             "stages:\n"
             "  - \"invalid\"\n"
@@ -299,20 +299,19 @@ class TestLoadStagesWithNonDict:
             "  - name: execute\n    role: worker\n\n"
             "  - name: verify\n    role: supervisor\n"
         )
-        stages = load_stages(pipeline)
-        assert len(stages) == 3
-        assert stages[0].kind == "plan"
-        assert stages[1].kind == "execute"
-        assert stages[2].kind == "verify"
+        with pytest.raises(AwfApiError, match="stage #0 must be a mapping"):
+            load_stages(pipeline)
 
-    def test_all_non_dict(self, tmp_path: Path) -> None:
-        """Pipeline with only non-dict entries returns empty list."""
+    def test_all_non_dict_rejected(self, tmp_path: Path) -> None:
+        """Pipeline with only non-dict entries is refused, not 'empty'."""
+        from awf.api._errors import AwfApiError
+
         agentic = tmp_path / ".agentic" / "pipelines"
         agentic.mkdir(parents=True)
         pipeline = agentic / "test.yaml"
         pipeline.write_text("stages:\n  - \"a\"\n  - 42\n  - null\n")
-        stages = load_stages(pipeline)
-        assert stages == []
+        with pytest.raises(AwfApiError, match="stage #0 must be a mapping"):
+            load_stages(pipeline)
 
 
 class TestRollbackToKeyScope:
@@ -320,47 +319,46 @@ class TestRollbackToKeyScope:
     on_blocked/on_rejected. On any other policy key the resolver ignores it,
     so the loader must say so instead of accepting it silently."""
 
-    def test_rollback_to_on_on_approved_warns(self, tmp_path: Path, capsys) -> None:
+    def test_rollback_to_on_on_approved_rejected(self, tmp_path: Path) -> None:
+        """A-06: rollback_to: on a key the resolver does not read is refused
+        at load (FU-19 used to warn — dead config now fails the file)."""
+        from awf.api._errors import AwfApiError
+
         pipeline = tmp_path / "pipeline.yaml"
         pipeline.write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: implement\n    role: worker\n    kind: execute\n"
-            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n"
+            "  - name: verify\n    role: supervisor\n"
             "    on_approved: rollback_to:implement\n",
             encoding="utf-8",
         )
-        stages = load_stages(pipeline)
-        err = capsys.readouterr().err
-        assert "on_approved" in err and "rollback_to" in err
-        # the warning names the keys where rollback_to: actually works
-        assert "on_blocked" in err and "on_rejected" in err
-        # the value is still loaded verbatim — resolver fallback applies
-        assert stages[2].on_approved == "rollback_to:implement"
+        with pytest.raises(AwfApiError, match="on_approved"):
+            load_stages(pipeline)
 
-    def test_rollback_to_on_on_failed_warns(self, tmp_path: Path, capsys) -> None:
+    def test_rollback_to_on_on_failed_rejected(self, tmp_path: Path) -> None:
         """on_failed is a reserved key (AUD16-03) — nothing drives it, so a
-        rollback_to: there is dead config and must be flagged."""
+        rollback_to: there is dead config and is refused at load."""
+        from awf.api._errors import AwfApiError
+
         pipeline = tmp_path / "pipeline.yaml"
         pipeline.write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: implement\n    role: worker\n    kind: execute\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n"
             "  - name: test\n    role: tester\n    on_failed: rollback_to:implement\n",
             encoding="utf-8",
         )
-        stages = load_stages(pipeline)
-        err = capsys.readouterr().err
-        assert "on_failed" in err and "rollback_to" in err
-        assert stages[2].on_failed == "rollback_to:implement"
+        with pytest.raises(AwfApiError, match="on_failed"):
+            load_stages(pipeline)
 
     def test_rollback_to_on_supported_key_no_warning(self, tmp_path: Path, capsys) -> None:
         pipeline = tmp_path / "pipeline.yaml"
         pipeline.write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: implement\n    role: worker\n    kind: execute\n"
-            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n"
+            "  - name: verify\n    role: supervisor\n"
             "    on_rejected: rollback_to:implement\n",
             encoding="utf-8",
         )
@@ -375,9 +373,9 @@ class TestRollbackToKeyScope:
         pipeline = tmp_path / "pipeline.yaml"
         pipeline.write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: implement\n    role: worker\n    kind: execute\n"
-            "  - name: verify\n    role: supervisor\n    kind: verify\n"
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: implement\n    role: worker\n"
+            "  - name: verify\n    role: supervisor\n"
             "    on_rejected: rollback_to:ghost\n",
             encoding="utf-8",
         )

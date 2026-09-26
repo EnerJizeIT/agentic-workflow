@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from awf.commit_gate import _files_changed_since_baseline
+from awf.commit_plan import _files_changed_since_baseline
 
 
 @pytest.fixture

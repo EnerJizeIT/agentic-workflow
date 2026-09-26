@@ -4,8 +4,9 @@
   - opencode.db (read-only): воркерские сессии (заголовок
     ``awf-<роль>-TODO-NNNN``) и сессии супервизора (подстроки из конфига
     ``metrics.supervisor_titles``) — токены, компрессии, окна сессий;
-  - git-репозиторий: коммиты юнитов (субъект содержит "verify" и
-    ``TODO-NNNN``) и ``git show --shortstat`` для строк кода;
+  - git-репозиторий: коммиты юнитов (формат commit-гейта
+    ``awf(<stage>): TODO-NNNN``, любая стадия) и ``git show --shortstat``
+    для строк кода;
   - ``.agentic/context/BASELINE-<todo>.sha`` — mtime старта окна юнита.
 
 Отчёт: таблица «юнит → Δt, сессии, воркер in/out/cache, компрессии,
@@ -111,8 +112,43 @@ SUBSCRIPTIONS_TIMEOUT = 10.0
 # U8d: недель в месяце (GLM: недельные кредитные лимиты → месячная доля).
 WEEKS_PER_MONTH = 4.345
 
-_WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4})$")
-_TODO_RE = re.compile(r"TODO-(\d{4})")
+# A-10: общий парсер TODO ID — 4+ цифры с явной правой границей
+# (не-словарный символ или конец строки). TODO-10000 не усекается до
+# TODO-1000, TODO-10000x не читается как ID вовсе.
+_TODO_ID_RE = re.compile(r"TODO-(\d{4,})(?!\w)")
+_WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4,})$")  # правая граница — `$`
+# A-17: префикс commit-гейта `awf(<stage>): ` — стадия любая (verify/execute/
+# кастомные); ID извлекает общий парсер A-10 (:func:`_todo_id_from_subject`).
+_AWF_STAGE_HEAD_RE = re.compile(r"^awf\([^)]*\):\s*")
+
+
+def _todo_id_from_title(title: str | None) -> str | None:
+    """Заголовок воркер-сессии ``awf-<роль>-TODO-NNNN`` → TODO ID или None."""
+    m = _WORKER_TITLE_RE.match(title or "")
+    return f"TODO-{m.group(1)}" if m else None
+
+
+def _todo_id_from_subject(subject: str | None) -> str | None:
+    """Коммит-субъект → TODO ID или None (явная правая граница)."""
+    m = _TODO_ID_RE.search(subject or "")
+    return m.group(0) if m else None
+
+
+def _todo_id_from_stage_commit(subj: str | None) -> str | None:
+    """Субъект commit-гейта ``awf(<stage>): TODO-<id>`` (любая стадия) →
+    TODO ID или None.
+
+    A-17: формат один для всех стадий (``verify``/``execute``/кастомные),
+    так что стадия в префиксе не влияет на распознавание. ID извлекает
+    общий парсер A-10 (:func:`_todo_id_from_subject`) — второй не заводим.
+    """
+    s = subj or ""
+    m = _AWF_STAGE_HEAD_RE.match(s)
+    if not m:
+        return None
+    return _todo_id_from_subject(s[m.end():])
+
+
 _SHORTSTAT_INS = re.compile(r"(\d+) insertions?")
 _SHORTSTAT_DEL = re.compile(r"(\d+) deletions?")
 
@@ -395,8 +431,8 @@ def collect_workers(
         warnings.append(f"запрос по сессиям упал: {e} — воркеры не измеряются")
         return workers
     for sid, title, sdir, tin, tout, tcr, tcw, cost, tc, tu in rows:
-        m = _WORKER_TITLE_RE.match(title or "")
-        if not m:
+        todo = _todo_id_from_title(title)
+        if not todo:
             continue
         if directory is not None:
             if not gate.allowed(sdir):
@@ -404,7 +440,6 @@ def collect_workers(
         elif matched is not None and sid not in matched:
             excluded += 1
             continue
-        todo = f"TODO-{m.group(1)}"
         d = workers.setdefault(
             todo,
             {
@@ -465,7 +500,8 @@ def collect_workers(
 
 
 def collect_commit_info(repo: Path, warnings: list[str]) -> dict[str, list[tuple[str, int]]]:
-    """Коммиты юнитов: субъект содержит "verify" и TODO-NNNN → {todo: [(sha, ct_s)]}."""
+    """Коммиты юнитов: формат commit-гейта ``awf(<stage>): TODO-NNNN``
+    (любая стадия) → {todo: [(sha, ct_s)]}."""
     commits: dict[str, list[tuple[str, int]]] = {}
     if not (repo / ".git").exists():
         warnings.append(f"git-репозиторий не найден: {repo} — строки кода не измеряются")
@@ -476,10 +512,10 @@ def collect_commit_info(repo: Path, warnings: list[str]) -> dict[str, list[tuple
         if len(parts) < 3:
             continue
         sha, ct, subj = parts
-        m = _TODO_RE.search(subj)
-        if m and "verify" in subj:
+        todo = _todo_id_from_stage_commit(subj)
+        if todo:
             try:
-                commits.setdefault(m.group(0), []).append((sha, int(ct)))
+                commits.setdefault(todo, []).append((sha, int(ct)))
             except ValueError:
                 continue
     return commits
@@ -740,16 +776,6 @@ def model_costs_from_catalog(
         )
         return None
     return {k: float(cost.get(k, 0) or 0) for k in _COST_KEYS}
-
-
-def load_reference_costs(
-    models_path: Path, reference_model: str, warnings: list[str]
-) -> dict[str, float] | None:
-    """Цены референс-модели из models.json (за 1M токенов) или None."""
-    catalog = load_models_catalog(models_path, warnings)
-    if catalog is None:
-        return None
-    return model_costs_from_catalog(catalog, reference_model, warnings)
 
 
 def convert_cost(

@@ -337,7 +337,7 @@ Created: ./.agentic/roles/security-audit.md
 | **Commit failed (pre-commit hook)** | TODO is NOT archived. Fix hook issue, then `awf_approve` again |
 | **Worker didn't signal** | Salvage path triggers automatically. Supervisor reads SALVAGE prompt and decides |
 | **Supervisor paused on verify >1 h** | Stage times out → salvage. Extend the window: `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200` |
-| **Phase stuck** | Check current state with `awf_current_step`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs); a full reset is a last resort, see below |
+| **Phase stuck** | Check current state with `awf_current_step`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs) and is refused while a pipeline is live. Re-running `awf_init` without `force` is safe: it deletes nothing and preserves the project byte-for-byte. A full reset is a last resort, see below |
 | **Wrong roles after setup** | `awf_analyze_roles` to re-check overlaps, `awf_confirm_normalized` to advance |
 
 To **hard reset** everything: this deletes all runtime data (TODOs, signals, logs, state).
@@ -354,7 +354,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-45 tools: 40 `awf_*` workflow + 5 UI (forms).
+47 tools: 42 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -380,6 +380,15 @@ accept `no_checkpoints=true` — the BD-36 plan form is skipped for that one
 launch only. It is process-scoped: not written to config or state, the next
 launch asks again (the run-level `awf_run_start(no_checkpoints=...)` is
 unchanged).
+
+**Engine pin (TODO-0077).** When the project IS awf (or otherwise the engine
+must not import the working tree — `python -m awf` puts cwd first on
+`sys.path`), set `automation.runner_dir` in `.agentic/config.yaml` to a
+directory containing `awf/__init__.py`. The background child of
+`awf_start` / `awf_continue` then runs from that pinned checkout;
+`--project-dir` and the rest of the child argv are unchanged. The value is
+validated before spawn (invalid path → `AwfApiError`, no process, no PID
+file). Without the key, behavior is unchanged (`cwd` = project directory).
 
 ### TODO
 | Tool | What it does |
@@ -453,6 +462,7 @@ commit by design. That protection used to be silent; now it is visible:
 | `awf_wait_for_event` | Check for pipeline events (reactive, not for polling); after approve it wakes with `done` — the TODO is committed + archived and the message names the next step (`awf_run_next` in a run) |
 | `awf_prove_red` | Prove declared tests are red on the baseline sha |
 | `awf_verify_pack` | One deterministic verify report (GATES file) |
+| `awf_tree_sha` | Working-tree fingerprint (HEAD + tracked + untracked) for `awf_approve(verified_sha=...)` |
 
 ### Metrics
 | Tool | What it does |
@@ -524,6 +534,7 @@ for every replan/split goes into the run report/note.
 | `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`) |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
+| `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop (RUN4 #2) |
 
 ### UI (forms)
 | Tool | What it does |

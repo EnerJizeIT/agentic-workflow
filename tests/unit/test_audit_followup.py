@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 from conftest import _git_init  # AUD12-08: shared git boilerplate
 
+from awf import commit_plan
 from awf.pipeline import Stage
 from awf.signals import find_signal_file
 
@@ -342,7 +343,13 @@ class TestC1PipelineReviewRejection:
 
         # Mock _maybe_commit — agent stage "next" transition calls it,
         # but we don't care about that for C1 (C1 is about verify stage).
-        monkeypatch.setattr(engine, "_maybe_commit", lambda *a, **kw: None)
+        # R-03: the gate returns a typed outcome — "next" skips.
+        monkeypatch.setattr(
+            engine, "_maybe_commit",
+            lambda *a, **kw: commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_SKIPPED, "policy 'next' does not commit"
+            ),
+        )
 
         # Mock _mark_plan_step_done to detect if it was called
         # (only called on verify approved path, NOT on REVIEW)

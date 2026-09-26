@@ -24,27 +24,19 @@ import yaml
 from .. import config as cfg_mod
 from .. import paths
 from .._atomic import atomic_write_text
-from ..pipeline import active_pipeline_name, list_pipeline_names
+from ..pipeline import (
+    active_pipeline_name,
+    list_pipeline_names,
+    validate_pipeline_stages,
+)
 from ._errors import AwfApiError
 from ._helpers import require_agentic, slugify_role
 from ._results import ListPipelinesResult, WritePipelineResult
 
-# Stage keys the pipeline loader accepts (awf/pipeline.py ``Stage``).
-# Unknown keys are REJECTED at write time (AUD13-04: a typo'd key written
-# here would be silently ignored by the loader and misbehave at runtime).
-_ALLOWED_STAGE_KEYS = frozenset(
-    {
-        "name",
-        "role",
-        "description",
-        "on_blocked",
-        "on_approved",
-        "on_rejected",
-        "on_failed",
-        "max_retries",
-        "max_rollbacks",
-    }
-)
+# A-06: stage schema (allowed keys, types, policies, budgets) is validated
+# by the SHARED validator in awf/pipeline.py — the same rule set the
+# loader applies to hand-written YAML (AUD13-04: a typo'd key written here
+# would be silently ignored by the loader and misbehave at runtime).
 
 # Same rule as resolve_pipeline_file (AUD14-05): letters, digits, '_',
 # '.', '-' — no path separators, no spaces, no "." / "..".
@@ -67,34 +59,19 @@ def validate_pipeline_name(name: Any) -> str:
     return name
 
 
-def _validate_stages(stages: Any) -> list[dict[str, Any]]:
+def _validate_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     """Validate/normalize stage objects against the pipeline YAML schema.
 
-    Every stage needs a ``role``; ``name`` defaults to the role slug
+    Form validation (list of mappings, unknown keys, role, policies,
+    budgets) is the shared A-06 validator (awf/pipeline.py). Here it
+    normalizes: ``role`` is slugified, ``name`` defaults to the role slug
     (same slug the runtime uses for role files and models.<role>).
     """
-    if not isinstance(stages, list) or not stages:
-        raise AwfApiError(
-            "stages must be a non-empty list of stage objects "
-            "(each a mapping with at least 'role')."
-        )
+    validated = validate_pipeline_stages(stages, source)
     result: list[dict[str, Any]] = []
-    for i, stage in enumerate(stages):
-        if not isinstance(stage, dict):
-            raise AwfApiError(
-                f"Stage #{i} must be a mapping, got {type(stage).__name__}."
-            )
-        role = str(stage.get("role") or "").strip()
-        if not role:
-            raise AwfApiError(f"Stage #{i} has no 'role' — every stage needs one.")
-        unknown = set(stage) - _ALLOWED_STAGE_KEYS
-        if unknown:
-            raise AwfApiError(
-                f"Stage #{i} uses keys the pipeline loader ignores: "
-                f"{sorted(unknown)}. Allowed: {sorted(_ALLOWED_STAGE_KEYS)}."
-            )
+    for stage in validated:
         entry = dict(stage)
-        entry["role"] = slugify_role(role)
+        entry["role"] = slugify_role(entry["role"])
         entry.setdefault("name", entry["role"])
         result.append(entry)
     return result
@@ -128,7 +105,7 @@ def write_pipeline(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
     name = validate_pipeline_name(name)
-    stages = _validate_stages(stages)
+    stages = _validate_stages(stages, f"pipeline {name!r}")
 
     pipelines_dir = paths.pipelines_dir(project_dir)
     pipelines_dir.mkdir(parents=True, exist_ok=True)

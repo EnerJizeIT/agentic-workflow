@@ -442,8 +442,9 @@ Do NOT relay "pipeline waits for your decision" to the user — that's YOUR call
    - Work has issues → write `.agentic/outbox/REVIEW-{todo_id}.md` with specific fixes.
    - Complete failure → `awf_rollback(todo_id)` + new TODO.
 8. Mark step `[x]` in phases file after approve.
-9. **Metrics:** `awf_metrics` / `awf metrics` (по запросу владельца и в конце
-  забега) — отчёт на рабочий стол и копия в `metrics.mirror_dir`, если задан.
+9. **Metrics:** `awf_metrics` / `awf metrics` — по запросу владельца или
+  когда супервизор решит, что нужна сводка. Отчёт на рабочий стол,
+  копия в `metrics.mirror_dir`, если задан.
 
 **CRITICAL:** You are the supervisor. The user hired you to make these decisions.
 DO NOT wait for the user to say "ACK" — that's YOUR call. If the work is good,

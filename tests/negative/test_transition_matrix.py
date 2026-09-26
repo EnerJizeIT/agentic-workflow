@@ -252,7 +252,9 @@ class TestRollbackTargetValidation:
         assert "no-such-role-agent" in err
         assert "no role file" in err
 
-    def test_loader_warns_on_empty_role(self, tmp_path, capsys):
+    def test_loader_rejects_empty_role(self, tmp_path):
+        """A-06: a stage without role is refused at load (used to warn)."""
+        from awf.api._errors import AwfApiError
         from awf.pipeline import load_stages
 
         pipes = tmp_path / ".agentic" / "pipelines"
@@ -265,7 +267,5 @@ class TestRollbackTargetValidation:
             encoding="utf-8",
         )
 
-        load_stages(pipes / "norole.yaml")
-        err = capsys.readouterr().err
-        assert "mystery" in err
-        assert "no role" in err
+        with pytest.raises(AwfApiError, match="mystery"):
+            load_stages(pipes / "norole.yaml")

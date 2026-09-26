@@ -29,8 +29,10 @@ def run(args: Any) -> int:
     project_dir_arg = getattr(args, "project_dir", ".")
 
     project_dir_path = Path(project_dir_arg).resolve()
-    # R1: awf init without force now cleans runtime + preserves config.
-    # Use --force / --hard for full overwrite.
+    # A-11: awf init without force is non-destructive — an existing
+    # .agentic/ (TODOs, done/ archive, state, logs, config) is preserved
+    # as-is; only missing skeleton directories are created. --force is
+    # the only destructive path (refused while a pipeline is live).
     # Error only if not a git repo.
 
     if not git_utils.is_git_repo(project_dir_path):

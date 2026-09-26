@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-09-26
+
+The stabilization program (audit 2026-09-25, 31 units): 21 audit findings
+fixed, launch and commit boundaries closed, one user-visible breaking change.
+
+### Breaking
+- **Legacy `action:` / `kind:` keys rejected in pipeline YAML** — a stage's kind (plan / execute / verify) is now computed from its position in the pipeline; a hand-written `action:` or `kind:` fails at load with a clear error naming the stage and key, instead of being silently ignored and surfacing later at runtime
+
+### Added
+- **Metrics on demand** — `awf metrics` (MCP `awf_metrics`) assembles the work-program report (tokens, compressions, code lines per unit, cost conversion to a reference model) whenever you ask and writes it to the desktop; nothing runs on its own
+- **Pinned engine runner** — `automation.runner_dir` in `.agentic/config.yaml` points the background pipeline child at a checkout that contains `awf/__init__.py`, so a `python -m awf` launch no longer shadows the installed engine with the working tree it orchestrates; without the key, behavior is unchanged
+- **Isolated commit index** — the commit gate commits through a throwaway `GIT_INDEX_FILE`; your index and uncommitted WIP are left untouched, and staged files can no longer leak into the unit's commit
+- **One-time checkpoint token** — the plan-checkpoint form carries a one-time token; a decision POST is accepted only with it (default-deny) and is spent after the first valid submit; the decision body is capped at 64 KiB and concurrent handlers at 16
+- **NEG-4 shim** — a deterministic scenario stand-in for the `opencode` CLI (`tests/infra/opencode_shim`) drives the engine's subprocess container (spawn → signal watch → salvage → hard-timeout kill) in `tests/e2e/test_w6_salvage_scenario.py`; the salvage scenario runs in CI alongside the wheel builds
+
+### Fixed
+- **Audit 2026-09-25: 21 findings (5 P1)** — data safety, launch ownership (one owner for the launch and the queue transition: file lease, run generation, a single task-file storage layer), the git commit contour (commit exactly what was verified; a gate refusal stops the stage), metrics, load boundaries (core + plugin), and release hygiene — each fix with a regression test and a reviewer verdict
+- **R-03-F1** — the commit path no longer leaves the git index "frozen" after a unit commit (incident of 2026-09-25)
+- **A-13** — the launch double-reservation hole closed: a second concurrent launch gets the text noop, not a second spawn
+- **`prove_red`** — bootstrap + verdict classifier: a broken runner (0 collected, collection error, missing new-code symbol) is reported as `broken-runner` instead of a misleading red/green
+- **FU-06** — the one-shot `no_checkpoints` flag no longer leaks from the parent's environment into the pipeline child; the plan-checkpoint gate wiring is restored (AUD16-02)
+
 ## [1.3.0] — 2026-09-23
 
 Four autonomous work programs (RUN6–RUN9): supervisor-focused polish. `awf brief`

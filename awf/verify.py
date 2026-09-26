@@ -1,6 +1,7 @@
 """Verify commands and auto-DONE logic."""
 from __future__ import annotations
 
+import hashlib
 import os
 import shlex
 import subprocess
@@ -66,12 +67,33 @@ def detect_work_evidence(
     return bool(untracked)
 
 
+def _untracked_content_digest(path: Path) -> bytes:
+    """A-09: sha256 of the file bytes; a fixed marker when unreadable.
+
+    The stage fingerprint must reflect the CONTENT of untracked files, not
+    just their names — a byte change in an existing untracked file has to
+    move the hash. Chunked read matches ``git_utils.tree_fingerprint``.
+    A file that vanished or became unreadable between listing and reading
+    hashes a fixed marker: deterministic, and no exception inside the
+    stage loop.
+    """
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return b"<unreadable>"
+    return digest.digest()
+
+
 def work_fingerprint(
     project_dir: str | Path,
     baseline_sha: str,
     todo_id: str = "",
 ) -> str:
-    """NEG-4 (day-2 B1): hash of the working tree vs baseline.
+    """NEG-4 (day-2 B1) / A-09 (аудит 2026-09-25): content hash of the
+    working tree vs baseline.
 
     ``detect_work_evidence`` answers "is there ANY work?" — a pre-existing
     diff left by an EARLIER stage makes it True. That let ``attempt_auto_done``
@@ -82,19 +104,23 @@ def work_fingerprint(
     Fix: callers snapshot this fingerprint at stage entry and compare at
     stage end. A changed fingerprint means THIS stage produced changes.
 
-    Hash covers ``git diff <baseline>`` text plus untracked files (minus
-    pre-existing ones recorded in ``BASELINE-{todo}.untracked``). Returns
-    ``""`` when the baseline is missing, the dir is not a git repo, or git
-    fails — callers treat ``""`` as "unknown", which fails closed for both
-    the auto-DONE gate and the retry decision.
+    Hash covers:
+    - tracked changes: ``git diff --binary <baseline>`` — the binary-safe
+      patch (A-09: makes the hash content-addressed for binary files
+      instead of relying on the diff text);
+    - untracked files: name + sha256 of the content (A-09: names alone
+      could not see a byte change in an EXISTING untracked file — the
+      stage then looked like a no-op and could fall into retry/salvage).
+    Pre-existing untracked files recorded in ``BASELINE-{todo}.untracked``
+    stay excluded. Returns ``""`` when the baseline is missing, the dir is
+    not a git repo, or git fails — callers treat ``""`` as "unknown", which
+    fails closed for both the auto-DONE gate and the retry decision.
     """
-    import hashlib
-
     cwd = Path(project_dir)
     if not baseline_sha or not git_utils.is_git_repo(cwd):
         return ""
     try:
-        diff_text = git_utils.git_stdout(cwd, "diff", baseline_sha, check=False)
+        diff_text = git_utils.git_stdout(cwd, "diff", "--binary", baseline_sha, check=False)
         untracked = git_utils.untracked_files(cwd)
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
         return ""
@@ -112,8 +138,13 @@ def work_fingerprint(
             except OSError:
                 pass
 
-    payload = diff_text + "\n--untracked--\n" + "\n".join(sorted(untracked))
-    return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
+    h = hashlib.sha256()
+    h.update(diff_text.encode("utf-8", errors="replace"))
+    h.update(b"\n--untracked--\n")
+    for name in sorted(untracked):
+        h.update(name.encode("utf-8") + b"\0")
+        h.update(_untracked_content_digest(cwd / name))
+    return h.hexdigest()
 
 
 def run_verify_commands(

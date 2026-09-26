@@ -465,51 +465,102 @@ optional_data_keys: []
 
       // === Helpers ===
 
-      function modelOptions() {
-        var h = '';
+      // A-16: options are built via DOM API — data (model names) is never
+      // assembled into HTML strings; values go through textContent/value.
+      function buildModelSelect() {
+        var sel = document.createElement('select');
+        sel.name = 'model';
+        sel.className = 'model-select';
         if (recentModels.length > 0) {
-          h += '<optgroup label="Recent">';
-          recentModels.forEach(function (m) { h += '<option value="' + m + '">' + m + '</option>'; });
-          h += '</optgroup>';
+          var recent = document.createElement('optgroup');
+          recent.label = 'Recent';
+          recentModels.forEach(function (m) {
+            var o = document.createElement('option');
+            o.value = m;
+            o.textContent = m;
+            recent.appendChild(o);
+          });
+          sel.appendChild(recent);
         }
-        h += '<optgroup label="All models">';
+        var all = document.createElement('optgroup');
+        all.label = 'All models';
         if (allModels.length === 0) {
-          h += '<option value="">(нет моделей)</option>';
+          var none = document.createElement('option');
+          none.value = '';
+          none.textContent = '(нет моделей)';
+          all.appendChild(none);
         } else {
-          allModels.forEach(function (m) { h += '<option value="' + m + '">' + m + '</option>'; });
+          allModels.forEach(function (m) {
+            var o = document.createElement('option');
+            o.value = m;
+            o.textContent = m;
+            all.appendChild(o);
+          });
         }
-        h += '</optgroup>';
-        return h;
+        sel.appendChild(all);
+        return sel;
       }
 
-      function agentOptions() {
-        var h = '';
+      function buildAgentSelect() {
+        var sel = document.createElement('select');
+        sel.name = 'agent';
+        sel.className = 'agent-select';
+        sel.onchange = function () { handleAgentSelect(sel); };
         // UI-1: 3 clean sections (user spec).
         // Section 1: previously used — merge project-local + global saved
         var seen = {};
         if (projectRoles.length > 0 || customAgents.length > 0) {
-          h += '<optgroup label="Ранее использовавшиеся">';
+          var prev = document.createElement('optgroup');
+          prev.label = 'Ранее использовавшиеся';
           projectRoles.forEach(function (r) {
-            if (!seen[r.id]) { seen[r.id] = true; h += '<option value="' + r.id + '" data-kind="project">' + r.title + '</option>'; }
+            if (!seen[r.id]) {
+              seen[r.id] = true;
+              var o = document.createElement('option');
+              o.value = r.id;
+              o.setAttribute('data-kind', 'project');
+              o.textContent = r.title;
+              prev.appendChild(o);
+            }
           });
           customAgents.forEach(function (c) {
-            if (!seen[c.id]) { seen[c.id] = true; h += '<option value="' + c.id + '" data-custom="true" data-kind="custom">' + c.title + '</option>'; }
+            if (!seen[c.id]) {
+              seen[c.id] = true;
+              var o = document.createElement('option');
+              o.value = c.id;
+              o.setAttribute('data-custom', 'true');
+              o.setAttribute('data-kind', 'custom');
+              o.textContent = c.title;
+              prev.appendChild(o);
+            }
           });
-          h += '</optgroup>';
+          sel.appendChild(prev);
         }
         // Section 2: all skills (global ~/.config/opencode/skills/)
         if (globalSkills.length > 0) {
-          h += '<optgroup label="Все скиллы">';
+          var skills = document.createElement('optgroup');
+          skills.label = 'Все скиллы';
           globalSkills.forEach(function (s) {
             var label = s.title + (s.desc ? ' — ' + s.desc.substring(0, 80) : '');
             if (label.length > 100) label = label.substring(0, 97) + '...';
-            h += '<option value="' + s.id + '" data-kind="skill">' + label + '</option>';
+            var o = document.createElement('option');
+            o.value = s.id;
+            o.setAttribute('data-kind', 'skill');
+            o.textContent = label;
+            skills.appendChild(o);
           });
-          h += '</optgroup>';
+          sel.appendChild(skills);
         }
         // Section 3: choose file
-        h += '<option value="__custom__" data-kind="custom">+ Выбрать файл (.md)...</option>';
-        return h;
+        var custom = document.createElement('option');
+        custom.value = '__custom__';
+        custom.setAttribute('data-kind', 'custom');
+        custom.textContent = '+ Выбрать файл (.md)...';
+        sel.appendChild(custom);
+        return sel;
+      }
+
+      function clearNode(el) {
+        while (el.firstChild) { el.removeChild(el.firstChild); }
       }
 
       function makeChip(name, onRemove) {
@@ -522,10 +573,22 @@ optional_data_keys: []
         var x = document.createElement('button');
         x.type = 'button';
         x.className = 'chip-close';
-        x.innerHTML = '&times;';
+        x.textContent = '×';
         x.onclick = function () { chip.remove(); if (onRemove) onRemove(); };
         chip.appendChild(x);
         return chip;
+      }
+
+      function buildSaveCheckbox() {
+        var label = document.createElement('label');
+        label.className = 'save-cb';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'save-agent-cb';
+        cb.checked = true;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' 💾'));
+        return label;
       }
 
       function updateEmpty() {
@@ -562,11 +625,39 @@ optional_data_keys: []
         var tbody = document.getElementById('team-rows');
         var tr = document.createElement('tr');
         tr.className = 'team-row';
-        tr.innerHTML =
-          '<td><select name="agent" class="agent-select" onchange="handleAgentSelect(this)">' + agentOptions() + '</select></td>' +
-          '<td><select name="model" class="model-select">' + modelOptions() + '</select></td>' +
-          '<td><button type="button" class="btn-reorder team-up" title="Вверх">&#9650;</button><button type="button" class="btn-reorder team-down" title="Вниз">&#9660;</button></td>' +
-          '<td><button type="button" class="btn-remove" onclick="removeRow(this)">&times;</button></td>';
+
+        var tdAgent = document.createElement('td');
+        tdAgent.appendChild(buildAgentSelect());
+
+        var tdModel = document.createElement('td');
+        tdModel.appendChild(buildModelSelect());
+
+        var tdOrder = document.createElement('td');
+        var up = document.createElement('button');
+        up.type = 'button';
+        up.className = 'btn-reorder team-up';
+        up.title = 'Вверх';
+        up.textContent = '▲';
+        var down = document.createElement('button');
+        down.type = 'button';
+        down.className = 'btn-reorder team-down';
+        down.title = 'Вниз';
+        down.textContent = '▼';
+        tdOrder.appendChild(up);
+        tdOrder.appendChild(down);
+
+        var tdRemove = document.createElement('td');
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn-remove';
+        removeBtn.textContent = '×';
+        removeBtn.onclick = function () { removeRow(removeBtn); };
+        tdRemove.appendChild(removeBtn);
+
+        tr.appendChild(tdAgent);
+        tr.appendChild(tdModel);
+        tr.appendChild(tdOrder);
+        tr.appendChild(tdRemove);
         tbody.appendChild(tr);
         updateEmpty();
         validate();
@@ -602,16 +693,37 @@ optional_data_keys: []
           }
           if (!skill) return;
           row.classList.add('custom-agent-row', 'skill-row');
-          // Replace cell with editable role-name input + skill chip
-          cell.innerHTML =
-            '<div class="custom-agent-cell">' +
-              '<input type="text" class="agent-name" name="custom_agent_name" value="' + skill.title.replace(/"/g, '&quot;') + '" placeholder="Имя роли в pipeline">' +
-              '<div class="skill-zone">' +
-                '<span class="chip skill-inline"><span class="chip-name">\uD83E\uDDE9 ' + skill.title + '</span></span>' +
-                '<input type="hidden" class="skill-hidden" name="custom_agent_content" value="' + skill.content.replace(/"/g, '&quot;') + '">' +
-              '</div>' +
-              '<label class="save-cb"><input type="checkbox" class="save-agent-cb" checked> \uD83D\uDCBE</label>' +
-            '</div>';
+          // Replace cell with editable role-name input + skill chip.
+          // A-16: skill.title/skill.content go through value/textContent —
+          // they are data, never markup.
+          clearNode(cell);
+          var div = document.createElement('div');
+          div.className = 'custom-agent-cell';
+          var nameInput = document.createElement('input');
+          nameInput.type = 'text';
+          nameInput.className = 'agent-name';
+          nameInput.name = 'custom_agent_name';
+          nameInput.value = skill.title;
+          nameInput.placeholder = 'Имя роли в pipeline';
+          var skillZone = document.createElement('div');
+          skillZone.className = 'skill-zone';
+          var chip = document.createElement('span');
+          chip.className = 'chip skill-inline';
+          var chipName = document.createElement('span');
+          chipName.className = 'chip-name';
+          chipName.textContent = '\uD83E\uDDE9 ' + skill.title;
+          chip.appendChild(chipName);
+          skillZone.appendChild(chip);
+          var hidden = document.createElement('input');
+          hidden.type = 'hidden';
+          hidden.className = 'skill-hidden';
+          hidden.name = 'custom_agent_content';
+          hidden.value = skill.content;
+          skillZone.appendChild(hidden);
+          div.appendChild(nameInput);
+          div.appendChild(skillZone);
+          div.appendChild(buildSaveCheckbox());
+          cell.appendChild(div);
           validate();
           return;
         }
@@ -621,21 +733,35 @@ optional_data_keys: []
         // Convert to custom agent row (user uploads .md file)
         row.classList.add('custom-agent-row');
         var idx = rowIdxCounter++;
-        cell.innerHTML =
-          '<div class="custom-agent-cell">' +
-            '<input type="text" class="agent-name" name="custom_agent_name" placeholder="Имя агента">' +
-            '<div class="skill-zone">' +
-              '<label class="btn upload-btn" for="skill-' + idx + '">📎 .md</label>' +
-              '<input type="file" id="skill-' + idx + '" accept=".md,.txt">' +
-              '<input type="hidden" class="skill-hidden" name="custom_agent_content">' +
-            '</div>' +
-            '<label class="save-cb"><input type="checkbox" class="save-agent-cb" checked> \uD83D\uDCBE</label>' +
-          '</div>';
-
-        var fileInput = cell.querySelector('#skill-' + idx);
-        var hiddenContent = cell.querySelector('.skill-hidden');
-        var uploadLabel = cell.querySelector('.upload-btn');
-        var skillZone = cell.querySelector('.skill-zone');
+        clearNode(cell);
+        var div = document.createElement('div');
+        div.className = 'custom-agent-cell';
+        var nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.className = 'agent-name';
+        nameInput.name = 'custom_agent_name';
+        nameInput.placeholder = 'Имя агента';
+        var skillZone = document.createElement('div');
+        skillZone.className = 'skill-zone';
+        var uploadLabel = document.createElement('label');
+        uploadLabel.className = 'btn upload-btn';
+        uploadLabel.htmlFor = 'skill-' + idx;
+        uploadLabel.textContent = '📎 .md';
+        var fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.id = 'skill-' + idx;
+        fileInput.accept = '.md,.txt';
+        var hiddenContent = document.createElement('input');
+        hiddenContent.type = 'hidden';
+        hiddenContent.className = 'skill-hidden';
+        hiddenContent.name = 'custom_agent_content';
+        skillZone.appendChild(uploadLabel);
+        skillZone.appendChild(fileInput);
+        skillZone.appendChild(hiddenContent);
+        div.appendChild(nameInput);
+        div.appendChild(skillZone);
+        div.appendChild(buildSaveCheckbox());
+        cell.appendChild(div);
 
         fileInput.addEventListener('change', function (e) {
           var f = e.target.files[0];
@@ -700,7 +826,7 @@ optional_data_keys: []
         } else {
           area.classList.remove('visible');
           document.getElementById('sv-content').value = '';
-          document.getElementById('sv-chips').innerHTML = '';
+          clearNode(document.getElementById('sv-chips'));
           document.getElementById('sv-upload-btn').classList.remove('hidden');
         }
       };
@@ -714,7 +840,7 @@ optional_data_keys: []
         var f = e.target.files[0];
         if (!f) return;
         svUploadBtn.classList.add('hidden');
-        svChips.innerHTML = '';
+        clearNode(svChips);
         svChips.appendChild(makeChip(f.name, function () {
           svContent.value = '';
           svFile.value = '';

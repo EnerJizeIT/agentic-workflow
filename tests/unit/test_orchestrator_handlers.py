@@ -1,6 +1,7 @@
 """Tests for extracted transition handlers (_handle_next, _handle_escalate, _handle_rollback)."""
 from __future__ import annotations
 
+from awf import commit_plan
 from awf.pipeline import Stage
 from awf.pipeline_engine import _handle_escalate, _handle_next, _handle_rollback
 
@@ -13,31 +14,57 @@ def _make_stage(name="implement", role="worker", max_retries=3):
 
 
 class TestHandleNext:
-
     def test_advances_stage_idx(self, tmp_path, monkeypatch):
-        """_handle_next returns stage_idx + 1."""
-        monkeypatch.setattr("awf.pipeline_engine._maybe_commit", lambda *a, **kw: None)
+        """_handle_next returns (stage_idx + 1, 0) on a proceeding outcome."""
+        monkeypatch.setattr(
+            "awf.pipeline_engine._maybe_commit",
+            lambda *a, **kw: commit_plan.CommitOutcome(commit_plan.OUTCOME_SKIPPED, "policy 'next' does not commit"),
+        )
         monkeypatch.setattr("awf.pipeline_engine._read_baseline_sha", lambda *a: "")
-        new_idx = _handle_next(
+        new_idx, rc = _handle_next(
             project_dir=tmp_path, logs_dir=tmp_path,
             s_name="implement", current_todo="TODO-0001",
             action="next", auto=False,
             retry_counts=[0, 0, 0], stage_idx=1,
         )
         assert new_idx == 2
+        assert rc == 0
 
     def test_resets_retry_count(self, tmp_path, monkeypatch):
         """_handle_next resets retry_counts[stage_idx] to 0."""
-        monkeypatch.setattr("awf.pipeline_engine._maybe_commit", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "awf.pipeline_engine._maybe_commit",
+            lambda *a, **kw: commit_plan.CommitOutcome(commit_plan.OUTCOME_COMMITTED, "", "abc1234"),
+        )
         monkeypatch.setattr("awf.pipeline_engine._read_baseline_sha", lambda *a: "")
         retry_counts = [0, 2, 0]  # stage 1 had 2 retries
-        _handle_next(
+        new_idx, rc = _handle_next(
             project_dir=tmp_path, logs_dir=tmp_path,
             s_name="implement", current_todo="TODO-0001",
             action="commit_and_next", auto=False,
             retry_counts=retry_counts, stage_idx=1,
         )
         assert retry_counts[1] == 0
+        assert (new_idx, rc) == (2, 0)
+
+    def test_refused_commit_stops_instead_of_advancing(self, tmp_path, monkeypatch):
+        """A-14 (fixed by R-03): a refused commit on the execute stage must
+        stop the cycle (exit 1, stage unchanged) — the boolean-ignore path
+        advanced anyway before R-03."""
+        monkeypatch.setattr(
+            "awf.pipeline_engine._maybe_commit",
+            lambda *a, **kw: commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, "rejected verdict"),
+        )
+        monkeypatch.setattr("awf.pipeline_engine._read_baseline_sha", lambda *a: "")
+        retry_counts = [0, 2, 0]
+        new_idx, rc = _handle_next(
+            project_dir=tmp_path, logs_dir=tmp_path,
+            s_name="implement", current_todo="TODO-0001",
+            action="commit_and_next", auto=False,
+            retry_counts=retry_counts, stage_idx=1,
+        )
+        assert (new_idx, rc) == (1, 1), "A-14: a refused commit must stop the cycle"
+        assert retry_counts[1] == 2, "the retry count must survive the stop"
 
 
 class TestHandleEscalate:

@@ -157,7 +157,15 @@ def test_get_submit_unknown_path_returns_404(http_setup):
 
 
 def test_submit_too_large_body_returns_413(http_setup):
-    """Body > 1MB returns 413."""
+    """Declared body > 1MB returns 413 without draining (A-07): declare
+    far more than the limit, send a small fraction — the server must
+    refuse before reading the body and leave the form pending.
+
+    (Was: urllib with a real 2 MiB body. With no-drain 413 + Connection:
+    close the server closes the connection while the client may still be
+    writing — the kernel RST can preempt urllib's read of the 413. The
+    raw-socket form is deterministic; the oversized case is covered in
+    full by test_audit25_a07_plugin_body.py.)"""
     config, registry, port = http_setup
     registry.add(FormRecord(
         form_id="FORM-001",
@@ -165,15 +173,18 @@ def test_submit_too_large_body_returns_413(http_setup):
         opened_at=datetime.now(timezone.utc),
     ))
 
-    big_data = b"x" * (2 * 1024 * 1024)
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/submit/FORM-001",
-        data=big_data,
-        method="POST",
+    raw = (
+        b"POST /submit/FORM-001 HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        + f"Content-Length: {2 * 1024 * 1024}\r\n".encode("ascii")
+        + b"\r\n"
+        + b"x" * 1024
     )
-    with pytest.raises(urllib.error.HTTPError) as exc_info:
-        urllib.request.urlopen(req)
-    assert exc_info.value.code == 413
+    resp = _raw_post(port, raw)
+
+    assert b" 413 " in resp.split(b"\r\n", 1)[0], resp.split(b"\r\n", 1)[0]
+    assert not (config.inputs_dir / "FORM-001.yaml").exists()
+    assert registry.get("FORM-001").status == "pending"
 
 
 def test_submit_write_failure_rolls_back_to_pending(http_setup, monkeypatch):

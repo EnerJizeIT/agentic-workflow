@@ -9,6 +9,7 @@ Coverage matrix:
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import time
 import urllib.error
@@ -20,6 +21,31 @@ import pytest
 from conftest import _free_port  # AUD12-09: shared free-port helper
 
 from awf import plan_checkpoint
+
+# A-03: one-time form token. Direct-server tests pass it to the server and
+# POST it; e2e tests extract the rendered one from the temp form HTML.
+FORM_TOKEN = "integration-form-token"
+
+_FORM_TOKEN_RE = re.compile(r'formToken = "([^"]+)"')
+
+
+def _extract_form_token(todo_id: str = "TODO-0001") -> str:
+    """A-03: the one-time token rendered into the temp form HTML."""
+    html_files = sorted(
+        Path(tempfile.gettempdir()).glob(f"awf-checkpoint-{todo_id}-*.html")
+    )
+    assert html_files, "form HTML not found in tempdir"
+    html = html_files[-1].read_text(encoding="utf-8")
+    m = _FORM_TOKEN_RE.search(html)
+    assert m, "formToken not found in form HTML"
+    return m.group(1)
+
+
+# Bound at import, before any monkeypatch: wrappers that call _run_with_post
+# twice in one test must each wrap the TRUE original (re-reading the module
+# attribute would nest the wrappers and spawn a stray POST thread from the
+# earlier call).
+_ORIGINAL_START_SERVER = plan_checkpoint._start_checkpoint_server
 
 # ── TestCheckpointEnabled ────────────────────────────────────────────────────
 
@@ -165,10 +191,12 @@ class TestCheckpointServer:
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=_free_port(), decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             status, body = self._post(
-                server.server_address[1], b"decision=approve",
+                server.server_address[1],
+                b"decision=approve&token=" + FORM_TOKEN.encode(),
             )
             assert status == 200
             assert decision.get("decision") == "approve"
@@ -182,12 +210,14 @@ class TestCheckpointServer:
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=_free_port(), decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             new_content = "Rewritten TODO body"
             payload = (
                 b"decision=edit&edited_content="
                 + urllib.parse.quote(new_content).encode()
+                + b"&token=" + FORM_TOKEN.encode()
             )
             status, _ = self._post(server.server_address[1], payload)
             assert status == 200
@@ -202,10 +232,12 @@ class TestCheckpointServer:
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=_free_port(), decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             status, _ = self._post(
-                server.server_address[1], b"decision=reject",
+                server.server_address[1],
+                b"decision=reject&token=" + FORM_TOKEN.encode(),
             )
             assert status == 200
             assert decision.get("decision") == "reject"
@@ -218,10 +250,12 @@ class TestCheckpointServer:
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=_free_port(), decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             status, _ = self._post(
-                server.server_address[1], b"decision=hack",
+                server.server_address[1],
+                b"decision=hack&token=" + FORM_TOKEN.encode(),
             )
             assert status == 400
             assert decision == {}  # not populated
@@ -325,11 +359,12 @@ class TestRunPlanCheckpoint:
             # Schedule approve POST in background thread.
             import threading
             def _approve():
-                time.sleep(0.2)  # let server fully bind
+                time.sleep(0.2)  # let server bind + the form HTML land
                 port_actual = server.server_address[1]
+                token = _extract_form_token()
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{port_actual}/checkpoint",
-                    data=b"decision=approve",
+                    data=b"decision=approve&token=" + token.encode(),
                     timeout=2,
                 ).read()
             threading.Thread(target=_approve, daemon=True).start()
@@ -360,10 +395,12 @@ class TestRunPlanCheckpoint:
             server = real_start(port, decision_holder, edited_holder, **kw)
 
             def _edit():
-                time.sleep(0.2)
+                time.sleep(0.2)  # let the form HTML land
+                token = _extract_form_token()
                 payload = (
                     b"decision=edit&edited_content="
                     + urllib.parse.quote(new_content).encode()
+                    + b"&token=" + token.encode()
                 )
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
@@ -435,11 +472,12 @@ class TestRunPlanCheckpoint:
             server = real_start(port, decision_holder, edited_holder, **kw)
 
             def _empty_edit():
-                time.sleep(0.2)
+                time.sleep(0.2)  # let the form HTML land
+                token = _extract_form_token()
                 # Empty content submitted
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
-                    data=b"decision=edit&edited_content=",
+                    data=b"decision=edit&edited_content=&token=" + token.encode(),
                     timeout=2,
                 ).read()
 
@@ -711,6 +749,16 @@ class TestGateWiringUnpinned:
 class TestCheckpointPortSurfaces:
     """AUD03-02: logs/state must carry the real OS-assigned port, not 0."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        # A-03: the form HTML (with the one-time token) is rendered into the
+        # tempdir — isolate it so the extraction glob sees only this test's
+        # form (the real tempdir is shared across xdist workers).
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
     def _make_project(self, tmp_path: Path) -> Path:
         inbox = tmp_path / ".agentic" / "inbox"
         phases = tmp_path / ".agentic" / "phases"
@@ -736,10 +784,11 @@ class TestCheckpointPortSurfaces:
             real_ports.append(server.server_address[1])
 
             def _approve():
-                time.sleep(0.2)
+                time.sleep(0.2)  # let the form HTML land
+                token = _extract_form_token()
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
-                    data=b"decision=approve", timeout=2,
+                    data=b"decision=approve&token=" + token.encode(), timeout=2,
                 ).read()
 
             import threading
@@ -846,6 +895,16 @@ class TestStaleCleanupProtectsLiveForm:
 class TestCheckpointHashSkip:
     """AUD03-04: skip hash must be keyed by todo_id and cover written content."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_tempdir(self, tmp_path, monkeypatch):
+        # A-03: the form HTML (with the one-time token) is rendered into the
+        # tempdir — isolate it so _extract_form_token's glob sees only this
+        # test's forms (the real tempdir is shared across xdist workers).
+        isolated = tmp_path / "ckpt-tmp"
+        isolated.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(isolated))
+        yield
+
     def _make_project(self, tmp_path: Path, todo_id: str = "TODO-0001",
                       content: str = "Original task") -> Path:
         inbox = tmp_path / ".agentic" / "inbox"
@@ -858,16 +917,15 @@ class TestCheckpointHashSkip:
         return tmp_path
 
     def _run_with_post(self, tmp_path, todo_id, post_data: bytes, monkeypatch):
-        real_start = plan_checkpoint._start_checkpoint_server
-
         def capturing_start(port, decision_holder, edited_holder, **kw):
-            server = real_start(port, decision_holder, edited_holder, **kw)
+            server = _ORIGINAL_START_SERVER(port, decision_holder, edited_holder, **kw)
 
             def _post():
-                time.sleep(0.2)
+                time.sleep(0.2)  # let the form HTML land
+                token = _extract_form_token(todo_id)
                 urllib.request.urlopen(
                     f"http://127.0.0.1:{server.server_address[1]}/checkpoint",
-                    data=post_data, timeout=2,
+                    data=post_data + b"&token=" + token.encode(), timeout=2,
                 ).read()
 
             import threading
@@ -952,7 +1010,8 @@ class TestCheckpointHashSkip:
 
 
 class TestCheckpointFirstWins:
-    """AUD03-05: the first accepted POST decides; later POSTs ack, not overwrite."""
+    """AUD03-05 + A-03: the first accepted (valid-token) POST decides;
+    repeat/racing POSTs are refused (spent token), never overwrite."""
 
     def _post(self, port: int, data: bytes) -> int:
         try:
@@ -968,11 +1027,15 @@ class TestCheckpointFirstWins:
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=0, decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             port = server.server_address[1]
-            assert self._post(port, b"decision=approve") == 200
-            assert self._post(port, b"decision=reject") == 200  # ack, no overwrite
+            tok = b"&token=" + FORM_TOKEN.encode()
+            assert self._post(port, b"decision=approve" + tok) == 200
+            # A-03: the token is one-time — the repeat is refused (403),
+            # and the decision is not overwritten either way.
+            assert self._post(port, b"decision=reject" + tok) == 403
             assert decision.get("decision") == "approve", (
                 f"first-wins broken: holder={decision}"
             )
@@ -985,12 +1048,14 @@ class TestCheckpointFirstWins:
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=0, decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             port = server.server_address[1]
-            payload = b"decision=edit&edited_content=First+content"
+            tok = b"&token=" + FORM_TOKEN.encode()
+            payload = b"decision=edit&edited_content=First+content" + tok
             assert self._post(port, payload) == 200
-            assert self._post(port, b"decision=approve") == 200
+            assert self._post(port, b"decision=approve" + tok) == 403
             assert decision.get("decision") == "edit"
             assert edited.get("content") == "First content"
         finally:
@@ -998,26 +1063,33 @@ class TestCheckpointFirstWins:
             server.server_close()
 
     def test_concurrent_posts_yield_single_consistent_decision(self):
-        """Two racing POSTs: exactly one decision lands, holders stay in sync."""
+        """Two racing POSTs with the same valid token: exactly one is
+        accepted, the other is refused (spent token), one decision lands."""
         decision: dict = {}
         edited: dict = {}
         server = plan_checkpoint._start_checkpoint_server(
             port=0, decision_holder=decision, edited_holder=edited,
+            token=FORM_TOKEN,
         )
         try:
             import threading
 
             port = server.server_address[1]
             bar = threading.Barrier(2)
+            statuses: list[int] = []
 
             def _post(payload: bytes):
                 bar.wait()
-                self._post(port, payload)
+                statuses.append(self._post(port, payload))
 
-            t1 = threading.Thread(target=_post, args=(b"decision=approve",))
-            t2 = threading.Thread(target=_post, args=(b"decision=reject",))
+            tok = b"&token=" + FORM_TOKEN.encode()
+            t1 = threading.Thread(target=_post, args=(b"decision=approve" + tok,))
+            t2 = threading.Thread(target=_post, args=(b"decision=reject" + tok,))
             t1.start(); t2.start(); t1.join(); t2.join()
 
+            assert sorted(statuses) == [200, 403], (
+                f"expected one accepted and one refused, got {statuses}"
+            )
             assert list(decision) == ["decision"]
             assert decision["decision"] in ("approve", "reject")
             assert edited == {}, "non-edit decision must not leave edited content"
@@ -1056,6 +1128,7 @@ class TestCheckpointDecisionFile:
             decision_file=decision_file,
             todo_id="TODO-0001" if decision_file is not None else None,
             logs_dir=tmp_path / "logs",
+            token=FORM_TOKEN,
         )
         return server, decision, edited
 
@@ -1064,7 +1137,7 @@ class TestCheckpointDecisionFile:
         server, decision, _ = self._server(tmp_path, decision_file)
         try:
             port = server.server_address[1]
-            assert self._post(port, b"decision=approve") == 200
+            assert self._post(port, b"decision=approve&token=" + FORM_TOKEN.encode()) == 200
             assert decision["decision"] == "approve"
             data = json.loads(decision_file.read_text(encoding="utf-8"))
             assert data["decision"] == "approve"
@@ -1083,6 +1156,7 @@ class TestCheckpointDecisionFile:
             payload = (
                 b"decision=edit&edited_content="
                 + urllib.parse.quote("Edited by user").encode()
+                + b"&token=" + FORM_TOKEN.encode()
             )
             assert self._post(port, payload) == 200
             assert edited["content"] == "Edited by user"
@@ -1094,13 +1168,15 @@ class TestCheckpointDecisionFile:
             server.server_close()
 
     def test_second_post_keeps_first_decision_on_disk(self, tmp_path):
-        """AUD03-05 parity: first-wins applies to the disk file too."""
+        """AUD03-05 + A-03 parity: the disk file keeps the first decision —
+        the repeat is refused (spent token), not overwritten."""
         decision_file = tmp_path / "CHECKPOINT-TODO-0001.json"
         server, _, _ = self._server(tmp_path, decision_file)
         try:
             port = server.server_address[1]
-            assert self._post(port, b"decision=approve") == 200
-            assert self._post(port, b"decision=reject") == 200
+            tok = b"&token=" + FORM_TOKEN.encode()
+            assert self._post(port, b"decision=approve" + tok) == 200
+            assert self._post(port, b"decision=reject" + tok) == 403
             data = json.loads(decision_file.read_text(encoding="utf-8"))
             assert data["decision"] == "approve"
         finally:
@@ -1108,11 +1184,14 @@ class TestCheckpointDecisionFile:
             server.server_close()
 
     def test_no_file_when_not_configured(self, tmp_path):
-        """Legacy calls (no decision_file) must not create the file."""
+        """Calls without a decision_file must not create the file."""
         server, _, _ = self._server(tmp_path, None)
         try:
             port = server.server_address[1]
-            assert self._post(port, b"decision=approve") == 200
+            assert (
+                self._post(port, b"decision=approve&token=" + FORM_TOKEN.encode())
+                == 200
+            )
             assert not list(tmp_path.glob("CHECKPOINT-*.json"))
         finally:
             server.shutdown()
@@ -1626,7 +1705,7 @@ class TestLaunchNoCheckpointsPlumbing:
         pipes.mkdir()
         (pipes / "default.yaml").write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n",
+            "  - name: plan\n    role: supervisor\n",
             encoding="utf-8",
         )
         monkeypatch.delenv("AWF_PLAN_CHECKPOINT", raising=False)

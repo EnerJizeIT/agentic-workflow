@@ -94,12 +94,12 @@ class TestAwfInit:
         assert result["status"] == "error"
         assert "Not a git repository" in result["error"]
 
-    def test_already_initialized_cleans_runtime(self, git_project):
-        """R1: awf init without force cleans runtime, preserves config."""
+    def test_already_initialized_preserves_runtime(self, git_project):
+        """A-11: awf init without force preserves runtime and config."""
         run(awf.awf_init(project_dir=str(git_project)))
         result = run(awf.awf_init(project_dir=str(git_project)))
         assert result["status"] == "ok"
-        # SMO: next_action is now phase-aware (not hardcoded "cleaned/preserved")
+        # SMO: next_action is now phase-aware (not hardcoded)
         assert "next_action" in result
         assert len(result["next_action"]) > 0
 
@@ -1775,9 +1775,9 @@ class TestCurrentStepLiveProject:
         pipes.mkdir(parents=True, exist_ok=True)
         (pipes / "default.yaml").write_text(
             "name: default\nstages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: worker\n    role: worker\n    kind: execute\n"
-            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: worker\n    role: worker\n"
+            "  - name: verify\n    role: supervisor\n",
             encoding="utf-8",
         )
         done = project / ".agentic" / "done" / "TODO-0001"

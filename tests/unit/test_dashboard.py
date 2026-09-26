@@ -24,9 +24,9 @@ def dash_project(tmp_git_repo):
     pipes_dir = tmp_git_repo / ".agentic" / "pipelines"
     pipes_dir.mkdir(parents=True, exist_ok=True)
     (pipes_dir / "default.yaml").write_text(
-        "stages:\n  - name: plan\n    role: supervisor\n    kind: plan\n"
-        "  - name: agent-dev\n    role: developer\n    kind: execute\n"
-        "  - name: verify\n    role: supervisor\n    kind: verify\n",
+        "stages:\n  - name: plan\n    role: supervisor\n"
+        "  - name: agent-dev\n    role: developer\n"
+        "  - name: verify\n    role: supervisor\n",
         encoding="utf-8",
     )
 
@@ -108,7 +108,7 @@ class TestDashboardErrorHandling:
         pipes_dir = tmp_git_repo / ".agentic" / "pipelines"
         pipes_dir.mkdir(parents=True, exist_ok=True)
         (pipes_dir / "default.yaml").write_text(
-            "stages:\n  - name: plan\n    role: supervisor\n    kind: plan\n",
+            "stages:\n  - name: plan\n    role: supervisor\n",
             encoding="utf-8",
         )
         # No write_state call
@@ -1096,15 +1096,15 @@ class TestActualPipeline:
 
     DEFAULT_YAML = (
         "stages:\n"
-        "  - name: plan\n    role: supervisor\n    kind: plan\n"
-        "  - name: implement\n    role: agent-implementer\n    kind: execute\n"
-        "  - name: qa\n    role: agent-qa-review\n    kind: execute\n"
+        "  - name: plan\n    role: supervisor\n"
+        "  - name: implement\n    role: agent-implementer\n"
+        "  - name: qa\n    role: agent-qa-review\n"
     )
     AUDIT_YAML = (
         "stages:\n"
-        "  - name: plan\n    role: supervisor\n    kind: plan\n"
-        "  - name: llm-audit\n    role: agent-security-auditor\n    kind: execute\n"
-        "  - name: verify\n    role: supervisor\n    kind: verify\n"
+        "  - name: plan\n    role: supervisor\n"
+        "  - name: llm-audit\n    role: agent-security-auditor\n"
+        "  - name: verify\n    role: supervisor\n"
     )
 
     def _project(self, tmp_git_repo, audit=True):

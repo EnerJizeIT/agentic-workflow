@@ -17,8 +17,9 @@ YOU are the reviewer. Read the TODO (contract), check the work, decide.
      without evidence is ignored by the engine)
    - ANY criterion not met → write `.agentic/outbox/REVIEW-{todo_id}.md`
      listing which criteria failed and what to fix
-7. Метрики: после закрытия юнита можно собрать метрики — `awf_metrics` /
-   `awf metrics` (отчёт на рабочий стол, копия в `metrics.mirror_dir`, если задан).
+7. Метрики: только по запросу владельца или когда супервизор решит, что
+   нужна сводка — `awf_metrics` / `awf metrics` (отчёт на рабочий стол,
+   копия в `metrics.mirror_dir`, если задан).
 8. Фрикция с awf → `awf feedback --type bug|feature` (отчёт владельцу на рабочий стол); не молчи — молчание не чинит инструмент.
 
 ## Do NOT

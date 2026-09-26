@@ -7,8 +7,12 @@ kind (plan / execute / verify) from the stage's position:
 - Stage index N-1         → kind="verify" (supervisor verifies + commits)
 - All stages between      → kind="execute" (agents do work)
 
-For backward compat, pipeline.yaml files written before BD-29 may still
-carry an `action:` field — it's read but ignored. kind always wins.
+A-06 (audit 2026-09-25): the loader validates the document FORM before
+building Stage objects (validate_pipeline_document) — the same rule set
+as the write path (awf.api.write_pipeline, shared validator). Legacy
+`action:`/`kind:` keys in YAML are rejected as unknown keys (they were
+read-but-ignored; kind is computed from position, action was never a
+runtime input).
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from typing import Any
 
 from . import config as cfg_mod
 from . import paths
+from ._errors import AwfApiError
 
 
 @dataclass
@@ -89,8 +94,28 @@ _POLICY_ALLOWED = {
 # FU-19 (AUD03-02 tail): the policy keys that may carry ``rollback_to:<stage>``
 # — exactly the keys the transition resolver reads the prefix on
 # (awf/transitions.py: on_blocked, on_rejected). On any other key the value
-# is ignored at runtime, so the loader warns instead of accepting silently.
+# is ignored at runtime, so A-06 rejects it at load (it used to warn).
 _ROLLBACK_TO_KEYS = ("on_blocked", "on_rejected")
+
+# A-06 (audit 2026-09-25, layer 1): stage keys the pipeline schema accepts.
+# Single source of truth — the write path (awf/api/pipelines.py) imports
+# this set, so a hand-written YAML and an API write are held to the same
+# schema. Any other key (a typo, or the legacy action:/kind:) is REJECTED
+# with a clear error instead of being silently ignored and surfacing at
+# runtime.
+ALLOWED_STAGE_KEYS = frozenset(
+    {
+        "name",
+        "role",
+        "description",
+        "on_blocked",
+        "on_approved",
+        "on_rejected",
+        "on_failed",
+        "max_retries",
+        "max_rollbacks",
+    }
+)
 
 
 def _compute_kind(position: int, total: int) -> str:
@@ -114,11 +139,110 @@ def _compute_kind(position: int, total: int) -> str:
     return "execute"
 
 
+def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
+    """A-06: form check for a pipeline stage list.
+
+    Shared by load_stages (hand-written YAML) and the write path
+    (awf.api.write_pipeline) — one rule set, no duplicated checks.
+    Type-level checks only: name uniqueness, rollback-target existence
+    and role-file resolution stay load-time warnings in load_stages.
+
+    Raises:
+        AwfApiError: stages not a non-empty list, a stage not a mapping,
+            unknown keys, a missing/empty/non-string role, a policy that
+            is not an allowed string (rollback_to:<stage> only on
+            on_blocked/on_rejected), or a negative/non-integer budget.
+    """
+    if not isinstance(stages, list) or not stages:
+        raise AwfApiError(
+            f"Pipeline {source}: 'stages' must be a non-empty list of stage "
+            "mappings (each with at least 'role')."
+        )
+    result: list[dict[str, Any]] = []
+    for i, stage in enumerate(stages):
+        if not isinstance(stage, dict):
+            raise AwfApiError(
+                f"Pipeline {source}: stage #{i} must be a mapping, "
+                f"got {type(stage).__name__}."
+            )
+        label = str(stage.get("name") or f"#{i}")
+        unknown = set(stage) - ALLOWED_STAGE_KEYS
+        if unknown:
+            raise AwfApiError(
+                f"Pipeline {source}: stage '{label}' uses unknown keys: "
+                f"{sorted(unknown)}. Allowed keys: {sorted(ALLOWED_STAGE_KEYS)}."
+            )
+        role = stage.get("role")
+        if not isinstance(role, str) or not role.strip():
+            raise AwfApiError(
+                f"Pipeline {source}: stage '{label}' has no non-empty 'role' "
+                f"— every stage needs one (got {role!r})."
+            )
+        for pk in _POLICY_KEYS:
+            if pk in stage and stage[pk] is not None:
+                value = stage[pk]
+                if not isinstance(value, str) or not value:
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' {pk} must be a "
+                        f"string policy, got {value!r}. Expected one of: "
+                        f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}."
+                    )
+                if value.startswith("rollback_to:"):
+                    if pk not in _ROLLBACK_TO_KEYS:
+                        raise AwfApiError(
+                            f"Pipeline {source}: stage '{label}' {pk}="
+                            f"{value!r} — rollback_to:<stage> is only "
+                            f"supported for {'/'.join(_ROLLBACK_TO_KEYS)} "
+                            f"(the transition resolver ignores it on {pk})."
+                        )
+                elif value not in _POLICY_ALLOWED[pk]:
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' {pk}={value!r} "
+                        f"is not a valid policy. Expected one of: "
+                        f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}."
+                    )
+        for bk in ("max_retries", "max_rollbacks"):
+            if bk in stage and stage[bk] is not None:
+                value = stage[bk]
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' {bk} must be an "
+                        f"integer, got {value!r}."
+                    )
+                if value < 0:
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' {bk} must be "
+                        f"non-negative, got {value}."
+                    )
+        result.append(stage)
+    return result
+
+
+def validate_pipeline_document(data: Any, source: str) -> list[dict[str, Any]]:
+    """A-06: validate a parsed pipeline document (root + stage list).
+
+    Root must be a mapping; ``stages`` must be a non-empty list of stage
+    mappings (validate_pipeline_stages). Raises AwfApiError on any form
+    error — before any Stage is built, so a bad file has no side effects.
+    """
+    if not isinstance(data, dict):
+        raise AwfApiError(
+            f"Pipeline {source}: the document root must be a mapping "
+            f"(top-level keys like 'name' and 'stages'), got "
+            f"{type(data).__name__}."
+        )
+    return validate_pipeline_stages(data.get("stages"), source)
+
+
 def load_stages(pipeline_file: str | Path) -> list[Stage]:
     """Parse a pipeline YAML file and return a list of Stage objects.
 
-    BD-29: kind is computed from position; `action:` field in YAML is read
-    for back-compat but ignored.
+    BD-29: kind is computed from position.
+    A-06: the document form is validated (validate_pipeline_document)
+    before any Stage is built — a malformed hand-written YAML raises
+    AwfApiError at load instead of surfacing mid-run. Byte-level
+    corruption (non-UTF-8, broken YAML) keeps the AUD06-16 degrade:
+    reason to stderr, empty list.
     """
     import yaml
 
@@ -133,49 +257,20 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         print(f"ERROR: pipeline file {p.name} is malformed: {e}", file=sys.stderr)
         return []
 
-    raw_stages = (data or {}).get("stages") or []
+    raw_stages = validate_pipeline_document(data, p.name)
     result: list[Stage] = []
-    total = len([s for s in raw_stages if isinstance(s, dict)])
+    total = len(raw_stages)
 
-    dict_index = 0  # position among dict-entries only (for _compute_kind)
-    for s in raw_stages:
-        if not isinstance(s, dict):
-            continue
+    for dict_index, s in enumerate(raw_stages):
         kwargs: dict[str, Any] = {}
         for key in ("name", "role", "description"):
             kwargs[key] = s.get(key, "")
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
-        mr = s.get("max_retries", _DEFAULTS["max_retries"])
-        try:
-            kwargs["max_retries"] = int(mr)
-        except (ValueError, TypeError):
-            kwargs["max_retries"] = _DEFAULTS["max_retries"]
-        mrb = s.get("max_rollbacks", _DEFAULTS["max_rollbacks"])
-        try:
-            kwargs["max_rollbacks"] = int(mrb)
-        except (ValueError, TypeError):
-            kwargs["max_rollbacks"] = _DEFAULTS["max_rollbacks"]
-        # AUD03-06: a negative budget used to load silently (max_retries: -3)
-        # — flag it; the value is kept as-is (warning only, no behavior change).
-        stage_label = str(s.get("name") or f"#{dict_index}")
-        if kwargs["max_retries"] < 0:
-            print(
-                f"WARNING: stage '{stage_label}': max_retries="
-                f"{kwargs['max_retries']} is negative — a negative retry "
-                "budget is meaningless, check the value.",
-                file=sys.stderr,
-            )
-        if kwargs["max_rollbacks"] < 0:
-            print(
-                f"WARNING: stage '{stage_label}': max_rollbacks="
-                f"{kwargs['max_rollbacks']} is negative — a negative "
-                "rollback budget is meaningless, check the value.",
-                file=sys.stderr,
-            )
+        kwargs["max_retries"] = s.get("max_retries", _DEFAULTS["max_retries"])
+        kwargs["max_rollbacks"] = s.get("max_rollbacks", _DEFAULTS["max_rollbacks"])
         kwargs["kind"] = _compute_kind(dict_index, total)
         result.append(Stage(**kwargs))
-        dict_index += 1
 
     # NEG-2 (dogfood-11): rollback targets must exist. Warn at load time
     # instead of discovering a broken target mid-run (the transition then
@@ -211,36 +306,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
                 file=sys.stderr,
             )
 
-    # AUD04-02: unknown policy words used to be silently reinterpreted by the
-    # resolver (on_approved → "next", on_rejected/on_failed → "escalate"),
-    # which hid typos like "on_blocked: halt". Warn at load time.
-    # FU-19 (AUD03-02 tail): rollback_to:<stage> is only allowed on
-    # _ROLLBACK_TO_KEYS — on other keys the resolver ignores it, so warn
-    # (previously any rollback_to: value passed the warning filter silently).
-    for st in result:
-        for pk in _POLICY_KEYS:
-            value = getattr(st, pk)
-            if not isinstance(value, str) or not value:
-                continue
-            if value.startswith("rollback_to:"):
-                if pk in _ROLLBACK_TO_KEYS:
-                    continue  # target existence checked above
-                print(
-                    f"WARNING: stage '{st.name}' has {pk}={value!r} — "
-                    f"rollback_to:<stage> is only supported for "
-                    f"{'/'.join(_ROLLBACK_TO_KEYS)} (the transition resolver "
-                    f"ignores it on {pk}). Expected one of: "
-                    f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}.",
-                    file=sys.stderr,
-                )
-                continue
-            if value not in _POLICY_ALLOWED[pk]:
-                print(
-                    f"WARNING: stage '{st.name}' has {pk}={value!r} — expected one of: "
-                    f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}. The transition resolver "
-                    f"will fall back to the default policy for {pk}.",
-                    file=sys.stderr,
-                )
+    # A-06: policy words are validated in validate_pipeline_document —
+    # unknown words, non-string values and rollback_to: on the wrong key
+    # are load errors now (AUD04-02/FU-19 used to warn).
 
     # Day-2 spec (second tier): stage roles must resolve to a role .md
     # (project .agentic/roles/ or the global awf roles dir). A typo used to
@@ -249,18 +317,12 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     from .supervisor import resolve_role_file  # lazy — avoids import cycle
 
     for st in result:
-        role = st.role or ""
-        if not role:
-            print(
-                f"WARNING: stage '{st.name}' has no role — it will fail at runtime.",
-                file=sys.stderr,
-            )
-            continue
+        # A-06: role is guaranteed non-empty by validate_pipeline_document.
         try:
-            resolve_role_file(role, project_dir)
+            resolve_role_file(st.role, project_dir)
         except RuntimeError:
             print(
-                f"WARNING: stage '{st.name}' uses role '{role}' but no role file "
+                f"WARNING: stage '{st.name}' uses role '{st.role}' but no role file "
                 f"was found (project .agentic/roles/ or global awf roles) — the "
                 f"stage will fail at runtime.",
                 file=sys.stderr,

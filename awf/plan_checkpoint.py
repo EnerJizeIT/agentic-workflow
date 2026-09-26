@@ -26,6 +26,8 @@ from __future__ import annotations
 import html as html_lib
 import json
 import os
+import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -40,6 +42,13 @@ from ._atomic import atomic_write_text
 from ._log import log as _log
 
 DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
+
+# A-07 (аудит 2026-09-25, слой 5): пределы тела POST формы. Настоящая форма
+# шлёт килобайты (decision + отредактированный TODO + токен), поэтому лимит
+# — защита от мусора и потоков, а не функциональное ограничение.
+CHECKPOINT_BODY_MAX_BYTES = 64 * 1024  # 64 KiB — потолок тела решения
+CHECKPOINT_BODY_READ_TIMEOUT = 10.0  # секунд простоя сокета на чтении
+CHECKPOINT_MAX_CONCURRENT = 16  # максимум одновременных обработчиков
 
 
 def _live_checkpoint_form_file(project_dir: Path) -> Path | None:
@@ -351,6 +360,9 @@ def run_plan_checkpoint(
     )
 
     port = 0  # P2: let OS assign free port — eliminates TOCTOU race entirely
+    # A-03: one-time token binds the decision to this opened form — a local
+    # client that only learned the port cannot submit a decision without it.
+    token = secrets.token_urlsafe(32)
     decision_holder: dict[str, str] = {}
     edited_holder: dict[str, str] = {}
     # AUD03-05: first-wins — the check-and-set in do_POST happens under this
@@ -369,6 +381,7 @@ def run_plan_checkpoint(
                 decision_file=_checkpoint_decision_file(project_dir, todo_id),
                 todo_id=todo_id,
                 logs_dir=logs_dir,
+                token=token,
             )
             break
         except OSError:
@@ -381,7 +394,9 @@ def run_plan_checkpoint(
     html_path = ""
     actual_port = server.server_address[1]  # P2: OS-assigned port (was port=0)
     try:
-        html_body = _render_html(todo_id, todo_content, plan_content, actual_port)
+        html_body = _render_html(
+            todo_id, todo_content, plan_content, actual_port, token
+        )
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".html",
@@ -556,6 +571,52 @@ def _is_local_origin(origin: str) -> bool:
         return False
 
 
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """A-07: ThreadingHTTPServer с ограничением активных обработчиков.
+
+    Без предела наводка из «зависших» соединений (open и тишина) порождает
+    потоки без конца — по одному на принятое соединение. Перелив получает
+    немедленный 503 и закрытие соединения; запрос при этом не
+    обрабатывается.
+    """
+
+    max_concurrent = CHECKPOINT_MAX_CONCURRENT
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._active = 0
+        self._active_lock = threading.Lock()
+
+    def process_request_thread(self, request, client_address):
+        with self._active_lock:
+            self._active += 1
+            over = self._active > self.max_concurrent
+        try:
+            if over:
+                self._reject_overflow(request)
+                return
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_lock:
+                self._active -= 1
+
+    @staticmethod
+    def _reject_overflow(request: socket.socket) -> None:
+        text = b"Too many concurrent checkpoint requests"
+        response = (
+            b"HTTP/1.0 503 Service Unavailable\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            + f"Content-Length: {len(text)}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+            + text
+        )
+        try:
+            request.sendall(response)
+        except OSError:
+            pass
+        request.close()
+
+
 def _start_checkpoint_server(
     port: int,
     decision_holder: dict[str, str],
@@ -564,6 +625,7 @@ def _start_checkpoint_server(
     decision_file: Path | None = None,
     todo_id: str | None = None,
     logs_dir: Path | None = None,
+    token: str | None = None,
 ) -> ThreadingHTTPServer:
     """Start one-shot HTTP server to receive form POST. Daemon thread.
 
@@ -577,11 +639,42 @@ def _start_checkpoint_server(
     B1: when ``decision_file`` + ``todo_id`` are given, the first accepted
     POST also persists the decision to disk (before publishing it in-memory)
     so it survives the process dying.
+
+    A-03: ``token`` is the opened form's one-time token. A POST is accepted
+    only on path ``/checkpoint`` and only with this token; the check runs
+    under ``decision_lock`` and the first accepted POST invalidates the
+    token (default-deny: without a token the server accepts nothing).
     """
     if decision_lock is None:
         decision_lock = threading.Lock()
+    # A-03: the form's one-time token (None — no POST can be accepted).
+    token_state: dict[str, str | None] = {"token": token}
 
     class _CheckpointHandler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup()
+            # A-07: любое чтение на этом соединении (request line, тело)
+            # ограничено по времени — зависший клиент не удерживает поток
+            # обработчика. socket.timeout на request line уже обработан
+            # BaseHTTPRequestHandler (закрытие без traceback).
+            self.connection.settimeout(CHECKPOINT_BODY_READ_TIMEOUT)
+
+        def _reply(self, code: int, text: bytes, *, close: bool = False) -> None:
+            """A-07: маленький текстовый отказ (400/408/413). Мёртвый сокет
+            клиента не превращает сам отказ в traceback."""
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(text)))
+                if close:
+                    self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(text)
+                if close:
+                    self.close_connection = True
+            except OSError:
+                pass
+
         def do_GET(self) -> None:  # noqa: N802 — http.server API
             # Browser may request /favicon.ico after form submit. Without a
             # GET handler, BaseHTTPRequestHandler returns 501 and pollutes
@@ -590,6 +683,29 @@ def _start_checkpoint_server(
             self.end_headers()
 
         def do_POST(self) -> None:  # noqa: N802 — http.server API
+            # A-07: Content-Length валидируется до любого чтения: мусор или
+            # отрицательное число — немедленный 400, а не int()/read(-1) в
+            # потоке (traceback или ожидание конца потока).
+            length_raw = self.headers.get("Content-Length")
+            try:
+                length = int(length_raw) if length_raw is not None else 0
+            except ValueError:
+                self._reply(400, b"Bad Content-Length")
+                return
+            if length < 0 or length > CHECKPOINT_BODY_MAX_BYTES:
+                # A-07: перелив — 413 без вычитывания тела: соединение
+                # закрывается, поток освобождается, заявленные мегабайты
+                # не читаются в память. Отрицательное — 400.
+                if length < 0:
+                    self._reply(400, b"Bad Content-Length")
+                else:
+                    self._reply(
+                        413,
+                        b"Payload too large: checkpoint limit is 64 KiB",
+                        close=True,
+                    )
+                return
+
             # QA-A: CSRF check — accept only from localhost forms.
             # Same-origin check via Origin/Referer header. Allows file://
             # forms (Origin: null or absent). Rejects cross-origin POST.
@@ -601,8 +717,21 @@ def _start_checkpoint_server(
                 self.wfile.write(b"Forbidden: cross-origin POST rejected")
                 return
 
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            # A-07: чтение ограничено по времени (socket timeout выставляется
+            # в setup) — медленный клиент не держит поток.
+            try:
+                body = self.rfile.read(length).decode("utf-8", errors="replace")
+            except OSError:  # TimeoutError ⊂ OSError (py3.10+) — read timeout
+                self._reply(408, b"Timeout reading body", close=True)
+                return
+            finally:
+                # Таймаут был только для чтения — маленький ответ
+                # ограничивать не нужно.
+                try:
+                    self.connection.settimeout(None)
+                except OSError:
+                    pass
+
             params = parse_qs(body, keep_blank_values=True)
 
             decision = params.get("decision", [""])[0]
@@ -613,51 +742,61 @@ def _start_checkpoint_server(
                 self.wfile.write(b"Invalid decision")
                 return
 
-            # AUD03-05: first-wins — only the first accepted POST sets the
-            # decision. Repeat/racing POSTs get an ack without overwriting
-            # (last-write-wins used to let a second tab flip the outcome).
-            already_decided = False
+            # A-03: path + token checks under the same lock that sets the
+            # decision. Only the opened form carries the one-time token — a
+            # client that learned the port but has no token (or a foreign
+            # one) cannot set the decision. The first accepted POST
+            # invalidates the token, so first-wins holds among valid-token
+            # requests only; repeat/racing POSTs are refused, never
+            # overwrite (last-write-wins used to let a second tab flip the
+            # outcome — AUD03-05).
+            submitted_token = params.get("token", [""])[0]
+            rejected: tuple[int, bytes] | None = None
             with decision_lock:
-                if decision_holder:
-                    already_decided = True
+                if self.path.split("?", 1)[0] != "/checkpoint":
+                    rejected = (
+                        404,
+                        b"Not Found: POSTs are only accepted on /checkpoint",
+                    )
                 else:
-                    edited_content = params.get("edited_content", [""])[0]
-                    # B1: persist to disk BEFORE publishing in-memory — the
-                    # main loop wakes on the holder and consumes the file, so
-                    # the write must be visible first.
-                    if decision_file is not None and todo_id is not None:
-                        _persist_checkpoint_decision(
-                            decision_file,
-                            todo_id,
-                            decision,
-                            edited_content if decision == "edit" else "",
-                            logs_dir,
+                    current_token = token_state["token"]
+                    # A-03 F1: compare_digest бросает TypeError на не-ASCII
+                    # str — isascii() превращает такой токен в чистый 403,
+                    # а не сброс соединения + traceback в stderr.
+                    if not (
+                        current_token is not None
+                        and submitted_token
+                        and submitted_token.isascii()
+                        and secrets.compare_digest(submitted_token, current_token)
+                    ):
+                        rejected = (
+                            403,
+                            b"Forbidden: missing or invalid checkpoint token",
                         )
-                    decision_holder["decision"] = decision
-                    if decision == "edit":
-                        edited_holder["content"] = edited_content
+                    else:
+                        edited_content = params.get("edited_content", [""])[0]
+                        # B1: persist to disk BEFORE publishing in-memory —
+                        # the main loop wakes on the holder and consumes the
+                        # file, so the write must be visible first.
+                        if decision_file is not None and todo_id is not None:
+                            _persist_checkpoint_decision(
+                                decision_file,
+                                todo_id,
+                                decision,
+                                edited_content if decision == "edit" else "",
+                                logs_dir,
+                            )
+                        decision_holder["decision"] = decision
+                        if decision == "edit":
+                            edited_holder["content"] = edited_content
+                        # A-03: one-time — the form's token is spent.
+                        token_state["token"] = None
 
-            if already_decided:
-                first = decision_holder["decision"]
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
+            if rejected is not None:
+                self.send_response(rejected[0])
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.end_headers()
-                dup_ack = (
-                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                    "<title>awf</title>"
-                    "<style>"
-                    "body{background:#1e1e1e;color:#d4d4d4;font-family:system-ui,sans-serif;"
-                    "padding:40px;text-align:center;margin:0;}"
-                    "h2{color:#4ec9b0;font-weight:600;margin-bottom:12px;}"
-                    "p{color:#858585;}"
-                    "</style>"
-                    "</head>"
-                    "<body>"
-                    f"<h2>Решение уже принято: {html_lib.escape(first)}</h2>"
-                    "<p>Повторная отправка проигнорирована. Можно закрыть вкладку.</p>"
-                    "</body></html>"
-                )
-                self.wfile.write(dup_ack.encode("utf-8"))
+                self.wfile.write(rejected[1])
                 return
 
             self.send_response(200)
@@ -683,7 +822,7 @@ def _start_checkpoint_server(
         def log_message(self, *args, **kwargs) -> None:
             pass  # silence stderr noise
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), _CheckpointHandler)
+    server = _BoundedThreadingHTTPServer(("127.0.0.1", port), _CheckpointHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -696,12 +835,18 @@ def _render_html(
     todo_content: str,
     plan_content: str,
     port: int,
+    token: str = "",
 ) -> str:
-    """Render checkpoint HTML form (inline, no Jinja dependency in awf-core)."""
+    """Render checkpoint HTML form (inline, no Jinja dependency in awf-core).
+
+    ``token`` is the form's one-time submit token (A-03): it lives only in
+    this rendered file, never in logs or state.
+    """
     submit_url = f"http://127.0.0.1:{port}/checkpoint"
     todo_esc = html_lib.escape(todo_content)
     plan_esc = html_lib.escape(plan_content) if plan_content else "(нет plan.md)"
     todo_id_esc = html_lib.escape(todo_id)
+    token_esc = html_lib.escape(token)
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -870,6 +1015,7 @@ def _render_html(
   </div>
 
   <script>
+    const formToken = "{token_esc}";
     let editing = false;
     function toggleEdit() {{
       editing = !editing;
@@ -892,6 +1038,9 @@ def _render_html(
       const d = document.createElement('input');
       d.type = 'hidden'; d.name = 'decision'; d.value = decision;
       form.appendChild(d);
+      const t = document.createElement('input');
+      t.type = 'hidden'; t.name = 'token'; t.value = formToken;
+      form.appendChild(t);
       if (decision === 'edit') {{
         const c = document.createElement('input');
         c.type = 'hidden'; c.name = 'edited_content';

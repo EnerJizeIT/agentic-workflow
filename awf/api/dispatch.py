@@ -110,10 +110,10 @@ def dispatch_todo(
         DispatchTodoResult with todo_id, baseline_sha, files written.
 
     Raises:
-        AwfApiError: if .agentic/ missing, content empty, a DONE
-            closure for ``todo_id`` is still in the outbox, a
-            ``carry_over_from`` origin cannot be validated, or an
-            ``include_untracked`` path is invalid.
+        AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
+            already archived in done/, a DONE closure for ``todo_id`` is
+            still in the outbox, a ``carry_over_from`` origin cannot be
+            validated, or an ``include_untracked`` path is invalid.
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -166,6 +166,17 @@ def dispatch_todo(
     elif not re.match(r"^TODO-\d{4,}$", todo_id):
         raise AwfApiError(
             f"invalid todo_id '{todo_id}' — expected format 'TODO-NNNN' (4+ digits)"
+        )
+
+    # A-12 (audit 2026-09-25): an archived id is occupied — a re-dispatch
+    # of done/<id>/ would let the next archive overwrite the history.
+    # Refuse BEFORE the O_EXCL reservation: no file created, no baseline.
+    # Auto numbering already skips done/<id>/ (see _next_todo_id), so this
+    # check bites on explicit todo_id.
+    if (paths.done_dir(project_dir) / todo_id).is_dir():
+        raise AwfApiError(
+            f"{todo_id} is already archived in done/{todo_id}/ — the id is "
+            "occupied. Restore it with awf restore or use a different todo_id."
         )
 
     inbox = paths.inbox(project_dir)

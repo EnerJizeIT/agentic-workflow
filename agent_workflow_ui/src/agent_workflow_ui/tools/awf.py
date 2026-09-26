@@ -66,11 +66,13 @@ async def awf_init(
     the full supervisor context (role instructions, vision excerpt, plan.md
     content). Caller is now ready to act as supervisor.
 
-    **R1 warning (AUD05-04):** if ``.agentic/`` already exists and
-    ``force=False``, the runtime directories (inbox/outbox/handoff/done/
-    state/logs/context/dashboards/inputs) are DELETED and config.yaml is
-    preserved — calling this on a live project drops active TODOs and
-    state. ``dry_run=True`` is a pure read.
+    **A-11 (audit 2026-09-25):** re-init is non-destructive. If
+    ``.agentic/`` already exists and ``force=False``, nothing is deleted
+    or overwritten — active TODOs, the done/ archive, state and logs stay
+    byte-for-byte as they were (only missing empty skeleton directories
+    are created). ``force=True`` is the explicit destructive path (cleans
+    runtime + rewrites the skeleton) and is REFUSED with an error while a
+    pipeline is live. ``dry_run=True`` is a pure read.
 
     All command parameters are optional — auto-detected when not provided.
     Project name is derived from directory name when not provided.
@@ -78,7 +80,9 @@ async def awf_init(
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
             NOT your project; always pass it explicitly (AUD08-12).
-        force: Overwrite existing .agentic/ if present (default: False).
+        force: Explicit destructive path — cleans runtime dirs and
+            rewrites the skeleton. Refused while a pipeline is live
+            (default: False).
         project_name: Override auto-derived name (default: from dir name).
         test_cmd: Override auto-detected test command.
         lint_cmd: Override auto-detected lint command.
@@ -92,21 +96,16 @@ async def awf_init(
         (instructions for caller), warnings, created_files.
         On error: {status: "error", error: "..."}.
     """
-    try:
-        result = api.init_project(
-            _resolve_project_dir(project_dir),
-            force=force,
-            project_name=project_name,
-            test_cmd=test_cmd,
-            lint_cmd=lint_cmd,
-            typecheck_cmd=typecheck_cmd,
-            build_cmd=build_cmd,
-        )
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(
+        api.init_project,
+        project_dir=_resolve_project_dir(project_dir),
+        force=force,
+        project_name=project_name,
+        test_cmd=test_cmd,
+        lint_cmd=lint_cmd,
+        typecheck_cmd=typecheck_cmd,
+        build_cmd=build_cmd,
+    )
 
 
 async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
@@ -766,29 +765,26 @@ async def awf_rollback(
         Dict with: todo_id, baseline_sha, mode, ack_file (None for dry-run),
         diff_stat.
     """
-    try:
-        result = api.rollback(
-            _resolve_project_dir(project_dir),
-            todo_id,
-            mode=mode,
-        )
-        response = _ok(result)
-        sha = str(response.get("baseline_sha", "?"))[:8]
-        if response.get("mode") == "dry-run":
-            response["next_action"] = (
-                f"Preview only — nothing changed. To roll back: awf_rollback("
-                f"todo_id, mode='hard'|'soft') (target sha {sha})."
-            )
-        else:
-            response["next_action"] = (
-                f"Rolled back to {sha}. Next: re-dispatch the unit "
-                "(awf_dispatch_todo) or adjust the plan."
-            )
+    response = await _exec(
+        api.rollback,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        mode=mode,
+    )
+    if response.get("status") != "ok":
         return response
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    sha = str(response.get("baseline_sha", "?"))[:8]
+    if response.get("mode") == "dry-run":
+        response["next_action"] = (
+            f"Preview only — nothing changed. To roll back: awf_rollback("
+            f"todo_id, mode='hard'|'soft') (target sha {sha})."
+        )
+    else:
+        response["next_action"] = (
+            f"Rolled back to {sha}. Next: re-dispatch the unit "
+            "(awf_dispatch_todo) or adjust the plan."
+        )
+    return response
 
 
 async def awf_prove_red(
@@ -1046,66 +1042,67 @@ async def awf_approve(
         Dict with: todo_id, signal_file (path to APPROVE-*.ready),
         verified_sha_file (when verified_sha matched).
     """
+    pd = _resolve_project_dir(project_dir)
+    response = await _exec(
+        api.approve_commit,
+        project_dir=pd,
+        todo_id=todo_id,
+        evidence=evidence,
+        verified_sha=verified_sha,
+    )
+    if response.get("status") != "ok":
+        return response
+    # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat).
+    # AUD05-03: the old fixed text promised "approved and committed.
+    # Pipeline exited." — approve only writes the signal; neither the
+    # commit nor the exit is guaranteed by it. Build the hint from facts.
+    # RUN10 #1: "run active" comes from the single source
+    # (api.run_is_active → awf.run_state), not a duplicated run_brief probe.
+    # A-20: probes off the event loop (to_thread), same values as before.
+    run_active = False
     try:
-        pd = _resolve_project_dir(project_dir)
-        result = api.approve_commit(
-            pd, todo_id, evidence=evidence, verified_sha=verified_sha
+        run_active = bool(await asyncio.to_thread(api.run_is_active, pd))
+    except Exception:
+        pass
+    if run_active:
+        response["next_action"] = (
+            f"{todo_id} approved — APPROVE signal written"
+            + (", evidence stored" if response.get("evidence_file") else "")
+            + ". Continue the run loop: awf_run_next."
         )
-        response = _ok(result)
-        # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat).
-        # AUD05-03: the old fixed text promised "approved and committed.
-        # Pipeline exited." — approve only writes the signal; neither the
-        # commit nor the exit is guaranteed by it. Build the hint from facts.
-        # RUN10 #1: "run active" comes from the single source
-        # (api.run_is_active → awf.run_state), not a duplicated run_brief probe.
-        run_active = False
+    else:
+        pipeline_alive = False
         try:
-            run_active = bool(api.run_is_active(pd))
+            st = await asyncio.to_thread(api.get_status, pd)
+            pipeline_alive = bool(st and st.pipeline_running)
         except Exception:
-            pass
-        if run_active:
+            pipeline_alive = False
+        if pipeline_alive:
             response["next_action"] = (
-                f"{todo_id} approved — APPROVE signal written"
-                + (", evidence stored" if result.evidence_file else "")
-                + ". Continue the run loop: awf_run_next."
+                f"{todo_id} approved — APPROVE signal written. The pipeline "
+                "acts on it at its verify/commit gate; a commit happens only "
+                "if the stage policy auto-commits. Wait for the user before "
+                "the next TODO."
             )
         else:
-            pipeline_alive = False
-            try:
-                st = api.get_status(pd)
-                pipeline_alive = bool(st and st.pipeline_running)
-            except Exception:
-                pipeline_alive = False
-            if pipeline_alive:
-                response["next_action"] = (
-                    f"{todo_id} approved — APPROVE signal written. The pipeline "
-                    "acts on it at its verify/commit gate; a commit happens only "
-                    "if the stage policy auto-commits. Wait for the user before "
-                    "the next TODO."
-                )
-            else:
-                response["next_action"] = (
-                    f"{todo_id} approved — APPROVE signal written, but the "
-                    "pipeline is not running: the signal waits in the inbox for "
-                    "the next run. Check awf_status. Wait for the user before "
-                    "the next TODO."
-                )
-        # RUN5 #1 (Part B): failsafe — rejected-attempt files that would be
-        # SILENTLY excluded from this commit. Warning only: the approve went
-        # through, nothing is auto-committed.
-        orphaned = list(getattr(result, "orphaned_files", None) or [])
-        if orphaned:
-            response["orphaned_files"] = orphaned
-            response["warning"] = (
-                f"{len(orphaned)} file(s) of a rejected attempt would NOT be "
-                f"committed: {', '.join(orphaned)}. Re-issue the unit with "
-                "carry_over_from=<rejected id>, or commit them consciously."
+            response["next_action"] = (
+                f"{todo_id} approved — APPROVE signal written, but the "
+                "pipeline is not running: the signal waits in the inbox for "
+                "the next run. Check awf_status. Wait for the user before "
+                "the next TODO."
             )
-        return response
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    # RUN5 #1 (Part B): failsafe — rejected-attempt files that would be
+    # SILENTLY excluded from this commit. Warning only: the approve went
+    # through, nothing is auto-committed.
+    orphaned = list(response.get("orphaned_files") or [])
+    if orphaned:
+        response["orphaned_files"] = orphaned
+        response["warning"] = (
+            f"{len(orphaned)} file(s) of a rejected attempt would NOT be "
+            f"committed: {', '.join(orphaned)}. Re-issue the unit with "
+            "carry_over_from=<rejected id>, or commit them consciously."
+        )
+    return response
 
 
 async def awf_reject(
@@ -1133,49 +1130,51 @@ async def awf_reject(
     """
     # AUD08-13: the duplicate validation (todo_id regex, reason.strip()) that
     # lived here is removed — api.reject_commit validates the same way and
-    # raises AwfApiError, which the except below turns into a clean error
-    # dict. One validation layer (the API), like every other wrapper.
-    try:
-        pd = _resolve_project_dir(project_dir)
-        result = api.reject_commit(pd, todo_id, reason)
-
-        if result.run_stopped:
-            next_action = (
-                f"{todo_id} rejected twice — RUN STOPPED. Report: {result.report_file}. "
-                "Notify the owner and wait for instructions."
-            )
-        else:
-            next_action = (
-                f"{result.message} The engine owns the REVIEW transition — do not "
-                "kill the pipeline yourself. If it is alive at the verify stage it "
-                "consumes the REVIEW, replans (new TODO) and stops. If it is stopped, "
-                "the REVIEW stays in the outbox: the next awf_continue reports it, "
-                "so dispatch the refined TODO and continue."
-            )
-        # RUN5 #1 (leak-gate): the rejected attempt's untracked files were
-        # recorded — tell the supervisor how the retry keeps them.
-        reject_files = list(getattr(result, "reject_files", None) or [])
-        if reject_files:
-            next_action += (
-                f" When re-issuing the retry, pass carry_over_from={todo_id} — "
-                f"{len(reject_files)} untracked file(s) of the rejected attempt "
-                f"were recorded (REJECT-{todo_id}.files) and will join the "
-                "retry's commit."
-            )
-        return {
-            "status": "ok",
-            "todo_id": todo_id,
-            "review_file": result.review_file,
-            "rejects": result.rejects,
-            "run_stopped": result.run_stopped,
-            "report_file": result.report_file,
-            "reject_files": reject_files,
-            "next_action": next_action,
-        }
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    # raises AwfApiError, which _exec turns into a clean error dict.
+    # One validation layer (the API), like every other wrapper.
+    response = await _exec(
+        api.reject_commit,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        reason=reason,
+    )
+    if response.get("status") != "ok":
+        return response
+    if response.get("run_stopped"):
+        next_action = (
+            f"{todo_id} rejected twice — RUN STOPPED. "
+            f"Report: {response.get('report_file')}. "
+            "Notify the owner and wait for instructions."
+        )
+    else:
+        next_action = (
+            f"{response.get('message')} The engine owns the REVIEW "
+            "transition — do not kill the pipeline yourself. If it is alive "
+            "at the verify stage it consumes the REVIEW, replans (new TODO) "
+            "and stops. If it is stopped, the REVIEW stays in the outbox: "
+            "the next awf_continue reports it, so dispatch the refined TODO "
+            "and continue."
+        )
+    # RUN5 #1 (leak-gate): the rejected attempt's untracked files were
+    # recorded — tell the supervisor how the retry keeps them.
+    reject_files = list(response.get("reject_files") or [])
+    if reject_files:
+        next_action += (
+            f" When re-issuing the retry, pass carry_over_from={todo_id} — "
+            f"{len(reject_files)} untracked file(s) of the rejected attempt "
+            f"were recorded (REJECT-{todo_id}.files) and will join the "
+            "retry's commit."
+        )
+    return {
+        "status": "ok",
+        "todo_id": todo_id,
+        "review_file": response.get("review_file"),
+        "rejects": response.get("rejects"),
+        "run_stopped": response.get("run_stopped"),
+        "report_file": response.get("report_file"),
+        "reject_files": reject_files,
+        "next_action": next_action,
+    }
 
 
 # ─── Reports ────────────────────────────────────────────────────────────
@@ -1231,18 +1230,13 @@ async def awf_reset(
         Dict with: cleaned_dirs (list), orphan_ids (list, only for
         orphans mode), mode ("full"|"default"|"tasks_only"|"orphans"|"noop").
     """
-    try:
-        result = api.reset_runtime(
-            _resolve_project_dir(project_dir),
-            tasks_only=tasks_only,
-            full=full,
-            orphans=orphans,
-        )
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(
+        api.reset_runtime,
+        project_dir=_resolve_project_dir(project_dir),
+        tasks_only=tasks_only,
+        full=full,
+        orphans=orphans,
+    )
 
 
 async def awf_add_role(
@@ -1280,20 +1274,15 @@ async def awf_add_role(
     Returns:
         Dict with: role_name, role_file (path), model.
     """
-    try:
-        result = api.add_role(
-            _resolve_project_dir(project_dir),
-            name,
-            description=description,
-            model=model,
-            from_skill=from_skill,
-            force=force,
-        )
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(
+        api.add_role,
+        project_dir=_resolve_project_dir(project_dir),
+        role_name=name,
+        description=description,
+        model=model,
+        from_skill=from_skill,
+        force=force,
+    )
 
 
 async def awf_analyze_roles(
@@ -1320,43 +1309,43 @@ async def awf_analyze_roles(
         Dict with: overlaps (list of {role_a, role_b, zone}),
         patches_applied (list of {role, preview}), dry_run (bool).
     """
-    try:
-        result = api.analyze_roles(
-            _resolve_project_dir(project_dir),
-            dry_run=dry_run,
-        )
-        response = _ok(result)
-        # AUD08-06: next_action is built from the ACTUAL phase. The old
-        # unconditional "call awf_confirm_normalized" steered a weak model
-        # into a phase jump from any other phase (advance_phase steps from
-        # the current one: run → verify).
-        try:
-            from awf.phase import detect_phase
-
-            phase = detect_phase(_resolve_project_dir(project_dir))
-        except Exception:
-            phase = None
-        if phase == "normalize":
-            response["next_action"] = (
-                "Roles analyzed. Call awf_confirm_normalized to advance to "
-                "brief phase."
-            )
-        elif phase:
-            response["next_action"] = (
-                f"Roles analyzed (current phase: {phase}). No phase change "
-                "needed — do NOT call awf_confirm_normalized outside the "
-                "normalize phase. Continue with the current phase."
-            )
-        else:
-            response["next_action"] = (
-                "Roles analyzed. Check awf_current_step for the phase and "
-                "the next step."
-            )
+    response = await _exec(
+        api.analyze_roles,
+        project_dir=_resolve_project_dir(project_dir),
+        dry_run=dry_run,
+    )
+    if response.get("status") != "ok":
         return response
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    # AUD08-06: next_action is built from the ACTUAL phase. The old
+    # unconditional "call awf_confirm_normalized" steered a weak model
+    # into a phase jump from any other phase (advance_phase steps from
+    # the current one: run → verify).
+    # A-20: phase detection off the event loop (to_thread).
+    try:
+        from awf.phase import detect_phase
+
+        phase = await asyncio.to_thread(
+            detect_phase, _resolve_project_dir(project_dir)
+        )
+    except Exception:
+        phase = None
+    if phase == "normalize":
+        response["next_action"] = (
+            "Roles analyzed. Call awf_confirm_normalized to advance to "
+            "brief phase."
+        )
+    elif phase:
+        response["next_action"] = (
+            f"Roles analyzed (current phase: {phase}). No phase change "
+            "needed — do NOT call awf_confirm_normalized outside the "
+            "normalize phase. Continue with the current phase."
+        )
+    else:
+        response["next_action"] = (
+            "Roles analyzed. Check awf_current_step for the phase and "
+            "the next step."
+        )
+    return response
 
 
 # ─── RUN3 #1: named pipelines (create + list) ────────────────────────────
@@ -1396,23 +1385,20 @@ async def awf_write_pipeline(
         Dict with: name, file (path), stages (count written), overwritten.
         On error: {status: "error", error: "..."}.
     """
-    try:
-        result = api.write_pipeline(
-            _resolve_project_dir(project_dir),
-            name,
-            stages,
-            force=force,
-        )
-        response = _ok(result)
-        response["next_action"] = (
-            f"Pipeline '{result.name}' written ({result.stages} stages). "
-            f"Run it: awf_start(project_dir, pipeline='{result.name}')."
-        )
+    response = await _exec(
+        api.write_pipeline,
+        project_dir=_resolve_project_dir(project_dir),
+        name=name,
+        stages=stages,
+        force=force,
+    )
+    if response.get("status") != "ok":
         return response
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    response["next_action"] = (
+        f"Pipeline '{response.get('name')}' written ({response.get('stages')} stages). "
+        f"Run it: awf_start(project_dir, pipeline='{response.get('name')}')."
+    )
+    return response
 
 
 async def awf_pipelines(project_dir: str | None = None) -> dict[str, Any]:
@@ -1430,13 +1416,7 @@ async def awf_pipelines(project_dir: str | None = None) -> dict[str, Any]:
         Dict with: pipelines (sorted names), active, active_exists.
         On error: {status: "error", error: "..."}.
     """
-    try:
-        result = api.list_pipelines(_resolve_project_dir(project_dir))
-        return _ok(result)
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    return await _exec(api.list_pipelines, project_dir=_resolve_project_dir(project_dir))
 
 
 # ─── Dogfood-2 automation: dispatch + context ────────────────────────────
@@ -1498,49 +1478,47 @@ async def awf_dispatch_todo(
         pre_existing_untracked (list, excluded from the commit),
         untracked_warning (one line, "" when nothing is excluded).
     """
-    try:
-        result = api.dispatch_todo(
-            _resolve_project_dir(project_dir),
-            content,
-            role=role,
-            todo_id=todo_id,
-            pipeline=pipeline,
-            carry_over_from=carry_over_from,
-            include_untracked=include_untracked,
-        )
-        response = _ok(result)
-        # SMO: next_action + pre-check warnings guide weak models
-        warnings = getattr(result, "pre_check_warnings", None) or []
-        if warnings:
-            response["pre_check_warnings"] = warnings
-            response["next_action"] = (
-                f"{result.todo_id} dispatched. ⚠️ Pre-check: "
-                f"{len(warnings)} pattern(s) already in code. "
-                "Verify task is needed BEFORE calling awf_start."
-            )
-        else:
-            response["next_action"] = (
-                f"{result.todo_id} dispatched. Call awf_start(background=True) to launch pipeline."
-            )
-        if getattr(result, "carry_over_files", None):
-            response["next_action"] = (
-                f"{result.todo_id} dispatched with carry-over from "
-                f"{result.carry_over_from}: {len(result.carry_over_files)} "
-                "file(s) of the rejected attempt will join the retry commit. "
-                "Call awf_start(background=True) to launch pipeline."
-            )
-        # RUN10 #4 (TODO-0074): the excluded pre-existing untracked files
-        # must not be invisible — the warning reaches next_action.
-        untracked_warning = getattr(result, "untracked_warning", "") or ""
-        if untracked_warning:
-            response["next_action"] = (
-                f"{response['next_action']} {untracked_warning}"
-            )
+    response = await _exec(
+        api.dispatch_todo,
+        project_dir=_resolve_project_dir(project_dir),
+        content=content,
+        role=role,
+        todo_id=todo_id,
+        pipeline=pipeline,
+        carry_over_from=carry_over_from,
+        include_untracked=include_untracked,
+    )
+    if response.get("status") != "ok":
         return response
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+    # SMO: next_action + pre-check warnings guide weak models
+    warnings = response.get("pre_check_warnings") or []
+    if warnings:
+        response["pre_check_warnings"] = warnings
+        response["next_action"] = (
+            f"{response.get('todo_id')} dispatched. ⚠️ Pre-check: "
+            f"{len(warnings)} pattern(s) already in code. "
+            "Verify task is needed BEFORE calling awf_start."
+        )
+    else:
+        response["next_action"] = (
+            f"{response.get('todo_id')} dispatched. "
+            "Call awf_start(background=True) to launch pipeline."
+        )
+    if response.get("carry_over_files"):
+        response["next_action"] = (
+            f"{response.get('todo_id')} dispatched with carry-over from "
+            f"{response.get('carry_over_from')}: {len(response.get('carry_over_files'))} "
+            "file(s) of the rejected attempt will join the retry commit. "
+            "Call awf_start(background=True) to launch pipeline."
+        )
+    # RUN10 #4 (TODO-0074): the excluded pre-existing untracked files
+    # must not be invisible — the warning reaches next_action.
+    untracked_warning = response.get("untracked_warning") or ""
+    if untracked_warning:
+        response["next_action"] = (
+            f"{response['next_action']} {untracked_warning}"
+        )
+    return response
 
 
 async def awf_load_supervisor_context(
@@ -1846,7 +1824,7 @@ async def awf_open_pipeline_dashboard(
 MAX_WAIT = 600
 
 
-def _wait_cap_note(project_dir, clamped: bool, requested: int) -> str:
+async def _wait_cap_note(project_dir, clamped: bool, requested: int) -> str:
     """B3 / RUN6 #3 / RUN10 #2: append the ACTUAL single-wait cap to
     every next_action.
 
@@ -1863,14 +1841,16 @@ def _wait_cap_note(project_dir, clamped: bool, requested: int) -> str:
     timeout in opencode.json" clause appears ONLY when that timeout is
     unknown or below the cap — never when the cap is no longer the
     default (the owner already raised the ceiling, the advice is stale).
+
+    A-20: the cap/advice probes read files — off the event loop (to_thread).
     """
     try:
-        cap = api.wait_cap(project_dir)
+        cap = await asyncio.to_thread(api.wait_cap, project_dir)
     except Exception:
         cap = api.TRANSPORT_CAP
     if cap == api.TRANSPORT_CAP:
         try:
-            advice = api.cap_advice(project_dir)
+            advice = await asyncio.to_thread(api.cap_advice, project_dir)
         except Exception:
             advice = (
                 f"{cap}s is the tool's own cap, not the transport — to "
@@ -1986,8 +1966,11 @@ async def awf_wait_for_event(
         # AWF_WAIT_CAP), not the hardcoded transport default. RUN10 #2:
         # the no-history fallback follows the cap (~90% of it), not the
         # 55s transport default.
+        # A-20: probes off the event loop (to_thread), same values as before.
         try:
-            cap = api.wait_cap(_resolve_project_dir(project_dir))
+            cap = await asyncio.to_thread(
+                api.wait_cap, _resolve_project_dir(project_dir)
+            )
         except Exception:
             cap = api.TRANSPORT_CAP
         suggested = response.get("suggested_timeout") or (
@@ -2001,7 +1984,11 @@ async def awf_wait_for_event(
         # the old run_brief probe was a duplicated, heavier check.
         run_active = False
         try:
-            run_active = bool(api.run_is_active(_resolve_project_dir(project_dir)))
+            run_active = bool(
+                await asyncio.to_thread(
+                    api.run_is_active, _resolve_project_dir(project_dir)
+                )
+            )
         except Exception:
             pass
 
@@ -2050,7 +2037,7 @@ async def awf_wait_for_event(
         # B3 / RUN6 #3: every response carries the actual single-wait cap
         # (project-aware: config/env, default ~55s transport cap); clamped
         # requests say so explicitly.
-        response["next_action"] += _wait_cap_note(
+        response["next_action"] += await _wait_cap_note(
             _resolve_project_dir(project_dir), clamped, requested
         )
         return response
