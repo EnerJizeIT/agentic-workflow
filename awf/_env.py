@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 # AUD14-07: load libc in the PARENT at import time. CDLL inside preexec_fn
 # does dlopen after fork in a multi-threaded process (orchestrator runs a
@@ -39,11 +40,43 @@ def _pdeathsig_preexec() -> None:
         pass  # best effort — don't crash if libc/prctl unavailable
 
 
-def awf_subprocess_env() -> dict[str, str]:
+def _is_readonly_role(role: str, project_dir: str | Path | None) -> bool:
+    """W7: True when ``role`` is in the project's ``automation.readonly_roles``.
+
+    The list lives in ``.agentic/config.yaml`` and is EMPTY by default —
+    behavior without it is exactly the previous one. Any read error
+    (no .agentic/, malformed YAML, wrong value type) degrades to False:
+    env assembly for a spawn must never raise.
+    """
+    if not role or project_dir is None:
+        return False
+    try:
+        from . import config as cfg_mod
+
+        config = cfg_mod.load(project_dir)
+        roles = cfg_mod.get(config, "automation.readonly_roles", [])
+    except Exception:
+        return False
+    if not isinstance(roles, list):
+        return False
+    return role in {str(r) for r in roles}
+
+
+def awf_subprocess_env(
+    *,
+    role: str = "",
+    project_dir: str | Path | None = None,
+) -> dict[str, str]:
     """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
     Sets ``OPENCODE_CONFIG_CONTENT`` to override permission rules so
     the subprocess can run ``edit``/``bash``/``write`` without prompting.
+
+    W7 (readonly roles): when ``role`` is listed in the project's
+    ``automation.readonly_roles`` (``.agentic/config.yaml``, default
+    empty), the ``edit``/``write`` overrides are NOT emitted — the role
+    gets read/bash/webfetch without the file-write tools. ``bash``/
+    ``webfetch`` and everything else stay as before.
 
     KAUD-5: MERGES with user's existing opencode.json instead of replacing.
     Reads user's config, adds our permission overrides on top, preserves
@@ -71,12 +104,18 @@ def awf_subprocess_env() -> dict[str, str]:
     merged_permissions = merged.get("permission", {})
     if not isinstance(merged_permissions, dict):
         merged_permissions = {}
-    merged_permissions.update({
-        "edit": "allow",
+    # W7: a readonly role (automation.readonly_roles) does not get the
+    # edit/write overrides — the user's own opencode.json values (if any)
+    # still apply, awf just stops granting the write tools.
+    readonly = _is_readonly_role(role, project_dir)
+    overrides = {
         "bash": "allow",
-        "write": "allow",
         "webfetch": "allow",
-    })
+    }
+    if not readonly:
+        overrides["edit"] = "allow"
+        overrides["write"] = "allow"
+    merged_permissions.update(overrides)
     merged["permission"] = merged_permissions
 
     # P1 security: only serialize permission overrides to env — never API keys,

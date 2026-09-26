@@ -1046,7 +1046,9 @@ def run_supervisor_via_subprocess(
         watch_paths=watch_paths,
         watch_new_glob=watch_new_glob,
         logs_dir=logs_dir,
-        env=awf_subprocess_env(),
+        # W7: role-aware env (the supervisor can also be listed in
+        # automation.readonly_roles — same mechanism as worker roles).
+        env=awf_subprocess_env(role="supervisor", project_dir=project_dir),
         signal_holder=signal_holder,
         # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
         # be legitimately long-silent (verify waits), so no watchdog; no

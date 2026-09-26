@@ -84,6 +84,31 @@ def _find_skill_file(skill_name: str, project_dir: Path) -> Path:
     )
 
 
+# W7: roles whose protocol ships with awf (built-in templates in
+# awf/templates/roles/). Only these names take the built-in template;
+# every other name (including "supervisor" — that template belongs to
+# awf init) keeps the placeholder behavior.
+_BUILTIN_ROLE_NAMES = ("agent-qa-review", "agent-implementer")
+
+
+def _builtin_role_template(role_name: str) -> Path | None:
+    """W7: built-in role template, or None for the placeholder fallback.
+
+    ``role_name`` is slug-validated by the caller before this is reached,
+    so the path cannot escape the templates dir. Returns None when the
+    name is not a built-in role or the shipped file is missing (old
+    installs) — the caller falls back to the placeholder, so previous
+    names and behavior are unchanged.
+    """
+    if role_name not in _BUILTIN_ROLE_NAMES:
+        return None
+    candidate = (
+        Path(__file__).resolve().parent.parent / "templates" / "roles"
+        / f"{role_name}.md"
+    )
+    return candidate if candidate.is_file() else None
+
+
 def _strip_yaml_frontmatter(content: str) -> str:
     """Drop a leading ``---`` YAML block if present; keep the rest verbatim.
 
@@ -110,9 +135,12 @@ def add_role(
 ) -> AddRoleResult:
     """Generate a new role at ``.agentic/roles/{role_name}.md``.
 
-    Two content sources:
-    - default (no ``from_skill``): a placeholder template
-      (``description``/``model`` fill its sections);
+    Content sources:
+    - built-in (W7): ``agent-qa-review`` / ``agent-implementer`` take
+      the protocol templates shipped with awf (``awf/templates/roles/``)
+      — the supervisor strategy works in other projects too;
+    - default (no ``from_skill``, no built-in template): a placeholder
+      template (``description``/``model`` fill its sections);
     - ``from_skill="name"``: an opencode skill — the SKILL.md body with
       its own YAML front-matter stripped, under a one-line provenance
       comment (source path + date). ``description``/``model`` are ignored
@@ -179,13 +207,21 @@ def add_role(
             f"on {date.today().isoformat()} -->\n{body}\n"
         )
     else:
-        if not model:
-            model = "<set-me-in-.agentic/config.yaml>"
-        content = _ROLE_TEMPLATE.format(
-            role_name=role_name,
-            description=description or "new role",
-            model=model,
-        )
+        builtin = _builtin_role_template(role_name)
+        if builtin is not None:
+            # W7: ship the project's quality protocol — the reviewer and
+            # the implementer get their built-in templates instead of the
+            # empty placeholder (the supervisor strategy works in other
+            # projects, not only in this repo).
+            content = builtin.read_text(encoding="utf-8")
+        else:
+            if not model:
+                model = "<set-me-in-.agentic/config.yaml>"
+            content = _ROLE_TEMPLATE.format(
+                role_name=role_name,
+                description=description or "new role",
+                model=model,
+            )
 
     # AUD06-07: an existing role file is user data (hand-edited instructions)
     # — silently replacing it lost it without a trace or a backup. Refuse;
