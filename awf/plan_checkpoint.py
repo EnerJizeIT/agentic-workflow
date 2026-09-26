@@ -27,6 +27,7 @@ import html as html_lib
 import json
 import os
 import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -41,6 +42,13 @@ from ._atomic import atomic_write_text
 from ._log import log as _log
 
 DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
+
+# A-07 (аудит 2026-09-25, слой 5): пределы тела POST формы. Настоящая форма
+# шлёт килобайты (decision + отредактированный TODO + токен), поэтому лимит
+# — защита от мусора и потоков, а не функциональное ограничение.
+CHECKPOINT_BODY_MAX_BYTES = 64 * 1024  # 64 KiB — потолок тела решения
+CHECKPOINT_BODY_READ_TIMEOUT = 10.0  # секунд простоя сокета на чтении
+CHECKPOINT_MAX_CONCURRENT = 16  # максимум одновременных обработчиков
 
 
 def _live_checkpoint_form_file(project_dir: Path) -> Path | None:
@@ -563,6 +571,52 @@ def _is_local_origin(origin: str) -> bool:
         return False
 
 
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """A-07: ThreadingHTTPServer с ограничением активных обработчиков.
+
+    Без предела наводка из «зависших» соединений (open и тишина) порождает
+    потоки без конца — по одному на принятое соединение. Перелив получает
+    немедленный 503 и закрытие соединения; запрос при этом не
+    обрабатывается.
+    """
+
+    max_concurrent = CHECKPOINT_MAX_CONCURRENT
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._active = 0
+        self._active_lock = threading.Lock()
+
+    def process_request_thread(self, request, client_address):
+        with self._active_lock:
+            self._active += 1
+            over = self._active > self.max_concurrent
+        try:
+            if over:
+                self._reject_overflow(request)
+                return
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_lock:
+                self._active -= 1
+
+    @staticmethod
+    def _reject_overflow(request: socket.socket) -> None:
+        text = b"Too many concurrent checkpoint requests"
+        response = (
+            b"HTTP/1.0 503 Service Unavailable\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            + f"Content-Length: {len(text)}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+            + text
+        )
+        try:
+            request.sendall(response)
+        except OSError:
+            pass
+        request.close()
+
+
 def _start_checkpoint_server(
     port: int,
     decision_holder: dict[str, str],
@@ -597,6 +651,30 @@ def _start_checkpoint_server(
     token_state: dict[str, str | None] = {"token": token}
 
     class _CheckpointHandler(BaseHTTPRequestHandler):
+        def setup(self) -> None:
+            super().setup()
+            # A-07: любое чтение на этом соединении (request line, тело)
+            # ограничено по времени — зависший клиент не удерживает поток
+            # обработчика. socket.timeout на request line уже обработан
+            # BaseHTTPRequestHandler (закрытие без traceback).
+            self.connection.settimeout(CHECKPOINT_BODY_READ_TIMEOUT)
+
+        def _reply(self, code: int, text: bytes, *, close: bool = False) -> None:
+            """A-07: маленький текстовый отказ (400/408/413). Мёртвый сокет
+            клиента не превращает сам отказ в traceback."""
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(text)))
+                if close:
+                    self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(text)
+                if close:
+                    self.close_connection = True
+            except OSError:
+                pass
+
         def do_GET(self) -> None:  # noqa: N802 — http.server API
             # Browser may request /favicon.ico after form submit. Without a
             # GET handler, BaseHTTPRequestHandler returns 501 and pollutes
@@ -605,6 +683,29 @@ def _start_checkpoint_server(
             self.end_headers()
 
         def do_POST(self) -> None:  # noqa: N802 — http.server API
+            # A-07: Content-Length валидируется до любого чтения: мусор или
+            # отрицательное число — немедленный 400, а не int()/read(-1) в
+            # потоке (traceback или ожидание конца потока).
+            length_raw = self.headers.get("Content-Length")
+            try:
+                length = int(length_raw) if length_raw is not None else 0
+            except ValueError:
+                self._reply(400, b"Bad Content-Length")
+                return
+            if length < 0 or length > CHECKPOINT_BODY_MAX_BYTES:
+                # A-07: перелив — 413 без вычитывания тела: соединение
+                # закрывается, поток освобождается, заявленные мегабайты
+                # не читаются в память. Отрицательное — 400.
+                if length < 0:
+                    self._reply(400, b"Bad Content-Length")
+                else:
+                    self._reply(
+                        413,
+                        b"Payload too large: checkpoint limit is 64 KiB",
+                        close=True,
+                    )
+                return
+
             # QA-A: CSRF check — accept only from localhost forms.
             # Same-origin check via Origin/Referer header. Allows file://
             # forms (Origin: null or absent). Rejects cross-origin POST.
@@ -616,8 +717,21 @@ def _start_checkpoint_server(
                 self.wfile.write(b"Forbidden: cross-origin POST rejected")
                 return
 
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            # A-07: чтение ограничено по времени (socket timeout выставляется
+            # в setup) — медленный клиент не держит поток.
+            try:
+                body = self.rfile.read(length).decode("utf-8", errors="replace")
+            except OSError:  # TimeoutError ⊂ OSError (py3.10+) — read timeout
+                self._reply(408, b"Timeout reading body", close=True)
+                return
+            finally:
+                # Таймаут был только для чтения — маленький ответ
+                # ограничивать не нужно.
+                try:
+                    self.connection.settimeout(None)
+                except OSError:
+                    pass
+
             params = parse_qs(body, keep_blank_values=True)
 
             decision = params.get("decision", [""])[0]
@@ -647,9 +761,13 @@ def _start_checkpoint_server(
                     )
                 else:
                     current_token = token_state["token"]
+                    # A-03 F1: compare_digest бросает TypeError на не-ASCII
+                    # str — isascii() превращает такой токен в чистый 403,
+                    # а не сброс соединения + traceback в stderr.
                     if not (
                         current_token is not None
                         and submitted_token
+                        and submitted_token.isascii()
                         and secrets.compare_digest(submitted_token, current_token)
                     ):
                         rejected = (
@@ -730,7 +848,7 @@ def _start_checkpoint_server(
         def log_message(self, *args, **kwargs) -> None:
             pass  # silence stderr noise
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), _CheckpointHandler)
+    server = _BoundedThreadingHTTPServer(("127.0.0.1", port), _CheckpointHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 

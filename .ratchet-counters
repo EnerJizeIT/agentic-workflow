@@ -401,4 +401,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # TODO-0001 default). Same class as above: test identifiers, not debt. The
 # production fix (awf/plan_checkpoint.py — the one-time form token) carries
 # no TODO id in code.
+# 2026-09-26 (stabilization, A-07): baseline raised 3876 -> 3877 — the
+# checkpoint-body unit (TODO-0095) adds 1 TODO-bearing line: the
+# "decision + отредактированный TODO + токен" wording in the A-07 limits
+# comment of awf/plan_checkpoint.py. Same class as above: unit wording,
+# not debt. The production fix (Content-Length validation, body limit,
+# read timeout, bounded handlers) and the new
+# tests/negative/test_audit25_a07_http_body.py carry no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
