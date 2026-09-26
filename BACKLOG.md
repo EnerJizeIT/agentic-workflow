@@ -9,10 +9,12 @@
 
 ### АУДИТ-2026-09-25 · Стабилизация (программа, решение владельца 25.09)
 
-🟡 **Волна 2 завершена (ждёт приёмки)**: A-02 lease, A-13 CAS, A-21 сигнал —
-коммиты `37cd55e`…`67e5ce3`; QA поймал P1 (утечка lease в окне запуска).
-**Волна 3 подготовлена**: A-04, A-15, A-09, R-03 (CommitPlan) + D-01/R-07.
-⬜ Волны 4–6 по плану: [docs/audit-2026-09-25-gpt6-sol-xhigh/ROADMAP-SUPERVISOR.md](docs/audit-2026-09-25-gpt6-sol-xhigh/ROADMAP-SUPERVISOR.md).
+🟡 **Волна 3 завершена (ждёт приёмки)**: A-04, A-15, A-09, R-03 (CommitPlan +
+изолированный index), D-01 — коммиты `2945985`…`ea61a45`; QA поймал P2/P3
+(окно A-15, rename-парсер), закрыты второй попыткой.
+**Волна 4 подготовлена**: метрики — A-10, A-17, контракт+тесты, «по запросу»
+(пункты RUN11 ниже).
+⬜ Волны 5–6 по плану: [docs/audit-2026-09-25-gpt6-sol-xhigh/ROADMAP-SUPERVISOR.md](docs/audit-2026-09-25-gpt6-sol-xhigh/ROADMAP-SUPERVISOR.md).
 Отложенные кандидаты (в волну 6): R1-комментарий `cmd_init.py`;
 `clean_stage_signals` против NEG-4; handoff в restore-цикле; дубль
 `_suffixed_name`/`_unique_name`; исключительный путь `start_pipeline` оставляет
