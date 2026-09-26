@@ -408,4 +408,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # not debt. The production fix (Content-Length validation, body limit,
 # read timeout, bounded handlers) and the new
 # tests/negative/test_audit25_a07_http_body.py carry no TODO id.
+# 2026-09-26 (stabilization, A-19): baseline raised 3877 -> 3881 — the
+# prove-red-paths unit (TODO-0096) adds 4 TODO-bearing lines, all in the new
+# tests/negative/test_audit25_a19_prove_red_paths.py: the _baseline helper's
+# TODO-0001 default plus the TODO-0001 prove_red calls of the
+# traversal/absolute/regression tests (the symlink test has no TODO id). Same
+# class as above: test identifiers, not debt. The production fix
+# (awf/prove_red.py — _split_test_id + the source/dest boundary checks)
+# carries no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

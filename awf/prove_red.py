@@ -143,6 +143,12 @@ def prove_red(
 
     baseline_sha = _read_baseline_sha(project_dir, todo_id)
 
+    # A-19: refuse test paths that escape the project BEFORE the worktree is
+    # created, so no file outside the project is read and no worktree is spun
+    # up for a bad id.
+    for tid in tests:
+        _check_source_inside_project(project_dir, _split_test_id(tid), tid)
+
     worktree = _new_worktree(project_dir, baseline_sha, tmp_base)
     warnings: list[str] = []
     current_output = ""
@@ -302,24 +308,66 @@ def _tests_from_contract(project_dir: Path, todo_id: str) -> list[str] | None:
     return None
 
 
+def _split_test_id(tid: str) -> str:
+    """The file part of a test id (before any ``::``); non-empty, no NUL."""
+    rel = tid.split("::", 1)[0].strip()
+    if not rel or "\x00" in rel:
+        raise AwfApiError(
+            f"bad test id '{tid}' — expected a file path or file::test"
+        )
+    return rel
+
+
+def _check_source_inside_project(project_dir: Path, rel: str, tid: str) -> None:
+    """Refuse a test path that is absolute or, once symlinks are resolved,
+    leaves the project. ``../``, absolute paths and symlinks pointing out of
+    the project are rejected before any file outside the project is read (A-19).
+    """
+    if Path(rel).is_absolute():
+        raise AwfApiError(
+            f"test path must be relative to the project root: {rel!r} (from '{tid}')"
+        )
+    root = project_dir.resolve()
+    src = (project_dir / rel).resolve()
+    if not src.is_relative_to(root):
+        raise AwfApiError(
+            f"test path escapes the project: {rel!r} resolves to {src} (from '{tid}')"
+        )
+
+
+def _check_dest_inside_worktree(worktree: Path, rel: str, tid: str) -> None:
+    """Refuse a copy destination that, once symlinks are resolved, leaves the
+    worktree. A symlink committed in the baseline checkout could otherwise let
+    ``shutil.copy2`` write outside the temporary worktree (A-19)."""
+    root = worktree.resolve()
+    dst = (worktree / rel).resolve()
+    if not dst.is_relative_to(root):
+        raise AwfApiError(
+            f"test destination escapes the worktree: {rel!r} resolves to {dst} "
+            f"(from '{tid}')"
+        )
+
+
 def _copy_test_files(project_dir: Path, worktree: Path, test_ids: list[str]) -> list[str]:
     """Copy files containing the given tests into the worktree.
 
     New (untracked) files are copied too — that is the whole point: the
     baseline checkout does not have them yet.
+
+    Each path is boundary-checked (A-19): the source must stay inside the
+    project and the destination inside the worktree, both symlink-aware,
+    before anything is read or written.
     """
     copied: list[str] = []
     for tid in test_ids:
-        rel = tid.split("::", 1)[0].strip()
-        if not rel or "\x00" in rel:
-            raise AwfApiError(
-                f"bad test id '{tid}' — expected a file path or file::test"
-            )
+        rel = _split_test_id(tid)
+        _check_source_inside_project(project_dir, rel, tid)
         src = project_dir / rel
         if not src.is_file():
             raise AwfApiError(
                 f"test file not found in the current tree: {rel} (from '{tid}')"
             )
+        _check_dest_inside_worktree(worktree, rel, tid)
         dst = worktree / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
