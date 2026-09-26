@@ -425,4 +425,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # untouched at 3881). Same class as the run_state.py / commit_gate.py
 # production-module raises above: the schema and its validator belong in
 # one file.
+# 2026-09-26 (stabilization, A-20): baseline raised 3881 -> 3886 — the
+# event-loop unit (TODO-0100) adds 5 TODO-bearing lines, all in the new
+# tests/agent_workflow_ui/test_audit25_a20_async.py: the TODO-0001 test-id
+# asserts (todo_id == "TODO-0001" x2, the .md/.ready is_file asserts, the
+# next_action startswith). The production change
+# (agent_workflow_ui/tools/awf.py — direct sync api calls moved through
+# the _exec/to_thread adapter) carries no TODO id (88 lines before and
+# after). Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
