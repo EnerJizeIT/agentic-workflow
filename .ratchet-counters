@@ -367,4 +367,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # run_next wiring/behavior tests). Same class as above: test identifiers,
 # not debt. The production change (awf/api/run.py — read_include_list call
 # instead of the manual parse) carries no TODO id.
+# 2026-09-26 (stabilization, A-17): baseline raised 3803 -> 3818 — the
+# commit-stages unit (TODO-0090) adds 15 TODO-bearing lines: 13 in the new
+# tests/negative/test_audit25_a17_commit_stages.py (module docstring + the
+# "awf(execute)/awf(verify): TODO-0001" commit-subject fixtures and the
+# TODO-0001 window asserts) and net +2 in awf/metrics.py (the
+# _todo_id_from_stage_commit docstring lines; the collect_commit_info and
+# module-docstring reword is TODO-line-for-TODO-line). Same class as above:
+# test identifiers and unit-id references, not debt. The production fix
+# (awf/metrics.py — _AWF_STAGE_HEAD_RE + _todo_id_from_stage_commit, the
+# stage-agnostic collect_commit_info) carries no TODO id in code.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
