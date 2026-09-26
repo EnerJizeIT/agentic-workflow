@@ -710,19 +710,17 @@ def run_next(
         # RUN10 #4 (TODO-0074): same for the inclusion list — re-apply the
         # dispatch's re-claimed paths from the BASELINE-{id}.include link,
         # or the re-baseline would silently drop them from the unit commit.
-        # Link-read failure must not kill the re-baseline (best-effort).
+        # D-01/R-07: read_include_list is the single .include parser — the
+        # helper's []-for-empty-file case is a no-op in create_baseline
+        # (set(include or ())), identical to the old None. Link-read failure
+        # must not kill the re-baseline (best-effort; the helper swallows
+        # OSError itself, the outer catch is the backstop).
+        from ..include_untracked import read_include_list
+
         include: set[str] | None = None
-        inc_link = paths.context_dir(project_dir) / f"BASELINE-{next_id}.include"
-        try:
-            if inc_link.is_file():
-                inc = {
-                    ln.strip()
-                    for ln in inc_link.read_text(encoding="utf-8").splitlines()
-                    if ln.strip()
-                }
-                include = inc or None
-        except OSError:
-            include = None
+        recorded = read_include_list(project_dir, next_id)
+        if recorded:
+            include = set(recorded)
         create_baseline(project_dir, next_id, carry_over=carry_over, include=include)
     except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start

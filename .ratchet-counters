@@ -360,4 +360,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # _read_verified_sha helper + the refresh_verified_sha plan update that
 # closes the P2 approve-in-wait window), same class as the
 # run_state.py / wait_event.py production-module raises above.
+# 2026-09-26 (stabilization, D-01/R-07): baseline raised 3751 -> 3763 —
+# the single-.include-parser unit (TODO-0088) adds 12 TODO-bearing lines,
+# all in the new tests/negative/test_audit25_d01_include_parser.py: the
+# TODO-0001 fixture ids of the five tests (the helper-parity pins and the
+# run_next wiring/behavior tests). Same class as above: test identifiers,
+# not debt. The production change (awf/api/run.py — read_include_list call
+# instead of the manual parse) carries no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
