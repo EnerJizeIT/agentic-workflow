@@ -206,14 +206,20 @@ def _all_changed_files(project_dir: Path) -> list[str]:
     stage — tracked changes (staged, unstaged, deleted) plus untracked.
 
     NUL-separated porcelain so unusual path names survive verbatim. A
-    staged rename/copy is TWO tokens ("R  target" + the bare source name);
-    both are the user's index WIP and are consumed whole, neither
-    contributes a path — the source token is not a path, and a source name
-    that looks like a status prefix (``git mv '?a b' ...``) must not be
-    parsed as one (REVIEW-0087 P3). Entries the user's index staged (R-03:
-    the unit never stages — a staged-vs-HEAD entry is the user's WIP and
-    stays out of the plan, same rule as the baseline path). Empty list on
-    error.
+    staged rename/copy is TWO tokens ("R<state> target" + the bare source
+    name, state = the target's worktree status `` ``/``M``/``D``); both
+    are the user's index WIP and are consumed whole for every state,
+    neither contributes a path — the source token is not a path, and a
+    source name that looks like a status prefix (``git mv '?a b' ...``)
+    must not be parsed as one (REVIEW-0087 P3). Consuming the pair for
+    every state (not only the clean "R " one) is what keeps the RM/CM
+    pair's bare source token out of the path branch (REVIEW-0087 P4;
+    REVIEW-0104 F1: a worktree existence check on path entries was wider
+    than this angle — it dropped real " D" deletions, and a source tail
+    that happens to exist in the worktree would still leak). Entries the
+    user's index staged (R-03: the unit never stages — a staged-vs-HEAD
+    entry is the user's WIP and stays out of the plan, same rule as the
+    baseline path). Empty list on error.
     """
     try:
         result = subprocess.run(
@@ -232,9 +238,15 @@ def _all_changed_files(project_dir: Path) -> list[str]:
         i = 0
         while i < len(tokens):
             tok = tokens[i]
-            if len(tok) >= 4 and tok[0] in ("R", "C") and tok[1] == " ":
-                # staged rename/copy: "R  target\0source\0" — the user's
-                # WIP, consume both tokens, keep neither
+            if (
+                len(tok) >= 4
+                and tok[0] in ("R", "C")
+                and tok[1] in (" ", "M", "D")
+            ):
+                # staged rename/copy, any worktree state of the target
+                # ("R  target" / "RM target" / "RD target" + the bare
+                # source token) — the user's index WIP, consume both
+                # tokens, keep neither
                 i += 2
                 continue
             if len(tok) >= 4 and tok[2] == " " and tok[0] in (" ", "?"):

@@ -445,4 +445,18 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # suite), same class as the test_brief.py / test_todo_hygiene.py raises
 # above. The production fix (awf/api/run.py — the reservation-collision
 # liveness branch) carries no other TODO id in code.
+# TODO-0104 (волна 6.3, гигиена): baseline raised 3906 -> 3921 — the new
+# tests/negative/test_audit25_w6_hygiene.py adds 12 TODO-bearing lines
+# (the TODO-0001 build_commit_plan fixture and the real
+# PROGRESS-TODO-0001.md artifact names in the suffix-convention test),
+# awf/_names.py 2 (its docstring's PROGRESS-TODO-0001.md example) and
+# awf/cmd_init.py 1 (the A-11 comment's "TODOs" in the preserved-list).
+# Same class as above: test identifiers, docstring examples and a unit
+# comment, not debt.
+# TODO-0104 (QA-проход): baseline raised 3921 -> 3922 — the QA regression
+# test test_legacy_plan_keeps_worktree_deletions (finding F1: the P4 guard
+# drops worktree " D" entries from the legacy plan) adds one TODO-bearing
+# line (the build_commit_plan call). Same class: a test identifier, not
+# debt. The test must stay in place and turn green after the guard
+# rework (REVIEW-0104 F1).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

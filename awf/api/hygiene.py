@@ -30,6 +30,7 @@ from pathlib import Path
 
 from .. import paths, todos
 from .._log import log as _log
+from .._names import unique_name
 from ..pipeline_state import read_state
 from ..signals import short_id
 from ._background import check_pipeline_running
@@ -225,14 +226,9 @@ def _unique_name(dest_dir: Path, name: str) -> str:
 
     ``PROGRESS-TODO-0001.md`` → ``PROGRESS-TODO-0001.md``, then
     ``PROGRESS-TODO-0001-1.md``, ``PROGRESS-TODO-0001-2.md``, ...
+    (shared mechanism: awf/_names.py)
     """
-    candidate = name
-    stem, dot, ext = name.partition(".")
-    i = 1
-    while (dest_dir / candidate).exists():
-        candidate = f"{stem}-{i}.{ext}" if dot else f"{name}-{i}"
-        i += 1
-    return candidate
+    return unique_name(dest_dir, name)
 
 
 def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResult:

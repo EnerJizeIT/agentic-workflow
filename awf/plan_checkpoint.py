@@ -752,7 +752,6 @@ def _start_checkpoint_server(
             # outcome — AUD03-05).
             submitted_token = params.get("token", [""])[0]
             rejected: tuple[int, bytes] | None = None
-            already_decided = False
             with decision_lock:
                 if self.path.split("?", 1)[0] != "/checkpoint":
                     rejected = (
@@ -774,8 +773,6 @@ def _start_checkpoint_server(
                             403,
                             b"Forbidden: missing or invalid checkpoint token",
                         )
-                    elif decision_holder:
-                        already_decided = True
                     else:
                         edited_content = params.get("edited_content", [""])[0]
                         # B1: persist to disk BEFORE publishing in-memory —
@@ -800,29 +797,6 @@ def _start_checkpoint_server(
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.end_headers()
                 self.wfile.write(rejected[1])
-                return
-
-            if already_decided:
-                first = decision_holder["decision"]
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                dup_ack = (
-                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                    "<title>awf</title>"
-                    "<style>"
-                    "body{background:#1e1e1e;color:#d4d4d4;font-family:system-ui,sans-serif;"
-                    "padding:40px;text-align:center;margin:0;}"
-                    "h2{color:#4ec9b0;font-weight:600;margin-bottom:12px;}"
-                    "p{color:#858585;}"
-                    "</style>"
-                    "</head>"
-                    "<body>"
-                    f"<h2>Решение уже принято: {html_lib.escape(first)}</h2>"
-                    "<p>Повторная отправка проигнорирована. Можно закрыть вкладку.</p>"
-                    "</body></html>"
-                )
-                self.wfile.write(dup_ack.encode("utf-8"))
                 return
 
             self.send_response(200)

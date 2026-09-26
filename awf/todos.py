@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ._names import unique_name
 from .paths import handoff_dir
 from .signals import short_id as _short_id
 
@@ -86,16 +87,10 @@ def _suffixed_name(dest_dir: Path, name: str) -> str:
     """First free ``name-N.ext`` in ``dest_dir`` — never the base name.
 
     The base name is reserved for the incoming winner, so the search
-    starts at the first suffix (the _unique_name mechanism from
-    api/hygiene.py, with the base name treated as pre-occupied).
+    starts at the first suffix (shared mechanism: awf/_names.py, base
+    name treated as pre-occupied).
     """
-    stem, dot, ext = name.partition(".")
-    i = 1
-    candidate = f"{stem}-{i}.{ext}" if dot else f"{name}-{i}"
-    while (dest_dir / candidate).exists():
-        i += 1
-        candidate = f"{stem}-{i}.{ext}" if dot else f"{name}-{i}"
-    return candidate
+    return unique_name(dest_dir, name, reserve_base=True)
 
 
 def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:

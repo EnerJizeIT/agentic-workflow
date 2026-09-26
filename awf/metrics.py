@@ -778,16 +778,6 @@ def model_costs_from_catalog(
     return {k: float(cost.get(k, 0) or 0) for k in _COST_KEYS}
 
 
-def load_reference_costs(
-    models_path: Path, reference_model: str, warnings: list[str]
-) -> dict[str, float] | None:
-    """Цены референс-модели из models.json (за 1M токенов) или None."""
-    catalog = load_models_catalog(models_path, warnings)
-    if catalog is None:
-        return None
-    return model_costs_from_catalog(catalog, reference_model, warnings)
-
-
 def convert_cost(
     totals: dict, costs: dict[str, float] | None, reference_model: str
 ) -> dict[str, Any]:
