@@ -24,7 +24,6 @@ A-18 supplement (TODO-0111):
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import subprocess
@@ -48,11 +47,15 @@ _COUNT_RE = re.compile(
 
 
 def _registry_counts() -> dict[str, int]:
-    """Count tools from the live registry — the single source of truth."""
-    pytest.importorskip("mcp.server.fastmcp")
-    from agent_workflow_ui.server import create_server
+    """Count tools from the registry — the single source of truth.
 
-    names = [t.name for t in asyncio.run(create_server().list_tools())]
+    R-06 (TODO-0112): reads ``tools/registry.py`` directly — ``create_server()``
+    registers exactly this list, and the registry↔``list_tools()`` parity is
+    pinned by ``test_audit25_r06_registry.py``."""
+    pytest.importorskip("mcp.server.fastmcp")
+    from agent_workflow_ui.tools.registry import TOOLS
+
+    names = [t.name for t in TOOLS]
     awf = [n for n in names if n.startswith("awf_")]
     ui = [n for n in names if not n.startswith("awf_")]
     return {

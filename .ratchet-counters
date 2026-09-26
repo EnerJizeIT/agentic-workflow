@@ -497,4 +497,17 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # 1 CI matrix comment in .github/workflows/ci.yml, 2 in
 # tests/agent_workflow_ui/test_audit25_w6_docs_ci.py (module docstring +
 # test class docstring). Same class as above: unit-id references, not debt.
+# TODO-0112 (R-06): baseline raised 4020 -> 4052 — the registry + shared
+# TODO-ID-parser unit adds 36 TODO-bearing lines in 3 new files
+# (awf/todo_ids.py 12 — module docstring, the regex, extract/valid
+# docstrings; tests/agent_workflow_ui/test_audit25_r06_registry.py 21 —
+# module docstring + TODO-10000 fixtures and asserts;
+# tools/registry.py 3 — header docstring), +9 TODO-bearing lines in the
+# touched files (unit-id references in metrics.py / run.py / dispatch.py /
+# brief.py / server.py / test_audit25_w6_docs_ci.py comments and docstrings),
+# and removes 13 (the manual add_tool comments in server.py, the old
+# _TODO_ID_RE/_TODO_RE local regexes in metrics.py and run.py, the A-08
+# create_server count comment). Net +32. Same class as above: test
+# identifiers, the parser module's own docstrings, and unit-id references,
+# not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

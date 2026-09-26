@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .. import paths
 from .._atomic import atomic_write_text
+from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
 from ._helpers import require_agentic
 from ._results import DispatchTodoResult
@@ -163,7 +164,7 @@ def dispatch_todo(
     explicit_id = todo_id is not None
     if todo_id is None:
         todo_id = _next_todo_id(project_dir)
-    elif not re.match(r"^TODO-\d{4,}$", todo_id):
+    elif not is_valid_todo_id(todo_id):
         raise AwfApiError(
             f"invalid todo_id '{todo_id}' — expected format 'TODO-NNNN' (4+ digits)"
         )
