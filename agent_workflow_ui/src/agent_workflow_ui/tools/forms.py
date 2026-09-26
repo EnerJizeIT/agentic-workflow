@@ -321,12 +321,20 @@ async def read_submit(form_id: str) -> dict[str, Any]:
         form_id: Form ID returned by open_form.
 
     Returns:
-        Dict with submitted (bool), form_id, status. If submitted: data, submitted_at, template.
+        Dict with submitted (bool), form_id, status. If submitted: data,
+        submitted_at, template, and (A-05) apply_status
+        ("received"/"applied"/"failed") + apply_result (ok, applied parts,
+        errors, warnings, attempts) when the submit file carries them.
+        Legacy submit files (written before apply tracking) report
+        "applied" without apply_result — the apply ran at submit time,
+        its result was not stored.
 
     Note:
         ``status`` may be "submitting" — a POST claimed the form and is
         mid-write. It is transient: a crashed claim auto-reverts to
         "pending" after <= 10 minutes (AUD09-05), so retrying is safe.
+        ``apply_status == "failed"`` — resubmit the form (the apply is
+        re-run from the saved payload exactly once).
     """
     # QA-5: validate form_id separators (defense-in-depth, same as http_endpoint)
     from ..http_endpoint import _is_valid_form_id
@@ -393,7 +401,7 @@ async def read_submit(form_id: str) -> dict[str, Any]:
     except OSError:
         pass
 
-    return {
+    result = {
         "submitted": True,
         "form_id": form_id,
         "status": "submitted",
@@ -401,6 +409,12 @@ async def read_submit(form_id: str) -> dict[str, Any]:
         "template": payload.get("template", record.template),
         "data": payload.get("data", {}),
     }
+    # A-05: the materialization outcome (additive keys; legacy submit
+    # files without apply_status default to "applied" — see docstring).
+    result["apply_status"] = payload.get("apply_status") or "applied"
+    if isinstance(payload.get("apply_result"), dict):
+        result["apply_result"] = payload["apply_result"]
+    return result
 
 
 async def cancel_form(form_id: str) -> dict[str, Any]:

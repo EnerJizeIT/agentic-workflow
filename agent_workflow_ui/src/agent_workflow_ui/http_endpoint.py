@@ -11,6 +11,7 @@ import os
 import socket
 import threading
 import urllib.parse
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import Any
 from uuid import uuid4
 
 from .config import Config
-from .state import FormRegistry
+from .state import FormRecord, FormRegistry
 
 log = logging.getLogger(__name__)
 
@@ -107,15 +108,68 @@ def _is_origin_allowed(origin: str, referer: str) -> bool:
     return True  # no Origin, no Referer — backward compat for curl
 
 
-def _ack_page(form_id: str, already_submitted: bool) -> str:
+# A-05: per-form locks for resubmit re-apply (in-process exactly-once;
+# the submit-file re-check under the lock is the real guard).
+_REAPPLY_LOCKS: dict[str, threading.Lock] = {}
+_REAPPLY_LOCKS_GUARD = threading.Lock()
+
+
+def _reapply_lock(form_id: str) -> threading.Lock:
+    with _REAPPLY_LOCKS_GUARD:
+        lock = _REAPPLY_LOCKS.get(form_id)
+        if lock is None:
+            lock = threading.Lock()
+            _REAPPLY_LOCKS[form_id] = lock
+        return lock
+
+
+@dataclass
+class ApplyResult:
+    """A-05: outcome of a submit's materialization.
+
+    ``ok`` — no part failed. ``applied``/``errors``/``warnings`` are the
+    explicit partial report (invariant 3): what landed, what did not.
+    """
+
+    ok: bool
+    applied: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "applied": self.applied,
+            "errors": self.errors,
+            "warnings": self.warnings,
+        }
+
+
+def _ack_message(already_submitted: bool, apply: dict[str, Any] | None) -> str:
+    """A-05: the ack text distinguishes received / applied / failed."""
+    if apply is None:
+        return "Эта форма уже была отправлена ранее." if already_submitted else "Форма отправлена!"
+    if apply.get("ok"):
+        if already_submitted:
+            return "Форма уже применена." if apply.get("applied") else "Эта форма уже была отправлена ранее."
+        return "Форма применена!" if apply.get("applied") else "Форма отправлена!"
+    errors = apply.get("errors") or ["unknown error"]
+    first = str(errors[0])
+    if len(first) > 200:
+        first = first[:200] + "…"
+    return f"Форма получена. Применение не удалось: {first}. Повторите отправку — применение повторится."
+
+
+def _ack_page(form_id: str, already_submitted: bool = False, apply: dict[str, Any] | None = None) -> str:
     """Generate HTML acknowledgement page shown after submit.
 
     A3: rendered from render/default_templates/ack.html.j2 (was inline f-string).
+    A-05: ``apply`` (the materialization outcome) selects the message.
     """
     from .render.engine import render_template
     from .state import get_jinja_env
 
-    message = "Эта форма уже была отправлена ранее." if already_submitted else "Форма отправлена!"
+    message = _ack_message(already_submitted, apply)
     try:
         env = get_jinja_env()
         return render_template(env, "ack", {
@@ -166,7 +220,11 @@ class SubmitHandler(BaseHTTPRequestHandler):
             return
 
         if record.status == "submitted":
-            self._send_html(200, _ack_page(form_id, already_submitted=True))
+            # A-05: resubmit either reports the completed apply or completes
+            # it from the saved payload (exactly once — the applied marker
+            # is not doubled). Legacy files keep the old ack text.
+            apply_info = self._resubmit_apply_info(form_id, record)
+            self._send_html(200, _ack_page(form_id, already_submitted=True, apply=apply_info))
             return
 
         if record.status == "cancelled":
@@ -247,6 +305,10 @@ class SubmitHandler(BaseHTTPRequestHandler):
             "template": record.template,
             "submitted_at": datetime.now(timezone.utc).isoformat(),
             "data": data,
+            # A-05: additive. "received" until the materialization below
+            # flips it to applied/failed (a crash in between leaves the
+            # explicit received state, and a resubmit completes the apply).
+            "apply_status": "received",
         }
 
         inputs_dir = (record.project_dir / ".agentic" / "inputs") if record.project_dir else self.inputs_dir
@@ -276,49 +338,94 @@ class SubmitHandler(BaseHTTPRequestHandler):
         # H4 fix: finalize submit status
         self.registry.finalize_submit(form_id)
 
-        # Persist custom roles if requested (delegates to roles_processor)
-        # QA-D: only project-setup submit has role fields. Other templates
-        # (increment-planning, etc.) called process_role_saves/deletions as
-        # no-op but wasted cycles + log noise. Gate explicitly.
-        from .roles_processor import process_role_deletions, process_role_saves
+        # A-05: run the materialization (project-setup → roles +
+        # apply_project_setup via roles_processor; increment-planning →
+        # apply_increment_plan) and record its outcome in the submit file.
+        # The form status now distinguishes received from applied/failed;
+        # the result (success/error, what was applied) is returned via
+        # read_submit and the ack page.
+        apply_result = apply_form_submit(record.template, data, record.project_dir)
+        apply_record = {
+            **apply_result.to_dict(),
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+            "attempts": 1,
+        }
+        payload["apply_status"] = "applied" if apply_result.ok else "failed"
+        payload["apply_result"] = apply_record
+        try:
+            _atomic_write_yaml(target, payload)
+            os.chmod(target, 0o600)
+        except OSError as e:
+            # The apply already ran; the file keeps "received". A resubmit
+            # re-runs the apply (idempotent) and records it.
+            log.error("Failed to record apply result for %s: %s", target, e)
 
-        if record.template == "project-setup":
-            process_role_saves(data, project_dir=record.project_dir)
-            process_role_deletions(data, project_dir=record.project_dir)
+        log.info("Submit received for %s, written to %s (apply: %s)", form_id, target, payload["apply_status"])
 
-        # Dogfood-7: increment-planning submit → persist via api.apply_increment_plan
-        if record.template == "increment-planning" and record.project_dir:
-            selected_variant_id = (data.get("selected_variant", "") or "").strip()
-            variants_json = data.get("variants_json", "") or "[]"
-            if selected_variant_id and selected_variant_id != "__reject__":
-                try:
-                    import json as _json
-                    variants = _json.loads(variants_json) if isinstance(variants_json, str) else variants_json
-                    selected = next(
-                        (v for v in variants if isinstance(v, dict) and v.get("id") == selected_variant_id),
-                        None,
-                    )
-                    if selected:
-                        # Build plan.md body from selected variant
-                        plan_body = _build_plan_md_from_variant(selected, variants)
-                        from awf.api import apply_increment_plan
-                        apply_increment_plan(
-                            record.project_dir,
-                            plan_body,
-                            selected_variant_id=selected_variant_id,
-                            variants=variants,
-                        )
-                        log.info(
-                            "Increment plan persisted: variant=%s → plan.md",
-                            selected_variant_id,
-                        )
-                except Exception as e:
-                    log.error("apply_increment_plan failed: %s", e)
+        self._send_html(200, _ack_page(form_id, already_submitted=False, apply=apply_record))
 
-        log.info("Submit received for %s, written to %s", form_id, target)
 
-        self._send_html(200, _ack_page(form_id, already_submitted=False))
+    def _resubmit_apply_info(self, form_id: str, record: FormRecord) -> dict[str, Any] | None:
+        """A-05: apply info for a resubmit of an already-submitted form.
 
+        Returns the stored apply result when the form is already applied,
+        re-runs the apply from the SAVED payload when it failed (or is
+        still "received" after a crash) and records the new result, or
+        None for a legacy file written before apply tracking existed
+        (the old ack text applies).
+        """
+        inputs_dir = (record.project_dir / ".agentic" / "inputs") if record.project_dir else self.inputs_dir
+        submit_file = inputs_dir / f"{form_id}.yaml"
+        payload = self._read_submit_payload(submit_file)
+        if payload is None or "apply_status" not in payload:
+            return None
+        if payload.get("apply_status") == "applied":
+            return self._stored_apply_result(payload)
+        # Apply not completed — re-run it from the saved payload, guarded
+        # so two parallel resubmits don't both run it.
+        with _reapply_lock(form_id):
+            payload = self._read_submit_payload(submit_file)
+            if payload is None:
+                return None
+            if payload.get("apply_status") == "applied":
+                return self._stored_apply_result(payload)
+            previous = payload.get("apply_result")
+            if not isinstance(previous, dict):
+                previous = {}
+            apply_result = apply_form_submit(
+                payload.get("template") or record.template,
+                payload.get("data") or {},
+                record.project_dir,
+            )
+            result = {
+                **apply_result.to_dict(),
+                "applied_at": datetime.now(timezone.utc).isoformat(),
+                "attempts": int(previous.get("attempts") or 0) + 1,
+            }
+            payload["apply_status"] = "applied" if apply_result.ok else "failed"
+            payload["apply_result"] = result
+            try:
+                _atomic_write_yaml(submit_file, payload)
+            except OSError as e:
+                # The apply ran; the file keeps the old state. The next
+                # resubmit re-runs the idempotent apply and records it.
+                log.error("Failed to record reapply result for %s: %s", submit_file, e)
+        return result
+
+    @staticmethod
+    def _stored_apply_result(payload: dict[str, Any]) -> dict[str, Any]:
+        result = payload.get("apply_result")
+        return result if isinstance(result, dict) else {}
+
+    @staticmethod
+    def _read_submit_payload(submit_file: Path) -> dict[str, Any] | None:
+        try:
+            import yaml
+
+            data = yaml.safe_load(submit_file.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def do_GET(self):
         """Handle GET /health."""
@@ -442,6 +549,74 @@ def start_http_server(config: Config, registry: FormRegistry) -> tuple[Threading
     log.info("HTTP server listening on http://127.0.0.1:%d", port)
     return server, port
 
+
+
+def apply_form_submit(template: str, data: dict[str, Any], project_dir: Path | None) -> ApplyResult:
+    """A-05: run the submit's materialization and report the outcome.
+
+    project-setup → role save/delete + apply_project_setup (roles_processor);
+    increment-planning → apply_increment_plan; other templates have nothing
+    to materialize (empty ok result).
+    """
+    if template == "project-setup":
+        return _apply_project_setup_submit(data, project_dir)
+    if template == "increment-planning":
+        return _apply_increment_planning_submit(data, project_dir)
+    return ApplyResult(ok=True)
+
+
+def _apply_project_setup_submit(data: dict[str, Any], project_dir: Path | None) -> ApplyResult:
+    from .roles_processor import RoleOpReport, process_role_deletions, process_role_saves
+
+    report = RoleOpReport()
+    saved = process_role_saves(data, project_dir=project_dir, report=report)
+    deleted = process_role_deletions(data, project_dir=project_dir, report=report)
+    if saved:
+        report.applied.append(f"roles saved: {saved}")
+    if deleted:
+        report.applied.append(f"roles deleted: {deleted}")
+    return ApplyResult(
+        ok=not report.errors,
+        applied=report.applied,
+        errors=report.errors,
+        warnings=report.warnings,
+    )
+
+
+def _apply_increment_planning_submit(data: dict[str, Any], project_dir: Path | None) -> ApplyResult:
+    if not project_dir:
+        return ApplyResult(ok=True, warnings=["no project_dir — plan.md not materialized"])
+    selected = str(data.get("selected_variant", "") or "").strip()
+    if not selected or selected == "__reject__":
+        return ApplyResult(ok=True, warnings=["no variant selected — plan.md unchanged"])
+    variants_json = data.get("variants_json", "") or "[]"
+    try:
+        variants = json.loads(variants_json) if isinstance(variants_json, str) else variants_json
+        if not isinstance(variants, list):
+            variants = []
+    except (json.JSONDecodeError, TypeError) as e:
+        return ApplyResult(ok=False, errors=[f"variants_json is not valid JSON: {e}"])
+    selected_variant = next(
+        (v for v in variants if isinstance(v, dict) and v.get("id") == selected),
+        None,
+    )
+    if not selected_variant:
+        return ApplyResult(ok=True, warnings=[f"variant '{selected}' not found — plan.md unchanged"])
+    plan_body = _build_plan_md_from_variant(selected_variant, variants)
+    try:
+        from awf.api import apply_increment_plan
+
+        apply_increment_plan(
+            project_dir,
+            plan_body,
+            selected_variant_id=selected,
+            variants=variants,
+        )
+        log.info("Increment plan persisted: variant=%s → plan.md", selected)
+        return ApplyResult(ok=True, applied=[f"plan.md (variant {selected})"])
+    except Exception as e:
+        log.error("apply_increment_plan failed: %s", e)
+        return ApplyResult(ok=False, errors=[f"apply_increment_plan: {e}"])
 
 
 def _build_plan_md_from_variant(

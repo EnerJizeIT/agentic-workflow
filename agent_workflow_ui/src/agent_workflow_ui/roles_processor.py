@@ -75,6 +75,22 @@ def _delete_from_project(filename: str, project_dir: Path | None = None) -> None
         log.info("Deleted role %s from project %s", filename, proj)
 
 
+class RoleOpReport:
+    """A-05: out-report for process_role_saves / process_role_deletions.
+
+    Collects what was applied and what failed (plus apply_project_setup
+    warnings) so the submit handler can record the outcome in the submit
+    file. Optional — without it the functions behave exactly as before.
+    """
+
+    def __init__(self) -> None:
+        self.saved: int = 0
+        self.deleted: int = 0
+        self.applied: list[str] = []
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+
+
 _DEFAULT_AGENT_IDS = {"worker", "reviewer", "tester"}
 
 
@@ -93,7 +109,8 @@ def _copy_existing_role_to_project(role_id: str, project_dir: Path | None = None
     return True
 
 
-def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) -> int:
+def process_role_saves(data: dict[str, Any], project_dir: Path | None = None,
+                       report: RoleOpReport | None = None) -> int:
     """Save custom agent .md and supervisor .md files if user requested.
 
     Reads form fields:
@@ -103,7 +120,9 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
     - supervisor_role (string id of selected existing supervisor variant)
     - agent[] (list of selected agent ids)
 
-    Returns count of successfully saved/copied roles. Failures are logged and skipped.
+    Returns count of successfully saved/copied roles. Failures are logged and skipped;
+    with ``report`` they are also collected there (A-05), together with the
+    apply_project_setup outcome (applied parts + warnings).
     """
     saved = 0
     saved_agent_ids: set[str] = set()
@@ -137,6 +156,8 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
             saved += 1
         except Exception as e:
             log.error("Failed to save custom agent %s: %s", name, e)
+            if report is not None:
+                report.errors.append(f"save agent '{name}': {e}")
 
     # Supervisor variant (new content + save_supervisor)
     sv_content = str(data.get("supervisor_content", "")).strip()
@@ -151,6 +172,8 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
             saved += 1
         except Exception as e:
             log.error("Failed to save supervisor: %s", e)
+            if report is not None:
+                report.errors.append(f"save supervisor: {e}")
 
     # BD-5-B: copy existing supervisor variant selected from dropdown
     if not sv_content:
@@ -200,26 +223,43 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None) ->
                     log.info("Pipeline written to %s", result.pipeline_file)
                 for w in result.warnings:
                     log.warning("apply_project_setup: %s", w)
+                # A-05: record what was materialized and what only warned.
+                if report is not None:
+                    if result.pipeline_file:
+                        report.applied.append(f"pipeline: {Path(result.pipeline_file).name}")
+                    if result.config_updated:
+                        report.applied.append("config: role mapping")
+                    if result.supervisor_md_updated:
+                        report.applied.append("supervisor.md: context/instructions")
+                    report.warnings.extend(result.warnings)
             except Exception as e:
                 log.error("apply_project_setup failed: %s", e)
+                if report is not None:
+                    report.errors.append(f"apply_project_setup: {e}")
 
+    if report is not None:
+        report.saved = saved
     return saved
 
 
 
 
-def process_role_deletions(data: dict[str, Any], project_dir: Path | None = None) -> int:
+def process_role_deletions(data: dict[str, Any], project_dir: Path | None = None,
+                           report: RoleOpReport | None = None) -> int:
     """Delete custom role .md files if user requested.
 
     Reads form field:
     - delete_agent (comma-separated slug names)
 
-    Returns count of successfully deleted roles. Missing files are not errors.
+    Returns count of successfully deleted roles. Missing files are not
+    errors; with ``report`` they are also collected there (A-05).
     """
     deleted = 0
 
     delete_str = str(data.get("delete_agent", "")).strip()
     if not delete_str:
+        if report is not None:
+            report.deleted = 0
         return 0
 
     for name in delete_str.split(","):
@@ -233,5 +273,9 @@ def process_role_deletions(data: dict[str, Any], project_dir: Path | None = None
                 deleted += 1
         except Exception as e:
             log.error("Failed to delete %s: %s", name, e)
+            if report is not None:
+                report.errors.append(f"delete role '{name}': {e}")
 
+    if report is not None:
+        report.deleted = deleted
     return deleted
