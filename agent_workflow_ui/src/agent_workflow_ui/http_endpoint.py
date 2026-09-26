@@ -23,6 +23,11 @@ from .state import FormRegistry
 log = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 1 * 1024 * 1024  # 1MB
+# A-07 (аудит 2026-09-25, слой 5): пределы обработки тела POST формы —
+# та же форма, что у ядровой половины (awf/plan_checkpoint.py: 64 KiB,
+# 10 c, кап 16). Для форм лимит тела остаётся 1 MiB.
+BODY_READ_TIMEOUT = 10.0  # секунд простоя сокета на чтении
+MAX_CONCURRENT_HANDLERS = 16  # максимум одновременных обработчиков
 
 
 def _find_free_port() -> int:
@@ -135,6 +140,14 @@ class SubmitHandler(BaseHTTPRequestHandler):
     inputs_dir: Path = None  # type: ignore[assignment]
     registry: FormRegistry = None  # type: ignore[assignment]
 
+    def setup(self) -> None:
+        super().setup()
+        # A-07: любое чтение на этом соединении (request line, тело)
+        # ограничено по времени — зависший клиент не удерживает поток
+        # обработчика. socket.timeout на request line уже обработан
+        # BaseHTTPRequestHandler (закрытие без traceback).
+        self.connection.settimeout(BODY_READ_TIMEOUT)
+
     def do_POST(self):
         """Handle POST /submit/<form_id>."""
         path = urllib.parse.urlparse(self.path).path
@@ -179,32 +192,41 @@ class SubmitHandler(BaseHTTPRequestHandler):
             self._send_text(403, f"Forbidden: Origin '{origin}' not allowed")
             return
 
+        # A-07: Content-Length валидируется до любого чтения: мусор или
+        # отрицательное число — немедленный 400, тело не читается, форма
+        # не трогается.
         try:
             content_length = int(self.headers.get("Content-Length", 0))
         except (ValueError, TypeError):
             self._send_text(400, "Invalid Content-Length header")
             return
-        # AUD09-07: read(-1) would block the handler thread until EOF and a
-        # negative length is never legitimate.
+        # AUD09-07: a negative length is never legitimate.
         if content_length < 0:
             self._send_text(400, "Invalid Content-Length header")
             return
         if content_length > MAX_BODY_BYTES:
-            # Drain request body before responding, otherwise client gets
-            # BrokenPipeError when server closes connection mid-write.
-            remaining = content_length
-            while remaining > 0:
-                chunk = self.rfile.read(min(remaining, 65536))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-            self._send_text(413, "Payload Too Large (max 1MB)")
+            # A-07: перелив — 413 без вычитывания тела: соединение
+            # закрывается, поток освобождается, заявленные мегабайты не
+            # читаются в память. Старый drain висел на частичной отправке.
+            self._send_text(413, "Payload Too Large (max 1MB)", close=True)
             return
         if content_length == 0:
             self._send_text(400, "Empty body")
             return
 
-        body_bytes = self.rfile.read(content_length)
+        # A-07: чтение ограничено по времени (socket timeout выставляется
+        # в setup) — медленный или зависший клиент не держит поток.
+        try:
+            body_bytes = self.rfile.read(content_length)
+        except OSError:  # TimeoutError ⊂ OSError (py3.10+) — read timeout
+            self._send_text(408, "Timeout reading body", close=True)
+            return
+        finally:
+            # Таймаут был только для чтения — ответ ограничивать не нужно.
+            try:
+                self.connection.settimeout(None)
+            except OSError:
+                pass
         # AUD09-07: if the connection closed before CL bytes arrived the
         # body is truncated. Continue would "submit" a partial/empty payload
         # and burn the pending form — reject instead.
@@ -319,13 +341,22 @@ class SubmitHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body_bytes)
 
-    def _send_text(self, code: int, body: str) -> None:
+    def _send_text(self, code: int, body: str, close: bool = False) -> None:
         body_bytes = body.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body_bytes)))
-        self.end_headers()
-        self.wfile.write(body_bytes)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body_bytes)))
+            if close:
+                self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body_bytes)
+        except OSError:
+            # A-07: мёртвый сокет клиента не превращает отказ в traceback
+            # (в MCP-контексте шум stderr — это порча stdio-протокола).
+            pass
+        if close:
+            self.close_connection = True
 
     def _send_json(self, code: int, data: dict) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -334,6 +365,52 @@ class SubmitHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+class _BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """A-07: ThreadingHTTPServer с ограничением активных обработчиков.
+
+    Без предела наводка из «зависших» соединений (open и тишина) порождает
+    потоки без конца — по одному на принятое соединение. Перелив получает
+    немедленный 503 и закрытие соединения; запрос при этом не
+    обрабатывается.
+    """
+
+    max_concurrent = MAX_CONCURRENT_HANDLERS
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._active = 0
+        self._active_lock = threading.Lock()
+
+    def process_request_thread(self, request, client_address):
+        with self._active_lock:
+            self._active += 1
+            over = self._active > self.max_concurrent
+        try:
+            if over:
+                self._reject_overflow(request)
+                return
+            super().process_request_thread(request, client_address)
+        finally:
+            with self._active_lock:
+                self._active -= 1
+
+    @staticmethod
+    def _reject_overflow(request: socket.socket) -> None:
+        text = b"Too many concurrent form requests"
+        response = (
+            b"HTTP/1.0 503 Service Unavailable\r\n"
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            + f"Content-Length: {len(text)}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+            + text
+        )
+        try:
+            request.sendall(response)
+        except OSError:
+            pass
+        request.close()
 
 
 def _make_handler_class(inputs_dir: Path, registry: FormRegistry):
@@ -358,7 +435,8 @@ def start_http_server(config: Config, registry: FormRegistry) -> tuple[Threading
     """
     port = config.http_port if config.http_port > 0 else _find_free_port()
     handler_class = _make_handler_class(config.inputs_dir, registry)
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler_class)
+    # A-07: bounded — число активных обработчиков ограничено.
+    server = _BoundedThreadingHTTPServer(("127.0.0.1", port), handler_class)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="awf-ui-http")
     thread.start()
     log.info("HTTP server listening on http://127.0.0.1:%d", port)
