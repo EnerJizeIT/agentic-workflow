@@ -16,6 +16,11 @@
 #   * `import awf.api`                    — the core API imports from the wheel
 #   * `import agent_workflow_ui`          — the plugin wheel installs + imports
 #   * the plugin's SKILL.md package-data  — survives the wheel build+install
+#   * `create_server().list_tools()`      — non-empty registry from the wheel
+#                                           (count checked >0, never hardcoded)
+#   * the project-setup template renders  — the default template ships + works
+#   * the plugin entry point starts       — under an isolated XDG/HOME, no
+#                                           network, no writes into $HOME
 #
 # Wheels are written to the repo's dist/ (gitignored, the CI build output
 # dir) so the "Check wheel contents" step can read them. The venv and the
@@ -126,6 +131,13 @@ fi
 # keeps pip from pulling a second (PyPI) copy of `awf` over the local wheel.
 pip_install "$core_whl"
 pip_install --no-deps "$ui_whl"
+# A-18 supplement (TODO-0111): the registry check imports
+# `agent_workflow_ui.server`, which needs the plugin's `mcp` runtime dep that
+# the --no-deps install above skipped. Install ONLY the third-party package
+# (with the same pin as the plugin's pyproject), never the plugin wheel a
+# second time — that is what would drag a PyPI `awf` over the local one.
+# PyYAML/jinja2 already came in with the core wheel's deps.
+pip_install "mcp>=1.0,<2"
 
 # Run every check from $smoke_cwd (a neutral dir, outside the repo) and with
 # PYTHONPATH cleared, so sys.path[0] is not the checkout. The site-packages
@@ -142,10 +154,94 @@ echo "  awf --help: OK ($(wc -l < "$workdir/help.log") lines)"
 
 ( cd "$smoke_cwd" && env -u PYTHONPATH "$venv/bin/python" -c \
   "import agent_workflow_ui, pathlib; f = pathlib.Path(agent_workflow_ui.__file__); \
-   assert 'site-packages' in str(f), f'plugin resolved outside the wheel: {f}'; \
-   skill = pathlib.Path(f).parent / 'SKILL.md'; \
-   assert skill.is_file(), f'package-data SKILL.md missing from the installed wheel: {skill}'; \
-   print('  import agent_workflow_ui ->', f); \
-   print('  package-data SKILL.md: present')" )
+    assert 'site-packages' in str(f), f'plugin resolved outside the wheel: {f}'; \
+    skill = pathlib.Path(f).parent / 'SKILL.md'; \
+    assert skill.is_file(), f'package-data SKILL.md missing from the installed wheel: {skill}'; \
+    print('  import agent_workflow_ui ->', f); \
+    print('  package-data SKILL.md: present')" )
 
-echo "wheel-smoke: OK — both wheels built, installed clean, import + CLI verified"
+# A-18 supplement (TODO-0111): the registry built from the INSTALLED wheel is
+# non-empty. The count is asserted >0, never hardcoded against the registry
+# (the live registry is the single source of truth — see R-06).
+( cd "$smoke_cwd" && env -u PYTHONPATH "$venv/bin/python" -c \
+  "import asyncio, agent_workflow_ui, pathlib; \
+    f = pathlib.Path(agent_workflow_ui.__file__); \
+    assert 'site-packages' in str(f), f'plugin resolved outside the wheel: {f}'; \
+    from agent_workflow_ui.server import create_server; \
+    tools = asyncio.run(create_server().list_tools()); \
+    names = [t.name for t in tools]; \
+    assert len(names) > 0, 'create_server().list_tools() returned an empty registry'; \
+    print(f'  list_tools(): {len(names)} tools registered (non-empty; count not hardcoded)')" )
+
+# A-18 supplement (TODO-0111): the standard project-setup template renders
+# from the installed package data (a dropped/corrupted template stays green
+# today — the wheel-contents grep only checks the file is IN the wheel).
+( cd "$smoke_cwd" && env -u PYTHONPATH "$venv/bin/python" -c \
+  "import agent_workflow_ui, pathlib; \
+    pkg = pathlib.Path(agent_workflow_ui.__file__).parent; \
+    from agent_workflow_ui.render.engine import create_env, render_template; \
+    env = create_env([pkg / 'render' / 'default_templates']); \
+    html = render_template(env, 'project-setup', { \
+        'form_id': 'smoke-0001', \
+        'submit_url': 'http://127.0.0.1:0/submit/smoke-0001', \
+        'available_roles': [{'id': 'developer', 'title': 'Developer'}], \
+    }); \
+    assert 'id=\"setup-form\"' in html, 'project-setup render lost the form body'; \
+    assert len(html) > 1000, f'project-setup render suspiciously small: {len(html)} chars'; \
+    print('  render project-setup: OK (%d chars)' % len(html))" )
+
+# A-18 supplement (TODO-0111): the declared console entry point starts under
+# a fully isolated environment — XDG_CONFIG_HOME/XDG_DATA_HOME (and HOME)
+# pointed at throwaway dirs, PATH restricted so the `opencode` CLI (and any
+# other external command) cannot be reached: no network, no $HOME access.
+# stdin is /dev/null so the stdio MCP server exits at EOF instead of blocking.
+# The restricted PATH is what keeps `read_available_models` on its offline
+# fallback (no `opencode models` subprocess).
+entry_home="$workdir/entry-home"
+entry_cfg="$workdir/entry-xdg-config"
+entry_data="$workdir/entry-xdg-data"
+entry_cwd="$workdir/entry-cwd"
+mkdir -p "$entry_home" "$entry_cfg" "$entry_data" "$entry_cwd"
+
+if [ -x "$venv/bin/agent-workflow-ui" ]; then
+  # Run from $entry_cwd (not the repo): the entry point creates .agentic/
+  # runtime dirs against its cwd — a throwaway dir keeps the tree clean.
+  ( cd "$entry_cwd" && timeout 30 env HOME="$entry_home" \
+      XDG_CONFIG_HOME="$entry_cfg" XDG_DATA_HOME="$entry_data" \
+      PATH="$venv/bin:/usr/bin:/bin" \
+      "$venv/bin/agent-workflow-ui" > "$workdir/entry.log" 2>&1 ) < /dev/null || {
+      echo "wheel-smoke: plugin entry point exited non-zero (rc=$?)" >&2
+      tail -n 5 "$workdir/entry.log" >&2
+      exit 1
+    }
+  grep -q "agent_workflow_ui started" "$workdir/entry.log" || {
+    echo "wheel-smoke: entry point did not reach startup:" >&2
+    tail -n 5 "$workdir/entry.log" >&2
+    exit 1
+  }
+  [ -f "$entry_cfg/opencode/skills/agent-workflow-ui/SKILL.md" ] || {
+    echo "wheel-smoke: skill not installed into the isolated XDG_CONFIG_HOME" >&2
+    exit 1
+  }
+  [ -z "$(ls -A "$entry_home" 2>/dev/null)" ] || {
+    echo "wheel-smoke: entry point wrote into HOME ($entry_home):" >&2
+    ls -A "$entry_home" | head -n 3 >&2
+    exit 1
+  }
+  echo "  entry point agent-workflow-ui: OK (isolated XDG, HOME untouched)"
+else
+  # No console script declared — the fallback still proves the server module
+  # imports from the wheel and registers tools, under the same isolation.
+  ( cd "$smoke_cwd" && env -u PYTHONPATH \
+      HOME="$entry_home" XDG_CONFIG_HOME="$entry_cfg" XDG_DATA_HOME="$entry_data" \
+      "$venv/bin/python" -c \
+    "import asyncio, agent_workflow_ui, pathlib; \
+      f = pathlib.Path(agent_workflow_ui.__file__); \
+      assert 'site-packages' in str(f), f'plugin resolved outside the wheel: {f}'; \
+      from agent_workflow_ui.server import create_server; \
+      tools = asyncio.run(create_server().list_tools()); \
+      assert len(tools) > 0, 'create_server().list_tools() returned an empty registry'; \
+      print('  (no entry point declared) import + list_tools: OK (%d tools)' % len(tools))" )
+fi
+
+echo "wheel-smoke: OK — both wheels built, installed clean, import + CLI + registry + template + entry point verified"

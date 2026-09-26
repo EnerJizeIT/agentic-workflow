@@ -40,25 +40,36 @@ jobs:
 
   # AUD13-02/03: editable install never validates package-data, so a
   # data file can silently drop out of the PyPI wheel. This job builds the
-  # real wheels, asserts the key files are inside, and smoke-installs the
-  # core wheel in a clean venv (import + CLI help + package-data test).
+  # real wheels, asserts the key files are inside, and smoke-installs both
+  # wheels in a clean venv (import + CLI help + package-data + registry +
+  # template render + entry point). A-18 supplement (TODO-0111): runs on the
+  # full requires-python range — 3.10 (lower bound) and 3.12 — so a 3.10-only
+  # breakage cannot hide behind a single-version green. The test job below
+  # deliberately stays single-version (3.12): it runs the full suite, and the
+  # matrix here is the cheap version-compat proof.
   package:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.12
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Build both wheels + smoke install in clean venv
         # A-18: the plugin wheel (agent-workflow-ui) was built but never
         # installed, so a broken plugin wheel would stay green. wheel-smoke.sh
         # builds BOTH wheels, installs them into a throwaway venv, and proves
-        # `awf --help`, `import awf.api` and `import agent_workflow_ui` with the
+        # `awf --help`, `import awf.api`, `import agent_workflow_ui`,
+        # `create_server().list_tools()`, the project-setup template render and
+        # the plugin entry point (isolated XDG, no network, no $HOME) with the
         # working tree kept out of sys.path. Replaces the old core-wheel-only
         # smoke step (that runtime package-data check is covered below by the
         # wheel-contents assertion on the same dist/ output).

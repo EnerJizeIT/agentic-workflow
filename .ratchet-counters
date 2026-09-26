@@ -492,4 +492,9 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # use-sites in the two top-level tests. Same class as above: test
 # identifiers, not debt. No production code changed — check unit (the
 # A-14 fix already landed with R-03, TODO-0087).
+# TODO-0111 (A-18 supplement): baseline raised 4013 -> 4020 — the unit adds
+# 7 TODO-bearing lines: 4 check-header comments in scripts/wheel-smoke.sh,
+# 1 CI matrix comment in .github/workflows/ci.yml, 2 in
+# tests/agent_workflow_ui/test_audit25_w6_docs_ci.py (module docstring +
+# test class docstring). Same class as above: unit-id references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

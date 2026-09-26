@@ -15,6 +15,12 @@ REVIEW fixes (attempt 2):
     offline ``--pick-wheel`` mode);
   * F2 — the CI wiring check parses the workflow YAML and requires the
     invocation in a step's ``run:``, not a comment.
+
+A-18 supplement (TODO-0111):
+  * ``TestWheelSmokeMatrix`` — the CI package job runs wheel-smoke on the
+    full ``requires-python`` range (3.10 lower bound + 3.12) via a
+    ``python-version`` matrix, while the test job deliberately stays
+    single-version (3.12).
 """
 from __future__ import annotations
 
@@ -131,6 +137,64 @@ class TestWheelSmokeStaleArtefacts:
         proc = self._pick(tmp_path)
         assert proc.returncode != 0
         assert "no wheel" in proc.stderr.lower(), f"no readable message: {proc.stderr!r}"
+
+
+class TestWheelSmokeMatrix:
+    """A-18 supplement (TODO-0111): the package job proves the wheels on the
+    full ``requires-python`` range — a 3.10-only breakage (syntax, stdlib,
+    dependency floor) must not hide behind a single-version green. The test
+    job stays single-version (3.12): the matrix lives on the cheap package
+    job, not the full suite."""
+
+    def _ci(self) -> dict:
+        path = _WORKFLOWS_DIR / "ci.yml"
+        assert path.is_file(), f"missing {path}"
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return doc
+
+    def test_package_job_matrix_covers_310_and_312(self):
+        doc = self._ci()
+        job = (doc.get("jobs") or {}).get("package")
+        assert job is not None, "ci.yml: no 'package' job"
+        matrix = ((job.get("strategy") or {}).get("matrix") or {}).get("python-version")
+        assert matrix, (
+            "package job must run wheel-smoke on a python-version matrix "
+            "(requires-python >=3.10 — one version cannot prove the range)"
+        )
+        for needed in ("3.10", "3.12"):
+            assert needed in matrix, f"package matrix lacks python {needed}: {matrix}"
+
+    def test_package_job_runs_smoke_under_matrix_python(self):
+        # Both halves: a step actually invokes the smoke, and the
+        # setup-python step consumes the matrix value (a hardcoded
+        # python-version alongside the matrix would run the smoke on the
+        # wrong interpreter).
+        doc = self._ci()
+        job = (doc.get("jobs") or {}).get("package")
+        assert job is not None, "ci.yml: no 'package' job"
+        steps = (job or {}).get("steps") or []
+        assert any("scripts/wheel-smoke.sh" in (s.get("run") or "") for s in steps), (
+            "no package-job step's `run:` invokes scripts/wheel-smoke.sh"
+        )
+        setups = [s for s in steps if "setup-python" in (s.get("uses") or "")]
+        assert setups, "package job must set up python before building wheels"
+        versions = [(s.get("with") or {}).get("python-version") for s in setups]
+        assert any(
+            isinstance(v, str) and "matrix.python-version" in v for v in versions
+        ), f"setup-python must consume the matrix value, got: {versions}"
+
+    def test_test_job_stays_single_python_312(self):
+        doc = self._ci()
+        job = (doc.get("jobs") or {}).get("test")
+        assert job is not None, "ci.yml: no 'test' job"
+        assert "strategy" not in (job or {}), (
+            "test job must stay single-version (version coverage belongs to "
+            "the package matrix, not the full suite)"
+        )
+        steps = (job or {}).get("steps") or []
+        setups = [s for s in steps if "setup-python" in (s.get("uses") or "")]
+        versions = [(s.get("with") or {}).get("python-version") for s in setups]
+        assert versions == ["3.12"], f"test job must stay on Python 3.12, got: {versions}"
 
 
 class TestDocsMatchRegistry:
