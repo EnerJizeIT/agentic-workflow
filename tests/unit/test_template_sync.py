@@ -17,7 +17,14 @@ REPO_ROLES = REPO_ROOT / "templates" / "roles"
 
 
 def _files(root: Path) -> dict[str, bytes]:
-    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+    # *.edtz are Obsidian edit-history backups (gitignored): their random
+    # entry names can never match between the two trees, so they are
+    # editor noise, not template drift.
+    return {
+        str(p.relative_to(root)): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and p.suffix != ".edtz"
+    }
 
 
 def test_both_copies_exist():
