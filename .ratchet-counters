@@ -310,4 +310,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # unlaunched TODO). Same class as above: test identifiers and a
 # unit comment, not debt. The production fix (awf/api/run.py — had_ready
 # snapshot + unlink on the refused branch) carries no TODO id in code.
+# 2026-09-26 (stabilization, A-04): baseline raised 3689 -> 3709,
+# files_over_400 raised 56 -> 57 — the reject/approve verdict-signal unit
+# (TODO-0084) adds 20 TODO-bearing lines: 18 in the new
+# tests/negative/test_audit25_a04_verdict_signal.py (module docstring +
+# the TODO-0001 inbox/outbox/run fixtures and assertions of the four
+# tests) and 2 in production (the approve-conflict message naming the
+# TODO in awf/api/pipeline.py, the _verdict_refusal docstring line in
+# awf/commit_gate.py). Same class as above: test identifiers and
+# unit comments, not debt. The +1 file over 400 is awf/commit_gate.py
+# (359 -> 413 — the A-04 _verdict_refusal helper), same class as the
+# run_state.py / wait_event.py production-module raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

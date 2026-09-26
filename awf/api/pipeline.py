@@ -375,16 +375,15 @@ def approve_commit(
             "evidence='pytest -q → 348 passed; ruff check → clean; verdict: approve'."
         )
 
-    inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
-    signal = inbox / f"APPROVE-{todo_id}.ready"
-    signal.touch()
-
     # SPEC A-run (second tier): record the verdict in the run diary.
     # AUD05-05 (rest): computed from the FRESH state inside the lock
     # (update_run), not from the snapshot read above. If a reject landed
     # first, this approve must NOT publish verdict='approved' — audit
     # invariant: 'approved' ⇒ rejects == 0. The reject's diary entry stays.
+    # A-04 (audit 2026-09-25, layer 4): the APPROVE signal is published
+    # ONLY after this decision succeeds. A conflict must refuse WITHOUT
+    # the file — a leftover APPROVE signal would unlock the commit gate
+    # on a rejected verdict.
     conflict = False
     if run_active:
         from .. import run_state as _run_state
@@ -403,6 +402,27 @@ def approve_commit(
             return state
 
         _run_state.update_run(project_dir, _approve_mutator)
+
+    if conflict:
+        # Refused: no APPROVE signal, no VERIFIED fingerprint. The
+        # reject's REVIEW file and diary entries are untouched.
+        return ApproveResult(
+            todo_id=todo_id,
+            signal_file="",
+            evidence_file=str(evidence_file) if evidence.strip() else "",
+            verified_sha_file="",
+            message=(
+                f"{todo_id}: a rejection already counted for this TODO — the "
+                "verdict stays 'rejected' in the run diary (hard invariant: "
+                "'approved' ⇒ rejects == 0). No APPROVE signal was created "
+                "— the commit gate stays closed. Resolve the reject first."
+            ),
+        )
+
+    inbox = paths.inbox(project_dir)
+    inbox.mkdir(parents=True, exist_ok=True)
+    signal = inbox / f"APPROVE-{todo_id}.ready"
+    signal.touch()
 
     if verified_fp:
         paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)

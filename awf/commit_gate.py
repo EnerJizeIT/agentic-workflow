@@ -266,6 +266,47 @@ def _commit_specific_files(
         return False
 
 
+def _verdict_refusal(project_dir: Path, todo_id: str) -> str:
+    """A-04 (audit 2026-09-25, layer 4): the active run's verdict check.
+
+    A leftover or raced APPROVE/ACK signal must not unlock a commit the
+    run already rejected: when the ACTIVE run's diary records
+    verdict='rejected' for this TODO, the gate refuses before staging
+    anything. Only an active run has verdict authority — outside a run
+    there is no diary, and a fresh run resets it (``outcomes={}``), so a
+    stale verdict cannot outlive its cycle. A 'generation' marker on the
+    entry (cycle identity, when present) that differs from the run's
+    generation belongs to another cycle and is not enforced; an
+    unreadable marker fails closed (enforce).
+
+    Returns a refusal reason, or "" when the commit may proceed.
+    """
+    if not todo_id:
+        return ""
+    try:
+        from . import run_state
+
+        state = run_state.read_run(project_dir)
+    except Exception:
+        return ""  # unreadable run state — the verdict is not provable
+    if not state or not state.get("active"):
+        return ""
+    outcome = (state.get("outcomes") or {}).get(todo_id)
+    if not isinstance(outcome, dict) or outcome.get("verdict") != "rejected":
+        return ""
+    if "generation" in outcome:
+        try:
+            if int(outcome["generation"]) != run_state.generation_of(state):
+                return ""  # verdict of another cycle — not this run's
+        except (TypeError, ValueError):
+            pass  # unreadable marker — fail closed, enforce the verdict
+    reason = str(outcome.get("reason") or "").strip()
+    return (
+        f"the active run's diary records verdict 'rejected' for {todo_id}"
+        + (f" ({reason[:200]})" if reason else "")
+    )
+
+
 def maybe_commit(
     stage_name: str,
     todo_id: str,
@@ -292,6 +333,19 @@ def maybe_commit(
         print(f"Not a git repo — skipping auto-commit for '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"No git repo; auto-commit skipped at {stage_name}")
         return True
+
+    # A-04: the verdict check runs BEFORE the signal wait and before any
+    # staging — a rejected unit must not commit even when a leftover
+    # APPROVE/ACK file (the reject/approve race) is present.
+    refusal = _verdict_refusal(project_dir, todo_id)
+    if refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"A-04: commit refused for {todo_id} — {refusal}")
+        return False
 
     if auto:
         inbox = paths.inbox(project_dir)
