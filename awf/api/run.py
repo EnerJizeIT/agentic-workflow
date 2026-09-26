@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
+from . import _liveness
 from ._errors import AwfApiError
 from ._results import (
     RunFinishResult,
@@ -640,6 +641,39 @@ def run_next(
     # it refuses with the index untouched.
     gen = run_state.generation_of(state)
     cur = str(state.get("current", "") or "")
+
+    # TODO-0103 (A-13 hole): the pre-read can land AFTER an earlier
+    # run_next's reservation write — then cur already equals next_id and
+    # the reservation CAS below would MATCH the on-disk state (its tuple
+    # was computed from the reserved snapshot) and "reserve" the same
+    # position a second time: two launches for one queue item (the flake
+    # observed in waves 5/5b). Resolve the collision by the liveness of
+    # the pipeline that should own the position — the existing single
+    # resolver (awf.api._liveness): alive → the launch is in progress,
+    # refuse; dead → the owner crashed between reservation and launch —
+    # take over the dead reservation. A flat "refuse when cur == next_id"
+    # is deliberately NOT used: it would lock the queue after a crash
+    # (QA probe B, TODO-0082).
+    if cur == next_id:
+        running, _pid, _source = _liveness.resolve(project_dir)
+        if running:
+            return RunNextResult(
+                action="refused",
+                todo_id=next_id,
+                message=(
+                    f"Cannot launch {next_id}: this queue position is "
+                    "already reserved and its pipeline is live — the "
+                    "launch is in progress (or already launched). The "
+                    "index is not moved."
+                ),
+                next_action=(
+                    "Check awf_status for the live pipeline; retry "
+                    "awf_run_next once the position is free."
+                ),
+            )
+        # dead reservation — fall through: the re-reservation below
+        # (cur == next_id) matches the on-disk state and takes the
+        # position over.
 
     def _reserve_mutator(st: dict) -> dict:
         st["current"] = next_id

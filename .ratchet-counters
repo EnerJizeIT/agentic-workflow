@@ -433,4 +433,16 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # (agent_workflow_ui/tools/awf.py — direct sync api calls moved through
 # the _exec/to_thread adapter) carries no TODO id (88 lines before and
 # after). Same class as above: test identifiers, not debt.
+# 2026-09-26 (stabilization, TODO-0103, A-13 hole): baseline raised
+# 3886 -> 3906, files_over_400 raised 58 -> 59 — the a13-run-cas-flake
+# unit (REVIEW attempt 2) adds 20 TODO-bearing lines: 18 in
+# tests/negative/test_audit25_a13_run_cas.py (the TODO-0103 docstring
+# bullets + the TODO-0001/TODO-0103 fixtures and asserts of the two new
+# tests) and 2 in awf/api/run.py (the unit references in the cur ==
+# next_id liveness-branch comment). Same class as above: test
+# identifiers and unit comments, not debt. The +1 file over 400 is
+# tests/negative/test_audit25_a13_run_cas.py (317 -> 506 — its test
+# suite), same class as the test_brief.py / test_todo_hygiene.py raises
+# above. The production fix (awf/api/run.py — the reservation-collision
+# liveness branch) carries no other TODO id in code.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
