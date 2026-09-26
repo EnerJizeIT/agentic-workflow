@@ -474,4 +474,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # F1 unit) and 2 in
 # tests/agent_workflow_ui/test_audit25_w6_docs_ci.py (the F1/F2
 # test comments). Same class as above: unit identifiers, not debt.
+# TODO-0107 (волна 6.6, NEG-4): baseline raised 3945 -> 3997 — the
+# scenario-shim unit adds 52 TODO-bearing lines: 20 in
+# tests/e2e/test_w6_salvage_scenario.py (the TODO-0001 scratch fixture
+# ids: inbox/outbox/state/done paths and asserts of the four scenario
+# tests), 28 in tests/infra/opencode_shim/opencode (the invocation
+# contract header: TODO-NNNN/TODO-0000/TODO-0001 id forms, the
+# plan-todo/silent-exit/do-step/write-blocked mode descriptions and the
+# title/prompt id-extraction comments) and 4 in
+# tests/infra/opencode_shim/README.md (the invocation table and the
+# TODO-0001 plan-todo id). Same class as above: test identifiers and
+# shim contract wording, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

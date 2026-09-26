@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# tests/infra/opencode_shim/opencode — scenario-driven `opencode` shim (NEG-4).
+#
+# Deterministic stand-in for the real opencode CLI so the subprocess
+# container of the engine (spawn, signal watch, salvage, kill) can be
+# tested without a real opencode/qwen process. Unlike tests/stubs/opencode
+# (one fixed behavior per run) this shim is scenario-driven: the test
+# switches the behavior BETWEEN engine invocations via env vars, and every
+# invocation is traced to a state dir so a test can assert how the engine
+# called the shim and with which mode.
+#
+# Invocation contract (awf/agent_stage.py::run_agent_stage,
+# awf/supervisor.py::run_supervisor_via_subprocess):
+#   opencode run --auto [--print-logs] --agent <name> --title <title>
+#                [--model <model>] --file <f1> [--file <f2> ...] -- <prompt>
+#
+# Call distinction — the --title value:
+#   worker     : awf-<role>-<TODO-NNNN>   (e.g. awf-worker-TODO-0001)
+#   supervisor : awf-supervisor-<kind>    (e.g. awf-supervisor-verify)
+# The TODO id comes from the title (worker calls) or from the prompt text
+# (supervisor calls — build_prompt embeds "TODO TODO-NNNN"). All --file
+# arguments are ignored; the prompt is read only for the TODO id.
+#
+# Env controls:
+#   AWF_SHIM_MODE            worker mode (default: silent-exit)
+#     silent-exit    exit 0, write no signal (salvage trigger)
+#     crash          exit 3, write no signal (loud failure)
+#     hang           spawn `sleep AWF_SHIM_HANG_SECONDS` as a child and
+#                    wait — outlives any sane --timeout so the hard-timeout
+#                    kill of the process group is exercised for real
+#     do-step        leave work (src/ file + PROGRESS) and write the
+#                    DONE signal (the "success" mode for a retry)
+#     write-blocked  write the BLOCKED signal, exit 0
+#   AWF_SHIM_SUPERVISOR_MODE supervisor mode (default derived from the
+#                    title kind: approve for verify, plan-todo for
+#                    plan/replan, noop otherwise)
+#     approve        write .agentic/inbox/ACK-<todo>.ready
+#     reject         write .agentic/outbox/REVIEW-<todo>.md
+#     plan-todo      create .agentic/inbox/TODO-<AWF_SHIM_PLAN_TODO_ID>.md
+#                    + .ready (default id: TODO-0001)
+#     noop           exit 0, write nothing
+#   AWF_SHIM_STATE_DIR       optional dir for the invocation trace:
+#     invocation.log  "<pid> <kind> <mode> <title> <todo>" — one line per
+#                     invocation (append; the test passes a fresh dir per
+#                     engine run)
+#     hang-pids       "<main pid>\n<child pid>" — written by hang mode
+#                     before it starts waiting (the test checks both are
+#                     dead after the engine's hard-timeout kill)
+#   AWF_SHIM_HANG_SECONDS    hang mode sleep length (default 300)
+#   AWF_SHIM_PLAN_TODO_ID    plan-todo mode TODO id (default TODO-0001)
+#
+# The engine spawns us with cwd = project dir, so .agentic/ is relative.
+set -euo pipefail
+
+TITLE=""
+PROMPT=""
+prev=""
+seen_dd=false
+for arg in "$@"; do
+    if [[ "$prev" == "--title" ]]; then
+        TITLE="$arg"
+    fi
+    if [[ "$arg" == "--" ]]; then
+        seen_dd=true
+        prev=""
+        continue
+    fi
+    if $seen_dd; then
+        PROMPT+="${arg} "
+    fi
+    prev="$arg"
+done
+
+TODO_ID=""
+if [[ "$TITLE" =~ (TODO-[0-9]+) ]]; then
+    TODO_ID="${BASH_REMATCH[1]}"
+elif [[ "$PROMPT" =~ (TODO-[0-9]+) ]]; then
+    TODO_ID="${BASH_REMATCH[1]}"
+fi
+[[ -z "$TODO_ID" ]] && TODO_ID="TODO-0000"
+
+KIND="worker"
+WORKER_MODE="${AWF_SHIM_MODE:-silent-exit}"
+SUP_MODE="${AWF_SHIM_SUPERVISOR_MODE:-}"
+SUP_KIND=""
+if [[ "$TITLE" == awf-supervisor-* ]]; then
+    KIND="supervisor"
+    SUP_KIND="${TITLE#awf-supervisor-}"
+    if [[ -z "$SUP_MODE" ]]; then
+        case "$SUP_KIND" in
+            verify) SUP_MODE="approve" ;;
+            plan | replan) SUP_MODE="plan-todo" ;;
+            *) SUP_MODE="noop" ;;
+        esac
+    fi
+fi
+
+STATE_DIR="${AWF_SHIM_STATE_DIR:-}"
+if [[ -n "$STATE_DIR" ]]; then
+    mkdir -p "$STATE_DIR"
+    ACTIVE_MODE="$WORKER_MODE"
+    [[ "$KIND" == "supervisor" ]] && ACTIVE_MODE="$SUP_MODE"
+    echo "$$ $KIND $ACTIVE_MODE $TITLE $TODO_ID" >> "$STATE_DIR/invocation.log"
+fi
+
+INBOX=".agentic/inbox"
+OUTBOX=".agentic/outbox"
+mkdir -p "$INBOX" "$OUTBOX"
+
+write_done() {
+    cat > "$OUTBOX/DONE-${TODO_ID}.md" <<EOF
+# DONE-${TODO_ID} (shim do-step)
+Simulated work completed; DONE signal written per scenario.
+EOF
+    touch "$OUTBOX/DONE-${TODO_ID}.ready"
+}
+
+write_blocked() {
+    cat > "$OUTBOX/BLOCKED-${TODO_ID}.md" <<EOF
+# BLOCKED-${TODO_ID} (shim)
+Simulated block reason: scenario write-blocked mode.
+EOF
+    touch "$OUTBOX/BLOCKED-${TODO_ID}.ready"
+}
+
+do_step_work() {
+    mkdir -p src
+    echo "shim work for ${TODO_ID}" > "src/shim-${TODO_ID}-work.txt"
+    {
+        echo "## Task 1 · shim step — [x]"
+        echo "- Files changed: src/shim-${TODO_ID}-work.txt"
+        echo "- Verify: true"
+    } >> "$OUTBOX/PROGRESS-${TODO_ID}.md"
+}
+
+hang_forever() {
+    local secs="${AWF_SHIM_HANG_SECONDS:-300}"
+    sleep "$secs" &
+    local child=$!
+    if [[ -n "$STATE_DIR" ]]; then
+        printf '%s\n%s\n' "$$" "$child" > "$STATE_DIR/hang-pids"
+    fi
+    wait "$child"
+}
+
+case "$KIND" in
+    supervisor)
+        case "$SUP_MODE" in
+            approve)
+                touch "$INBOX/ACK-${TODO_ID}.ready"
+                ;;
+            reject)
+                printf '# REVIEW-%s (shim)\nSimulated rejection.\n' "$TODO_ID" \
+                    > "$OUTBOX/REVIEW-${TODO_ID}.md"
+                ;;
+            plan-todo)
+                PLAN_ID="${AWF_SHIM_PLAN_TODO_ID:-TODO-0001}"
+                printf '# %s (shim plan)\nSimulated plan TODO.\n' "$PLAN_ID" \
+                    > "$INBOX/${PLAN_ID}.md"
+                touch "$INBOX/${PLAN_ID}.ready"
+                ;;
+            noop)
+                :
+                ;;
+            *)
+                echo "tests/infra/opencode_shim: unknown AWF_SHIM_SUPERVISOR_MODE=$SUP_MODE" >&2
+                exit 1
+                ;;
+        esac
+        exit 0
+        ;;
+    worker)
+        case "$WORKER_MODE" in
+            silent-exit)
+                : # intentional no-op: clean exit, no signal
+                ;;
+            crash)
+                exit 3
+                ;;
+            hang)
+                hang_forever
+                ;;
+            do-step)
+                do_step_work
+                write_done
+                ;;
+            write-blocked)
+                write_blocked
+                ;;
+            *)
+                echo "tests/infra/opencode_shim: unknown AWF_SHIM_MODE=$WORKER_MODE" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+esac
+
+exit 0
