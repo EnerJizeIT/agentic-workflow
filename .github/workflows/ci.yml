@@ -54,27 +54,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build wheels
-        run: |
-          python -m pip install --upgrade pip
-          pip install build
-          pip wheel . --no-deps --wheel-dir dist/
-          pip wheel ./agent_workflow_ui --no-deps --wheel-dir dist/
+      - name: Build both wheels + smoke install in clean venv
+        # A-18: the plugin wheel (agent-workflow-ui) was built but never
+        # installed, so a broken plugin wheel would stay green. wheel-smoke.sh
+        # builds BOTH wheels, installs them into a throwaway venv, and proves
+        # `awf --help`, `import awf.api` and `import agent_workflow_ui` with the
+        # working tree kept out of sys.path. Replaces the old core-wheel-only
+        # smoke step (that runtime package-data check is covered below by the
+        # wheel-contents assertion on the same dist/ output).
+        run: bash scripts/wheel-smoke.sh
 
       - name: Check wheel contents
+        # AUD13-02/03: assert the key package-data files are inside each wheel
+        # (reads the dist/ output written by the step above).
         run: |
           python -m zipfile -l dist/awf-*.whl | grep -E \
             'awf/data/role_zones\.yaml|awf/templates/roles/supervisor/phase-(init|verify)\.md|awf/templates/dashboard\.html\.j2'
           python -m zipfile -l dist/agent_workflow_ui-*.whl | grep -E \
             'render/default_templates/project-setup\.html\.j2|SKILL\.md'
-
-      - name: Smoke install core wheel in clean venv
-        # Runs outside the checkout: from the repo dir, sys.path[0] would
-        # shadow the installed wheel with the source tree.
-        working-directory: /tmp
-        run: |
-          python -m venv /tmp/pip-smoke
-          /tmp/pip-smoke/bin/pip install --quiet "${GITHUB_WORKSPACE}"/dist/awf-*.whl
-          /tmp/pip-smoke/bin/python -c "import awf, pathlib; p = pathlib.Path(awf.__file__).parent / 'data' / 'role_zones.yaml'; assert p.is_file(), f'missing {p} — package-data drift'; print('awf', awf.__version__)"
-          /tmp/pip-smoke/bin/python -m awf --help
-          /tmp/pip-smoke/bin/awf --help

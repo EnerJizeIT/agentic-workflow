@@ -468,4 +468,10 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # identifiers, not debt. The production fix (awf/api/_background.py —
 # strip the inherited AWF_NO_CHECKPOINTS before the child_env is built)
 # carries no TODO id.
+# TODO-0106 (волна 6.5, REVIEW attempt 2): baseline raised 3941 -> 3945 —
+# the F1/F2 fix adds 4 TODO-bearing lines: 2 in scripts/wheel-smoke.sh
+# (the pick_wheel header comment + the dist-wipe comment, both naming the
+# F1 unit) and 2 in
+# tests/agent_workflow_ui/test_audit25_w6_docs_ci.py (the F1/F2
+# test comments). Same class as above: unit identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

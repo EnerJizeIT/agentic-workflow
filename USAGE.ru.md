@@ -203,7 +203,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-45 инструментов: 40 `awf_*` workflow + 5 UI (формы).
+47 инструментов: 42 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -332,6 +332,7 @@ id.
 | `awf_wait_for_event` | Проверка событий пайплайна (реактивно, не для polling); после approve будит событием `done` — TODO закоммичен и архивирован, в сообщении следующий шаг (`awf_run_next` в забеге) |
 | `awf_prove_red` | Доказательство, что заявленные тесты красные на baseline |
 | `awf_verify_pack` | Один детерминированный verify-отчёт (GATES-файл) |
+| `awf_tree_sha` | Отпечаток рабочего дерева (HEAD + tracked + untracked) для `awf_approve(verified_sha=...)` |
 
 ### Метрики
 | Tool | Что делает |
@@ -404,6 +405,7 @@ TODO, и `awf_run_next` читает его для элементов без п�
 | `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`) |
 | `awf_analyze_roles` | Детекция перекрытий зон ролей |
 | `awf_check_model_config` | Валидация моделей в config.yaml vs opencode.json |
+| `awf_feedback` | Отчёт bug/feature о трении с awf на стол владельца (RUN4 #2) |
 
 **Роль из opencode-скилла** (RUN3 #3) — одной командой вместо рукописного
 файла. Роль получает тело SKILL.md (YAML front-matter скилла вырезан) под

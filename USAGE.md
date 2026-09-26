@@ -354,7 +354,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-45 tools: 40 `awf_*` workflow + 5 UI (forms).
+47 tools: 42 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -462,6 +462,7 @@ commit by design. That protection used to be silent; now it is visible:
 | `awf_wait_for_event` | Check for pipeline events (reactive, not for polling); after approve it wakes with `done` — the TODO is committed + archived and the message names the next step (`awf_run_next` in a run) |
 | `awf_prove_red` | Prove declared tests are red on the baseline sha |
 | `awf_verify_pack` | One deterministic verify report (GATES file) |
+| `awf_tree_sha` | Working-tree fingerprint (HEAD + tracked + untracked) for `awf_approve(verified_sha=...)` |
 
 ### Metrics
 | Tool | What it does |
@@ -533,6 +534,7 @@ for every replan/split goes into the run report/note.
 | `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`) |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
+| `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop (RUN4 #2) |
 
 ### UI (forms)
 | Tool | What it does |
