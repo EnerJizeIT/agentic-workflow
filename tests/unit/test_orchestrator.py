@@ -319,13 +319,17 @@ class TestMaybeCommitBD8:
             project_dir, logs_dir, auto=False,
         )
 
-        # Verify commit was made — no uncommitted changes
+        # Verify commit was made: HEAD carries the new content.
+        # R-03: the user's index is never opened (isolated index) — the
+        # committed file may still show in `git status` until the user
+        # refreshes the index; the commit is the observable fact.
         import subprocess
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
+        head = subprocess.run(
+            ["git", "show", "HEAD:file.txt"],
             cwd=project_dir, capture_output=True, text=True,
         )
-        assert "file.txt" not in status.stdout
+        assert head.returncode == 0
+        assert head.stdout == "modified"
 
     def test_maybe_commit_auto_accepts_ack_signal_bd17(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -356,13 +360,15 @@ class TestMaybeCommitBD8:
         # Assert on the poll interval itself instead.
         from awf.commit_gate import APPROVE_POLL_INTERVAL
         assert APPROVE_POLL_INTERVAL not in sleep_calls
-        # Commit happened — file.txt no longer in `git status`
+        # Commit happened: HEAD carries the new content (R-03: the user's
+        # index is never opened, so `git status` is not the observable fact)
         import subprocess
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
+        head = subprocess.run(
+            ["git", "show", "HEAD:file.txt"],
             cwd=project_dir, capture_output=True, text=True,
         )
-        assert "file.txt" not in status.stdout
+        assert head.returncode == 0
+        assert head.stdout == "modified"
 
     def test_maybe_commit_auto_no_signal_still_times_out_bd17(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1671,7 +1677,7 @@ class TestStageStartCheckpointClear:
         (proj / ".agentic" / "phases" / "plan.md").write_text("- [ ] Step 1\n")
         (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
             "name: default\nstages:\n"
-            "  - name: worker\n    role: worker\n    kind: execute\n"
+            "  - name: worker\n    role: worker\n"
         )
         return proj
 
@@ -1758,7 +1764,7 @@ class TestPipelineNameInState:
     state where pipeline_pid is written — the dashboard then draws THAT
     pipeline's stages (a run queue item can pin a non-default one)."""
 
-    STAGE = "stages:\n  - name: {name}-work\n    role: worker\n    kind: execute\n"
+    STAGE = "stages:\n  - name: {name}-work\n    role: worker\n"
 
     def _make_proj(self, tmp_path: Path, pipelines: dict[str, str]) -> Path:
         proj = tmp_path / "proj"

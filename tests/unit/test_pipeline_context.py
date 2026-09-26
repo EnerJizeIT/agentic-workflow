@@ -24,10 +24,10 @@ def project(tmp_git_repo):
     pipes.mkdir(parents=True, exist_ok=True)
     (pipes / "default.yaml").write_text(
         "stages:\n"
-        '  - name: plan\n    role: supervisor\n    kind: plan\n'
-        '  - name: agent-analyst\n    role: analyst\n    kind: execute\n'
-        '  - name: agent-implementer\n    role: implementer\n    kind: execute\n'
-        '  - name: verify\n    role: supervisor\n    kind: verify\n',
+        '  - name: plan\n    role: supervisor\n'
+        '  - name: agent-analyst\n    role: analyst\n'
+        '  - name: agent-implementer\n    role: implementer\n'
+        '  - name: verify\n    role: supervisor\n',
         encoding="utf-8",
     )
     return tmp_git_repo

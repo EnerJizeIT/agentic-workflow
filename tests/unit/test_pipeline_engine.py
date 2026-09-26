@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from awf import pipeline_engine
+from awf import commit_plan, pipeline_engine
 from awf.pipeline import Stage
 
 
@@ -759,7 +759,10 @@ class TestVerifyDecisionConsumption:
         )
         monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a: "")
-        monkeypatch.setattr(pipeline_engine, "_maybe_commit", lambda *a, **kw: True)
+        monkeypatch.setattr(
+            pipeline_engine, "_maybe_commit",
+            lambda *a, **kw: commit_plan.CommitOutcome(commit_plan.OUTCOME_COMMITTED, "", "abc1234"),
+        )
         monkeypatch.setattr(pipeline_engine, "_mark_plan_step_done", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
         import awf.todos as todos_mod
@@ -786,7 +789,10 @@ class TestVerifyDecisionConsumption:
         )
         monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a: "")
-        monkeypatch.setattr(pipeline_engine, "_maybe_commit", lambda *a, **kw: False)
+        monkeypatch.setattr(
+            pipeline_engine, "_maybe_commit",
+            lambda *a, **kw: commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, "test refusal"),
+        )
         monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
 
         todo, delta, rc = pipeline_engine.execute_supervisor_stage(

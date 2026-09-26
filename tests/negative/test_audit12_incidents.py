@@ -70,12 +70,14 @@ class TestInitDryRun:
         assert (state / "current.yaml").is_file(), "dry-run deleted stage state"
         assert (done / "TODO-0000" / "TODO.md").is_file(), "dry-run deleted the done/ archive"
 
-        # R1 pin: the REAL (non-dry) re-init still cleans runtime — documented behavior
+        # A-11 pin (audit 2026-09-25): the REAL (non-dry) re-init without
+        # force must PRESERVE runtime — the old R1 cleanup dropped the
+        # active TODO and the whole done/ archive.
         _seed_runtime()
         api.init_project(proj, dry_run=False)
-        assert not (inbox / "TODO-0001.md").exists(), "R1: re-init must clean inbox"
-        assert not (state / "current.yaml").exists(), "R1: re-init must clean state"
-        assert not (done / "TODO-0000").exists(), "R1: re-init must clean done/"
+        assert (inbox / "TODO-0001.md").is_file(), "A-11: re-init must preserve inbox"
+        assert (state / "current.yaml").is_file(), "A-11: re-init must preserve state"
+        assert (done / "TODO-0000" / "TODO.md").is_file(), "A-11: re-init must preserve done/"
 
 
 # ── T3.2 · AUD04-02: on_blocked=stop must stop (rc=1), not loop ──

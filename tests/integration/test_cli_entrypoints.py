@@ -313,10 +313,10 @@ class TestAnalyzeRolesEntrypoint:
         pipes.mkdir(parents=True, exist_ok=True)
         (pipes / "default.yaml").write_text(
             "stages:\n"
-            "  - name: plan\n    role: supervisor\n    kind: plan\n"
-            "  - name: developer\n    role: developer\n    kind: execute\n"
-            "  - name: tester\n    role: tester\n    kind: execute\n"
-            "  - name: verify\n    role: supervisor\n    kind: verify\n",
+            "  - name: plan\n    role: supervisor\n"
+            "  - name: developer\n    role: developer\n"
+            "  - name: tester\n    role: tester\n"
+            "  - name: verify\n    role: supervisor\n",
             encoding="utf-8",
         )
         capsys.readouterr()

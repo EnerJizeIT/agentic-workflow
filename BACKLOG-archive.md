@@ -4,6 +4,23 @@
 > Активные items — только в BACKLOG.md; открытая строка в архиве
 > (пометка OPEN) — ошибка, её дом BACKLOG.md.
 
+## Программа «АУДИТ-2026-09-25 · Стабилизация» (закрыта 26.09.2026)
+
+31 юнит (`TODO-0077`…`TODO-0107`), волны 0–6 и 5b; ветка `stabilization`,
+коммиты `79592e8`…`3e4bd0e` + docs; раннер — закреплённый чекаут
+`agentic-workflow-runner` (бампался по волнам). Полные отчёты —
+`.agentic/outbox/RUN-REPORT-*.md`; журнал —
+`.agentic/context/STABILIZATION-LOG.md`.
+
+Закрыто по аудиту: 21 находка (5 P1: A-02 владелец запуска, A-11 init/архив,
+A-12 коллизии ID, A-01 чужой index, A-03 токен checkpoint) + 3 мёртвых
+кандидата (D-01…D-03) + R-01…R-07 (CommitPlan, lease, метрики, хранилище).
+Сверх аудита: R-03-F1 (застывший index — тихие неполные коммиты), дыра A-13
+(двойной резерв при позднем пре-реде), prove_red (editable-утечка плагина +
+классификатор «has no attribute»), FU-06 (флаг no_checkpoints утекал из env
+родителя). Артефакты: 16 negative-наборов audit25, e2e-шим opencode (NEG-4),
+контракт метрик, wheel-smoke в CI, release-notes 1.4.
+
 ---
 
 ## 🟢 Active · MCP-MIGRATION — awf как pure MCP toolkit под opencode

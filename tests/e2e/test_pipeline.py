@@ -22,12 +22,10 @@ def _two_stage_pipeline(proj: Path) -> None:
         'stages:\n'
         '  - name: "implement"\n'
         '    role: "worker"\n'
-        '    action: "execute_todo"\n'
         '    on_blocked: "escalate"\n'
         '    max_retries: 3\n'
         '  - name: "verify"\n'
         '    role: "supervisor"\n'
-        '    action: "verify_result"\n'
         '    on_approved: "commit_and_next"\n'
         '    on_rejected: "replan"\n',
         encoding="utf-8",

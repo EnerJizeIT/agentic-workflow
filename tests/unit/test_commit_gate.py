@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from awf.commit_gate import _files_changed_since_baseline, maybe_commit
+from awf.commit_gate import maybe_commit
+from awf.commit_plan import _files_changed_since_baseline
 
 TODO = "TODO-0002"
 
@@ -87,7 +88,7 @@ class TestCarriedOverFiles:
 
         ok = maybe_commit("implement", TODO, "commit_and_report", repo, logs,
                           auto=False, baseline_sha=sha)
-        assert ok is True
+        assert ok.status == "committed", f"the unit commit must commit — got {ok.status}: {ok.reason}"
         committed = subprocess.run(
             ["git", "show", "--name-only", "--format=", "HEAD"],
             cwd=repo, capture_output=True, text=True, check=True,
@@ -96,10 +97,24 @@ class TestCarriedOverFiles:
         assert "stale.txt" not in committed
         # stale.txt stays in the tree, untouched
         assert (repo / "stale.txt").is_file()
-        assert subprocess.run(
+        # R-03-F1: the commit ran on the isolated index, then the real
+        # index is synced for the plan's files — src/a.py matches HEAD
+        # (no longer "untracked" in the user's index view); stale.txt,
+        # outside the plan, stays untracked.
+        head_files = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        assert "src/a.py" in head_files
+        untracked = subprocess.run(
             ["git", "ls-files", "--others", "--exclude-standard"],
             cwd=repo, capture_output=True, text=True, check=True,
-        ).stdout.splitlines() == ["stale.txt"]
+        ).stdout.splitlines()
+        assert "stale.txt" in untracked
+        assert "src/a.py" not in untracked, (
+            "R-03-F1: after the unit commit the plan's files must match "
+            "HEAD in the real index"
+        )
 
 
 class TestIncludeUntracked:

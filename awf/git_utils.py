@@ -89,12 +89,6 @@ def status_porcelain(project_dir: str | Path) -> str:
     return _git(Path(project_dir), "status", "--porcelain", check=False)
 
 
-def working_tree_clean(project_dir: str | Path) -> bool:
-    """True when ``git status --porcelain`` is empty (no staged, unstaged
-    or untracked changes)."""
-    return not status_porcelain(project_dir).strip()
-
-
 def tree_fingerprint(project_dir: str | Path) -> str:
     """U11: content-addressed hash of the EXACT working-tree state.
 

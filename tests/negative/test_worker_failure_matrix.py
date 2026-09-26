@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from awf import pipeline_engine
+from awf import commit_plan, pipeline_engine
 from awf.pipeline import Stage
 
 
@@ -50,7 +50,14 @@ def _mock_pipeline(monkeypatch, behavior, baseline_sha: str | None = "abc123"):
     monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: baseline_sha)
     monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
-    monkeypatch.setattr(pipeline_engine, "_maybe_commit", lambda *a, **kw: None)
+    # R-03: the gate returns a typed outcome; the worker stage's policy is
+    # "next", so the gate skips — the flow continues as before.
+    monkeypatch.setattr(
+        pipeline_engine, "_maybe_commit",
+        lambda *a, **kw: commit_plan.CommitOutcome(
+            commit_plan.OUTCOME_SKIPPED, "policy 'next' does not commit"
+        ),
+    )
     monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
 

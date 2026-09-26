@@ -1,0 +1,5 @@
+# Contract: Метрики программы
+Owns: отчёт `awf metrics` — сессии opencode.db, коммиты юнитов, строки кода, цены моделей. Входы: база, git-репо, конфиг, каталог цен; выходы: markdown-отчёт + totals + предупреждения.
+Path: `collect_metrics` (`awf/metrics.py`)
+Never: область по умолчанию — только текущий проект: дискриминатор — путь проекта в `part.data`, не `session.directory` (спавн из $HOME); `--all-projects` — единственное исключение, явный `metrics.directory` — legacy-фильтр, побеждает. ID юнита — один парсер: 4+ цифр с явной правой границей (TODO-10000 не усекается, TODO-10000x — не ID); commit-гейт `awf(<stage>): TODO-NNNN` — любая стадия (A-10, A-17). Битый вход (база, git, цены) — предупреждение и деградация, не падение сбора.
+Gate: [ -n "$(git ls-files --cached --others --exclude-standard 'awf/*.py' | head -1)" ] && grep -qF 'TODO-(\d{4,})(?!\w)' awf/metrics.py && grep -qF 'awf\([^)]*\):\s*' awf/metrics.py && python3 -m pytest tests/negative/test_metrics_contract.py -q --timeout=180 -p no:cacheprovider

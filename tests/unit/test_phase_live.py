@@ -33,9 +33,9 @@ def _add_pipeline(project: Path) -> None:
     pipes.mkdir(parents=True, exist_ok=True)
     (pipes / "default.yaml").write_text(
         "name: default\nstages:\n"
-        "  - name: plan\n    role: supervisor\n    kind: plan\n"
-        "  - name: worker\n    role: worker\n    kind: execute\n"
-        "  - name: verify\n    role: supervisor\n    kind: verify\n"
+        "  - name: plan\n    role: supervisor\n"
+        "  - name: worker\n    role: worker\n"
+        "  - name: verify\n    role: supervisor\n"
     )
 
 

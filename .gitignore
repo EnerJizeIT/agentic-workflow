@@ -33,3 +33,6 @@ QA_REPORT.md
 QA_AUDIT_REPORT.md
 *_AUDIT.md
 qa-audit-*.md
+
+# Editor autosave backups (edtz)
+*.edtz

@@ -228,18 +228,23 @@ class TestBadQuoting:
 
 
 class TestCommitGateTimeout:
-    def test_commit_specific_files_timeout_returns_false(self, tmp_git_repo, monkeypatch):
-        """TimeoutExpired inside _commit_specific_files → False, not a hang."""
-        from awf import commit_gate
+    def test_isolated_commit_timeout_returns_error(self, tmp_git_repo, monkeypatch):
+        """TimeoutExpired inside the isolated-index commit → error outcome,
+        not a hang (R-03: the gate commits through a throwaway index)."""
+        from awf import commit_gate, commit_plan
 
         def _raise(*_a, **_k):
             raise subprocess.TimeoutExpired(cmd="git commit", timeout=30)
 
         monkeypatch.setattr(commit_gate.subprocess, "run", _raise)
-        assert commit_gate._commit_specific_files(tmp_git_repo, ["README.md"], "m") is False
+        plan = commit_plan.CommitPlan(
+            todo_id="TODO-0001", generation=0, verified_sha="", files=("README.md",)
+        )
+        outcome = commit_gate._commit_via_isolated_index(tmp_git_repo, plan, "m")
+        assert outcome.status == "error"
 
     def test_commit_gate_git_calls_carry_timeout(self, tmp_git_repo, monkeypatch):
-        from awf import commit_gate, git_utils
+        from awf import commit_gate, commit_plan, git_utils
 
         real_run = subprocess.run
         seen: list[tuple[list[str], object]] = []
@@ -252,9 +257,13 @@ class TestCommitGateTimeout:
         monkeypatch.setattr(commit_gate.subprocess, "run", _recording)
         sha = git_utils.current_sha(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("changed\n")
-        changed = commit_gate._files_changed_since_baseline(tmp_git_repo, sha, todo_id="TODO-0001")
+        changed = commit_plan._files_changed_since_baseline(tmp_git_repo, sha, todo_id="TODO-0001")
         assert "README.md" in changed
-        assert commit_gate._commit_specific_files(tmp_git_repo, changed, "t") is True
+        plan = commit_plan.CommitPlan(
+            todo_id="TODO-0001", generation=0, verified_sha="", files=tuple(changed)
+        )
+        outcome = commit_gate._commit_via_isolated_index(tmp_git_repo, plan, "t")
+        assert outcome.status == "committed", f"got {outcome.status}: {outcome.reason}"
 
         assert seen, "no git calls recorded"
         bad = [n for n, t in seen if t in (None, "MISSING")]
@@ -376,7 +385,7 @@ def _proj_with_pipeline(tmp_path: Path) -> Path:
     (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
         'name: "default"\n'
         'stages:\n'
-        '  - name: "worker"\n    role: "worker"\n    kind: "execute"\n',
+        '  - name: "worker"\n    role: "worker"\n',
     )
     return proj
 
