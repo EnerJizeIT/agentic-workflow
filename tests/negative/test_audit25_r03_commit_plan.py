@@ -11,8 +11,9 @@ refuse-first) блокировали коммит вовсе.
    отпечаток, список файлов, ожидаемый verdict. Строится на
    approve/verify и передаётся в гейт.
 2. Коммит идёт через изолированный временный index (GIT_INDEX_FILE):
-   пользовательский index не меняется ни при успехе, ни при отказе; в
-   коммит попадают ровно файлы плана.
+   в коммит попадают ровно файлы плана; при отказе пользовательский
+   index не трогается, при успехе записи файлов плана переставляются
+   на новый HEAD (R-03-F1, TODO-0093), а чужие staged — нет.
 3. Результат гейта типизирован: committed/skipped/refused/error с
    причиной — execute и verify стадии обрабатывают его одинаково.
 4. Сверка отпечатка (A-15) и verdict (A-04) — часть плана, без
@@ -138,9 +139,14 @@ def test_commit_uses_isolated_index(tmp_git_repo: Path):
     assert "A  foreign.txt" in _status(proj), (
         "the user's foreign file must stay staged exactly as before"
     )
-    assert _index_entries(proj) == index_before, (
-        "the user's index must be byte-identical: the commit ran on the "
-        "isolated index, the unit file was never staged into the user's one"
+    staged_vs_head = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "HEAD"],
+        cwd=proj, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert staged_vs_head == ["foreign.txt"], (
+        "R-03-F1: the plan's files must match the new HEAD in the real "
+        f"index — the commit ran on the isolated index and only the plan's "
+        f"entries are re-pointed — got {staged_vs_head}"
     )
     # Typed result (R-03, invariant 3):
     assert outcome.status == "committed", (
@@ -178,14 +184,17 @@ def test_commit_plan_typed_results(tmp_git_repo: Path):
     )
     assert outcome.sha and _head(proj) != baseline_sha
 
-    # refused: the active run's diary says rejected (A-04, via the plan)
+    # refused: the active run's diary says rejected (A-04, via the plan).
+    # R-03-F1: the next unit's baseline is the NEW HEAD (the unit's own
+    # committed files no longer read as "foreign" from the stale index),
+    # so the plan is built against head_before, not the original base.
     (proj / "file.txt").write_text("v2\n", encoding="utf-8")
     api.run_start(proj, queue=[TODO])
     api.reject_commit(proj, TODO, "defect: the gate plan")
     head_before = _head(proj)
     index_before = _index_entries(proj)
 
-    plan = commit_plan.build_commit_plan(proj, TODO, baseline_sha)
+    plan = commit_plan.build_commit_plan(proj, TODO, head_before)
     assert plan.todo_id == TODO
     assert plan.generation == 1, "the plan carries the active run's generation"
     assert "file.txt" in plan.files
@@ -193,7 +202,7 @@ def test_commit_plan_typed_results(tmp_git_repo: Path):
 
     outcome = maybe_commit(
         "verify", TODO, "commit_and_next", proj, logs,
-        auto=False, baseline_sha=baseline_sha,
+        auto=False, baseline_sha=head_before,
     )
     assert outcome.status == "refused", (
         f"the rejected verdict must refuse — got {outcome.status}: {outcome.reason}"

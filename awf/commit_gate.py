@@ -14,6 +14,11 @@ way. The A-04 verdict and A-15 fingerprint checks are plan checks
 (``commit_plan``); the commit runs through a throwaway ``GIT_INDEX_FILE``
 so the user's index is never opened — foreign staged entries can neither
 leak into the unit commit nor be unstaged by a failure rollback (A-01).
+
+R-03-F1 (TODO-0093): after a successful isolated commit the real index is
+synced for the plan's files (``_sync_real_index``) — otherwise it stays
+on the pre-commit base and the next unit's plan subtracts the unit's own
+committed files as "foreign" (A-17).
 """
 from __future__ import annotations
 
@@ -86,17 +91,64 @@ def _git_isolated(
     )
 
 
+def _sync_real_index(project_dir: Path, plan: commit_plan.CommitPlan) -> str:
+    """R-03-F1 (TODO-0093): re-point the user's index at the new HEAD for
+    the plan's files.
+
+    The commit ran on a throwaway ``GIT_INDEX_FILE`` — the user's index
+    still holds the pre-commit base for every plan file. Stale, it makes
+    the plan's files look "staged vs the new HEAD" (``git diff
+    --cached``): the next unit (baseline = the new HEAD) subtracts its own
+    committed files from the plan as "foreign" (incident A-17:
+    ``awf/metrics.py`` silently dropped from a unit commit), and
+    ``git status`` shows committed work as staged.
+
+    ``git reset -- <paths>`` is the pinpoint form: it re-points ONLY the
+    listed paths' index entries at the new HEAD — the working tree is not
+    touched and foreign staged entries outside the plan keep their state
+    (A-01).
+
+    Returns "" on success, the warning text on failure. The commit is
+    already made — a failed sync degrades to the old stale-index behavior
+    and must stay visible, not roll back a good commit.
+    """
+    if not plan.files:
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "reset", "-q", "HEAD", "--", *plan.files],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,  # AUD04-11: a hung git must not hang the commit gate
+        )
+    except (subprocess.SubprocessError, OSError) as e:
+        return f"index sync after the unit commit failed: {e}"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return (
+            f"index sync after the unit commit failed "
+            f"(rc={result.returncode}): {detail}"
+        )
+    return ""
+
+
 def _commit_via_isolated_index(
     project_dir: Path,
     plan: commit_plan.CommitPlan,
     message: str,
+    logs_dir: Path | None = None,
 ) -> commit_plan.CommitOutcome:
     """R-03: commit EXACTLY ``plan.files`` through a throwaway index.
 
     The isolated index is built from HEAD (when commits exist) plus the
     plan's files and deleted in ``finally``. On success the user's index
-    is unchanged (foreign staged entries stay staged); on refusal or
-    error it is byte-identical (nothing was ever staged into it).
+    is synced for the plan's files (R-03-F1: their entries re-pointed at
+    the new HEAD, so the next unit's plan does not subtract its own
+    committed files as "foreign"); foreign staged entries outside the
+    plan are never touched. On refusal or error the index is
+    byte-identical (nothing was ever staged into it).
     """
     fd, index_path = tempfile.mkstemp(
         prefix=f"awf-commit-index-{plan.todo_id}-", suffix=".idx"
@@ -153,6 +205,14 @@ def _commit_via_isolated_index(
                 commit_plan.OUTCOME_ERROR,
                 "the commit was created but its sha could not be read",
             )
+        # R-03-F1: the throwaway index never touched the user's one — its
+        # plan-file entries still hold the pre-commit base. Re-point them
+        # at the new HEAD (pinpoint: only the plan's paths).
+        sync_warning = _sync_real_index(project_dir, plan)
+        if sync_warning:
+            print(f"WARNING: {sync_warning}", file=sys.stderr)
+            if logs_dir is not None:
+                _log(logs_dir, f"R-03-F1: {sync_warning}")
         return commit_plan.CommitOutcome(
             commit_plan.OUTCOME_COMMITTED, "", sha.stdout.strip()
         )
@@ -265,7 +325,9 @@ def maybe_commit(
             commit_plan.OUTCOME_SKIPPED, "no changes to commit"
         )
 
-    outcome = _commit_via_isolated_index(project_dir, plan, f"awf({stage_name}): {todo_id}")
+    outcome = _commit_via_isolated_index(
+        project_dir, plan, f"awf({stage_name}): {todo_id}", logs_dir=logs_dir
+    )
     if outcome.status == commit_plan.OUTCOME_COMMITTED:
         print(f"Auto-committed: {todo_id} at '{stage_name}' ({outcome.sha}).", file=sys.stderr)
         print("Remember to push: git push origin HEAD", file=sys.stderr)

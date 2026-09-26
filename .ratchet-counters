@@ -385,4 +385,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # A-10 boundary wording, the A-17 subject format) and 1 in
 # scripts/instruction-gates.conf (the limit-raise comment). Same class
 # as above: test identifiers and contract wording, not debt.
+# RUN11-2026-09-26 (TODO-0093, R-03-F1): baseline raised 3857 -> 3868 —
+# the stale-index unit adds 12 TODO-bearing lines, net 11: 7 in the new
+# tests/negative/test_audit25_r03f1_stale_index.py (module docstring +
+# the TODO-0093 test ids), 2 in awf/commit_gate.py (module and
+# _sync_real_index docstrings), 3 in updated tests (a01/r03 docstring
+# unit-id refs, the r03 build_commit_plan call) minus 1 replaced line in
+# tests/negative/test_audit25_r03_commit_plan.py. Same class as above:
+# test identifiers and doc references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

@@ -97,9 +97,10 @@ class TestCarriedOverFiles:
         assert "stale.txt" not in committed
         # stale.txt stays in the tree, untouched
         assert (repo / "stale.txt").is_file()
-        # R-03: the user's index is never opened — src/a.py is committed
-        # (in HEAD) but still shows untracked in the user's index view
-        # until the user refreshes it; stale.txt is untracked in both.
+        # R-03-F1: the commit ran on the isolated index, then the real
+        # index is synced for the plan's files — src/a.py matches HEAD
+        # (no longer "untracked" in the user's index view); stale.txt,
+        # outside the plan, stays untracked.
         head_files = subprocess.run(
             ["git", "ls-tree", "-r", "--name-only", "HEAD"],
             cwd=repo, capture_output=True, text=True, check=True,
@@ -110,6 +111,10 @@ class TestCarriedOverFiles:
             cwd=repo, capture_output=True, text=True, check=True,
         ).stdout.splitlines()
         assert "stale.txt" in untracked
+        assert "src/a.py" not in untracked, (
+            "R-03-F1: after the unit commit the plan's files must match "
+            "HEAD in the real index"
+        )
 
 
 class TestIncludeUntracked:

@@ -14,8 +14,9 @@ A-01 property (foreign staged can neither leak into the unit commit nor
 be dropped by a failure rollback) is enforced by the isolation itself:
 
 - foreign staged present → the commit proceeds, contains exactly the
-  plan's files, the foreign entry stays staged, the index is
-  byte-identical;
+  plan's files, the foreign entry stays staged, the rest of the index is
+  untouched (the plan's files' entries are re-pointed at the new HEAD —
+  R-03-F1, TODO-0093);
 - a failing pre-commit hook → error outcome, no commit, the index is
   byte-identical (nothing was ever staged into it — no rollback needed);
 - a fresh repo without commits → the first commit is built from the
@@ -95,9 +96,18 @@ class TestForeignStagedIndex:
         assert "A  foreign.txt" in _status(repo), (
             "the user's foreign file must stay staged exactly as before"
         )
-        assert _index_entries(repo) == index_before, (
-            "the user's index must be byte-identical — the commit ran on "
-            "the isolated index"
+        staged_vs_head = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "HEAD"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        assert staged_vs_head == ["foreign.txt"], (
+            "R-03-F1: after the unit commit the plan's files must match "
+            f"the new HEAD in the real index — got {staged_vs_head}"
+        )
+        foreign_before = [line for line in index_before.splitlines() if "foreign.txt" in line]
+        foreign_after = [line for line in _index_entries(repo).splitlines() if "foreign.txt" in line]
+        assert foreign_after == foreign_before, (
+            "the user's foreign staged entry must be untouched"
         )
 
     def test_hook_failure_preserves_user_index(self, tmp_git_repo: Path) -> None:
@@ -204,6 +214,16 @@ class TestFirstCommitIndex:
             "the first commit must contain exactly the unit file"
         )
         assert "A  foreign.txt" in _status(repo), "the foreign file must stay staged"
-        assert _index_entries(repo) == index_before, (
-            "the user's index must be byte-identical"
+        staged_vs_head = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "HEAD"],
+            cwd=repo, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()
+        assert staged_vs_head == ["foreign.txt"], (
+            "R-03-F1: after the first commit the plan's files must match "
+            f"the new HEAD in the real index — got {staged_vs_head}"
+        )
+        foreign_before = [line for line in index_before.splitlines() if "foreign.txt" in line]
+        foreign_after = [line for line in _index_entries(repo).splitlines() if "foreign.txt" in line]
+        assert foreign_after == foreign_before, (
+            "the user's foreign staged entry must be untouched"
         )
