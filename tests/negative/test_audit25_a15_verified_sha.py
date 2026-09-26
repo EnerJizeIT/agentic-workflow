@@ -72,7 +72,9 @@ def test_tree_change_after_approve_blocks_commit(tmp_git_repo, capsys):
         auto=True, baseline_sha=baseline_sha,
     )
 
-    assert ok is False, "commit gate committed a tree that was not verified"
+    assert ok.status == "refused", (
+        f"commit gate committed a tree that was not verified — got {ok.status}: {ok.reason}"
+    )
     assert _head(proj) == baseline_sha, "HEAD moved — an unverified change was committed"
     cached = subprocess.run(
         ["git", "diff", "--cached", "--quiet"], cwd=proj, capture_output=True
@@ -104,7 +106,7 @@ def test_tree_unchanged_after_approve_commits(tmp_git_repo):
         auto=True, baseline_sha=baseline_sha,
     )
 
-    assert ok is True, "the verified success path must commit"
+    assert ok.status == "committed", f"the verified success path must commit — got {ok.status}: {ok.reason}"
     assert _head(proj) != baseline_sha
     committed = subprocess.run(
         ["git", "show", "--name-only", "--format=", "HEAD"],
@@ -133,5 +135,5 @@ def test_no_verified_file_legacy_behavior(tmp_git_repo):
         auto=True, baseline_sha=baseline_sha,
     )
 
-    assert ok is True, "legacy path (no VERIFIED file) must not gain a new refusal"
+    assert ok.status == "committed", f"legacy path (no VERIFIED file) must not gain a new refusal — got {ok.status}: {ok.reason}"
     assert _head(proj) != baseline_sha

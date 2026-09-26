@@ -23,7 +23,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from awf import pipeline_engine, supervisor
+from awf import commit_plan, pipeline_engine, supervisor
 from awf.pipeline_state import read_state
 
 
@@ -290,7 +290,10 @@ class TestEngineRecordsAcceptance:
 
         def fake_maybe_commit(s_name, *a, **kw):
             commit_gate_states.append((s_name, read_state(proj)))
-            return True
+            # R-03: the gate returns a typed outcome — committed proceeds
+            # (the fake does not commit anything; the state record is the
+            # point of this test).
+            return commit_plan.CommitOutcome(commit_plan.OUTCOME_COMMITTED, "", "fake")
 
         outbox = proj / ".agentic" / "outbox"
 

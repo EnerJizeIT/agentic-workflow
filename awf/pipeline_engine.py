@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import commit_plan as _commit_plan
 from . import config as cfg_mod
 from . import paths, todos, verify
 from ._log import log as _log
@@ -273,6 +274,37 @@ def _record_verify_decision(
         return
 
 
+def _commit_outcome_ok(
+    outcome: _commit_plan.CommitOutcome,
+    s_name: str,
+    current_todo: str,
+    logs_dir: Path,
+) -> bool:
+    """R-03: one handling of the typed gate result for BOTH stages.
+
+    committed/skipped → the cycle may continue; refused/error → it stops
+    (exit code 1, the TODO stays active, changes remain in the working
+    tree). Before R-03 the execute stage ignored the gate's boolean
+    refusal (A-14) and advanced anyway.
+    """
+    if outcome.status in _commit_plan.PROCEED_STATUSES:
+        return True
+    print(
+        f"Commit gate {outcome.status} for {current_todo} at '{s_name}': "
+        f"{outcome.reason}",
+        file=sys.stderr,
+    )
+    print(
+        "  TODO stays ACTIVE; changes remain in the working tree for manual review.",
+        file=sys.stderr,
+    )
+    _log(
+        logs_dir,
+        f"Commit gate {outcome.status} for {current_todo} at {s_name}: {outcome.reason}",
+    )
+    return False
+
+
 def _handle_next(
     project_dir: Path,
     logs_dir: Path,
@@ -282,13 +314,23 @@ def _handle_next(
     auto: bool,
     retry_counts: list[int],
     stage_idx: int,
-) -> int:
-    """Transition: next / commit_and_next / commit_and_report."""
+) -> tuple[int, int]:
+    """Transition: next / commit_and_next / commit_and_report.
+
+    Returns (new_stage_idx, exit_code). The gate's typed result (R-03) is
+    handled exactly like on the verify stage: a refused/failed commit
+    stops the cycle (exit_code 1, stage unchanged) instead of advancing —
+    the A-14 boolean-ignore path is gone.
+    """
     baseline_sha = _read_baseline_sha(project_dir, current_todo)
-    _maybe_commit(s_name, current_todo, action, project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha)
+    outcome = _maybe_commit(
+        s_name, current_todo, action, project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha
+    )
+    if not _commit_outcome_ok(outcome, s_name, current_todo, logs_dir):
+        return stage_idx, 1
     print("Moving to next stage.")
     retry_counts[stage_idx] = 0
-    return stage_idx + 1
+    return stage_idx + 1, 0
 
 
 def _handle_escalate(
@@ -757,7 +799,7 @@ def execute_supervisor_stage(
         # AUD04-05: the commit gate can time out (APPROVE wait) — treat it as
         # a failed commit (clean stop) instead of a raw traceback.
         try:
-            commit_ok = _maybe_commit(
+            outcome = _maybe_commit(
                 s_name, current_todo, stage.on_approved,
                 project_dir, logs_dir, auto=auto, baseline_sha=baseline_sha,
             )
@@ -765,19 +807,20 @@ def execute_supervisor_stage(
             print(f"ERROR: commit gate for {current_todo} crashed. Pipeline stopped.", file=sys.stderr)
             print(f"  Details: {e}", file=sys.stderr)
             _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
-            commit_ok = False
+            outcome = _commit_plan.CommitOutcome(_commit_plan.OUTCOME_ERROR, str(e))
         # AUD04-04: consume the accepted ACK/APPROVE now that the commit gate
         # has acted on it — success OR failure. A commit-fail leaves the TODO
         # active; a re-verify of the same TODO must get a FRESH approval, not
         # re-open the gate on this cycle's stale one.
         _consume_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
-        if not commit_ok:
+        # R-03: the typed result is handled exactly like on the execute stage.
+        if not _commit_outcome_ok(outcome, s_name, current_todo, logs_dir):
             print(
-                f"Commit failed for {current_todo} — TODO NOT archived, "
+                f"Commit {outcome.status} for {current_todo} — TODO NOT archived, "
                 f"changes left in working tree for manual review.",
                 file=sys.stderr,
             )
-            _log(logs_dir, f"Commit failed at verify for {current_todo} — not archived")
+            _log(logs_dir, f"Commit {outcome.status} at verify for {current_todo} — not archived")
             return current_todo, 0, 1
         _mark_plan_step_done(project_dir, current_todo, logs_dir)
         from .todos import archive_todo
@@ -1189,7 +1232,7 @@ def execute_agent_stage(
         # AUD04-05: the commit gate can time out (APPROVE wait) — stop
         # cleanly instead of letting the TimeoutError traceback out.
         try:
-            new_idx = _handle_next(
+            new_idx, rc = _handle_next(
                 project_dir, logs_dir, s_name, current_todo, action, auto, retry_counts, stage_idx,
             )
         except (RuntimeError, TimeoutError) as e:
@@ -1197,7 +1240,10 @@ def execute_agent_stage(
             print(f"  Details: {e}", file=sys.stderr)
             _log(logs_dir, f"Pipeline stopped at stage {s_name}: commit gate: {e}")
             return current_todo, stage_idx, 1
-        return current_todo, new_idx, 0
+        # R-03: a refused/failed commit on the execute stage stops the
+        # cycle too (A-14) — the TODO stays active, the stage does not
+        # advance.
+        return current_todo, new_idx, rc
 
     elif action == "escalate":
         new_idx, new_todo, exit_code = _handle_escalate(

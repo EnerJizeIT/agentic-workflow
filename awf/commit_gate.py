@@ -4,17 +4,27 @@ Extracted from orchestrator.py (A6 refactor).
 
 A1 fix: commit only files changed since baseline (not `git add -A`).
 Supervisor's mid-flight edits stay out of worker commits.
+
+R-03 (audit 2026-09-25, layer 11): the commit is an explicit object —
+``commit_plan.CommitPlan`` (todo id, run generation, verified fingerprint,
+exact file list, expected verdict) built at approve/verify time — and the
+gate returns a typed ``commit_plan.CommitOutcome`` (committed/skipped/
+refused/error + reason) that the execute and verify stages handle the same
+way. The A-04 verdict and A-15 fingerprint checks are plan checks
+(``commit_plan``); the commit runs through a throwaway ``GIT_INDEX_FILE``
+so the user's index is never opened — foreign staged entries can neither
+leak into the unit commit nor be unstaged by a failure rollback (A-01).
 """
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from . import git_utils, paths
+from . import commit_plan, git_utils, paths
 from ._log import log as _log
 
 APPROVE_POLL_INTERVAL: int = 2
@@ -43,340 +53,114 @@ def _get_approve_timeout() -> int:
     return _safe_int_env("AWF_APPROVE_TIMEOUT_SECONDS", 1800)
 
 
-def _files_changed_since_baseline(
-    project_dir: Path,
-    baseline_sha: str,
-    todo_id: str = "",
-) -> list[str]:
-    """A1 fix: list files changed since baseline SHA.
-
-    Returns relative paths (POSIX). Empty list on error or no baseline.
-
-    QA-1: ``todo_id`` used to locate ``BASELINE-{todo_id}.untracked`` snapshot
-    so pre-existing untracked files are excluded from worker commit.
-
-    Now combines:
-    1. ``git diff --name-only <sha>`` — modified tracked files since baseline.
-    2. ``git ls-files --others --exclude-standard`` — new untracked files
-       (respects .gitignore — awf runtime dirs stay excluded).
-    """
-    if not baseline_sha:
-        return []
-
-    # 1. Modified tracked files
+def _has_head(project_dir: Path) -> bool:
+    """Does the repo have any commit yet (the first-commit case)?"""
     try:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", baseline_sha],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11: hung git must not hang the commit gate
-        )
-        if result.returncode != 0:
-            logs_dir = project_dir / ".agentic" / "logs"
-            if logs_dir.is_dir():
-                _log(
-                    logs_dir,
-                    f"WARNING: git diff vs baseline {baseline_sha!r} failed "
-                    f"(rc={result.returncode}): {result.stderr.strip()}",
-                )
-            return []
-        modified = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    except (subprocess.SubprocessError, OSError):
-        return []
-
-    # 2. Untracked files (new files worker created since baseline)
-    # QA-1: exclude pre-existing untracked files (existed before baseline).
-    # Read BASELINE-{todo_id}.untracked snapshot to filter them out.
-    try:
-        untracked_result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11
-        )
-        if untracked_result.returncode == 0:
-            untracked = [
-                line.strip() for line in untracked_result.stdout.splitlines() if line.strip()
-            ]
-        else:
-            untracked = []
-    except (subprocess.SubprocessError, OSError):
-        untracked = []
-
-    # QA-1: filter out files that were already untracked at baseline time.
-    # BASELINE-{todo_id}.untracked was written by create_baseline().
-    baseline_untracked_path: Path | None = None
-    if todo_id:
-        candidate = project_dir / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
-        if candidate.exists():
-            baseline_untracked_path = candidate
-    if not baseline_untracked_path:
-        # AUD-2026-08-09.3: no baseline for this todo_id → don't grab another
-        # TODO's baseline (would include wrong files). Log warning, include all
-        # untracked (safer than filtering with wrong data).
-        if todo_id:
-            print(
-                f"warning: no BASELINE-{todo_id}.untracked found, "
-                "including all untracked files in commit",
-                file=sys.stderr,
-            )
-
-    if baseline_untracked_path and baseline_untracked_path.exists():
-        try:
-            pre_existing = {
-                line.strip()
-                for line in baseline_untracked_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            }
-            untracked = [f for f in untracked if f not in pre_existing]
-        except OSError:
-            pass  # best effort — if can't read, include all untracked
-
-    # Combine + dedupe (a file could be in both lists if it was deleted
-    # then re-created). Order: modified first, then new untracked.
-    seen: set[str] = set()
-    combined: list[str] = []
-    for path in [*modified, *untracked]:
-        if path and path not in seen:
-            seen.add(path)
-            combined.append(path)
-    return combined
-
-
-def _index_has_foreign_staged(project_dir: Path) -> bool | None:
-    """A-01: staged entries already in the index before the gate touches it.
-
-    True — foreign staged changes are present: the unit commit must be
-    refused (they would leak into the commit, or a failure rollback would
-    unstage them).
-    False — index clean, safe to stage the unit files.
-    None — could not determine (git error); caller refuses (fail closed).
-    """
-    try:
-        if subprocess.run(
+        return subprocess.run(
             ["git", "rev-parse", "--verify", "-q", "HEAD"],
             cwd=project_dir,
             capture_output=True,
             timeout=30,  # AUD04-11
-        ).returncode == 0:
-            result = subprocess.run(
-                ["git", "diff", "--cached", "--quiet"],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,  # AUD04-11
-            )
-            if result.returncode not in (0, 1):
-                return None
-            return result.returncode == 1
-        # No commits yet (first-commit case): "foreign staged" is any
-        # entry in the index.
-        result = subprocess.run(
-            ["git", "ls-files", "--stage"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,  # AUD04-11
-        )
-        if result.returncode != 0:
-            return None
-        return bool(result.stdout.strip())
+        ).returncode == 0
     except (subprocess.SubprocessError, OSError):
-        return None
+        return False
 
 
-def _unstage_unit_files(project_dir: Path, files: list[str]) -> None:
-    """A-01: undo exactly the staging this gate did — never a wide reset.
+def _git_isolated(
+    project_dir: Path, args: list[str], env: dict[str, str]
+) -> subprocess.CompletedProcess:
+    """Run one git command against the plan's throwaway index (R-03).
 
-    A plain ``git reset`` on commit failure unstaged the user's foreign
-    staged changes (audit 2026-09-25, A-01); restoring only the unit files
-    leaves the rest of the index untouched.
+    ``GIT_INDEX_FILE`` keeps every index operation — read-tree, add,
+    diff --cached, the commit itself, and the hooks' own git calls —
+    inside the temporary file. The user's ``.git/index`` is never opened.
     """
-    if not files:
-        return
-    try:
-        subprocess.run(
-            ["git", "restore", "--staged", "--"] + files,
-            cwd=project_dir,
-            capture_output=True,
-            timeout=30,  # AUD04-11
-        )
-    except (subprocess.SubprocessError, OSError):
-        pass  # best effort; the failure is reported by the caller
-
-
-def _commit_specific_files(
-    project_dir: Path,
-    files: list[str],
-    message: str,
-    todo_id: str = "",
-) -> bool:
-    """A1 fix: commit ONLY the listed files (no `git add -A`).
-
-    A-01: refuses when the index already holds staged changes, and on any
-    failure unstages only the files this gate added (no wide ``git reset``
-    that would drop the user's foreign staged entries).
-
-    A-15: when ``todo_id`` is given and the approve carried verified_sha,
-    re-checks the tree against VERIFIED-{todo_id}.sha immediately before
-    the stage+commit sequence. The check runs PRE-STAGING on purpose:
-    this gate's own ``git add`` flips the fingerprint (staging-sensitive),
-    so a post-add comparison would refuse the success path.
-
-    Returns True if commit succeeded, False if refused, nothing to commit,
-    or error.
-    """
-    if not files:
-        return False
-    if _index_has_foreign_staged(project_dir) is not False:
-        print(
-            "refusing unit commit: the git index already has staged changes. "
-            "They would leak into the unit commit or be unstaged on failure; "
-            "unstage or commit them first. The index is left untouched.",
-            file=sys.stderr,
-        )
-        return False
-    refusal = _verified_refusal(project_dir, todo_id)
-    if refusal:
-        print(
-            f"refusing unit commit for {todo_id}: {refusal}. "
-            "Nothing was staged; the working tree is left for manual review.",
-            file=sys.stderr,
-        )
-        return False
-    try:
-        # Stage only specific files
-        subprocess.run(
-            ["git", "add", "--"] + files,
-            cwd=project_dir,
-            check=True,
-            capture_output=True,
-            timeout=30,  # AUD04-11
-        )
-        # Commit (allow empty-tree — first commit case)
-        result = subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,  # AUD04-11: hung hook/index.lock must not hang verify
-        )
-        if result.returncode != 0:
-            # AUD-2026-08-09.4: commit failed (e.g. pre-commit hook rejection).
-            # A-01: unstage exactly the unit files, nothing broader.
-            _unstage_unit_files(project_dir, files)
-            print(
-                f"git commit failed (rc={result.returncode}): "
-                f"{result.stderr.strip() or result.stdout.strip()}",
-                file=sys.stderr,
-            )
-            return False
-        return True
-    except (subprocess.SubprocessError, OSError):
-        _unstage_unit_files(project_dir, files)
-        return False
-
-
-def _verdict_refusal(project_dir: Path, todo_id: str) -> str:
-    """A-04 (audit 2026-09-25, layer 4): the active run's verdict check.
-
-    A leftover or raced APPROVE/ACK signal must not unlock a commit the
-    run already rejected: when the ACTIVE run's diary records
-    verdict='rejected' for this TODO, the gate refuses before staging
-    anything. Only an active run has verdict authority — outside a run
-    there is no diary, and a fresh run resets it (``outcomes={}``), so a
-    stale verdict cannot outlive its cycle. A 'generation' marker on the
-    entry (cycle identity, when present) that differs from the run's
-    generation belongs to another cycle and is not enforced; an
-    unreadable marker fails closed (enforce).
-
-    Returns a refusal reason, or "" when the commit may proceed.
-    """
-    if not todo_id:
-        return ""
-    try:
-        from . import run_state
-
-        state = run_state.read_run(project_dir)
-    except Exception:
-        return ""  # unreadable run state — the verdict is not provable
-    if not state or not state.get("active"):
-        return ""
-    outcome = (state.get("outcomes") or {}).get(todo_id)
-    if not isinstance(outcome, dict) or outcome.get("verdict") != "rejected":
-        return ""
-    if "generation" in outcome:
-        try:
-            if int(outcome["generation"]) != run_state.generation_of(state):
-                return ""  # verdict of another cycle — not this run's
-        except (TypeError, ValueError):
-            pass  # unreadable marker — fail closed, enforce the verdict
-    reason = str(outcome.get("reason") or "").strip()
-    return (
-        f"the active run's diary records verdict 'rejected' for {todo_id}"
-        + (f" ({reason[:200]})" if reason else "")
+    return subprocess.run(
+        ["git", *args],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,  # AUD04-11: hung git must not hang the commit gate
+        env=env,
     )
 
 
-def _verified_refusal(project_dir: Path, todo_id: str) -> str:
-    """A-15 (audit 2026-09-25, layer 4): re-check the tree against VERIFIED.
+def _commit_via_isolated_index(
+    project_dir: Path,
+    plan: commit_plan.CommitPlan,
+    message: str,
+) -> commit_plan.CommitOutcome:
+    """R-03: commit EXACTLY ``plan.files`` through a throwaway index.
 
-    ``approve_commit(verified_sha=...)`` stores the verified tree
-    fingerprint to ``.agentic/context/VERIFIED-{todo_id}.sha``. Between the
-    approve and the commit the tree may still move (an edit, a new file, a
-    commit by someone else) — the gate would then commit something that was
-    not verified. When the file exists, the fingerprint is recomputed
-    (``git_utils.tree_fingerprint``, the same mechanism approve uses) and a
-    mismatch refuses the commit. No file (the approve carried no
-    ``verified_sha``) — the legacy behavior: nothing is checked.
-
-    Must run while the tree is still PRE-STAGING: ``tree_fingerprint`` is
-    staging-sensitive (``git add`` flips the status flags and drops the
-    files from the untracked list), so a post-add comparison would refuse
-    the gate's own staging and break the verified success path.
-
-    Returns a refusal reason, or "" when the commit may proceed.
+    The isolated index is built from HEAD (when commits exist) plus the
+    plan's files and deleted in ``finally``. On success the user's index
+    is unchanged (foreign staged entries stay staged); on refusal or
+    error it is byte-identical (nothing was ever staged into it).
     """
-    if not todo_id:
-        return ""
-    verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
-    if not verified_file.is_file():
-        return ""
+    fd, index_path = tempfile.mkstemp(
+        prefix=f"awf-commit-index-{plan.todo_id}-", suffix=".idx"
+    )
+    os.close(fd)
+    env = {**os.environ, "GIT_INDEX_FILE": index_path}
     try:
-        expected = verified_file.read_text(encoding="utf-8").strip().lower()
-    except OSError:
-        return (
-            f"the verified fingerprint file {verified_file.name} exists but "
-            "could not be read — refuse to commit unverified (fail closed)"
+        try:
+            # A 0-byte file is NOT a valid index for git (git 2.43: "index
+            # file smaller than expected") — initialize it properly first.
+            init = _git_isolated(project_dir, ["read-tree", "--empty"], env)
+            if init.returncode != 0:
+                return commit_plan.CommitOutcome(
+                    commit_plan.OUTCOME_ERROR,
+                    f"git read-tree --empty failed (rc={init.returncode}): "
+                    f"{init.stderr.strip()}",
+                )
+            if _has_head(project_dir):
+                read = _git_isolated(project_dir, ["read-tree", "HEAD"], env)
+                if read.returncode != 0:
+                    return commit_plan.CommitOutcome(
+                        commit_plan.OUTCOME_ERROR,
+                        f"git read-tree HEAD failed (rc={read.returncode}): "
+                        f"{read.stderr.strip()}",
+                    )
+            add = _git_isolated(project_dir, ["add", "--", *plan.files], env)
+            if add.returncode != 0:
+                return commit_plan.CommitOutcome(
+                    commit_plan.OUTCOME_ERROR,
+                    f"git add failed (rc={add.returncode}): "
+                    f"{add.stderr.strip() or add.stdout.strip()}",
+                )
+            if _has_head(project_dir):
+                diff = _git_isolated(project_dir, ["diff", "--cached", "--quiet"], env)
+                if diff.returncode == 0:
+                    return commit_plan.CommitOutcome(
+                        commit_plan.OUTCOME_SKIPPED,
+                        "the plan's files match HEAD — nothing to commit",
+                    )
+            result = _git_isolated(project_dir, ["commit", "-m", message], env)
+        except (subprocess.SubprocessError, OSError) as e:
+            return commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_ERROR, f"git commit failed: {e}"
+            )
+        if result.returncode != 0:
+            return commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_ERROR,
+                f"git commit failed (rc={result.returncode}): "
+                f"{result.stderr.strip() or result.stdout.strip()}",
+            )
+        sha = _git_isolated(project_dir, ["rev-parse", "--short", "HEAD"], env)
+        if sha.returncode != 0:
+            return commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_ERROR,
+                "the commit was created but its sha could not be read",
+            )
+        return commit_plan.CommitOutcome(
+            commit_plan.OUTCOME_COMMITTED, "", sha.stdout.strip()
         )
-    if not re.fullmatch(r"[0-9a-f]{64}", expected):
-        return (
-            f"the verified fingerprint file {verified_file.name} does not "
-            "hold a 64-hex tree fingerprint — refuse to commit unverified "
-            "(fail closed); re-verify and re-approve with a fresh "
-            "`awf tree-sha`"
-        )
-    try:
-        current = git_utils.tree_fingerprint(project_dir)
-    except RuntimeError:
-        return (
-            f"the verified fingerprint {expected[:12]}… exists but the tree "
-            "fingerprint could not be recomputed — refuse to commit "
-            "unverified (fail closed)"
-        )
-    if current != expected:
-        return (
-            f"the tree changed after verification (verified {expected[:12]}…, "
-            f"now {current[:12]}…) — the commit gate would commit something "
-            "that was not verified. Re-verify on the current tree "
-            "(`awf tree-sha`) and re-approve with the fresh fingerprint."
-        )
-    return ""
+    finally:
+        try:
+            os.unlink(index_path)
+        except OSError:
+            pass
 
 
 def maybe_commit(
@@ -387,34 +171,40 @@ def maybe_commit(
     logs_dir: Path,
     auto: bool = False,
     baseline_sha: str = "",
-) -> bool:
+) -> commit_plan.CommitOutcome:
     """Auto-commit if policy is commit_and_next or commit_and_report.
 
-    Returns True if commit succeeded (or was skipped gracefully), False on failure.
-    In auto mode, blocks waiting for APPROVE-TODO-NNNN.ready signal file
+    R-03: returns the typed ``CommitOutcome`` (committed/skipped/
+    refused/error + reason). The execute stage and the verify stage
+    handle it the same way — a refused/failed commit stops the cycle
+    (the boolean result used to be ignored on the execute path, A-14).
+    In auto mode, blocks waiting for APPROVE-TODO-NNNN.ready (or ACK)
     before committing. This preserves supervisor approval gate.
 
-    A1 fix: if baseline_sha is provided, commits ONLY files changed since
-    baseline (avoids mixing supervisor's edits into worker commit).
-    Falls back to `git add -A` if no baseline (back-compat).
-
-    A-15: when the approve carried verified_sha (VERIFIED-{todo_id}.sha
-    exists), the tree is re-checked against the stored fingerprint before
-    staging and again inside the commit path — a mismatch refuses the
-    commit. Without the file the behavior is exactly as before.
+    The plan is built at approve/verify time (``commit_plan.
+    build_commit_plan``): the verdict check (A-04) runs BEFORE the signal
+    wait — a rejected unit must not commit even when a leftover signal is
+    present; the fingerprint re-check (A-15) runs pre-staging, from the
+    plan's stored value. In auto mode the stored fingerprint is re-read
+    into the plan AFTER the signal wait — an approve that arrives in the
+    wait window writes VERIFIED-{todo}.sha after the build, and its
+    fingerprint must be enforced, not silently skipped (REVIEW-0087 P2).
+    Both are plan checks — there is no separate duplicate check in the
+    commit path.
     """
     if policy not in ("commit_and_next", "commit_and_report"):
-        return True
+        return commit_plan.CommitOutcome(
+            commit_plan.OUTCOME_SKIPPED, f"policy {policy!r} does not commit"
+        )
 
     if not git_utils.is_git_repo(project_dir):
         print(f"Not a git repo — skipping auto-commit for '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"No git repo; auto-commit skipped at {stage_name}")
-        return True
+        return commit_plan.CommitOutcome(commit_plan.OUTCOME_SKIPPED, "not a git repo")
 
-    # A-04: the verdict check runs BEFORE the signal wait and before any
-    # staging — a rejected unit must not commit even when a leftover
-    # APPROVE/ACK file (the reject/approve race) is present.
-    refusal = _verdict_refusal(project_dir, todo_id)
+    plan = commit_plan.build_commit_plan(project_dir, todo_id, baseline_sha)
+
+    refusal = commit_plan.verdict_refusal(plan, project_dir)
     if refusal:
         print(
             f"REFUSING unit commit for {todo_id}: {refusal}. "
@@ -422,7 +212,7 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"A-04: commit refused for {todo_id} — {refusal}")
-        return False
+        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
 
     if auto:
         inbox = paths.inbox(project_dir)
@@ -451,9 +241,14 @@ def maybe_commit(
         which = "APPROVE" if approve_signal.exists() else "ACK"
         _log(logs_dir, f"{which} signal received for {todo_id}")
 
-    # A-15: when the approve carried verified_sha, re-check the tree against
-    # VERIFIED-{todo_id}.sha BEFORE staging — the approve-to-commit window.
-    refusal = _verified_refusal(project_dir, todo_id)
+        # REVIEW-0087 P2: the plan was built BEFORE the wait; an approve
+        # that arrived in the window wrote VERIFIED-{todo}.sha after the
+        # build, so plan.verified_sha is "" and the A-15 check would
+        # silently skip. Re-read the stored fingerprint into the plan
+        # (field update only — the check stays in fingerprint_refusal).
+        plan = commit_plan.refresh_verified_sha(plan, project_dir)
+
+    refusal = commit_plan.fingerprint_refusal(plan, project_dir)
     if refusal:
         print(
             f"REFUSING unit commit for {todo_id}: {refusal}. "
@@ -461,44 +256,31 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"A-15: commit refused for {todo_id} — {refusal}")
-        return False
+        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
 
-    # A1 fix: commit only baseline-diff files (isolate worker changes)
-    if baseline_sha:
-        changed = _files_changed_since_baseline(project_dir, baseline_sha, todo_id=todo_id)
-        if not changed:
-            print(f"No changes since baseline — skip commit at '{stage_name}'.", file=sys.stderr)
-            _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
-            return True
-        committed = _commit_specific_files(
-            project_dir, changed, f"awf({stage_name}): {todo_id}", todo_id=todo_id
+    if not plan.files:
+        print(f"No changes to commit — skip commit at '{stage_name}'.", file=sys.stderr)
+        _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
+        return commit_plan.CommitOutcome(
+            commit_plan.OUTCOME_SKIPPED, "no changes to commit"
         )
-        _log(logs_dir, f"A1: committed {len(changed)} files (vs baseline {baseline_sha[:8]})")
-    else:
-        # Back-compat: no baseline → git add -A (legacy behavior)
-        committed = git_utils.commit_all(project_dir, f"awf({stage_name}): {todo_id}")
-        _log(logs_dir, "committed via git add -A (no baseline provided)")
 
-    if committed:
-        try:
-            sha = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=project_dir, capture_output=True, text=True,
-                timeout=30,  # AUD04-11
-            ).stdout.strip()
-        except subprocess.TimeoutExpired:
-            print(
-                f"git rev-parse timed out at '{stage_name}' — commit result unknown, "
-                "treating as failure.",
-                file=sys.stderr,
-            )
-            _log(logs_dir, f"git rev-parse timed out at {stage_name}")
-            return False
-        print(f"Auto-committed: {todo_id} at '{stage_name}' ({sha}).", file=sys.stderr)
+    outcome = _commit_via_isolated_index(project_dir, plan, f"awf({stage_name}): {todo_id}")
+    if outcome.status == commit_plan.OUTCOME_COMMITTED:
+        print(f"Auto-committed: {todo_id} at '{stage_name}' ({outcome.sha}).", file=sys.stderr)
         print("Remember to push: git push origin HEAD", file=sys.stderr)
-        _log(logs_dir, f"Auto-committed {todo_id} at {stage_name} ({sha})")
-        return True
+        _log(logs_dir, f"Auto-committed {todo_id} at {stage_name} ({outcome.sha})")
+    elif outcome.status == commit_plan.OUTCOME_SKIPPED:
+        print(f"No commit at '{stage_name}': {outcome.reason}", file=sys.stderr)
+        _log(logs_dir, f"Commit skipped at {stage_name}: {outcome.reason}")
     else:
-        print(f"Commit FAILED at '{stage_name}' — changes remain uncommitted.", file=sys.stderr)
-        _log(logs_dir, f"Commit failed at {stage_name} — changes left in working tree")
-        return False
+        print(
+            f"Commit gate {outcome.status} at '{stage_name}' for {todo_id}: "
+            f"{outcome.reason}",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"Commit {outcome.status} at {stage_name} for {todo_id}: {outcome.reason}",
+        )
+    return outcome

@@ -102,7 +102,9 @@ def test_commit_gate_refuses_when_verdict_rejected(tmp_git_repo):
         auto=True, baseline_sha=baseline_sha,
     )
 
-    assert ok is False, "commit gate committed a rejected unit"
+    assert ok.status == "refused", (
+        f"commit gate committed a rejected unit — got {ok.status}: {ok.reason}"
+    )
     assert _head(proj) == baseline_sha, "HEAD moved — the rejected unit was committed"
     status = subprocess.run(
         ["git", "status", "--porcelain"], cwd=proj, capture_output=True, text=True, check=True
@@ -133,7 +135,7 @@ def test_approve_then_commit_still_commits(tmp_git_repo):
         auto=True, baseline_sha=baseline_sha,
     )
 
-    assert ok is True
+    assert ok.status == "committed", f"the approved path must commit — got {ok.status}: {ok.reason}"
     assert _head(proj) != baseline_sha
     assert run_state.read_run(proj)["outcomes"][TODO]["verdict"] == "approved"
 
@@ -153,5 +155,5 @@ def test_commit_without_run_commits_as_before(tmp_git_repo):
         auto=False, baseline_sha=baseline_sha,
     )
 
-    assert ok is True
+    assert ok.status == "committed", f"the no-run path must commit — got {ok.status}: {ok.reason}"
     assert _head(proj) != baseline_sha

@@ -1468,7 +1468,7 @@ class TestDispatchIncludeUntracked:
     def test_included_file_lands_in_commit_gate(self, proj: Path) -> None:
         """End-to-end consequence: dispatch(include_untracked=[x]) → x is in
         the commit gate's files_changed (and the other file is not)."""
-        from awf.commit_gate import _files_changed_since_baseline
+        from awf.commit_plan import _files_changed_since_baseline
 
         (proj / "x.md").write_text("re-claimed\n")
         (proj / "y.md").write_text("stays excluded\n")

@@ -338,4 +338,26 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # class as above: test identifiers, not debt. The production fix
 # (awf/verify.py — --binary diff + untracked name/content hash) carries
 # no TODO id in code.
+# 2026-09-26 (stabilization, R-03): baseline raised 3725 -> 3747 — the
+# CommitPlan/isolated-index unit (TODO-0087) adds 22 TODO-bearing lines:
+# 14 in the new tests/negative/test_audit25_r03_commit_plan.py (the
+# TODO = "TODO-0001" constant and its use-sites in the three tests), 1+2+1
+# in the updated test_audit25_a01_index.py / test_audit14_incidents.py /
+# test_orchestrator_handlers.py (R-03/A-14 regression assertions), and 6 in
+# production (awf/commit_plan.py docstrings, awf/pipeline_engine.py R-03/A-14
+# comments; awf/commit_gate.py -2). Same class as above: test identifiers
+# and unit comments, not debt. The unit also drops awf/commit_gate.py below
+# 400 lines (504 -> 275, the A-01 helpers left with the isolated index), so
+# files_over_400 is locked in at 56 (was 57).
+# 2026-09-26 (stabilization, R-03, REVIEW attempt 2): baseline raised
+# 3747 -> 3751, files_over_400 raised 56 -> 57 — the P2/P3 fix
+# (TODO-0087 attempt 2) adds 4 TODO-bearing lines, all in
+# tests/negative/test_audit25_r03_commit_plan.py: the two new tests'
+# TODO-0001 use-sites (the wait-window test's VERIFIED/APPROVE fixture
+# paths and its maybe_commit call, the rename-corner test's
+# build_commit_plan call). Same class as above: test identifiers, not
+# debt. The +1 file over 400 is awf/commit_plan.py (380 -> 411 — the
+# _read_verified_sha helper + the refresh_verified_sha plan update that
+# closes the P2 approve-in-wait window), same class as the
+# run_state.py / wait_event.py production-module raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
