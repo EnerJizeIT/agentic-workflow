@@ -4,7 +4,7 @@ Short, human note for what is shipping next. Full per-version history lives in
 `CHANGELOG.md`; this file is the quick "what changed and why it matters" for the
 `awf` core and the `agent-workflow-ui` MCP plugin.
 
-## [1.4] — unreleased
+## [1.4.0] — 2026-09-26
 
 Five things change since 1.3.0. One is a breaking change — read that first.
 
