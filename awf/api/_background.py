@@ -123,7 +123,16 @@ def start_in_background(
 
     # RUN3 #6: single-launch checkpoint bypass — env for the child's
     # duration only (never in argv: the child is a plain `awf start`).
+    # FU-06: the parent's own AWF_NO_CHECKPOINTS is NOT transport — it must
+    # not ride along. A parent that carries the flag (a session inside a
+    # no_checkpoints run) would otherwise silently disable the checkpoint
+    # gate of EVERY later background launch it spawns, and the gate's log
+    # would blame the launch ("start no_checkpoints=true") that never
+    # passed the flag. The contract (plan_checkpoint.launch_no_checkpoints):
+    # the flag is set for the duration of the pipeline process and dies
+    # with it — the next launch is unaffected.
     child_env = {**os.environ, "AWF_BACKGROUND_CHILD": "1"}
+    child_env.pop("AWF_NO_CHECKPOINTS", None)
     if no_checkpoints:
         child_env["AWF_NO_CHECKPOINTS"] = "1"
 

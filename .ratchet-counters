@@ -459,4 +459,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # line (the build_commit_plan call). Same class: a test identifier, not
 # debt. The test must stay in place and turn green after the guard
 # rework (REVIEW-0104 F1).
+# TODO-0105 (волна 6.4, FU-06): baseline raised 3922 -> 3940 — the
+# checkpoint-gate unit adds 18 TODO-bearing lines, all in the new
+# tests/negative/test_audit25_w6_checkpoint_gate.py: the
+# TODO = "TODO-0001" constant, its f-string use-sites (inbox/context
+# paths in the _plumbing_project / _run helpers), and the unit-id
+# mentions in the module docstring. Same class as above: test
+# identifiers, not debt. The production fix (awf/api/_background.py —
+# strip the inherited AWF_NO_CHECKPOINTS before the child_env is built)
+# carries no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
