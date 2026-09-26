@@ -24,10 +24,14 @@ The worktree is removed in ``finally`` on every outcome
 Hermeticity: the baseline run is launched through a small bootstrap
 script injected into the worktree that first scrubs PEP 660 editable
 meta-path finders and duplicate sys.path providers of the project's own
-top-level packages. Without this, an editable install of the project in
+top-level packages — including the packages of nested src-layout
+sub-projects (e.g. the agent_workflow_ui plugin at <top>/src/<pkg>),
+whose provider paths inside the worktree are re-added so they resolve
+from the checkout. Without this, an editable install of the project in
 site-packages silently leaks the CURRENT tree into the baseline run
 (imports of modules missing from the worktree resolve to the installed
-copy), which fakes a red.
+copy), which fakes a red (for the plugin it fakes a NOT-RED: the test
+sees the fix).
 """
 from __future__ import annotations
 
@@ -422,7 +426,11 @@ _BOOTSTRAP_SOURCE = '''\
 """U4 hermeticity bootstrap — runs inside the baseline worktree.
 
 Drops editable-install leaks before pytest starts, then hands over to
-pytest.main. Must stay import-free of the project itself.
+pytest.main. Leaks covered: PEP 660 meta-path finders and duplicate
+sys.path providers of the project's own top-level packages — including
+packages of nested src-layout sub-projects (e.g. the agent_workflow_ui
+plugin at <top>/src/<pkg>), whose editable installs point at the
+working-tree copy. Must stay import-free of the project itself.
 """
 import os
 import sys
@@ -444,7 +452,12 @@ for finder in list(sys.meta_path):
 
 # 2) Old-style editable installs / other checkouts: sys.path entries that
 #    also provide one of this worktree's own top-level packages.
+#    ``src_providers`` maps a package of a nested src-layout sub-project
+#    (e.g. agent_workflow_ui under agent_workflow_ui/src) to the provider
+#    directory INSIDE this worktree, so the baseline imports the plugin
+#    from the checkout, not from the working tree.
 own = set()
+src_providers = {}
 try:
     entries = list(worktree.iterdir())
 except OSError:
@@ -457,6 +470,21 @@ for p in entries:
         own.add(name)
     elif p.is_file() and p.suffix == ".py":
         own.add(name[: -len(".py")])
+    elif p.is_dir() and (p / "src").is_dir():
+        try:
+            subs = sorted((p / "src").iterdir())
+        except OSError:
+            subs = []
+        for sub in subs:
+            subname = sub.name
+            if subname.startswith(".") or subname == "__pycache__":
+                continue
+            if sub.is_dir() and (sub / "__init__.py").is_file():
+                own.add(subname)
+                src_providers.setdefault(subname, p / "src")
+            elif sub.is_file() and sub.suffix == ".py":
+                own.add(subname[: -len(".py")])
+                src_providers.setdefault(subname, p / "src")
 
 if own:
     kept = []
@@ -472,6 +500,11 @@ if own:
             continue  # duplicate provider — this worktree is the source
         kept.append(entry)
     sys.path[:] = kept
+    # Re-add the worktree's own src-layout providers so the nested
+    # sub-projects import from THIS checkout (baseline), not the install.
+    for provider in sorted(set(str(v) for v in src_providers.values())):
+        if provider not in sys.path:
+            sys.path.append(provider)
 
 import pytest  # noqa: E402
 
@@ -534,6 +567,19 @@ _NO_MODULE_RE = re.compile(r"No module named ['\"]([^'\"]+)['\"]")
 _CANT_IMPORT_RE = re.compile(
     r"cannot import name ['\"]([^'\"]+)['\"]\s+from\s+['\"]([^'\"]+)['\"]"
 )
+#: AttributeError on a runtime OBJECT — a genuine runtime error, i.e. a real
+#: red. Python renders it in two forms: an instance error carries the type
+#: name plus the word "object" (`AttributeError: 'list' object has no
+#: attribute 'get'`); a class error prefixes "type object" and drops the
+#: trailing "object" (`AttributeError: type object 'Foo' has no attribute
+#: 'bar'`). Modules never render this way: `module 'x' has no attribute 'y'`
+#: is a missing symbol, not an object error.
+_OBJ_ATTR_RE = re.compile(
+    r"AttributeError:\s*(?:"
+    r"['\"][^'\"]+['\"]\s+object has no attribute"
+    r"|type\s+object\s+['\"][^'\"]+['\"]\s+has no attribute"
+    r")"
+)
 
 
 def _mentions_project_symbol(output: str, project_dir: Path) -> bool:
@@ -561,13 +607,19 @@ def _classify_pytest(rc: int, output: str, project_dir: Path) -> str:
     1. rc 0 — everything passed.
     2. rc 5 — pytest collected nothing.
     3. rc 2/3/4 — interrupted or usage error: nothing was executed.
-    4. rc 1 with 0 items or an error summary — collection/setup error.
+    4. rc 1 with 0 items, or an error summary WITHOUT a failed count —
+       collection/setup error. A summary that shows "N failed" means
+       tests WERE executed, so it is not a collection error even if some
+       other test errored.
     5. rc 1 with an ``AssertionError`` — a real red.
     6. rc 1 without any import/attribute marker — a genuine runtime
        error, which is a real red too (spec: "assertion OR real error").
-    7. rc 1 where the failures are import/attribute errors only: either a
-       project symbol is missing (expected for new code) or an external
-       module is missing (broken environment).
+    7. rc 1 where the failures are import/attribute errors only: an
+       attribute error on a runtime object (`'list' object has no
+       attribute 'get'`) is a genuine runtime error — a real red; a
+       project symbol is missing (``module 'x' has no attribute 'y'`` or
+       a module/name import failure, expected for new code) or an
+       external module is missing (broken environment).
     """
     if rc == 0:
         return "passed"
@@ -579,11 +631,14 @@ def _classify_pytest(rc: int, output: str, project_dir: Path) -> str:
         return "broken"
     if "collected 0 items" in output:
         return "collection-error"
-    if "error" in _summary_tail(output):
+    tail = _summary_tail(output)
+    if "error" in tail and "failed" not in tail:
         return "collection-error"
     if "AssertionError" in output:
         return "real-red"
     if not re.search(r"ModuleNotFoundError|ImportError|has no attribute", output):
+        return "real-red"
+    if _OBJ_ATTR_RE.search(output):
         return "real-red"
 
     levels = _project_top_levels(project_dir)
