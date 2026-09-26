@@ -393,4 +393,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # unit-id refs, the r03 build_commit_plan call) minus 1 replaced line in
 # tests/negative/test_audit25_r03_commit_plan.py. Same class as above:
 # test identifiers and doc references, not debt.
+# 2026-09-26 (stabilization, A-03): baseline raised 3868 -> 3876 — the
+# checkpoint-token unit (TODO-0094) adds 8 TODO-bearing lines: 7 in the new
+# tests/negative/test_audit25_a03_checkpoint_token.py (the TODO = "TODO-0001"
+# constant and its fixture/assert use-sites) and 1 in
+# tests/integration/test_plan_checkpoint.py (the _extract_form_token helper's
+# TODO-0001 default). Same class as above: test identifiers, not debt. The
+# production fix (awf/plan_checkpoint.py — the one-time form token) carries
+# no TODO id in code.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

@@ -26,6 +26,7 @@ from __future__ import annotations
 import html as html_lib
 import json
 import os
+import secrets
 import tempfile
 import threading
 import time
@@ -351,6 +352,9 @@ def run_plan_checkpoint(
     )
 
     port = 0  # P2: let OS assign free port — eliminates TOCTOU race entirely
+    # A-03: one-time token binds the decision to this opened form — a local
+    # client that only learned the port cannot submit a decision without it.
+    token = secrets.token_urlsafe(32)
     decision_holder: dict[str, str] = {}
     edited_holder: dict[str, str] = {}
     # AUD03-05: first-wins — the check-and-set in do_POST happens under this
@@ -369,6 +373,7 @@ def run_plan_checkpoint(
                 decision_file=_checkpoint_decision_file(project_dir, todo_id),
                 todo_id=todo_id,
                 logs_dir=logs_dir,
+                token=token,
             )
             break
         except OSError:
@@ -381,7 +386,9 @@ def run_plan_checkpoint(
     html_path = ""
     actual_port = server.server_address[1]  # P2: OS-assigned port (was port=0)
     try:
-        html_body = _render_html(todo_id, todo_content, plan_content, actual_port)
+        html_body = _render_html(
+            todo_id, todo_content, plan_content, actual_port, token
+        )
         with tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".html",
@@ -564,6 +571,7 @@ def _start_checkpoint_server(
     decision_file: Path | None = None,
     todo_id: str | None = None,
     logs_dir: Path | None = None,
+    token: str | None = None,
 ) -> ThreadingHTTPServer:
     """Start one-shot HTTP server to receive form POST. Daemon thread.
 
@@ -577,9 +585,16 @@ def _start_checkpoint_server(
     B1: when ``decision_file`` + ``todo_id`` are given, the first accepted
     POST also persists the decision to disk (before publishing it in-memory)
     so it survives the process dying.
+
+    A-03: ``token`` is the opened form's one-time token. A POST is accepted
+    only on path ``/checkpoint`` and only with this token; the check runs
+    under ``decision_lock`` and the first accepted POST invalidates the
+    token (default-deny: without a token the server accepts nothing).
     """
     if decision_lock is None:
         decision_lock = threading.Lock()
+    # A-03: the form's one-time token (None — no POST can be accepted).
+    token_state: dict[str, str | None] = {"token": token}
 
     class _CheckpointHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 — http.server API
@@ -613,29 +628,61 @@ def _start_checkpoint_server(
                 self.wfile.write(b"Invalid decision")
                 return
 
-            # AUD03-05: first-wins — only the first accepted POST sets the
-            # decision. Repeat/racing POSTs get an ack without overwriting
-            # (last-write-wins used to let a second tab flip the outcome).
+            # A-03: path + token checks under the same lock that sets the
+            # decision. Only the opened form carries the one-time token — a
+            # client that learned the port but has no token (or a foreign
+            # one) cannot set the decision. The first accepted POST
+            # invalidates the token, so first-wins holds among valid-token
+            # requests only; repeat/racing POSTs are refused, never
+            # overwrite (last-write-wins used to let a second tab flip the
+            # outcome — AUD03-05).
+            submitted_token = params.get("token", [""])[0]
+            rejected: tuple[int, bytes] | None = None
             already_decided = False
             with decision_lock:
-                if decision_holder:
-                    already_decided = True
+                if self.path.split("?", 1)[0] != "/checkpoint":
+                    rejected = (
+                        404,
+                        b"Not Found: POSTs are only accepted on /checkpoint",
+                    )
                 else:
-                    edited_content = params.get("edited_content", [""])[0]
-                    # B1: persist to disk BEFORE publishing in-memory — the
-                    # main loop wakes on the holder and consumes the file, so
-                    # the write must be visible first.
-                    if decision_file is not None and todo_id is not None:
-                        _persist_checkpoint_decision(
-                            decision_file,
-                            todo_id,
-                            decision,
-                            edited_content if decision == "edit" else "",
-                            logs_dir,
+                    current_token = token_state["token"]
+                    if not (
+                        current_token is not None
+                        and submitted_token
+                        and secrets.compare_digest(submitted_token, current_token)
+                    ):
+                        rejected = (
+                            403,
+                            b"Forbidden: missing or invalid checkpoint token",
                         )
-                    decision_holder["decision"] = decision
-                    if decision == "edit":
-                        edited_holder["content"] = edited_content
+                    elif decision_holder:
+                        already_decided = True
+                    else:
+                        edited_content = params.get("edited_content", [""])[0]
+                        # B1: persist to disk BEFORE publishing in-memory —
+                        # the main loop wakes on the holder and consumes the
+                        # file, so the write must be visible first.
+                        if decision_file is not None and todo_id is not None:
+                            _persist_checkpoint_decision(
+                                decision_file,
+                                todo_id,
+                                decision,
+                                edited_content if decision == "edit" else "",
+                                logs_dir,
+                            )
+                        decision_holder["decision"] = decision
+                        if decision == "edit":
+                            edited_holder["content"] = edited_content
+                        # A-03: one-time — the form's token is spent.
+                        token_state["token"] = None
+
+            if rejected is not None:
+                self.send_response(rejected[0])
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(rejected[1])
+                return
 
             if already_decided:
                 first = decision_holder["decision"]
@@ -696,12 +743,18 @@ def _render_html(
     todo_content: str,
     plan_content: str,
     port: int,
+    token: str = "",
 ) -> str:
-    """Render checkpoint HTML form (inline, no Jinja dependency in awf-core)."""
+    """Render checkpoint HTML form (inline, no Jinja dependency in awf-core).
+
+    ``token`` is the form's one-time submit token (A-03): it lives only in
+    this rendered file, never in logs or state.
+    """
     submit_url = f"http://127.0.0.1:{port}/checkpoint"
     todo_esc = html_lib.escape(todo_content)
     plan_esc = html_lib.escape(plan_content) if plan_content else "(нет plan.md)"
     todo_id_esc = html_lib.escape(todo_id)
+    token_esc = html_lib.escape(token)
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -870,6 +923,7 @@ def _render_html(
   </div>
 
   <script>
+    const formToken = "{token_esc}";
     let editing = false;
     function toggleEdit() {{
       editing = !editing;
@@ -892,6 +946,9 @@ def _render_html(
       const d = document.createElement('input');
       d.type = 'hidden'; d.name = 'decision'; d.value = decision;
       form.appendChild(d);
+      const t = document.createElement('input');
+      t.type = 'hidden'; t.name = 'token'; t.value = formToken;
+      form.appendChild(t);
       if (decision === 'edit') {{
         const c = document.createElement('input');
         c.type = 'hidden'; c.name = 'edited_content';
