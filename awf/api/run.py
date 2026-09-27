@@ -146,11 +146,20 @@ def _todo_finished(project_dir: Path, todo_id: str) -> bool:
 
 
 def run_brief(project_dir: Path) -> dict | None:
-    """Compact run state for status/dashboard. None when no run state exists."""
-    state = run_state.read_run(project_dir)
+    """Compact run state for status/dashboard. None when no run state exists.
+
+    ORCH M1.2: reads through the shared record reader
+    (``awf/run_plan_read.py``) — the same parse the brief card and the
+    supervisor context use (one path, no duplicate parsing)."""
+    from ..run_plan_read import read_run_record
+
+    record = read_run_record(project_dir)
+    state = record.state
     if not state:
         return None
-    budget = int(state.get("budget_minutes", 0) or 0)
+    # the sanitized budget from the shared record (a corrupt value already
+    # degraded to 0 with a warning — no re-derivation from the raw state)
+    budget = record.budget_minutes
     elapsed = run_state.elapsed_minutes(state)
     downtime = run_state.downtime_minutes(state)
     productive = run_state.productive_minutes(state)
@@ -189,6 +198,21 @@ def run_brief(project_dir: Path) -> dict | None:
     }
 
 
+def _normalize_plan(goal: str, criteria: list[str] | None) -> tuple[str, list[str]]:
+    """ORCH M1.1: the run plan — ``goal`` is a plain string, ``criteria`` a
+    list of non-empty strings. A single string criteria is accepted as one
+    item (the MCP surface is string-shaped; the list is the canonical
+    form). Whitespace is trimmed, empties dropped."""
+    g = str(goal or "").strip()
+    if criteria is None:
+        items: list[str] = []
+    elif isinstance(criteria, str):
+        items = [criteria]
+    else:
+        items = list(criteria)
+    return g, [str(c).strip() for c in items if str(c).strip()]
+
+
 def run_start(
     project_dir: Path,
     *,
@@ -198,6 +222,8 @@ def run_start(
     note: str = "",
     force: bool = False,
     no_checkpoints: bool = False,
+    goal: str = "",
+    criteria: list[str] | None = None,
 ) -> RunStartResult:
     """Start an autonomous run: record the queue and the mechanical gates.
 
@@ -214,10 +240,17 @@ def run_start(
     for every pipeline launch of this run — the run does not expect the
     owner at every TODO. The flag is stored in the run state and surfaced
     by :func:`run_status` / :func:`run_brief`.
+
+    ORCH M1.1 — the run plan: ``goal`` (one line) and ``criteria`` (a list
+    of lines) are stored in the run state (a DERIVED RunPlan, one source —
+    no second store) and surfaced by :func:`run_status` and the RUN-REPORT.
+    Old run.yaml files without these fields read as before (no migration);
+    a fresh run always resets them (``decisions`` included).
     """
     project_dir = _require_run_project(project_dir)
     items = _validate_queue(queue)
     ids = [i["todo_id"] for i in items]
+    goal_clean, criteria_clean = _normalize_plan(goal, criteria)
 
     flags = {str(k): list(v) for k, v in (stop_flags or {}).items() if k}
     outcome: dict = {}
@@ -261,6 +294,13 @@ def run_start(
             report_file="",
             note=note.strip(),
             no_checkpoints=bool(no_checkpoints),
+            # ORCH M1.1: the run plan — goal + criteria, reset with the
+            # run (a force replace must not inherit the previous run's
+            # plan), and a fresh causal memory (decisions belong to the
+            # run that made them).
+            goal=goal_clean,
+            criteria=criteria_clean,
+            decisions=[],
         )
         return new_state
 
@@ -313,18 +353,24 @@ def run_note(project_dir: Path, text: str) -> RunStatusResult:
 
 
 def run_status(project_dir: Path) -> RunStatusResult:
-    """Current run state (or an inactive summary when no run exists)."""
-    project_dir = _require_run_project(project_dir)
-    state = run_state.read_run(project_dir) or {}
-    active = bool(state.get("active"))
-    budget = int(state.get("budget_minutes", 0) or 0)
+    """Current run state (or an inactive summary when no run exists).
+
+    ORCH M1.2: reads through the shared record reader
+    (``awf/run_plan_read.py``) — the same parse the brief card and the
+    supervisor context use (one path, no duplicate parsing)."""
+    from ..run_plan_read import read_run_record
+
+    record = read_run_record(project_dir)
+    state = record.state or {}
+    active = record.active
+    budget = record.budget_minutes
     elapsed = run_state.elapsed_minutes(state) if state else 0.0
     downtime = run_state.downtime_minutes(state) if state else 0.0
     productive = run_state.productive_minutes(state) if state else 0.0
     # B2: the budget is in PRODUCTIVE minutes (elapsed − recorded downtime).
-    left = max(0, int(budget - productive)) if budget else 0
-    current = str(state.get("current", "") or "")
-    position = run_state.position(state) if state else "0/0"
+    left = record.budget_left_minutes if budget else 0
+    current = record.current
+    position = record.position
 
     if not state:
         message = "No run found — start one with awf_run_start(queue=[...])."
@@ -358,6 +404,12 @@ def run_status(project_dir: Path) -> RunStatusResult:
         report_file=str(state.get("report_file", "") or ""),
         message=message,
         no_checkpoints=bool(state.get("no_checkpoints")),
+        # ORCH M1.1: the run plan + causal memory. The shared reader
+        # sanitizes the fields, so absent (old state) / broken values
+        # read as ""/[]/[] (record.state is the sanitized state).
+        goal=record.goal,
+        criteria=list(record.criteria),
+        decisions=[dict(d) for d in record.decisions],
     )
 
 
@@ -398,7 +450,13 @@ def _write_report(
     rejects = state.get("rejects") or {}
     outcomes = state.get("outcomes") or {}
     rejects_note = ", ".join(f"{k}×{v}" for k, v in rejects.items()) or "—"
-    budget = int(state.get("budget_minutes", 0) or 0)
+    try:
+        budget = int(state.get("budget_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        # ORCH M1.3 (class NEG-3): the report is written from the SAME
+        # (possibly corrupt) state the stop gate saw — a corrupt budget
+        # degrades to a 0 display here; the gate itself stops the run.
+        budget = 0
     salvage = _salvage_events(project_dir, str(state.get("started_at") or ""))
     health_note = ""
     if salvage >= 3:
@@ -418,6 +476,16 @@ def _write_report(
         f"**Elapsed:** {int(run_state.elapsed_minutes(state))} min "
         f"(budget {state.get('budget_minutes', 0)} min)",
     ]
+    # ORCH M1.1: the run plan — goal and criteria, when set (old runs and
+    # runs started without a plan show nothing, as before).
+    goal = str(state.get("goal") or "").strip()
+    criteria = [
+        str(c).strip() for c in (state.get("criteria") or []) if str(c).strip()
+    ]
+    if goal:
+        lines.append(f"**Goal:** {goal}")
+    if criteria:
+        lines.append(f"**Criteria:** {', '.join(criteria)}")
     # B2: the budget is in productive minutes (elapsed − downtime); show the
     # split so the owner sees how much of the run was incident, not work.
     if budget:
@@ -451,6 +519,20 @@ def _write_report(
                 )
             else:
                 lines.append(f"- {todo}: {verdict}")
+        lines.append("")
+    # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,
+    # so the owner can audit the run after the fact. The approve entries
+    # carry the evidence excerpt (the full text stays in RUN-EVIDENCE).
+    decisions = [d for d in (state.get("decisions") or []) if isinstance(d, dict)]
+    if decisions:
+        lines += ["## Run decisions (causal memory)", ""]
+        for d in decisions:
+            reason = str(d.get("reason") or "")
+            lines.append(
+                f"- {str(d.get('ts') or '')} {str(d.get('kind') or '?')} "
+                f"{str(d.get('todo_id') or '?')}"
+                + (f" — {reason[:200]}" if reason else "")
+            )
         lines.append("")
     if summary:
         lines += ["## Supervisor summary", "", summary, ""]
@@ -526,7 +608,19 @@ def run_next(
             state = run_state.write_run(project_dir, completed=completed)
         return stop_run(project_dir, state, "queue exhausted — all items processed")
 
-    budget = int(state.get("budget_minutes", 0) or 0)
+    try:
+        budget = int(state.get("budget_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        # ORCH M1.3 (class NEG-3): a corrupt budget_minutes in an ACTIVE
+        # run.yaml (hand-edited; the write path stores an int) makes the
+        # budget gate unverifiable. Degrade toward safety, the AUD02-09
+        # direction: stopping is safe, degrading to 0 would silently
+        # disable the gate (and the raw ValueError would kill the run loop).
+        return stop_run(
+            project_dir, state,
+            "run state corrupted (budget_minutes unparseable) — "
+            "the budget gate cannot be verified",
+        )
     if budget:
         if not run_state.started_at_ok(state):
             # AUD02-09: a corrupt started_at used to read as elapsed 0.0 —
@@ -576,6 +670,31 @@ def run_next(
         # lets a restored (active again) prev pass. Require it to be gone from
         # the active list too (see _todo_finished).
         if not _todo_finished(project_dir, prev):
+            # ORCH M1.3: when the open block is a counted REJECT, say so —
+            # the generic "verify → approve/reject" advice is wrong there
+            # (the approve is refused against a counted reject; a second
+            # reject stops the run). The permitted step is to close the
+            # reject decision; a fresh session must not guess it.
+            try:
+                prev_rejects = int(rejects.get(prev, 0) or 0)
+            except (TypeError, ValueError):
+                prev_rejects = 0
+            if prev_rejects >= 1:
+                return RunNextResult(
+                    action="refused",
+                    todo_id=next_id,
+                    message=(
+                        f"Previous TODO {prev} was rejected ({prev_rejects}×) "
+                        f"and the decision is not closed — the run will not "
+                        f"launch {next_id} over an unreviewed result."
+                    ),
+                    next_action=(
+                        f"Close the reject decision: re-plan the task (issue a "
+                        f"new TODO) and retire {prev} (`awf_todo_retire`), or "
+                        f"stop the run (`awf_run_finish`) if it needs the "
+                        f"owner. Reason: outbox/REVIEW-{prev}.md."
+                    ),
+                )
             return RunNextResult(
                 action="refused",
                 todo_id=next_id,

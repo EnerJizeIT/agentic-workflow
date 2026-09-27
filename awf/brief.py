@@ -99,6 +99,14 @@ class BriefResult:
     recovery: str
     doctrine: list[str]
     what_new: str
+    # ORCH M1.2: the compact view of the shared run record
+    # (awf/run_plan_read.py) — the full view is load_supervisor_context.
+    # All empty/[] outside a run; run_warning is set when run.yaml exists
+    # but is corrupted (degradation, not a crash).
+    run_goal: str = ""
+    run_last_decision: str = ""
+    run_sources: list[str] = field(default_factory=list)
+    run_warning: str = ""
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -325,6 +333,17 @@ def _state_lines(r: BriefResult) -> list[str]:
         lines.append(f"- run: active={r.run.get('active')}, " + ", ".join(bits))
         if note:
             lines.append(f"- run note: {note}")
+        # ORCH M1.2: the compact view of the shared run record — goal,
+        # the last decision in one line, links to the sources (not a
+        # retelling of long texts).
+        if r.run_goal:
+            lines.append(f"- run goal: {r.run_goal}")
+        if r.run_last_decision:
+            lines.append(f"- run last decision: {r.run_last_decision}")
+        if r.run_sources:
+            lines.append(f"- run sources: {', '.join(r.run_sources)}")
+    if r.run_warning:
+        lines.append(f"- run warning: {r.run_warning}")
     if r.pipeline_running:
         stage = f" · stage: {r.current_stage}" if r.current_stage else ""
         lines.append(f"- pipeline: RUNNING (PID {r.pipeline_pid}){stage}")
@@ -474,12 +493,21 @@ def next_action_from_status(s: Any) -> str:
 
 
 def build_brief(
-    project_dir: Path, *, status: Any | None = None, run: dict[str, Any] | None = None
+    project_dir: Path,
+    *,
+    status: Any | None = None,
+    run: dict[str, Any] | None = None,
+    run_record: Any | None = None,
 ) -> BriefResult:
-    """Assemble the card. ``status``/``run`` come from awf.api (callers)."""
+    """Assemble the card. ``status``/``run``/``run_record`` come from
+    awf.api (callers). ``run_record`` is the shared reading of the run
+    state (ORCH M1.2, ``awf/run_plan_read.py``) — the card renders its
+    compact view."""
     import awf as _awf
 
     from . import phase as _phase
+    from . import run_state as _run_state
+    from .run_plan_read import clip_goal, decision_line, next_action_for_record
 
     project_dir = Path(project_dir).expanduser().resolve()
     has_agentic = paths.agentic_dir(project_dir).is_dir()
@@ -546,6 +574,29 @@ def build_brief(
     elif is_live and not next_action:
         next_action = next_action_from_status(status) if status is not None else LIVE_LINE
 
+    # ORCH M1.2: the card's compact view of the shared run record — the
+    # goal clipped to the card budget, the last decision in one line,
+    # links to the sources (not a retelling of long texts). Outside a run
+    # every field stays empty and next_action keeps the pre-M1.2 value.
+    run_goal = ""
+    run_last_decision = ""
+    run_sources: list[str] = []
+    run_warning = ""
+    if run_record is not None:
+        run_goal = clip_goal(run_record.goal)
+        run_last_decision = decision_line(run_record.last_decision)
+        run_sources = list(run_record.sources)
+        run_warning = run_record.warning
+        next_action = next_action_for_record(run_record, next_action)
+        # ORCH M1.3: the done (approved) side of the run-aware step — after
+        # the current item is approved, the next step is awf_run_next (the
+        # run owns the queue position), not the generic "plan the next
+        # TODO" fallback. One shared helper (awf.run_state), same as the
+        # context surface.
+        step = _run_state.run_step_after_done(run_record.state)
+        if step:
+            next_action = step
+
     result = BriefResult(
         version=_awf.__version__,
         project=project,
@@ -572,6 +623,10 @@ def build_brief(
         recovery=load_recovery(),
         doctrine=doctrine_lines(project_dir),
         what_new=latest_changelog(),
+        run_goal=run_goal,
+        run_last_decision=run_last_decision,
+        run_sources=run_sources,
+        run_warning=run_warning,
     )
     result.text = render_brief(result)
     return result

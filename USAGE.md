@@ -367,7 +367,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 |---|---|
 | `awf_init` | Create `.agentic/`, detect stack, return phase prompt |
 | `awf_status` | Active TODOs, pipeline state, stage info, suggestion |
-| `awf_brief` | Onboarding/recovery card — live state, tool map, rituals, recovery recipes |
+| `awf_brief` | Onboarding/recovery card — live state (run: goal, last decision, sources), tool map, rituals, recovery recipes |
 | `awf_report` | Task statuses + git diff + latest test log |
 | `awf_reset` | Clear runtime data (tasks_only / full / orphans) |
 
@@ -500,6 +500,28 @@ front-matter, and `awf_run_next` reads it for items without a queue-level
 pipeline. An unknown name refuses the launch with the list of available
 pipelines (RUN3 #1).
 
+**Run plan (goal, criteria, decisions).** `awf_run_start` accepts
+`goal` (one line) and `criteria` (a list of lines) — stored in
+`state/run.yaml` (a derived RunPlan, no second store) and shown by
+`awf_run_status` and in the RUN-REPORT. Inside a run every
+`awf_approve` / `awf_reject` appends a causal entry
+(`{ts, kind, todo_id, reason}`; the approve keeps a ≤200-char evidence
+excerpt — the full text stays in `context/RUN-EVIDENCE-{todo}.md`) to the
+append-only `decisions` list; repeating the same (kind, todo_id, reason)
+adds no duplicate. Old run.yaml files without these fields read as before
+(no migration); corrupt values degrade to empty with a warning.
+
+**Two views of one record (ORCH M1.2).** `awf_brief` and
+`awf_load_supervisor_context` are two views of the SAME run record, read
+by one shared reader (`awf/run_plan_read.py`), not parallel retellings:
+the card shows the goal, position, budget, the last decision in one line
+and links to the sources (run.yaml, the last decision's REVIEW /
+RUN-EVIDENCE file, the RUN-REPORT); the full context adds all the
+decisions (which, why, when). After a reject in a run both surfaces show
+the decision and the nearest permitted action (`awf_run_next`, not the
+generic `awf_start`). A corrupted run.yaml degrades both to "no run"
+with a warning — no traceback.
+
 **Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
 cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`
 (or env `AWF_WAIT_CAP`, which wins). The 55s default is the tool's OWN cap,
@@ -539,7 +561,7 @@ for every replan/split goes into the run report/note.
 |---|---|
 | `awf_open_project_setup_form` | Open setup form (auto-populates roles/models) |
 | `awf_open_increment_planning_form` | Open decomposition variants form |
-| `awf_load_supervisor_context` | One-shot: vision + plan + phase + state + next role |
+| `awf_load_supervisor_context` | One-shot: vision + plan + phase + state + next role + full run record (goal, criteria, all decisions, sources) |
 | `awf_open_pipeline_dashboard` | Open dashboard (HTTP or file:// fallback) |
 
 ### Roles & Config

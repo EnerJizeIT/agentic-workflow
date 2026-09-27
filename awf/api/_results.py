@@ -270,6 +270,24 @@ class SupervisorContextResult:
     # Dogfood-9: structural trigger for increment planning
     increment_planning_needed: bool = False
     final_stage_commit_policy: str | None = None  # on_approved value from last stage
+    # ORCH M1.2: the run record — the SAME reading the brief card renders
+    # (awf/run_plan_read.read_run_record), the full view: all decisions
+    # (which, why, when) + sources. Additive — outside a run every field
+    # is empty/False ("0/0" position); run_warning is set when run.yaml
+    # exists but is corrupted (degradation, not a crash).
+    run_active: bool = False
+    run_goal: str = ""
+    run_criteria: list[str] = field(default_factory=list)
+    run_position: str = "0/0"
+    run_budget_minutes: int = 0
+    run_budget_left_minutes: int = 0
+    run_note: str = ""
+    run_last_decision: str = ""  # one line: "reject TODO-0001 — reason"
+    run_decisions: list[dict[str, str]] = field(default_factory=list)
+    run_sources: list[str] = field(default_factory=list)
+    run_warning: str = ""
+    # the nearest permitted action (run-aware after a reject: awf_run_next)
+    next_action: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -359,6 +377,12 @@ class RunStatusResult:
     # B2: the budget counts productive minutes (elapsed − downtime)
     downtime_minutes: int = 0
     productive_minutes: int = 0
+    # ORCH M1.1: the run plan (goal, criteria) + the causal memory
+    # (decisions: [{ts, kind, todo_id, reason}]). Additive — old state
+    # files read as ""/[]/[].
+    goal: str = ""
+    criteria: list[str] = field(default_factory=list)
+    decisions: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -367,6 +367,8 @@ async def awf_run_start(
     note: str = "",
     force: bool = False,
     no_checkpoints: bool = False,
+    goal: str = "",
+    criteria: list[str] | None = None,
 ) -> dict[str, Any]:
     """Start an autonomous run: a queue of TODOs with mechanical gates.
 
@@ -393,6 +395,12 @@ async def awf_run_start(
             skipped for every pipeline launch of this run. Use for autonomous
             runs where the owner does not sit at every TODO. The flag is
             stored in the run state and shown by awf_run_status.
+        goal: ORCH M1.1 — the run's goal (one line). Stored in the run state
+            (state/run.yaml — a derived RunPlan, no second store), shown by
+            awf_run_status and in the RUN-REPORT. Survives process death and
+            a new session.
+        criteria: ORCH M1.1 — completion criteria (a list of lines), same
+            storage and surfaces as goal.
 
     Returns:
         Dict with: active, queue, position, budget, stop_flags, next_action.
@@ -427,6 +435,8 @@ async def awf_run_start(
         note=note,
         force=force,
         no_checkpoints=no_checkpoints,
+        goal=goal,
+        criteria=criteria,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         result["next_action"] = (
@@ -622,7 +632,9 @@ async def awf_tree_sha(project_dir: str | None = None) -> dict[str, Any]:
 
 
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
-    """Show the current run (забег) state: position, budget left, rejects, stop reason."""
+    """Show the current run (забег) state: position, budget left, rejects,
+    stop reason, and the run plan (goal, criteria, causal decisions — ORCH
+    M1.1)."""
     result = await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
     if isinstance(result, dict) and result.get("status") == "ok":
         if result.get("active"):
@@ -1570,7 +1582,13 @@ async def awf_load_supervisor_context(
             "verify": "Read handoffs + git diff → awf_approve.",
             "done": "Pipeline complete. Ask user for next step.",
         }
-        response["next_action"] = _PHASE_NEXT.get(phase, f"Phase: {phase}. Check awf_current_step.")
+        # ORCH M1.2: the run-aware action from the shared run record wins
+        # (e.g. after a reject in a run: awf_run_next); the phase hint
+        # stays the fallback when the record carries no action.
+        response["next_action"] = (
+            result.next_action
+            or _PHASE_NEXT.get(phase, f"Phase: {phase}. Check awf_current_step.")
+        )
         return response
     except api.AwfApiError as e:
         return _err(e)

@@ -386,6 +386,32 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
             f"next_stage_role='{next_role}' has no prohibitions section in .md"
         )
 
+    # ORCH M1.2: the SAME shared run record the brief card renders
+    # (awf/run_plan_read.py — one reader, two views): here the full view —
+    # all decisions (which, why, when), unclipped goal, sources. A
+    # corrupted run.yaml degrades to "no run" with a warning, no traceback.
+    from ..run_plan_read import (
+        decision_line,
+        next_action_for_record,
+        read_run_record,
+    )
+
+    run_record = read_run_record(project_dir)
+    if run_record.warning:
+        warnings.append(run_record.warning)
+    # The run-aware action (after a reject in a run: awf_run_next). Empty
+    # when the run does not force one — the MCP surface keeps the phase
+    # hint as the fallback, so behavior outside a run is unchanged.
+    run_next_action = next_action_for_record(run_record, "")
+    # ORCH M1.3: the done (approved) side of the run-aware step — the same
+    # shared helper the brief card uses (one implementation, two views):
+    # after the current item is approved, the next step is awf_run_next.
+    from ..run_state import run_step_after_done
+
+    step = run_step_after_done(run_record.state)
+    if step:
+        run_next_action = step
+
     # Dogfood-9: structural triggers for increment planning + commit visibility
     pipeline_configured = _pipeline_exists(project_dir)
     increment_planning_needed = (
@@ -419,6 +445,18 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         warnings=warnings,
         increment_planning_needed=increment_planning_needed,
         final_stage_commit_policy=final_commit_policy,
+        run_active=run_record.active,
+        run_goal=run_record.goal,
+        run_criteria=list(run_record.criteria),
+        run_position=run_record.position,
+        run_budget_minutes=run_record.budget_minutes,
+        run_budget_left_minutes=run_record.budget_left_minutes,
+        run_note=run_record.note,
+        run_last_decision=decision_line(run_record.last_decision),
+        run_decisions=[dict(d) for d in run_record.decisions],
+        run_sources=list(run_record.sources),
+        run_warning=run_record.warning,
+        next_action=run_next_action,
     )
 
 

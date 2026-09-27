@@ -601,4 +601,39 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # scripts/mutations.txt dispatch entry's comment gains 1 (the TODO-0127
 # unit reference). Same class as above: test identifiers and unit-id
 # references, not debt.
+# TODO-0128 (ORCH M1.1, RunPlan in run state): baseline raised
+# 4197 -> 4204 — the new tests/negative/test_run_plan_record.py adds 2
+# TODO-bearing lines (the T = "TODO-0001" / T2 = "TODO-0002" constants),
+# docs/file-bus.md's run.yaml field table adds 4 (the {TODO: ...} map
+# shapes in the rejects/outcomes/stop_flags rows + "completed TODO"),
+# and awf/run_state.py::append_decision's docstring gains 1 (the
+# TODO-0128 unit reference). Same class as above: test identifiers,
+# doc field shapes and unit-id references, not debt.
+# TODO-0129 (ORCH M1.2, one run record / two views): baseline raised
+# 4204 -> 4210 — the unit adds 6 TODO-bearing lines: 3 in the new
+# tests/negative/test_context_single_source.py (the T = "TODO-0001" /
+# T2 = "TODO-0002" constants + one REVIEW-TODO-0001.md assert), 1 in the
+# new tests/unit/test_context.py (the T = "TODO-0001" constant), 1 in
+# awf/run_plan_read.py (the decision_line docstring example
+# "reject TODO-0001 — reason") and 1 in awf/api/_results.py (the
+# run_last_decision field comment with the same example). Same class as
+# above: test identifiers and docstring examples, not debt.
+# TODO-0130 (ORCH M1.3, supervisor context recovery): baseline raised
+# 4210 -> 4228 — the unit adds 18 TODO-bearing lines: 15 in the new
+# tests/negative/test_run_plan_recovery.py (the T = "TODO-0001" /
+# T2 = "TODO-0002" / HIST = "TODO-0000" constants, the "queue: [TODO-"
+# truncation literal, the ["TODO-00"] bad-id literal, and docstring /
+# comment references) and 3 in the production diff (two f-string message
+# lines in awf/api/run.py's reject-aware refusal, one comment line in
+# awf/brief.py's M1.3 note). Same class as above: test identifiers and
+# unit references, not debt.
+# TODO-0131 (ORCH M1.4, verify-prompt contradiction): baseline raised
+# 4228 -> 4235 — the unit adds 7 TODO-bearing lines: 2 in the reworded
+# role-boundary line of _core.md (awf/templates + root mirror — the
+# "run the TODO's verify commands" exception clause), 4 in the new
+# tests/negative/test_verify_prompt_no_contradiction.py (module docstring
+# unit reference + the TODO-0131/TODO wording lines) and 1 in the new
+# tests/agent_workflow_ui/test_audit25_w7_protocol_ship.py (module
+# docstring unit reference). Same class as above: unit references and
+# prompt wording, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
