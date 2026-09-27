@@ -1,8 +1,8 @@
 # Release notes
 
-Short, human note for what is shipping next. Full per-version history lives in
-`CHANGELOG.md`; this file is the quick "what changed and why it matters" for the
-`awf` core and the `agent-workflow-ui` MCP plugin.
+Short, human note for what the current release ships. Full per-version
+history lives in `CHANGELOG.md`; this file is the quick "what changed and
+why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
 ## [1.4.0] — 2026-09-27
 
@@ -42,6 +42,10 @@ The breaking change first, then what is new.
 - **Isolated commit index.** The commit gate now commits through a throwaway
   `GIT_INDEX_FILE`. Your index and any uncommitted WIP are left untouched by an
   awf commit — staged files can no longer leak into the unit's commit.
+- **Documentation restructured.** The project docs now live in one `docs/`
+  tree with a map (`docs/README.md`) — vision, design, file bus, contracts,
+  unit contract and release notes, each described in one place, duplicates
+  removed; the 2026-09-25 audit stays as history.
 
 ### Security
 
