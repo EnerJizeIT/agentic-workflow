@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-09-27
+
+The ORCH program (development strategy 2026-09-27): the supervisor keeps a
+durable memory of the run, approve is bound to the state it was made against,
+workers stop seeing controlling tools, and the worker chain becomes
+replaceable per unit.
+
+### Added
+
+- **Run memory.** The active run stores `goal`, `criteria` and an append-only
+  decision log (approve/reject with reasons) in `run.yaml`; `awf_run_start`
+  accepts `goal`/`criteria`; run surfaces show them; broken fields degrade
+  with a warning.
+- **One source for supervisor surfaces.** `awf_brief` and
+  `awf_load_supervisor_context` render the same record instead of parallel
+  retellings.
+- **Evidence plan per unit.** At launch the unit contract
+  (`verify`/`gates`/`prove_red`) is snapshotted into the run memory and shown
+  before the verdict.
+- **`awf_run_revise` (tool 48).** One typed call: a side-effect-free preview,
+  an idempotency key, a generation-checked apply; changes the pipeline of
+  not-started queue items; refuses while a stage is running.
+- **Stage instances.** Stages accept `id` (unique address — the same role may
+  appear twice), `task` (short assignment) and declared `input`/`output`; the
+  declared output is checked for existence and freshness before the next
+  stage; the retry budget is per instance.
+- **Pipeline snapshot per unit.** Launch and continue work from
+  `.agentic/context/PIPELINE-{todo}.yaml`; editing the published pipeline no
+  longer changes a unit already running.
+- **CI:** the mutation smoke (base list) runs in the test job.
+
+### Changed
+
+- **In-run approvals require `verified_sha`** (outside a run it stays
+  optional).
+- **Role tool profiles.** Execute-stage workers no longer see the controlling
+  MCP tools (approve, kill, rollback, dispatch, run management) — 48 tools
+  shipped, a worker sees only its working set. This reduces accidental
+  actions; it is not a security boundary.
+- **`readonly_roles` denies `edit`/`write` over host config** (bash stays
+  allowed so a reviewer can run tests).
+- **`run_next` success condition.** A foreground launch counts as successful
+  only when it completes with exit 0; any refusal rolls back its own effects
+  (the `.ready`, the queue reservation).
+
+### Fixed
+
+- A stale-generation approval is refused by the commit gate instead of
+  committing a tree the supervisor never pinned.
+- A structurally invalid pipeline snapshot degrades like a byte-corrupt one.
+- A corrupt `budget_minutes` degrades in reports and stops the run (the
+  budget gate cannot be verified) instead of crashing the loop.
+
+### Security
+
+- The approve binding, the isolated commit index and the plan-checkpoint
+  token close the "publish a decision for a state you did not verify" class.
+
 ## [1.4.0] — 2026-09-27
 
 The stabilization program (audit 2026-09-25, 31 units) addressed the 21
