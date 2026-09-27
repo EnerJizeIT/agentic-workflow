@@ -36,10 +36,12 @@ prove_red: ["tests/unit/test_x.py::test_y"]
   Это НЕ «имена проверок из run-all.sh»: `scripts/run-all.sh` гоняет
   `contracts`/`ratchet`/`instructions` под этими короткими именами, а
   pytest- и ruff-команды — строками из `scripts/project-commands.txt`
-  (это и есть `tests`/`lint`); `mutations` в run-all не входит —
-  отдельный ручной шаг `scripts/mutation-smoke.sh` (в текущем CI не подключён). В verify-pack секция
+  (это и есть `tests`/`lint`); `mutations` в run-all не входит:
+  базовый набор (4 мутации, `scripts/mutations.txt`) гоняется в CI test-job
+  отдельным шагом `scripts/mutation-smoke.sh`, а `--report`-прогон
+  (`scripts/mutations-neg5.txt`) остаётся ручным шагом. В verify-pack секция
   `gates` исполняет только первые три; `tests`/`lint` покрывают команды
-  из `verify:`, а `mutations` — декларация для QA и отдельного ручного прогона.
+  из `verify:`, а `mutations` — декларация для QA и для CI-базового набора.
 - `prove_red` — список тест-идов, которые обязаны быть красными до фикса.
   `awf prove-red --todo <id>` проверяет это машинно (baseline в worktree:
   красный от ассерта + зелёный на текущем дереве; вердикты `red-ok` /

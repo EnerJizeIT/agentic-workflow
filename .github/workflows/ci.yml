@@ -38,6 +38,18 @@ jobs:
         # run-all уже покрывает их — без двойного прогона (+2,5 мин CI).
         run: bash scripts/run-all.sh
 
+      - name: Mutation smoke (base list)
+        # V-05 (audit 2026-09-27): the base mutant list
+        # (scripts/mutations.txt, 4 mutants) is a gate in the test job,
+        # not a manual wave ritual — the job fails if any mutant survives.
+        # Deliberately AFTER Quality gates: a failing gate ends the job
+        # before this ~30s pass runs, and the heavy step stays first
+        # (step order is sequential, so total job time is unchanged
+        # versus placing it elsewhere). The tree is clean here — run-all
+        # writes no tracked files — so the script's dirty-tree warning
+        # cannot fire. The --report run (mutations-neg5.txt) stays manual.
+        run: bash scripts/mutation-smoke.sh
+
   # AUD13-02/03: editable install never validates package-data, so a
   # data file can silently drop out of the PyPI wheel. This job builds the
   # real wheels, asserts the key files are inside, and smoke-installs both

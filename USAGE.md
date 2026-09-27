@@ -100,11 +100,14 @@ REQUIRED** (V-03, 2026-09-27): approve without the fingerprint is refused
 and no APPROVE signal is published.
 
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
-over `scripts/mutations.txt` (same format as `mutation-smoke.sh`, which
-stays the CI step). Runs on a QUIET tree only (dirty `git status` →
-refusal), reports killed/survived/timeout per mutation with test tails,
-and always restores the mutated files (content + mtime, even on crash).
-It is a «once per wave / before release» tool, not an auto-gate. Exit
+over `scripts/mutations.txt` (the same base list the CI test job runs as
+a gate step, `bash scripts/mutation-smoke.sh`). Runs on a QUIET tree only
+(dirty `git status` → refusal), reports killed/survived/timeout per
+mutation with test tails, and always restores the mutated files (content
++ mtime, even on crash). The 4-mutant base list is an auto-gate in CI on
+every push/PR; this command (and the `--report` run over
+`scripts/mutations-neg5.txt`) is the «once per wave / before release»
+ritual on top of it. Exit
 codes: 0 = all killed, 1 = a mutation survived or the run was refused,
 2 = configuration error (bad line, stale mutation, empty list).
 
