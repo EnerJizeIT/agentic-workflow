@@ -485,4 +485,78 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/infra/opencode_shim/README.md (the invocation table and the
 # TODO-0001 plan-todo id). Same class as above: test identifiers and
 # shim contract wording, not debt.
+# TODO-0110 (A-14, проверочный юнит): baseline raised 3997 -> 4013 — the
+# new tests/negative/test_audit25_a14_execute_refusal.py adds 16
+# TODO-bearing lines: the module docstring (the DONE-TODO-0110.md
+# reference), the TODO = "TODO-0001" constant and its fixture/assert
+# use-sites in the two top-level tests. Same class as above: test
+# identifiers, not debt. No production code changed — check unit (the
+# A-14 fix already landed with R-03, TODO-0087).
+# TODO-0111 (A-18 supplement): baseline raised 4013 -> 4020 — the unit adds
+# 7 TODO-bearing lines: 4 check-header comments in scripts/wheel-smoke.sh,
+# 1 CI matrix comment in .github/workflows/ci.yml, 2 in
+# tests/agent_workflow_ui/test_audit25_w6_docs_ci.py (module docstring +
+# test class docstring). Same class as above: unit-id references, not debt.
+# TODO-0112 (R-06): baseline raised 4020 -> 4052 — the registry + shared
+# TODO-ID-parser unit adds 36 TODO-bearing lines in 3 new files
+# (awf/todo_ids.py 12 — module docstring, the regex, extract/valid
+# docstrings; tests/agent_workflow_ui/test_audit25_r06_registry.py 21 —
+# module docstring + TODO-10000 fixtures and asserts;
+# tools/registry.py 3 — header docstring), +9 TODO-bearing lines in the
+# touched files (unit-id references in metrics.py / run.py / dispatch.py /
+# brief.py / server.py / test_audit25_w6_docs_ci.py comments and docstrings),
+# and removes 13 (the manual add_tool comments in server.py, the old
+# _TODO_ID_RE/_TODO_RE local regexes in metrics.py and run.py, the A-08
+# create_server count comment). Net +32. Same class as above: test
+# identifiers, the parser module's own docstrings, and unit-id references,
+# not debt.
+# TODO-0114 (NEG-3, broken-inputs layer 3): baseline raised 4060 -> 4104,
+# files_over_400 raised 59 -> 60 — the new
+# tests/negative/test_neg3_broken_inputs.py adds 44 TODO-bearing lines
+# (the TODO-0001/TODO-0002/TODO-0003 test ids of the run/verify-pack
+# fixtures and the TODO-0114 unit reference in the module docstring) and
+# crosses 400 lines (411 — its test suite), same class as the
+# test_audit25_* negative-layer files above. The production fixes
+# (awf/include_untracked.py, awf/verify_pack.py, awf/unit_contract.py —
+# the UnicodeDecodeError input guards) carry no TODO id.
+# TODO-0115 (NEG-5, mutation smoke): baseline raised 4104 -> 4112,
+# files_over_400 raised 60 -> 61 — the new scripts/mutations-neg5.txt
+# carries 6 TODO-bearing comment lines (unit-id references TODO-0115 and
+# TODO-0103, the (TODO, stage)/(TODO, source->target) key names of
+# AUD02-07/AUD03-01), and the targeted test
+# test_rollback_budget_allows_exactly_limit adds 2 TODO-0001 test-id
+# lines, pushing tests/negative/test_audit12_incidents.py over 400
+# lines (374 -> 402). Same class as above: test identifiers and unit-id
+# references, not debt.
+# TODO-0117 (audit-25 W7 acceptance gaps): baseline raised 4112 -> 4135
+# — the acceptance-gap coverage adds 23 TODO-bearing lines: 4 in the new
+# tests/negative/test_audit25_w7_acceptance_gaps.py (A-02 foreground/
+# mixed-pair + A-06 public-path tests: TODO-0117 unit reference in the
+# docstring, TODO-0001 fixture, the A-10 TODO-1000/TODO-10000 pointer),
+# 16 in test_audit25_a10_todo_ids.py (the collect_metrics e2e test:
+# commit subjects awf(verify): TODO-1000/TODO-10000, worker-session
+# titles awf-developer-TODO-1000/10000, unit-id references in asserts)
+# and 3 in test_audit25_a15_verified_sha.py (the untracked-tail test:
+# docstring + VERIFIED-{TODO} reference). Same class as above: test
+# identifiers and unit-id references, not debt. After the supervisor ACK
+# (BLOCKED-TODO-0117 resolution): the A-02 foreground test got a strict
+# xfail mark — baseline raised 4135 -> 4138 for the 3 added TODO-bearing
+# lines (xfail reason + defect docstring + module docstring, all pointing
+# at TODO-0118). All three files stay under 400 lines (297/209/181).
+# TODO-0118 (A-02 foreground lease fix): baseline raised 4138 -> 4143,
+# files_over_400 raised 61 -> 62 — the xfail removal net -1 TODO line
+# (reason + 2 docstring refs in test_audit25_w7_acceptance_gaps.py), the
+# two new a02 tests +5 (module docstring invariant 4 + the two test
+# docstrings in test_audit25_a02_lease.py) and the production comments
+# +3 (the TODO-0118 lease/liveness notes in awf/api/pipeline.py). The
+# xfail reason line and 2 of the 3 docstring refs are removed, the rest
+# are the same class: test identifiers and unit-id references, not debt.
+# The +1 file over 400 is tests/negative/test_audit25_a02_lease.py
+# (395 -> 497 — its test suite), same class as the
+# test_audit25_a13_run_cas.py / test_neg3_broken_inputs.py raises above.
+# TODO-0118 (QA-проход, 2026-09-27): baseline raised 4143 -> 4144 —
+# tests/unit/test_background_child_marker.py (unit-тесты двойного
+# маркера _is_background_child, находка QA: случай утечки env в
+# потомков воркера не был покрыт) +1 TODO-строка (ссылка на юнит в
+# модульном докстринге — та же класс: unit-id reference, not debt).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

@@ -3,11 +3,17 @@ from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
 
-from .tools import awf, forms, templates
+from .tools import registry
 
 
 def create_server() -> FastMCP:
-    """Create and configure the FastMCP server with all tools registered."""
+    """Create and configure the FastMCP server with all tools registered.
+
+    R-06 (TODO-0112): the registration list lives in ``tools/registry.py``
+    (``registry.TOOLS``) — the single source for the server and the
+    docs count (A-08). Each entry is a thin async wrapper over awf.api.*
+    functions; see tools/awf.py for docstrings and parameter contracts.
+    """
     mcp = FastMCP(
         "agent-workflow-ui",
         instructions=(
@@ -18,78 +24,7 @@ def create_server() -> FastMCP:
         ),
     )
 
-    # ── UI tools: form lifecycle ─────────────────────────────────────────
-    mcp.add_tool(forms.open_form, name="open_form")
-    mcp.add_tool(forms.read_submit, name="read_submit")
-    mcp.add_tool(forms.cancel_form, name="cancel_form")
-    mcp.add_tool(forms.list_pending_forms, name="list_pending_forms")
-
-    # ── UI tools: template discovery ─────────────────────────────────────
-    mcp.add_tool(templates.list_templates, name="list_templates")
-
-    # ── awf workflow tools (MCP-3) ───────────────────────────────────────
-    # Each is a thin async wrapper over awf.api.* functions. See
-    # tools/awf.py for docstrings and parameter contracts.
-    mcp.add_tool(awf.awf_init, name="awf_init")
-    mcp.add_tool(awf.awf_status, name="awf_status")
-    mcp.add_tool(awf.awf_start, name="awf_start")
-    mcp.add_tool(awf.awf_continue, name="awf_continue")
-    mcp.add_tool(awf.awf_retry_stage, name="awf_retry_stage")
-    mcp.add_tool(awf.awf_baseline, name="awf_baseline")
-    mcp.add_tool(awf.awf_rollback, name="awf_rollback")
-    mcp.add_tool(awf.awf_approve, name="awf_approve")
-    mcp.add_tool(awf.awf_reject, name="awf_reject")
-    mcp.add_tool(awf.awf_report, name="awf_report")
-    mcp.add_tool(awf.awf_reset, name="awf_reset")
-    mcp.add_tool(awf.awf_add_role, name="awf_add_role")
-    mcp.add_tool(awf.awf_analyze_roles, name="awf_analyze_roles")
-    # Dogfood-2 automation: dispatch + context
-    mcp.add_tool(awf.awf_dispatch_todo, name="awf_dispatch_todo")
-    mcp.add_tool(awf.awf_load_supervisor_context, name="awf_load_supervisor_context")
-    # Dogfood-5: shortcut tools (deterministic UX, no prompt-only guidance)
-    mcp.add_tool(awf.awf_open_project_setup_form, name="awf_open_project_setup_form")
-    # Dogfood-7: increment planning (user picks decomposition variant)
-    mcp.add_tool(awf.awf_open_increment_planning_form, name="awf_open_increment_planning_form")
-    # DASH Phase 2: pipeline dashboard
-    mcp.add_tool(awf.awf_open_pipeline_dashboard, name="awf_open_pipeline_dashboard")
-    # DASH Phase 3: supervisor wake-up (no more polling)
-    mcp.add_tool(awf.awf_wait_for_event, name="awf_wait_for_event")
-    # Model configuration validation (dogfood-10)
-    mcp.add_tool(awf.awf_check_model_config, name="awf_check_model_config")
-    # Kill pipeline (SELF-2)
-    mcp.add_tool(awf.awf_kill, name="awf_kill")
-    # SMO: Phase-aware supervisor tools
-    mcp.add_tool(awf.awf_current_step, name="awf_current_step")
-    # RUN4 #1: supervisor onboarding/recovery card (live state + tool map)
-    mcp.add_tool(awf.awf_brief, name="awf_brief")
-    mcp.add_tool(awf.awf_set_goal, name="awf_set_goal")
-    mcp.add_tool(awf.awf_confirm_normalized, name="awf_confirm_normalized")
-    # SPEC A-run: autonomous run (забег)
-    mcp.add_tool(awf.awf_run_start, name="awf_run_start")
-    mcp.add_tool(awf.awf_run_status, name="awf_run_status")
-    mcp.add_tool(awf.awf_run_next, name="awf_run_next")
-    mcp.add_tool(awf.awf_run_finish, name="awf_run_finish")
-    mcp.add_tool(awf.awf_run_note, name="awf_run_note")
-    mcp.add_tool(awf.awf_restore, name="awf_restore")
-    # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
-    mcp.add_tool(awf.awf_unblock, name="awf_unblock")
-    mcp.add_tool(awf.awf_todo_remove, name="awf_todo_remove")
-    # RUN5 #2: retire a rejected/abandoned TODO that stays "active"
-    mcp.add_tool(awf.awf_todo_retire, name="awf_todo_retire")
-    # RUN6 #4: reword a not-started TODO (number/.ready/baseline preserved)
-    mcp.add_tool(awf.awf_todo_update, name="awf_todo_update")
-    # RUN6 #4: working-tree fingerprint (MCP parity for the CLI tree-sha)
-    mcp.add_tool(awf.awf_tree_sha, name="awf_tree_sha")
-    # U4: machine proof that tests are red on the baseline sha
-    mcp.add_tool(awf.awf_prove_red, name="awf_prove_red")
-    # U5: one deterministic verify report (GATES-<todo>.md)
-    mcp.add_tool(awf.awf_verify_pack, name="awf_verify_pack")
-    # U8: token/cost metrics of the work program (report to desktop)
-    mcp.add_tool(awf.awf_metrics, name="awf_metrics")
-    # RUN3 #1: named pipelines (create + list; run by name via awf_start)
-    mcp.add_tool(awf.awf_write_pipeline, name="awf_write_pipeline")
-    mcp.add_tool(awf.awf_pipelines, name="awf_pipelines")
-    # RUN4 #2: feedback contour (supervisor friction → report to owner)
-    mcp.add_tool(awf.awf_feedback, name="awf_feedback")
+    for spec in registry.TOOLS:
+        mcp.add_tool(spec.fn, name=spec.name)
 
     return mcp

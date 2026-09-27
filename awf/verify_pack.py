@@ -254,7 +254,19 @@ def _diff_section(project: Path, todo_id: str, contract: dict | None) -> Section
     baseline_file = paths.context_dir(project) / f"BASELINE-{todo_id}.sha"
     sha = ""
     if baseline_file.is_file():
-        raw = baseline_file.read_text(encoding="utf-8").strip()
+        try:
+            raw = baseline_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            # NEG-3: corrupt (non-UTF-8) baseline bytes — the diff cannot
+            # be measured, skip the section instead of tracebacks.
+            return Section(
+                name="diff",
+                status="skipped",
+                lines=[
+                    f"skipped — BASELINE-{todo_id}.sha unreadable "
+                    "(corrupt bytes), diff not measured"
+                ],
+            )
         sha = raw.splitlines()[0] if raw else ""
     if not sha:
         return Section(
@@ -511,7 +523,9 @@ def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
         )
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # NEG-3: binary garbage in the DONE json degrades to a skipped
+        # section, the same as an unreadable file.
         return Section(
             name="done_json",
             status="skipped",

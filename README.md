@@ -57,7 +57,7 @@ pip install awf agent-workflow-ui
 ## Features
 
 - 🎯 **State-Machine Orchestration (SMO)** — awf guides the supervisor through phases: `init → goal → form → normalize → brief → run → verify → done`. Every tool returns a `next_action` hint — even weak models follow the full flow without getting lost.
-- 🔧 **45 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
+- 🔧 **47 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation. No bash, no manual file editing.
 - 📊 **Live Dashboard** — HTTP server with real-time polling. Chat-style agent handoffs, TODO content, TODO timeline, worker status, browser notifications. No page reloads.
 - 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. You choose in the setup form.
 - ✅ **Approve / Reject** — symmetric verify tools. Approve commits and archives. Reject kills the pipeline and asks for fixes.
@@ -85,22 +85,14 @@ graph LR
     init --> goal --> form --> normalize --> brief --> run --> verify --> done
 ```
 
-| Phase | You do | Supervisor does |
-|---|---|---|
-| init | — | Creates `.agentic/`, detects stack |
-| goal | Answer "what do you want?" | Stores goal |
-| form | Fill setup form in browser | Opens form, recommends roles |
-| normalize | — | Analyzes role overlaps |
-| brief | — | Studies project, dispatches TODO |
-| run | Monitor dashboard | **IDLE** — waits for you |
-| verify | Say *"verify"* | Reviews, approves/rejects |
-| done | "continue" or "stop" | Waits for instruction |
+Every tool returns a `next_action` hint — even weak models follow the full
+flow. Phase-by-phase: [USAGE.md → SMO phases](USAGE.md#smo-phases).
 
 ## Architecture
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 45 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 47 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf orchestrator]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]
@@ -123,14 +115,9 @@ Two packages:
 
 ## Dashboard
 
-Live HTTP dashboard opens automatically when pipeline starts:
-
-- **Two-panel layout** — pipeline sidebar (stages, progress, worker) + content tabs
-- **💬 Agent Chat** — handoffs as conversation messages with chain visualization
-- **📝 Задача** — full TODO content in rendered markdown
-- **📊 События** — meaningful events, newest first
-- **TODO timeline** — `[✅ TODO-0001] ─ [✅ TODO-0002] ─ [🔄 TODO-0003]`
-- **Browser notification** when pipeline reaches verify
+Live HTTP dashboard opens automatically when pipeline starts — agent chat,
+TODO content, events, TODO timeline, worker status, browser notification.
+Detail: [USAGE.md → Dashboard](USAGE.md#dashboard).
 
 ## Real-world results
 

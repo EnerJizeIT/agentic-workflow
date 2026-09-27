@@ -83,6 +83,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as config_mod
+from .todo_ids import extract_todo_id
 
 DEFAULT_REFERENCE_MODEL = "anthropic/claude-sonnet-4-6"
 
@@ -112,10 +113,9 @@ SUBSCRIPTIONS_TIMEOUT = 10.0
 # U8d: недель в месяце (GLM: недельные кредитные лимиты → месячная доля).
 WEEKS_PER_MONTH = 4.345
 
-# A-10: общий парсер TODO ID — 4+ цифры с явной правой границей
-# (не-словарный символ или конец строки). TODO-10000 не усекается до
-# TODO-1000, TODO-10000x не читается как ID вовсе.
-_TODO_ID_RE = re.compile(r"TODO-(\d{4,})(?!\w)")
+# A-10: общий парсер TODO ID — в `awf/todo_ids.py` (R-06, TODO-0112):
+# 4+ цифры с явной правой границей. TODO-10000 не усекается до TODO-1000,
+# TODO-10000x не читается как ID вовсе.
 _WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4,})$")  # правая граница — `$`
 # A-17: префикс commit-гейта `awf(<stage>): ` — стадия любая (verify/execute/
 # кастомные); ID извлекает общий парсер A-10 (:func:`_todo_id_from_subject`).
@@ -129,9 +129,11 @@ def _todo_id_from_title(title: str | None) -> str | None:
 
 
 def _todo_id_from_subject(subject: str | None) -> str | None:
-    """Коммит-субъект → TODO ID или None (явная правая граница)."""
-    m = _TODO_ID_RE.search(subject or "")
-    return m.group(0) if m else None
+    """Коммит-субъект → TODO ID или None (явная правая граница).
+
+    R-06 (TODO-0112): извлечение — общий парсер ``awf/todo_ids.py``.
+    """
+    return extract_todo_id(subject)
 
 
 def _todo_id_from_stage_commit(subj: str | None) -> str | None:

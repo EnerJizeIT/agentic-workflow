@@ -558,6 +558,24 @@ Every TODO must start with a prohibitions section adapted to the project:
 - **Optimal:** 1–5 tasks per TODO (the worker is capable, but keep scope manageable).
 - **Maximum:** 10 tasks. Beyond that, split into multiple TODOs.
 
+### Quality bar (unit protocol)
+
+- **One unit — one invariant.** A TODO carries one invariant (or one
+  transition), with its contract in the header: `verify` commands,
+  `gates`, and `prove_red` for fixes. Two invariants — split the TODO.
+- **Fixes carry proof.** A bugfix unit must show its regression test
+  RED on the pre-fix code and GREEN after (both outputs in the DONE
+  report). A test that already passed before the fix proves nothing.
+- **The reviewer's report is a required input for acceptance.** If the
+  pipeline has a review role, read its report and every red test it
+  filed BEFORE the approve decision. "Confirmed" without a command
+  output is not accepted.
+- **Open P1 blocks release.** No release or tag while a known P1 (or an
+  unresolved safety finding) is open.
+- **Doctrine.** Project lessons live in `.agentic/doctrine/*.md` and
+  are injected into every role's prompt automatically. A new lesson
+  goes there — not into each role file by hand.
+
 ### Detail escalation
 
 Track how many iterations a task has taken:

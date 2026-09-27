@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
+from ..todo_ids import is_valid_todo_id
 from . import _liveness
 from ._errors import AwfApiError
 from ._results import (
@@ -26,8 +27,6 @@ from ._results import (
     RunStartResult,
     RunStatusResult,
 )
-
-_TODO_RE = re.compile(r"^TODO-\d{4,}$")
 
 
 def _require_run_project(project_dir: Path) -> Path:
@@ -66,7 +65,7 @@ def _validate_queue(queue: list[str | dict] | None) -> list[dict]:
         if isinstance(q, dict):
             todo_id = str(q.get("todo_id", "")).strip()
             pipeline = str(q.get("pipeline", "") or "").strip()
-            if not _TODO_RE.match(todo_id):
+            if not is_valid_todo_id(todo_id):
                 raise AwfApiError(
                     f"invalid queue item {q!r} — an object item needs "
                     "{'todo_id': 'TODO-NNNN', 'pipeline': '<name>'} "
@@ -77,7 +76,7 @@ def _validate_queue(queue: list[str | dict] | None) -> list[dict]:
             s = str(q).strip()
             if not s:
                 continue
-            if not _TODO_RE.match(s):
+            if not is_valid_todo_id(s):
                 raise AwfApiError(f"invalid TODO id {s!r} in queue — expected TODO-NNNN")
             items.append({"todo_id": s, "pipeline": ""})
     if not items:

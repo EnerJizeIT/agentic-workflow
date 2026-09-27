@@ -61,6 +61,35 @@ def assemble_doctrine(project_dir: str | Path) -> str:
     return "\n".join(parts).rstrip("\n") + "\n"
 
 
+# W7: built-in doctrine templates shipped with awf (awf/templates/doctrine/).
+# ``awf init`` copies the missing ones into the project's catalog so a new
+# project starts with the core safety lessons without hand-copying them.
+BUILTIN_DOCTRINE_DIR = Path(__file__).resolve().parent / "templates" / "doctrine"
+
+
+def seed_doctrine(project_dir: str | Path) -> list[str]:
+    """Copy built-in doctrine templates missing from the project catalog.
+
+    Never overwrites an existing file — a user-edited doctrine is user
+    data (same rule as add_role refusing to replace a role file).
+    Returns the copied file names (sorted); [] when nothing was missing
+    or the built-in catalog does not exist (old installs).
+    """
+    import shutil
+
+    if not BUILTIN_DOCTRINE_DIR.is_dir():
+        return []
+    dst = doctrine_dir(project_dir)
+    dst.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for src in sorted(BUILTIN_DOCTRINE_DIR.glob("*.md")):
+        target = dst / src.name
+        if not target.exists():
+            shutil.copy2(src, target)
+            copied.append(src.name)
+    return copied
+
+
 def materialize_doctrine(project_dir: str | Path) -> Path | None:
     """Write the assembled section to .agentic/context/DOCTRINE.md.
 

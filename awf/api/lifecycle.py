@@ -140,6 +140,13 @@ def init_project(
                 if not dirpath.exists():
                     dirpath.mkdir(parents=True, exist_ok=True)
                     created_dirs.append(f".agentic/{d}/")
+            # W7: re-init also seeds missing doctrine (non-destructive,
+            # same rule as the skeleton dirs above — existing files are
+            # user data and are never overwritten).
+            from ..doctrine import seed_doctrine
+
+            for name in seed_doctrine(project_dir):
+                created_dirs.append(f".agentic/doctrine/{name}")
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
             vision_path = paths.find_vision_file(project_dir)
@@ -253,6 +260,13 @@ def init_project(
         created_files.append(".agentic/roles/supervisor.md")
     else:
         warnings.append(f"supervisor.md template not found at {supervisor_template}")
+
+    # W7: seed the built-in project doctrine (missing only, never
+    # overwrite) — a new project starts with the core safety lessons.
+    from ..doctrine import seed_doctrine
+
+    for name in seed_doctrine(project_dir):
+        created_files.append(f".agentic/doctrine/{name}")
 
     # plan.md stub — point to vision if found (atomic per H5 invariant)
     if vision_path is not None:

@@ -6,6 +6,8 @@
 # зелёными, модуль они не защищают.
 #
 #   bash mutation-smoke.sh [файл-мутаций]   (по умолчанию scripts/mutations.txt)
+#   bash mutation-smoke.sh --report [файл-мутаций]
+#       (по умолчанию scripts/mutations-neg5.txt)
 #
 # Формат строки (одна мутация на строку):
 #   ФАЙЛ @@ ЧТО_ЗАМЕНИТЬ @@ НА_ЧТО @@ КОМАНДА_ТЕСТОВ
@@ -21,8 +23,11 @@
 # Против кэшей раннера (байткод Python сверяет время изменения и размер)
 # скрипт сдвигает время файла вперёд и отключает запись байткода.
 #
-# Код возврата: 0 — все мутации убиты, 1 — какая-то выжила, 2 — ошибка
-# конфигурации (в том числе пустой список мутаций).
+# Код возврата (обычный режим, гейт): 0 — все мутации убиты, 1 — какая-то
+# выжила, 2 — ошибка конфигурации (в том числе пустой список мутаций).
+# Код возврата (--report, NEG-5): 0 — прогон завершён (выжившие печатаются
+# списком «модуль:строка:описание» — это сигнал, а не гейт), 2 — ошибка
+# конфигурации (сбой инструмента).
 
 # Скрипт на bash, но его могут позвать через sh — как остальные ворота.
 # Перезапускаемся в bash, чтобы не падать с невнятным «Syntax error».
@@ -40,7 +45,26 @@ else
   cd "$script_dir/.." || exit 2
 fi
 
-FILE_LIST="${1:-scripts/mutations.txt}"
+REPORT=0
+FILE_LIST=""
+for arg in "$@"; do
+  case "$arg" in
+    --report) REPORT=1 ;;
+    *)
+      if [ -n "$FILE_LIST" ]; then
+        echo "mutation-smoke: лишний аргумент «$arg»" >&2; exit 2
+      fi
+      FILE_LIST="$arg"
+      ;;
+  esac
+done
+if [ -z "$FILE_LIST" ]; then
+  if [ "$REPORT" -eq 1 ]; then
+    FILE_LIST="scripts/mutations-neg5.txt"
+  else
+    FILE_LIST="scripts/mutations.txt"
+  fi
+fi
 [ -f "$FILE_LIST" ] || { echo "mutation-smoke: нет файла мутаций $FILE_LIST" >&2; exit 2; }
 
 if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
@@ -52,7 +76,7 @@ backup=""; target=""
 restore() { if [ -n "$backup" ] && [ -f "$backup" ]; then cp -p "$backup" "$target"; rm -f "$backup"; fi; }
 trap restore 0 1 2 3 15
 
-survived=0; total=0; lineno=0
+survived=0; killed=0; total=0; lineno=0; survivors=""
 while IFS= read -r line || [ -n "$line" ]; do
   lineno=$((lineno + 1))
   trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -71,6 +95,11 @@ while IFS= read -r line || [ -n "$line" ]; do
     exit 2
   fi
 
+  # Строка мутации в исходнике (для отчёта «модуль:строка:описание»).
+  # Считаем ДО правки — после замены исходной строки в файле не будет.
+  line_no=$(grep -nF -- "$find" "$target" 2> /dev/null | head -1 | cut -d: -f1)
+  [ -n "$line_no" ] || line_no="?"
+
   backup="$(mktemp)"; cp -p "$target" "$backup"
   printf '%s' "${content/"$find"/"$repl"}" > "$target"
   # Кэш, сверяющий время изменения и размер файла (байткод Python), не должен
@@ -81,8 +110,10 @@ while IFS= read -r line || [ -n "$line" ]; do
   total=$((total + 1))
   if PYTHONDONTWRITEBYTECODE=1 bash -c "$cmd" > /dev/null 2>&1; then
     survived=1
+    survivors="${survivors}  ${target}:${line_no} — «${find}» → «${repl}»"$'\n'
     echo "✗ выжила: $target — «$find» → «$repl»; тесты остались зелёными"
   else
+    killed=$((killed + 1))
     echo "✓ убита: $target — «$find» → «$repl»"
   fi
   restore; backup=""
@@ -91,6 +122,19 @@ done < "$FILE_LIST"
 if [ "$total" -eq 0 ]; then
   echo "mutation-smoke: в $FILE_LIST нет мутаций — проверять нечего, это не зелёный результат" >&2
   exit 2
+fi
+
+if [ "$REPORT" -eq 1 ]; then
+  # NEG-5: прогон — сигнал, а не гейт: завершится он всегда с exit 0,
+  # выжившие печатаются списком для разбора (адресные тесты — по критичным).
+  echo "mutation-smoke: итог — мутантов: $total, убито: $killed, выжило: $survived"
+  if [ "$survived" -gt 0 ]; then
+    echo "mutation-smoke: выжившие (кандидаты в адресные тесты):"
+    printf '%s' "$survivors"
+  else
+    echo "mutation-smoke: выживших нет — все мутанты убиты"
+  fi
+  exit 0
 fi
 
 if [ "$survived" -eq 0 ]; then echo "mutation-smoke: ok (мутаций: $total)"; fi

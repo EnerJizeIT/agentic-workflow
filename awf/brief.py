@@ -15,7 +15,6 @@
 """
 from __future__ import annotations
 
-import ast
 import importlib.util
 import re
 from dataclasses import asdict, dataclass, field
@@ -171,8 +170,9 @@ def load_scenarios() -> list[str]:
 def tool_registry() -> dict[str, list[str]]:
     """All awf tools: MCP tools of agent_workflow_ui + CLI subcommands.
 
-    The MCP list is parsed from the plugin's server.py (``add_tool``
-    registrations) — a live registry, not a hand-maintained copy.
+    The MCP list comes from the plugin's registry
+    (``agent_workflow_ui/tools/registry.py``, R-06) — the single source
+    ``create_server()`` registers from, not a hand-maintained copy.
     Returns {"mcp": [...], "cli": [...]} (sorted); "mcp" is [] when the
     plugin package is not installed.
     """
@@ -190,22 +190,13 @@ def _mcp_tool_names() -> list[str]:
     spec = importlib.util.find_spec("agent_workflow_ui")
     if spec is None or not spec.submodule_search_locations:
         return []
-    server_py = Path(spec.submodule_search_locations[0]) / "server.py"
+    # R-06 (TODO-0112): the registry is the single source create_server()
+    # registers from — read it instead of re-parsing server.py source.
     try:
-        tree = ast.parse(server_py.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError):
+        from agent_workflow_ui.tools.registry import tool_names
+    except ImportError:
         return []
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_tool"
-        ):
-            for kw in node.keywords:
-                if kw.arg == "name" and isinstance(kw.value, ast.Constant):
-                    names.add(str(kw.value.value))
-    return sorted(names)
+    return sorted(tool_names())
 
 
 def map_coverage(registry: dict[str, list[str]] | None = None) -> dict[str, list[str]]:

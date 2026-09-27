@@ -14,6 +14,11 @@
    процесса, а не возраст файла.
 3. Жизненный цикл не изменился: после завершения владельца новый запуск
    проходит; lease с мёртвым pid перехватывается; foreground не сломан.
+4. TODO-0118: lease/liveness не зависят от режима — два одновременных
+   foreground-вызова и смешанная пара «background выполняется + приходит
+   foreground» дают ровно один выполняющийся пайплайн; background-ребёнок
+   (argv ``-m awf start/continue`` + ``AWF_BACKGROUND_CHILD``) не
+   отклоняется собственным запуском.
 
 Реальные процессы не запускаются: Popen замокан, проект — ``tmp_git_repo``.
 """
@@ -173,6 +178,103 @@ def test_second_start_refused_while_launch_in_progress(tmp_git_repo, monkeypatch
     assert second.run_id is None
     assert "in progress" in second.message, second.message
     assert "awf_status" in second.message, second.message
+
+
+def test_mixed_pair_background_running_blocks_foreground_launch(
+    tmp_git_repo, monkeypatch
+):
+    """TODO-0118 (A-02, смешанная пара, обратное направление):
+    background-пайплайн выполняется (PID-файл, argv как у настоящего
+    ``awf start``) — приходит foreground-запуск и отклоняется общим
+    резолвером живости: ровно один выполняющийся пайплайн, второго
+    worker (спавна) нет."""
+    import awf.orchestrator as orch_mod
+    from awf.api import _liveness
+
+    proj = _project(tmp_git_repo)
+    runs: dict = {}
+    spawn: dict = {}
+
+    # Выполняющийся background-пайплайн: PID-файл с живым pid.
+    pid_file = proj / ".agentic" / "logs" / "awf-start.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+    # Документированный шов (как в w7-смешанном тесте): строгому
+    # резолверу argv тестового процесса не пройти без подмены.
+    monkeypatch.setattr(
+        _liveness, "read_cmdline", lambda pid: "python3\x00-m\x00awf\x00start\x00"
+    )
+    # Среда: маркер background-ребёнка вычищен — вызывающий здесь
+    # обычный процесс (MCP-сервер/CLI), а не спавненный пайплайн.
+    monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+
+    def fake_run_pipeline(args):
+        runs["n"] = runs.get("n", 0) + 1
+        return 0
+
+    def fake_popen(cmd, *args, **kwargs):
+        spawn["n"] = spawn.get("n", 0) + 1
+        raise AssertionError("второй worker (спавн) не должен быть")
+
+    monkeypatch.setattr(orch_mod, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = api.start_pipeline(proj, background=False)
+
+    assert runs.get("n", 0) == 0, (
+        f"foreground-запуск рядом с выполняющимся background запустил "
+        f"второй пайплайн ({runs.get('n')}) (A-02: ровно один)"
+    )
+    assert spawn.get("n", 0) == 0, "появился второй worker (спавн)"
+    assert result.run_mode == "noop", (
+        f"foreground-запуск рядом с выполняющимся background не отклонён — "
+        f"{result.run_mode!r}: {result.message}"
+    )
+    assert result.run_id is None
+
+
+def test_two_concurrent_foreground_continues_run_once(tmp_git_repo, monkeypatch):
+    """TODO-0118: два одновременных foreground-continue — ровно один
+    исполняется, второй получает отказ (lease в continue_pipeline тоже
+    не зависит от режима)."""
+    import awf.orchestrator as orch_mod
+
+    proj = _project(tmp_git_repo)
+    runs: dict = {}
+    gate = threading.Event()
+
+    def fake_run_pipeline(args):
+        runs["n"] = runs.get("n", 0) + 1
+        if runs["n"] == 1:
+            gate.wait(timeout=30)
+        return 0
+
+    monkeypatch.setattr(orch_mod, "run_pipeline", fake_run_pipeline)
+    monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+
+    t = threading.Thread(
+        target=lambda: api.continue_pipeline(proj, background=False)
+    )
+    t.start()
+    assert _wait_until(runs, 1), "первый continue должен дойти до пайплайна"
+
+    # Первый continue ещё внутри пайплайна — второй вызов обязан
+    # получить отказ, а не запустить второй выполняющийся пайплайн.
+    second = api.continue_pipeline(proj, background=False)
+
+    gate.set()
+    t.join(timeout=30)
+    assert not t.is_alive(), "первый continue не завершился"
+
+    assert runs.get("n", 0) == 1, (
+        f"run_pipeline вызван {runs.get('n')} раз(а) — два одновременных "
+        "foreground-continue дали два выполняющихся пайплайна (A-02)"
+    )
+    assert second.run_mode == "noop", (
+        f"второй одновременный continue не получил отказ — "
+        f"{second.run_mode!r}: {second.message}"
+    )
+    assert second.run_id is None
 
 
 class TestLaunchLeaseRegressions:
