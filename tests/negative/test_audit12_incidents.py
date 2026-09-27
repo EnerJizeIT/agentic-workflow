@@ -145,6 +145,34 @@ class TestRollbackBudget:
             f"budget must stop the loop within a few rollbacks, got {len(results)}"
         )
 
+    def test_rollback_budget_allows_exactly_limit(self, tmp_path, monkeypatch):
+        """NEG-5: exactly max_rollbacks rollbacks pass; the (limit+1)-th is
+        refused. The loose test above (<=6) let the >= → > off-by-one
+        survive: with max_rollbacks=2 it allowed 3 rollbacks."""
+        proj = _bare_project(tmp_path)
+        _activate(proj, "TODO-0001")
+        logs = proj / ".agentic" / "logs"
+
+        monkeypatch.setattr(engine, "_run_supervisor_stage", lambda *a, **kw: "")
+
+        stages = [
+            Stage(name="implement", role="developer", kind="execute",
+                  max_rollbacks=2),
+            Stage(name="verify", role="supervisor", kind="verify",
+                  on_rejected="rollback_to:implement"),
+        ]
+
+        rcs = [
+            engine._handle_rollback(
+                proj, logs, stages, "TODO-0001", True, "implement",
+            )[2]
+            for _ in range(4)
+        ]
+        assert rcs == [0, 0, 1, 1], (
+            f"max_rollbacks=2: exactly 2 rollbacks allowed, then refusal — "
+            f"got {rcs} (the >= boundary is off by one)"
+        )
+
 
 # ── T3.4 · AUD04-01: continue must pass todo_id from state ──
 

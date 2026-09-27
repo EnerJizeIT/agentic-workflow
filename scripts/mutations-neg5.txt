@@ -1,0 +1,68 @@
+# NEG-5 (мутационный smoke): критические модули pipeline_engine + api.
+# Формат: ФАЙЛ @@ ЧТО_ЗАМЕНИТЬ @@ НА_ЧТО @@ КОМАНДА_ТЕСТОВ
+# Область фиксирована этим файлом (детерминированный прогон): каждый
+# мутант ломает один инвариант (состояние/резервация/коммит/сигналы),
+# COMMAND — адресный быстрый тест, который обязан его убить.
+#
+# Запуск (сигнал, не гейт — exit 0 при завершённом прогоне):
+#   bash scripts/mutation-smoke.sh --report
+# Ограничение по времени: адресные тесты по одному на мутанта,
+# полный прогон ~30 секунд (замерено на TODO-0115), лимит 10 минут.
+# Запускать на покоящемся дереве (как и основной список).
+
+# R-03/A-14: refused-коммит на execute-стейдже обязан остановить цикл
+# (rc=1, стейдж не сдвинут). Мутация даёт rc=0 — цикл бы крутился.
+awf/pipeline_engine.py @@         return stage_idx, 1 @@         return stage_idx, 0 @@ python3 -m pytest tests/unit/test_orchestrator_handlers.py::TestHandleNext::test_refused_commit_stops_instead_of_advancing -q
+
+# AUD03-01: бюджет rollback на (TODO, source->target) — исчерпан = стоп.
+# Мутация >= → > даёт лишний (limit+1)-й rollback. Первый прогон NEG-5
+# выжил в loose-тесте (<=6) — добавлен адресный тест с точной границей.
+awf/pipeline_engine.py @@     if rb_count >= limit: @@     if rb_count > limit: @@ python3 -m pytest tests/negative/test_audit12_incidents.py::TestRollbackBudget::test_rollback_budget_allows_exactly_limit -q
+
+# AUD02-07: счётчик salvage пер (TODO, stage) — чужой ключ не наследуется.
+# Мутация == → != наследует чужой счётчик и сбрасывает свой.
+awf/pipeline_engine.py @@         attempt = prev_count + 1 if prev_state.get("salvage_count_key") == salvage_key else 1 @@         attempt = prev_count + 1 if prev_state.get("salvage_count_key") != salvage_key else 1 @@ python3 -m pytest tests/unit/test_pipeline_engine.py::TestSalvageEscalation::test_salvage_count_is_per_stage_and_todo -q
+
+# U6b/AUD02-07: сетевой счётчик наследуется при том же ключе (TODO, stage).
+# Мутация != → == сбрасывает унаследованный бюджет в 0.
+awf/pipeline_engine.py @@     if _prev_net_state.get("net_retry_key") != net_key: @@     if _prev_net_state.get("net_retry_key") == net_key: @@ python3 -m pytest tests/unit/test_pipeline_engine.py::TestU6bNetRetry::test_persisted_counter_survives_restart -q
+
+# NEG-4: stage-scoped отпечаток — работа принадлежит ТЕКУЩЕМУ стейджу.
+# Мутация != → == считает «работа есть» при НЕизменившемся дереве
+# (ложное DONE / ложный skip-retry).
+awf/pipeline_engine.py @@                 != stage_start_fingerprint @@                 == stage_start_fingerprint @@ python3 -m pytest tests/unit/test_pipeline_engine.py::TestSalvageEscalation::test_no_retry_when_work_present -q
+
+# NEG-4 (day-2 B1): сработавший .ready потребляется — старый сигнал не
+# должен закрыть следующий стейдж. Мутация оставляет DONE-*.ready.
+awf/pipeline_engine.py @@     for consumed_suffix in (".ready", ".md.ready"): @@     for consumed_suffix in (".md.ready",): @@ python3 -m pytest tests/negative/test_worker_failure_matrix.py::TestAutoDoneScope::test_signal_consumed_on_transition -q
+
+# A-02 (launch lease): O_EXCL делает захват атомарным — два параллельных
+# start дают ровно один спавн. Мутация убирает атомарность.
+awf/api/_lease.py @@             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600) @@             fd = os.open(str(path), os.O_CREAT | os.O_WRONLY, 0o600) @@ python3 -m pytest tests/negative/test_audit25_a02_lease.py::test_two_concurrent_starts_spawn_once -q
+
+# A-02: release удаляет только СВОЙ lease (свой pid внутри). Мутация
+# инвертирует проверку — чужой lease удаляется, свой остаётся висеть.
+awf/api/_lease.py @@         if content != str(self.owner_pid): @@         if content == str(self.owner_pid): @@ python3 -m pytest tests/negative/test_audit25_a02_lease.py::TestLaunchLeaseRegressions::test_launch_passes_after_owner_finishes -q
+
+# SPEC A-run: два reject одного TODO — стоп забегу (гейт в run_next).
+# Мутация >= 2 → >= 3 пропускает третий запуск отjected юнита.
+awf/api/run.py @@     if int(rejects.get(next_id, 0) or 0) >= 2: @@     if int(rejects.get(next_id, 0) or 0) >= 3: @@ python3 -m pytest tests/unit/test_run.py::TestRunNextGates::test_rejected_twice_stops -q
+
+# TODO-0103/A-13: позиция, зарезервированная живым пайплайном, не
+# перезанимается (cur == next_id разрешается по живости). Мутация
+# инвертирует проверку — мёртвый резерв блокирует очередь, живой
+# дублирует запуск.
+awf/api/run.py @@         if running: @@         if not running: @@ python3 -m pytest tests/negative/test_audit25_a13_run_cas.py::test_late_pre_read_after_reservation_refuses_when_pipeline_live -q
+
+# U11/B5 (verified-sha): расхождение отпечатка дерева после верификации =
+# отказ approve. Мутация инвертирует — коммитит то, что не верифицировано.
+awf/api/pipeline.py @@         if current_fp != v: @@         if current_fp == v: @@ python3 -m pytest tests/negative/test_audit25_a15_verified_sha.py::test_tree_change_after_approve_blocks_commit -q
+
+# AUD11-03 (evidence gate): в активном забеге approve требует файл
+# RUN-EVIDENCE. Мутация инвертирует проверку — гейт пропускает approve
+# без доказательств.
+awf/api/pipeline.py @@     elif run_active and not evidence_file.is_file(): @@     elif run_active and evidence_file.is_file(): @@ python3 -m pytest tests/unit/test_run.py::TestEvidenceGate::test_run_requires_evidence -q
+
+# A-04: reject записан раньше → approve НЕ публикует APPROVE-сигнал
+# (конфликт verdict'ов). Мутация >= 1 → >= 2 снимает защиту.
+awf/api/pipeline.py @@             if int(rejects_map.get(todo_id, 0) or 0) >= 1: @@             if int(rejects_map.get(todo_id, 0) or 0) >= 2: @@ python3 -m pytest tests/negative/test_audit25_a04_verdict_signal.py::test_reject_then_approve_leaves_no_approve_signal -q

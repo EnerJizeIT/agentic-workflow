@@ -519,4 +519,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # test_audit25_* negative-layer files above. The production fixes
 # (awf/include_untracked.py, awf/verify_pack.py, awf/unit_contract.py —
 # the UnicodeDecodeError input guards) carry no TODO id.
+# TODO-0115 (NEG-5, mutation smoke): baseline raised 4104 -> 4112,
+# files_over_400 raised 60 -> 61 — the new scripts/mutations-neg5.txt
+# carries 6 TODO-bearing comment lines (unit-id references TODO-0115 and
+# TODO-0103, the (TODO, stage)/(TODO, source->target) key names of
+# AUD02-07/AUD03-01), and the targeted test
+# test_rollback_budget_allows_exactly_limit adds 2 TODO-0001 test-id
+# lines, pushing tests/negative/test_audit12_incidents.py over 400
+# lines (374 -> 402). Same class as above: test identifiers and unit-id
+# references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'
