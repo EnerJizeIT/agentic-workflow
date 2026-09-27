@@ -107,6 +107,10 @@ class BriefResult:
     run_last_decision: str = ""
     run_sources: list[str] = field(default_factory=list)
     run_warning: str = ""
+    # ORCH M2.3: the current/last element's evidence plan, rendered
+    # compact for the card (verify commands + prove_red ids, brief) —
+    # the same record the full context shows in full.
+    run_evidence_plan_lines: list[str] = field(default_factory=list)
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -340,6 +344,12 @@ def _state_lines(r: BriefResult) -> list[str]:
             lines.append(f"- run goal: {r.run_goal}")
         if r.run_last_decision:
             lines.append(f"- run last decision: {r.run_last_decision}")
+        # ORCH M2.3: the evidence plan of the current/last element —
+        # the verify commands and the prove_red ids, brief, so the
+        # supervisor decides against the plan that was snapshotted at
+        # launch (not against a TODO that may have been rewritten).
+        if r.run_evidence_plan_lines:
+            lines.extend(r.run_evidence_plan_lines)
         if r.run_sources:
             lines.append(f"- run sources: {', '.join(r.run_sources)}")
     if r.run_warning:
@@ -507,7 +517,12 @@ def build_brief(
 
     from . import phase as _phase
     from . import run_state as _run_state
-    from .run_plan_read import clip_goal, decision_line, next_action_for_record
+    from .run_plan_read import (
+        clip_goal,
+        decision_line,
+        evidence_plan_lines,
+        next_action_for_record,
+    )
 
     project_dir = Path(project_dir).expanduser().resolve()
     has_agentic = paths.agentic_dir(project_dir).is_dir()
@@ -582,11 +597,15 @@ def build_brief(
     run_last_decision = ""
     run_sources: list[str] = []
     run_warning = ""
+    run_evidence_plan_lines: list[str] = []
     if run_record is not None:
         run_goal = clip_goal(run_record.goal)
         run_last_decision = decision_line(run_record.last_decision)
         run_sources = list(run_record.sources)
         run_warning = run_record.warning
+        # ORCH M2.3: the compact view of the current/last element's
+        # evidence plan (one shared helper, same as the decisions line).
+        run_evidence_plan_lines = evidence_plan_lines(run_record, compact=True)
         next_action = next_action_for_record(run_record, next_action)
         # ORCH M1.3: the done (approved) side of the run-aware step — after
         # the current item is approved, the next step is awf_run_next (the
@@ -627,6 +646,7 @@ def build_brief(
         run_last_decision=run_last_decision,
         run_sources=run_sources,
         run_warning=run_warning,
+        run_evidence_plan_lines=run_evidence_plan_lines,
     )
     result.text = render_brief(result)
     return result

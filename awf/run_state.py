@@ -125,15 +125,47 @@ def _normalize_decision(d: dict) -> dict:
     }
 
 
+def _evidence_plan_entry_ok(e: object) -> bool:
+    """ORCH M2.3: an evidence plan entry is a dict with a non-empty string
+    ``todo_id`` — everything else is a corrupt entry (same rule class as
+    :func:`_decision_entry_ok`)."""
+    return isinstance(e, dict) and bool(str(e.get("todo_id") or "").strip())
+
+
+def _normalize_evidence_plan(e: dict) -> dict:
+    """ORCH M2.3: the canonical evidence plan shape
+    ``{ts, todo_id, todo_sha, verify, gates, prove_red, note}``; absent or
+    mistyped fields degrade to empty (a partial entry survives as far as
+    its todo_id allows)."""
+
+    def _str_list(v: object) -> list[str]:
+        # strict: only real strings survive — a coerced None would read as
+        # the id "None" in a prove_red list (machine identifiers, not text)
+        if not isinstance(v, list):
+            return []
+        return [x for x in v if isinstance(x, str) and x.strip()]
+
+    return {
+        "ts": str(e.get("ts") or ""),
+        "todo_id": str(e.get("todo_id") or "").strip(),
+        "todo_sha": str(e.get("todo_sha") or ""),
+        "verify": _str_list(e.get("verify")),
+        "gates": _str_list(e.get("gates")),
+        "prove_red": _str_list(e.get("prove_red")),
+        "note": str(e.get("note") or ""),
+    }
+
+
 def _sanitize_plan_fields(state: dict, logs_dir: Path | None) -> None:
     """ORCH M1.1 (invariant 4): broken/partial ``goal``/``criteria``/
-    ``decisions`` in run.yaml must not crash the read — the broken value is
-    dropped with a warning (the file itself is kept, like AUD02-06), the
-    rest of the run stays usable.
+    ``decisions``/``evidence_plans`` in run.yaml must not crash the read —
+    the broken value is dropped with a warning (the file itself is kept,
+    like AUD02-06), the rest of the run stays usable.
 
     After this call the state ALWAYS carries ``goal`` (str), ``criteria``
-    (list of non-empty str) and ``decisions`` (list of normalized entries),
-    so every consumer indexes them without a defensive isinstance.
+    (list of non-empty str), ``decisions`` (list of normalized entries) and
+    ``evidence_plans`` (list of normalized entries), so every consumer
+    indexes them without a defensive isinstance.
     """
     goal = state.get("goal")
     if goal is None:
@@ -187,6 +219,36 @@ def _sanitize_plan_fields(state: dict, logs_dir: Path | None) -> None:
                 "skipped (file kept for inspection)",
             )
         state["decisions"] = kept
+
+    # ORCH M2.3: the per-item evidence plans — absent (legacy state) is not
+    # corruption (no migration); a broken value degrades the same way
+    # decisions do (the file is kept, the rest of the run stays usable).
+    plans = state.get("evidence_plans")
+    if plans is None:
+        state["evidence_plans"] = []
+    elif not isinstance(plans, list):
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                "ORCH M2.3: run.yaml 'evidence_plans' is not a list — "
+                "dropped (corrupt file kept for inspection)",
+            )
+        state["evidence_plans"] = []
+    else:
+        plans_kept: list[dict] = []
+        plans_skipped = 0
+        for e in plans:
+            if _evidence_plan_entry_ok(e):
+                plans_kept.append(_normalize_evidence_plan(e))
+            else:
+                plans_skipped += 1
+        if plans_skipped and logs_dir is not None:
+            _log(
+                logs_dir,
+                f"ORCH M2.3: {plans_skipped} corrupt run.yaml evidence-plan "
+                "entr(y/ies) skipped (file kept for inspection)",
+            )
+        state["evidence_plans"] = plans_kept
 
 
 def read_run(project_dir: Path, *, logs_dir: Path | None = None) -> dict | None:
@@ -414,6 +476,42 @@ def append_decision(state: dict, kind: str, todo_id: str, reason: str) -> bool:
             return False
     decisions.append({"ts": now_iso(), "kind": kind, "todo_id": todo_id, "reason": reason})
     return True
+
+
+def append_evidence_plan(state: dict, todo_id: str, plan: dict) -> None:
+    """ORCH M2.3: append a per-item evidence plan to the state dict IN PLACE.
+
+    A mutator fragment for :func:`update_run` / :func:`update_run_cas` —
+    the caller runs it inside the lock so the plan lands in the SAME
+    atomic write as the queue-position commit that launched the item (the
+    decisions' path, M1: one lock hold, one write). Appended, never
+    replaced: a retry that re-launches the same item appends a fresh
+    snapshot; the surfaces read the current element's (last) entry.
+
+    ``plan`` carries ``{todo_sha, verify, gates, prove_red, note}`` —
+    the launch-time snapshot of the TODO's contract + file hash
+    (``awf/api/run.py::_todo_evidence_plan``).
+    """
+    plans = state.get("evidence_plans")
+    if not isinstance(plans, list):
+        plans = []
+        state["evidence_plans"] = plans
+    def _str_items(v: object) -> list[str]:
+        if not isinstance(v, list):
+            return []
+        return [x for x in v if isinstance(x, str) and x.strip()]
+
+    plans.append(
+        {
+            "ts": now_iso(),
+            "todo_id": str(todo_id or "").strip(),
+            "todo_sha": str(plan.get("todo_sha") or ""),
+            "verify": _str_items(plan.get("verify")),
+            "gates": _str_items(plan.get("gates")),
+            "prove_red": _str_items(plan.get("prove_red")),
+            "note": str(plan.get("note") or ""),
+        }
+    )
 
 
 def record_decision(

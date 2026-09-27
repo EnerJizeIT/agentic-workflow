@@ -531,6 +531,17 @@ append-only `decisions` list; repeating the same (kind, todo_id, reason)
 adds no duplicate. Old run.yaml files without these fields read as before
 (no migration); corrupt values degrade to empty with a warning.
 
+**Evidence plan (per launched item, ORCH M2.3).** At the launch of a
+queue item, `awf_run_next` snapshots the launched TODO's contract
+(verify/gates/prove_red) + the file hash of `TODO-*.md` into
+`state/run.yaml` (an append-only `evidence_plans` list, in the same
+atomic write as the position commit — no second store). The plan
+survives a later edit or retire of the TODO: `awf_brief` and
+`awf_load_supervisor_context` show the current/last item's plan (the
+verify commands and the prove_red ids, brief) before the supervisor
+decides. A TODO without a contract → an empty plan + a note; corrupt
+values degrade to empty with a warning.
+
 **Two views of one record (ORCH M1.2).** `awf_brief` and
 `awf_load_supervisor_context` are two views of the SAME run record, read
 by one shared reader (`awf/run_plan_read.py`), not parallel retellings:
@@ -538,9 +549,10 @@ the card shows the goal, position, budget, the last decision in one line
 and links to the sources (run.yaml, the last decision's REVIEW /
 RUN-EVIDENCE file, the RUN-REPORT); the full context adds all the
 decisions (which, why, when). After a reject in a run both surfaces show
-the decision and the nearest permitted action (`awf_run_next`, not the
-generic `awf_start`). A corrupted run.yaml degrades both to "no run"
-with a warning — no traceback.
+the decision and the ONE next step — closing it: re-plan the task (issue
+a new TODO) + `awf_todo_retire`, or `awf_run_finish` (the run gate
+refuses `awf_run_next` over an open reject). A corrupted run.yaml
+degrades both to "no run" with a warning — no traceback.
 
 **Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
 cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`

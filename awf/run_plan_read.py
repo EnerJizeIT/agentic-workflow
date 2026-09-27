@@ -28,6 +28,11 @@ from . import paths, run_state
 # compact line each; the full context carries the unclipped text.
 _GOAL_MAX_WORDS = 10
 _REASON_MAX_WORDS = 10
+# ORCH M2.3: the card's evidence plan stays brief — one verify command
+# per line, clipped to ONE line, at most three commands (the context
+# carries all of them unclipped).
+_VERIFY_MAX_WORDS = 12
+_PLAN_MAX_ITEMS = 3
 
 
 @dataclass
@@ -45,6 +50,11 @@ class RunRecord:
     # the causal memory: [{ts, kind, todo_id, reason}] (sanitized by read_run)
     decisions: list[dict[str, str]] = field(default_factory=list)
     last_decision: dict[str, str] | None = None
+    # ORCH M2.3: the per-item evidence plan of the CURRENT element (the
+    # last recorded one when current has none) — the launch-time snapshot
+    # of the TODO's contract (verify/gates/prove_red) + file hash. None
+    # when nothing was launched (or the legacy state carries no plans).
+    evidence_plan: dict | None = None
     # project-relative files that back the record: run.yaml + the
     # REVIEW/RUN-EVIDENCE file of the last decision + the RUN-REPORT of a
     # closed run
@@ -95,6 +105,24 @@ def _sources(project_dir: Path, record: RunRecord) -> list[str]:
     return sources
 
 
+def _evidence_plan_for(state: dict) -> dict | None:
+    """ORCH M2.3: which evidence plan a surface shows — the CURRENT
+    element's snapshot when one was recorded for it, else the LAST
+    recorded entry (a closed run keeps its last element's plan; a re-
+    launched item is matched by id, not by position). None when the
+    (sanitized) state carries no plans at all."""
+    plans = state.get("evidence_plans")
+    if not isinstance(plans, list) or not plans:
+        return None
+    current = str(state.get("current") or "")
+    if current:
+        for e in reversed(plans):
+            if isinstance(e, dict) and str(e.get("todo_id") or "") == current:
+                return dict(e)
+    last = plans[-1]
+    return dict(last) if isinstance(last, dict) else None
+
+
 def read_run_record(project_dir: Path) -> RunRecord:
     """Read the run state ONCE for a supervisor surface.
 
@@ -129,6 +157,9 @@ def read_run_record(project_dir: Path) -> RunRecord:
     record.decisions = [dict(d) for d in (state.get("decisions") or [])]
     if record.decisions:
         record.last_decision = record.decisions[-1]
+    # ORCH M2.3: the current/last element's evidence plan (the sanitized
+    # state — a broken field already degraded to [] in read_run).
+    record.evidence_plan = _evidence_plan_for(state)
     try:
         budget = int(state.get("budget_minutes", 0) or 0)
     except (TypeError, ValueError):
@@ -165,14 +196,62 @@ def decision_line(d: dict[str, str] | None) -> str:
     return line
 
 
+def evidence_plan_lines(record: RunRecord, *, compact: bool = False) -> list[str]:
+    """ORCH M2.3: the evidence plan lines for a supervisor surface — the
+    verify commands and the prove_red ids, brief, before the decision.
+
+    ``compact=True`` (the brief card) keeps the word budget: at most
+    ``_PLAN_MAX_ITEMS`` commands/ids, each clipped to one line; the full
+    context (``compact=False``) carries every item unclipped. No plan →
+    [] (nothing launched yet); a plan with an empty contract renders the
+    note (the TODO had no contract block / the block was broken).
+    """
+    plan = record.evidence_plan
+    if not plan:
+        return []
+    todo = str(plan.get("todo_id") or "?")
+    sha = str(plan.get("todo_sha") or "")
+    head = f"- run evidence plan ({todo}"
+    if sha:
+        head += f", file sha {sha[:12]}…"
+    lines = [head + "):"]
+    verify = [str(v).strip() for v in (plan.get("verify") or []) if str(v).strip()]
+    gates = [str(g).strip() for g in (plan.get("gates") or []) if str(g).strip()]
+    prove = [str(p).strip() for p in (plan.get("prove_red") or []) if str(p).strip()]
+    if verify:
+        shown = verify if not compact else verify[:_PLAN_MAX_ITEMS]
+        for v in shown:
+            lines.append(f"  - verify: {_clip_words(v, _VERIFY_MAX_WORDS) if compact else v}")
+        if compact and len(verify) > _PLAN_MAX_ITEMS:
+            lines.append(f"  - … +{len(verify) - _PLAN_MAX_ITEMS} more verify command(s)")
+    if gates:
+        lines.append(f"  - gates: {', '.join(gates)}")
+    if prove:
+        shown = prove if not compact else prove[:_PLAN_MAX_ITEMS]
+        for p in shown:
+            lines.append(f"  - prove_red: {p}")
+        if compact and len(prove) > _PLAN_MAX_ITEMS:
+            lines.append(f"  - … +{len(prove) - _PLAN_MAX_ITEMS} more prove_red id(s)")
+    note = str(plan.get("note") or "").strip()
+    if note:
+        lines.append(f"  - note: {note}")
+    return lines
+
+
 def next_action_for_record(record: RunRecord, fallback: str) -> str:
     """The nearest permitted action, run-aware.
 
     Outside a run (or before the first decision) the fallback stands —
     the behavior is unchanged. Inside an active run after a REJECT the
-    fallback is replaced: the decision is recorded, and the next step is
-    to fix the assignment and ``awf_run_next`` (in a run the queue
-    position is owned by awf — not the generic ``awf_start``).
+    fallback is replaced: the decision is recorded, and the ONE next
+    step is to CLOSE it — re-plan the task (issue a new TODO) and retire
+    the rejected one, or stop the run (ORCH M2.3: the old wording told
+    the supervisor "fix the assignment, then awf_run_next", but the run
+    gate REFUSES that run_next until the rejected TODO is archived —
+    ``awf/api/run.py`` refuses over an open reject; the retire step was
+    missing from the text). ``awf_run_next`` stays named as the loop
+    step AFTER the closing (the queue position is owned by awf — not
+    the generic ``awf_start``).
     """
     if not record.active or not record.last_decision:
         return fallback
@@ -181,9 +260,11 @@ def next_action_for_record(record: RunRecord, fallback: str) -> str:
     todo = str(record.last_decision.get("todo_id") or "?")
     return (
         f"Decision recorded: reject {todo} (sources in the run record). "
-        f"Next permitted step: fix the assignment, then `awf_run_next` "
-        f"(the run gate counts rejections — twice stops the run). Stop the "
-        f"run instead with `awf_run_finish` if the task needs the owner."
+        f"Close the reject decision: re-plan the task (issue a new TODO) "
+        f"and retire {todo} (`awf_todo_retire`), or stop the run "
+        f"(`awf_run_finish`) if it needs the owner. Then `awf_run_next` "
+        f"launches the next item (the run gate counts rejections — twice "
+        f"stops the run)."
     )
 
 
@@ -192,5 +273,6 @@ __all__ = [
     "read_run_record",
     "clip_goal",
     "decision_line",
+    "evidence_plan_lines",
     "next_action_for_record",
 ]
