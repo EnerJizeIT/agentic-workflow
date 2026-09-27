@@ -411,6 +411,19 @@ allowed (deliberate — QA runs tests). Full isolation of a role is out of
 scope for awf and belongs to the ORCH plan. Example:
 `automation.readonly_roles: [agent-qa-review]`.
 
+**Worker tool profile.** For execute stages (all pipeline stages
+between `plan` and `verify`) awf adds an agent-scoped permission block
+to the generated `OPENCODE_CONFIG_CONTENT` that denies the control MCP
+tools — approve, reject, start, continue, kill, retry-stage, reset,
+rollback, restore, unblock, init, baseline, dispatch-todo,
+todo-remove/retire/update, run-start/next/finish/note, set-goal,
+confirm-normalized (22 in total, `awf._env.CONTROL_TOOLS`). The worker
+model does not see these tools in its tool list; `bash`, file and
+search tools and observability tools (status, brief, report) stay
+available. `plan`/`verify` stages keep the full set. This reduces
+accidental errors — it is not a security boundary; strict isolation of
+a worker is a separate effort.
+
 ### TODO
 | Tool | What it does |
 |---|---|

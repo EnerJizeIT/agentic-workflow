@@ -249,6 +249,19 @@ argv ребёнка не меняются. Значение проверяетс
 этой программы, в ORCH-плане. Пример:
 `automation.readonly_roles: [agent-qa-review]`.
 
+**Профиль tools воркера.** Для execute-стадий (все стадии пайплайна
+между `plan` и `verify`) awf добавляет в сгенерированный
+`OPENCODE_CONFIG_CONTENT` агентный блок permission, который запрещает
+управляющие MCP-tools — approve, reject, start, continue, kill,
+retry-stage, reset, rollback, restore, unblock, init, baseline,
+dispatch-todo, todo-remove/retire/update, run-start/next/finish/note,
+set-goal, confirm-normalized (22 всего, `awf._env.CONTROL_TOOLS`).
+Модель воркера не видит эти tools в своём списке; `bash`, файловые и
+поисковые tools и инструменты наблюдения (status, brief, report)
+остаются. Стадии `plan`/`verify` сохраняют полный набор. Это снижение
+случайных ошибок, а не граница безопасности; строгая изоляция воркера
+— отдельный этап.
+
 **Именованные пайплайны.** Несколько пайплайнов в одном проекте,
 запуск нужного по имени:
 

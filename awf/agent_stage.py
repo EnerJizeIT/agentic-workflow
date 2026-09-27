@@ -163,7 +163,14 @@ def run_agent_stage(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         # W7: role-aware env — a role listed in automation.readonly_roles
         # gets no edit/write permission overrides.
-        env=awf_subprocess_env(role=role, project_dir=project_dir),
+        # ORCH M2.2: execute stages hide the control MCP tools from the
+        # stage's agent (plan/verify keep the full set).
+        env=awf_subprocess_env(
+            role=role,
+            project_dir=project_dir,
+            agent_name=agent_name,
+            restrict_control_tools=(kind == "execute"),
+        ),
         hard_timeout=hard_timeout,
         log_holder=log_holder,
         on_spawn=_record_worker_pid,

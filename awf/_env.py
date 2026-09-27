@@ -62,15 +62,75 @@ def _is_readonly_role(role: str, project_dir: str | Path | None) -> bool:
     return role in {str(r) for r in roles}
 
 
+# ORCH M2.2 (V-03, audit 2026-09-27): MCP tools that control the run's
+# verdicts and state. Execute-stage workers get them hidden from their
+# tool list (agent-scoped permission deny, see :func:`awf_subprocess_env`)
+# so they cannot accidentally approve/kill/rollback/dispatch. This reduces
+# accidental errors — it is NOT a security boundary (the worker keeps
+# ``bash``). Strict isolation is a separate effort (ORCH plan).
+MCP_CONTROL_SERVER = "agent-workflow-ui"
+
+CONTROL_TOOLS: tuple[str, ...] = (
+    # work verdicts
+    "awf_approve",
+    "awf_reject",
+    # pipeline lifecycle
+    "awf_start",
+    "awf_continue",
+    "awf_kill",
+    "awf_retry_stage",
+    # destructive / repair state
+    "awf_reset",
+    "awf_rollback",
+    "awf_restore",
+    "awf_unblock",
+    # project / unit lifecycle
+    "awf_init",
+    "awf_baseline",
+    "awf_dispatch_todo",
+    "awf_todo_remove",
+    "awf_todo_retire",
+    "awf_todo_update",
+    # run state
+    "awf_run_start",
+    "awf_run_next",
+    "awf_run_finish",
+    "awf_run_note",
+    # supervisor phase state
+    "awf_set_goal",
+    "awf_confirm_normalized",
+)
+
+
+def control_tool_permission_keys() -> list[str]:
+    """Full MCP tool names (``<server>_<tool>``) denied for execute stages."""
+    return [f"{MCP_CONTROL_SERVER}_{tool}" for tool in CONTROL_TOOLS]
+
+
 def awf_subprocess_env(
     *,
     role: str = "",
     project_dir: str | Path | None = None,
+    agent_name: str = "",
+    restrict_control_tools: bool = False,
 ) -> dict[str, str]:
     """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
     Sets ``OPENCODE_CONFIG_CONTENT`` to override permission rules so
     the subprocess can run ``edit``/``bash``/``write`` without prompting.
+
+    ORCH M2.2 (V-03, 27.09): with ``restrict_control_tools=True`` and a
+    non-empty ``agent_name``, the config content also carries an
+    agent-scoped permission block that DENIES the control MCP tools
+    (see :data:`CONTROL_TOOLS`) for that agent only — execute stages
+    pass both so the worker's model does not see approve/kill/rollback/
+    dispatch in its tool list. Plan/verify stages pass nothing and keep
+    the full set. The deny keys are full MCP tool names
+    (``agent-workflow-ui_awf_*``) — opencode matches permission keys as
+    glob patterns against tool names, so the same mechanism that gates
+    ``bash`` gates MCP tools. Verified live on opencode 1.18.32: the
+    deny rule lands after the ``*`` allow in the resolved config and the
+    denied tools disappear from the model's tool list.
 
     W7 + V-04 (readonly roles): when ``role`` is listed in the project's
     ``automation.readonly_roles`` (``.agentic/config.yaml``, default
@@ -126,11 +186,25 @@ def awf_subprocess_env(
     merged_permissions.update(overrides)
     merged["permission"] = merged_permissions
 
+    # ORCH M2.2: execute stages hide the control MCP tools from the
+    # stage's agent only — an agent-scoped deny block, merged by opencode
+    # with the user's own agent definition (probed on 1.18.32).
+    agent_block: dict | None = None
+    if restrict_control_tools and agent_name:
+        agent_block = {
+            agent_name: {
+                "permission": {key: "deny" for key in control_tool_permission_keys()}
+            }
+        }
+
     # P1 security: only serialize permission overrides to env — never API keys,
     # providers, or other sensitive fields from opencode.json. Workers only
     # need the permission overrides; everything else is loaded by opencode
     # itself from the real config file.
-    config_json = json.dumps({"permission": merged_permissions})
+    payload: dict = {"permission": merged_permissions}
+    if agent_block is not None:
+        payload["agent"] = agent_block
+    config_json = json.dumps(payload)
     env["OPENCODE_CONFIG_CONTENT"] = config_json
 
     # BD-25: strip server env vars

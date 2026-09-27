@@ -646,4 +646,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # awf/commit_gate.py, awf/api/pipeline.py) and the docs (docs/file-bus.md,
 # USAGE EN/RU) are TODO-line neutral. Same class as above: test
 # identifiers, not debt.
+# TODO-0133 (ORCH M2.2, worker tool profiles): baseline raised
+# 4259 -> 4262 — the new tests/negative/test_worker_tool_profiles.py adds
+# 3 TODO-bearing lines (the module docstring's unit-contract references:
+# the dispatch-TODO sentence, the "поверхность из TODO" test bullets).
+# Same class as above: test identifiers, not debt. The production diff
+# (awf/_env.py, awf/agent_stage.py) and the docs (USAGE EN/RU,
+# docs/design.md) are TODO-line neutral.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
