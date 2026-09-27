@@ -14,6 +14,8 @@ commit path).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -260,6 +262,51 @@ def _all_changed_files(project_dir: Path) -> list[str]:
         return []
 
 
+def read_baseline_sha(project_dir: Path, todo_id: str) -> str:
+    """The ``BASELINE-{todo_id}.sha`` content — the plan's file-set input.
+
+    "" when the baseline file is absent or unreadable (the plan then falls
+    back to the full change set, exactly like the gate's no-baseline path).
+    """
+    if not todo_id:
+        return ""
+    sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+    if not sha_file.is_file():
+        return ""
+    try:
+        return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
+    except OSError:
+        return ""
+
+
+def plan_files(
+    project_dir: Path, baseline_sha: str = "", todo_id: str = ""
+) -> list[str]:
+    """M2.1: the EXACT commit file set, read the way the plan reads it.
+
+    The baseline diff (A1 isolation) when ``baseline_sha`` is given, the
+    full change set (legacy back-compat) otherwise. ``build_commit_plan``
+    and the approve-time binding both go through this one function, so
+    their digests are computed over the same file set by construction.
+    """
+    if baseline_sha:
+        return _files_changed_since_baseline(project_dir, baseline_sha, todo_id=todo_id)
+    return _all_changed_files(project_dir)
+
+
+def files_digest(files: list[str] | tuple[str, ...]) -> str:
+    """M2.1: stable digest of the exact commit file set.
+
+    sha256 over the NUL-joined sorted paths — order-insensitive, empty set
+    has its own (deterministic) digest.
+    """
+    h = hashlib.sha256()
+    for name in sorted(files):
+        h.update(name.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
+
+
 def _read_verified_sha(project_dir: Path, todo_id: str) -> str | None:
     """The stored VERIFIED-{todo_id}.sha fingerprint.
 
@@ -317,10 +364,7 @@ def build_commit_plan(
 
     verified = _read_verified_sha(project_dir, todo_id)
 
-    if baseline_sha:
-        files = _files_changed_since_baseline(project_dir, baseline_sha, todo_id=todo_id)
-    else:
-        files = _all_changed_files(project_dir)
+    files = plan_files(project_dir, baseline_sha, todo_id)
     return CommitPlan(
         todo_id=todo_id,
         generation=generation,
@@ -419,5 +463,140 @@ def fingerprint_refusal(plan: CommitPlan, project_dir: Path) -> str:
             f"now {current[:12]}…) — the commit gate would commit something "
             "that was not verified. Re-verify on the current tree "
             "(`awf tree-sha`) and re-approve with the fresh fingerprint."
+        )
+    return ""
+
+
+def read_approval_binding(project_dir: Path, todo_id: str) -> dict | None:
+    """M2.1: the approval binding stored in ``APPROVE-{todo_id}.ready``.
+
+    In an active run ``awf_approve`` writes the signal as a small JSON:
+    ``{"generation": int, "verified_sha": 64-hex, "files_digest": 64-hex}``
+    — the run generation the decision was made in, the verified-tree
+    fingerprint, and the digest of the file set the gate will apply.
+    Outside a run the signal stays an empty marker. An empty or
+    unparseable file (legacy approve, a hand-made signal) yields None —
+    the gate fail-closes it inside a run.
+    """
+    signal = paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready"
+    try:
+        raw = signal.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def binding_refusal(plan: CommitPlan, project_dir: Path, authorized_by: str) -> str:
+    """M2.1 (ORCH M2.1): the approval's binding vs the run generation and
+    the plan.
+
+    A-04 and A-15 pin the verdict and the tree, but neither pins WHICH run
+    cycle the approval belongs to: a force-restarted run resets the diary
+    (A-04 then has nothing to check) and an unchanged tree passes A-15, so
+    a leftover approval of a dead generation unlocked the new cycle's
+    commit. The approve now stamps the binding (generation, verified
+    fingerprint, file-set digest) into the APPROVE signal; this check
+    enforces it at the gate:
+
+    - only a bound APPROVE authorizes a commit in an ACTIVE run — an ACK
+      (or an unbound APPROVE: legacy, hand-made) carries no evidence and
+      no fingerprint and is refused (the AUD11-03 evidence gate for the
+      interactive wait, now also for the gate itself);
+    - the binding's generation must be the CURRENT run's generation — an
+      approval published for a revised/restarted run is stale and is
+      refused;
+    - the binding's fingerprint must be the one the plan will enforce
+      (a divergent VERIFIED file fails closed);
+    - the plan's file set must match the set the approve covered.
+
+    Outside a run the binding is not enforced (legacy behavior). Returns a
+    refusal reason, or "" when the commit may proceed.
+    """
+    if not plan.todo_id:
+        return ""
+    try:
+        state = run_state.read_run(project_dir)
+    except Exception:
+        return ""  # unreadable run state — the same posture as A-04
+    if not state or not state.get("active"):
+        return ""
+    current_gen = run_state.generation_of(state)
+
+    if authorized_by != "APPROVE":
+        what = (
+            "the ACK signal"
+            if authorized_by == "ACK"
+            else "no approval signal is present"
+        )
+        return (
+            f"an active run (generation {current_gen}) authorizes the unit "
+            f"commit only via a bound awf_approve — {what} carries no "
+            "evidence and no verified fingerprint. Approve with "
+            "awf_approve(evidence=..., verified_sha=...)."
+        )
+
+    binding = read_approval_binding(project_dir, plan.todo_id)
+    if binding is None:
+        return (
+            f"the APPROVE-{plan.todo_id}.ready signal carries no binding "
+            "(published by an older awf version or by hand) — an active "
+            "run commits only on a bound approval. Re-approve with "
+            "awf_approve(evidence=..., verified_sha=...)."
+        )
+
+    gen = binding.get("generation")
+    if isinstance(gen, bool) or not isinstance(gen, int):
+        return (
+            "the APPROVE signal's binding has no readable generation — "
+            "re-approve with awf_approve."
+        )
+    if gen != current_gen:
+        return (
+            f"the approve was published for run generation {gen}, but the "
+            f"active run is generation {current_gen} — the run was revised "
+            "or restarted after the approval. The stale approval must not "
+            "unlock this commit. Re-verify on the current run and approve "
+            "again (awf_approve)."
+        )
+
+    expected_fp = binding.get("verified_sha")
+    if not isinstance(expected_fp, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_fp):
+        return (
+            "the APPROVE signal's binding has no valid verified_sha — "
+            "re-approve with awf_approve."
+        )
+    if plan.verified_sha != expected_fp:
+        return (
+            "the fingerprint the approve pinned does not match the one the "
+            "commit gate will enforce — the VERIFIED file and the approval "
+            "diverge. Re-verify on the current tree (`awf tree-sha`) and "
+            "re-approve with the fresh fingerprint."
+        )
+
+    expected_digest = binding.get("files_digest")
+    if (
+        not isinstance(expected_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+    ):
+        return (
+            "the APPROVE signal's binding has no valid files_digest — "
+            "re-approve with awf_approve."
+        )
+    files = plan_files(
+        project_dir, read_baseline_sha(project_dir, plan.todo_id), plan.todo_id
+    )
+    if files_digest(files) != expected_digest:
+        return (
+            "the commit's file set differs from the set the approve covered "
+            "(files digest mismatch) — the gate would commit files the "
+            "supervisor did not verify. Re-approve on the current tree."
         )
     return ""

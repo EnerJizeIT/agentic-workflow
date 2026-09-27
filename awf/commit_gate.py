@@ -247,10 +247,15 @@ def maybe_commit(
     present; the fingerprint re-check (A-15) runs pre-staging, from the
     plan's stored value. In auto mode the stored fingerprint is re-read
     into the plan AFTER the signal wait — an approve that arrives in the
-    wait window writes VERIFIED-{todo}.sha after the build, and its
+    wait     window writes VERIFIED-{todo}.sha after the build, and its
     fingerprint must be enforced, not silently skipped (REVIEW-0087 P2).
     Both are plan checks — there is no separate duplicate check in the
     commit path.
+
+    M2.1: in an active run the approval is checked too — the APPROVE
+    signal carries the binding (run generation, verified fingerprint,
+    file-set digest) and any mismatch refuses the commit
+    (``commit_plan.binding_refusal``).
     """
     if policy not in ("commit_and_next", "commit_and_report"):
         return commit_plan.CommitOutcome(
@@ -274,13 +279,16 @@ def maybe_commit(
         _log(logs_dir, f"A-04: commit refused for {todo_id} — {refusal}")
         return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
 
+    # BD-17: accept either APPROVE-{todo}.ready (from `awf approve` /
+    # human) or ACK-{todo}.ready (from supervisor verify subprocess in
+    # auto mode). In an active run only the bound APPROVE authorizes the
+    # commit (M2.1 binding_refusal) — `which` is what the binding check
+    # sees.
+    inbox = paths.inbox(project_dir)
+    approve_signal = inbox / f"APPROVE-{todo_id}.ready"
+    ack_signal = inbox / f"ACK-{todo_id}.ready"
+
     if auto:
-        inbox = paths.inbox(project_dir)
-        # BD-17: accept either APPROVE-{todo}.ready (from `awf approve` /
-        # human) or ACK-{todo}.ready (from supervisor verify subprocess in
-        # auto mode). Both authorize the commit.
-        approve_signal = inbox / f"APPROVE-{todo_id}.ready"
-        ack_signal = inbox / f"ACK-{todo_id}.ready"
         print("Auto-mode: waiting for supervisor approval to commit.", file=sys.stderr)
         print(f"  Approve signal: awf approve {todo_id}", file=sys.stderr)
         print("  Or ACK from supervisor verify subprocess.", file=sys.stderr)
@@ -307,6 +315,10 @@ def maybe_commit(
         # silently skip. Re-read the stored fingerprint into the plan
         # (field update only — the check stays in fingerprint_refusal).
         plan = commit_plan.refresh_verified_sha(plan, project_dir)
+    else:
+        which = "APPROVE" if approve_signal.exists() else (
+            "ACK" if ack_signal.exists() else ""
+        )
 
     refusal = commit_plan.fingerprint_refusal(plan, project_dir)
     if refusal:
@@ -316,6 +328,19 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"A-15: commit refused for {todo_id} — {refusal}")
+        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
+
+    # M2.1: the approval's binding — which run generation it was made in,
+    # and the file set it covered. Runs after A-15 so a moved tree still
+    # gets the (more actionable) re-verify message first.
+    refusal = commit_plan.binding_refusal(plan, project_dir, which)
+    if refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"M2.1: commit refused for {todo_id} — {refusal}")
         return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
 
     if not plan.files:

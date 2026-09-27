@@ -97,7 +97,14 @@ verification». The hash is stored to
 the evidence and the verified tree. Without `--verified-sha` the behavior
 is exactly as before — **except in an active run (забег), where it is
 REQUIRED** (V-03, 2026-09-27): approve without the fingerprint is refused
-and no APPROVE signal is published.
+and no APPROVE signal is published. In an active run the approve is also
+BOUND to the cycle (M2.1, 2026-09-27): the `APPROVE-<todo-id>.ready`
+signal carries the run generation, the verified fingerprint, and the
+digest of the file set the commit gate will apply. If the run is
+restarted or revised after the approve, the stale approval no longer
+unlocks the commit — the gate refuses with a clear message, nothing is
+committed, and a fresh `awf_approve` on the current run is required.
+Outside a run the signal stays an empty marker as before.
 
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
 over `scripts/mutations.txt` (the same base list the CI test job runs as

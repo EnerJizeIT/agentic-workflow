@@ -636,4 +636,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/agent_workflow_ui/test_audit25_w7_protocol_ship.py (module
 # docstring unit reference). Same class as above: unit references and
 # prompt wording, not debt.
+# TODO-0132 (ORCH M2.1, approve generation binding): baseline raised
+# 4235 -> 4259 — the unit adds 24 TODO-bearing lines, all in the new
+# tests/negative/test_approve_binding.py (the TODO-0001 constant and its
+# fixture/assert use-sites in the seven tests: _write_todo / _verify_state
+# helpers, the BASELINE-{TODO}.sha fixture, the run_start/force-queue
+# fixtures, the APPROVE/ACK/VERIFIED-TODO-0001 path asserts, and the
+# module docstring unit reference). The production diff (awf/commit_plan.py,
+# awf/commit_gate.py, awf/api/pipeline.py) and the docs (docs/file-bus.md,
+# USAGE EN/RU) are TODO-line neutral. Same class as above: test
+# identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
