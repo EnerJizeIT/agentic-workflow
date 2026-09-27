@@ -46,6 +46,11 @@
 #     hang-pids       "<main pid>\n<child pid>" — written by hang mode
 #                     before it starts waiting (the test checks both are
 #                     dead after the engine's hard-timeout kill)
+#     prompt-<N>-<kind>.txt
+#                     the full prompt argument of the N-th invocation
+#                     (N = invocation.log line number) — ORCH M3.2: lets a
+#                     test assert what the engine actually sent to the
+#                     stage (task/input/output in the execute prompt)
 #   AWF_SHIM_HANG_SECONDS    hang mode sleep length (default 300)
 #   AWF_SHIM_PLAN_TODO_ID    plan-todo mode TODO id (default TODO-0001)
 #
@@ -101,6 +106,10 @@ if [[ -n "$STATE_DIR" ]]; then
     ACTIVE_MODE="$WORKER_MODE"
     [[ "$KIND" == "supervisor" ]] && ACTIVE_MODE="$SUP_MODE"
     echo "$$ $KIND $ACTIVE_MODE $TITLE $TODO_ID" >> "$STATE_DIR/invocation.log"
+    if [[ -n "$PROMPT" ]]; then
+        N=$(wc -l < "$STATE_DIR/invocation.log" | tr -d '[:space:]')
+        printf '%s\n' "$PROMPT" > "$STATE_DIR/prompt-${N}-${KIND}.txt"
+    fi
 fi
 
 INBOX=".agentic/inbox"

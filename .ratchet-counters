@@ -669,4 +669,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # "TODO file unreadable"). Same class as above: test identifiers and
 # unit wording, not debt. The new test file stays at exactly 400 lines
 # (not over), so files_over_400 is locked at 62.
+# ORCH M3.2 (TODO-0136, поручение стадии и объявленные выходы): baseline
+# raised 4315 -> 4334 — the new
+# tests/negative/test_stage_assignment_outputs.py adds 19 TODO-bearing
+# lines (module docstring unit reference, the TODO-0001 fixtures in the
+# pipeline YAML strings and the fixture/assert use-sites of the five
+# engine/unit/loader tests). The production diff (awf/pipeline.py,
+# awf/agent_stage.py, awf/pipeline_engine.py — Stage input/output schema
+# + validation, the prompt assignment block, the declared-output check)
+# and the shim prompt capture are TODO-line neutral. Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays 62
+# (the new test file is 364 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

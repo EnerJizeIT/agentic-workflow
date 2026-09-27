@@ -17,7 +17,13 @@ runtime input).
 ORCH M3.1: a stage may carry an optional ``id`` (unique stage address —
 the stage NAME becomes it, so one role may appear twice with different
 assignments; duplicate ids are a load error) and ``task`` (short
-assignment, carried on the Stage; not fed to prompts yet — M3.2).
+assignment).
+
+ORCH M3.2: a stage may declare ``input``/``output`` (project-relative
+paths). The execute prompt carries task/input/output (when task is set),
+and the engine verifies a declared output (exists + fresh) before the
+stage advances — the declared output is the stage's contract, not the
+bare DONE signal.
 """
 from __future__ import annotations
 
@@ -46,9 +52,15 @@ class Stage:
     # the id (one role may appear twice with different assignments), so
     # handoff files ``<name>-<todo>.md`` stay distinct. Empty by default.
     id: str = ""
-    # ORCH M3.1: short stage assignment. Carried on the Stage; not fed to
-    # prompts yet (ORCH M3.2). Empty by default.
+    # ORCH M3.1: short stage assignment. Carried on the Stage; the
+    # execute prompt carries it (plus input/output) — ORCH M3.2.
+    # Empty by default.
     task: str = ""
+    # ORCH M3.2: declared stage input/output — project-relative paths.
+    # The engine verifies a declared output (exists + fresh) before the
+    # stage advances; without one, behavior is unchanged (back-compat).
+    input: str = ""
+    output: str = ""
     on_blocked: str = "escalate"
     on_approved: str = "next"
     on_rejected: str = "escalate"
@@ -123,6 +135,9 @@ ALLOWED_STAGE_KEYS = frozenset(
         # ORCH M3.1: stage identity + assignment.
         "id",
         "task",
+        # ORCH M3.2: declared stage inputs/outputs (project-relative).
+        "input",
+        "output",
         "on_blocked",
         "on_approved",
         "on_rejected",
@@ -154,6 +169,19 @@ def _compute_kind(position: int, total: int) -> str:
     return "execute"
 
 
+def _is_project_relative(value: str) -> bool:
+    """ORCH M3.2: a declared input/output must stay inside the project.
+
+    Project-relative means: no absolute path (``/...``), no ``~`` and no
+    ``..`` component (the engine resolves these against the project root
+    and checks a declared output's freshness there — an escaping path
+    would read/write outside the project).
+    """
+    if value.startswith("/") or value.startswith("~"):
+        return False
+    return ".." not in Path(value).parts
+
+
 def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     """A-06: form check for a pipeline stage list.
 
@@ -165,10 +193,11 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     Raises:
         AwfApiError: stages not a non-empty list, a stage not a mapping,
             unknown keys, a missing/empty/non-string role, an empty or
-            non-slug ``id`` / an empty ``task`` (ORCH M3.1), a duplicated
-            stage ``id``, a policy that is not an allowed string
-            (rollback_to:<stage> only on on_blocked/on_rejected), or a
-            negative/non-integer budget.
+            non-slug ``id`` / an empty ``task`` (ORCH M3.1), a non-empty
+            but non project-relative ``input``/``output`` (ORCH M3.2),
+            a duplicated stage ``id``, a policy that is not an allowed
+            string (rollback_to:<stage> only on on_blocked/on_rejected),
+            or a negative/non-integer budget.
     """
     if not isinstance(stages, list) or not stages:
         raise AwfApiError(
@@ -214,6 +243,25 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                     f"Pipeline {source}: stage '{label}' has an invalid "
                     f"'task' (must be a non-empty string), got {value!r}."
                 )
+        # ORCH M3.2: declared stage input/output — non-empty
+        # project-relative paths (the engine resolves them against the
+        # project root; a declared output is checked for existence and
+        # freshness before the stage advances).
+        for io_key in ("input", "output"):
+            if io_key in stage and stage[io_key] is not None:
+                value = stage[io_key]
+                if not isinstance(value, str) or not value.strip():
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' has an invalid "
+                        f"'{io_key}' (must be a non-empty string), "
+                        f"got {value!r}."
+                    )
+                if not _is_project_relative(value):
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' has an invalid "
+                        f"'{io_key}' (must be a project-relative path — "
+                        f"no leading '/', no '..'), got {value!r}."
+                    )
         for pk in _POLICY_KEYS:
             if pk in stage and stage[pk] is not None:
                 value = stage[pk]
@@ -325,6 +373,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         kwargs["description"] = s.get("description", "")
         kwargs["id"] = stage_id
         kwargs["task"] = s.get("task") or ""
+        # ORCH M3.2: declared inputs/outputs (project-relative).
+        kwargs["input"] = s.get("input") or ""
+        kwargs["output"] = s.get("output") or ""
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         kwargs["max_retries"] = s.get("max_retries", _DEFAULTS["max_retries"])

@@ -49,7 +49,10 @@ Trace (set `AWF_SHIM_STATE_DIR` to a fresh dir per engine run):
 - `invocation.log` — one line per invocation:
   `<pid> <worker|supervisor> <mode> <title> <todo>`;
 - `hang-pids` — `<main pid>` + `<child pid>` (hang mode), for the
-  "the process group is gone after the hard timeout" assertion.
+  "the process group is gone after the hard timeout" assertion;
+- `prompt-<N>-<worker|supervisor>.txt` — the full prompt argument of the
+  N-th invocation (N = invocation.log line number); ORCH M3.2: lets a
+  test assert what the engine actually sent to the stage.
 
 Tunables: `AWF_SHIM_HANG_SECONDS` (default 300),
 `AWF_SHIM_PLAN_TODO_ID` (default TODO-0001).
