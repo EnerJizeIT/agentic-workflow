@@ -16,7 +16,7 @@ prove_red, DONE-факты) жили только в `.agentic/roles/` этог�
   (включая supervisor) ведут себя как раньше
 - test_add_role_missing_builtin_falls_back_to_placeholder — старой
   установки без файла шаблон деградирует в плейсхолдер
-- test_env_readonly_role_has_no_edit_write — readonly-роль без edit/write
+- test_env_readonly_role_denies_edit_write — readonly-роль с edit/write=deny (V-04)
 - test_env_normal_role_keeps_edit_write — обычная роль со всем как раньше
 - test_env_empty_readonly_list_keeps_previous_behavior — пустой список =
   прежнее поведение
@@ -146,13 +146,13 @@ def test_add_role_missing_builtin_falls_back_to_placeholder(tmp_git_repo, monkey
 _READONLY_YAML = "automation:\n  readonly_roles:\n    - agent-qa-review\n"
 
 
-def test_env_readonly_role_has_no_edit_write(tmp_path, monkeypatch):
-    """Роль из automation.readonly_roles не получает edit/write; bash остаётся."""
+def test_env_readonly_role_denies_edit_write(tmp_path, monkeypatch):
+    """Роль из automation.readonly_roles: edit/write=deny (V-04), bash остаётся."""
     proj = _env_project(tmp_path, monkeypatch, _READONLY_YAML, "ro")
     env = awf_subprocess_env(role="agent-qa-review", project_dir=proj)
     perm = _permission(env)
-    assert "edit" not in perm
-    assert "write" not in perm
+    assert perm["edit"] == "deny"
+    assert perm["write"] == "deny"
     assert perm["bash"] == "allow"
     assert perm["webfetch"] == "allow"
 

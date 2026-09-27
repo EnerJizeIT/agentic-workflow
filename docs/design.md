@@ -229,7 +229,7 @@ HTTP server (daemon thread in orchestrator, `127.0.0.1`):
 8. **Закреплённый движок (`automation.runner_dir`).** Для проектов, где awf правит сам себя: background-ребёнок стартует с cwd закреплённого checkout — движок берётся оттуда, а не из дерева проекта, которое воркер меняет прямо сейчас (TODO-0077).
 9. **Evidence-гейт (AUD11-03).** В забеге approve без записи RUN-EVIDENCE не принимается, а ручной ACK без неё игнорируется. Содержимое evidence сообщает вызывающий; фактический запуск проверок ядро не удостоверяет.
 10. **Единый реестр tools (R-06).** `tools/registry.py` — один список для server, skill-установщика и тестов: 47 tools не расходятся по файлам.
-11. **`readonly_roles` (W7).** Роли из `automation.readonly_roles` не получают новых `edit/write` override в `OPENCODE_CONFIG_CONTENT`. Это не запрет записи: прежние разрешения пользователя сохраняются, а `bash` остаётся разрешённым. Ограничение роли пока держится на инструкции и конфигурации хоста.
+11. **`readonly_roles` (W7, V-04 27.09).** Роли из `automation.readonly_roles` получают в `OPENCODE_CONFIG_CONTENT` принудительные `edit: deny` / `write: deny` — поверх любых разрешений хоста; `bash` остаётся разрешённым (QA прогоняет тесты). Полная изоляция роли — в ORCH-плане.
 12. **Mutation smoke (U11).** `awf mutations` — supervisor проверяет, что ключевые инварианты реально ловятся тестами: подменить строку в файле, прогнать команду, ожидание красного.
 13. **Salvage-сценарий.** Worker умер без сигнала → `SALVAGE-{todo}.md` + рестарт стадии (`awf_retry_stage`); сценарий зафиксирован в brief-карточке (`awf/data/scenarios.yaml`) и в recovery-разделе USAGE.
 

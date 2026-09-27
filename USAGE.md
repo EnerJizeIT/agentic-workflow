@@ -394,10 +394,11 @@ validated before spawn (invalid path → `AwfApiError`, no process, no PID
 file). Without the key, behavior is unchanged (`cwd` = project directory).
 
 **Reviewer permission hint.** `automation.readonly_roles` in
-`.agentic/config.yaml` is a list of role names (default: empty). Awf does
-not add `edit`/`write` permission overrides for listed roles, but existing
-user permissions remain and `bash` stays allowed. This setting alone does
-not enforce read-only access. Example:
+`.agentic/config.yaml` is a list of role names (default: empty). For a
+listed role awf forces `edit`/`write` to `deny` in the generated
+`OPENCODE_CONFIG_CONTENT`, overriding any user permissions; `bash` stays
+allowed (deliberate — QA runs tests). Full isolation of a role is out of
+scope for awf and belongs to the ORCH plan. Example:
 `automation.readonly_roles: [agent-qa-review]`.
 
 ### TODO
