@@ -367,7 +367,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-47 tools: 42 `awf_*` workflow + 5 UI (forms).
+48 tools: 43 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -511,6 +511,7 @@ commit by design. That protection used to be silent; now it is visible:
 | `awf_run_next` | Launch the next queue item, or stop on a gate |
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
+| `awf_run_revise` | Revise the pipelines of the run's NOT-STARTED queue elements (preview + apply, idempotent by key) |
 
 **Per-item pipeline.** The queue accepts
 `{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain
@@ -519,6 +520,19 @@ id strings (mixed is fine); an empty/absent `pipeline` = the config default.
 front-matter, and `awf_run_next` reads it for items without a queue-level
 pipeline. An unknown name refuses the launch with the list of available
 pipelines (RUN3 #1).
+
+**Queue revision (ORCH M3.4).** `awf_run_revise(project_dir, queue,
+reason, key, preview)` revises the pipeline of the run's not-started queue
+elements only — the current and completed elements are never touched.
+`preview=true` shows the current queue, the elements that would change and
+the conflicts (current/started/completed/not in the queue) without writing
+anything. The apply is atomic (a conflict refuses the whole request), is
+refused while a stage is running (stop the unit first — stopping is the
+next unit, ORCH M3.5), and is idempotent by `key`: a repeat with the same
+key is a no-op. The applied revision is recorded in `state/run.yaml`
+(`revisions`, the decisions' path) in the same CAS write as the queue
+change (A-13 generation condition); the revised pipelines take effect at
+each element's launch (`awf_run_next`).
 
 **Run plan (goal, criteria, decisions).** `awf_run_start` accepts
 `goal` (one line) and `criteria` (a list of lines) — stored in

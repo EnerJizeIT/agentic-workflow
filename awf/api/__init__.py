@@ -100,7 +100,15 @@ from .pipeline import (
 from .pipelines import list_pipelines, write_pipeline
 from .planning import apply_increment_plan
 from .roles import add_role, analyze_roles
-from .run import run_brief, run_finish, run_next, run_note, run_start, run_status
+from .run import (
+    run_brief,
+    run_finish,
+    run_next,
+    run_note,
+    run_revise,
+    run_start,
+    run_status,
+)
 from .setup import apply_project_setup
 from .wait_event import (
     TRANSPORT_CAP,
@@ -184,6 +192,7 @@ __all__ = [
     "run_finish",
     "run_brief",
     "run_note",
+    "run_revise",
     # RUN10 #1: the single "run active" source (hints + done fuse + phase)
     "run_is_active",
     # Roles

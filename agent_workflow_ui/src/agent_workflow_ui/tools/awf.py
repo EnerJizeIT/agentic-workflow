@@ -711,6 +711,73 @@ async def awf_run_finish(
     return result
 
 
+async def awf_run_revise(
+    project_dir: str | None = None,
+    *,
+    queue: list[dict[str, Any]] | None = None,
+    reason: str = "",
+    key: str = "",
+    preview: bool = False,
+) -> dict[str, Any]:
+    """Revise the pipelines of the not-started queue elements of the active run (ORCH M3.4).
+
+    One typed operation with a preview and an idempotency key.
+    ``preview=True`` shows the current queue, the elements that would
+    change and the conflicts (current/started/completed/not in the queue)
+    with NO side effects. The apply changes the pipeline of the
+    NOT-STARTED elements only — completed and current are never touched —
+    and records the revision in the run state (state/run.yaml, the
+    decisions' path). A repeat with the same ``key`` is a no-op.
+    Refusals (each returns the current state; the previous plan stays in
+    force): no active run; a stage is running (stop the unit first —
+    stopping is the next unit, ORCH M3.5); any conflict; a missing key; a
+    generation mismatch (CAS, A-13).
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        queue: Items to revise — a list of {"todo_id": "TODO-NNNN",
+            "pipeline": "<name>"}; an empty pipeline reverts the element to
+            the config default.
+        reason: Why the composition changes (stored in the revision record).
+        key: Idempotency key — required for the apply; a repeat with the
+            same key is a no-op (no second revision).
+        preview: True — the plan only, nothing is written (default: False).
+
+    Returns:
+        Dict with: action (preview/applied/noop/refused), key, generation,
+        current_queue, changes, conflicts, unchanged, revision, message,
+        next_action.
+    """
+    result = await _exec(
+        api.run_revise,
+        project_dir=_resolve_project_dir(project_dir),
+        queue=queue or [],
+        reason=reason,
+        key=key,
+        preview=preview,
+    )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        action = result.get("action")
+        if action == "preview":
+            result["next_action"] = (
+                "Preview only — nothing changed. Review the changes/conflicts, "
+                "then apply with the same queue + key (preview=false). A stage "
+                "must be stopped before the apply."
+            )
+        elif action == "applied":
+            result["next_action"] = (
+                "Queue revised. Continue the run with awf_run_next — the "
+                "revised pipelines take effect at each element's launch."
+            )
+        elif action == "noop":
+            result["next_action"] = (
+                "Nothing changed (already applied or no effective change) — "
+                "check awf_run_status for the current queue."
+            )
+    return result
+
+
 # ─── Baseline / rollback ────────────────────────────────────────────────
 
 

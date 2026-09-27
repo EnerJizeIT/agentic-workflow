@@ -100,6 +100,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_run_next", awf.awf_run_next),
     _spec("awf_run_finish", awf.awf_run_finish),
     _spec("awf_run_note", awf.awf_run_note),
+    # ORCH M3.4: queue revision (preview + apply by idempotency key)
+    _spec("awf_run_revise", awf.awf_run_revise),
     _spec("awf_restore", awf.awf_restore),
     # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
     _spec("awf_unblock", awf.awf_unblock),

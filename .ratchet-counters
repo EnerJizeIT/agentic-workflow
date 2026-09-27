@@ -691,4 +691,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # references, not debt. files_over_400 stays 62 (the new test file is
 # 354 lines — under the bar).
 # QA review of M3.3 (red/green + corrupted-snapshot tests): tests/negative/test_pipeline_snapshot.py grew 354 -> 425 lines and crossed the 400-line bar — files_over_400 raised 62 -> 63. The two added tests lock the degrade-on-corruption behavior (green) and expose the structural-corruption crash (red, for the fix pass).
+# ORCH M3.4 (TODO-0138, awf_run_revise): baseline raised 4367 -> 4371 — the
+# unit adds 4 TODO-bearing lines: the T1/T2/T3 constants line + the
+# TODO-0099 not-in-queue fixture in tests/negative/test_run_revise.py (2),
+# the {"todo_id": "TODO-NNNN"} example in the awf_run_revise docstring of
+# agent_workflow_ui/tools/awf.py (1) and the TODO-0138 unit reference in
+# tests/negative/test_docs_counters.py (1). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 63
+# (the new test file is 373 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

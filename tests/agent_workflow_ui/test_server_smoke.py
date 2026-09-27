@@ -128,6 +128,8 @@ def test_all_tools_registered():
         "awf_run_next",
         "awf_run_finish",
         "awf_run_note",
+        # ORCH M3.4: queue revision (preview + apply by idempotency key)
+        "awf_run_revise",
         "awf_restore",
         # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
         "awf_unblock",

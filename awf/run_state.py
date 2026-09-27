@@ -156,16 +156,57 @@ def _normalize_evidence_plan(e: dict) -> dict:
     }
 
 
+def _revision_entry_ok(e: object) -> bool:
+    """ORCH M3.4: a revisions entry is a dict with a non-empty string
+    ``key`` — everything else is a corrupt entry (same rule class as
+    :func:`_decision_entry_ok`)."""
+    return isinstance(e, dict) and bool(str(e.get("key") or "").strip())
+
+
+def _normalize_revision(e: dict) -> dict:
+    """ORCH M3.4: the canonical revision shape
+    ``{ts, key, kind, reason, changes, generation}``; absent or mistyped
+    fields degrade to empty (a partial entry survives as far as its key
+    allows)."""
+
+    def _norm_change(c: dict) -> dict:
+        return {
+            "todo_id": str(c.get("todo_id") or "").strip(),
+            "from": str(c.get("from") or ""),
+            "to": str(c.get("to") or ""),
+        }
+
+    changes = e.get("changes")
+    norm_changes = [
+        _norm_change(c)
+        for c in (changes if isinstance(changes, list) else [])
+        if isinstance(c, dict) and str(c.get("todo_id") or "").strip()
+    ]
+    try:
+        generation = int(e.get("generation", 0) or 0)
+    except (TypeError, ValueError):
+        generation = 0
+    return {
+        "ts": str(e.get("ts") or ""),
+        "key": str(e.get("key") or "").strip(),
+        "kind": "revision",
+        "reason": str(e.get("reason") or ""),
+        "changes": norm_changes,
+        "generation": generation,
+    }
+
+
 def _sanitize_plan_fields(state: dict, logs_dir: Path | None) -> None:
     """ORCH M1.1 (invariant 4): broken/partial ``goal``/``criteria``/
-    ``decisions``/``evidence_plans`` in run.yaml must not crash the read —
-    the broken value is dropped with a warning (the file itself is kept,
-    like AUD02-06), the rest of the run stays usable.
+    ``decisions``/``evidence_plans``/``revisions`` in run.yaml must not
+    crash the read — the broken value is dropped with a warning (the file
+    itself is kept, like AUD02-06), the rest of the run stays usable.
 
     After this call the state ALWAYS carries ``goal`` (str), ``criteria``
-    (list of non-empty str), ``decisions`` (list of normalized entries) and
-    ``evidence_plans`` (list of normalized entries), so every consumer
-    indexes them without a defensive isinstance.
+    (list of non-empty str), ``decisions`` (list of normalized entries),
+    ``evidence_plans`` (list of normalized entries) and ``revisions``
+    (list of normalized entries), so every consumer indexes them without a
+    defensive isinstance.
     """
     goal = state.get("goal")
     if goal is None:
@@ -249,6 +290,36 @@ def _sanitize_plan_fields(state: dict, logs_dir: Path | None) -> None:
                 "entr(y/ies) skipped (file kept for inspection)",
             )
         state["evidence_plans"] = plans_kept
+
+    # ORCH M3.4: the applied queue revisions — absent (legacy state) is not
+    # corruption (no migration); a broken value degrades the same way
+    # decisions do (the file is kept, the rest of the run stays usable).
+    revisions = state.get("revisions")
+    if revisions is None:
+        state["revisions"] = []
+    elif not isinstance(revisions, list):
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                "ORCH M3.4: run.yaml 'revisions' is not a list — "
+                "dropped (corrupt file kept for inspection)",
+            )
+        state["revisions"] = []
+    else:
+        rev_kept: list[dict] = []
+        rev_skipped = 0
+        for e in revisions:
+            if _revision_entry_ok(e):
+                rev_kept.append(_normalize_revision(e))
+            else:
+                rev_skipped += 1
+        if rev_skipped and logs_dir is not None:
+            _log(
+                logs_dir,
+                f"ORCH M3.4: {rev_skipped} corrupt run.yaml revision "
+                "entr(y/ies) skipped (file kept for inspection)",
+            )
+        state["revisions"] = rev_kept
 
 
 def read_run(project_dir: Path, *, logs_dir: Path | None = None) -> dict | None:
@@ -510,6 +581,57 @@ def append_evidence_plan(state: dict, todo_id: str, plan: dict) -> None:
             "gates": _str_items(plan.get("gates")),
             "prove_red": _str_items(plan.get("prove_red")),
             "note": str(plan.get("note") or ""),
+        }
+    )
+
+
+def find_revision(state: dict, key: str) -> dict | None:
+    """ORCH M3.4: the stored revision with this idempotency key (or None).
+
+    The check runs under the caller's lock hold (inside the mutator), so a
+    repeat with the same key is a no-op for serialized writers too."""
+    key = str(key or "").strip()
+    if not key:
+        return None
+    for e in state.get("revisions") or []:
+        if isinstance(e, dict) and str(e.get("key") or "").strip() == key:
+            return e
+    return None
+
+
+def append_revision(
+    state: dict, key: str, reason: str, changes: list[dict], generation: int
+) -> None:
+    """ORCH M3.4: append an applied revision to the state dict IN PLACE.
+
+    A mutator fragment for :func:`update_run` / :func:`update_run_cas` —
+    the caller runs it inside the lock so the revision lands in the SAME
+    atomic write as the queue change it records (the decisions' path, M1:
+    one lock hold, one write). The entry is
+    ``{ts, key, kind: "revision", reason, changes, generation}``. The
+    caller checks :func:`find_revision` first — a repeat with the same key
+    is a no-op, never a second entry.
+    """
+    revisions = state.get("revisions")
+    if not isinstance(revisions, list):
+        revisions = []
+        state["revisions"] = revisions
+    revisions.append(
+        {
+            "ts": now_iso(),
+            "key": str(key or "").strip(),
+            "kind": "revision",
+            "reason": str(reason or "").strip(),
+            "changes": [
+                {
+                    "todo_id": str(c.get("todo_id") or "").strip(),
+                    "from": str(c.get("from") or ""),
+                    "to": str(c.get("to") or ""),
+                }
+                for c in (changes or [])
+                if isinstance(c, dict) and str(c.get("todo_id") or "").strip()
+            ],
+            "generation": int(generation or 0),
         }
     )
 
