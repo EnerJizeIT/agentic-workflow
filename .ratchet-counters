@@ -593,4 +593,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # class as above: test identifiers and unit-id references, not debt.
 # The production fix (awf/api/pipeline.py — one run-mode refusal) and
 # the docs (USAGE EN/RU, docs/file-bus.md) carry no TODO id.
+# TODO-0127 (V-05-followup, O_EXCL deterministic killer): baseline raised
+# 4193 -> 4197 — the new tests/negative/test_dispatch_claim_atomicity.py
+# adds 3 TODO-bearing lines (the TODO-0127 unit reference in the module
+# docstring, the OCCUPIED_ID = "TODO-0001" constant, the pytest.raises
+# match on the "could not reserve a free TODO id" refusal) and the
+# scripts/mutations.txt dispatch entry's comment gains 1 (the TODO-0127
+# unit reference). Same class as above: test identifiers and unit-id
+# references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

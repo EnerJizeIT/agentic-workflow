@@ -11,9 +11,12 @@ awf/_proc.py @@ candidate is not None and candidate == proc.pid and proc.pid > 1
 # пустой словарь вместо on-disk state.
 awf/run_state.py @@ new_state = mutator(state) @@ new_state = mutator({}) @@ python3 -m pytest tests/negative/test_audit05_incidents.py::TestUpdateRunAtomic::test_mutator_sees_fresh_state -q
 
-# O_EXCL делает claim TODO-NNNN атомарным (AUD14-01): параллельные
-# dispatch не должны дать коллизию id. Мутация убирает атомарность.
-awf/api/dispatch.py @@ os.O_CREAT | os.O_EXCL | os.O_WRONLY @@ os.O_CREAT | os.O_WRONLY @@ python3 -m pytest tests/negative/test_dispatch_concurrency.py::TestParallelDispatch::test_parallel_dispatch_unique_ids_and_content -q
+# O_EXCL делает claim TODO-NNNN атомарным (AUD14-01). Мутация убирает
+# атомарность: повторный claim занятого имени молча обрезает файл.
+# Убийца детерминированный (TODO-0127): два claim'а одного имени в одном
+# процессе — нет гонок планировщика. Флейковый параллельный тест остаётся
+# в сьюте как проверка на реальную параллельность.
+awf/api/dispatch.py @@ os.O_CREAT | os.O_EXCL | os.O_WRONLY @@ os.O_CREAT | os.O_WRONLY @@ python3 -m pytest tests/negative/test_dispatch_claim_atomicity.py -q --timeout=180 -p no:cacheprovider
 
 # AUD04-11: git-вызов commit gate обязан нести timeout (зависший hook не
 # должен вешать verify). Мутация убирает timeout из diff-вызова.
