@@ -573,4 +573,32 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # трэковых файлах, удалённых из рабочего дерева (переезд: файл в индексе,
 # но не на диске) — xargs grep молчит про них (2>/dev/null), удалённый
 # файл считает как 0 строк. Число не изменилось (4152).
+# TODO-0123 (V-01/V-02, run_next отказные переходы): baseline raised
+# 4146 -> 4175 — the unit adds 29 TODO-bearing lines, all in the two new
+# negative tests: tests/negative/test_run_next_failure_transitions.py
+# (20 — module docstring + the TODO-0001 fixtures and TODO-0123 unit
+# references of the five tests) and
+# tests/negative/test_audit25_a13_reservation.py (9 — module docstring +
+# the TODO-0001 fixtures of the two reservation-rollback tests). Same
+# class as above: test identifiers and unit-id references, not debt.
+# The production fix (awf/api/run.py — one launch-success condition +
+# the try/except rollback of the launch window) carries no TODO id
+# (31 TODO lines before and after).
+# TODO-0124 (V-03, run-approve requires verified_sha): baseline raised
+# 4175 -> 4193 — the new tests/negative/test_verify27_v03_approve_sha.py
+# adds 18 TODO-bearing lines (module docstring, the TODO-0001 constant
+# and its fixture/assert use-sites in the four tests, the
+# APPROVE/VERIFIED-TODO-0001 path asserts). The touched tracked files
+# are TODO-line neutral (4 approve-call lines rewritten 4-to-4). Same
+# class as above: test identifiers and unit-id references, not debt.
+# The production fix (awf/api/pipeline.py — one run-mode refusal) and
+# the docs (USAGE EN/RU, docs/file-bus.md) carry no TODO id.
+# TODO-0127 (V-05-followup, O_EXCL deterministic killer): baseline raised
+# 4193 -> 4197 — the new tests/negative/test_dispatch_claim_atomicity.py
+# adds 3 TODO-bearing lines (the TODO-0127 unit reference in the module
+# docstring, the OCCUPIED_ID = "TODO-0001" constant, the pytest.raises
+# match on the "could not reserve a free TODO id" refusal) and the
+# scripts/mutations.txt dispatch entry's comment gains 1 (the TODO-0127
+# unit reference). Same class as above: test identifiers and unit-id
+# references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

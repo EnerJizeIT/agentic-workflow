@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from agent_workflow_ui.tools import awf
 
-from awf import api
+from awf import api, git_utils
 
 # AUD12-13 / test infra: import mcp at COLLECTION time, not inside a test.
 # The autouse conftest fixture replaces subprocess.Popen with a function, and
@@ -1532,9 +1532,11 @@ class TestApproveNextActionFacts:
         run_state.write_run(
             mcp_project, active=True, queue=[self.T], started_at=run_state.now_iso(),
         )
+        # V-03: run mode requires the verified-tree fingerprint too.
         result = run(awf.awf_approve(
             self.T, project_dir=str(mcp_project),
             evidence="pytest -q → 348 passed; verdict: approve",
+            verified_sha=git_utils.tree_fingerprint(mcp_project),
         ))
         assert result["status"] == "ok"
         assert "Continue the run loop: awf_run_next" in result["next_action"]

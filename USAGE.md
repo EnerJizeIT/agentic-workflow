@@ -95,14 +95,19 @@ edited file, new file), approve refuses with «the tree changed after
 verification». The hash is stored to
 `.agentic/context/VERIFIED-<todo-id>.sha`, and the run report lists both
 the evidence and the verified tree. Without `--verified-sha` the behavior
-is exactly as before.
+is exactly as before — **except in an active run (забег), where it is
+REQUIRED** (V-03, 2026-09-27): approve without the fingerprint is refused
+and no APPROVE signal is published.
 
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
-over `scripts/mutations.txt` (same format as `mutation-smoke.sh`, which
-stays the CI step). Runs on a QUIET tree only (dirty `git status` →
-refusal), reports killed/survived/timeout per mutation with test tails,
-and always restores the mutated files (content + mtime, even on crash).
-It is a «once per wave / before release» tool, not an auto-gate. Exit
+over `scripts/mutations.txt` (the same base list the CI test job runs as
+a gate step, `bash scripts/mutation-smoke.sh`). Runs on a QUIET tree only
+(dirty `git status` → refusal), reports killed/survived/timeout per
+mutation with test tails, and always restores the mutated files (content
++ mtime, even on crash). The 4-mutant base list is an auto-gate in CI on
+every push/PR; this command (and the `--report` run over
+`scripts/mutations-neg5.txt`) is the «once per wave / before release»
+ritual on top of it. Exit
 codes: 0 = all killed, 1 = a mutation survived or the run was refused,
 2 = configuration error (bad line, stale mutation, empty list).
 
@@ -392,10 +397,11 @@ validated before spawn (invalid path → `AwfApiError`, no process, no PID
 file). Without the key, behavior is unchanged (`cwd` = project directory).
 
 **Reviewer permission hint.** `automation.readonly_roles` in
-`.agentic/config.yaml` is a list of role names (default: empty). Awf does
-not add `edit`/`write` permission overrides for listed roles, but existing
-user permissions remain and `bash` stays allowed. This setting alone does
-not enforce read-only access. Example:
+`.agentic/config.yaml` is a list of role names (default: empty). For a
+listed role awf forces `edit`/`write` to `deny` in the generated
+`OPENCODE_CONFIG_CONTENT`, overriding any user permissions; `bash` stays
+allowed (deliberate — QA runs tests). Full isolation of a role is out of
+scope for awf and belongs to the ORCH plan. Example:
 `automation.readonly_roles: [agent-qa-review]`.
 
 ### TODO

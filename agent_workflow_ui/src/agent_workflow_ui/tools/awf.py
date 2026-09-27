@@ -1034,9 +1034,11 @@ async def awf_approve(
         verified_sha: U11 (B5) — the working-tree fingerprint recorded at
             verify time (`awf tree-sha`). If passed, approve is REFUSED
             when the tree moved since verification (new commit, edited
-            file, new untracked file). Without it the behavior is as
-            before. On match the fingerprint is stored to
-            .agentic/context/VERIFIED-{todo}.sha.
+            file, new untracked file). V-03 (2026-09-27): in run (забег)
+            mode this is REQUIRED — an empty verified_sha is refused and
+            no APPROVE signal is published. Outside a run the parameter
+            is optional (behavior as before). On match the fingerprint is
+            stored to .agentic/context/VERIFIED-{todo}.sha.
 
     Returns:
         Dict with: todo_id, signal_file (path to APPROVE-*.ready),

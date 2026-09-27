@@ -385,10 +385,12 @@ def _build_parser():
         dest="verified_sha",
         default="",
         # U11 (B5): the tree fingerprint recorded at verify time (awf
-        # tree-sha). Without it — behavior as before; with it — the API
-        # refuses when the tree moved since verification.
+        # tree-sha). V-03 (2026-09-27): required in run (забег) mode;
+        # outside a run — behavior as before. With it — the API refuses
+        # when the tree moved since verification.
         help="U11: tree fingerprint from verify time (`awf tree-sha`). "
-             "Approve is refused if the tree changed after verification.",
+             "Required in run (забег) mode. Approve is refused if the tree "
+             "changed after verification.",
     )
     p_approve.add_argument(
         "--project-dir",

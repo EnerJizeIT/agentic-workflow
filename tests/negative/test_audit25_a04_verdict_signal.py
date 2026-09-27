@@ -21,7 +21,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from awf import api, run_state
+from awf import api, git_utils, run_state
 from awf.commit_gate import maybe_commit
 
 TODO = "TODO-0001"
@@ -65,7 +65,13 @@ def test_reject_then_approve_leaves_no_approve_signal(tmp_git_repo):
     api.run_start(proj, queue=[TODO])
     api.reject_commit(proj, TODO, "defect: off-by-one in the gate")
 
-    result = api.approve_commit(proj, TODO, evidence="late approve after reject")
+    # V-03: run mode requires the verified-tree fingerprint; the conflict
+    # branch under test is reached only with a valid one.
+    result = api.approve_commit(
+        proj, TODO,
+        evidence="late approve after reject",
+        verified_sha=git_utils.tree_fingerprint(proj),
+    )
 
     inbox = proj / ".agentic" / "inbox"
     assert not (inbox / f"APPROVE-{TODO}.ready").exists(), (
@@ -118,16 +124,25 @@ def test_commit_gate_refuses_when_verdict_rejected(tmp_git_repo):
 
 def test_approve_then_commit_still_commits(tmp_git_repo):
     """Регрессия (инвариант 3): approve → verdict approved → commit
-    проходит, юнит фиксируется коммитом."""
+    проходит, юнит фиксируется коммитом.
+
+    V-03: approve теперь идёт против финального дерева (после baseline
+    и правки юнита) с verified_sha — так работает реальный verify-ритуал
+    (tree-sha → проверки → approve → коммит неизменного дерева)."""
     proj = _project(tmp_git_repo)
     _verify_state(proj)
     api.run_start(proj, queue=[TODO])
-    api.approve_commit(proj, TODO, evidence="probes ok")
 
     (proj / "file.txt").write_text("v1\n")
     _git_commit_all(proj, "baseline")
     baseline_sha = _head(proj)
     (proj / "file.txt").write_text("v2 good\n")
+
+    api.approve_commit(
+        proj, TODO,
+        evidence="probes ok",
+        verified_sha=git_utils.tree_fingerprint(proj),
+    )
 
     ok = maybe_commit(
         "verify", TODO, "commit_and_next", proj,

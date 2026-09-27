@@ -769,24 +769,44 @@ def run_next(
 
     from .pipeline import start_pipeline
 
-    result = start_pipeline(
-        project_dir,
-        background=background,
-        from_stage=from_stage,
-        auto=auto,
-        timeout=timeout,
-        pipeline=launch_pipeline,  # RUN3 #2: per-item pipeline (None = config)
-        todo_id=next_id,  # NEG-2026-09-19 R1: queue order is pinned, not "newest active"
-        # RUN9 #3 (TODO-0067): the RUN flag — the engine skips the BD-36
-        # checkpoint for no_checkpoints runs anyway (pipeline_engine
-        # run_flag), so the pre-launch foreground guard must see it too or
-        # the direct API path run_next(background=False) gets a false
-        # refusal. Background behavior is unchanged (flag was a no-op there:
-        # the engine's run_flag already covered the checkpoint).
-        no_checkpoints=bool(state.get("no_checkpoints")),
-    )
+    # V-01/V-02 (audit re-verification 2026-09-27): ONE success condition
+    # and ONE rollback for the launch window. Success: background — the
+    # process really launched (run_mode="background"); foreground — the
+    # run COMPLETED (exit_code == 0). Everything else (noop / error /
+    # foreground non-zero exit / a raised exception) is a refusal that
+    # rolls back only this call's own effects.
+    launch_failed = True
+    refusal_message = ""
+    try:
+        result = start_pipeline(
+            project_dir,
+            background=background,
+            from_stage=from_stage,
+            auto=auto,
+            timeout=timeout,
+            pipeline=launch_pipeline,  # RUN3 #2: per-item pipeline (None = config)
+            todo_id=next_id,  # NEG-2026-09-19 R1: queue order is pinned, not "newest active"
+            # RUN9 #3 (TODO-0067): the RUN flag — the engine skips the BD-36
+            # checkpoint for no_checkpoints runs anyway (pipeline_engine
+            # run_flag), so the pre-launch foreground guard must see it too or
+            # the direct API path run_next(background=False) gets a false
+            # refusal. Background behavior is unchanged (flag was a no-op there:
+            # the engine's run_flag already covered the checkpoint).
+            no_checkpoints=bool(state.get("no_checkpoints")),
+        )
+        launch_failed = result.run_mode in ("noop", "error") or (
+            result.run_mode == "foreground" and (result.exit_code or 0) != 0
+        )
+        refusal_message = f"Launch failed: {result.message}"
+    except Exception as e:
+        # V-02: an unexpected exception in the launch window must not escape
+        # with this call's own effects (the .ready, the reservation) still
+        # in place — it becomes a classified refusal and rolls them back.
+        refusal_message = (
+            f"Launch failed: start_pipeline raised {type(e).__name__}: {e}"
+        )
 
-    if result.run_mode in ("noop", "error"):
+    if launch_failed:
         # AUD02-02: the launch failed — the run position stays put, so the
         # retry targets the same item instead of skipping it (and the
         # unlaunched TODO is not counted as completed).
@@ -805,7 +825,7 @@ def run_next(
         return RunNextResult(
             action="refused",
             todo_id=next_id,
-            message=f"Launch failed: {result.message}",
+            message=refusal_message,
             next_action="Investigate the pipeline state (awf_status), then retry awf_run_next.",
         )
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import awf.api.pipeline as api_pipeline
-from awf import api, run_state
+from awf import api, git_utils, run_state
 
 
 def _project(tmp_git_repo: Path) -> Path:
@@ -250,9 +250,11 @@ class TestEvidenceGate:
         proj = _project(tmp_git_repo)
         api.run_start(proj, queue=["TODO-0001"])
 
+        # V-03: run mode requires the verified-tree fingerprint too.
         result = api.approve_commit(
             proj, "TODO-0001",
             evidence="pytest -q → 348 passed; ruff → clean; verdict: approve",
+            verified_sha=git_utils.tree_fingerprint(proj),
         )
 
         assert result.evidence_file
@@ -336,7 +338,12 @@ class TestApproveDiary:
         proj = _project(tmp_git_repo)
         api.run_start(proj, queue=["TODO-0001"])
 
-        api.approve_commit(proj, "TODO-0001", evidence="probes ok")
+        # V-03: run mode requires the verified-tree fingerprint too.
+        api.approve_commit(
+            proj, "TODO-0001",
+            evidence="probes ok",
+            verified_sha=git_utils.tree_fingerprint(proj),
+        )
 
         assert run_state.read_run(proj)["outcomes"]["TODO-0001"]["verdict"] == "approved"
 

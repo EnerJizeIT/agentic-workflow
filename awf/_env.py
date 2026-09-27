@@ -72,11 +72,13 @@ def awf_subprocess_env(
     Sets ``OPENCODE_CONFIG_CONTENT`` to override permission rules so
     the subprocess can run ``edit``/``bash``/``write`` without prompting.
 
-    W7 (readonly roles): when ``role`` is listed in the project's
+    W7 + V-04 (readonly roles): when ``role`` is listed in the project's
     ``automation.readonly_roles`` (``.agentic/config.yaml``, default
-    empty), the ``edit``/``write`` overrides are NOT emitted — the role
-    gets read/bash/webfetch without the file-write tools. ``bash``/
-    ``webfetch`` and everything else stay as before.
+    empty), ``edit``/``write`` are FORCED to ``deny`` on top of any user
+    permission settings — a host config that allows writing cannot
+    re-enable them for a listed role. ``bash`` stays ``allow``
+    (deliberate: QA runs tests); ``webfetch`` and everything else stay
+    as before.
 
     KAUD-5: MERGES with user's existing opencode.json instead of replacing.
     Reads user's config, adds our permission overrides on top, preserves
@@ -105,14 +107,20 @@ def awf_subprocess_env(
     if not isinstance(merged_permissions, dict):
         merged_permissions = {}
     # W7: a readonly role (automation.readonly_roles) does not get the
-    # edit/write overrides — the user's own opencode.json values (if any)
-    # still apply, awf just stops granting the write tools.
+    # edit/write allow-overrides.
+    # V-04 (27.09): "not granted" was not a denial — the user's own
+    # edit/write=allow in opencode.json survived the merge. Now a listed
+    # role gets edit/write FORCED to deny on top of any host config;
+    # bash stays allowed (deliberate: QA runs tests).
     readonly = _is_readonly_role(role, project_dir)
     overrides = {
         "bash": "allow",
         "webfetch": "allow",
     }
-    if not readonly:
+    if readonly:
+        overrides["edit"] = "deny"
+        overrides["write"] = "deny"
+    else:
         overrides["edit"] = "allow"
         overrides["write"] = "allow"
     merged_permissions.update(overrides)
