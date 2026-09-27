@@ -442,6 +442,50 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     return result
 
 
+def pipeline_snapshot_text(
+    stages: list[Stage], source_name: str, todo_id: str
+) -> str:
+    """ORCH M3.3: the per-TODO pipeline snapshot as YAML text.
+
+    The same document form ``load_stages`` reads (``name`` + ``stages``) —
+    the snapshot is loaded with the same loader, no second parser. The
+    header comment carries the source pipeline and the capture time:
+    which published definition this unit runs on, and since when.
+    """
+    from datetime import datetime, timezone
+
+    import yaml
+
+    doc_stages: list[dict[str, Any]] = []
+    for st in stages:
+        entry: dict[str, Any] = {"name": st.name, "role": st.role}
+        if st.description:
+            entry["description"] = st.description
+        if st.id:
+            entry["id"] = st.id
+        if st.task:
+            entry["task"] = st.task
+        if st.input:
+            entry["input"] = st.input
+        if st.output:
+            entry["output"] = st.output
+        entry["on_blocked"] = st.on_blocked
+        entry["on_approved"] = st.on_approved
+        entry["on_rejected"] = st.on_rejected
+        entry["on_failed"] = st.on_failed
+        entry["max_retries"] = st.max_retries
+        entry["max_rollbacks"] = st.max_rollbacks
+        doc_stages.append(entry)
+    document = {"name": source_name, "stages": doc_stages}
+    captured = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = (
+        f"# PIPELINE-{todo_id}.yaml — ORCH M3.3 per-TODO pipeline snapshot\n"
+        f"# source: pipelines/{source_name}.yaml\n"
+        f"# captured: {captured}\n"
+    )
+    return header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+
+
 def active_pipeline_name(
     project_dir: str | Path,
     config: dict | None = None,

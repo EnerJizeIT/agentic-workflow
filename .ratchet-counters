@@ -680,4 +680,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # and the shim prompt capture are TODO-line neutral. Same class as above:
 # test identifiers and unit references, not debt. files_over_400 stays 62
 # (the new test file is 364 lines — under the bar).
+# ORCH M3.3 (TODO-0137, снимок pipeline на TODO): baseline raised
+# 4334 -> 4367 — the new tests/negative/test_pipeline_snapshot.py adds
+# 25 TODO-bearing lines (module docstring invariant list, the TODO-0001
+# fixture use-sites of the four shim/e2e tests and the TODO-0137
+# roundtrip id), +6 in awf/orchestrator.py (the snapshot helpers'
+# docstrings/comments and the TODO-\d{4,} guard line) and +2 in
+# awf/pipeline.py (pipeline_snapshot_text docstring + the header
+# f-string). Same class as above: test identifiers and unit
+# references, not debt. files_over_400 stays 62 (the new test file is
+# 354 lines — under the bar).
+# QA review of M3.3 (red/green + corrupted-snapshot tests): tests/negative/test_pipeline_snapshot.py grew 354 -> 425 lines and crossed the 400-line bar — files_over_400 raised 62 -> 63. The two added tests lock the degrade-on-corruption behavior (green) and expose the structural-corruption crash (red, for the fix pass).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

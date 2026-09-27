@@ -16,7 +16,7 @@ Pipeline обменивается сигналами через файлы в `.
 | `outbox/` | Worker сигналы (DONE, BLOCKED, REVIEW) + PROGRESS |
 | `done/{todo_id}/` | Архив завершённых TODO (после verify approve) |
 | `handoff/` | Per-stage handoff файлы (`{stage_name}-{todo_id}.md`; legacy `{role}-{todo_id}.md` принимается) |
-| `context/` | Baseline snapshots (SHA, tests, env, untracked) + `CHECKPOINT-{todo}.json` + `RUN-EVIDENCE-{todo}.md` + `VERIFIED-{todo}.sha` |
+| `context/` | Baseline snapshots (SHA, tests, env, untracked) + `CHECKPOINT-{todo}.json` + `RUN-EVIDENCE-{todo}.md` + `VERIFIED-{todo}.sha` + `PIPELINE-{todo}.yaml` (снимок стадий юнита, ORCH M3.3 — continue возобновляет по снимку) |
 | `state/` | `current.yaml` — structured pipeline state; `run.yaml` — автономный забег; `last-kill.json` — последний kill (orphan-предупреждение); `metrics_models_cache.json` — кэш цен моделей |
 | `logs/` | orchestrator.log, awf-start.out, worker logs; `awf-launch.lease` — lease одного владельца запуска |
 
