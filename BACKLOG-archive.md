@@ -24,8 +24,8 @@ A-12 коллизии ID, A-01 чужой index, A-03 токен checkpoint) + 3
 Волны 7–8 (27.09.2026): добор проверок аудита (A-14, A-18+, R-06, стратегия
 supervisor в поставке, NEG-слои 3/5, фикс A-02 для foreground-пары) и перепашка
 документации; PR #16–#18. **Выпущено 27.09.2026:** `v1.4.0` — тег + PyPI
-(`awf`, `agent-workflow-ui`). Ход и таблица волн —
-[ROADMAP-SUPERVISOR](docs/audit-2026-09-25-gpt6-sol-xhigh/ROADMAP-SUPERVISOR.md).
+(`awf`, `agent-workflow-ui`). Историческая таблица волн доступна в Git на
+`v1.4.0`; актуальная оценка исполнения — в [повторной проверке](docs/audit-2026-09-27-gpt6-sol-xhigh/14-strategy.md).
 
 ---
 

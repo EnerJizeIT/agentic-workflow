@@ -391,11 +391,11 @@ directory containing `awf/__init__.py`. The background child of
 validated before spawn (invalid path → `AwfApiError`, no process, no PID
 file). Without the key, behavior is unchanged (`cwd` = project directory).
 
-**Read-only roles.** `automation.readonly_roles` in
-`.agentic/config.yaml` — a list of role names (default: empty — behavior
-unchanged). A role in the list is spawned WITHOUT the `edit`/`write`
-permission overrides: read/bash/webfetch stay, the file-write tools are
-not granted. To run the reviewer read-only:
+**Reviewer permission hint.** `automation.readonly_roles` in
+`.agentic/config.yaml` is a list of role names (default: empty). Awf does
+not add `edit`/`write` permission overrides for listed roles, but existing
+user permissions remain and `bash` stays allowed. This setting alone does
+not enforce read-only access. Example:
 `automation.readonly_roles: [agent-qa-review]`.
 
 ### TODO

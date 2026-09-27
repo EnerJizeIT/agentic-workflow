@@ -131,6 +131,7 @@ Full backlog: [BACKLOG.md](BACKLOG.md)
 
 - [USAGE.md](USAGE.md) — usage scenarios and tool reference
 - [docs/](docs/README.md) — project docs map: design, vision, file bus, contracts, release notes
+- [Current audit](docs/audit-2026-09-27-gpt6-sol-xhigh/README.md) — verified fixes and open findings
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 - [BACKLOG.md](BACKLOG.md) — open tasks

@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.4.0] — 2026-09-27
 
-The stabilization program (audit 2026-09-25, 31 units): 21 audit findings
-fixed, launch and commit boundaries closed, one user-visible breaking change.
+The stabilization program (audit 2026-09-25, 31 units) addressed the 21
+original findings and one user-visible breaking change. A later
+[verification](docs/audit-2026-09-27-gpt6-sol-xhigh/README.md) identified
+remaining failure paths and limits of the supervisor approval boundary.
 The follow-up verification wave (9 units) closed the remaining acceptance
 checks, shipped the supervisor strategy, and cleaned the documentation.
 The documentation wave (3 units) restructured the project docs: one `docs/`
@@ -26,12 +28,12 @@ duplicates removed.
 - **NEG-4 shim** — a deterministic scenario stand-in for the `opencode` CLI (`tests/infra/opencode_shim`) drives the engine's subprocess container (spawn → signal watch → salvage → hard-timeout kill) in `tests/e2e/test_w6_salvage_scenario.py`; the salvage scenario runs in CI alongside the wheel builds
 - **Single tool registry** — the MCP registration list and metadata live in one module (`tools/registry.py`) that `create_server()` and the documentation counts read; a shared unit-ID parser (`awf/todo_ids.py`, four-plus digits with an explicit right boundary) serves metrics and public ID validation
 - **Supervisor strategy ships** — role templates for the implementer and the reviewer, project doctrine seeds on `awf init`, and a quality section in the shipped supervisor template (a fix comes with `prove_red`; an open P1 blocks a release; the reviewer report is a verify input)
-- **`readonly_roles`** — a role listed in `automation.readonly_roles` runs its stage subprocess without edit/write tools; reviewers verify instead of fixing. Empty by default
+- **`readonly_roles`** — a listed role receives no new edit/write overrides from awf; pre-existing user permissions and allowed bash remain in effect, so this is not enforced read-only. Empty by default
 - **Wheel smoke covers the plugin surface** — the smoke installs both wheels into a clean venv and proves the tool registry, the project-setup template render, and the plugin entry point under an isolated XDG (no network, no `$HOME`); the package job runs it on Python 3.10 and 3.12
 - **Mutation smoke** — `scripts/mutation-smoke.sh` runs a fixed list of 13 targeted mutants over the launch and state contour (the base gate list plus a report mode)
 
 ### Changed
-- **Documentation restructured** — the project docs now live in one `docs/` tree with a map (`docs/README.md`): vision, design, file bus, contracts, unit contract and release notes, each described in one place, duplicates removed; the 2026-09-25 audit stays as history under `docs/audit-2026-09-25-gpt6-sol-xhigh/`
+- **Documentation restructured** — the project docs now live in one `docs/` tree with a map (`docs/README.md`): vision, design, file bus, contracts, unit contract and release notes, each described in one place, duplicates removed; the 2026-09-25 audit is retained in Git history and superseded by the verification dated 2026-09-27
 
 ### Fixed
 - **Audit 2026-09-25: 21 findings (5 P1)** — data safety, launch ownership (one owner for the launch and the queue transition: file lease, run generation, a single task-file storage layer), the git commit contour (commit exactly what was verified; a gate refusal stops the stage), metrics, load boundaries (core + plugin), and release hygiene — each fix with a regression test and a reviewer verdict
