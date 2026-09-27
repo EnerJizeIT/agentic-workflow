@@ -1,6 +1,6 @@
 # Product Vision
 
-**Версия:** 1.0 · **Дата:** 2026-08-11
+**Версия:** 2.0 · **Дата:** 2026-09-27 · **Релиз:** 1.4.0
 
 ## Что
 
@@ -35,20 +35,22 @@ Pet-проекты где пользователь хочет делегиров
 
 Plugin зависит от `awf` Python-пакета. Все workflow tools — thin async wrappers над `awf.api.*()`. Бизнес-логика в `awf`, не в plugin.
 
-См. [architecture.md](architecture.md) для деталей.
+См. [design.md](design.md) для деталей.
 
-## Real-world-результаты (6 сессий)
+## Dogfood: этот репозиторий
 
-6 real-world-сессий на jira-epic-presenter (Qwen vllm):
-- Real-world #5: 4 TODO + 1 reject, ноль polling, 1× approve каждый
-- Real-world #6: 3 TODO, pre-check показал уже выполненные задачи
-- Полный SMO flow работает end-to-end на слабой модели
+Awf развивает сам себя. Программа стабилизации 2026-09 прошла целиком
+через awf: 31 юнит (`TODO-0077`…`TODO-0107`, волны 0–6 и 5b) по аудитной
+карте, плюс волна доборки (9 юнитов: инцидент-гарды, NEG-слои 3/5,
+реестр tools, роли/доктрина в поставке, зачистка доков). Каждый юнит — dispatch → pipeline → verify-гейты → commit
+гейтом; rejects, salvage и rollback отработаны на реальных падениях.
+
+Ранние 6 real-world-сессий на jira-epic-presenter (Qwen vLLM) показали
+базовый SMO flow end-to-end на слабой модели; с тех пор сценарии живых
+сессий фиксировались в доктрину и в brief-карточку.
 
 ## Future scenarios
 
-| Сценарий | Что добавляет |
-|---|---|
-| 2 · Decision fork | Runtime ad-hoc forms |
-| 3 · Blockage recovery | Multi-step problem→solution flow |
-| 5 · Priority planning | Drag-and-drop UI |
-| 6 · Onboarding wizard | Multi-form conditional logic |
+Открытые сценарии и кандидаты — в [BACKLOG-archive](../BACKLOG-archive.md)
+(закрытые) и [BACKLOG](../BACKLOG.md) (открытые): decision fork, blockage
+recovery, priority planning, onboarding wizard и другие.
