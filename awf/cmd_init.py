@@ -178,7 +178,7 @@ def _offer_plugin_install(project_name: str) -> None:
     print()
     print("agent-workflow-ui plugin (optional):")
     print("  HTML forms + dashboards for opencode agents.")
-    print("  See: vision/agent-ui-plugin.md")
+    print("  See: https://github.com/EnerJizeIT/agentic-workflow/blob/main/docs/vision.md")
 
     try:
         import importlib.util

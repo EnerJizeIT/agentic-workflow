@@ -79,7 +79,7 @@ working cycle.
 
 **After approve:** pipeline exits. Say *"continue"* to dispatch next TODO, or *"stop"* to pause.
 
-## Supervisor tools (U11): tree-sha, mutations, todo-draft
+## Supervisor tools: tree-sha, mutations, todo-draft, feedback
 
 Three CLI tools for the verify ritual — supervisor instruments, not
 pipeline gates:
@@ -274,7 +274,7 @@ stages:
     on_rejected: replan
 ```
 
-**Multiple pipelines side by side** (RUN3 #1). Keep several pipelines in one
+**Multiple pipelines side by side.** Keep several pipelines in one
 project and run the needed one by name:
 
 ```console
@@ -313,7 +313,7 @@ Review database migrations for safety.
 - Do not create new migrations
 ```
 
-**Role from an opencode skill** (RUN3 #3) — one command instead of a
+**Role from an opencode skill** — one command instead of a
 hand-written file. The role receives the SKILL.md body (the skill's own
 YAML front-matter is stripped) under a provenance comment with the
 source path and date. Project skills (`.opencode/skills/`) are checked
@@ -349,7 +349,8 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 - **Pipeline depth:** tested up to 5 agent stages. More stages = longer runs, more tokens.
 - **Single-machine:** not distributed. Orchestrator, workers, dashboard all run locally.
 - **Linux-first:** `PR_SET_PDEATHSIG` for worker cleanup is Linux-only. macOS should work. Windows untested.
-- **One TODO at a time:** pipeline processes one TODO per run. Dispatch next + `awf_start` for the next.
+- **One TODO at a time:** a pipeline processes one TODO per run; a run (забег)
+  chains them — `awf_run_next` launches the next queued TODO.
 - **No streaming:** dashboard polls every 3 seconds (not WebSocket/SSE).
 
 ## All tools (reference)
@@ -361,7 +362,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 |---|---|
 | `awf_init` | Create `.agentic/`, detect stack, return phase prompt |
 | `awf_status` | Active TODOs, pipeline state, stage info, suggestion |
-| `awf_brief` | RUN4 #1: onboarding/recovery card — live state, tool map, rituals, recovery recipes |
+| `awf_brief` | Onboarding/recovery card — live state, tool map, rituals, recovery recipes |
 | `awf_report` | Task statuses + git diff + latest test log |
 | `awf_reset` | Clear runtime data (tasks_only / full / orphans) |
 
@@ -375,13 +376,13 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_write_pipeline` | Write a named pipeline file from stages (config/supervisor untouched) |
 | `awf_pipelines` | List pipelines in `.agentic/pipelines/` + the active one |
 
-**Single-launch checkpoint bypass (RUN3 #6).** `awf_start` / `awf_continue`
+**Single-launch checkpoint bypass.** `awf_start` / `awf_continue`
 accept `no_checkpoints=true` — the BD-36 plan form is skipped for that one
 launch only. It is process-scoped: not written to config or state, the next
 launch asks again (the run-level `awf_run_start(no_checkpoints=...)` is
 unchanged).
 
-**Engine pin (TODO-0077).** When the project IS awf (or otherwise the engine
+**Engine pin.** When the project IS awf (or otherwise the engine
 must not import the working tree — `python -m awf` puts cwd first on
 `sys.path`), set `automation.runner_dir` in `.agentic/config.yaml` to a
 directory containing `awf/__init__.py`. The background child of
@@ -390,7 +391,7 @@ directory containing `awf/__init__.py`. The background child of
 validated before spawn (invalid path → `AwfApiError`, no process, no PID
 file). Without the key, behavior is unchanged (`cwd` = project directory).
 
-**Read-only roles (W7).** `automation.readonly_roles` in
+**Read-only roles.** `automation.readonly_roles` in
 `.agentic/config.yaml` — a list of role names (default: empty — behavior
 unchanged). A role in the list is spawned WITHOUT the `edit`/`write`
 permission overrides: read/bash/webfetch stay, the file-write tools are
@@ -444,7 +445,7 @@ log. Refusals: no TODO file in the inbox; empty content; a started TODO
 the unit is in flight: fix it via REVIEW/replan, or retire it and
 re-dispatch); a live pipeline on this id.
 
-**Untracked files and the unit commit (RUN10 #4).** The commit gate commits
+**Untracked files and the unit commit.** The commit gate commits
 only changes since the unit baseline — a file that was already untracked
 BEFORE the dispatch is not the unit's work, so it is excluded from the unit
 commit by design. That protection used to be silent; now it is visible:
@@ -474,7 +475,7 @@ commit by design. That protection used to be silent; now it is visible:
 ### Metrics
 | Tool | What it does |
 |---|---|
-| `awf_metrics` | U8: token/cost metrics of the work program; report to desktop + "if workers ran on model X" cost |
+| `awf_metrics` | Token/cost metrics of the work program; report to desktop + "if workers ran on model X" cost |
 
 ### Run (autonomous queue)
 | Tool | What it does |
@@ -485,7 +486,7 @@ commit by design. That protection used to be silent; now it is visible:
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
 
-**Per-item pipeline (RUN3 #2).** The queue accepts
+**Per-item pipeline.** The queue accepts
 `{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain
 id strings (mixed is fine); an empty/absent `pipeline` = the config default.
 `awf_dispatch_todo(..., pipeline=...)` writes the name into the TODO's
@@ -505,7 +506,7 @@ when that timeout is unknown or below the cap — never once the cap is raised
 in config or env, and `suggested_timeout` then follows your cap (no stage
 history: ~90% of it, 55 → 55, 600 → 540).
 
-**Per-mode hints (RUN10 #1).** The response hints of `awf_wait_for_event` /
+**Per-mode hints.** The response hints of `awf_wait_for_event` /
 `awf_approve` depend on the mode. With an active run: a timeout offers the
 next loop call (`awf_wait_for_event(timeout=<suggested>, actionable_only=True)`)
 and the step after approve is `awf_run_next` — "wait for the user" appears
@@ -541,7 +542,7 @@ for every replan/split goes into the run report/note.
 | `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`) |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
-| `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop (RUN4 #2) |
+| `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop |
 
 ### UI (forms)
 | Tool | What it does |

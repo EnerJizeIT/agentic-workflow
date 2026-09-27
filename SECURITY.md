@@ -19,6 +19,7 @@ awf runs locally on your machine. The main security considerations:
 
 ## Known limitations
 
-- No CSRF token on form server — relies on `127.0.0.1` binding + Origin/Referer check (A2).
+- Form servers rely on `127.0.0.1` binding + an Origin/Referer CSRF check; the
+  plan-checkpoint form additionally requires a one-time token (default-deny).
 - No authentication on dashboard (local-only).
 - `OPENCODE_CONFIG_CONTENT` env var contains permission overrides (not API keys).
