@@ -559,4 +559,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # маркера _is_background_child, находка QA: случай утечки env в
 # потомков воркера не был покрыт) +1 TODO-строка (ссылка на юнит в
 # модульном докстринге — та же класс: unit-id reference, not debt).
+# TODO-0120 (волна 8.2, доки под 1.4.0): baseline raised 4144 -> 4152 —
+# the docs-content unit rewrites docs/design.md (SMO merge + the 1.4.0
+# component/run/verify-gates sections: +10 TODO-bearing lines — unit-id
+# TODO-0077, TODO-NNNN/TODO-0001 pipeline-flow and dashboard examples,
+# the component-table "TODO lifecycle" rows), adds
+# tests/negative/test_docs_counters.py (+1 — the TODO-0120 module
+# docstring line), replaces the "6 sessions" real-world lines in
+# docs/vision.md with the dogfood line (TODO-0077…TODO-0107, -1) and
+# deletes docs/supervisor-flow.md, the merged duplicate (-1). Same class
+# as above: unit identifiers and doc wording, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO | awk -F: '{s+=$NF} END{print s+0}'

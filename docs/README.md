@@ -5,8 +5,7 @@
 ## Живое
 
 - [vision.md](vision.md) — Product Vision: что делает awf, для кого, конкурентные преимущества.
-- [design.md](design.md) — Архитектура: компоненты, потоки данных, design decisions.
-- [supervisor-flow.md](supervisor-flow.md) — Supervisor Flow (SMO): фазовая система, паттерн next_action.
+- [design.md](design.md) — Архитектура: SMO-фазы, забег, компоненты, verify-гейты, design decisions.
 - [file-bus.md](file-bus.md) — File Bus Protocol: файлы-сигналы между ролями, таблица имён.
 - [contracts/](contracts/) — Контракты: инварианты «никогда не делать X» с гейтом на каждый.
 - [unit-contract.md](unit-contract.md) — Машиночитаемый контракт юнита: блок в TODO и DONE.json.

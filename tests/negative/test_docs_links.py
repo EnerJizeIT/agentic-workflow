@@ -3,7 +3,8 @@
 Wave 8 moved ``vision/*.md`` and ``protocols/communication.md`` into
 ``docs/`` (``git mv``, links updated). This guard pins the new tree:
   * the old ``vision/`` and ``protocols/`` directories are gone;
-  * the five new docs exist (4 moved + the ``docs/README.md`` map);
+  * the new docs exist (3 moved + the ``docs/README.md`` map;
+    ``supervisor-flow.md`` was merged into ``design.md`` in wave 8.2);
   * every relative markdown link in the live docs resolves to an
     existing file.
 
@@ -24,7 +25,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NEW_DOCS = [
     REPO_ROOT / "docs" / "vision.md",
     REPO_ROOT / "docs" / "design.md",
-    REPO_ROOT / "docs" / "supervisor-flow.md",
     REPO_ROOT / "docs" / "file-bus.md",
     REPO_ROOT / "docs" / "README.md",
 ]
