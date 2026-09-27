@@ -346,6 +346,10 @@ def _handle_escalate(
 ) -> tuple[int, str, int]:
     """Transition: BLOCKED → supervisor replan + retry same stage.
 
+    The ``max_retries`` budget slot is per stage INSTANCE (its position in
+    the pipeline — the stage id when declared), not per role: two stages
+    of the same role never share a counter (ORCH M3.2 invariant 3).
+
     Returns (new_stage_idx, new_current_todo, exit_code).
     exit_code != 0 means pipeline should stop.
     """
@@ -683,6 +687,33 @@ def _silent_retry_note(attempt: int, todo_id: str) -> str:
     )
 
 
+def _declared_output_problem(
+    project_dir: Path, output: str, stage_start_wall: float,
+) -> str:
+    """ORCH M3.2: why the stage's declared output does not count — or "".
+
+    The declared output (project-relative) must exist AND be fresh: its
+    mtime no older than the stage entry's start, whole-second resolution
+    (the AUD04-04 convention — filesystem mtime granularity can be 1s, so
+    a file written in the stage's start second is fresh). A leftover from
+    an earlier stage or run predates the start and does not count as this
+    stage's work.
+    """
+    p = project_dir / output
+    if not p.is_file():
+        return f"declared output '{output}' does not exist"
+    try:
+        mtime = int(p.stat().st_mtime)
+    except OSError:
+        return f"declared output '{output}' is not readable"
+    if mtime < int(stage_start_wall):
+        return (
+            f"declared output '{output}' is stale "
+            f"(last modified before this stage started)"
+        )
+    return ""
+
+
 # ─── stage execution ────────────────────────────────────────────────────
 
 
@@ -942,11 +973,17 @@ def execute_agent_stage(
     - new_stage_idx: next stage index (may jump for rollback/escalate)
     - exit_code: 0 = success, 1 = stop pipeline
     """
+    import time as _time
+
     from .pipeline_state import write_state as _ws
 
     s_name = stage.name
     s_kind = stage.kind
     outbox = paths.outbox(project_dir)
+    # ORCH M3.2: this stage entry's wall-clock start — the freshness
+    # reference for the declared-output check (a leftover from a previous
+    # stage/run is older and does not count as this stage's work).
+    stage_start_wall = _time.time()
 
     if not current_todo:
         current_todo = _find_active_todo(project_dir)
@@ -1224,6 +1261,30 @@ def execute_agent_stage(
             (outbox / f"{signal}{consumed_suffix}").unlink()
         except FileNotFoundError:
             pass
+
+    # ORCH M3.2: a DONE signal is not the stage's contract — its declared
+    # output is. A declared output that is missing or stale means the
+    # stage did not fulfill its assignment: route it through the stage's
+    # normal failure path (the on_blocked policy: escalate/stop/rollback),
+    # never a silent advance. The message names the stage and the
+    # expected output. Stages without a declared output keep the previous
+    # behavior (back-compat).
+    if sig_type in ("done", "approved") and stage.output:
+        problem = _declared_output_problem(
+            project_dir, stage.output, stage_start_wall
+        )
+        if problem:
+            print(
+                f"Stage '{s_name}' did not fulfill its assignment: "
+                f"{problem} — routed through the stage failure path.",
+                file=sys.stderr,
+            )
+            _log(
+                logs_dir,
+                f"ORCH M3.2: stage {s_name} output check failed: {problem} "
+                "— routed as blocked (stage policy)",
+            )
+            sig_type = "blocked"
 
     action, target = resolve_transition(stage, sig_type)
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")

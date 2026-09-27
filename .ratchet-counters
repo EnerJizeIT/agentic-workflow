@@ -669,4 +669,34 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # "TODO file unreadable"). Same class as above: test identifiers and
 # unit wording, not debt. The new test file stays at exactly 400 lines
 # (not over), so files_over_400 is locked at 62.
+# ORCH M3.2 (TODO-0136, поручение стадии и объявленные выходы): baseline
+# raised 4315 -> 4334 — the new
+# tests/negative/test_stage_assignment_outputs.py adds 19 TODO-bearing
+# lines (module docstring unit reference, the TODO-0001 fixtures in the
+# pipeline YAML strings and the fixture/assert use-sites of the five
+# engine/unit/loader tests). The production diff (awf/pipeline.py,
+# awf/agent_stage.py, awf/pipeline_engine.py — Stage input/output schema
+# + validation, the prompt assignment block, the declared-output check)
+# and the shim prompt capture are TODO-line neutral. Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays 62
+# (the new test file is 364 lines — under the bar).
+# ORCH M3.3 (TODO-0137, снимок pipeline на TODO): baseline raised
+# 4334 -> 4367 — the new tests/negative/test_pipeline_snapshot.py adds
+# 25 TODO-bearing lines (module docstring invariant list, the TODO-0001
+# fixture use-sites of the four shim/e2e tests and the TODO-0137
+# roundtrip id), +6 in awf/orchestrator.py (the snapshot helpers'
+# docstrings/comments and the TODO-\d{4,} guard line) and +2 in
+# awf/pipeline.py (pipeline_snapshot_text docstring + the header
+# f-string). Same class as above: test identifiers and unit
+# references, not debt. files_over_400 stays 62 (the new test file is
+# 354 lines — under the bar).
+# QA review of M3.3 (red/green + corrupted-snapshot tests): tests/negative/test_pipeline_snapshot.py grew 354 -> 425 lines and crossed the 400-line bar — files_over_400 raised 62 -> 63. The two added tests lock the degrade-on-corruption behavior (green) and expose the structural-corruption crash (red, for the fix pass).
+# ORCH M3.4 (TODO-0138, awf_run_revise): baseline raised 4367 -> 4371 — the
+# unit adds 4 TODO-bearing lines: the T1/T2/T3 constants line + the
+# TODO-0099 not-in-queue fixture in tests/negative/test_run_revise.py (2),
+# the {"todo_id": "TODO-NNNN"} example in the awf_run_revise docstring of
+# agent_workflow_ui/tools/awf.py (1) and the TODO-0138 unit reference in
+# tests/negative/test_docs_counters.py (1). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 63
+# (the new test file is 373 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

@@ -510,6 +510,37 @@ class RunFinishResult:
         return asdict(self)
 
 
+@dataclass
+class RunReviseResult:
+    """Result of :func:`awf.api.run_revise` (ORCH M3.4).
+
+    ``action`` is one of:
+    - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
+    - ``applied`` — the not-started elements' pipelines changed, the
+      revision is recorded (``revision`` = the stored entry);
+    - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
+      entry) or a request with no effective change;
+    - ``refused`` — no active run / live engine / conflicts / missing key /
+      CAS mismatch; ``current_queue`` + ``generation`` carry the current
+      state (the previous plan stays in force).
+    """
+
+    action: str
+    preview: bool
+    key: str = ""
+    generation: int = 0
+    current_queue: list[dict[str, Any]] = field(default_factory=list)
+    changes: list[dict[str, str]] = field(default_factory=list)
+    conflicts: list[dict[str, str]] = field(default_factory=list)
+    unchanged: list[dict[str, str]] = field(default_factory=list)
+    revision: dict[str, Any] | None = None
+    message: str = ""
+    next_action: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 __all__ = [
     "InitResult",
     "StatusResult",
@@ -531,6 +562,7 @@ __all__ = [
     "RunStatusResult",
     "RunNextResult",
     "RunFinishResult",
+    "RunReviseResult",
     "RestoreResult",
     "UnblockResult",
     "RemoveTodoResult",

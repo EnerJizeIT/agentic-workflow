@@ -13,6 +13,17 @@ as the write path (awf.api.write_pipeline, shared validator). Legacy
 `action:`/`kind:` keys in YAML are rejected as unknown keys (they were
 read-but-ignored; kind is computed from position, action was never a
 runtime input).
+
+ORCH M3.1: a stage may carry an optional ``id`` (unique stage address —
+the stage NAME becomes it, so one role may appear twice with different
+assignments; duplicate ids are a load error) and ``task`` (short
+assignment).
+
+ORCH M3.2: a stage may declare ``input``/``output`` (project-relative
+paths). The execute prompt carries task/input/output (when task is set),
+and the engine verifies a declared output (exists + fresh) before the
+stage advances — the declared output is the stage's contract, not the
+bare DONE signal.
 """
 from __future__ import annotations
 
@@ -37,6 +48,19 @@ class Stage:
     name: str
     role: str
     description: str = ""
+    # ORCH M3.1: unique stage address. When set, the stage NAME becomes
+    # the id (one role may appear twice with different assignments), so
+    # handoff files ``<name>-<todo>.md`` stay distinct. Empty by default.
+    id: str = ""
+    # ORCH M3.1: short stage assignment. Carried on the Stage; the
+    # execute prompt carries it (plus input/output) — ORCH M3.2.
+    # Empty by default.
+    task: str = ""
+    # ORCH M3.2: declared stage input/output — project-relative paths.
+    # The engine verifies a declared output (exists + fresh) before the
+    # stage advances; without one, behavior is unchanged (back-compat).
+    input: str = ""
+    output: str = ""
     on_blocked: str = "escalate"
     on_approved: str = "next"
     on_rejected: str = "escalate"
@@ -108,6 +132,12 @@ ALLOWED_STAGE_KEYS = frozenset(
         "name",
         "role",
         "description",
+        # ORCH M3.1: stage identity + assignment.
+        "id",
+        "task",
+        # ORCH M3.2: declared stage inputs/outputs (project-relative).
+        "input",
+        "output",
         "on_blocked",
         "on_approved",
         "on_rejected",
@@ -139,6 +169,19 @@ def _compute_kind(position: int, total: int) -> str:
     return "execute"
 
 
+def _is_project_relative(value: str) -> bool:
+    """ORCH M3.2: a declared input/output must stay inside the project.
+
+    Project-relative means: no absolute path (``/...``), no ``~`` and no
+    ``..`` component (the engine resolves these against the project root
+    and checks a declared output's freshness there — an escaping path
+    would read/write outside the project).
+    """
+    if value.startswith("/") or value.startswith("~"):
+        return False
+    return ".." not in Path(value).parts
+
+
 def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     """A-06: form check for a pipeline stage list.
 
@@ -149,9 +192,12 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
 
     Raises:
         AwfApiError: stages not a non-empty list, a stage not a mapping,
-            unknown keys, a missing/empty/non-string role, a policy that
-            is not an allowed string (rollback_to:<stage> only on
-            on_blocked/on_rejected), or a negative/non-integer budget.
+            unknown keys, a missing/empty/non-string role, an empty or
+            non-slug ``id`` / an empty ``task`` (ORCH M3.1), a non-empty
+            but non project-relative ``input``/``output`` (ORCH M3.2),
+            a duplicated stage ``id``, a policy that is not an allowed
+            string (rollback_to:<stage> only on on_blocked/on_rejected),
+            or a negative/non-integer budget.
     """
     if not isinstance(stages, list) or not stages:
         raise AwfApiError(
@@ -178,6 +224,44 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                 f"Pipeline {source}: stage '{label}' has no non-empty 'role' "
                 f"— every stage needs one (got {role!r})."
             )
+        # ORCH M3.1: ``id`` is the stage address (a slug — it becomes the
+        # stage name and part of handoff file names); ``task`` is the
+        # short assignment. Both optional; when present, must be valid.
+        if "id" in stage and stage["id"] is not None:
+            value = stage["id"]
+            if not isinstance(value, str) or not re.fullmatch(r"[\w.-]+", value):
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'id' (must be a stage slug: letters, digits, '_', "
+                    f"'.' or '-', no spaces or path separators), "
+                    f"got {value!r}."
+                )
+        if "task" in stage and stage["task"] is not None:
+            value = stage["task"]
+            if not isinstance(value, str) or not value.strip():
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'task' (must be a non-empty string), got {value!r}."
+                )
+        # ORCH M3.2: declared stage input/output — non-empty
+        # project-relative paths (the engine resolves them against the
+        # project root; a declared output is checked for existence and
+        # freshness before the stage advances).
+        for io_key in ("input", "output"):
+            if io_key in stage and stage[io_key] is not None:
+                value = stage[io_key]
+                if not isinstance(value, str) or not value.strip():
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' has an invalid "
+                        f"'{io_key}' (must be a non-empty string), "
+                        f"got {value!r}."
+                    )
+                if not _is_project_relative(value):
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' has an invalid "
+                        f"'{io_key}' (must be a project-relative path — "
+                        f"no leading '/', no '..'), got {value!r}."
+                    )
         for pk in _POLICY_KEYS:
             if pk in stage and stage[pk] is not None:
                 value = stage[pk]
@@ -215,6 +299,22 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                         f"non-negative, got {value}."
                     )
         result.append(stage)
+
+    # ORCH M3.1: a duplicated stage id is a load error — stages are
+    # addressed by id (the stage name becomes it), so two stages sharing
+    # an id are indistinguishable (rollback targets, handoff files).
+    id_uses: dict[str, list[str]] = {}
+    for i, s in enumerate(result):
+        sid = s.get("id")
+        if isinstance(sid, str) and sid:
+            id_uses.setdefault(sid, []).append(str(s.get("name") or f"#{i}"))
+    for sid, labels in id_uses.items():
+        if len(labels) > 1:
+            raise AwfApiError(
+                f"Pipeline {source}: duplicate stage id '{sid}' "
+                f"(stages: {', '.join(labels)}) — each stage id must be "
+                "unique within a pipeline."
+            )
     return result
 
 
@@ -263,8 +363,19 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
 
     for dict_index, s in enumerate(raw_stages):
         kwargs: dict[str, Any] = {}
-        for key in ("name", "role", "description"):
-            kwargs[key] = s.get(key, "")
+        # ORCH M3.1: an explicit id becomes the stage address — the stage
+        # name is the id (handoff files ``<name>-<todo>.md`` then stay
+        # distinct for repeated roles). Without an id the written name is
+        # kept, so legacy pipelines load exactly as before.
+        stage_id = s.get("id") or ""
+        kwargs["name"] = stage_id or s.get("name", "")
+        kwargs["role"] = s.get("role", "")
+        kwargs["description"] = s.get("description", "")
+        kwargs["id"] = stage_id
+        kwargs["task"] = s.get("task") or ""
+        # ORCH M3.2: declared inputs/outputs (project-relative).
+        kwargs["input"] = s.get("input") or ""
+        kwargs["output"] = s.get("output") or ""
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         kwargs["max_retries"] = s.get("max_retries", _DEFAULTS["max_retries"])
@@ -329,6 +440,50 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             )
 
     return result
+
+
+def pipeline_snapshot_text(
+    stages: list[Stage], source_name: str, todo_id: str
+) -> str:
+    """ORCH M3.3: the per-TODO pipeline snapshot as YAML text.
+
+    The same document form ``load_stages`` reads (``name`` + ``stages``) —
+    the snapshot is loaded with the same loader, no second parser. The
+    header comment carries the source pipeline and the capture time:
+    which published definition this unit runs on, and since when.
+    """
+    from datetime import datetime, timezone
+
+    import yaml
+
+    doc_stages: list[dict[str, Any]] = []
+    for st in stages:
+        entry: dict[str, Any] = {"name": st.name, "role": st.role}
+        if st.description:
+            entry["description"] = st.description
+        if st.id:
+            entry["id"] = st.id
+        if st.task:
+            entry["task"] = st.task
+        if st.input:
+            entry["input"] = st.input
+        if st.output:
+            entry["output"] = st.output
+        entry["on_blocked"] = st.on_blocked
+        entry["on_approved"] = st.on_approved
+        entry["on_rejected"] = st.on_rejected
+        entry["on_failed"] = st.on_failed
+        entry["max_retries"] = st.max_retries
+        entry["max_rollbacks"] = st.max_rollbacks
+        doc_stages.append(entry)
+    document = {"name": source_name, "stages": doc_stages}
+    captured = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    header = (
+        f"# PIPELINE-{todo_id}.yaml — ORCH M3.3 per-TODO pipeline snapshot\n"
+        f"# source: pipelines/{source_name}.yaml\n"
+        f"# captured: {captured}\n"
+    )
+    return header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
 def active_pipeline_name(

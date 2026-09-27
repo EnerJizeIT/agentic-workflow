@@ -24,6 +24,31 @@ from .supervisor import (
 )
 
 
+def _stage_assignment_block(stage: Stage) -> str:
+    """ORCH M3.2: the stage's assignment for the execute prompt.
+
+    Carries the stage's ``task`` and its declared ``input``/``output``
+    (project-relative paths). Empty when the stage declares no task —
+    the prompt stays exactly as before (back-compat). The engine's
+    declared-output check applies independently of the prompt: a stage
+    may declare an output without a task.
+    """
+    if not stage.task:
+        return ""
+    lines = ["## Stage assignment (from pipeline.yaml)", ""]
+    lines.append(f"Task: {stage.task}")
+    if stage.input:
+        lines.append(f"Input: {stage.input}")
+    if stage.output:
+        lines.append(f"Expected output: {stage.output}")
+        lines.append(
+            "The engine verifies the expected output (present, written by "
+            "this stage) before the stage advances — without it the stage "
+            "counts as failed."
+        )
+    return "\n".join(lines)
+
+
 def run_agent_stage(
     stage: Stage,
     todo_id: str,
@@ -71,6 +96,14 @@ def run_agent_stage(
     todo_file = inbox / f"{todo_id}.md"
 
     prompt = build_prompt(kind, todo_id, project_dir=project_dir)
+    # ORCH M3.2: the stage's assignment (task + declared input/output)
+    # goes LAST in the prompt — recency bias, the same rule the
+    # supervisor snippets follow. Empty block when the stage has no
+    # task (back-compat: the prompt is byte-identical to before).
+    assignment = _stage_assignment_block(stage)
+    if assignment:
+        prompt = prompt + "\n\n" + assignment
+        _log(logs_dir, f"ORCH M3.2: stage assignment appended to {role} prompt")
     if retry_note:
         prompt = prompt + "\n\n" + retry_note
         _log(logs_dir, f"dogfood-11: retry note appended to {role} prompt")

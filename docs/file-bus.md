@@ -16,7 +16,7 @@ Pipeline обменивается сигналами через файлы в `.
 | `outbox/` | Worker сигналы (DONE, BLOCKED, REVIEW) + PROGRESS |
 | `done/{todo_id}/` | Архив завершённых TODO (после verify approve) |
 | `handoff/` | Per-stage handoff файлы (`{stage_name}-{todo_id}.md`; legacy `{role}-{todo_id}.md` принимается) |
-| `context/` | Baseline snapshots (SHA, tests, env, untracked) + `CHECKPOINT-{todo}.json` + `RUN-EVIDENCE-{todo}.md` + `VERIFIED-{todo}.sha` |
+| `context/` | Baseline snapshots (SHA, tests, env, untracked) + `CHECKPOINT-{todo}.json` + `RUN-EVIDENCE-{todo}.md` + `VERIFIED-{todo}.sha` + `PIPELINE-{todo}.yaml` (снимок стадий юнита, ORCH M3.3 — continue возобновляет по снимку) |
 | `state/` | `current.yaml` — structured pipeline state; `run.yaml` — автономный забег; `last-kill.json` — последний kill (orphan-предупреждение); `metrics_models_cache.json` — кэш цен моделей |
 | `logs/` | orchestrator.log, awf-start.out, worker logs; `awf-launch.lease` — lease одного владельца запуска |
 
@@ -117,6 +117,7 @@ archive_todo → done/{todo_id}/ (inbox + outbox очищены)
 | `note` / `no_checkpoints` | живое описание (R5) и пропуск чекпоинтов (B4) |
 | `goal` / `criteria` | план забега (ORCH M1.1): цель (строка) и критерии (список строк); пишет `awf_run_start`, показаны в `awf_run_status` и RUN-REPORT; в старом run.yaml отсутствуют → читаются как `""` / `[]`, миграции нет |
 | `decisions` | append-only причинная память (ORCH M1.1): `[{ts, kind: approve\|reject, todo_id, reason}]`; approve хранит выжимку evidence ≤200 символов (полный текст — в `context/RUN-EVIDENCE-{todo}.md`); повтор того же (kind, todo_id, reason) дубль не добавляет; пишется только в активном забеге |
+| `revisions` | применённые ревизии состава очереди (ORCH M3.4): `[{ts, key, kind: "revision", reason, changes, generation}]`, `changes` = `[{todo_id, from, to}]` (только НЕ начатые элементы); пишет `awf_run_revise` в том же CAS-записе, что и смена очереди (условие поколения A-13); повтор с тем же `key` — no-op (идемпотентность); в старом run.yaml отсутствует → читается как `[]`, миграции нет |
 
 ## Stage prompt injection
 

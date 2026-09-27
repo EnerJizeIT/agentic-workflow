@@ -50,6 +50,8 @@ groups:
         when: "launch the next item"
       - mcp: awf_run_note
         when: "owner's live status line"
+      - mcp: awf_run_revise
+        when: "revise queue (not-started, by key)"
       - mcp: awf_run_finish
         when: "close the run (report)"
       - mcp: awf_approve

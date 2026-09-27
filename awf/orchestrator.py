@@ -11,14 +11,16 @@ No circular dependency: orchestrator imports from pipeline_engine (one direction
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
 from . import paths
+from ._atomic import atomic_write_text
 from ._log import log as _log
-from .pipeline import load_stages, resolve_pipeline_file
+from .pipeline import load_stages, pipeline_snapshot_text, resolve_pipeline_file
 from .pipeline_engine import (
     _find_stage_index,
     execute_agent_stage,
@@ -28,6 +30,101 @@ from .pipeline_state import clear_state, read_state, write_state
 from .plan_progress import (
     print_progress_report as _print_progress_report,
 )
+
+
+def _pipeline_snapshot_file(project_dir: Path, todo_id: str) -> Path:
+    """ORCH M3.3: the per-TODO pipeline snapshot path in the context dir."""
+    return paths.context_dir(project_dir) / f"PIPELINE-{todo_id}.yaml"
+
+
+def _write_pipeline_snapshot(
+    project_dir: Path,
+    stages: list,
+    pipeline_file: Path,
+    todo_id: str,
+    logs_dir: Path,
+) -> None:
+    """ORCH M3.3: capture the resolved stages as PIPELINE-{todo_id}.yaml.
+
+    Atomic write (temp + rename, same as every context artifact). Best
+    effort by design: the snapshot is a stability feature, not a gate —
+    a failed capture must not kill the launch (the unit keeps running on
+    the live stages; the next launch retries the capture).
+    """
+    try:
+        text = pipeline_snapshot_text(stages, pipeline_file.stem, todo_id)
+        atomic_write_text(_pipeline_snapshot_file(project_dir, todo_id), text)
+        _log(
+            logs_dir,
+            f"Pipeline snapshot captured: PIPELINE-{todo_id}.yaml "
+            f"(source {pipeline_file.name})",
+        )
+    except Exception as e:
+        _log(logs_dir, f"WARNING: pipeline snapshot capture failed: {e}")
+
+
+def _apply_pipeline_snapshot(
+    project_dir: Path,
+    stages: list,
+    pipeline_file: Path,
+    todo_id: str,
+    resuming: bool,
+    logs_dir: Path,
+) -> list:
+    """ORCH M3.3: read the unit's pipeline snapshot (or capture it).
+
+    Snapshot present → the run resumes the definition it started with,
+    whatever the published pipeline file says now (contract: changing the
+    published template does not change the snapshot of a running stage).
+    Snapshot absent → degrade, not refuse: the live pipeline is used and
+    captured so the next resume is stable; a resuming launch (from_stage
+    set) without a snapshot is an old unit or a manual launch and gets a
+    warning. A snapshot that fails to load degrades the same way — a unit
+    must not die on its own shadow file.
+    """
+    if not re.fullmatch(r"TODO-\d{4,}", todo_id or ""):
+        return stages
+    # AUD14-05: function-local — awf._errors is a zero-import leaf (the
+    # awf.api re-export would pull the package init in).
+    from ._errors import AwfApiError
+
+    snap = _pipeline_snapshot_file(project_dir, todo_id)
+    if snap.is_file():
+        try:
+            snap_stages = load_stages(snap)
+        except AwfApiError as e:
+            # F-01 (QA review, M3.3): a structurally invalid snapshot
+            # (valid YAML, bad stage form / unknown key / bad id) makes
+            # load_stages raise instead of returning [] — degrade it the
+            # same way as byte corruption: the unit must not die on its
+            # own shadow file.
+            print(
+                f"ERROR: pipeline snapshot {snap.name} is invalid: {e}",
+                file=sys.stderr,
+            )
+            snap_stages = []
+        if snap_stages:
+            _log(logs_dir, f"Pipeline {todo_id} resumed from snapshot {snap.name}")
+            return snap_stages
+        print(
+            f"WARNING: pipeline snapshot {snap.name} is unreadable — "
+            "falling back to the live pipeline.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"Snapshot {snap.name} unreadable — live pipeline fallback")
+    elif resuming:
+        print(
+            f"WARNING: no pipeline snapshot for {todo_id} (old unit or "
+            "manual launch) — using the live pipeline.",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"No snapshot for {todo_id} (old unit or manual launch) — "
+            "live pipeline fallback",
+        )
+    _write_pipeline_snapshot(project_dir, stages, pipeline_file, todo_id, logs_dir)
+    return stages
 
 
 def run_pipeline(args: Any) -> int:
@@ -95,6 +192,20 @@ def run_pipeline(args: Any) -> int:
     if not stages:
         print(f"ERROR: No stages found in {pipeline_file}")
         return 1
+
+    # ORCH M3.3: the unit runs on the pipeline definition it started with.
+    # Every launch path (awf_start / awf_run_next / awf_continue, foreground
+    # and the background child) funnels into run_pipeline, so this single
+    # point covers all of them: a pinned TODO resumes its snapshot
+    # PIPELINE-{todo_id}.yaml — a republished pipelines/*.yaml does not
+    # change the resumed unit. An unpinned start has no TODO yet; its
+    # snapshot is captured in the stage loop once the plan stage resolves
+    # the unit.
+    stages = _apply_pipeline_snapshot(
+        project_dir, stages, pipeline_file,
+        str(getattr(args, "todo_id", "") or ""),
+        bool(from_stage), logs_dir,
+    )
 
     total = len(stages)
     print("=== Agentic Workflow: Starting Pipeline ===")
@@ -222,6 +333,19 @@ def run_pipeline(args: Any) -> int:
                 )
                 if rc != 0:
                     return rc
+
+            # ORCH M3.3: the plan stage is where an unpinned start learns
+            # its TODO — capture the unit's definition the moment it is
+            # known. A pinned launch already carries the snapshot from
+            # load time (the existence check makes this a no-op then); a
+            # replan that yields a NEW TODO captures a fresh snapshot for
+            # the new unit.
+            if current_todo and not _pipeline_snapshot_file(
+                project_dir, current_todo
+            ).is_file():
+                _write_pipeline_snapshot(
+                    project_dir, stages, pipeline_file, current_todo, logs_dir
+                )
 
         # All stages completed
         print()

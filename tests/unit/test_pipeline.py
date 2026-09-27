@@ -121,6 +121,10 @@ class TestLoadStages:
         assert s.on_failed == "escalate"
         assert s.max_retries == 1
         assert s.max_rollbacks == 3
+        # ORCH M3.1: id (адрес стадии) и task (поручение) — опциональные,
+        # пустые по умолчанию (старый YAML без них грузится как раньше).
+        assert s.id == ""
+        assert s.task == ""
 
     def test_loader_rejects_legacy_on_passed(self, tmp_path) -> None:
         """A-06: load_stages does not accept on_passed — a YAML key with

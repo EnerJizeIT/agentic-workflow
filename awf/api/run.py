@@ -25,6 +25,7 @@ from ._errors import AwfApiError
 from ._results import (
     RunFinishResult,
     RunNextResult,
+    RunReviseResult,
     RunStartResult,
     RunStatusResult,
 )
@@ -1118,4 +1119,324 @@ def run_finish(
         reason=reason,
         report_file=report_str,
         message=f"Run finished: {reason}." + (f" Report: {report}" if report else ""),
+    )
+
+
+def _revision_items(
+    state: dict, requested: list[dict]
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """ORCH M3.4: classify the run queue + the requested changes.
+
+    Queue lifecycle per item (the launch position from ``run_next``):
+    positions ``< index`` are STARTED (the in-flight element sits at
+    ``index - 1`` while ``current`` is set), positions ``>= index`` are
+    NOT STARTED. ``completed`` ids count as completed regardless of
+    position (the last item is credited only at exhaustion).
+
+    Returns ``(current_queue, changes, conflicts, unchanged)``:
+    - ``current_queue`` — every queue item with its lifecycle state
+      (``completed`` | ``current`` | ``started`` | ``queued``);
+    - ``changes`` — requested items that change a not-started element's
+      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default);
+    - ``conflicts`` — requested items that cannot be changed
+      (current / started / completed / not in the queue);
+    - ``unchanged`` — requested items whose pipeline already matches.
+    """
+    queue = list(state.get("queue") or [])
+    try:
+        index = int(state.get("index", 0) or 0)
+    except (TypeError, ValueError):
+        index = 0
+    current = str(state.get("current") or "")
+    completed = {str(c) for c in (state.get("completed") or [])}
+
+    def _item_fields(item: object) -> tuple[str, str]:
+        if isinstance(item, dict):
+            return (
+                str(item.get("todo_id", "")),
+                str(item.get("pipeline", "") or ""),
+            )
+        return str(item), ""
+
+    def _lifecycle(tid: str, pos: int) -> str:
+        if tid in completed:
+            return "completed"
+        if tid == current:
+            return "current"
+        if pos < index:
+            return "started"
+        return "queued"
+
+    current_queue: list[dict] = []
+    by_id: dict[str, tuple[int, str]] = {}
+    for pos, item in enumerate(queue):
+        tid, pipe = _item_fields(item)
+        current_queue.append(
+            {"todo_id": tid, "pipeline": pipe, "position": pos, "state": _lifecycle(tid, pos)}
+        )
+        by_id[tid] = (pos, pipe)
+
+    conflicts: dict[str, str] = {
+        "completed": "already completed",
+        "current": "the current (in-flight) element",
+        "started": "already started",
+    }
+    changes: list[dict] = []
+    conflicts_list: list[dict] = []
+    unchanged: list[dict] = []
+    for req in requested:
+        tid = req["todo_id"]
+        to = str(req.get("pipeline", "") or "")
+        entry = by_id.get(tid)
+        if entry is None:
+            conflicts_list.append({"todo_id": tid, "reason": "not in the run queue"})
+            continue
+        pos, pipe = entry
+        lifecycle = _lifecycle(tid, pos)
+        if lifecycle != "queued":
+            conflicts_list.append({"todo_id": tid, "reason": conflicts[lifecycle]})
+            continue
+        if pipe == to:
+            unchanged.append({"todo_id": tid, "pipeline": to})
+        else:
+            changes.append({"todo_id": tid, "from": pipe, "to": to})
+    return current_queue, changes, conflicts_list, unchanged
+
+
+def run_revise(
+    project_dir: Path,
+    *,
+    queue: list[str | dict] | None = None,
+    reason: str = "",
+    key: str = "",
+    preview: bool = False,
+) -> RunReviseResult:
+    """ORCH M3.4: revise the pipeline of the NOT-STARTED elements of the
+    active run's queue — one typed operation with a preview and an
+    idempotency key.
+
+    - ``preview=True`` — no side effects: the current queue (per-item
+      lifecycle state), which elements would change, the conflicts
+      (current/started/completed/not in the queue), the key. The preview is
+      not refused by a live engine (it is read-only).
+    - apply (``preview=False``) — changes the pipeline of the not-started
+      elements only; the completed and the current element are never
+      touched. Refusals (each returns the current state, the previous plan
+      stays in force): no active run; the engine is alive (a stage is
+      running — stop the unit first, ORCH M3.5); ANY conflict in the
+      request (atomic — nothing is applied); a missing ``key``; a
+      generation mismatch (CAS, A-13 — the run changed between the read
+      and the write).
+    - a repeat with the same ``key`` is a no-op: the stored revision is
+      returned, nothing is written twice (the check and the append are one
+      step under one lock hold).
+    - the applied revision is recorded in the run state (state/run.yaml,
+      ``revisions``: ``{ts, key, kind: "revision", reason, changes,
+      generation}`` — the decisions' path) in the SAME CAS write as the
+      queue change.
+    """
+    project_dir = _require_run_project(project_dir)
+    requested = _validate_queue(queue)
+    reason_clean = str(reason or "").strip()
+    key_clean = str(key or "").strip()
+
+    state = run_state.read_run(project_dir)
+    if not state or not state.get("active"):
+        return RunReviseResult(
+            action="refused",
+            preview=bool(preview),
+            key=key_clean,
+            message=(
+                "No active run — a revision revises the queue of an active "
+                "run. Start one with awf_run_start(queue=[...])."
+            ),
+        )
+
+    gen = run_state.generation_of(state)
+    try:
+        index = int(state.get("index", 0) or 0)
+    except (TypeError, ValueError):
+        index = 0
+    current = str(state.get("current") or "")
+    current_queue, changes, conflicts, unchanged = _revision_items(state, requested)
+
+    if preview:
+        bits = [
+            f"{len(changes)} element(s) would change",
+            f"{len(conflicts)} conflict(s)" if conflicts else "no conflicts",
+        ]
+        return RunReviseResult(
+            action="preview",
+            preview=True,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message="Preview: " + ", ".join(bits) + " — nothing was written.",
+            next_action=(
+                "Apply with the same queue + key (preview=false). A stage must "
+                "be stopped before the apply (a live engine refuses it)."
+            ),
+        )
+
+    # Invariant 2: a live engine (a stage is running) — refused with the
+    # stop-first hint. Stopping a running stage + revising it is the NEXT
+    # unit (ORCH M3.5); until then the engine must be stopped (awf_kill).
+    running, _pid, source = _liveness.resolve(project_dir)
+    if running:
+        return RunReviseResult(
+            action="refused",
+            preview=False,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                f"Refused: a stage is running (source: {source or '?'}) — "
+                "stop the unit first (awf_kill), then retry the revision. "
+                "Stopping a running stage is the next unit (ORCH M3.5); "
+                "the previous plan stays in force."
+            ),
+        )
+
+    if conflicts:
+        listed = "; ".join(f"{c['todo_id']}: {c['reason']}" for c in conflicts)
+        return RunReviseResult(
+            action="refused",
+            preview=False,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                f"Refused: the request touches elements that cannot be "
+                f"changed — {listed}. Nothing was changed (atomic); the "
+                "previous plan stays in force. Review the preview."
+            ),
+        )
+
+    if not key_clean:
+        return RunReviseResult(
+            action="refused",
+            preview=False,
+            key="",
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                "key is required to apply the revision — it is the "
+                "idempotency identity (a repeat with the same key is a no-op)."
+            ),
+        )
+
+    if not changes:
+        return RunReviseResult(
+            action="noop",
+            preview=False,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=[],
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                "Nothing to change — the requested pipelines already match "
+                "the queue. No revision was recorded."
+            ),
+        )
+
+    # A-13: the queue change and the revision record are ONE CAS write
+    # conditioned on (generation, index, current) — the same pattern as the
+    # run_next reservation/commit. The idempotency check (find_revision)
+    # runs under the same lock hold: two serialized writers cannot race
+    # into a second revision.
+    outcome: dict = {}
+
+    def _revise_mutator(st: dict) -> dict:
+        existing = run_state.find_revision(st, key_clean)
+        if existing is not None:
+            outcome["existing"] = existing
+            return st
+        for ch in changes:
+            for q in st.get("queue") or []:
+                if isinstance(q, dict) and str(q.get("todo_id", "")) == ch["todo_id"]:
+                    q["pipeline"] = ch["to"]
+        run_state.append_revision(st, key_clean, reason_clean, changes, gen)
+        outcome["applied"] = True
+        return st
+
+    _written, cas_ok = run_state.update_run_cas(
+        project_dir,
+        _revise_mutator,
+        generation=gen,
+        index=index,
+        current=current,
+    )
+    if not cas_ok:
+        fresh = run_state.read_run(project_dir) or {}
+        fresh_queue, _c, _f, _u = _revision_items(fresh, requested)
+        return RunReviseResult(
+            action="refused",
+            preview=False,
+            key=key_clean,
+            generation=run_state.generation_of(fresh),
+            current_queue=fresh_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                "Refused: the run changed between the read and the write "
+                "(generation/index/current mismatch — A-13 CAS). The "
+                "previous plan stays in force; the current state is in "
+                "current_queue/generation."
+            ),
+        )
+
+    if "existing" in outcome:
+        stored = outcome["existing"]
+        return RunReviseResult(
+            action="noop",
+            preview=False,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=[],
+            conflicts=conflicts,
+            unchanged=unchanged,
+            revision=stored,
+            message=(
+                f"Revision with key {key_clean} was already applied "
+                f"({str(stored.get('ts') or '?')}) — no-op, nothing was "
+                "written twice."
+            ),
+        )
+
+    # _written is the state the CAS just wrote — its last revision entry is
+    # exactly the record this call appended (no re-read).
+    written_revisions = (_written or {}).get("revisions") or []
+    entry = written_revisions[-1] if written_revisions else None
+    return RunReviseResult(
+        action="applied",
+        preview=False,
+        key=key_clean,
+        generation=gen,
+        current_queue=[dict(e) for e in current_queue],
+        changes=changes,
+        conflicts=conflicts,
+        unchanged=unchanged,
+        revision=entry,
+        message=(
+            f"Queue revised (key {key_clean}): {len(changes)} element(s) "
+            "changed — the pipelines take effect at each element's launch "
+            "(awf_run_next)."
+        ),
+        next_action="Continue the run with awf_run_next.",
     )
