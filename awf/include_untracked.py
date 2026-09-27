@@ -56,7 +56,9 @@ def read_include_list(project_dir: Path, todo_id: str) -> list[str] | None:
         return None
     try:
         lines = f.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # NEG-3: binary garbage in the include link is a missing link, not
+        # a crash — the same degrade as an unreadable file.
         return None
     return sorted(ln.strip() for ln in lines if ln.strip())
 

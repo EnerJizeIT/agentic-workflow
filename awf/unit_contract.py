@@ -295,7 +295,9 @@ def collect_done_facts(
         return fact, []
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # NEG-3: binary garbage in the DONE json degrades to absent facts,
+        # the same as an unreadable file.
         _log(logs_dir, f"U3: {path.name} unreadable ({e}) — handoff skips machine facts")
         return fact, []
     if not text.strip():
