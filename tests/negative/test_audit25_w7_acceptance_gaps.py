@@ -9,10 +9,10 @@
 1. A-02 (полный набор аудита): два одновременных foreground-запуска и
    смешанная пара (foreground+background), как и background-пара, дают
    ровно один выполняющийся пайплайн без второго worker:
-   test_two_concurrent_foreground_starts_run_once (xfail strict — на
-   текущем коде красный: lease/liveness только в background-режиме,
-   дефект подтверждён, фикс TODO-0118; пометку снимет 0118),
-   test_mixed_pair_foreground_running_blocks_background_launch (зелёный).
+    test_two_concurrent_foreground_starts_run_once (дефект foreground-пары
+    зафиксирован в TODO-0117, фикс — TODO-0118: lease/liveness на
+    foreground-пути),
+    test_mixed_pair_foreground_running_blocks_background_launch (зелёный).
 2. A-06 (публичный путь): неверно типизированный YAML через публичный
    start_pipeline — понятная ошибка, без побочных записей в runtime
    (снимок .agentic/ побайтно; исключение — .agentic/logs/**):
@@ -82,19 +82,13 @@ def _head(proj: Path) -> str:
 # ── A-02 (полный набор аудита): foreground-пара и смешанная пара ──────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A-02 foreground-пара: нет lease/liveness на foreground-пути — TODO-0118",
-)
 def test_two_concurrent_foreground_starts_run_once(tmp_git_repo, monkeypatch):
     """A-02 (полный набор аудита): два одновременных foreground-запуска —
     ровно один выполняющийся пайплайн, второй вызов получает отказ, а не
     второй прогон (как и background-пара).
 
-    XFAIL (strict): на текущем коде красный — lease берётся только в
-    background-режиме (`awf/api/pipeline.py`, start_pipeline), и второй
-    одновременный foreground-вызов исполняет второй пайплайн. Дефект
-    подтверждён (BLOCKED-TODO-0117), фикс — TODO-0118; пометку снимет он.
+    Дефект (lease/liveness только в background-режиме) подтверждён в
+    TODO-0117 красным тестом; фикс — TODO-0118 (lease на foreground-пути).
     """
     import awf.orchestrator as orch_mod
 

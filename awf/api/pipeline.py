@@ -70,6 +70,33 @@ def _is_pipeline_running(project_dir: Path) -> int | None:
     return None
 
 
+def _is_background_child() -> bool:
+    """This process IS the background pipeline child, not a caller of it.
+
+    ``start_in_background`` spawns the child as ``<python> -m awf start ...``
+    with ``AWF_BACKGROUND_CHILD=1`` in its environment. The marker is BOTH,
+    because neither alone is reliable: the env var leaks into the child's
+    descendants (workers, their shells and their tests — they must still be
+    refused normally), and bare argv could be a human in the terminal. Only
+    the process carrying both is the launched pipeline itself; it must not
+    be refused by its own launch (its own PID file / its spawner's lease).
+
+    The own cmdline is read from /proc directly, NOT via the read_cmdline
+    seam: the seam models OTHER processes' argv for liveness tests and a
+    blanket patch must not be able to flip the caller's own identity.
+    Without /proc the argv cannot be checked — degrade to the env marker.
+    """
+    if not os.environ.get("AWF_BACKGROUND_CHILD"):
+        return False
+    try:
+        cmdline = Path("/proc/self/cmdline").read_bytes().decode(
+            "utf-8", errors="replace"
+        )
+    except OSError:
+        return True
+    return _liveness.cmdline_is_ours(cmdline)
+
+
 def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
     """DF5-10: Wait briefly, then check if a background child is still alive.
 
@@ -913,8 +940,14 @@ def start_pipeline(
     # in progress is refused (non-blocking, not a wait); a dead owner's
     # lease is taken over automatically (staleness = process liveness,
     # never file age).
+    # TODO-0118: the lease is taken in foreground too and held for the
+    # whole run — a concurrent foreground call is refused the same way, so
+    # a foreground pair also gives exactly one running pipeline. The
+    # background child (the pipeline itself, spawned by the launch that
+    # owned the lease) must not be refused by its own launch.
+    is_bg_child = _is_background_child()
     lease = None
-    if background:
+    if not is_bg_child:
         try:
             lease = _lease.acquire(project_dir)
         except _lease.LeaseHeldError as e:
@@ -935,8 +968,13 @@ def start_pipeline(
     try:
         # DF5-6 + AUD04-07: refuse to start if a pipeline is already running
         # (shared resolver: background PID file AND state.pipeline_pid).
+        # TODO-0118: refusal in foreground too — the mixed pair (background
+        # running, foreground call arrives) is refused by the shared
+        # resolver instead of running a second pipeline. The background
+        # child is exempt: its own PID file is itself, not a running
+        # pipeline.
         live_pid = _liveness.resolve(project_dir)[1]
-        if live_pid and background:
+        if live_pid and not is_bg_child:
             return StartResult(
                 run_mode="noop",
                 run_id=None,
@@ -1178,18 +1216,21 @@ def continue_pipeline(
     # ack block on purpose: an ack that gets refused by a concurrent
     # launch stays in the inbox as the supervisor's pending answer (the
     # next continue consumes it) instead of being dropped.
+    # TODO-0118: taken in foreground too — a concurrent foreground
+    # continue is refused the same way (exactly one running pipeline).
+    # The background child re-enters start_pipeline, not this function,
+    # so no child exception is needed here.
     lease = None
-    if background:
-        try:
-            lease = _lease.acquire(project_dir)
-        except _lease.LeaseHeldError as e:
-            return StartResult(
-                run_mode="noop",
-                run_id=None,
-                log_file=None,
-                exit_code=0,
-                message=f"Launch refused: {e}",
-            )
+    try:
+        lease = _lease.acquire(project_dir)
+    except _lease.LeaseHeldError as e:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=0,
+            message=f"Launch refused: {e}",
+        )
 
     # F-1 (REVIEW A-02): everything after acquire runs under ONE try/finally
     # — any error in the window (reconcile, liveness, closure resolution,
