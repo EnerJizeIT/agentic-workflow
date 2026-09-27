@@ -19,7 +19,7 @@ import pytest
 import yaml
 from conftest import _git_init  # AUD12-08: shared git boilerplate
 
-from awf import api, cli
+from awf import api, cli, git_utils
 from awf.pipeline_state import write_state
 
 
@@ -638,10 +638,12 @@ class TestApproveEvidenceFlag:
         self._active_run(repo)
         capsys.readouterr()
 
+        # V-03: run mode also requires the verified-tree fingerprint.
         rc = cli.main(
             [
                 "approve", "TODO-0001",
                 "--evidence", "pytest -q → 348 passed; verdict: approve",
+                "--verified-sha", git_utils.tree_fingerprint(repo),
                 "--project-dir", str(repo),
             ]
         )

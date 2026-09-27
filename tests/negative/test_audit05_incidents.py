@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 import awf.api.pipeline as api_pipeline
-from awf import api, run_state
+from awf import api, git_utils, run_state
 
 TODO = "TODO-0001"
 ITERS = 30
@@ -57,6 +57,11 @@ class TestApproveRejectRace:
         proj = _project(tmp_git_repo)
         _write_todo(proj)
         api.run_start(proj, queue=[TODO])
+        # V-03: run mode requires a verified-tree fingerprint in approve.
+        # The tree is stable across the whole race (every write lands in
+        # gitignored .agentic runtime dirs, HEAD never moves) — one
+        # fingerprint is valid for all iterations.
+        fp = git_utils.tree_fingerprint(proj)
 
         errors: list = []
         violations: list = []
@@ -68,7 +73,11 @@ class TestApproveRejectRace:
             def approve():
                 try:
                     barrier.wait(timeout=10)
-                    api.approve_commit(proj, TODO, evidence=f"iter {i}: probes ok")
+                    api.approve_commit(
+                        proj, TODO,
+                        evidence=f"iter {i}: probes ok",
+                        verified_sha=fp,
+                    )
                 except Exception as e:  # noqa: BLE001 — surface in the test
                     errors.append(f"approve iter {i}: {e!r}")
 

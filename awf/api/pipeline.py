@@ -345,6 +345,13 @@ def approve_commit(
     fingerprint is stored to ``.agentic/context/VERIFIED-{todo_id}.sha``.
     Without the parameter the behavior is exactly as before.
 
+    V-03 (re-verification 2026-09-27, owner decision): inside an ACTIVE
+    run the parameter is REQUIRED — ``awf_approve(evidence=...,
+    verified_sha='')`` used to publish the signal anyway, and the commit
+    gate committed a tree the supervisor never pinned with a fingerprint.
+    In run mode an empty ``verified_sha`` is an explicit refusal (no
+    APPROVE signal, no verdict). Outside a run it stays optional.
+
     Requires ``.agentic/`` (consistency with other api functions).
     """
     if not todo_id:
@@ -400,6 +407,19 @@ def approve_commit(
             "Run mode requires independent-verification evidence. Pass the "
             "commands you actually ran and the verdict via evidence=..., e.g. "
             "evidence='pytest -q → 348 passed; ruff check → clean; verdict: approve'."
+        )
+
+    # V-03 (re-verification 2026-09-27, owner decision): in an active run
+    # the approve must ALSO carry the verified-tree fingerprint. The check
+    # runs after the evidence one, so a call missing both still gets the
+    # evidence error (the earlier, weaker gap). No APPROVE signal, no
+    # verdict — the refusal happens before any publication.
+    if run_active and not verified_sha.strip():
+        raise AwfApiError(
+            "Run mode requires verified_sha: the working-tree fingerprint "
+            "you recorded at verify time (`awf tree-sha` / `awf_tree_sha`, "
+            "BEFORE your checks). Approve without it is refused — the "
+            "commit gate would commit a tree you did not verify."
         )
 
     # SPEC A-run (second tier): record the verdict in the run diary.

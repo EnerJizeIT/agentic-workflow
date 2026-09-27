@@ -584,4 +584,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # The production fix (awf/api/run.py — one launch-success condition +
 # the try/except rollback of the launch window) carries no TODO id
 # (31 TODO lines before and after).
+# TODO-0124 (V-03, run-approve requires verified_sha): baseline raised
+# 4175 -> 4193 — the new tests/negative/test_verify27_v03_approve_sha.py
+# adds 18 TODO-bearing lines (module docstring, the TODO-0001 constant
+# and its fixture/assert use-sites in the four tests, the
+# APPROVE/VERIFIED-TODO-0001 path asserts). The touched tracked files
+# are TODO-line neutral (4 approve-call lines rewritten 4-to-4). Same
+# class as above: test identifiers and unit-id references, not debt.
+# The production fix (awf/api/pipeline.py — one run-mode refusal) and
+# the docs (USAGE EN/RU, docs/file-bus.md) carry no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

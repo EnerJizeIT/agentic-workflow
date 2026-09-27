@@ -87,7 +87,7 @@ Awf ведёт supervisor по детерминированному flow:
 проверки, ДО своих проб, снимите отпечаток дерева (`awf tree-sha`, MCP: `awf_tree_sha`); после проверок
 передайте его в approve (MCP: `awf_approve(verified_sha=...)`). Если дерево изменилось (новый коммит,
 правка, новый файл) — approve откажет: «the tree changed after verification». Отпечаток сохраняется в
-`.agentic/context/VERIFIED-<todo-id>.sha`. Без `--verified-sha` поведение прежнее.
+`.agentic/context/VERIFIED-<todo-id>.sha`. Без `--verified-sha` поведение прежнее — **кроме активного забега, где он ОБЯЗАТЕЛЕН** (V-03, 2026-09-27): approve без отпечатка в забеге отказывается, сигнал APPROVE не публикуется.
 
 **`awf mutations [--list]`** — мутационный smoke по `scripts/mutations.txt` на покоящемся дереве (грязное
 `git status` → отказ): убитые / выжившие / таймауты с хвостами логов, файлы всегда восстанавливаются.

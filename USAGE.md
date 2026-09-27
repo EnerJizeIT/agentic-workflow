@@ -95,7 +95,9 @@ edited file, new file), approve refuses with «the tree changed after
 verification». The hash is stored to
 `.agentic/context/VERIFIED-<todo-id>.sha`, and the run report lists both
 the evidence and the verified tree. Without `--verified-sha` the behavior
-is exactly as before.
+is exactly as before — **except in an active run (забег), where it is
+REQUIRED** (V-03, 2026-09-27): approve without the fingerprint is refused
+and no APPROVE signal is published.
 
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
 over `scripts/mutations.txt` (same format as `mutation-smoke.sh`, which
