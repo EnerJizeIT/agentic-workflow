@@ -366,6 +366,17 @@ TODO, и `awf_run_next` читает его для элементов без п�
 очереди. Неизвестное имя отказывает запуску со списком доступных
 пайплайнов (RUN3 #1).
 
+**План забега (goal, criteria, decisions).** `awf_run_start` принимает
+`goal` (одна строка) и `criteria` (список строк) — хранятся в
+`state/run.yaml` (производный RunPlan, второго хранилища нет) и показаны
+в `awf_run_status` и в RUN-REPORT. В забеге каждый `awf_approve` /
+`awf_reject` дописывает в append-only `decisions` запись
+`{ts, kind, todo_id, reason}`; approve хранит выжимку evidence ≤200
+символов (полный текст — в `context/RUN-EVIDENCE-{todo}.md`). Повтор того
+же (kind, todo_id, reason) дубль не добавляет. Старые run.yaml без этих
+полей читаются как раньше (без миграции); битые значения деградируют в
+пустое с предупреждением.
+
 **Долгие ожидания.** Один вызов `awf_wait_for_event` рвётся по потолку
 одиночного ожидания — 55 с по умолчанию, поднимается через
 `wait.cap_seconds` в `.agentic/config.yaml` (или env `AWF_WAIT_CAP` — он

@@ -431,6 +431,22 @@ def approve_commit(
     # ONLY after this decision succeeds. A conflict must refuse WITHOUT
     # the file — a leftover APPROVE signal would unlock the commit gate
     # on a rejected verdict.
+    # ORCH M1.1: causal memory — the approve is recorded with a short
+    # evidence excerpt (the full text stays in the RUN-EVIDENCE file). An
+    # approve without a fresh evidence= but with an existing evidence file
+    # (allowed: the file gate passes) gets the excerpt from the file.
+    evidence_excerpt = ""
+    if run_active:
+        evidence_excerpt = evidence.strip()[:200]
+        if not evidence_excerpt and evidence_file.is_file():
+            try:
+                evidence_excerpt = (
+                    evidence_file.read_text(encoding="utf-8", errors="replace")
+                    .strip()[:200]
+                )
+            except OSError:
+                evidence_excerpt = ""
+
     conflict = False
     if run_active:
         from .. import run_state as _run_state
@@ -446,6 +462,9 @@ def approve_commit(
             outcomes = dict(state.get("outcomes") or {})
             outcomes[todo_id] = {"verdict": "approved"}
             state["outcomes"] = outcomes
+            # ORCH M1.1: the causal memory entry — same lock hold as the
+            # verdict, dedup by (kind, todo_id, reason) inside the lock.
+            _run_state.append_decision(state, "approve", todo_id, evidence_excerpt)
             return state
 
         _run_state.update_run(project_dir, _approve_mutator)
@@ -573,6 +592,9 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
                 "rejects": rejects,
             }
             state["outcomes"] = outcomes
+            # ORCH M1.1: the causal memory entry — the reject with its
+            # reason, same lock hold as the counter (dedup inside the lock).
+            _run_state.append_decision(state, "reject", todo_id, reason.strip())
             return state
 
         fresh = _run_state.update_run(project_dir, _reject_mutator)

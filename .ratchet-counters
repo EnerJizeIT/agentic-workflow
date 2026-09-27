@@ -601,4 +601,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # scripts/mutations.txt dispatch entry's comment gains 1 (the TODO-0127
 # unit reference). Same class as above: test identifiers and unit-id
 # references, not debt.
+# TODO-0128 (ORCH M1.1, RunPlan in run state): baseline raised
+# 4197 -> 4204 — the new tests/negative/test_run_plan_record.py adds 2
+# TODO-bearing lines (the T = "TODO-0001" / T2 = "TODO-0002" constants),
+# docs/file-bus.md's run.yaml field table adds 4 (the {TODO: ...} map
+# shapes in the rejects/outcomes/stop_flags rows + "completed TODO"),
+# and awf/run_state.py::append_decision's docstring gains 1 (the
+# TODO-0128 unit reference). Same class as above: test identifiers,
+# doc field shapes and unit-id references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

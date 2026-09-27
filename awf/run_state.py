@@ -103,6 +103,92 @@ def _run_shape_ok(state: dict) -> bool:
     return True
 
 
+def _decision_entry_ok(d: object) -> bool:
+    """ORCH M1.1: a decisions entry is a dict with non-empty string
+    ``kind`` and ``todo_id`` — everything else is a corrupt entry."""
+    if not isinstance(d, dict):
+        return False
+    return bool(str(d.get("kind") or "").strip()) and bool(
+        str(d.get("todo_id") or "").strip()
+    )
+
+
+def _normalize_decision(d: dict) -> dict:
+    """ORCH M1.1: the canonical decision shape {ts, kind, todo_id, reason};
+    absent fields become empty strings (a partial entry survives as far as
+    its kind/todo_id allow)."""
+    return {
+        "ts": str(d.get("ts") or ""),
+        "kind": str(d.get("kind") or "").strip(),
+        "todo_id": str(d.get("todo_id") or "").strip(),
+        "reason": str(d.get("reason") or ""),
+    }
+
+
+def _sanitize_plan_fields(state: dict, logs_dir: Path | None) -> None:
+    """ORCH M1.1 (invariant 4): broken/partial ``goal``/``criteria``/
+    ``decisions`` in run.yaml must not crash the read — the broken value is
+    dropped with a warning (the file itself is kept, like AUD02-06), the
+    rest of the run stays usable.
+
+    After this call the state ALWAYS carries ``goal`` (str), ``criteria``
+    (list of non-empty str) and ``decisions`` (list of normalized entries),
+    so every consumer indexes them without a defensive isinstance.
+    """
+    goal = state.get("goal")
+    if goal is None:
+        state["goal"] = ""
+    elif not isinstance(goal, str):
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                "ORCH M1.1: run.yaml 'goal' is not a string — dropped "
+                "(corrupt file kept for inspection)",
+            )
+        state["goal"] = ""
+
+    criteria = state.get("criteria")
+    if criteria is None:
+        state["criteria"] = []
+    elif not isinstance(criteria, list):
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                "ORCH M1.1: run.yaml 'criteria' is not a list — dropped "
+                "(corrupt file kept for inspection)",
+            )
+        state["criteria"] = []
+    else:
+        state["criteria"] = [str(c).strip() for c in criteria if str(c).strip()]
+
+    decisions = state.get("decisions")
+    if decisions is None:
+        state["decisions"] = []
+    elif not isinstance(decisions, list):
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                "ORCH M1.1: run.yaml 'decisions' is not a list — dropped "
+                "(corrupt file kept for inspection)",
+            )
+        state["decisions"] = []
+    else:
+        kept: list[dict] = []
+        skipped = 0
+        for d in decisions:
+            if _decision_entry_ok(d):
+                kept.append(_normalize_decision(d))
+            else:
+                skipped += 1
+        if skipped and logs_dir is not None:
+            _log(
+                logs_dir,
+                f"ORCH M1.1: {skipped} corrupt run.yaml decision entr(y/ies) "
+                "skipped (file kept for inspection)",
+            )
+        state["decisions"] = kept
+
+
 def read_run(project_dir: Path, *, logs_dir: Path | None = None) -> dict | None:
     """Read run state. Returns None when no run was ever started or the
     file is corrupt (non-UTF-8, broken YAML, non-dict root, bad shape)."""
@@ -130,6 +216,9 @@ def read_run(project_dir: Path, *, logs_dir: Path | None = None) -> dict | None:
     # RUN3 #2: upgrade legacy string queue items to the canonical
     # {"todo_id", "pipeline"} form on read (old state files stay readable).
     data["queue"] = normalize_queue(data["queue"])
+    # ORCH M1.1: the RunPlan fields always exist in the returned state
+    # (""/[]/[]); broken values degrade with a warning, not a traceback.
+    _sanitize_plan_fields(data, logs_dir)
     return data
 
 
@@ -291,6 +380,64 @@ def update_run_cas(
             yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
         )
         return new_state, True
+
+
+def append_decision(state: dict, kind: str, todo_id: str, reason: str) -> bool:
+    """ORCH M1.1: append a causal decision to the state dict IN PLACE.
+
+    A mutator fragment for :func:`update_run` / :func:`update_run_cas` —
+    the caller runs it inside the lock so the decision lands in the SAME
+    atomic write as the outcomes/rejects update that triggered it. The
+    entry is ``{ts, kind, todo_id, reason}``.
+
+    Idempotent by (kind, todo_id, reason): a repeat of the same decision
+    adds no duplicate. The check and the append are one step inside one
+    lock hold, so two serialized writers cannot race into a double entry —
+    that is the mechanism the TODO-0128 invariant 2 asks for.
+
+    Returns True when the entry was added, False when it already existed.
+    """
+    kind = str(kind or "").strip()
+    todo_id = str(todo_id or "").strip()
+    reason = str(reason or "").strip()
+    decisions = state.get("decisions")
+    if not isinstance(decisions, list):
+        decisions = []
+        state["decisions"] = decisions
+    for d in decisions:
+        if (
+            isinstance(d, dict)
+            and str(d.get("kind") or "").strip() == kind
+            and str(d.get("todo_id") or "").strip() == todo_id
+            and str(d.get("reason") or "").strip() == reason
+        ):
+            return False
+    decisions.append({"ts": now_iso(), "kind": kind, "todo_id": todo_id, "reason": reason})
+    return True
+
+
+def record_decision(
+    project_dir: Path, kind: str, todo_id: str, reason: str
+) -> tuple[dict | None, bool]:
+    """ORCH M1.1: append a decision to the ACTIVE run in one lock hold.
+
+    Returns ``(written_state, added)``. No run state on disk →
+    ``(None, False)`` — decisions belong to a run; outside a run there is
+    nothing to record and nothing is created (invariant 2). An inactive
+    (closed) run is treated the same way: the state is returned unchanged,
+    ``added`` is False.
+    """
+    if read_run(project_dir) is None:
+        return None, False
+    result = {"added": False}
+
+    def _mut(state: dict) -> dict:
+        if not state.get("active"):
+            return state
+        result["added"] = append_decision(state, kind, todo_id, reason)
+        return state
+
+    return update_run(project_dir, _mut), result["added"]
 
 
 def run_is_active(project_dir: Path) -> bool:

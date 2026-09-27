@@ -359,6 +359,12 @@ class RunStatusResult:
     # B2: the budget counts productive minutes (elapsed − downtime)
     downtime_minutes: int = 0
     productive_minutes: int = 0
+    # ORCH M1.1: the run plan (goal, criteria) + the causal memory
+    # (decisions: [{ts, kind, todo_id, reason}]). Additive — old state
+    # files read as ""/[]/[].
+    goal: str = ""
+    criteria: list[str] = field(default_factory=list)
+    decisions: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

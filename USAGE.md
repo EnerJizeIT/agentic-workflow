@@ -500,6 +500,17 @@ front-matter, and `awf_run_next` reads it for items without a queue-level
 pipeline. An unknown name refuses the launch with the list of available
 pipelines (RUN3 #1).
 
+**Run plan (goal, criteria, decisions).** `awf_run_start` accepts
+`goal` (one line) and `criteria` (a list of lines) — stored in
+`state/run.yaml` (a derived RunPlan, no second store) and shown by
+`awf_run_status` and in the RUN-REPORT. Inside a run every
+`awf_approve` / `awf_reject` appends a causal entry
+(`{ts, kind, todo_id, reason}`; the approve keeps a ≤200-char evidence
+excerpt — the full text stays in `context/RUN-EVIDENCE-{todo}.md`) to the
+append-only `decisions` list; repeating the same (kind, todo_id, reason)
+adds no duplicate. Old run.yaml files without these fields read as before
+(no migration); corrupt values degrade to empty with a warning.
+
 **Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
 cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`
 (or env `AWF_WAIT_CAP`, which wins). The 55s default is the tool's OWN cap,

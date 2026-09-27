@@ -189,6 +189,21 @@ def run_brief(project_dir: Path) -> dict | None:
     }
 
 
+def _normalize_plan(goal: str, criteria: list[str] | None) -> tuple[str, list[str]]:
+    """ORCH M1.1: the run plan — ``goal`` is a plain string, ``criteria`` a
+    list of non-empty strings. A single string criteria is accepted as one
+    item (the MCP surface is string-shaped; the list is the canonical
+    form). Whitespace is trimmed, empties dropped."""
+    g = str(goal or "").strip()
+    if criteria is None:
+        items: list[str] = []
+    elif isinstance(criteria, str):
+        items = [criteria]
+    else:
+        items = list(criteria)
+    return g, [str(c).strip() for c in items if str(c).strip()]
+
+
 def run_start(
     project_dir: Path,
     *,
@@ -198,6 +213,8 @@ def run_start(
     note: str = "",
     force: bool = False,
     no_checkpoints: bool = False,
+    goal: str = "",
+    criteria: list[str] | None = None,
 ) -> RunStartResult:
     """Start an autonomous run: record the queue and the mechanical gates.
 
@@ -214,10 +231,17 @@ def run_start(
     for every pipeline launch of this run — the run does not expect the
     owner at every TODO. The flag is stored in the run state and surfaced
     by :func:`run_status` / :func:`run_brief`.
+
+    ORCH M1.1 — the run plan: ``goal`` (one line) and ``criteria`` (a list
+    of lines) are stored in the run state (a DERIVED RunPlan, one source —
+    no second store) and surfaced by :func:`run_status` and the RUN-REPORT.
+    Old run.yaml files without these fields read as before (no migration);
+    a fresh run always resets them (``decisions`` included).
     """
     project_dir = _require_run_project(project_dir)
     items = _validate_queue(queue)
     ids = [i["todo_id"] for i in items]
+    goal_clean, criteria_clean = _normalize_plan(goal, criteria)
 
     flags = {str(k): list(v) for k, v in (stop_flags or {}).items() if k}
     outcome: dict = {}
@@ -261,6 +285,13 @@ def run_start(
             report_file="",
             note=note.strip(),
             no_checkpoints=bool(no_checkpoints),
+            # ORCH M1.1: the run plan — goal + criteria, reset with the
+            # run (a force replace must not inherit the previous run's
+            # plan), and a fresh causal memory (decisions belong to the
+            # run that made them).
+            goal=goal_clean,
+            criteria=criteria_clean,
+            decisions=[],
         )
         return new_state
 
@@ -358,6 +389,11 @@ def run_status(project_dir: Path) -> RunStatusResult:
         report_file=str(state.get("report_file", "") or ""),
         message=message,
         no_checkpoints=bool(state.get("no_checkpoints")),
+        # ORCH M1.1: the run plan + causal memory. read_run sanitizes the
+        # fields, so absent (old state) / broken values read as ""/[]/[].
+        goal=str(state.get("goal") or ""),
+        criteria=list(state.get("criteria") or []),
+        decisions=list(state.get("decisions") or []),
     )
 
 
@@ -418,6 +454,16 @@ def _write_report(
         f"**Elapsed:** {int(run_state.elapsed_minutes(state))} min "
         f"(budget {state.get('budget_minutes', 0)} min)",
     ]
+    # ORCH M1.1: the run plan — goal and criteria, when set (old runs and
+    # runs started without a plan show nothing, as before).
+    goal = str(state.get("goal") or "").strip()
+    criteria = [
+        str(c).strip() for c in (state.get("criteria") or []) if str(c).strip()
+    ]
+    if goal:
+        lines.append(f"**Goal:** {goal}")
+    if criteria:
+        lines.append(f"**Criteria:** {', '.join(criteria)}")
     # B2: the budget is in productive minutes (elapsed − downtime); show the
     # split so the owner sees how much of the run was incident, not work.
     if budget:
@@ -451,6 +497,20 @@ def _write_report(
                 )
             else:
                 lines.append(f"- {todo}: {verdict}")
+        lines.append("")
+    # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,
+    # so the owner can audit the run after the fact. The approve entries
+    # carry the evidence excerpt (the full text stays in RUN-EVIDENCE).
+    decisions = [d for d in (state.get("decisions") or []) if isinstance(d, dict)]
+    if decisions:
+        lines += ["## Run decisions (causal memory)", ""]
+        for d in decisions:
+            reason = str(d.get("reason") or "")
+            lines.append(
+                f"- {str(d.get('ts') or '')} {str(d.get('kind') or '?')} "
+                f"{str(d.get('todo_id') or '?')}"
+                + (f" — {reason[:200]}" if reason else "")
+            )
         lines.append("")
     if summary:
         lines += ["## Supervisor summary", "", summary, ""]
