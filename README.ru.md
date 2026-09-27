@@ -99,6 +99,7 @@ Dashboard (live /api/state polling)
 
 - [USAGE.ru.md](USAGE.ru.md) — сценарии использования и справочник tools
 - [docs/](docs/README.md) — карта проектной документации: design, vision, file bus, контракты, release notes
+- [Текущий аудит](docs/audit-2026-09-27-gpt6-sol-xhigh/README.md) — проверенные исправления и открытые выводы
 - [CHANGELOG.md](CHANGELOG.md) — история версий
 - [CONTRIBUTING.md](CONTRIBUTING.md) — как контрибьютить
 - [BACKLOG](BACKLOG.md) — открытые задачи

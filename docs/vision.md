@@ -1,18 +1,18 @@
 # Product Vision
 
-**Версия:** 2.0 · **Дата:** 2026-09-27 · **Релиз:** 1.4.0
+**Версия:** 2.1 · **Дата:** 2026-09-27 · **Релиз:** 1.4.0
 
 ## Что
 
-`agent-workflow-ui` — MCP plugin для opencode. Даёт supervisor-агенту 47 typed MCP tools для управления pipeline без shell-команд.
+`agent-workflow-ui` — MCP plugin для opencode. Даёт supervisor-агенту 47 typed MCP tools для управления pipeline без shell-команд. Supervisor всегда планирует работу, проверяет результат и ведёт следующий забег; состав исполнительных ролей меняется под цель.
 
 ## Почему
 
-AI-агенты в opencode работают быстрее и надёжнее через typed tools, чем через bash. Формы дают структурированный ввод. Pipeline обеспечивает разделение ролей и quality gate.
+AI-агенты в opencode работают быстрее и надёжнее через typed tools, чем через bash. Формы дают структурированный ввод. Сильный supervisor держит контекст проекта и решения, а pipeline поручает узкие действия специализированным агентам, в том числе более слабым моделям.
 
 ## Для кого
 
-Pet-проекты где пользователь хочет делегировать разработку AI-агентам, но контролировать процесс: планировать, проверять, откатывать.
+Pet-проекты, где пользователь хочет поручать AI-агентам последовательную работу над кодом, документацией, тестами или анализом и сохранять контроль над целью, проверкой и результатом через supervisor.
 
 ## Tools
 
@@ -24,7 +24,7 @@ Pet-проекты где пользователь хочет делегиров
 
 ## Конкурентные преимущества
 
-- **SMO (State-Machine Orchestration):** awf ведёт supervisor по фазам (init→goal→form→normalize→brief→run→verify→done) через compact prompts + next_action. Даже слабые модели (Qwen vllm) проходят полный flow без ошибок.
+- **SMO (State-Machine Orchestration):** awf ведёт supervisor по фазам (init→goal→form→normalize→brief→run→verify→done) через compact prompts + next_action. Исполнительные роли получают свои узкие поручения; supervisor сохраняет общую цель и право решения.
 - **Pipeline с ролями:** любой набор (analyst → architect → implementer → QA → audit, или 1 stage, или 10 — пользователь выбирает).
 - **Dashboard v2:** HTTP server с live polling. Chat-style handoffs с chain visualization. TODO content. TODO timeline. Worker status. Browser notifications.
 - **Pre-dispatch check:** grep кода перед запуском pipeline — warning если задача уже реализована.
@@ -45,6 +45,14 @@ Awf развивает сам себя. Программа стабилизац�
 salvage и rollback отработаны на реальных падениях.
 
 ## Future scenarios
+
+Supervisor сможет пересобирать состав и порядок рабочих стадий внутри
+активного забега, а при нехватке компетенции — запускать связанный служебный
+забег для создания новой проектной роли. После проверки роли и её
+инкрементальной нормализации он продолжит исходный забег с обновлённым
+планом. Текущая фаза `normalize` обслуживает первичную настройку;
+повторный сброс настройки для новой роли не потребуется. План реализации —
+в [стратегии развития](audit-2026-09-27-gpt6-sol-xhigh/IMPLEMENTATION-STRATEGY.md).
 
 Сценарии и кандидаты — в [BACKLOG-archive](../BACKLOG-archive.md) (история
 решений, включая decision fork, blockage recovery, priority planning,

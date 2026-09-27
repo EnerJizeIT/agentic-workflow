@@ -27,9 +27,9 @@ The breaking change first, then what is new.
   the implementer and the reviewer; `awf init` seeds the project doctrine; the
   supervisor template carries the quality bar — a fix comes with `prove_red`,
   an open P1 blocks a release, and the reviewer report is a verify input.
-- **`readonly_roles`.** List a role in `automation.readonly_roles` and its
-  stage subprocess runs without edit/write tools — a reviewer verifies instead
-  of fixing. Empty by default.
+- **`readonly_roles`.** A listed role receives no new edit/write permission
+  overrides from awf. Existing user permissions and allowed bash remain in
+  effect, so this is not an enforced read-only boundary. Empty by default.
 
 ### Changed
 
