@@ -266,11 +266,14 @@ def test_unknown_stage_key_rejected(tmp_path, key):
 
 
 def test_allowed_keys_set_pinned():
-    """A-06: набор разрешённых ключей один для загрузки и записи."""
+    """A-06: набор разрешённых ключей один для загрузки и записи.
+
+    ORCH M3.1: + ``id`` (адрес стадии) и ``task`` (поручение стадии).
+    """
     from awf.pipeline import ALLOWED_STAGE_KEYS
 
     assert ALLOWED_STAGE_KEYS == {
-        "name", "role", "description",
+        "name", "role", "description", "id", "task",
         "on_blocked", "on_approved", "on_rejected", "on_failed",
         "max_retries", "max_rollbacks",
     }

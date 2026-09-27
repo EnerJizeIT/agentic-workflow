@@ -13,6 +13,11 @@ as the write path (awf.api.write_pipeline, shared validator). Legacy
 `action:`/`kind:` keys in YAML are rejected as unknown keys (they were
 read-but-ignored; kind is computed from position, action was never a
 runtime input).
+
+ORCH M3.1: a stage may carry an optional ``id`` (unique stage address —
+the stage NAME becomes it, so one role may appear twice with different
+assignments; duplicate ids are a load error) and ``task`` (short
+assignment, carried on the Stage; not fed to prompts yet — M3.2).
 """
 from __future__ import annotations
 
@@ -37,6 +42,13 @@ class Stage:
     name: str
     role: str
     description: str = ""
+    # ORCH M3.1: unique stage address. When set, the stage NAME becomes
+    # the id (one role may appear twice with different assignments), so
+    # handoff files ``<name>-<todo>.md`` stay distinct. Empty by default.
+    id: str = ""
+    # ORCH M3.1: short stage assignment. Carried on the Stage; not fed to
+    # prompts yet (ORCH M3.2). Empty by default.
+    task: str = ""
     on_blocked: str = "escalate"
     on_approved: str = "next"
     on_rejected: str = "escalate"
@@ -108,6 +120,9 @@ ALLOWED_STAGE_KEYS = frozenset(
         "name",
         "role",
         "description",
+        # ORCH M3.1: stage identity + assignment.
+        "id",
+        "task",
         "on_blocked",
         "on_approved",
         "on_rejected",
@@ -149,9 +164,11 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
 
     Raises:
         AwfApiError: stages not a non-empty list, a stage not a mapping,
-            unknown keys, a missing/empty/non-string role, a policy that
-            is not an allowed string (rollback_to:<stage> only on
-            on_blocked/on_rejected), or a negative/non-integer budget.
+            unknown keys, a missing/empty/non-string role, an empty or
+            non-slug ``id`` / an empty ``task`` (ORCH M3.1), a duplicated
+            stage ``id``, a policy that is not an allowed string
+            (rollback_to:<stage> only on on_blocked/on_rejected), or a
+            negative/non-integer budget.
     """
     if not isinstance(stages, list) or not stages:
         raise AwfApiError(
@@ -178,6 +195,25 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                 f"Pipeline {source}: stage '{label}' has no non-empty 'role' "
                 f"— every stage needs one (got {role!r})."
             )
+        # ORCH M3.1: ``id`` is the stage address (a slug — it becomes the
+        # stage name and part of handoff file names); ``task`` is the
+        # short assignment. Both optional; when present, must be valid.
+        if "id" in stage and stage["id"] is not None:
+            value = stage["id"]
+            if not isinstance(value, str) or not re.fullmatch(r"[\w.-]+", value):
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'id' (must be a stage slug: letters, digits, '_', "
+                    f"'.' or '-', no spaces or path separators), "
+                    f"got {value!r}."
+                )
+        if "task" in stage and stage["task"] is not None:
+            value = stage["task"]
+            if not isinstance(value, str) or not value.strip():
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'task' (must be a non-empty string), got {value!r}."
+                )
         for pk in _POLICY_KEYS:
             if pk in stage and stage[pk] is not None:
                 value = stage[pk]
@@ -215,6 +251,22 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                         f"non-negative, got {value}."
                     )
         result.append(stage)
+
+    # ORCH M3.1: a duplicated stage id is a load error — stages are
+    # addressed by id (the stage name becomes it), so two stages sharing
+    # an id are indistinguishable (rollback targets, handoff files).
+    id_uses: dict[str, list[str]] = {}
+    for i, s in enumerate(result):
+        sid = s.get("id")
+        if isinstance(sid, str) and sid:
+            id_uses.setdefault(sid, []).append(str(s.get("name") or f"#{i}"))
+    for sid, labels in id_uses.items():
+        if len(labels) > 1:
+            raise AwfApiError(
+                f"Pipeline {source}: duplicate stage id '{sid}' "
+                f"(stages: {', '.join(labels)}) — each stage id must be "
+                "unique within a pipeline."
+            )
     return result
 
 
@@ -263,8 +315,16 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
 
     for dict_index, s in enumerate(raw_stages):
         kwargs: dict[str, Any] = {}
-        for key in ("name", "role", "description"):
-            kwargs[key] = s.get(key, "")
+        # ORCH M3.1: an explicit id becomes the stage address — the stage
+        # name is the id (handoff files ``<name>-<todo>.md`` then stay
+        # distinct for repeated roles). Without an id the written name is
+        # kept, so legacy pipelines load exactly as before.
+        stage_id = s.get("id") or ""
+        kwargs["name"] = stage_id or s.get("name", "")
+        kwargs["role"] = s.get("role", "")
+        kwargs["description"] = s.get("description", "")
+        kwargs["id"] = stage_id
+        kwargs["task"] = s.get("task") or ""
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         kwargs["max_retries"] = s.get("max_retries", _DEFAULTS["max_retries"])

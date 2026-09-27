@@ -137,6 +137,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `_atomic.py`, `_lock.py` | Атомарные записи, file lock (read→merge→write) |
 | `cli.py`, `cmd_*.py` | CLI: `awf start`, `awf baseline`, `awf brief`, `awf metrics`, ... |
 | `pipeline.py` | Разбор пайплайна: Stage, load_stages, kind по позиции (BD-29), валидация YAML (A-06) |
+| `pipeline.py` — тождество стадии | Stage `id` (адрес: имя стадии = id) + `task` (поручение): повторы роли с разными id, дубли id отвергаются (ORCH M3.1) |
 | `api/pipelines.py` | Named pipelines: write_pipeline / list_pipelines (RUN3 #1) |
 | `api/planning.py` | Increment planning: apply_increment_plan (форма → вариант) |
 | `api/roles.py` | Роли: add_role + zone-анализ для analyze_roles |

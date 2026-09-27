@@ -1402,7 +1402,10 @@ async def awf_write_pipeline(
     or CLI ``awf start --pipeline <name>``.
 
     Stage schema (each item in ``stages`` — the pipeline YAML keys):
-    ``role`` (required), ``name`` (defaults to the role slug),
+    ``role`` (required), ``id`` (optional unique stage address — the
+    stage name becomes it; lets one role appear twice with different
+    assignments), ``task`` (optional short stage assignment),
+    ``name`` (defaults to the id, then to the role slug),
     ``description``, ``on_blocked`` / ``on_approved`` / ``on_rejected`` /
     ``on_failed``, ``max_retries``, ``max_rollbacks``. Unknown keys are
     refused (the loader would ignore them).

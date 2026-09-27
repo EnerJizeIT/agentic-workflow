@@ -63,16 +63,17 @@ def _validate_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     """Validate/normalize stage objects against the pipeline YAML schema.
 
     Form validation (list of mappings, unknown keys, role, policies,
-    budgets) is the shared A-06 validator (awf/pipeline.py). Here it
-    normalizes: ``role`` is slugified, ``name`` defaults to the role slug
-    (same slug the runtime uses for role files and models.<role>).
+    budgets, id/task — ORCH M3.1) is the shared A-06 validator
+    (awf/pipeline.py). Here it normalizes: ``role`` is slugified,
+    ``name`` defaults to the stage id (when present), then to the role
+    slug (same slug the runtime uses for role files and models.<role>).
     """
     validated = validate_pipeline_stages(stages, source)
     result: list[dict[str, Any]] = []
     for stage in validated:
         entry = dict(stage)
         entry["role"] = slugify_role(entry["role"])
-        entry.setdefault("name", entry["role"])
+        entry.setdefault("name", entry.get("id") or entry["role"])
         result.append(entry)
     return result
 
@@ -95,7 +96,10 @@ def write_pipeline(
         project_dir: awf project root (must contain .agentic/).
         name: pipeline name (validated — traversal-proof).
         stages: stage objects, pipeline YAML schema (``role`` required;
-            ``name`` defaults to the role slug). Unknown keys are refused.
+            ``id`` — unique stage address, the name becomes it (lets one
+            role appear twice with different assignments); ``task`` —
+            short stage assignment; ``name`` defaults to the id, then to
+            the role slug). Unknown keys are refused.
         force: overwrite an existing pipeline file (default: False).
 
     Raises:
