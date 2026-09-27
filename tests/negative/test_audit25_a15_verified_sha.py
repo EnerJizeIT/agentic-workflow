@@ -115,6 +115,48 @@ def test_tree_unchanged_after_approve_commits(tmp_git_repo):
     assert "file.txt" in committed
 
 
+def test_untracked_change_after_approve_blocks_commit(tmp_git_repo, capsys):
+    """A-15 (полный набор аудита 26.09: tracked/untracked): появление
+    untracked-файла после approve(verified_sha=...) блокирует коммит:
+    гейт отказывает, HEAD не двигается, ничего не стейджится, дерево
+    не тронуто, сообщение требует повторной верификации."""
+    proj = _project(tmp_git_repo)
+
+    (proj / "file.txt").write_text("v1\n")
+    _git_commit_all(proj, "baseline")
+    baseline_sha = _head(proj)
+    (proj / "file.txt").write_text("v2 good\n")  # работа юнита
+
+    fp = git_utils.tree_fingerprint(proj)
+    api.approve_commit(proj, TODO, verified_sha=fp)
+    assert (proj / ".agentic" / "context" / f"VERIFIED-{TODO}.sha").is_file()
+
+    # Окно A-15 (untracked): новый untracked-файл между approve и commit gate
+    (proj / "scratch.txt").write_text("unverified\n")
+
+    ok = maybe_commit(
+        "verify", TODO, "commit_and_next", proj, _logs(proj),
+        auto=True, baseline_sha=baseline_sha,
+    )
+
+    assert ok.status == "refused", (
+        f"commit gate committed a tree with an unverified untracked file — got {ok.status}: {ok.reason}"
+    )
+    assert _head(proj) == baseline_sha, (
+        "HEAD moved — the unverified untracked change was committed"
+    )
+    cached = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"], cwd=proj, capture_output=True
+    )
+    assert cached.returncode == 0, "the unit files were staged"
+    assert (proj / "scratch.txt").read_text(encoding="utf-8") == "unverified\n", (
+        "working tree was touched"
+    )
+    assert "re-verify" in capsys.readouterr().err.lower(), (
+        "the refusal must tell the supervisor to re-verify on the current tree"
+    )
+
+
 def test_no_verified_file_legacy_behavior(tmp_git_repo):
     """Регрессия (инвариант 2): approve без verified_sha (файла нет) →
     гейт ведёт себя как раньше: смена дерева коммит не блокирует."""
