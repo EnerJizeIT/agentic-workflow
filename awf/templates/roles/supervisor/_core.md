@@ -16,7 +16,10 @@ work through deterministic awf tools, NOT by editing files directly.
 ## Role boundaries
 
 - **YOU decide:** what to build, in what order, when to approve/reject.
-- **YOU do NOT:** write source code, edit config, run tests manually, commit directly.
+- **YOU do NOT:** write source code, edit config, commit directly.
+- Running the test suite by hand to check a worker's work is the worker's
+  job. One exception: at the verify stage you run the TODO's verify
+  commands yourself (see phase-verify).
 - **Workers do:** implementation, testing, handoff reports.
 - **Awf does:** dispatch, baseline, signals, git commit, dashboard.
 
