@@ -146,11 +146,20 @@ def _todo_finished(project_dir: Path, todo_id: str) -> bool:
 
 
 def run_brief(project_dir: Path) -> dict | None:
-    """Compact run state for status/dashboard. None when no run state exists."""
-    state = run_state.read_run(project_dir)
+    """Compact run state for status/dashboard. None when no run state exists.
+
+    ORCH M1.2: reads through the shared record reader
+    (``awf/run_plan_read.py``) — the same parse the brief card and the
+    supervisor context use (one path, no duplicate parsing)."""
+    from ..run_plan_read import read_run_record
+
+    record = read_run_record(project_dir)
+    state = record.state
     if not state:
         return None
-    budget = int(state.get("budget_minutes", 0) or 0)
+    # the sanitized budget from the shared record (a corrupt value already
+    # degraded to 0 with a warning — no re-derivation from the raw state)
+    budget = record.budget_minutes
     elapsed = run_state.elapsed_minutes(state)
     downtime = run_state.downtime_minutes(state)
     productive = run_state.productive_minutes(state)
@@ -344,18 +353,24 @@ def run_note(project_dir: Path, text: str) -> RunStatusResult:
 
 
 def run_status(project_dir: Path) -> RunStatusResult:
-    """Current run state (or an inactive summary when no run exists)."""
-    project_dir = _require_run_project(project_dir)
-    state = run_state.read_run(project_dir) or {}
-    active = bool(state.get("active"))
-    budget = int(state.get("budget_minutes", 0) or 0)
+    """Current run state (or an inactive summary when no run exists).
+
+    ORCH M1.2: reads through the shared record reader
+    (``awf/run_plan_read.py``) — the same parse the brief card and the
+    supervisor context use (one path, no duplicate parsing)."""
+    from ..run_plan_read import read_run_record
+
+    record = read_run_record(project_dir)
+    state = record.state or {}
+    active = record.active
+    budget = record.budget_minutes
     elapsed = run_state.elapsed_minutes(state) if state else 0.0
     downtime = run_state.downtime_minutes(state) if state else 0.0
     productive = run_state.productive_minutes(state) if state else 0.0
     # B2: the budget is in PRODUCTIVE minutes (elapsed − recorded downtime).
-    left = max(0, int(budget - productive)) if budget else 0
-    current = str(state.get("current", "") or "")
-    position = run_state.position(state) if state else "0/0"
+    left = record.budget_left_minutes if budget else 0
+    current = record.current
+    position = record.position
 
     if not state:
         message = "No run found — start one with awf_run_start(queue=[...])."
@@ -389,11 +404,12 @@ def run_status(project_dir: Path) -> RunStatusResult:
         report_file=str(state.get("report_file", "") or ""),
         message=message,
         no_checkpoints=bool(state.get("no_checkpoints")),
-        # ORCH M1.1: the run plan + causal memory. read_run sanitizes the
-        # fields, so absent (old state) / broken values read as ""/[]/[].
-        goal=str(state.get("goal") or ""),
-        criteria=list(state.get("criteria") or []),
-        decisions=list(state.get("decisions") or []),
+        # ORCH M1.1: the run plan + causal memory. The shared reader
+        # sanitizes the fields, so absent (old state) / broken values
+        # read as ""/[]/[] (record.state is the sanitized state).
+        goal=record.goal,
+        criteria=list(record.criteria),
+        decisions=[dict(d) for d in record.decisions],
     )
 
 

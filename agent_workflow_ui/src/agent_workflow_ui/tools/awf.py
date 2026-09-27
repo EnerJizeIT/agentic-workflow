@@ -1582,7 +1582,13 @@ async def awf_load_supervisor_context(
             "verify": "Read handoffs + git diff → awf_approve.",
             "done": "Pipeline complete. Ask user for next step.",
         }
-        response["next_action"] = _PHASE_NEXT.get(phase, f"Phase: {phase}. Check awf_current_step.")
+        # ORCH M1.2: the run-aware action from the shared run record wins
+        # (e.g. after a reject in a run: awf_run_next); the phase hint
+        # stays the fallback when the record carries no action.
+        response["next_action"] = (
+            result.next_action
+            or _PHASE_NEXT.get(phase, f"Phase: {phase}. Check awf_current_step.")
+        )
         return response
     except api.AwfApiError as e:
         return _err(e)

@@ -609,4 +609,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # and awf/run_state.py::append_decision's docstring gains 1 (the
 # TODO-0128 unit reference). Same class as above: test identifiers,
 # doc field shapes and unit-id references, not debt.
+# TODO-0129 (ORCH M1.2, one run record / two views): baseline raised
+# 4204 -> 4210 — the unit adds 6 TODO-bearing lines: 3 in the new
+# tests/negative/test_context_single_source.py (the T = "TODO-0001" /
+# T2 = "TODO-0002" constants + one REVIEW-TODO-0001.md assert), 1 in the
+# new tests/unit/test_context.py (the T = "TODO-0001" constant), 1 in
+# awf/run_plan_read.py (the decision_line docstring example
+# "reject TODO-0001 — reason") and 1 in awf/api/_results.py (the
+# run_last_decision field comment with the same example). Same class as
+# above: test identifiers and docstring examples, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
