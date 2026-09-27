@@ -294,7 +294,7 @@ collapses to "1 effective agent + N rubber-stamps".
 
 ## 🔮 Future scenarios (после MVP)
 
-В порядке приоритета из [Vision §6](vision/agent-ui-plugin.md#6-пользовательские-сценарии). Каждый — отдельный epic.
+В порядке приоритета из [Vision §6](docs/vision.md#6-пользовательские-сценарии). Каждый — отдельный epic.
 
 | Сценарий | Что добавляет | Сложность |
 |---|---|---|
@@ -416,7 +416,7 @@ call вместо N циклов. Token savings: 1 response vs N.
 
 ## 🔮 Future epic · `awf-mcp` (separate MCP server)
 
-[Architecture §4.3](vision/architecture.md) — отдельный MCP server для awf-specific state queries. Не зависит от `agent-workflow-ui`.
+[Architecture §4.3](docs/design.md) — отдельный MCP server для awf-specific state queries. Не зависит от `agent-workflow-ui`.
 
 - [ ] `awf_mcp/` package (separate dist).
 - [ ] Tools: `get_active_todos()`, `get_pipeline_state()`, `get_progress(todo_id)`, `get_recent_signals(limit)`, `list_roles()`, `list_pipelines()`.

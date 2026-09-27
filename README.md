@@ -140,9 +140,9 @@ Full backlog: [BACKLOG.md](BACKLOG.md)
 ## Documentation
 
 - [USAGE.md](USAGE.md) — usage scenarios and tool reference
-- [Architecture](vision/architecture.md) — components, data flow, design decisions
-- [Product Vision](vision/agent-ui-plugin.md) — competitive advantages
-- [Supervisor Flow (SMO)](vision/supervisor-flow.md) — phase system, next_action pattern
+- [Architecture](docs/design.md) — components, data flow, design decisions
+- [Product Vision](docs/vision.md) — competitive advantages
+- [Supervisor Flow (SMO)](docs/supervisor-flow.md) — phase system, next_action pattern
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 - [BACKLOG.md](BACKLOG.md) — open tasks
