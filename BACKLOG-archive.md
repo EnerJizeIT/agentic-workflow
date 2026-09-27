@@ -4,7 +4,7 @@
 > Активные items — только в BACKLOG.md; открытая строка в архиве
 > (пометка OPEN) — ошибка, её дом BACKLOG.md.
 
-## Программа «АУДИТ-2026-09-25 · Стабилизация» (закрыта 26.09.2026)
+## Программа «АУДИТ-2026-09-25 · Стабилизация» (закрыта 27.09.2026)
 
 31 юнит (`TODO-0077`…`TODO-0107`), волны 0–6 и 5b; ветка `stabilization`,
 коммиты `79592e8`…`3e4bd0e` + docs; раннер — закреплённый чекаут
@@ -20,6 +20,12 @@ A-12 коллизии ID, A-01 чужой index, A-03 токен checkpoint) + 3
 классификатор «has no attribute»), FU-06 (флаг no_checkpoints утекал из env
 родителя). Артефакты: 16 negative-наборов audit25, e2e-шим opencode (NEG-4),
 контракт метрик, wheel-smoke в CI, release-notes 1.4.
+
+Волны 7–8 (27.09.2026): добор проверок аудита (A-14, A-18+, R-06, стратегия
+supervisor в поставке, NEG-слои 3/5, фикс A-02 для foreground-пары) и перепашка
+документации; PR #16–#18. **Выпущено 27.09.2026:** `v1.4.0` — тег + PyPI
+(`awf`, `agent-workflow-ui`). Ход и таблица волн —
+[ROADMAP-SUPERVISOR](docs/audit-2026-09-25-gpt6-sol-xhigh/ROADMAP-SUPERVISOR.md).
 
 ---
 
@@ -1852,3 +1858,12 @@ red-first in `tests/negative/test_run_queue_safety.py` (11 tests).
 commit-механика verify (15 коммитов без сбоев).
 
 **Закрыто в программе аудита и RUN'ах:** подписи коммитов (пересборка, head ffa5e12), герметичность тестов (U7a), rollback-таймауты (FU-19), Actions Node20 (FU-21), `files:`/verify_pack/доки/ратчет-BACKLOG/DONE-пример/CI-дубль (FU-20/21); **кириллица в slugify** (RUN9 #5, `ef48b53`), **атомарная ротация логов** (RUN9 #6, `ae3c49a`), **флейк test_salvage_signal** (RUN9 #4, `8db9747`).
+
+---
+
+### ТИРАЖ-2026-08-11 · хвосты публикации — отклонено / отложено (перенесено из BACKLOG 27.09.2026)
+
+- ℹ️ `.22` **GitHub Pages / ReadTheDocs** — отдельный effort, текущих .md файлов достаточно для начала.
+- ℹ️ `.23` **Docker образ** — интересная идея, но opencode требует локального окружения. Не приоритет.
+- ℹ️ `.24` **Экосистемная расширяемость (standalone, другие агенты)** — aspirational. Сейчас: "The missing orchestration layer for opencode".
+- ℹ️ `.25` **Английский как основной** — сделано: README.md (EN) primary, README.ru.md (RU) secondary.

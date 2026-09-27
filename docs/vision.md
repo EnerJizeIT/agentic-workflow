@@ -46,6 +46,6 @@ salvage и rollback отработаны на реальных падениях.
 
 ## Future scenarios
 
-Открытые сценарии и кандидаты — в [BACKLOG-archive](../BACKLOG-archive.md)
-(закрытые) и [BACKLOG](../BACKLOG.md) (открытые): decision fork, blockage
-recovery, priority planning, onboarding wizard и другие.
+Сценарии и кандидаты — в [BACKLOG-archive](../BACKLOG-archive.md) (история
+решений, включая decision fork, blockage recovery, priority planning,
+onboarding wizard) и [BACKLOG](../BACKLOG.md) (открытая работа).
