@@ -4,6 +4,49 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [1.5.0] — 2026-09-27
+
+The ORCH program: the supervisor's memory survives sessions, decisions are
+bound to the state they were made against, and the worker chain is
+replaceable unit by unit.
+
+### Added
+
+- **Run memory.** `awf_run_start` takes `goal` and `criteria`; the run stores
+  them plus an append-only decision log (approve/reject reasons) in
+  `run.yaml`. After a restart or a fresh session the supervisor restores
+  what was decided, why, and which step is allowed next.
+- **One source for `brief`/`context`.** Both surfaces render the same record;
+  a corrupt `run.yaml` degrades with a warning instead of a traceback.
+- **Evidence plan.** The unit contract (`verify`/`gates`/`prove_red`) is
+  snapshotted into the run memory at launch and shown before the verdict.
+- **`awf_run_revise`.** Preview a queue revision without side effects, apply
+  it with an idempotency key; only not-started items change; a running stage
+  must be stopped first (tool #48).
+- **Stage instances.** The same role can appear several times with its own
+  `id`, `task` and declared `output`; the output is checked for existence and
+  freshness before the next stage.
+- **Pipeline snapshot.** Each unit runs and continues from its own snapshot;
+  editing the published pipeline does not change a unit already running.
+
+### Changed
+
+- **In-run approvals require the tree fingerprint** (`verified_sha`); outside
+  a run the parameter stays optional.
+- **Workers don't see controlling tools.** Execute stages get their working
+  set without approve/kill/rollback/dispatch/run management. This reduces
+  accidents, it is not a security boundary (bash remains).
+- **`readonly_roles` is enforced for `edit`/`write`** over host config; bash
+  stays allowed so a reviewer can run tests.
+- **`run_next` counts a foreground launch successful only on exit 0** and
+  rolls back its own effects on any refusal.
+
+### Fixed
+
+- Stale-generation approvals are refused instead of committing an unverified
+  tree; invalid pipeline snapshots and corrupt budget fields degrade instead
+  of crashing.
+
 ## [1.4.0] — 2026-09-27
 
 The breaking change first, then what is new.
