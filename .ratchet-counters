@@ -618,4 +618,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # "reject TODO-0001 — reason") and 1 in awf/api/_results.py (the
 # run_last_decision field comment with the same example). Same class as
 # above: test identifiers and docstring examples, not debt.
+# TODO-0130 (ORCH M1.3, supervisor context recovery): baseline raised
+# 4210 -> 4228 — the unit adds 18 TODO-bearing lines: 15 in the new
+# tests/negative/test_run_plan_recovery.py (the T = "TODO-0001" /
+# T2 = "TODO-0002" / HIST = "TODO-0000" constants, the "queue: [TODO-"
+# truncation literal, the ["TODO-00"] bad-id literal, and docstring /
+# comment references) and 3 in the production diff (two f-string message
+# lines in awf/api/run.py's reject-aware refusal, one comment line in
+# awf/brief.py's M1.3 note). Same class as above: test identifiers and
+# unit references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

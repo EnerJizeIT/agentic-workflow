@@ -506,6 +506,7 @@ def build_brief(
     import awf as _awf
 
     from . import phase as _phase
+    from . import run_state as _run_state
     from .run_plan_read import clip_goal, decision_line, next_action_for_record
 
     project_dir = Path(project_dir).expanduser().resolve()
@@ -587,6 +588,14 @@ def build_brief(
         run_sources = list(run_record.sources)
         run_warning = run_record.warning
         next_action = next_action_for_record(run_record, next_action)
+        # ORCH M1.3: the done (approved) side of the run-aware step — after
+        # the current item is approved, the next step is awf_run_next (the
+        # run owns the queue position), not the generic "plan the next
+        # TODO" fallback. One shared helper (awf.run_state), same as the
+        # context surface.
+        step = _run_state.run_step_after_done(run_record.state)
+        if step:
+            next_action = step
 
     result = BriefResult(
         version=_awf.__version__,

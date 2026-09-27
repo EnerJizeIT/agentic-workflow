@@ -403,6 +403,14 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
     # when the run does not force one — the MCP surface keeps the phase
     # hint as the fallback, so behavior outside a run is unchanged.
     run_next_action = next_action_for_record(run_record, "")
+    # ORCH M1.3: the done (approved) side of the run-aware step — the same
+    # shared helper the brief card uses (one implementation, two views):
+    # after the current item is approved, the next step is awf_run_next.
+    from ..run_state import run_step_after_done
+
+    step = run_step_after_done(run_record.state)
+    if step:
+        run_next_action = step
 
     # Dogfood-9: structural triggers for increment planning + commit visibility
     pipeline_configured = _pipeline_exists(project_dir)

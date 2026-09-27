@@ -587,3 +587,53 @@ def position(state: dict) -> str:
     shown = idx if current else idx + 1
     shown = max(1, min(shown, total))
     return f"{shown}/{total}"
+
+
+def run_step_after_done(state: dict | None) -> str:
+    """ORCH M1.3: the next permitted step once the CURRENT item's decision
+    is an APPROVE (done, archived by the commit gate) — '' when the state
+    does not force one (the caller keeps its own hint).
+
+    After the approve the queue position is owned by the run: the next
+    step is `awf_run_next` (it launches the next queue item, or stops the
+    run with a report when the queue is exhausted) — not a generic
+    `awf_start`/`awf_dispatch_todo`. A fresh supervisor session must
+    restore that step from the state, without guessing (IMPLEMENTATION-
+    STRATEGY §1.4, acceptance). The REJECT side is rendered by
+    `run_plan_read.next_action_for_record` — the two do not overlap.
+
+    Reads the sanitized state (`read_run` output): a corrupt
+    decisions/index value degrades to '' (no forced step), never raises.
+    """
+    if not state or not state.get("active"):
+        return ""
+    current = str(state.get("current") or "")
+    if not current:
+        return ""
+    decisions = state.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        return ""
+    last = decisions[-1]
+    if not isinstance(last, dict):
+        return ""
+    if str(last.get("kind") or "") != "approve":
+        return ""
+    if str(last.get("todo_id") or "") != current:
+        return ""
+    queue = state.get("queue") or []
+    try:
+        index = int(state.get("index", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if index < len(queue):
+        item = queue[index]
+        next_id = str(item.get("todo_id", "")) if isinstance(item, dict) else str(item)
+        return (
+            f"{current} is approved (done). Next step: `awf_run_next` — "
+            f"it launches queue item {index + 1}/{len(queue)} ({next_id})."
+        )
+    return (
+        f"{current} is approved (done) and the queue is exhausted — "
+        f"`awf_run_next` will stop the run with a report (or close it now "
+        f"with `awf_run_finish`)."
+    )

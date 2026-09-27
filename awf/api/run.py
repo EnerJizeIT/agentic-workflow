@@ -450,7 +450,13 @@ def _write_report(
     rejects = state.get("rejects") or {}
     outcomes = state.get("outcomes") or {}
     rejects_note = ", ".join(f"{k}×{v}" for k, v in rejects.items()) or "—"
-    budget = int(state.get("budget_minutes", 0) or 0)
+    try:
+        budget = int(state.get("budget_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        # ORCH M1.3 (class NEG-3): the report is written from the SAME
+        # (possibly corrupt) state the stop gate saw — a corrupt budget
+        # degrades to a 0 display here; the gate itself stops the run.
+        budget = 0
     salvage = _salvage_events(project_dir, str(state.get("started_at") or ""))
     health_note = ""
     if salvage >= 3:
@@ -602,7 +608,19 @@ def run_next(
             state = run_state.write_run(project_dir, completed=completed)
         return stop_run(project_dir, state, "queue exhausted — all items processed")
 
-    budget = int(state.get("budget_minutes", 0) or 0)
+    try:
+        budget = int(state.get("budget_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        # ORCH M1.3 (class NEG-3): a corrupt budget_minutes in an ACTIVE
+        # run.yaml (hand-edited; the write path stores an int) makes the
+        # budget gate unverifiable. Degrade toward safety, the AUD02-09
+        # direction: stopping is safe, degrading to 0 would silently
+        # disable the gate (and the raw ValueError would kill the run loop).
+        return stop_run(
+            project_dir, state,
+            "run state corrupted (budget_minutes unparseable) — "
+            "the budget gate cannot be verified",
+        )
     if budget:
         if not run_state.started_at_ok(state):
             # AUD02-09: a corrupt started_at used to read as elapsed 0.0 —
@@ -652,6 +670,31 @@ def run_next(
         # lets a restored (active again) prev pass. Require it to be gone from
         # the active list too (see _todo_finished).
         if not _todo_finished(project_dir, prev):
+            # ORCH M1.3: when the open block is a counted REJECT, say so —
+            # the generic "verify → approve/reject" advice is wrong there
+            # (the approve is refused against a counted reject; a second
+            # reject stops the run). The permitted step is to close the
+            # reject decision; a fresh session must not guess it.
+            try:
+                prev_rejects = int(rejects.get(prev, 0) or 0)
+            except (TypeError, ValueError):
+                prev_rejects = 0
+            if prev_rejects >= 1:
+                return RunNextResult(
+                    action="refused",
+                    todo_id=next_id,
+                    message=(
+                        f"Previous TODO {prev} was rejected ({prev_rejects}×) "
+                        f"and the decision is not closed — the run will not "
+                        f"launch {next_id} over an unreviewed result."
+                    ),
+                    next_action=(
+                        f"Close the reject decision: re-plan the task (issue a "
+                        f"new TODO) and retire {prev} (`awf_todo_retire`), or "
+                        f"stop the run (`awf_run_finish`) if it needs the "
+                        f"owner. Reason: outbox/REVIEW-{prev}.md."
+                    ),
+                )
             return RunNextResult(
                 action="refused",
                 todo_id=next_id,
