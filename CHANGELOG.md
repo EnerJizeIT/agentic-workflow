@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.0] — 2026-09-26
+## [1.4.0] — 2026-09-27
 
 The stabilization program (audit 2026-09-25, 31 units): 21 audit findings
 fixed, launch and commit boundaries closed, one user-visible breaking change.
+The follow-up verification wave (9 units) closed the remaining acceptance
+checks, shipped the supervisor strategy, and cleaned the documentation.
 
 ### Breaking
 - **Legacy `action:` / `kind:` keys rejected in pipeline YAML** — a stage's kind (plan / execute / verify) is now computed from its position in the pipeline; a hand-written `action:` or `kind:` fails at load with a clear error naming the stage and key, instead of being silently ignored and surfacing later at runtime
@@ -19,6 +21,11 @@ fixed, launch and commit boundaries closed, one user-visible breaking change.
 - **Isolated commit index** — the commit gate commits through a throwaway `GIT_INDEX_FILE`; your index and uncommitted WIP are left untouched, and staged files can no longer leak into the unit's commit
 - **One-time checkpoint token** — the plan-checkpoint form carries a one-time token; a decision POST is accepted only with it (default-deny) and is spent after the first valid submit; the decision body is capped at 64 KiB and concurrent handlers at 16
 - **NEG-4 shim** — a deterministic scenario stand-in for the `opencode` CLI (`tests/infra/opencode_shim`) drives the engine's subprocess container (spawn → signal watch → salvage → hard-timeout kill) in `tests/e2e/test_w6_salvage_scenario.py`; the salvage scenario runs in CI alongside the wheel builds
+- **Single tool registry** — the MCP registration list and metadata live in one module (`tools/registry.py`) that `create_server()` and the documentation counts read; a shared unit-ID parser (`awf/todo_ids.py`, four-plus digits with an explicit right boundary) serves metrics and public ID validation
+- **Supervisor strategy ships** — role templates for the implementer and the reviewer, project doctrine seeds on `awf init`, and a quality section in the shipped supervisor template (a fix comes with `prove_red`; an open P1 blocks a release; the reviewer report is a verify input)
+- **`readonly_roles`** — a role listed in `automation.readonly_roles` runs its stage subprocess without edit/write tools; reviewers verify instead of fixing. Empty by default
+- **Wheel smoke covers the plugin surface** — the smoke installs both wheels into a clean venv and proves the tool registry, the project-setup template render, and the plugin entry point under an isolated XDG (no network, no `$HOME`); the package job runs it on Python 3.10 and 3.12
+- **Mutation smoke** — `scripts/mutation-smoke.sh` runs a fixed list of 13 targeted mutants over the launch and state contour (the base gate list plus a report mode)
 
 ### Fixed
 - **Audit 2026-09-25: 21 findings (5 P1)** — data safety, launch ownership (one owner for the launch and the queue transition: file lease, run generation, a single task-file storage layer), the git commit contour (commit exactly what was verified; a gate refusal stops the stage), metrics, load boundaries (core + plugin), and release hygiene — each fix with a regression test and a reviewer verdict
@@ -26,6 +33,8 @@ fixed, launch and commit boundaries closed, one user-visible breaking change.
 - **A-13** — the launch double-reservation hole closed: a second concurrent launch gets the text noop, not a second spawn
 - **`prove_red`** — bootstrap + verdict classifier: a broken runner (0 collected, collection error, missing new-code symbol) is reported as `broken-runner` instead of a misleading red/green
 - **FU-06** — the one-shot `no_checkpoints` flag no longer leaks from the parent's environment into the pipeline child; the plan-checkpoint gate wiring is restored (AUD16-02)
+- **A-02: foreground and mixed pairs** — the launch lease and the liveness check now cover the foreground path: two concurrent foreground launches (or a foreground call while a background pipeline runs) yield exactly one running pipeline, the second gets the noop refusal. The background child carries a double marker (env plus own argv), so it is not refused by its own launch
+- **NEG-3: corrupt state degrades** — non-UTF-8 bytes in the include link, the DONE facts file or the baseline fingerprint read as "absent" / "skipped" instead of a traceback
 
 ## [1.3.0] — 2026-09-23
 

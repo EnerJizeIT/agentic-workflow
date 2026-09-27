@@ -4,9 +4,9 @@ Short, human note for what is shipping next. Full per-version history lives in
 `CHANGELOG.md`; this file is the quick "what changed and why it matters" for the
 `awf` core and the `agent-workflow-ui` MCP plugin.
 
-## [1.4.0] — 2026-09-26
+## [1.4.0] — 2026-09-27
 
-Five things change since 1.3.0. One is a breaking change — read that first.
+The breaking change first, then what is new.
 
 ### Breaking
 
@@ -23,6 +23,13 @@ Five things change since 1.3.0. One is a breaking change — read that first.
   work-program report — tokens, compressions, code lines per unit, and a cost
   conversion to a reference model — whenever you ask, and writes it to the
   desktop. Nothing runs on its own; you invoke it.
+- **The supervisor strategy ships.** `awf add-role` ships ready templates for
+  the implementer and the reviewer; `awf init` seeds the project doctrine; the
+  supervisor template carries the quality bar — a fix comes with `prove_red`,
+  an open P1 blocks a release, and the reviewer report is a verify input.
+- **`readonly_roles`.** List a role in `automation.readonly_roles` and its
+  stage subprocess runs without edit/write tools — a reviewer verifies instead
+  of fixing. Empty by default.
 
 ### Changed
 
@@ -42,3 +49,13 @@ Five things change since 1.3.0. One is a breaking change — read that first.
   token. A decision POST is accepted only with that token (default-deny without
   it), so a client that learns the local port but not the token cannot submit a
   decision on your behalf.
+
+### Fixed
+
+- **Concurrent launches are one pipeline, foreground included.** Two concurrent
+  foreground launches — or a foreground call while a background pipeline runs —
+  yield exactly one running pipeline; the second gets the same noop refusal as
+  the background pair.
+- **Corrupt state files degrade instead of crashing.** Non-UTF-8 bytes in the
+  include link, the DONE facts file or the baseline fingerprint now read as
+  "absent" / "skipped", not a traceback on the supervisor path.
