@@ -286,6 +286,11 @@ class SupervisorContextResult:
     run_decisions: list[dict[str, str]] = field(default_factory=list)
     run_sources: list[str] = field(default_factory=list)
     run_warning: str = ""
+    # ORCH M2.3: the current/last element's evidence plan — the
+    # launch-time snapshot of the TODO's contract (verify/gates/
+    # prove_red) + file hash (the same entry the brief card renders
+    # compactly). None when nothing was launched.
+    run_evidence_plan: dict | None = None
     # the nearest permitted action (run-aware after a reject: awf_run_next)
     next_action: str = ""
 

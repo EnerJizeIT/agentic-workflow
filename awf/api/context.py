@@ -456,6 +456,11 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         run_decisions=[dict(d) for d in run_record.decisions],
         run_sources=list(run_record.sources),
         run_warning=run_record.warning,
+        # ORCH M2.3: the current/last element's evidence plan (the full
+        # view of what the brief card renders compactly).
+        run_evidence_plan=(
+            dict(run_record.evidence_plan) if run_record.evidence_plan else None
+        ),
         next_action=run_next_action,
     )
 

@@ -636,4 +636,37 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/agent_workflow_ui/test_audit25_w7_protocol_ship.py (module
 # docstring unit reference). Same class as above: unit references and
 # prompt wording, not debt.
+# TODO-0132 (ORCH M2.1, approve generation binding): baseline raised
+# 4235 -> 4259 — the unit adds 24 TODO-bearing lines, all in the new
+# tests/negative/test_approve_binding.py (the TODO-0001 constant and its
+# fixture/assert use-sites in the seven tests: _write_todo / _verify_state
+# helpers, the BASELINE-{TODO}.sha fixture, the run_start/force-queue
+# fixtures, the APPROVE/ACK/VERIFIED-TODO-0001 path asserts, and the
+# module docstring unit reference). The production diff (awf/commit_plan.py,
+# awf/commit_gate.py, awf/api/pipeline.py) and the docs (docs/file-bus.md,
+# USAGE EN/RU) are TODO-line neutral. Same class as above: test
+# identifiers, not debt.
+# TODO-0133 (ORCH M2.2, worker tool profiles): baseline raised
+# 4259 -> 4262 — the new tests/negative/test_worker_tool_profiles.py adds
+# 3 TODO-bearing lines (the module docstring's unit-contract references:
+# the dispatch-TODO sentence, the "поверхность из TODO" test bullets).
+# Same class as above: test identifiers, not debt. The production diff
+# (awf/_env.py, awf/agent_stage.py) and the docs (USAGE EN/RU,
+# docs/design.md) are TODO-line neutral.
+# TODO-0134 (ORCH M2.3, evidence plan in run memory): baseline raised
+# 4262 -> 4315 — the new tests/negative/test_run_evidence_plan.py adds
+# 26 TODO-bearing lines (the T = "TODO-0001" / T2 = "TODO-0002"
+# constants and their use-sites, the TODO-*.md fixture paths, the
+# CONTRACT_TODO front-matter example, unit references in docstrings),
+# +4 in tests/agent_workflow_ui/test_awf_tools.py (the two new
+# reject-hint tests: the queue=["TODO-0001"] fixture + the TODO-0001
+# reject calls), +5/+4 in USAGE.md/USAGE.ru.md (the evidence-plan
+# paragraphs and the reject-action wording naming TODO-*.md / a new
+# TODO) and +13 in production (awf/api/run.py 5, awf/run_plan_read.py
+# 5, awf/brief.py 1, awf/api/_results.py 1, awf/run_state.py 1,
+# agent_workflow_ui tools/awf.py 1 — all docstring/comment/message
+# wording: "the launched TODO's contract", "issue a new TODO",
+# "TODO file unreadable"). Same class as above: test identifiers and
+# unit wording, not debt. The new test file stays at exactly 400 lines
+# (not over), so files_over_400 is locked at 62.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

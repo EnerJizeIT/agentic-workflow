@@ -448,6 +448,7 @@ def approve_commit(
                 evidence_excerpt = ""
 
     conflict = False
+    approved_generation: list[int] = [-1]
     if run_active:
         from .. import run_state as _run_state
 
@@ -462,6 +463,10 @@ def approve_commit(
             outcomes = dict(state.get("outcomes") or {})
             outcomes[todo_id] = {"verdict": "approved"}
             state["outcomes"] = outcomes
+            # M2.1: the run generation this verdict belongs to — captured
+            # in the SAME lock hold as the verdict, so the binding stamps
+            # the cycle the decision actually landed in.
+            approved_generation[0] = _run_state.generation_of(state)
             # ORCH M1.1: the causal memory entry — same lock hold as the
             # verdict, dedup by (kind, todo_id, reason) inside the lock.
             _run_state.append_decision(state, "approve", todo_id, evidence_excerpt)
@@ -497,7 +502,35 @@ def approve_commit(
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
     signal = inbox / f"APPROVE-{todo_id}.ready"
-    signal.touch()
+    if run_active:
+        # M2.1: the approval is bound to the cycle it was made for — the
+        # run generation captured under the verdict's lock, the verified
+        # fingerprint, and the digest of the file set the commit gate
+        # applies (plan_files on the gate's own baseline input). The
+        # gate enforces the binding (commit_plan.binding_refusal): a
+        # force-restarted run refuses the stale approval instead of
+        # committing on it. Outside a run the signal stays an empty
+        # marker (legacy behavior).
+        from .. import commit_plan as _commit_plan
+        from .. import run_state as _run_state
+
+        gen = approved_generation[0]
+        if gen < 0:
+            # The run closed inside the window (verdict not written):
+            # stamp the last known generation — the gate enforces the
+            # binding only against an ACTIVE run, and a newer run that
+            # starts before the commit fails closed on the mismatch.
+            gen = _run_state.generation_of(run or {})
+        baseline_sha = _commit_plan.read_baseline_sha(project_dir, todo_id)
+        files = _commit_plan.plan_files(project_dir, baseline_sha, todo_id)
+        binding = {
+            "generation": gen,
+            "verified_sha": verified_fp,
+            "files_digest": _commit_plan.files_digest(files),
+        }
+        atomic_write_text(signal, json.dumps(binding, sort_keys=True) + "\n")
+    else:
+        signal.touch()
 
     # RUN5 #1 (Part B): failsafe — list rejected-attempt files that would be
     # SILENTLY excluded from this commit (still untracked AND in the

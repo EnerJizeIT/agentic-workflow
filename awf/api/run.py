@@ -12,6 +12,7 @@ rejected twice, or the previous TODO is not finished.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,6 +134,57 @@ def _todo_declared_pipeline(todo_md: Path) -> str:
     if not contract:
         return ""
     return str(contract.get("pipeline", "") or "").strip()
+
+
+def _todo_evidence_plan(todo_md: Path) -> dict:
+    """ORCH M2.3: the launch-time snapshot of a TODO's evidence plan.
+
+    Returns ``{todo_sha, verify, gates, prove_red, note}`` — the file hash
+    (sha256 of the TODO's bytes) plus the contract's verify/gates/
+    prove_red, read through the shared contract parser (ONE meaning).
+    Absent block → empty plan + note; unreadable or broken block → the
+    same (the engine's own contract handling surfaces the break at verify
+    time; the snapshot must never kill the launch).
+    """
+    from ..unit_contract import parse_todo_contract
+
+    try:
+        raw = todo_md.read_bytes()
+    except OSError as e:
+        return {
+            "todo_sha": "",
+            "verify": [],
+            "gates": [],
+            "prove_red": [],
+            "note": f"TODO file unreadable ({type(e).__name__})",
+        }
+    todo_sha = hashlib.sha256(raw).hexdigest()
+    content = raw.decode("utf-8", errors="replace")
+    try:
+        contract, _unknown = parse_todo_contract(content)
+    except ValueError as e:
+        return {
+            "todo_sha": todo_sha,
+            "verify": [],
+            "gates": [],
+            "prove_red": [],
+            "note": f"broken contract block: {str(e).splitlines()[0] if str(e) else e}",
+        }
+    if not contract:
+        return {
+            "todo_sha": todo_sha,
+            "verify": [],
+            "gates": [],
+            "prove_red": [],
+            "note": "no contract block — the unit declares no verify commands",
+        }
+    return {
+        "todo_sha": todo_sha,
+        "verify": [str(v) for v in (contract.get("verify") or [])],
+        "gates": [str(g) for g in (contract.get("gates") or [])],
+        "prove_red": [str(p) for p in (contract.get("prove_red") or [])],
+        "note": "",
+    }
 
 
 def _todo_finished(project_dir: Path, todo_id: str) -> bool:
@@ -301,6 +353,10 @@ def run_start(
             goal=goal_clean,
             criteria=criteria_clean,
             decisions=[],
+            # ORCH M2.3: the per-item evidence plans belong to the run that
+            # launched them — a fresh run starts with an empty memory, a
+            # force replace must not inherit the previous run's plans.
+            evidence_plans=[],
         )
         return new_state
 
@@ -717,6 +773,13 @@ def run_next(
             ),
         )
 
+    # ORCH M2.3: the evidence plan snapshot — the launched TODO's contract
+    # (verify/gates/prove_red) + file hash. It lands in the run record in
+    # the SAME atomic write as the position commit (the advance mutator
+    # below, the decisions' path M1), so a refused launch records nothing
+    # and a later edit/retire of the TODO cannot lose the plan.
+    evidence_plan = _todo_evidence_plan(todo_md)
+
     # RUN3 #2: the item's own pipeline, else the TODO-declared one (Part B),
     # else the config default (None = unchanged behavior). Resolved BEFORE
     # any side effect (baseline, .ready): a refused launch must leave the
@@ -969,6 +1032,9 @@ def run_next(
         st["index"] = index + 1
         st["current"] = next_id
         st["completed"] = completed
+        # ORCH M2.3: the evidence plan joins the SAME atomic write — one
+        # lock hold, one file (the decisions' path, M1).
+        run_state.append_evidence_plan(st, next_id, evidence_plan)
         advance["applied"] = True
         return st
 

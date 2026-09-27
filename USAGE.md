@@ -97,7 +97,14 @@ verification». The hash is stored to
 the evidence and the verified tree. Without `--verified-sha` the behavior
 is exactly as before — **except in an active run (забег), where it is
 REQUIRED** (V-03, 2026-09-27): approve without the fingerprint is refused
-and no APPROVE signal is published.
+and no APPROVE signal is published. In an active run the approve is also
+BOUND to the cycle (M2.1, 2026-09-27): the `APPROVE-<todo-id>.ready`
+signal carries the run generation, the verified fingerprint, and the
+digest of the file set the commit gate will apply. If the run is
+restarted or revised after the approve, the stale approval no longer
+unlocks the commit — the gate refuses with a clear message, nothing is
+committed, and a fresh `awf_approve` on the current run is required.
+Outside a run the signal stays an empty marker as before.
 
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
 over `scripts/mutations.txt` (the same base list the CI test job runs as
@@ -404,6 +411,19 @@ allowed (deliberate — QA runs tests). Full isolation of a role is out of
 scope for awf and belongs to the ORCH plan. Example:
 `automation.readonly_roles: [agent-qa-review]`.
 
+**Worker tool profile.** For execute stages (all pipeline stages
+between `plan` and `verify`) awf adds an agent-scoped permission block
+to the generated `OPENCODE_CONFIG_CONTENT` that denies the control MCP
+tools — approve, reject, start, continue, kill, retry-stage, reset,
+rollback, restore, unblock, init, baseline, dispatch-todo,
+todo-remove/retire/update, run-start/next/finish/note, set-goal,
+confirm-normalized (22 in total, `awf._env.CONTROL_TOOLS`). The worker
+model does not see these tools in its tool list; `bash`, file and
+search tools and observability tools (status, brief, report) stay
+available. `plan`/`verify` stages keep the full set. This reduces
+accidental errors — it is not a security boundary; strict isolation of
+a worker is a separate effort.
+
 ### TODO
 | Tool | What it does |
 |---|---|
@@ -511,6 +531,17 @@ append-only `decisions` list; repeating the same (kind, todo_id, reason)
 adds no duplicate. Old run.yaml files without these fields read as before
 (no migration); corrupt values degrade to empty with a warning.
 
+**Evidence plan (per launched item, ORCH M2.3).** At the launch of a
+queue item, `awf_run_next` snapshots the launched TODO's contract
+(verify/gates/prove_red) + the file hash of `TODO-*.md` into
+`state/run.yaml` (an append-only `evidence_plans` list, in the same
+atomic write as the position commit — no second store). The plan
+survives a later edit or retire of the TODO: `awf_brief` and
+`awf_load_supervisor_context` show the current/last item's plan (the
+verify commands and the prove_red ids, brief) before the supervisor
+decides. A TODO without a contract → an empty plan + a note; corrupt
+values degrade to empty with a warning.
+
 **Two views of one record (ORCH M1.2).** `awf_brief` and
 `awf_load_supervisor_context` are two views of the SAME run record, read
 by one shared reader (`awf/run_plan_read.py`), not parallel retellings:
@@ -518,9 +549,10 @@ the card shows the goal, position, budget, the last decision in one line
 and links to the sources (run.yaml, the last decision's REVIEW /
 RUN-EVIDENCE file, the RUN-REPORT); the full context adds all the
 decisions (which, why, when). After a reject in a run both surfaces show
-the decision and the nearest permitted action (`awf_run_next`, not the
-generic `awf_start`). A corrupted run.yaml degrades both to "no run"
-with a warning — no traceback.
+the decision and the ONE next step — closing it: re-plan the task (issue
+a new TODO) + `awf_todo_retire`, or `awf_run_finish` (the run gate
+refuses `awf_run_next` over an open reject). A corrupted run.yaml
+degrades both to "no run" with a warning — no traceback.
 
 **Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
 cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`

@@ -1146,19 +1146,40 @@ async def awf_reject(
     # lived here is removed — api.reject_commit validates the same way and
     # raises AwfApiError, which _exec turns into a clean error dict.
     # One validation layer (the API), like every other wrapper.
+    pd = _resolve_project_dir(project_dir)
     response = await _exec(
         api.reject_commit,
-        project_dir=_resolve_project_dir(project_dir),
+        project_dir=pd,
         todo_id=todo_id,
         reason=reason,
     )
     if response.get("status") != "ok":
         return response
+    # ORCH M2.3: the run-mode reject hint — in an active run the ONE next
+    # step is to close the reject decision (re-plan + retire, or
+    # awf_run_finish): the run gate refuses awf_run_next over an open
+    # reject, and awf_continue does not own the run queue. Same single
+    # source as awf_approve (api.run_is_active → awf.run_state); A-20:
+    # probe off the event loop.
+    run_active = False
+    try:
+        run_active = bool(await asyncio.to_thread(api.run_is_active, pd))
+    except Exception:
+        pass
     if response.get("run_stopped"):
         next_action = (
             f"{todo_id} rejected twice — RUN STOPPED. "
             f"Report: {response.get('report_file')}. "
             "Notify the owner and wait for instructions."
+        )
+    elif run_active:
+        next_action = (
+            f"{todo_id} rejected — the decision is recorded in the run. "
+            f"Close the reject decision: re-plan the task (issue a new "
+            f"TODO) and retire {todo_id} (awf_todo_retire), or stop the "
+            f"run (awf_run_finish) if it needs the owner. Then "
+            f"awf_run_next launches the next item (the run gate counts "
+            f"rejections — twice stops the run)."
         )
     else:
         next_action = (

@@ -308,8 +308,44 @@ class TestAwfReject:
             reason="bad",
             project_dir=str(mcp_project),
         ))
+
         assert result["status"] == "error"
         assert "todo_id" in result["error"]
+
+    def test_reject_in_run_points_to_closing_the_decision(self, mcp_project):
+        """ORCH M2.3: inside an active run the reject hint must name the
+        ONE next step — closing the reject decision (re-plan + retire, or
+        awf_run_finish). The run gate refuses awf_run_next over an open
+        reject, and awf_continue does not own the run queue (the old text
+        said "dispatch the refined TODO and continue")."""
+        api.run_start(mcp_project, queue=["TODO-0001"])
+
+        result = run(awf.awf_reject(
+            todo_id="TODO-0001",
+            reason="tests red",
+            project_dir=str(mcp_project),
+        ))
+
+        assert result["status"] == "ok"
+        na = result["next_action"].lower()
+        assert "close the reject decision" in na
+        assert "awf_todo_retire" in na
+        assert "awf_run_finish" in na
+        assert "awf_run_next" in na
+        assert "awf_continue" not in na
+
+    def test_reject_outside_run_keeps_the_generic_hint(self, mcp_project):
+        """ORCH M2.3 (the other side): no active run — the generic
+        out-of-run wording stands (awf_continue IS the loop there)."""
+        result = run(awf.awf_reject(
+            todo_id="TODO-0001",
+            reason="tests red",
+            project_dir=str(mcp_project),
+        ))
+
+        assert result["status"] == "ok"
+        assert "awf_continue" in result["next_action"]
+        assert "close the reject decision" not in result["next_action"]
 
 
 # ─── awf_dispatch_todo carry_over_from (RUN5 #1, TODO-0052) ──────────────

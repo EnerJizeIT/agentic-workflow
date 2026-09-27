@@ -32,7 +32,7 @@ Pipeline обменивается сигналами через файлы в `.
 | `REVIEW-APPROVED-{todo_id}.ready` | Worker | outbox | Работа одобрена (классификация: approved) |
 | `REVIEW-REJECTED-{todo_id}.ready` | Worker | outbox | Работа отклонена (классификация: rejected) |
 | `ACK-{todo_id}.ready` | Supervisor (verify) | inbox | Работа принята |
-| `APPROVE-{todo_id}.ready` | Supervisor (awf_approve) | inbox | Коммит разрешён |
+| `APPROVE-{todo_id}.ready` | Supervisor (awf_approve) | inbox | Коммит разрешён; в забеге сигнал несёт привязку — поколение + `verified_sha` + `files_digest` (M2.1) |
 | `REVIEW-{todo_id}.md` | Supervisor (verify) | outbox | Работа отклонена (с фидбеком) |
 | `SALVAGE-{todo_id}.md` | Orchestrator | inbox | Worker не просигналил |
 | `CHECKPOINT-{todo}.json` | Форма чекпоинта (владелец) | context | One-shot форма плана: решение привязано одноразовым токеном; после принятия файл уходит в `CHECKPOINT-{todo}.json.consumed` (аудит-след) |
@@ -77,6 +77,16 @@ archive_todo → done/{todo_id}/ (inbox + outbox очищены)
 - **V-03 (27.09):** в активном забеге approve дополнительно требует
   `verified_sha` (отпечаток дерева с момента `awf tree-sha`) — без него
   отказ, сигнал APPROVE не публикуется; вне забега параметр опционален.
+- **M2.1 (27.09):** в активном забеге коммит авторизует только bound
+  APPROVE. Сигнал несёт привязку решения к циклу: поколение забега (в том
+  же lock-держании, что и вердикт в журнал), проверенный отпечаток и
+  дайджест набора файлов, который применит commit-гейт (тот же
+  `plan_files` на baseline-входе гейта). Гейт сверяет привязку: одобрение
+  устаревшего поколения (забег рестартанулся/ревизован после approve),
+  ACK или APPROVE без привязки (ручной touch, старая версия) — отказ
+  с внятным текстом, повторный `awf_approve`; расхождение набора файлов
+  или отпечатка — отказ. Вне забега сигнал остаётся пустым маркером,
+  поведение прежнее.
 
 ## Состояние забега (state/run.yaml)
 
