@@ -21,13 +21,9 @@ python -m pytest tests/
 # Unit only (fast)
 python -m pytest tests/unit/
 
-# Coverage gates — exactly what CI runs (test.yml).
-# Combined --cov=awf --cov=agent_workflow_ui is misleading: pytest-cov does
-# not track subprocess execution in E2E tests, so run the two gates separately.
-# Core gate (>=80%)
-python -m pytest tests/unit tests/negative tests/integration tests/e2e --cov=awf --cov-report=term-missing --cov-fail-under=80
-# Plugin gate (>=80%)
-python -m pytest tests/agent_workflow_ui/ --cov=agent_workflow_ui --cov-report=term-missing --cov-fail-under=80
+# Quality gates — exactly what CI runs: contracts, ratchet, instruction
+# budget, the full suite and ruff.
+bash scripts/run-all.sh
 ```
 
 ## Code style
@@ -64,9 +60,9 @@ docs: bilingual README
 
 1. Add the async wrapper in `agent_workflow_ui/src/agent_workflow_ui/tools/awf.py`
 2. Include `next_action` in the return dict
-3. Register in `server.py`
-4. Add to the tool list in `test_server_smoke.py`
-5. Document in `USAGE.md`
+3. Register in `tools/registry.py` — the single source `create_server()` reads
+4. Add to `expected` in `test_server_smoke.py` (the smoke pins the registry)
+5. Document in `USAGE.md` (the docs counters test checks the numbers)
 
 ## Adding a new SMO phase
 

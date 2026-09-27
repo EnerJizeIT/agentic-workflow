@@ -9,7 +9,7 @@
 
 ## Какую проблему решает
 
-AI-агенты для кода мощные, но хаотичные. Прыгают сразу к коду без планирования, пропускают ревью, оставляют баги. Токены горят, а ты смотришь беспомощно.
+AI-агенты для кода мощные, но хаотичные. Прыгают сразу к коду без планирования, пропускают ревью, оставляют баги.
 
 **awf** добавляет структуру: supervisor-агент планирует работу, worker-агенты выполняют через пайплайн, который вы проектируете (любые роли, любая глубина — от одного воркера до многостадийной цепочки), и вы одобряете каждый результат перед коммитом. Всё через естественный язык — *"начни работу по бэклогу"*, *"проверь и одобри"*, *"отклони — DOMParser не починен"*.
 
@@ -50,8 +50,7 @@ pip install awf agent-workflow-ui
 # "Разработай MVP по бэклогу"
 ```
 
-> **Таймауты:** каждая стадия по умолчанию живёт 1 час — supervisor,
-> зависший на verify дольше, получает salvage. Увеличить:
+> **Таймауты:** стадии живут 1 час. Увеличить:
 > `AWF_SUPERVISOR_TIMEOUT=7200` (env) или `awf start --timeout 7200`
 > (USAGE.ru.md → Восстановление после сбоев).
 
@@ -76,7 +75,7 @@ init → goal → form → normalize → brief → run → verify → done
                            confirm    start
 ```
 
-Каждая фаза: компактный промт (~50 строк) + `next_action` в каждом tool result.
+Фазы по шагам: [USAGE.ru.md → SMO фазы](USAGE.ru.md#smo-фазы).
 
 ## Архитектура
 
@@ -96,18 +95,10 @@ Dashboard (live /api/state polling)
 - **`awf`** — Python core. Pipeline engine, phase state machine, signals, commit gate, dashboard server.
 - **`agent_workflow_ui`** — MCP plugin. Thin async wrappers + `next_action` guidance + HTML forms.
 
-## Dashboard
-
-Живой HTTP-дашборд открывается автоматически при запуске пайплайна — чат
-агентов, содержимое TODO, события, TODO timeline, статус воркера,
-браузерное уведомление. Подробности:
-[USAGE.ru.md → Дашборд](USAGE.ru.md#дашборд).
-
 ## Документация
 
 - [USAGE.ru.md](USAGE.ru.md) — сценарии использования и справочник tools
-- [Архитектура](docs/design.md) — компоненты, потоки данных, design decisions
-- [Product Vision](docs/vision.md) — конкурентные преимущества
+- [docs/](docs/README.md) — карта проектной документации: design, vision, file bus, контракты, release notes
 - [CHANGELOG.md](CHANGELOG.md) — история версий
 - [CONTRIBUTING.md](CONTRIBUTING.md) — как контрибьютить
 - [BACKLOG](BACKLOG.md) — открытые задачи
@@ -115,19 +106,17 @@ Dashboard (live /api/state polling)
 
 ## Roadmap
 
-- **SMO escape-hatch'и** — ручные переходы между фазами, прерывания (edge cases с реальных сессий)
-- **Coverage** — CI-гейты ≥80% (awf core + plugin) стоят; держать от отката
-- ✅ ~~**PyPI**~~ — `pip install awf agent-workflow-ui` (готово!)
+- **SMO escape hatch** — ручные переходы между фазами, прерывания (edge cases с реальных сессий)
+- **PyPI** — `pip install awf agent-workflow-ui`
 - **Dashboard v3** — timing bars по агентам, session summary, sound notifications
 - **Standalone mode** — awf без opencode (только API)
 
 ## Real-world результаты
 
-6 dogfood-сессий на jira-epic-presenter (Qwen vLLM):
-- Полный SMO flow: init → goal → form → normalize → brief → run → verify
-- До 4 TODO за сессию, 1× approve (без циклов), ноль polling
-- Reject flow протестирован: supervisor нашёл пропущенную работу, отклонил, перенаправил с фиксом
-- Pre-dispatch check обнаружил уже реализованные задачи
+Этот репозиторий построен на awf: программа стабилизации (31 юнит) и волны
+проверки и документации (ещё 13 юнитов) — планирование, реализация, ревью,
+проверка, коммит; супервизор принимает каждый юнит, ревью-стадия ловит
+дефекты до мёржа.
 
 ## Лицензия
 

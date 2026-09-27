@@ -35,17 +35,17 @@ Pipeline обменивается сигналами через файлы в `.
 | `APPROVE-{todo_id}.ready` | Supervisor (awf_approve) | inbox | Коммит разрешён |
 | `REVIEW-{todo_id}.md` | Supervisor (verify) | outbox | Работа отклонена (с фидбеком) |
 | `SALVAGE-{todo_id}.md` | Orchestrator | inbox | Worker не просигналил |
-| `CHECKPOINT-{todo}.json` | Orchestrator (plan checkpoint, BD-36) | context | One-shot форма плана: решение привязано одноразовым токеном; после принятия файл уходит в `CHECKPOINT-{todo}.json.consumed` (аудит-след) |
+| `CHECKPOINT-{todo}.json` | Форма чекпоинта (владелец) | context | One-shot форма плана: решение привязано одноразовым токеном; после принятия файл уходит в `CHECKPOINT-{todo}.json.consumed` (аудит-след) |
 | `RUN-EVIDENCE-{todo}.md` | Supervisor (`awf_approve(evidence=...)`) | context | Независимая проверка approve в забеге: команды, которые реально прогнаны + вердикт (AUD11-03) |
 | `VERIFIED-{todo}.sha` | Supervisor (`awf_approve(verified_sha=...)`) | context | Fingerprint рабочего дерева на момент verify; approve отказывает, если дерево сдвинулось после проверки |
-| `RUN-REPORT-{ts}.md` | Orchestrator (`awf_run_finish`) | outbox | Итог забега: очередь, бюджет, rejects, причина стопа |
+| `RUN-REPORT-{ts}.md` | Supervisor (`awf_run_finish`) | outbox | Итог забега: очередь, бюджет, rejects, причина стопа |
 
 Запуск: `.agentic/logs/awf-launch.lease` — не сигнал, а lease одного
 владельца запуска: O_EXCL, stale по живости процесса (не по возрасту файла);
 прочие одновременные запуски получают `run_mode="noop"` с текстом.
 
-Удалено из протокола: `BRIEF-*` (R5, двухфазный бриф) и `TEST-PASSED`/`TEST-FAILED`
-(движок никогда их не читал — AUD16-03). Странный сигнал без известного префикса
+Удалено из протокола: `BRIEF-*` и `TEST-PASSED`/`TEST-FAILED` (движок
+никогда их не читал). Странный сигнал без известного префикса
 классифицируется как `unknown` и эскалируется, как и любой мусор.
 
 ## TODO lifecycle
@@ -79,14 +79,14 @@ archive_todo → done/{todo_id}/ (inbox + outbox очищены)
 
 `build_prompt(kind, todo_id)` конструирует prompt для каждой стадии:
 
-- **execute:** signal contract (DF5-1) + pipeline context (BD-10)
+- **execute:** signal contract + pipeline context
 - **plan:** plan snippet + vision injection
 - **verify:** verify snippet ("DECIDE YOURSELF")
-- **salvage:** salvage-stage snippet (`_SNIPPET_SALVAGE` — "check git diff, ACK or REVIEW")
+- **salvage:** salvage snippet ("check git diff, ACK or REVIEW")
 
 Snippets добавляются в КОНЕЦ prompt (recency bias).
 
-## Handoff chain (BD-15)
+## Handoff chain
 
 Каждая стадия получает handoff-файлы предыдущих стадий через `--file` аргументы. `collect_handoff()` собирает PROGRESS + DONE + git diff в `{stage_name}-{todo_id}.md`.
 

@@ -9,7 +9,7 @@
 
 ## The problem it solves
 
-AI coding agents are powerful but chaotic. They jump straight to code without planning, skip review, leave bugs. You watch helplessly as tokens burn.
+AI coding agents are powerful but chaotic. They jump straight to code without planning, skip review, leave bugs.
 
 **awf** adds structure: a supervisor agent plans the work, worker agents execute through a pipeline you design (any roles, any depth — from a single worker to a multi-stage chain), and you approve each result before it commits. All through natural language — *"start working on the backlog"*, *"verify and approve"*, *"reject — the DOMParser fix is missing"*.
 
@@ -49,8 +49,7 @@ pip install awf agent-workflow-ui
 | **Models** | Model-agnostic. Tested with Qwen vLLM. Should work with Claude, GPT, or any opencode-supported provider. |
 | **Git** | Required (commit gate, baselines, rollback) |
 
-> **Timeouts:** each agent stage times out after 1 hour by default — a supervisor
-> paused on verify longer than that gets the stage salvaged. Extend with
+> **Timeouts:** agent stages time out after 1 hour. Extend with
 > `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200`
 > (USAGE.md → Troubleshooting).
 
@@ -85,8 +84,7 @@ graph LR
     init --> goal --> form --> normalize --> brief --> run --> verify --> done
 ```
 
-Every tool returns a `next_action` hint — even weak models follow the full
-flow. Phase-by-phase: [USAGE.md → SMO phases](USAGE.md#smo-phases).
+Phase-by-phase: [USAGE.md → SMO phases](USAGE.md#smo-phases).
 
 ## Architecture
 
@@ -113,25 +111,17 @@ Two packages:
 | Self-hosted / free | ✅ | ✅ | ❌ | ❌ |
 | Any LLM provider | ✅ | ✅ | ❌ | ❌ |
 
-## Dashboard
-
-Live HTTP dashboard opens automatically when pipeline starts — agent chat,
-TODO content, events, TODO timeline, worker status, browser notification.
-Detail: [USAGE.md → Dashboard](USAGE.md#dashboard).
-
 ## Real-world results
 
-6 sessions on jira-epic-presenter (Qwen vLLM):
-- Full SMO flow end-to-end: init → goal → form → normalize → brief → run → verify
-- 4 TODOs per session, 1× approve (no loops), zero polling
-- Reject flow tested: supervisor found missing work, rejected, re-dispatched with fix
-- Pre-dispatch check caught already-implemented tasks
+This repository is built on awf: a 31-unit stabilization program and the
+follow-up verification and documentation waves (13 more units) — plan,
+implement, review, verify, commit, with the supervisor approving every unit
+and the review stage catching defects before merge.
 
 ## Roadmap
 
-- **SMO escape-hatch'и** — manual phase jumps, interruptions (from real session edge cases)
-- **Coverage** — CI gates ≥80% (awf core + plugin) are in place; keep them from sliding
-- ✅ ~~**PyPI**~~ — `pip install awf agent-workflow-ui` (done!)
+- **SMO escape hatches** — manual phase jumps and interruptions (from real session edge cases)
+- **PyPI** — `pip install awf agent-workflow-ui`
 - **Dashboard v3** — stage timing bars, session summary, sound notifications
 - **Standalone mode** — awf without opencode (API-only)
 
@@ -140,8 +130,7 @@ Full backlog: [BACKLOG.md](BACKLOG.md)
 ## Documentation
 
 - [USAGE.md](USAGE.md) — usage scenarios and tool reference
-- [Architecture](docs/design.md) — components, data flow, design decisions
-- [Product Vision](docs/vision.md) — competitive advantages
+- [docs/](docs/README.md) — project docs map: design, vision, file bus, contracts, release notes
 - [CHANGELOG.md](CHANGELOG.md) — version history
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 - [BACKLOG.md](BACKLOG.md) — open tasks

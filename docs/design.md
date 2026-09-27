@@ -45,7 +45,7 @@ init → goal → form → normalize → brief → run → verify → done
 
 ### Забег (run)
 
-Autonomous run — очередь TODO с механическими гейтами (`awf/api/run.py`, состояние в `.agentic/state/run.yaml`, отдельно от `current.yaml`):
+Autonomous run (забег) — очередь TODO с механическими гейтами (`awf/api/run.py`, состояние в `.agentic/state/run.yaml`, отдельно от `current.yaml`):
 
 - Запуск: `awf_run_start` (queue, `budget_minutes`, `stop_flags`, `no_checkpoints`), дальше — `awf_run_next` по одному TODO.
 - Стоп-условия: очередь пуста, бюджет (в продуктивных минутах) исчерпан, стоп-флаги на следующем TODO, двойной reject одного TODO, предыдущий TODO не завершён.
@@ -62,11 +62,9 @@ awf_set_goal → "Открой форму → awf_open_project_setup_form"
 awf_confirm_normalized → "Изучи BACKLOG, вызови awf_dispatch_todo"
 awf_dispatch_todo → "Call awf_start(background=True)"
 awf_start → "GO IDLE. Do NOT poll. Wait for user."
-awf_approve → "Pipeline EXIT. Wait for user. DO NOT dispatch without asking."
-awf_reject → "Fix issues → dispatch_todo → awf_start."
+awf_approve → "APPROVE signal written, evidence stored. Continue the run loop: awf_run_next."
+awf_reject → "REVIEW written — the engine replans."
 ```
-
-Слабые модели (Qwen vLLM) следуют next_action, игнорируя длинные промты.
 
 ### Принципы
 
@@ -76,16 +74,9 @@ awf_reject → "Fix issues → dispatch_todo → awf_start."
 
 ### Архитектурное решение
 
-SMO распространяет existing pipeline-state-machine pattern на setup-flow:
-
-```
-Было: execute-стадии уже автоматизированы (plan → agent → agent → verify)
-Стало: setup-стадии тоже автоматизированы (init → goal → form → normalize → brief)
-```
-
-Awf = state-machine на весь цикл сессии, не только на execute-часть.
-
-Проверено на этом репозитории: программа стабилизации 2026-09 (31 юнит) и волны доборки прошли через awf end-to-end.
+SMO распространяет pipeline-state-machine на setup-фазы: awf ведёт весь цикл
+сессии (init → goal → form → normalize → brief), не только execute-часть
+(plan → agent → agent → verify).
 
 ## Компоненты
 
@@ -198,7 +189,7 @@ Awf = state-machine на весь цикл сессии, не только на 
 
 - **Evidence-гейт (AUD11-03):** в активном забеге `awf_approve` требует `evidence=` — независимая проверка пишется в `.agentic/context/RUN-EVIDENCE-{todo}.md`. Bare ACK/APPROVE без RUN-EVIDENCE игнорируется; вне забега file-based ACK — обычный интерактивный поток.
 - **Verified-sha (U11):** `awf_approve(verified_sha=...)` — fingerprint рабочего дерева на момент verify сохраняется в `.agentic/context/VERIFIED-{todo}.sha`; если дерево сдвинулось (коммит, правка файла, новый untracked) — approve отклоняется.
-- **Изолированный коммит:** commit gate строет commit на одноразовом `GIT_INDEX_FILE` от HEAD + diff vs baseline (`commit_gate.py`); индекс пользователя не меняется.
+- **Изолированный коммит:** commit gate строит commit на одноразовом `GIT_INDEX_FILE` от HEAD + diff vs baseline (`commit_gate.py`); индекс пользователя не меняется.
 - **One-shot токен чекпоинта (A-03):** форма BD-36 привязывается одноразовым токеном (`secrets.token_urlsafe`) — решение относится к этой открытой форме, не к случайному POST.
 
 ## Dashboard
@@ -229,7 +220,7 @@ HTTP server (daemon thread in orchestrator, `127.0.0.1`):
 ## Key design decisions
 
 1. **SMO (State-Machine Orchestration).** Awf ведёт supervisor по фазам, LLM исполняет шаги. Compact prompt + next_action на каждом шаге.
-2. **next_action в каждом tool.** Даже слабые модели (Qwen) следуют короткой инструкции из tool result.
+2. **next_action в каждом tool.** Даже слабые модели следуют короткой инструкции из tool result.
 3. **File-based signal bus.** Workers communicate via files, not IPC. Simple, debuggable.
 4. **HTTP dashboard.** Live polling через /api/state — без page reload, без file:// CORS.
 5. **Pre-dispatch check.** `dispatch_todo` greps codebase для identifiers из TODO — warning если уже реализовано.

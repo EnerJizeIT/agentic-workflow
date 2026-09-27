@@ -9,7 +9,7 @@
 - [file-bus.md](file-bus.md) — File Bus Protocol: файлы-сигналы между ролями, таблица имён.
 - [contracts/](contracts/) — Контракты: инварианты «никогда не делать X» с гейтом на каждый.
 - [unit-contract.md](unit-contract.md) — Машиночитаемый контракт юнита: блок в TODO и DONE.json.
-- [RELEASE-NOTES.md](RELEASE-NOTES.md) — Что в ближайшем релизе и почему это важно.
+- [RELEASE-NOTES.md](RELEASE-NOTES.md) — Что в текущем релизе и почему это важно.
 
 ## История
 
