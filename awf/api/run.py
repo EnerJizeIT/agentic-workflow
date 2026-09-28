@@ -1334,7 +1334,14 @@ def run_revise(
     - the applied revision is recorded in the run state (state/run.yaml,
       ``revisions``: ``{ts, key, kind: "revision", reason, changes,
       generation, resume_from}`` — the decisions' path) in the SAME CAS
-      write as the queue change.
+      write as the queue change. The record's ``generation`` is the
+      generation the revision was applied AGAINST (the CAS identity).
+    - ORCH M6.3: an applied revision moves the run to a new CYCLE — the
+      queue is a new plan, so the state's ``generation`` is bumped in the
+      same CAS write (the record keeps the pre-bump value, see above).
+      Approvals published for the pre-revision generation are stale: the
+      commit gate refuses them (M2.1 binding, binding_refusal) and the
+      supervisor re-verifies and re-approves on the current cycle.
     """
     project_dir = _require_run_project(project_dir)
     requested = _validate_queue(queue)
@@ -1518,6 +1525,18 @@ def run_revise(
             for q in st.get("queue") or []:
                 if isinstance(q, dict) and str(q.get("todo_id", "")) == ch["todo_id"]:
                     q["pipeline"] = ch["to"]
+        # ORCH M6.3 (seam: binding×revision): a revision changes the run's
+        # PLAN — the queue the run continues with is new, so the run moves
+        # to a new cycle (the same bump a force-restart gets in run_start).
+        # Without it, an approval published for the pre-revision
+        # generation (M2.1 binding) survives the revision and unlocks the
+        # commit the revision was meant to invalidate: binding_refusal
+        # compares the binding's generation with the CURRENT one and
+        # documents the revised-run refusal, but nothing ever moved the
+        # current generation. The bump and the queue change are one CAS
+        # write; the revision record keeps `gen` — the generation the
+        # revision was applied AGAINST (the CAS identity).
+        st["generation"] = run_state.generation_of(st) + 1
         run_state.append_revision(
             st, key_clean, reason_clean, changes, gen, resume_from=resume_from
         )
@@ -2221,10 +2240,22 @@ def run_service_status(project_dir: Path) -> ServiceRunStatusResult:
     """ORCH M5.2: one read, two snapshots — the service run (unit, slug,
     pipeline, candidate path, position, close reason) and the main run
     (position, current). Read-only; degrades to "no service run" on a
-    corrupt service file (the main run is unaffected)."""
+    corrupt service file — with a ``warning`` naming the unreadable file,
+    since the file exists (the main run is unaffected)."""
     project_dir = _require_run_project(project_dir)
     svc = run_state.read_run(project_dir, slot="service")
     main_state = run_state.read_run(project_dir)
+    # ORCH M6.4: a state file that EXISTS but cannot be read is corrupt
+    # state, not "never started" — degrade to no service run and say so
+    # (the run.yaml precedent: run_plan_read.read_run_record's warning).
+    # The file is kept for inspection.
+    warning = ""
+    if svc is None and run_state.run_file(project_dir, slot="service").is_file():
+        warning = (
+            "service-run.yaml is unreadable (broken YAML or invalid shape) — "
+            "treated as no service run; the file is kept at "
+            ".agentic/state/service-run.yaml"
+        )
     slug = _service_slug_of(svc) if svc else ""
     svc_queue = list((svc or {}).get("queue") or [])
     todo_id = ""
@@ -2242,12 +2273,15 @@ def run_service_status(project_dir: Path) -> ServiceRunStatusResult:
         )
         if not service_active and svc.get("stop_reason"):
             message += f" Closed: {svc.get('stop_reason')}."
+    elif warning:
+        message = warning
     else:
         message = "No service run."
     main_pos = run_state.position(main_state) if main_state else "—"
     return ServiceRunStatusResult(
         service_active=service_active,
         message=message,
+        warning=warning,
         todo_id=todo_id,
         slug=slug,
         pipeline=pipeline,

@@ -417,7 +417,17 @@ def adopt_role_draft(project_dir: Path, role_name: str) -> AdoptRoleDraftResult:
             "adopt again."
         )
 
-    content = _strip_draft_marker(draft.read_text(encoding="utf-8"))
+    try:
+        raw = draft.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # ORCH M6.4: a candidate that is not valid UTF-8 is a corrupt
+        # input — typed refusal, the file is kept (the listing already
+        # reports it as source="file"), nothing is created.
+        raise AwfApiError(
+            f"Draft role {slug!r} is unreadable (not valid UTF-8) — fix the "
+            "candidate or discard it, then adopt again."
+        )
+    content = _strip_draft_marker(raw)
     atomic_write_text(target, content)
     draft.unlink()
 

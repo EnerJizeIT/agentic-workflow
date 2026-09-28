@@ -21,3 +21,29 @@ awf/api/dispatch.py @@ os.O_CREAT | os.O_EXCL | os.O_WRONLY @@ os.O_CREAT | os.O
 # AUD04-11: git-вызов commit gate обязан нести timeout (зависший hook не
 # должен вешать verify). Мутация убирает timeout из diff-вызова.
 awf/commit_gate.py @@ timeout=30,  # AUD04-11: hung git must not hang the commit gate @@ # AUD04-11: (timeout REMOVED by mutation) @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestCommitGateTimeout::test_commit_gate_git_calls_carry_timeout -q
+
+# ORCH M6.2 (TODO-0147): мутации по инвариантам M1–M5 (ORCH-волны).
+
+# ORCH M4.2 (stall): тихая стадия короче порога — без предупреждения.
+# Мутация < → > предупреждает про тихую (5 < 30) и прячет застрявшую
+# (95 > 30).
+awf/stall_detect.py @@ if minutes < threshold: @@ if minutes > threshold: @@ python3 -m pytest tests/negative/test_run_progress_surfaces.py::TestStalledStageBrief::test_brief_warns_about_stalled_stage -q
+
+# ORCH M3.4 (идемпотентность ключа ревизии): повтор с тем же ключом —
+# no-op. Мутация инвертирует guard: ПЕРВОЕ применение становится no-op
+# (и падает на записанной ревизии None).
+awf/api/run.py @@ if existing is not None: @@ if existing is None: @@ python3 -m pytest tests/negative/test_run_revise.py::test_revise_is_idempotent_by_key -q
+
+# M2.1 (привязка approve): устаревшее поколение забега не разблокирует
+# коммит. Мутация != → == пропускает approve мёртвого поколения.
+awf/commit_plan.py @@ if gen != current_gen: @@ if gen == current_gen: @@ python3 -m pytest tests/negative/test_approve_binding.py::test_approve_refused_on_stale_generation -q
+
+# ORCH M5.3 (adopt): конфликт slug с живой ролью — явный отказ, авf
+# никогда не затирает live role. Мутация инвертирует условие: конфликт
+# adopt'ится, чистый adopt — откажется.
+awf/api/roles.py @@ if target.exists(): @@ if not target.exists(): @@ python3 -m pytest tests/negative/test_role_draft.py::test_adopt_refuses_name_conflict -q
+
+# ORCH M5.2 (изоляция служебного слота): служебный забег живёт в своём
+# файле, основной run.yaml побайто неприкосновенен. Мутация маппинга
+# слотов льёт служебное состояние в основной run.yaml.
+awf/run_state.py @@ _RUN_SLOT_FILES = {"main": "run.yaml", "service": "service-run.yaml"} @@ _RUN_SLOT_FILES = {"main": "run.yaml", "service": "run.yaml"} @@ python3 -m pytest tests/negative/test_service_run.py::test_service_run_keeps_main_run_intact -q

@@ -1,0 +1,14 @@
+# coverage ratchet baseline — scripts/coverage.sh (ORCH M6.1)
+# selection: tests/unit tests/agent_workflow_ui tests/negative
+# reason: ORCH M6.1: initial baseline for TOTAL + the M1-M5 modules (unit 0146)
+total	85.29
+awf/api/run.py	91.63
+awf/run_state.py	87.02
+awf/run_plan_read.py	92.00
+awf/brief.py	90.91
+awf/stall_detect.py	89.71
+awf/api/roles.py	90.44
+awf/commit_plan.py	77.39
+awf/commit_gate.py	80.92
+awf/_env.py	84.00
+agent_workflow_ui/src/agent_workflow_ui/tools/awf.py	74.37

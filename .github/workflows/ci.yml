@@ -38,6 +38,16 @@ jobs:
         # run-all уже покрывает их — без двойного прогона (+2,5 мин CI).
         run: bash scripts/run-all.sh
 
+      - name: Coverage ratchet
+        # ORCH M6.1: coverage may only rise — TOTAL + the M1-M5 modules
+        # against .coverage-baseline. Runs the fast subset (130s local,
+        # ~2 min on the 2-core runner); a second full-suite run is ~+6.5
+        # min and misses the +2 min budget. The full suite itself already
+        # ran in Quality gates above without coverage, so no test goes
+        # unexercised in CI — the subset only measures. The selection and
+        # the per-directory justification live in scripts/coverage.sh.
+        run: bash scripts/coverage.sh
+
       - name: Mutation smoke (base list)
         # V-05 (audit 2026-09-27): the base mutant list
         # (scripts/mutations.txt, 4 mutants) is a gate in the test job,

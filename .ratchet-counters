@@ -772,4 +772,27 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # awf/cmd_add_role.py, tools/awf.py) and the test_role_draft.py tests
 # carry no TODO id. files_over_400 stays 65 (the new e2e file is 276
 # lines — under the bar).
+# ORCH M6.2 (TODO-0147, мутации по инвариантам M1–M5): baseline raised
+# 4462 -> 4465 — the unit adds 3 TODO-bearing lines, all in the mutation
+# lists: the "ORCH M6.2 (TODO-0147)" section header in
+# scripts/mutations.txt (1) and in scripts/mutations-neg5.txt (1) plus
+# the "TODO без контрактного блока" wording in the M2.3 fallback-mutant
+# comment of scripts/mutations-neg5.txt (1). Same class as above: unit
+# references and mutant comments, not debt. files_over_400 stays 65 (the
+# unit touches no .py file).
+# ORCH M6.4 (TODO-0149, NEG for the new zones + the QA BLOCKED-signal
+# rule): baseline raised 4472 -> 4484 — the new
+# tests/negative/test_new_zones_degradation.py adds 12 TODO-bearing lines:
+# the module docstring's unit/incident references (TODO-0149,
+# TODO-0140/TODO-0144, the TODO-NNNN garbage-queue wording, the
+# TODO-0136 regression pointer, the rule's TODO-0149 reference), the
+# test docstrings' TODO-0136/TODO-NNNN lines, and the
+# TODO-0001/TODO-0002 fixture ids in the run_start queue and the
+# valid service-state writes (4 fixture use-sites). Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays 66
+# (the new test file is 259 lines — under the bar). The production fixes
+# (awf/api/run.py + awf/api/_results.py — the service-run.yaml unreadable
+# warning; awf/api/roles.py — the typed adopt refusal) and the QA role
+# files (awf/templates + the root mirror — the BLOCKED-signal rule line)
+# carry no TODO id (the rule uses the lowercase {todo} placeholder).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

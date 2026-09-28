@@ -409,6 +409,19 @@ def test_revision_between_units_runs_new_composition(tmp_path, awf_bin, awf_env,
 
         assert _wait_for_dir(proj / ".agentic" / "done" / T1), f"T1 did not complete. state={run_state.read_run(proj)}"
 
+        # The unit is archived while the background child is still exiting
+        # (dashboard + state clear after "Pipeline complete!"). A revision
+        # against a live pipeline is a LEGITIMATE refusal — wait for the
+        # launched process to actually exit before revising (PR #28 CI:
+        # run_revise raced the child's exit).
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and _liveness.resolve(proj)[0]:
+            time.sleep(0.2)
+        assert not _liveness.resolve(proj)[0], (
+            "T1 pipeline process still running after the archive — "
+            "the revision must not race the child's exit"
+        )
+
         # Between units: revise T2's pipeline to the role-repetition composition.
         result = api.run_revise(
             proj, queue=[{"todo_id": T2, "pipeline": "doccomp"}],
