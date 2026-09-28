@@ -104,6 +104,17 @@ def run_agent_stage(
     if assignment:
         prompt = prompt + "\n\n" + assignment
         _log(logs_dir, f"ORCH M3.2: stage assignment appended to {role} prompt")
+    # ORCH M4.3: the worker gets its stage identity in the prompt (one line)
+    # so the DONE.json stage block is a copy, not a guess.
+    s_id = stage.id or stage.name
+    stage_identity = (
+        "## Stage identity\n"
+        f'stage_id="{s_id}", attempt={attempt}, role="{role}" — if you write '
+        f'DONE.json, include "stage": {{"stage_id": "{s_id}", "attempt": {attempt}}} '
+        "(the engine cross-checks it in the handoff)."
+    )
+    prompt = prompt + "\n\n" + stage_identity
+    _log(logs_dir, f"ORCH M4.3: stage identity appended to {role} prompt")
     if retry_note:
         prompt = prompt + "\n\n" + retry_note
         _log(logs_dir, f"dogfood-11: retry note appended to {role} prompt")
@@ -241,6 +252,8 @@ def run_agent_stage(
         role, todo_id, project_dir, logs_dir,
         exit_code=result.returncode, duration_sec=agent_elapsed, attempt=attempt,
         stage_name=stage.name,
+        stage_id=stage.id or stage.name,
+        model=role_model,
     )
 
 
@@ -253,6 +266,8 @@ def collect_handoff(
     duration_sec: float | None = None,
     attempt: int = 1,
     stage_name: str = "",
+    stage_id: str = "",
+    model: str | None = None,
 ) -> Path:
     """BD-15/19: gather PROGRESS/DONE + git diff summary into handoff .md.
 
@@ -262,6 +277,10 @@ def collect_handoff(
     Handoff v2 (dogfood-11): the file is a *fact sheet* for the NEXT WORKER —
     run metadata, signal/notes presence, changes vs baseline — instead of
     alarm prose addressed to the supervisor (that lives in the SALVAGE note).
+
+    ORCH M4.3: ``stage_id``/``model`` (engine-known, optional for legacy
+    callers) feed the always-present "Stage facts" section — the engine's
+    stage identity plus a cross-check of the DONE.json ``stage`` block.
     """
     handoff_dir = paths.handoff_dir(project_dir)
     handoff_dir.mkdir(parents=True, exist_ok=True)
@@ -279,8 +298,10 @@ def collect_handoff(
     if done_path.is_file():
         done_body = done_path.read_text(encoding="utf-8").strip()
 
-    from .unit_contract import collect_done_facts
-    done_json_fact, machine_facts_lines = collect_done_facts(outbox, todo_id, logs_dir)
+    from .unit_contract import collect_done_facts, render_stage_facts
+    done_json_fact, machine_facts_lines, declared_stage = collect_done_facts(
+        outbox, todo_id, logs_dir,
+    )
 
     def _signal(prefix: str, suffix: str) -> str:
         return "yes" if (outbox / f"{prefix}-{todo_id}{suffix}").is_file() else "no"
@@ -357,10 +378,19 @@ def collect_handoff(
         changes_fact,
     ]
 
+    # ORCH M4.3: the engine fills the stage identity itself — the section
+    # is always present, even when the worker wrote no DONE.json.
+    stage_facts_lines = render_stage_facts(
+        stage_id, attempt, role, model=model, declared=declared_stage,
+    )
     parts: list[str] = [
         f"# Handoff from `{role}` (TODO {todo_id})",
         "",
         *facts,
+        "",
+        "## Stage facts",
+        "",
+        *stage_facts_lines,
         "",
     ]
 

@@ -718,4 +718,9 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # stays 63: the new test file is 305 lines (under the bar) and the stall
 # detection lives in the new awf/stall_detect.py (~150 lines), so
 # awf/run_plan_read.py did not cross 400.
+# ORCH M4.3 (TODO-0141, stage result record): baseline raised
+# 4389 -> 4390 — the new tests/negative/test_stage_result_record.py adds
+# 1 TODO-bearing line (the T = "TODO-0001" constant). Same class as above:
+# a test identifier, not debt. files_over_400 stays 63 (the new test file
+# is 330 lines, awf/unit_contract.py 399 — both under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
