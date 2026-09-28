@@ -205,6 +205,7 @@ def run_brief(project_dir: Path) -> dict | None:
     (``awf/run_plan_read.py``) — the same parse the brief card and the
     supervisor context use (one path, no duplicate parsing)."""
     from ..run_plan_read import read_run_record
+    from ..stall_detect import detect_stage_stall, stall_line
 
     record = read_run_record(project_dir)
     state = record.state
@@ -247,6 +248,9 @@ def run_brief(project_dir: Path) -> dict | None:
         "stop_reason": state.get("stop_reason", ""),
         "report_file": state.get("report_file", ""),
         "no_checkpoints": bool(state.get("no_checkpoints")),
+        # ORCH M4.2: the stalled-stage warning ("" when off / no stall) —
+        # awf_status surfaces it inside the run block.
+        "stall": stall_line(detect_stage_stall(project_dir)),
         **pipeline_info,
     }
 
@@ -414,8 +418,13 @@ def run_status(project_dir: Path) -> RunStatusResult:
 
     ORCH M1.2: reads through the shared record reader
     (``awf/run_plan_read.py``) — the same parse the brief card and the
-    supervisor context use (one path, no duplicate parsing)."""
+    supervisor context use (one path, no duplicate parsing).
+
+    ORCH M4.2: the ``stall`` field carries the stalled-stage warning
+    ("" when off / no stall / no active run) — the same line the brief
+    card shows (one shared detector)."""
     from ..run_plan_read import read_run_record
+    from ..stall_detect import detect_stage_stall, stall_line
 
     record = read_run_record(project_dir)
     state = record.state or {}
@@ -429,6 +438,11 @@ def run_status(project_dir: Path) -> RunStatusResult:
     current = record.current
     position = record.position
 
+    # ORCH M4.2: the stalled-stage warning — only inside an active run
+    # (this surface talks about the run; outside it there is nothing to
+    # stall against). The same detector/line as the brief card.
+    stall = stall_line(detect_stage_stall(project_dir)) if active else ""
+
     if not state:
         message = "No run found — start one with awf_run_start(queue=[...])."
     elif active:
@@ -436,6 +450,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
             f"Run active: {position}, current {current or '—'}"
             + _current_pipeline_hint(state.get("queue"), current)
             + (f", budget left ~{left} min (productive)" if budget else "")
+            + (f" Stage stall: {stall}." if stall else "")
         )
     else:
         message = (
@@ -467,6 +482,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
         goal=record.goal,
         criteria=list(record.criteria),
         decisions=[dict(d) for d in record.decisions],
+        stall=stall,
     )
 
 
@@ -488,6 +504,73 @@ def _salvage_events(project_dir: Path, since_iso: str) -> int:
         r"\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\].*salvage path"
     )
     return sum(1 for m in pattern.finditer(text) if m.group(1) >= since)
+
+
+def _goal_check_lines(state: dict, reason: str, salvage: int) -> list[str]:
+    """ORCH M4.2: the "Goal vs done" reconciliation section of the
+    RUN-REPORT — the report answers «цель → что исполнено → риски →
+    следующий шаг» (IMPLEMENTATION-STRATEGY §2).
+
+    Goal and criteria come from the run state (the shared reader's
+    sanitized values: a broken field already reads as ""/[] — then the
+    section is skipped with a marker line, no error, M1 style). The
+    queue fact is mechanical (credited ``completed`` vs the queue); the
+    risks are the run's own health signals (salvage events counted by
+    :func:`_salvage_events`, the rejects, the stop reason); the next
+    step is next_action-style — it names the exact command.
+    """
+    lines = ["## Goal vs done", ""]
+    goal = str(state.get("goal") or "").strip()
+    criteria = [str(c).strip() for c in (state.get("criteria") or []) if str(c).strip()]
+    if not goal and not criteria:
+        lines.append(
+            "- no goal or criteria recorded in the run plan — reconciliation "
+            "skipped (awf_run_start accepts goal/criteria)."
+        )
+        lines.append("")
+        return lines
+    if goal:
+        lines.append(f"**Goal:** {goal}")
+    if criteria:
+        lines.append(f"**Criteria:** {', '.join(criteria)}")
+    queue = list(state.get("queue") or [])
+    total = len(queue)
+    completed = [str(c) for c in (state.get("completed") or [])]
+    remaining: list[str] = []
+    for item in queue:
+        tid = str(item.get("todo_id", "")) if isinstance(item, dict) else str(item)
+        if tid and tid not in completed:
+            remaining.append(tid)
+    queue_line = f"**Queue:** {len(completed)}/{total} done"
+    if completed:
+        queue_line += f" — completed: {', '.join(completed)}"
+    if remaining:
+        queue_line += f"; remaining: {', '.join(remaining)}"
+    lines.append(queue_line + ".")
+    risks: list[str] = []
+    if salvage:
+        risks.append(f"salvage events: {salvage}")
+    rejects = state.get("rejects") or {}
+    if rejects:
+        risks.append("rejects: " + ", ".join(f"{k}×{v}" for k, v in rejects.items()))
+    if str(reason or "").strip():
+        risks.append(f"stop: {str(reason).strip()}")
+    lines.append("**Risks:** " + ("; ".join(risks) if risks else "none recorded"))
+    if remaining:
+        first = remaining[0]
+        lines.append(
+            f"**Next step:** `awf_run_next` — launches {first} "
+            f"({len(remaining)} left in the queue). The goal check stays "
+            "yours: the queue ending does not mean the goal is met."
+        )
+    else:
+        lines.append(
+            "**Next step:** queue exhausted — judge the goal against the "
+            "criteria: if met, the run is closed; if not, start a new run "
+            "(`awf_run_start`) with the remaining criteria."
+        )
+    lines.append("")
+    return lines
 
 
 def _write_report(
@@ -584,13 +667,17 @@ def _write_report(
     if decisions:
         lines += ["## Run decisions (causal memory)", ""]
         for d in decisions:
-            reason = str(d.get("reason") or "")
+            d_reason = str(d.get("reason") or "")
             lines.append(
                 f"- {str(d.get('ts') or '')} {str(d.get('kind') or '?')} "
                 f"{str(d.get('todo_id') or '?')}"
-                + (f" — {reason[:200]}" if reason else "")
+                + (f" — {d_reason[:200]}" if d_reason else "")
             )
         lines.append("")
+    # ORCH M4.2: the goal reconciliation — the report answers «цель →
+    # что исполнено → риски → следующий шаг». The section is always
+    # present (a run without a plan shows the marker, invariant 2).
+    lines += _goal_check_lines(state, reason, salvage)
     if summary:
         lines += ["## Supervisor summary", "", summary, ""]
     try:

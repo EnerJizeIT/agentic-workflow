@@ -634,7 +634,9 @@ async def awf_tree_sha(project_dir: str | None = None) -> dict[str, Any]:
 async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     """Show the current run (забег) state: position, budget left, rejects,
     stop reason, and the run plan (goal, criteria, causal decisions — ORCH
-    M1.1)."""
+    M1.1). ORCH M4.2: with `run.stall_minutes` set in config, a stalled
+    active stage shows up as a `stall` field + a line in the message
+    ("" when the warning is off)."""
     result = await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
     if isinstance(result, dict) and result.get("status") == "ok":
         if result.get("active"):
@@ -2354,7 +2356,8 @@ async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
     Returns:
         Dict with: status ("ok"), version, project, phase, date,
         is_live_project, next_action, run, active_todos, blocked,
-        salvage_stage, last_signal, pipeline_running, tool_map (groups),
+        salvage_stage, last_signal, pipeline_running, stall (the
+        stalled-stage line, "" when off), tool_map (groups),
         rituals, recovery, doctrine, what_new, text (the rendered card).
         On error: {status: "error", error: "..."}.
     """

@@ -707,4 +707,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # ("3 ready TODOs" docstring, the worker-role "Execute the TODO." stub, 2).
 # Same class as above: test identifiers and unit references, not debt.
 # files_over_400 stays 63 (the new test file is 375 lines — under the bar).
+# ORCH M4.2 (TODO-0140, контроль прогресса + сверка цели): baseline raised
+# 4376 -> 4389 — the unit adds 13 TODO-bearing lines: 11 in the new
+# tests/negative/test_run_progress_surfaces.py (the module-docstring
+# references, the T/T2/T3 = "TODO-0001/0002/0003" constants and their
+# fixture/assert use-sites in the stall/brief/report tests) and 1+1 in
+# USAGE.md/USAGE.ru.md (the M4.2 paragraph naming the unit's TODO).
+# Same class as above: test identifiers and unit references, not debt.
+# files_over_400
+# stays 63: the new test file is 305 lines (under the bar) and the stall
+# detection lives in the new awf/stall_detect.py (~150 lines), so
+# awf/run_plan_read.py did not cross 400.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

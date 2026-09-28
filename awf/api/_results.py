@@ -388,6 +388,9 @@ class RunStatusResult:
     goal: str = ""
     criteria: list[str] = field(default_factory=list)
     decisions: list[dict[str, str]] = field(default_factory=list)
+    # ORCH M4.2: the stalled-stage warning ("" when off / no stall) —
+    # the same line the brief card shows (one shared detector).
+    stall: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

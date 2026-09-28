@@ -579,6 +579,20 @@ a new TODO) + `awf_todo_retire`, or `awf_run_finish` (the run gate
 refuses `awf_run_next` over an open reject). A corrupted run.yaml
 degrades both to "no run" with a warning — no traceback.
 
+**Progress control + goal check (ORCH M4.2).** `run.stall_minutes` in
+`.agentic/config.yaml` turns on the stalled-stage warning: while the
+active pipeline stage has produced no state event for at least that many
+minutes (timestamps: `current.yaml`'s `updated_at` + the stage's
+`Stage N:` log stamps — no new store), `awf_brief` and
+`awf_run_status` show a line naming the stage, the unit's TODO and the
+quiet duration. Absent/0/negative/broken value → the warning is off
+(opt-in diagnostic, not a gate). At run finish, the RUN-REPORT carries a
+"Goal vs done" section: the goal + criteria from the run plan versus the
+completed/remaining queue items, the risks (salvage events, rejects,
+stop reason) and the proposed next step (`awf_run_next` while items
+remain, `awf_run_start` when the queue is exhausted). Empty goal/criteria
+→ a marker line, not an error.
+
 **Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
 cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`
 (or env `AWF_WAIT_CAP`, which wins). The 55s default is the tool's OWN cap,
