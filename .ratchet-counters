@@ -723,4 +723,15 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # 1 TODO-bearing line (the T = "TODO-0001" constant). Same class as above:
 # a test identifier, not debt. files_over_400 stays 63 (the new test file
 # is 330 lines, awf/unit_contract.py 399 — both under the bar).
+# ORCH M4.4 (TODO-0142, сквозные сценарии сменяемости составов): baseline
+# raised 4390 -> 4422, files_over_400 raised 63 -> 64 — the new
+# tests/e2e/test_orch_composition_scenarios.py adds 31 TODO-bearing lines
+# (the T1/T2 constants, the TODO-0001/TODO-0002 fixture and archive-path
+# use-sites in the four scenario tests, the module docstring's unit
+# reference) and crosses 400 lines (453 — its test suite), same class as
+# the test_audit25_* / test_pipeline_snapshot.py raises above. The shim
+# (tests/infra/opencode_shim/opencode) adds 1 net TODO-bearing line (the
+# declared-output printf's "TODO %s" tag). The production fix
+# (awf/supervisor.py — _build_pipeline_context effective stage name)
+# carries no TODO id. Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

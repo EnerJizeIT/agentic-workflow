@@ -100,10 +100,33 @@ if [[ "$TITLE" == awf-supervisor-* ]]; then
     fi
 fi
 
+# ORCH M4.4: per-stage identity, resolved from the execute prompt the engine
+# sends. stage_id comes from the "Stage identity" block (always present in an
+# agent-stage prompt); the declared output from the "Stage assignment" block
+# (present when the stage declares a task). Both are engine-controlled
+# strings, so the shim can act on them without a per-stage env map. Empty for
+# supervisor invocations and for stages that declare neither.
+STAGE_ID=$(printf '%s\n' "$PROMPT" | grep -oE 'stage_id="[^"]+"' | head -n1 | sed 's/stage_id="//; s/"$//' || true)
+DECLARED_OUTPUT=$(printf '%s\n' "$PROMPT" | grep -oE 'Expected output: [^ ]+' | head -n1 | sed 's/Expected output: //' || true)
+
+# Per-stage worker mode: AWF_SHIM_STAGE_MODES="id1=mode1,id2=mode2" picks the
+# mode by the stage's id — one role repeated with different ids needs
+# different behavior per instance. Unset, or an id with no entry, falls back
+# to the global AWF_SHIM_MODE (back-compat: the existing suite is unchanged).
+EFFECTIVE_MODE="$WORKER_MODE"
+if [[ -n "$STAGE_ID" && -n "${AWF_SHIM_STAGE_MODES:-}" ]]; then
+    for _entry in ${AWF_SHIM_STAGE_MODES//,/ }; do
+        if [[ "$_entry" == "${STAGE_ID}="* ]]; then
+            EFFECTIVE_MODE="${_entry#*=}"
+            break
+        fi
+    done
+fi
+
 STATE_DIR="${AWF_SHIM_STATE_DIR:-}"
 if [[ -n "$STATE_DIR" ]]; then
     mkdir -p "$STATE_DIR"
-    ACTIVE_MODE="$WORKER_MODE"
+    ACTIVE_MODE="$EFFECTIVE_MODE"
     [[ "$KIND" == "supervisor" ]] && ACTIVE_MODE="$SUP_MODE"
     echo "$$ $KIND $ACTIVE_MODE $TITLE $TODO_ID" >> "$STATE_DIR/invocation.log"
     if [[ -n "$PROMPT" ]]; then
@@ -135,9 +158,22 @@ EOF
 do_step_work() {
     mkdir -p src
     echo "shim work for ${TODO_ID}" > "src/shim-${TODO_ID}-work.txt"
+    # ORCH M4.4: the stage's declared output (from the prompt's "Expected
+    # output:" line) is the stage's contract. Created (project-relative) only
+    # when AWF_SHIM_CREATE_DECLARED_OUTPUT=1 — the e2e composition scenarios
+    # opt in so the engine's output check (exists + fresh) passes. Off by
+    # default: the negative scenarios (test_stage_assignment_outputs) rely on
+    # the declared output being ABSENT to prove DONE alone does not advance.
+    if [[ -n "$DECLARED_OUTPUT" && "${AWF_SHIM_CREATE_DECLARED_OUTPUT:-0}" == "1" ]]; then
+        mkdir -p "$(dirname "$DECLARED_OUTPUT")" 2>/dev/null || true
+        printf 'shim output for stage "%s" (TODO %s)\n' "${STAGE_ID:-$TODO_ID}" "$TODO_ID" > "$DECLARED_OUTPUT"
+    fi
     {
         echo "## Task 1 · shim step — [x]"
         echo "- Files changed: src/shim-${TODO_ID}-work.txt"
+        if [[ -n "$DECLARED_OUTPUT" ]]; then
+            echo "- Declared output: ${DECLARED_OUTPUT}"
+        fi
         echo "- Verify: true"
     } >> "$OUTBOX/PROGRESS-${TODO_ID}.md"
 }
@@ -179,7 +215,7 @@ case "$KIND" in
         exit 0
         ;;
     worker)
-        case "$WORKER_MODE" in
+        case "$EFFECTIVE_MODE" in
             silent-exit)
                 : # intentional no-op: clean exit, no signal
                 ;;
@@ -196,8 +232,30 @@ case "$KIND" in
             write-blocked)
                 write_blocked
                 ;;
+            blocked:*)
+                # ORCH M4.4: block the first K invocations of THIS stage id,
+                # then do-step. The count file is keyed by stage id, so two
+                # instances of the same role never share a counter — this is
+                # what drives the per-instance retry-budget scenario.
+                _k="${EFFECTIVE_MODE#blocked:}"
+                _count_file=""
+                [[ -n "$STATE_DIR" ]] && _count_file="$STATE_DIR/blocked-count-${STAGE_ID:-_global}"
+                _n=0
+                if [[ -n "$_count_file" && -f "$_count_file" ]]; then
+                    _n=$(cat "$_count_file" 2>/dev/null || echo 0)
+                fi
+                _n=${_n:-0}
+                _n=$((_n + 1))
+                [[ -n "$_count_file" ]] && printf '%s' "$_n" > "$_count_file"
+                if [[ "$_n" -le "$_k" ]]; then
+                    write_blocked
+                else
+                    do_step_work
+                    write_done
+                fi
+                ;;
             *)
-                echo "tests/infra/opencode_shim: unknown AWF_SHIM_MODE=$WORKER_MODE" >&2
+                echo "tests/infra/opencode_shim: unknown AWF_SHIM_MODE=$EFFECTIVE_MODE" >&2
                 exit 1
                 ;;
         esac

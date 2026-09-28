@@ -97,10 +97,14 @@ def _build_pipeline_context(
     if not current_stage_name:
         return ""
 
-    # 3. Find position in pipeline
+    # 3. Find position in pipeline. ORCH M4.4: a stage addressed by `id`
+    # carries no explicit `name` in the YAML (the id becomes the stage
+    # name at load, see load_stages) — match by the effective name (id or
+    # name), else an id-addressed stage is never found and, worse, the
+    # before/after list below KeyErrors on its missing `name`.
     current_idx = None
     for i, s in enumerate(stages):
-        if s.get("name") == current_stage_name:
+        if (s.get("id") or s.get("name")) == current_stage_name:
             current_idx = i
             break
 
@@ -110,9 +114,9 @@ def _build_pipeline_context(
     total = len(stages)
     parts.append(f"## Pipeline context (you are stage {current_idx + 1} of {total})")
 
-    # 4. List other stages
-    before = [s["name"] for s in stages[:current_idx]]
-    after = [s["name"] for s in stages[current_idx + 1:]]
+    # 4. List other stages — effective names (id or name), same rule.
+    before = [(s.get("id") or s.get("name")) for s in stages[:current_idx]]
+    after = [(s.get("id") or s.get("name")) for s in stages[current_idx + 1:]]
 
     if before:
         parts.append(f"Before you: {', '.join(before)}")
