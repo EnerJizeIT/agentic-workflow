@@ -26,6 +26,28 @@ python -m pytest tests/unit/
 bash scripts/run-all.sh
 ```
 
+## Coverage
+
+Coverage is ratcheted: it can rise or hold, a drop below the baseline
+fails. The gate (`scripts/coverage.sh`) measures TOTAL + one number per
+M1-M5 module and compares against `.coverage-baseline`:
+
+```bash
+bash scripts/coverage.sh                # check (what CI runs)
+bash scripts/coverage.sh show           # current vs baseline, no verdict
+bash scripts/coverage.sh --update "why" # re-measure and raise the baseline
+```
+
+It runs the fast subset — `tests/unit` + `tests/agent_workflow_ui` +
+`tests/negative` (the directories that carry the tracked modules'
+coverage). A second full-suite run would add ~6.5 min to CI; the full
+suite still runs uninstrumented in the Quality gates step, so the subset
+only measures — it does not replace any functional check.
+
+`--update` only raises. A measured drop is refused (fix the code first),
+and the reason goes into the baseline file itself. In CI the gate is the
+"Coverage ratchet" step of the test job.
+
 ## Code style
 
 - **Linter:** ruff (`ruff check tests/ awf/ agent_workflow_ui/src/agent_workflow_ui/`)
