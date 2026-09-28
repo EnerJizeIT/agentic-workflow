@@ -29,10 +29,12 @@ from . import paths
 MAX_WORDS = 900
 # RUN6 #5 (TODO-0060): the card grew Defaults + Scenarios sections — the
 # two verbose blocks (phase prompt, changelog tail) shrank to pay for them
-# without touching MAX_WORDS.
+# without touching MAX_WORDS. ORCH M4.2 (TODO-0140): the changelog tail
+# shrank again (45 → 40 words) to pay for the stalled-stage line — same
+# rule: new card content is paid by the verbose blocks, not MAX_WORDS.
 _PHASE_PROMPT_MAX_WORDS = 45
 _CHANGELOG_MAX_LINES = 10
-_CHANGELOG_MAX_WORDS = 45
+_CHANGELOG_MAX_WORDS = 40
 _NEXT_ACTION_MAX_WORDS = 26
 
 SETUP_HINT = (
@@ -111,6 +113,10 @@ class BriefResult:
     # compact for the card (verify commands + prove_red ids, brief) —
     # the same record the full context shows in full.
     run_evidence_plan_lines: list[str] = field(default_factory=list)
+    # ORCH M4.2: the stalled-stage warning ("" when off / no stall) —
+    # stage, TODO, quiet minutes, threshold. Computed from the stock
+    # timestamps (current.yaml updated_at + the stage's log stamp).
+    stall: str = ""
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -334,7 +340,11 @@ def _state_lines(r: BriefResult) -> list[str]:
         if r.run.get("no_checkpoints"):
             bits.append("no_checkpoints")
         note = r.run.get("note") or ""
-        lines.append(f"- run: active={r.run.get('active')}, " + ", ".join(bits))
+        # ORCH M4.2: "active=True" was the only consumer of the fact — the
+        # line only exists when the run record exists. "run (closed): "
+        # keeps the closed-run case readable at the same word count.
+        label = "run: " if r.run.get("active") else "run (closed): "
+        lines.append(f"- {label}" + ", ".join(bits))
         if note:
             lines.append(f"- run note: {note}")
         # ORCH M1.2: the compact view of the shared run record — goal,
@@ -357,6 +367,8 @@ def _state_lines(r: BriefResult) -> list[str]:
     if r.pipeline_running:
         stage = f" · stage: {r.current_stage}" if r.current_stage else ""
         lines.append(f"- pipeline: RUNNING (PID {r.pipeline_pid}){stage}")
+    if r.stall:
+        lines.append(f"- stall: {r.stall}")
     for t in r.active_todos:
         prog = t.get("progress")
         if prog:
@@ -523,6 +535,7 @@ def build_brief(
         evidence_plan_lines,
         next_action_for_record,
     )
+    from .stall_detect import detect_stage_stall, stall_line
 
     project_dir = Path(project_dir).expanduser().resolve()
     has_agentic = paths.agentic_dir(project_dir).is_dir()
@@ -579,6 +592,13 @@ def build_brief(
         pipeline_running = status.pipeline_running
         pipeline_pid = status.pipeline_pid
         current_stage = status.current_stage_name
+
+    # ORCH M4.2: the stalled-stage warning — the active stage's quiet
+    # duration against the stock timestamps (current.yaml updated_at +
+    # the stage's Stage N: log stamp). Opt-in: run.stall_minutes in the
+    # project config (absent/0 = off). One shared detector
+    # (awf/run_plan_read.py) — the run status carries the same line.
+    stall = stall_line(detect_stage_stall(project_dir))
 
     # RUN6 #5 (TODO-0060): every answer leads to the next step — a new
     # project's next action is the setup chain itself (before: empty); a
@@ -647,6 +667,7 @@ def build_brief(
         run_sources=run_sources,
         run_warning=run_warning,
         run_evidence_plan_lines=run_evidence_plan_lines,
+        stall=stall,
     )
     result.text = render_brief(result)
     return result

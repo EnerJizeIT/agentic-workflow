@@ -340,13 +340,15 @@ def test_f_broken_done_json_handoff_facts_degrade(tmp_git_repo: Path):
     done_json = outbox / "DONE-TODO-0001.json"
 
     done_json.write_text("{{{{", encoding="utf-8")
-    fact, lines = collect_done_facts(outbox, "TODO-0001", logs)
+    fact, lines, declared = collect_done_facts(outbox, "TODO-0001", logs)
     assert lines == []
+    assert declared is None
     assert "DONE-json=absent" in fact
 
     done_json.write_bytes(b"\xff\xfe\x00binary")
-    fact, lines = collect_done_facts(outbox, "TODO-0001", logs)
+    fact, lines, declared = collect_done_facts(outbox, "TODO-0001", logs)
     assert lines == []
+    assert declared is None
     assert "DONE-json=absent" in fact
 
 

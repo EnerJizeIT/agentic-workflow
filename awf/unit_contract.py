@@ -23,7 +23,15 @@ DONE.json (optional, written by the worker to ``.agentic/outbox/``)::
 
     {"files_changed": [...],
      "tests_run": [{"cmd": "...", "result": "..."}],
-     "gates": [...], "notes": "..."}
+     "gates": [...], "notes": "...",
+     "stage": {"stage_id": "impl", "attempt": 1}}
+
+``stage`` (ORCH M4.3, block and every key optional): the stage identity the
+worker was given in its prompt (``stage_id``/``role``/``model`` non-empty
+strings, ``attempt`` an int); a violation skips the whole file like any
+other. The engine fills the handoff's "Stage facts" section from its own
+knowledge regardless of DONE.json and cross-checks a declared block there —
+a note, never an error.
 
 ``collect_handoff`` folds a valid DONE.json into the handoff as a
 "Machine facts (DONE.json)" section; a broken or schema-violating file is a
@@ -225,7 +233,8 @@ def parse_done_json(text: str) -> dict | None:
 
     Schema (all keys optional): ``files_changed: [str]``,
     ``tests_run: [{cmd: str, result: str}]``, ``gates: [str]``,
-    ``notes: str``.
+    ``notes: str``, ``stage: {stage_id: str, attempt: int, role: str,
+    model: str}`` (ORCH M4.3, block and keys optional).
     """
     try:
         data = json.loads(text)
@@ -253,6 +262,20 @@ def parse_done_json(text: str) -> dict | None:
     notes = data.get("notes")
     if notes is not None and not isinstance(notes, str):
         return None
+    # ORCH M4.3: the stage identity block — a violation skips the file.
+    stage = data.get("stage")
+    if stage is not None:
+        if not isinstance(stage, dict):
+            return None
+        for key in ("stage_id", "role", "model"):
+            v = stage.get(key)
+            if v is not None and (not isinstance(v, str) or not v.strip()):
+                return None
+        attempt = stage.get("attempt")
+        if attempt is not None and (
+            not isinstance(attempt, int) or isinstance(attempt, bool)
+        ):
+            return None
     return data
 
 
@@ -275,33 +298,83 @@ def render_done_json(data: dict) -> list[str]:
     notes = data.get("notes")
     if notes:
         lines.append(f"- notes: {notes}")
+    stage = data.get("stage")
+    if isinstance(stage, dict):
+        parts = [
+            f"{key}=" + fmt.format(stage[key])
+            for key, fmt in (("stage_id", "`{}`"), ("attempt", "{}"),
+                             ("role", "`{}`"), ("model", "`{}`"))
+            if stage.get(key) is not None
+        ]
+        if parts:
+            lines.append(f"- stage: {', '.join(parts)}")
+    return lines
+
+
+def render_stage_facts(
+    stage_id: str, attempt: int, role: str, model: str | None = None,
+    declared: dict | None = None,
+) -> list[str]:
+    """ORCH M4.3: the handoff's "Stage facts" section lines.
+
+    The engine fills the identity itself — always present, even without
+    DONE.json. ``declared`` is the DONE.json ``stage`` block (None = absent):
+    a cross-check line follows, matched/mismatched — a note, never an error;
+    only declared fields are compared.
+    """
+    lines: list[str] = []
+    if stage_id:
+        lines.append(f"- stage_id: `{stage_id}`")
+    lines.append(f"- attempt: {attempt}")
+    if role:
+        lines.append(f"- role: `{role}`")
+    if model:
+        lines.append(f"- model: `{model}`")
+    if declared:
+        mismatches: list[str] = []
+        decl_id = declared.get("stage_id")
+        if decl_id is not None and stage_id and decl_id != stage_id:
+            mismatches.append(f"stage_id declared `{decl_id}` (engine `{stage_id}`)")
+        decl_attempt = declared.get("attempt")
+        if decl_attempt is not None and decl_attempt != attempt:
+            mismatches.append(f"attempt declared {decl_attempt} (engine {attempt})")
+        decl_role = declared.get("role")
+        if decl_role is not None and role and decl_role != role:
+            mismatches.append(f"role declared `{decl_role}` (engine `{role}`)")
+        if mismatches:
+            lines.append(
+                "- check vs DONE.json: mismatched — " + "; ".join(mismatches)
+            )
+        else:
+            lines.append("- check vs DONE.json: matched")
     return lines
 
 
 def collect_done_facts(
     outbox: Path, todo_id: str, logs_dir: Path
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], dict | None]:
     """Read + validate DONE-{todo_id}.json for the handoff.
 
-    Returns ``(fact_suffix, machine_facts_lines)``: ``fact_suffix`` is
-    ``", DONE-json=present"`` or ``", DONE-json=absent"`` for the handoff
-    Run-facts line; ``machine_facts_lines`` are the rendered section lines
-    (empty when the file is absent, empty, or broken). A broken or
-    schema-violating file logs a warning and never raises.
+    Returns ``(fact_suffix, machine_facts_lines, declared_stage)``: the
+    Run-facts suffix (``", DONE-json=present"``/``", DONE-json=absent"``),
+    the rendered machine-facts lines (empty when absent, empty, or broken)
+    and the DONE.json ``stage`` block (ORCH M4.3) or None — the handoff's
+    Stage facts cross-checks it. A broken or schema-violating file logs a
+    warning and never raises.
     """
     fact = ", DONE-json=absent"
     path = find_signal_file(outbox, "DONE", todo_id, ".json")
     if path is None:
-        return fact, []
+        return fact, [], None
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         # NEG-3: binary garbage in the DONE json degrades to absent facts,
         # the same as an unreadable file.
         _log(logs_dir, f"U3: {path.name} unreadable ({e}) — handoff skips machine facts")
-        return fact, []
+        return fact, [], None
     if not text.strip():
-        return fact, []
+        return fact, [], None
     data = parse_done_json(text)
     if data is None:
         _log(
@@ -309,9 +382,9 @@ def collect_done_facts(
             f"U3: {path.name} is broken or violates the DONE.json schema — "
             "handoff continues without the machine-facts section",
         )
-        return fact, []
+        return fact, [], None
     lines = render_done_json(data)
-    return (fact if not lines else ", DONE-json=present"), lines
+    return (fact if not lines else ", DONE-json=present"), lines, data.get("stage")
 
 
 __all__ = [
@@ -321,5 +394,6 @@ __all__ = [
     "inject_pipeline_key",
     "parse_done_json",
     "render_done_json",
+    "render_stage_facts",
     "collect_done_facts",
 ]

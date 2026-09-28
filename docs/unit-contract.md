@@ -68,18 +68,30 @@ prove_red: ["tests/unit/test_x.py::test_y"]
     {"cmd": "python3 -m pytest tests/unit/test_unit_contract.py -q", "result": "38 passed"}
   ],
   "gates": ["contracts", "ratchet"],
-  "notes": "коротко, что важно для следующей роли"
+  "notes": "коротко, что важно для следующей роли",
+  "stage": {"stage_id": "impl", "attempt": 1}
 }
 ```
 
 Схема (все ключи необязательны): `files_changed: [str]`,
-`tests_run: [{cmd: str, result: str}]`, `gates: [str]`, `notes: str`.
+`tests_run: [{cmd: str, result: str}]`, `gates: [str]`, `notes: str`,
+`stage: {stage_id: str, attempt: int, role: str, model: str}` — блок
+идентичности стадии, под-ключи внутри него тоже все необязательны
+(ORCH M4.3). Старый файл без блока работает ровно как раньше.
+
+`stage` — идентичность стадии. Worker получает её в промпте (строка
+«Stage identity»: stage_id/attempt/role), так что блок — копия
+данных, а не угадывание. Битый json или нарушение схемы (в том числе в
+блоке `stage`) — предупреждение в `orchestrator.log`, файл пропускается,
+пада нет.
 
 Движок при сборке handoff (`awf/agent_stage.py::collect_handoff`) включает
 валидный файл в секцию «Machine facts (DONE.json)» handoff-файла следующей
-роли и в Run facts (`DONE-json=present`). Битый json или нарушение схемы —
-предупреждение в `orchestrator.log`, handoff собирается без секции, пада
-нет.
+роли и в Run facts (`DONE-json=present`). Независимо от DONE.json handoff
+всегда несёт секцию «Stage facts»: stage_id/attempt/role и model, если он
+известен из конфига, — движок заполняет её сам, из стадии и счётчика
+ретраев. Если в DONE.json есть блок `stage`, секция получает строку
+сверки (matched/mismatched — пометка для следующей роли, не ошибка).
 
 Отчёт на стадии verify: `.agentic/context/GATES-<todo>.md` (собирает
 `awf verify-pack --todo <id>`, U5) — быстрые гейты, safety-канарейки,

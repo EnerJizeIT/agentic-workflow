@@ -511,7 +511,7 @@ commit by design. That protection used to be silent; now it is visible:
 | `awf_run_next` | Launch the next queue item, or stop on a gate |
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
-| `awf_run_revise` | Revise the pipelines of the run's NOT-STARTED queue elements (preview + apply, idempotent by key) |
+| `awf_run_revise` | Revise the pipelines of the run's NOT-STARTED queue elements (preview + apply, idempotent by key; `stop_running` stops a live unit via the engine's kill path) |
 
 **Per-item pipeline.** The queue accepts
 `{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain
@@ -522,17 +522,28 @@ pipeline. An unknown name refuses the launch with the list of available
 pipelines (RUN3 #1).
 
 **Queue revision (ORCH M3.4).** `awf_run_revise(project_dir, queue,
-reason, key, preview)` revises the pipeline of the run's not-started queue
-elements only — the current and completed elements are never touched.
-`preview=true` shows the current queue, the elements that would change and
-the conflicts (current/started/completed/not in the queue) without writing
-anything. The apply is atomic (a conflict refuses the whole request), is
-refused while a stage is running (stop the unit first — stopping is the
-next unit, ORCH M3.5), and is idempotent by `key`: a repeat with the same
-key is a no-op. The applied revision is recorded in `state/run.yaml`
-(`revisions`, the decisions' path) in the same CAS write as the queue
-change (A-13 generation condition); the revised pipelines take effect at
-each element's launch (`awf_run_next`).
+reason, key, preview, stop_running)` revises the pipeline of the run's
+not-started queue elements only — the current and completed elements are
+never touched. `preview=true` shows the current queue, the elements that
+would change and the conflicts (current/started/completed/not in the queue)
+without writing anything. The apply is atomic (a conflict refuses the whole
+request) and is idempotent by `key`: a repeat with the same key is a no-op.
+By default it is refused while a stage is running (stop the unit first).
+`stop_running=true` authorizes the stop: the unit is stopped by the
+engine's standard kill path (`kill_pipeline`: the pipeline's TERM → grace →
+KILL plus the worker-tree kill and the `last-kill` record), liveness is
+re-checked, and the revision applies only after the stop is confirmed. The
+resume point (the stopped stage, from `stage_name`/`todo_id` captured
+BEFORE the kill, which clears the pipeline state) is restored afterwards,
+so a plain `awf continue` resumes the unit from that stage — the response
+names it explicitly (`resume_from`) and the revision record in
+`state/run.yaml` (`revisions`) carries it too. A stop that does not take
+(the process is still alive after the kill) refuses WITHOUT applying the
+revision: the run stays consistent and the retry is possible. With no live
+stage, `stop_running=true` is a no-op stop, not an error. The applied
+revision is recorded in `state/run.yaml` (`revisions`, the decisions' path)
+in the same CAS write as the queue change (A-13 generation condition); the
+revised pipelines take effect at each element's launch (`awf_run_next`).
 
 **Run plan (goal, criteria, decisions).** `awf_run_start` accepts
 `goal` (one line) and `criteria` (a list of lines) — stored in
@@ -567,6 +578,20 @@ the decision and the ONE next step — closing it: re-plan the task (issue
 a new TODO) + `awf_todo_retire`, or `awf_run_finish` (the run gate
 refuses `awf_run_next` over an open reject). A corrupted run.yaml
 degrades both to "no run" with a warning — no traceback.
+
+**Progress control + goal check (ORCH M4.2).** `run.stall_minutes` in
+`.agentic/config.yaml` turns on the stalled-stage warning: while the
+active pipeline stage has produced no state event for at least that many
+minutes (timestamps: `current.yaml`'s `updated_at` + the stage's
+`Stage N:` log stamps — no new store), `awf_brief` and
+`awf_run_status` show a line naming the stage, the unit's TODO and the
+quiet duration. Absent/0/negative/broken value → the warning is off
+(opt-in diagnostic, not a gate). At run finish, the RUN-REPORT carries a
+"Goal vs done" section: the goal + criteria from the run plan versus the
+completed/remaining queue items, the risks (salvage events, rejects,
+stop reason) and the proposed next step (`awf_run_next` while items
+remain, `awf_run_start` when the queue is exhausted). Empty goal/criteria
+→ a marker line, not an error.
 
 **Long waits.** A single `awf_wait_for_event` call is cut at the single-wait
 cap — 55s by default, raised via `wait.cap_seconds` in `.agentic/config.yaml`

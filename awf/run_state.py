@@ -164,10 +164,11 @@ def _revision_entry_ok(e: object) -> bool:
 
 
 def _normalize_revision(e: dict) -> dict:
-    """ORCH M3.4: the canonical revision shape
-    ``{ts, key, kind, reason, changes, generation}``; absent or mistyped
-    fields degrade to empty (a partial entry survives as far as its key
-    allows)."""
+    """ORCH M3.4/M4.1: the canonical revision shape
+    ``{ts, key, kind, reason, changes, generation, resume_from}``; absent
+    or mistyped fields degrade to empty (a partial entry survives as far
+    as its key allows). ``resume_from`` (ORCH M4.1) — the stage the
+    stopped unit resumes from; absent in v1 (M3.4) records → ``""``."""
 
     def _norm_change(c: dict) -> dict:
         return {
@@ -193,6 +194,7 @@ def _normalize_revision(e: dict) -> dict:
         "reason": str(e.get("reason") or ""),
         "changes": norm_changes,
         "generation": generation,
+        "resume_from": str(e.get("resume_from") or "").strip(),
     }
 
 
@@ -600,7 +602,12 @@ def find_revision(state: dict, key: str) -> dict | None:
 
 
 def append_revision(
-    state: dict, key: str, reason: str, changes: list[dict], generation: int
+    state: dict,
+    key: str,
+    reason: str,
+    changes: list[dict],
+    generation: int,
+    resume_from: str = "",
 ) -> None:
     """ORCH M3.4: append an applied revision to the state dict IN PLACE.
 
@@ -608,7 +615,9 @@ def append_revision(
     the caller runs it inside the lock so the revision lands in the SAME
     atomic write as the queue change it records (the decisions' path, M1:
     one lock hold, one write). The entry is
-    ``{ts, key, kind: "revision", reason, changes, generation}``. The
+    ``{ts, key, kind: "revision", reason, changes, generation,
+    resume_from}``. ``resume_from`` (ORCH M4.1) names the stage the
+    stopped unit resumes from (``""`` when the stop was a no-op). The
     caller checks :func:`find_revision` first — a repeat with the same key
     is a no-op, never a second entry.
     """
@@ -632,6 +641,7 @@ def append_revision(
                 if isinstance(c, dict) and str(c.get("todo_id") or "").strip()
             ],
             "generation": int(generation or 0),
+            "resume_from": str(resume_from or "").strip(),
         }
     )
 

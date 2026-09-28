@@ -101,6 +101,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update |
 | `run_state.py` | `.agentic/state/run.yaml`: лок read→merge→write, shape-проверка (AUD02-06) |
 | `run_plan_read.py` | Единый reader записи забега (ORCH M1.2): одна запись — два представления (brief-карточка / полный контекст) |
+| `stall_detect.py` | Детекция зависшей активной стадии (ORCH M4.2): общий детектор — строка в brief/status |
 | `pipeline_state.py` | `.agentic/state/current.yaml` persistence |
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
 | `pipeline_engine.py` | Stage handlers + transition logic |
