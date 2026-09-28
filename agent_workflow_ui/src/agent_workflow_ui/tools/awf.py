@@ -1566,6 +1566,11 @@ async def awf_add_role(
     - ``adopt="<name>"``: move a candidate to ``.agentic/roles/`` —
       EXPLICIT refusal when a live role with the same slug exists (awf
       never overwrites a live role; there is no force for this path).
+      ORCH M5.3: the adopt is also the normalization step — zone
+      analysis is re-run (``analyze_roles_core``) and the BD-31
+      disambiguation addenda refreshed idempotently. Only the BD-31
+      blocks of role files change; config/pipeline and the setup phase
+      are NOT touched (pipeline participation stays a supervisor step).
     - ``discard="<name>"``: remove a candidate (kept as a trace in
       ``.agentic/context/``).
 
@@ -1596,7 +1601,8 @@ async def awf_add_role(
 
     Returns:
         Create: role_name, role_file (path), model. List: drafts (list
-        of {name, source, created, file}). Adopt: role_name, role_file.
+        of {name, source, created, file}). Adopt: role_name, role_file,
+        normalization ({overlaps, addenda, failed} or {error}).
         Discard: role_name, draft_file, trace_file.
     """
     modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)

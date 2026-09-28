@@ -759,4 +759,17 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # The production diff (awf/api/run.py, awf/run_state.py,
 # awf/pipeline_engine.py — the service slot + slot-aware downtime) carries
 # no TODO id in code.
+# ORCH M5.3 (TODO-0145, adopt-нормализация + сквозная приёмка): baseline
+# raised 4454 -> 4462 — the new tests/e2e/test_service_role_run.py adds 8
+# TODO-bearing lines: the module-docstring unit reference (TODO-0145),
+# the T1/T2 = "TODO-0001"/"TODO-0002" and SVC_TODO = "TODO-0003"
+# constants, the worker-role "Execute the TODO." stub, the shim
+# plan-TODO docstring + AWF_SHIM_PLAN_TODO_ID env line, and the two
+# SVC_TODO use-sites (the service-unit id assert + the
+# run_service_approve call). Same class as above: test identifiers and
+# unit references, not debt. The adopted-role normalization diff
+# (awf/api/roles.py, awf/api/_results.py, awf/api/__init__.py,
+# awf/cmd_add_role.py, tools/awf.py) and the test_role_draft.py tests
+# carry no TODO id. files_over_400 stays 65 (the new e2e file is 276
+# lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

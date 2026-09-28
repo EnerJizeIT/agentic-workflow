@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from .. import config as cfg_mod
 from .. import paths
@@ -21,6 +22,7 @@ from ._errors import AwfApiError
 from ._helpers import require_agentic
 from ._results import (
     AddRoleResult,
+    AdoptRoleDraftResult,
     AnalyzeRolesResult,
     DiscardRoleDraftResult,
     RoleDraftsResult,
@@ -369,14 +371,28 @@ def list_role_drafts(project_dir: Path) -> RoleDraftsResult:
     return RoleDraftsResult(drafts=drafts)
 
 
-def adopt_role_draft(project_dir: Path, role_name: str) -> AddRoleResult:
+def adopt_role_draft(project_dir: Path, role_name: str) -> AdoptRoleDraftResult:
     """Move a draft candidate into the live roles area (ORCH M5.1).
 
     ``roles/draft/{slug}.md`` becomes ``roles/{slug}.md`` (the awf-draft
     marker line is stripped) and the candidate is removed. A slug that
     already has a live role is an EXPLICIT refusal — awf never
     overwrites a live role, and there is deliberately no force for this
-    path: resolve the conflict (rename or discard one of the two) first.
+    path: resolve the conflict (adopt under a different slug, discard
+    the candidate, or remove the live role — the supervisor/owner's
+    call) first.
+
+    ORCH M5.3: the adopt is ALSO the normalization step — the adopted
+    role joins the team, so zone analysis is re-run through the existing
+    ``analyze_roles_core`` mechanism and the BD-31 disambiguation addenda
+    are refreshed. That is idempotent (the BD-31 marker block is
+    replaced, never duplicated) and touches ONLY the BD-31 blocks of the
+    role files — the role bodies and every other file (config, pipeline,
+    supervisor.md) are left byte-for-byte. The setup phase is not
+    re-run, and the role's pipeline participation (a stage + model
+    mapping) stays an explicit supervisor step — adopt does not rebuild
+    the pipeline. Normalization is best-effort: a failure is reported in
+    the result's ``normalization`` dict but does not undo the adopt.
     """
     slug = _validate_draft_slug(role_name)
     project_dir = Path(project_dir).resolve()
@@ -395,15 +411,39 @@ def adopt_role_draft(project_dir: Path, role_name: str) -> AddRoleResult:
     if target.exists():
         raise AwfApiError(
             f"Adopt refused: live role {slug!r} already exists at {target}. "
-            "awf never overwrites a live role — rename or discard the "
-            "draft (discard_role_draft / awf add-role --discard), or "
-            "remove the live role, then adopt again."
+            "awf never overwrites a live role — adopt under a different "
+            "slug, or discard the draft (discard_role_draft / "
+            "awf add-role --discard), or remove the live role, then "
+            "adopt again."
         )
 
     content = _strip_draft_marker(draft.read_text(encoding="utf-8"))
     atomic_write_text(target, content)
     draft.unlink()
-    return AddRoleResult(role_name=slug, role_file=str(target), model="")
+
+    # ORCH M5.3: normalization — see the docstring. analyze_roles_core
+    # is best-effort here: the role is already live, a broken analysis
+    # (corrupt pipeline, unreadable config) must not fail the adopt.
+    normalization: dict[str, Any] = {}
+    try:
+        data = analyze_roles_core(project_dir, dry_run=False)
+        normalization = {
+            "overlaps": [
+                {"role_a": a, "role_b": b, "zone": zone}
+                for a, b, zone in data.overlaps
+            ],
+            "addenda": [
+                r for r in data.patches if data.applied and r not in data.failed
+            ],
+            "failed": list(data.failed),
+        }
+    except Exception as e:  # noqa: BLE001 — analysis must not fail adopt
+        log.warning("adopt_role_draft: normalization skipped: %s", e)
+        normalization = {"error": str(e)}
+
+    return AdoptRoleDraftResult(
+        role_name=slug, role_file=str(target), normalization=normalization
+    )
 
 
 def discard_role_draft(project_dir: Path, role_name: str) -> DiscardRoleDraftResult:

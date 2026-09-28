@@ -67,6 +67,19 @@ def run(args: Any) -> int:
         return 0
     if mode == "adopt":
         print(f"Adopted: {result.role_file} (draft candidate removed)")
+        # ORCH M5.3: report the adopt's normalization (BD-31 addenda).
+        norm = getattr(result, "normalization", None) or {}
+        if norm.get("error"):
+            print(f"Normalization skipped (adopt stands): {norm['error']}")
+        else:
+            overlaps = norm.get("overlaps") or []
+            addenda = sorted(norm.get("addenda") or [])
+            if overlaps or addenda:
+                where = ", ".join(addenda) if addenda else "no role"
+                print(
+                    f"Normalized: {len(overlaps)} zone overlap(s); "
+                    f"BD-31 addenda refreshed on: {where}."
+                )
         print()
         print("Next steps:")
         print(f"  1. Edit the role instructions in {result.role_file}")

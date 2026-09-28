@@ -43,6 +43,7 @@ from ..verify_pack import VerifyPackResult, verify_pack
 from ._errors import AwfApiError
 from ._results import (
     AddRoleResult,
+    AdoptRoleDraftResult,
     AnalyzeRolesResult,
     ApplyIncrementPlanResult,
     ApplyProjectSetupResult,
@@ -151,6 +152,7 @@ __all__ = [
     "ReportResult",
     "ResetResult",
     "AddRoleResult",
+    "AdoptRoleDraftResult",
     "DiscardRoleDraftResult",
     "RoleDraftsResult",
     "StartResult",

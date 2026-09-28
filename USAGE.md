@@ -347,7 +347,11 @@ marker: skill / builtin / template). List candidates with `--list-drafts`
 `--adopt <name>` — a name conflict with a live role is an explicit
 refusal, awf never overwrites a live role — and remove one with
 `--discard <name>` (the candidate is kept as a trace in
-`.agentic/context/`). MCP: `awf_add_role(name, draft=True)`,
+`.agentic/context/`). Adopt is also the normalization step (M5.3):
+zone analysis re-runs and the BD-31 disambiguation addenda are
+refreshed — only the BD-31 blocks of role files change, config and
+the pipeline are untouched, the setup phase is not re-run. MCP:
+`awf_add_role(name, draft=True)`,
 `awf_add_role(list_drafts=True)`, `awf_add_role(adopt=...)`,
 `awf_add_role(discard=...)` — one action per call.
 

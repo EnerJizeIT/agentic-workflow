@@ -179,6 +179,27 @@ class AddRoleResult:
 
 
 @dataclass
+class AdoptRoleDraftResult:
+    """Result of :func:`awf.api.adopt_role_draft` (ORCH M5.1 + M5.3).
+
+    ``normalization`` (ORCH M5.3) reports adopt's normalization step: the
+    adopted role joins the team, so zone overlaps are re-analyzed through
+    ``analyze_roles_core`` and the BD-31 disambiguation addenda refreshed.
+    Keys: ``overlaps`` (list of ``{role_a, role_b, zone}``), ``addenda``
+    (roles whose BD-31 block was (re)written), ``failed`` (roles whose
+    addendum write raised OSError). Normalization is best-effort: on a
+    failure it is ``{"error": <message>}`` and the adopt itself stands.
+    """
+
+    role_name: str
+    role_file: str
+    normalization: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RoleDraftsResult:
     """Result of :func:`awf.api.list_role_drafts` (ORCH M5.1).
 
@@ -673,6 +694,7 @@ __all__ = [
     "ReportResult",
     "ResetResult",
     "AddRoleResult",
+    "AdoptRoleDraftResult",
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
