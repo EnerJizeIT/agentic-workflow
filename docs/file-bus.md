@@ -117,7 +117,7 @@ archive_todo → done/{todo_id}/ (inbox + outbox очищены)
 | `note` / `no_checkpoints` | живое описание (R5) и пропуск чекпоинтов (B4) |
 | `goal` / `criteria` | план забега (ORCH M1.1): цель (строка) и критерии (список строк); пишет `awf_run_start`, показаны в `awf_run_status` и RUN-REPORT; в старом run.yaml отсутствуют → читаются как `""` / `[]`, миграции нет |
 | `decisions` | append-only причинная память (ORCH M1.1): `[{ts, kind: approve\|reject, todo_id, reason}]`; approve хранит выжимку evidence ≤200 символов (полный текст — в `context/RUN-EVIDENCE-{todo}.md`); повтор того же (kind, todo_id, reason) дубль не добавляет; пишется только в активном забеге |
-| `revisions` | применённые ревизии состава очереди (ORCH M3.4): `[{ts, key, kind: "revision", reason, changes, generation}]`, `changes` = `[{todo_id, from, to}]` (только НЕ начатые элементы); пишет `awf_run_revise` в том же CAS-записе, что и смена очереди (условие поколения A-13); повтор с тем же `key` — no-op (идемпотентность); в старом run.yaml отсутствует → читается как `[]`, миграции нет |
+| `revisions` | применённые ревизии состава очереди (ORCH M3.4): `[{ts, key, kind: "revision", reason, changes, generation, resume_from}]`, `changes` = `[{todo_id, from, to}]` (только НЕ начатые элементы); `resume_from` (ORCH M4.1) — стадия, с которой возобновляется остановленный юнит (пустая, если остановка не нужна / живой стадии нет); пишет `awf_run_revise` в том же CAS-записе, что и смена очереди (условие поколения A-13); повтор с тем же `key` — no-op (идемпотентность); в старом run.yaml отсутствует → читается как `[]`, миграции нет |
 
 ## Stage prompt injection
 

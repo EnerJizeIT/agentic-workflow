@@ -17,7 +17,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import paths, run_state, todos
+from .. import paths, pipeline_state, run_state, todos
 from .._atomic import atomic_write_text
 from ..todo_ids import is_valid_todo_id
 from . import _liveness
@@ -1210,6 +1210,7 @@ def run_revise(
     reason: str = "",
     key: str = "",
     preview: bool = False,
+    stop_running: bool = False,
 ) -> RunReviseResult:
     """ORCH M3.4: revise the pipeline of the NOT-STARTED elements of the
     active run's queue — one typed operation with a preview and an
@@ -1222,18 +1223,28 @@ def run_revise(
     - apply (``preview=False``) — changes the pipeline of the not-started
       elements only; the completed and the current element are never
       touched. Refusals (each returns the current state, the previous plan
-      stays in force): no active run; the engine is alive (a stage is
-      running — stop the unit first, ORCH M3.5); ANY conflict in the
+      stays in force): no active run; the engine is alive and
+      ``stop_running`` is false (stop the unit first); ANY conflict in the
       request (atomic — nothing is applied); a missing ``key``; a
       generation mismatch (CAS, A-13 — the run changed between the read
-      and the write).
+      and the write); the stop failed (ORCH M4.1 — the stage survived the
+      kill, so the revision is NOT applied and the retry is possible).
+    - ``stop_running=True`` (ORCH M4.1) — the caller allows stopping the
+      live unit: the stop goes through the engine's STANDARD kill path
+      (``kill_pipeline``: TERM → grace → KILL the pipeline, the worker
+      tree kill, the last-kill record — no home-grown signals). The resume
+      point (state ``stage_name`` / ``todo_id``) is captured BEFORE the
+      kill (which clears the state) and restored after, so a plain
+      ``awf continue`` resumes the unit from the stopped stage; the answer
+      and the revision record name it (``resume_from``). No live stage →
+      the stop is a no-op and the revision applies.
     - a repeat with the same ``key`` is a no-op: the stored revision is
       returned, nothing is written twice (the check and the append are one
       step under one lock hold).
     - the applied revision is recorded in the run state (state/run.yaml,
       ``revisions``: ``{ts, key, kind: "revision", reason, changes,
-      generation}`` — the decisions' path) in the SAME CAS write as the
-      queue change.
+      generation, resume_from}`` — the decisions' path) in the SAME CAS
+      write as the queue change.
     """
     project_dir = _require_run_project(project_dir)
     requested = _validate_queue(queue)
@@ -1281,11 +1292,12 @@ def run_revise(
             ),
         )
 
-    # Invariant 2: a live engine (a stage is running) — refused with the
-    # stop-first hint. Stopping a running stage + revising it is the NEXT
-    # unit (ORCH M3.5); until then the engine must be stopped (awf_kill).
+    # A live engine (a stage is running) — refused with the stop-first
+    # hint UNLESS the caller allows the stop (stop_running, ORCH M4.1).
+    # The stop itself happens below the cheap state checks: a conflicted
+    # or keyless request must not take down the running unit for nothing.
     running, _pid, source = _liveness.resolve(project_dir)
-    if running:
+    if running and not stop_running:
         return RunReviseResult(
             action="refused",
             preview=False,
@@ -1297,9 +1309,9 @@ def run_revise(
             unchanged=unchanged,
             message=(
                 f"Refused: a stage is running (source: {source or '?'}) — "
-                "stop the unit first (awf_kill), then retry the revision. "
-                "Stopping a running stage is the next unit (ORCH M3.5); "
-                "the previous plan stays in force."
+                "stop the unit first (awf_kill), then retry the revision; "
+                "or pass stop_running=true to stop it as part of this call "
+                "(ORCH M4.1). The previous plan stays in force."
             ),
         )
 
@@ -1353,6 +1365,53 @@ def run_revise(
             ),
         )
 
+    # ORCH M4.1: the stop path — only now, when the request actually
+    # applies (a live engine + stop_running=True + no conflicts + a key +
+    # at least one effective change). The stop goes through the engine's
+    # STANDARD kill mechanism (kill_pipeline: TERM → grace → KILL the
+    # pipeline, the worker tree kill, the last-kill record — no
+    # home-grown signals). The resume point is captured BEFORE the kill —
+    # the kill clears the pipeline state (AUD04-08) — and restored after,
+    # so a plain ``awf continue`` resumes the unit from the stopped stage.
+    resume_from = ""
+    if running:
+        pre_state = pipeline_state.read_state(project_dir) or {}
+        resume_from = str(pre_state.get("stage_name") or "").strip()
+        resume_todo = str(pre_state.get("todo_id") or "").strip()
+
+        from .pipeline import kill_pipeline
+
+        kill_pipeline(project_dir)
+        # The stop is confirmed by the shared liveness resolver, not by
+        # the kill's own report: a process that survived the standard
+        # escalation is still ours (the resolver is strict about
+        # identity) — the revision must not apply over a live stage.
+        still, still_pid, _still_source = _liveness.resolve(project_dir)
+        if still:
+            return RunReviseResult(
+                action="refused",
+                preview=False,
+                key=key_clean,
+                generation=gen,
+                current_queue=current_queue,
+                changes=changes,
+                conflicts=conflicts,
+                unchanged=unchanged,
+                message=(
+                    f"Refused: the stop failed — the stage is still alive "
+                    f"(PID {still_pid}). The revision was NOT applied; "
+                    "the run state is consistent and the retry is "
+                    "possible. The previous plan stays in force."
+                ),
+            )
+        if resume_from or resume_todo:
+            restore: dict = {}
+            if resume_from:
+                restore["stage_name"] = resume_from
+            if resume_todo:
+                restore["todo_id"] = resume_todo
+            pipeline_state.write_state(project_dir, **restore)
+
     # A-13: the queue change and the revision record are ONE CAS write
     # conditioned on (generation, index, current) — the same pattern as the
     # run_next reservation/commit. The idempotency check (find_revision)
@@ -1369,7 +1428,9 @@ def run_revise(
             for q in st.get("queue") or []:
                 if isinstance(q, dict) and str(q.get("todo_id", "")) == ch["todo_id"]:
                     q["pipeline"] = ch["to"]
-        run_state.append_revision(st, key_clean, reason_clean, changes, gen)
+        run_state.append_revision(
+            st, key_clean, reason_clean, changes, gen, resume_from=resume_from
+        )
         outcome["applied"] = True
         return st
 
@@ -1423,6 +1484,12 @@ def run_revise(
     # exactly the record this call appended (no re-read).
     written_revisions = (_written or {}).get("revisions") or []
     entry = written_revisions[-1] if written_revisions else None
+    resume_note = ""
+    if resume_from:
+        resume_note = (
+            f" The stopped unit: continue will resume from stage "
+            f"'{resume_from}' (awf continue)."
+        )
     return RunReviseResult(
         action="applied",
         preview=False,
@@ -1433,10 +1500,17 @@ def run_revise(
         conflicts=conflicts,
         unchanged=unchanged,
         revision=entry,
+        resume_from=resume_from,
         message=(
             f"Queue revised (key {key_clean}): {len(changes)} element(s) "
-            "changed — the pipelines take effect at each element's launch "
-            "(awf_run_next)."
+            f"changed — the pipelines take effect at each element's launch "
+            f"(awf_run_next).{resume_note}"
         ),
-        next_action="Continue the run with awf_run_next.",
+        next_action=(
+            f"Resume the stopped unit with awf_continue (it continues from "
+            f"stage '{resume_from}'), then awf_run_next for the next "
+            "element."
+            if resume_from
+            else "Continue the run with awf_run_next."
+        ),
     )

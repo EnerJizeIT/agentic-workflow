@@ -512,7 +512,7 @@ class RunFinishResult:
 
 @dataclass
 class RunReviseResult:
-    """Result of :func:`awf.api.run_revise` (ORCH M3.4).
+    """Result of :func:`awf.api.run_revise` (ORCH M3.4 / M4.1).
 
     ``action`` is one of:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
@@ -521,8 +521,14 @@ class RunReviseResult:
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
     - ``refused`` — no active run / live engine / conflicts / missing key /
-      CAS mismatch; ``current_queue`` + ``generation`` carry the current
-      state (the previous plan stays in force).
+      CAS mismatch / a failed stop (M4.1); ``current_queue`` +
+      ``generation`` carry the current state (the previous plan stays in
+      force).
+
+    ``resume_from`` (ORCH M4.1, ``stop_running=True``): the stage the
+    stopped unit resumes from — the ``awf continue`` answer and the
+    revision record name it explicitly; ``""`` when nothing was stopped
+    (no live stage) or for the preview/noop/refused actions.
     """
 
     action: str
@@ -534,6 +540,7 @@ class RunReviseResult:
     conflicts: list[dict[str, str]] = field(default_factory=list)
     unchanged: list[dict[str, str]] = field(default_factory=list)
     revision: dict[str, Any] | None = None
+    resume_from: str = ""
     message: str = ""
     next_action: str = ""
 

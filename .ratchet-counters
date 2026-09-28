@@ -699,4 +699,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/negative/test_docs_counters.py (1). Same class as above: test
 # identifiers and unit references, not debt. files_over_400 stays 63
 # (the new test file is 373 lines — under the bar).
+# ORCH M4.1 (TODO-0139, run_revise stop_running): baseline raised
+# 4371 -> 4376 — the unit adds 5 TODO-bearing lines, all in the new
+# tests/negative/test_run_revise_stop.py: the module-docstring unit
+# reference + the invariants header (TODO-0139, 2), the T1/T2/T3 =
+# "TODO-0001/0002/0003" constants line (1) and two fixture/docstring lines
+# ("3 ready TODOs" docstring, the worker-role "Execute the TODO." stub, 2).
+# Same class as above: test identifiers and unit references, not debt.
+# files_over_400 stays 63 (the new test file is 375 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

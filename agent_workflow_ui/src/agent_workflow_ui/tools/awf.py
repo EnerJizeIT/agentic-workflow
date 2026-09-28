@@ -718,6 +718,7 @@ async def awf_run_revise(
     reason: str = "",
     key: str = "",
     preview: bool = False,
+    stop_running: bool = False,
 ) -> dict[str, Any]:
     """Revise the pipelines of the not-started queue elements of the active run (ORCH M3.4).
 
@@ -729,9 +730,18 @@ async def awf_run_revise(
     and records the revision in the run state (state/run.yaml, the
     decisions' path). A repeat with the same ``key`` is a no-op.
     Refusals (each returns the current state; the previous plan stays in
-    force): no active run; a stage is running (stop the unit first —
-    stopping is the next unit, ORCH M3.5); any conflict; a missing key; a
-    generation mismatch (CAS, A-13).
+    force): no active run; a stage is running without ``stop_running``
+    (stop the unit first); any conflict; a missing key; a generation
+    mismatch (CAS, A-13); a failed stop (ORCH M4.1 — the stage survived
+    the kill, the revision is NOT applied, retry is possible).
+
+    ``stop_running=True`` (ORCH M4.1) allows stopping the live unit in
+    the SAME call: the stop goes through the engine's standard kill path
+    (kill_pipeline: TERM → grace → KILL the pipeline, the worker tree,
+    the last-kill record), and the revision is applied only after the
+    stop is confirmed dead. The answer names the resume point
+    (``resume_from`` — the stage ``awf continue`` resumes the unit from);
+    no live stage → the stop is a no-op and the revision applies.
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —
@@ -743,11 +753,14 @@ async def awf_run_revise(
         key: Idempotency key — required for the apply; a repeat with the
             same key is a no-op (no second revision).
         preview: True — the plan only, nothing is written (default: False).
+        stop_running: True — allow stopping the live unit (the standard
+            kill path) before applying the revision; without it a running
+            stage is a refusal (default: False).
 
     Returns:
         Dict with: action (preview/applied/noop/refused), key, generation,
-        current_queue, changes, conflicts, unchanged, revision, message,
-        next_action.
+        current_queue, changes, conflicts, unchanged, revision,
+        resume_from, message, next_action.
     """
     result = await _exec(
         api.run_revise,
@@ -756,20 +769,29 @@ async def awf_run_revise(
         reason=reason,
         key=key,
         preview=preview,
+        stop_running=stop_running,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         action = result.get("action")
         if action == "preview":
             result["next_action"] = (
                 "Preview only — nothing changed. Review the changes/conflicts, "
-                "then apply with the same queue + key (preview=false). A stage "
-                "must be stopped before the apply."
+                "then apply with the same queue + key (preview=false). A "
+                "running stage is stopped with stop_running=true."
             )
         elif action == "applied":
-            result["next_action"] = (
-                "Queue revised. Continue the run with awf_run_next — the "
-                "revised pipelines take effect at each element's launch."
-            )
+            resume_from = result.get("resume_from") or ""
+            if resume_from:
+                result["next_action"] = (
+                    f"Queue revised; the live unit is stopped. Resume it with "
+                    f"awf_continue (it continues from stage '{resume_from}'), "
+                    "then awf_run_next for the next element."
+                )
+            else:
+                result["next_action"] = (
+                    "Queue revised. Continue the run with awf_run_next — the "
+                    "revised pipelines take effect at each element's launch."
+                )
         elif action == "noop":
             result["next_action"] = (
                 "Nothing changed (already applied or no effective change) — "
