@@ -734,4 +734,42 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # declared-output printf's "TODO %s" tag). The production fix
 # (awf/supervisor.py — _build_pipeline_context effective stage name)
 # carries no TODO id. Same class as above: test identifiers, not debt.
+# ORCH M5.1 (TODO-0143, draft-область ролей): baseline raised
+# 4422 -> 4424 — the unit adds 2 TODO-bearing lines: the module
+# docstring of the new tests/negative/test_role_draft.py (unit reference)
+# and the discard_role_draft docstring in awf/api/roles.py (the
+# trace-vs-delete decision, pointing at the unit). Same class as above:
+# test identifier and unit reference, not debt. files_over_400 stays 64
+# (the new test file is 206 lines — under the bar; awf/api/roles.py was
+# already over it).
+# ORCH M5.2 (TODO-0144, служебный забег создания роли): baseline raised
+# 4424 -> 4454, files_over_400 raised 64 -> 65 — the unit adds 30
+# TODO-bearing lines: the T1/T2 constants + the TODO-0001/0002/0003 fixture
+# and assert use-sites across the hermetic/e2e tests of the new
+# tests/negative/test_service_run.py (module docstring, the
+# AWF_SHIM_PLAN_TODO_ID wording, the run_start/queue fixtures, the
+# "TODO-0003.md" no-side-effect asserts, the e2e candidate/snapshot asserts),
+# the "создай роль-кандидат … TODO" wording in the generated service-pipeline
+# task + the unit TODO template in awf/api/run.py, the SERVICE-RUN-REPORT /
+# service-run.yaml lines in docs/file-bus.md (2) and the service-run tool
+# rows + paragraph in USAGE EN/RU (naming the role-draft candidate). Same
+# class as above: test identifiers and unit references, not debt. The +1
+# file over 400 is tests/negative/test_service_run.py (766 — its test
+# suite), same class as the test_orch_composition_scenarios.py raise above.
+# The production diff (awf/api/run.py, awf/run_state.py,
+# awf/pipeline_engine.py — the service slot + slot-aware downtime) carries
+# no TODO id in code.
+# ORCH M5.3 (TODO-0145, adopt-нормализация + сквозная приёмка): baseline
+# raised 4454 -> 4462 — the new tests/e2e/test_service_role_run.py adds 8
+# TODO-bearing lines: the module-docstring unit reference (TODO-0145),
+# the T1/T2 = "TODO-0001"/"TODO-0002" and SVC_TODO = "TODO-0003"
+# constants, the worker-role "Execute the TODO." stub, the shim
+# plan-TODO docstring + AWF_SHIM_PLAN_TODO_ID env line, and the two
+# SVC_TODO use-sites (the service-unit id assert + the
+# run_service_approve call). Same class as above: test identifiers and
+# unit references, not debt. The adopted-role normalization diff
+# (awf/api/roles.py, awf/api/_results.py, awf/api/__init__.py,
+# awf/cmd_add_role.py, tools/awf.py) and the test_role_draft.py tests
+# carry no TODO id. files_over_400 stays 65 (the new e2e file is 276
+# lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

@@ -29,9 +29,29 @@ from ._log import log as _log
 _TODO_ID_RE = re.compile(r"^TODO-\d{4,}$")
 
 
-def run_file(project_dir: Path) -> Path:
-    """Path of the run state file."""
-    return paths.agentic_dir(project_dir) / "state" / "run.yaml"
+#: ORCH M5.2: the run state slots — file per logical run. "main" is the
+#: main run (run.yaml, the original behavior); "service" is the service
+#: run (service-run.yaml, role creation DURING the main run). The file is
+#: the unit of atomicity: two logical states in one file would break the
+#: byte-for-byte survival of the main run across a service run.
+_RUN_SLOT_FILES = {"main": "run.yaml", "service": "service-run.yaml"}
+
+
+def run_file(project_dir: Path, slot: str = "main") -> Path:
+    """Path of the run state file for the slot (ORCH M5.2).
+
+    ``slot="main"`` (default) — the main run, ``state/run.yaml`` — every
+    pre-M5.2 caller is unchanged. ``slot="service"`` — the service run in
+    its OWN file, ``state/service-run.yaml``: the service flow never opens
+    the main file for writing (see :func:`awf.api.run_service_start`).
+    """
+    try:
+        name = _RUN_SLOT_FILES[slot]
+    except KeyError:
+        raise ValueError(
+            f"unknown run slot {slot!r} — expected 'main' or 'service'"
+        ) from None
+    return paths.agentic_dir(project_dir) / "state" / name
 
 
 def _queue_item_ok(q: object) -> bool:
@@ -324,10 +344,20 @@ def _sanitize_plan_fields(state: dict, logs_dir: Path | None) -> None:
         state["revisions"] = rev_kept
 
 
-def read_run(project_dir: Path, *, logs_dir: Path | None = None) -> dict | None:
+def read_run(
+    project_dir: Path,
+    *,
+    logs_dir: Path | None = None,
+    slot: str = "main",
+) -> dict | None:
     """Read run state. Returns None when no run was ever started or the
-    file is corrupt (non-UTF-8, broken YAML, non-dict root, bad shape)."""
-    f = run_file(project_dir)
+    file is corrupt (non-UTF-8, broken YAML, non-dict root, bad shape).
+
+    ``slot`` (ORCH M5.2) selects the state file — "main" (default, the
+    original behavior) or "service" (the service run's own file). A corrupt
+    service file degrades to "no service run" exactly like a corrupt main
+    file degrades to "no run" (AUD02-06) — the other slot is unaffected."""
+    f = run_file(project_dir, slot=slot)
     if not f.is_file():
         return None
     try:
@@ -378,27 +408,31 @@ def _ensure_lock_file(project_dir: Path) -> None:
         pass  # a concurrent caller created it first
 
 
-def write_run(project_dir: Path, **fields) -> dict:
+def write_run(project_dir: Path, *, slot: str = "main", **fields) -> dict:
     """Merge fields into run state and return the merged dict.
 
     AUD05-05: the read → merge → write runs under an advisory lock so
     concurrent write_run calls (parallel approve/reject, run_next +
     run_finish) cannot lose each other's updates.
+
+    ``slot`` (ORCH M5.2): which state file to merge into — "main" (default)
+    or "service". Both slots share the same advisory lock (one project,
+    one writer at a time), so the two runs cannot interleave mid-write.
     """
     from ._lock import locked
 
     _ensure_lock_file(project_dir)
     with locked(project_dir):
-        state = read_run(project_dir) or {}
+        state = read_run(project_dir, slot=slot) or {}
         state.update(fields)
         atomic_write_text(
-            run_file(project_dir),
+            run_file(project_dir, slot=slot),
             yaml.safe_dump(state, allow_unicode=True, sort_keys=False),
         )
     return state
 
 
-def update_run(project_dir: Path, mutator) -> dict:
+def update_run(project_dir: Path, mutator, *, slot: str = "main") -> dict:
     """Atomic read → mutate → write in ONE lock hold (AUD05-05, rest).
 
     ``write_run`` serializes its own RMW, but callers like
@@ -420,7 +454,7 @@ def update_run(project_dir: Path, mutator) -> dict:
 
     _ensure_lock_file(project_dir)
     with locked(project_dir):
-        state = read_run(project_dir) or {}
+        state = read_run(project_dir, slot=slot) or {}
         new_state = mutator(state)
         if new_state is None:
             new_state = state
@@ -430,7 +464,7 @@ def update_run(project_dir: Path, mutator) -> dict:
                 f"got {type(new_state).__name__}"
             )
         atomic_write_text(
-            run_file(project_dir),
+            run_file(project_dir, slot=slot),
             yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
         )
     return new_state
@@ -476,6 +510,7 @@ def update_run_cas(
     project_dir: Path,
     mutator,
     *,
+    slot: str = "main",
     generation: int | None = None,
     index: int | None = None,
     current: str | None = None,
@@ -497,7 +532,7 @@ def update_run_cas(
 
     _ensure_lock_file(project_dir)
     with locked(project_dir):
-        state = read_run(project_dir)
+        state = read_run(project_dir, slot=slot)
         if state is None or not cas_match(
             state, generation=generation, index=index, current=current
         ):
@@ -511,7 +546,7 @@ def update_run_cas(
                 f"got {type(new_state).__name__}"
             )
         atomic_write_text(
-            run_file(project_dir),
+            run_file(project_dir, slot=slot),
             yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
         )
         return new_state, True
@@ -670,7 +705,7 @@ def record_decision(
     return update_run(project_dir, _mut), result["added"]
 
 
-def run_is_active(project_dir: Path) -> bool:
+def run_is_active(project_dir: Path, *, slot: str = "main") -> bool:
     """RUN10 #1: the single source for the "run (забег) is active" decision.
 
     Every hint and gate that depends on it goes through this one function —
@@ -679,17 +714,21 @@ def run_is_active(project_dir: Path) -> bool:
     ``detect_phase``. The duplicated ``read_run(...).get("active")`` checks
     (and the heavy ``run_brief`` probe on the MCP side) are gone.
 
+    ``slot`` (ORCH M5.2): "main" (default — every pre-M5.2 caller) or
+    "service" (the service run's own state file).
+
     Returns False when no run exists or the file is corrupt (the reader
     degrades to "no run" — same as before).
     """
-    run = read_run(project_dir)
+    run = read_run(project_dir, slot=slot)
     return bool(run and run.get("active"))
 
 
-def clear_run(project_dir: Path) -> None:
-    """Remove the run state file (soft reset)."""
+def clear_run(project_dir: Path, *, slot: str = "main") -> None:
+    """Remove the run state file (soft reset) — for the given slot
+    (ORCH M5.2: the service slot clears service-run.yaml, never run.yaml)."""
     try:
-        run_file(project_dir).unlink()
+        run_file(project_dir, slot=slot).unlink()
     except FileNotFoundError:
         pass
 
@@ -758,18 +797,45 @@ def productive_minutes(state: dict) -> float:
     return max(0.0, elapsed_minutes(state) - downtime_minutes(state))
 
 
+def run_slot_for_todo(project_dir: Path, todo_id: str) -> str:
+    """ORCH M5.2: the state slot (main/service) whose queue owns ``todo_id``.
+
+    The engine's downtime accounting must land in the run that is actually
+    EXECUTING the pipeline, not blindly in the main slot — otherwise a
+    service run's salvage / net-backoff would rewrite the main ``run.yaml``
+    and break its isolation invariant (the main run stays byte-identical
+    through a service run, crash included). A corrupt or absent service file
+    degrades to "no service queue" (the main slot wins). A todo in neither
+    queue (a pipeline launched outside any run) stays on "main" — the
+    pre-M5.2 behavior.
+    """
+    if not todo_id:
+        return "main"
+    svc = read_run(project_dir, slot="service")
+    for q in (svc or {}).get("queue") or []:
+        if isinstance(q, dict) and str(q.get("todo_id", "")) == str(todo_id):
+            return "service"
+    return "main"
+
+
 def add_downtime(
     project_dir: Path,
     seconds: float,
     reason: str = "",
     logs_dir: Path | None = None,
+    slot: str = "main",
 ) -> None:
     """B2: accumulate ``seconds`` into the ACTIVE run's ``downtime_seconds``.
 
     No-op when seconds is not a positive number, when there is no run state
-    (absent or corrupt), or when the run is not active — a pipeline outside
-    a run must not create or touch run.yaml (hard rule: behavior without an
+    (absent or corrupt), or when the run is not active — a pipeline outside a
+    run must not create or touch run.yaml (hard rule: behavior without an
     active run is unchanged).
+
+    ``slot`` (ORCH M5.2): which run's file to accumulate into — "main"
+    (default, every pre-M5.2 caller) or "service" (resolved by the engine
+    via :func:`run_slot_for_todo` when the executing stage belongs to the
+    service run).
 
     The read-then-write is deliberate: ``update_run`` overwrites the file
     with an empty dict when ``read_run`` returns None, which would destroy a
@@ -781,7 +847,7 @@ def add_downtime(
         return
     if secs <= 0:
         return
-    if read_run(project_dir) is None:
+    if read_run(project_dir, slot=slot) is None:
         return
 
     def _mut(state: dict) -> dict:
@@ -794,7 +860,7 @@ def add_downtime(
         state["downtime_seconds"] = current + secs
         return state
 
-    update_run(project_dir, _mut)
+    update_run(project_dir, _mut, slot=slot)
     if logs_dir is not None:
         suffix = f" ({reason})" if reason else ""
         _log(logs_dir, f"B2: downtime +{secs:.0f}s{suffix}")

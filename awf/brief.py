@@ -42,7 +42,7 @@ SETUP_HINT = (
     "`awf_open_project_setup_form` (owner submits) → `awf_confirm_normalized` "
     "→ first TODO (`awf_dispatch_todo`)."
 )
-LIVE_LINE = "Live project: setup chain not needed — continue the working cycle."
+LIVE_LINE = "Live project: continue the working cycle."
 NEW_LINE = "New project (setup chain applies)."
 
 FEEDBACK_LINE = (

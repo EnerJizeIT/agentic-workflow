@@ -17,7 +17,7 @@ Pipeline обменивается сигналами через файлы в `.
 | `done/{todo_id}/` | Архив завершённых TODO (после verify approve) |
 | `handoff/` | Per-stage handoff файлы (`{stage_name}-{todo_id}.md`; legacy `{role}-{todo_id}.md` принимается) |
 | `context/` | Baseline snapshots (SHA, tests, env, untracked) + `CHECKPOINT-{todo}.json` + `RUN-EVIDENCE-{todo}.md` + `VERIFIED-{todo}.sha` + `PIPELINE-{todo}.yaml` (снимок стадий юнита, ORCH M3.3 — continue возобновляет по снимку) |
-| `state/` | `current.yaml` — structured pipeline state; `run.yaml` — автономный забег; `last-kill.json` — последний kill (orphan-предупреждение); `metrics_models_cache.json` — кэш цен моделей |
+| `state/` | `current.yaml` — structured pipeline state; `run.yaml` — автономный забег; `service-run.yaml` — служебный забег создания роли (ORCH M5.2, отдельный файл: основной `run.yaml` от него не страдает); `last-kill.json` — последний kill (orphan-предупреждение); `metrics_models_cache.json` — кэш цен моделей |
 | `logs/` | orchestrator.log, awf-start.out, worker logs; `awf-launch.lease` — lease одного владельца запуска |
 
 ## Сигналы
@@ -39,6 +39,7 @@ Pipeline обменивается сигналами через файлы в `.
 | `RUN-EVIDENCE-{todo}.md` | Supervisor (`awf_approve(evidence=...)`) | context | Независимая проверка approve в забеге: команды, которые реально прогнаны + вердикт (AUD11-03) |
 | `VERIFIED-{todo}.sha` | Supervisor (`awf_approve(verified_sha=...)`) | context | Fingerprint рабочего дерева на момент verify; approve отказывает, если дерево сдвинулось после проверки |
 | `RUN-REPORT-{ts}.md` | Supervisor (`awf_run_finish`) | outbox | Итог забега: очередь, бюджет, rejects, причина стопа |
+| `SERVICE-RUN-REPORT-{ts}.md` | Supervisor (`awf_run_service_finish`) | outbox | Итог служебного забега (ORCH M5.2): роль/кандидат, позиция, причина стопа + снимок основного забега («продолжай основной») |
 
 Запуск: `.agentic/logs/awf-launch.lease` — не сигнал, а lease одного
 владельца запуска: O_EXCL, stale по живости процесса (не по возрасту файла);
@@ -118,6 +119,24 @@ archive_todo → done/{todo_id}/ (inbox + outbox очищены)
 | `goal` / `criteria` | план забега (ORCH M1.1): цель (строка) и критерии (список строк); пишет `awf_run_start`, показаны в `awf_run_status` и RUN-REPORT; в старом run.yaml отсутствуют → читаются как `""` / `[]`, миграции нет |
 | `decisions` | append-only причинная память (ORCH M1.1): `[{ts, kind: approve\|reject, todo_id, reason}]`; approve хранит выжимку evidence ≤200 символов (полный текст — в `context/RUN-EVIDENCE-{todo}.md`); повтор того же (kind, todo_id, reason) дубль не добавляет; пишется только в активном забеге |
 | `revisions` | применённые ревизии состава очереди (ORCH M3.4): `[{ts, key, kind: "revision", reason, changes, generation, resume_from}]`, `changes` = `[{todo_id, from, to}]` (только НЕ начатые элементы); `resume_from` (ORCH M4.1) — стадия, с которой возобновляется остановленный юнит (пустая, если остановка не нужна / живой стадии нет); пишет `awf_run_revise` в том же CAS-записе, что и смена очереди (условие поколения A-13); повтор с тем же `key` — no-op (идемпотентность); в старом run.yaml отсутствует → читается как `[]`, миграции нет |
+
+**Служебный забег (ORCH M5.2).** Тот же набор полей живёт в отдельном
+файле `state/service-run.yaml` (slot `"service"`; все функции `run_state`
+принимают `slot="main"|"service"`, дефолт `"main"`). Служебный забег
+создаёт роль-кандидата во время основного: его очередь — один юнит, а
+основной `run.yaml` не перезаписывается и не завершается (побайтовая
+неприкосновенность — инвариант, покрыт тестом). Движок кладёт простой
+(`add_downtime`) в слот забега, которому принадлежит текущий TODO
+(`run_slot_for_todo`) — salvage/backoff служебного юнита не трогают
+основной файл. Вердикты и решения служебного юнита пишутся в слот
+`"service"`; approve несёт evidence (`RUN-EVIDENCE-{todo}.md`), но сигнал
+`APPROVE-{todo}.ready` пустой — служебный verify не коммитит (кандидат
+остаётся в `roles/draft/` до явного adopt, M5.1). Штатный `awf_approve` /
+`awf_reject` для юнита служебного слота — вежливый отказ с текстом ДО любых
+побочных эффектов (REVIEW-файл не пишется, счётчики и эскалация
+двойного-reject основного не трогаются): путь вердикта —
+`awf_run_service_approve`, отклонение кандидата — `awf_run_service_finish`
++ повторный запуск.
 
 ## Stage prompt injection
 

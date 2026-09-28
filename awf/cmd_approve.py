@@ -26,6 +26,12 @@ def run(args: Any) -> int:
     except api.AwfApiError as e:
         print(str(e))
         return 1
+    if not result.signal_file:
+        # ORCH M5.2 (review fix F1) + A-04: a refusal returned signal_file=""
+        # (service-run unit / a rejection already counted) — the message is
+        # the whole answer; "Approved" would be a lie.
+        print(result.message or "Refused — no APPROVE signal was written.")
+        return 0
     print(f"Approved {result.todo_id}. Pipeline (if waiting) will commit and continue.")
     print(f"Signal: {result.signal_file}")
     if result.verified_sha_file:

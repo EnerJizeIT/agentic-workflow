@@ -802,6 +802,140 @@ async def awf_run_revise(
     return result
 
 
+# ─── Service run (ORCH M5.2): role creation during the main run ─────────
+
+
+async def awf_run_service_start(
+    project_dir: str | None = None,
+    *,
+    slug: str,
+    description: str,
+) -> dict[str, Any]:
+    """Start a SERVICE run — create a role candidate during the main run.
+
+    The service run is its own run in a SEPARATE state file
+    (state/service-run.yaml): a one-unit queue («создай роль <slug> по
+    описанию»). The main state/run.yaml is NOT replaced or finished — after
+    the service run completes or fails the main run is exactly as it was
+    (byte-for-byte, tested). The unit runs the same engine: the generated
+    pipeline (a snapshot of the active composition; the first non-supervisor
+    stage declares the draft candidate as its output, M3.2; verify never
+    commits) launched via the standard start_pipeline with the service TODO
+    pinned. One pipeline per project: while a stage is live the launch is
+    refused before side effects (stop the unit first — awf_kill).
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        slug: Role slug (letters/digits/_/-), e.g. "auditor". The candidate
+            lands at .agentic/roles/draft/<slug>.md.
+        description: The role-creation task text (what the role does).
+
+    Returns:
+        Dict with: action (started/refused), todo_id, slug, pipeline,
+        candidate_path, run_mode, run_id, log_file, main_active,
+        main_position, main_current, message, next_action.
+    """
+    return await _exec(
+        api.run_service_start,
+        project_dir=_resolve_project_dir(project_dir),
+        slug=slug,
+        description=description,
+        background=True,
+    )
+
+
+async def awf_run_service_status(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """One read, two snapshots — the service run and the main run.
+
+    The service run (unit, slug, pipeline, candidate path, position, close
+    reason) plus the main run (position, current) in a single call.
+    Read-only; a corrupt service file degrades to "no service run" (the main
+    run is unaffected).
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: service_active, message, todo_id, slug, pipeline,
+        candidate_path, position, index, current, completed, stop_reason,
+        report_file, main_active, main_position, main_current, next_action.
+    """
+    return await _exec(
+        api.run_service_status,
+        project_dir=_resolve_project_dir(project_dir),
+    )
+
+
+async def awf_run_service_finish(
+    project_dir: str | None = None,
+    *,
+    reason: str = "service unit processed",
+) -> dict[str, Any]:
+    """Close the service run: SERVICE-RUN-REPORT to outbox, mark the service
+    slot inactive, and name the main continuation (awf_run_next /
+    awf_continue) with the main run's snapshot.
+
+    Refused while a pipeline is still live (the service unit in flight) —
+    wait for verify/salvage or awf_kill first (M4.1: this call never kills).
+    Idempotent: an already-closed (or absent) service run is a no-op. The
+    main run.yaml is never written by this flow.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        reason: Why the service run closes (stored in the report).
+
+    Returns:
+        Dict with: action (stopped/refused/noop), slug, pipeline,
+        candidate_path, report_file, main_active, main_position,
+        main_current, message, next_action.
+    """
+    return await _exec(
+        api.run_service_finish,
+        project_dir=_resolve_project_dir(project_dir),
+        reason=reason,
+    )
+
+
+async def awf_run_service_approve(
+    project_dir: str | None = None,
+    *,
+    todo_id: str,
+    evidence: str,
+) -> dict[str, Any]:
+    """Approve the service unit at its verify stage.
+
+    Publishes the signal pair the engine's verify wait accepts in run mode:
+    context/RUN-EVIDENCE-{todo}.md (the independent-verification trace) and
+    inbox/APPROVE-{todo}.ready (an EMPTY marker — the service pipeline never
+    commits, so there is no verified_sha to record). The verdict is recorded
+    in the SERVICE slot only — the main run's diary is untouched. Only the
+    CURRENT unit of an active service run can be approved; evidence is
+    required (a service unit is a run unit).
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+        todo_id: The service unit's id (the one awf_run_service_start
+            returned).
+        evidence: The commands actually run and the verdict, e.g.
+            "pytest -q → 3 passed; verdict: approve".
+
+    Returns:
+        Dict with: todo_id, signal_file, evidence_file, message.
+    """
+    return await _exec(
+        api.run_service_approve,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        evidence=evidence,
+    )
+
+
 # ─── Baseline / rollback ────────────────────────────────────────────────
 
 
@@ -1146,6 +1280,10 @@ async def awf_approve(
     Returns:
         Dict with: todo_id, signal_file (path to APPROVE-*.ready),
         verified_sha_file (when verified_sha matched).
+
+    ORCH M5.2: a service-run unit (queue in state/service-run.yaml) is
+    refused with text — no signal, no verdict, the main run untouched;
+    approve the service unit with awf_run_service_approve instead.
     """
     pd = _resolve_project_dir(project_dir)
     response = await _exec(
@@ -1156,6 +1294,15 @@ async def awf_approve(
         verified_sha=verified_sha,
     )
     if response.get("status") != "ok":
+        return response
+    # ORCH M5.2 (review fix F1) + A-04: refusal paths return
+    # signal_file="" — the message (service-run unit / a rejection already
+    # counted) is the whole answer; "approved — APPROVE signal written"
+    # would be a lie.
+    if not response.get("signal_file"):
+        response["next_action"] = (
+            response.get("message") or "Refused — no APPROVE signal was written."
+        )
         return response
     # SMO: tell weak models to STOP calling approve (dogfood #4: 5x repeat).
     # AUD05-03: the old fixed text promised "approved and committed.
@@ -1232,6 +1379,11 @@ async def awf_reject(
 
     Returns:
         Dict with: todo_id, review_file, next_action.
+
+    ORCH M5.2: a service-run unit (queue in state/service-run.yaml) is
+    refused with text — no REVIEW file, no reject count, the main run
+    untouched; reject the candidate by closing the service run
+    (awf_run_service_finish) and re-issuing awf_run_service_start.
     """
     # AUD08-13: the duplicate validation (todo_id regex, reason.strip()) that
     # lived here is removed — api.reject_commit validates the same way and
@@ -1246,6 +1398,22 @@ async def awf_reject(
     )
     if response.get("status") != "ok":
         return response
+    # ORCH M5.2 (review fix F1): refusal — a service-run unit's verdict is
+    # recorded NOWHERE (review_file=""): the message names the service
+    # path, and "rejected — recorded in the run" would be a lie.
+    if not response.get("review_file"):
+        return {
+            "status": "ok",
+            "todo_id": todo_id,
+            "review_file": "",
+            "rejects": 0,
+            "run_stopped": False,
+            "report_file": "",
+            "reject_files": [],
+            "next_action": (
+                response.get("message") or "Refused — no REVIEW file was written."
+            ),
+        }
     # ORCH M2.3: the run-mode reject hint — in an active run the ONE next
     # step is to close the reject decision (re-plan + retire, or
     # awf_run_finish): the run gate refuses awf_run_next over an open
@@ -1373,6 +1541,10 @@ async def awf_add_role(
     model: str = "",
     from_skill: str = "",
     force: bool = False,
+    draft: bool = False,
+    adopt: str = "",
+    discard: str = "",
+    list_drafts: bool = False,
 ) -> dict[str, Any]:
     """Generate a new role file at .agentic/roles/{name}.md.
 
@@ -1383,6 +1555,27 @@ async def awf_add_role(
     provenance comment. Skill search: project ``.opencode/skills/<name>/``
     first, then global ``~/.config/opencode/skills/<name>/``. An unknown
     skill is an error listing the available skills.
+
+    ORCH M5.1 draft area (candidate isolated until checked):
+    - ``draft=True``: write the candidate to
+      ``.agentic/roles/draft/{name}.md`` — live roles, config and
+      pipeline are NOT touched. ``force`` replaces an existing candidate
+      only (never a live role).
+    - ``list_drafts=True``: list candidates (name + source:
+      ``skill:<name>`` / ``builtin`` / ``template`` / ``file``).
+    - ``adopt="<name>"``: move a candidate to ``.agentic/roles/`` —
+      EXPLICIT refusal when a live role with the same slug exists (awf
+      never overwrites a live role; there is no force for this path).
+      ORCH M5.3: the adopt is also the normalization step — zone
+      analysis is re-run (``analyze_roles_core``) and the BD-31
+      disambiguation addenda refreshed idempotently. Only the BD-31
+      blocks of role files change; config/pipeline and the setup phase
+      are NOT touched (pipeline participation stays a supervisor step).
+    - ``discard="<name>"``: remove a candidate (kept as a trace in
+      ``.agentic/context/``).
+
+    The four draft-area parameters are mutually exclusive — at most one
+    per call; without any of them the behavior is the original create.
 
     Args:
         name: Role slug (e.g. "qa", "reviewer", "auditor"). With
@@ -1395,19 +1588,52 @@ async def awf_add_role(
         from_skill: Skill slug to copy the role content from (e.g.
             "agent-security-auditor").
         force: Overwrite the role file if it already exists (default:
-            refuse — the file is user data).
+            refuse — the file is user data). With ``draft``, replaces
+            the candidate only.
+        draft: Write the candidate to .agentic/roles/draft/ (default:
+            False — live role file, original behavior).
+        adopt: Slug of a draft candidate to move to the live roles
+            (default: "" — not an adopt call).
+        discard: Slug of a draft candidate to remove (default: "" —
+            not a discard call).
+        list_drafts: List draft candidates instead of creating (default:
+            False).
 
     Returns:
-        Dict with: role_name, role_file (path), model.
+        Create: role_name, role_file (path), model. List: drafts (list
+        of {name, source, created, file}). Adopt: role_name, role_file,
+        normalization ({overlaps, addenda, failed} or {error}).
+        Discard: role_name, draft_file, trace_file.
     """
+    modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
+    if modes > 1:
+        return {
+            "status": "error",
+            "error": (
+                "Pick ONE of draft / adopt / discard / list_drafts — "
+                "they are mutually exclusive."
+            ),
+        }
+    resolved = _resolve_project_dir(project_dir)
+    if list_drafts:
+        return await _exec(api.list_role_drafts, project_dir=resolved)
+    if adopt:
+        return await _exec(
+            api.adopt_role_draft, project_dir=resolved, role_name=adopt
+        )
+    if discard:
+        return await _exec(
+            api.discard_role_draft, project_dir=resolved, role_name=discard
+        )
     return await _exec(
         api.add_role,
-        project_dir=_resolve_project_dir(project_dir),
+        project_dir=resolved,
         role_name=name,
         description=description,
         model=model,
         from_skill=from_skill,
         force=force,
+        draft=draft,
     )
 
 

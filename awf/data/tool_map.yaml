@@ -54,6 +54,14 @@ groups:
         when: "revise queue (not-started, by key)"
       - mcp: awf_run_finish
         when: "close the run (report)"
+      - mcp: awf_run_service_start
+        when: "create role during main run"
+      - mcp: awf_run_service_status
+        when: "service + main snapshot"
+      - mcp: awf_run_service_finish
+        when: "close service run (report)"
+      - mcp: awf_run_service_approve
+        when: "approve service unit (evidence)"
       - mcp: awf_approve
         cli: approve
         when: "approve (evidence, sha)"

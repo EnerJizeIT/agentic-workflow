@@ -142,7 +142,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline.py` — поручение стадии | Stage `input`/`output` (относительные пути проекта): execute-промпт несёт task/входы/выходы, движок проверяет объявленный выход (существует + свежий) перед переходом к следующей стадии, лимит повтора — на экземпляр стадии (ORCH M3.2) |
 | `api/pipelines.py` | Named pipelines: write_pipeline / list_pipelines (RUN3 #1) |
 | `api/planning.py` | Increment planning: apply_increment_plan (форма → вариант) |
-| `api/roles.py` | Роли: add_role + zone-анализ для analyze_roles |
+| `api/roles.py` | Роли: add_role (draft-область: кандидаты в `roles/draft/`, adopt/discard/list) + zone-анализ для analyze_roles |
 | `xdg.py` | XDG config dir (~/.config, XDG_CONFIG_HOME) |
 | `_log.py`, `_log_reader.py` | Файловый логгер + чтение логов orchestrator |
 | `_names.py` | Уникальные имена при архивации (reserve_base) |

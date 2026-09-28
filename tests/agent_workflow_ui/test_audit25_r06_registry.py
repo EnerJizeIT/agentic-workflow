@@ -4,7 +4,7 @@
 и доков разъезжались (A-08). Здесь закреплено:
 
 - ``tools/registry.py::TOOLS`` — единственный источник регистрации: его
-  набор имён == ``create_server().list_tools()``, 48 tools, у каждого
+  набор имён == ``create_server().list_tools()``, 52 tools, у каждого
   непустое описание (сверка супервизора 26.09; +awf_run_revise — ORCH M3.4);
 - сигнатуры и docstrings обёрток не изменились (внешний MCP-контракт) —
   выборка 10 инструментов;
@@ -59,9 +59,9 @@ def test_registry_equals_list_tools():
 
     TOOLS = registry.TOOLS
     names = [spec.name for spec in TOOLS]
-    # 48 tools (сверка супервизора 26.09: 47; +awf_run_revise — ORCH M3.4)
-    # и без дублей имён.
-    assert len(names) == 48, f"registry has {len(names)} tools, expected 48"
+    # 52 tools (сверка супервизора 26.09: 47; +awf_run_revise — ORCH M3.4;
+    # +4 awf_run_service_* — ORCH M5.2) и без дублей имён.
+    assert len(names) == 52, f"registry has {len(names)} tools, expected 52"
     assert len(set(names)) == len(names), "duplicate tool names in the registry"
 
     live = asyncio.run(create_server().list_tools())
@@ -71,7 +71,7 @@ def test_registry_equals_list_tools():
         f"registry-only={sorted(set(names) - set(live_names))}, "
         f"server-only={sorted(set(live_names) - set(names))}"
     )
-    assert len(live_names) == 48
+    assert len(live_names) == 52
 
     # У каждого инструмента непустое описание (и у сервера, и в метаданных).
     empty_live = [t.name for t in live if not (t.description or "").strip()]
@@ -81,7 +81,7 @@ def test_registry_equals_list_tools():
 
     # Счётчик для docs-проверки A-08 сходится с составом.
     counts = registry.tool_counts()
-    assert counts["total"] == 48 and counts["total"] == counts["awf"] + counts["ui"]
+    assert counts["total"] == 52 and counts["total"] == counts["awf"] + counts["ui"]
 
 
 # ─── 2. Сигнатуры и docstrings не изменились ─────────────────────────────

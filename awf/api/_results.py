@@ -179,6 +179,59 @@ class AddRoleResult:
 
 
 @dataclass
+class AdoptRoleDraftResult:
+    """Result of :func:`awf.api.adopt_role_draft` (ORCH M5.1 + M5.3).
+
+    ``normalization`` (ORCH M5.3) reports adopt's normalization step: the
+    adopted role joins the team, so zone overlaps are re-analyzed through
+    ``analyze_roles_core`` and the BD-31 disambiguation addenda refreshed.
+    Keys: ``overlaps`` (list of ``{role_a, role_b, zone}``), ``addenda``
+    (roles whose BD-31 block was (re)written), ``failed`` (roles whose
+    addendum write raised OSError). Normalization is best-effort: on a
+    failure it is ``{"error": <message>}`` and the adopt itself stands.
+    """
+
+    role_name: str
+    role_file: str
+    normalization: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class RoleDraftsResult:
+    """Result of :func:`awf.api.list_role_drafts` (ORCH M5.1).
+
+    ``drafts`` is a list of ``{"name", "source", "created", "file"}``
+    dicts — source is ``skill:<name>`` / ``builtin`` / ``template`` from
+    the draft marker, or ``file`` for a hand-placed candidate without one.
+    """
+
+    drafts: list[dict[str, str]]
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DiscardRoleDraftResult:
+    """Result of :func:`awf.api.discard_role_draft` (ORCH M5.1).
+
+    The candidate leaves ``.agentic/roles/draft/`` and is kept as a trace
+    under ``.agentic/context/`` (``trace_file``); ``draft_file`` names the
+    removed candidate.
+    """
+
+    role_name: str
+    draft_file: str
+    trace_file: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class StartResult:
     """Result of :func:`awf.api.start_pipeline` and :func:`awf.api.continue_pipeline`."""
 
@@ -551,6 +604,86 @@ class RunReviseResult:
         return asdict(self)
 
 
+@dataclass
+class ServiceRunResult:
+    """Result of ORCH M5.2 service-run operations
+    (:func:`awf.api.run_service_start` / :func:`awf.api.run_service_finish`).
+
+    ``action`` is one of:
+    - ``started`` — the service unit launched (the main run untouched);
+    - ``stopped`` — the service run closed (``report_file`` = the
+      SERVICE-RUN-REPORT); ``next_action`` names the main continuation
+      (awf_run_next / awf_continue);
+    - ``refused`` — a live pipeline (one per project) / launch failure /
+      the unit still in flight; no side effects (or rolled back);
+    - ``noop`` — no (or already closed) service run to finish.
+
+    ``main_active``/``main_position``/``main_current`` — the MAIN run's
+    snapshot (the service run's answer always shows that the main run
+    survived, with its position).
+    """
+
+    action: str
+    message: str
+    todo_id: str = ""
+    slug: str = ""
+    pipeline: str = ""
+    candidate_path: str = ""
+    run_mode: str = ""
+    run_id: int | None = None
+    log_file: str = ""
+    report_file: str = ""
+    main_active: bool = False
+    main_position: str = ""
+    main_current: str = ""
+    next_action: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ServiceRunStatusResult:
+    """Result of :func:`awf.api.run_service_status` — the service run's
+    snapshot (unit, slug, pipeline, candidate path, position) PLUS the
+    main run's snapshot (position, current) in one read."""
+
+    service_active: bool
+    message: str
+    todo_id: str = ""
+    slug: str = ""
+    pipeline: str = ""
+    candidate_path: str = ""
+    position: str = "0/0"
+    index: int = 0
+    current: str = ""
+    completed: list[str] = field(default_factory=list)
+    stop_reason: str = ""
+    report_file: str = ""
+    main_active: bool = False
+    main_position: str = ""
+    main_current: str = ""
+    next_action: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ServiceRunApproveResult:
+    """Result of :func:`awf.api.run_service_approve` — the approve signal
+    pair for the service unit's verify stage (the verdict is recorded in
+    the SERVICE slot, never the main run's diary)."""
+
+    todo_id: str
+    signal_file: str
+    evidence_file: str
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 __all__ = [
     "InitResult",
     "StatusResult",
@@ -561,6 +694,7 @@ __all__ = [
     "ReportResult",
     "ResetResult",
     "AddRoleResult",
+    "AdoptRoleDraftResult",
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
@@ -573,6 +707,9 @@ __all__ = [
     "RunNextResult",
     "RunFinishResult",
     "RunReviseResult",
+    "ServiceRunResult",
+    "ServiceRunStatusResult",
+    "ServiceRunApproveResult",
     "RestoreResult",
     "UnblockResult",
     "RemoveTodoResult",

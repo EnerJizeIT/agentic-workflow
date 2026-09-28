@@ -675,6 +675,45 @@ class TestAwfAddRole:
                    ).read_text(encoding="utf-8")
         assert "Demo body line." in content
 
+    def test_draft_area_mutually_exclusive(self, mcp_project):
+        result = run(awf.awf_add_role(
+            name="x",
+            project_dir=str(mcp_project),
+            draft=True,
+            list_drafts=True,
+        ))
+        assert result["status"] == "error"
+        assert "Pick ONE" in result["error"]
+
+    def test_draft_list_adopt_discard_dispatch(self, mcp_project):
+        run(awf.awf_add_role(
+            name="free", model="m", project_dir=str(mcp_project), draft=True))
+        run(awf.awf_add_role(
+            name="cand", model="m", project_dir=str(mcp_project), draft=True))
+        result = run(awf.awf_add_role(
+            project_dir=str(mcp_project), list_drafts=True))
+        assert result["status"] == "ok"
+        assert [d["name"] for d in result["drafts"]] == ["cand", "free"]
+        result = run(awf.awf_add_role(
+            project_dir=str(mcp_project), adopt="free"))
+        assert result["status"] == "ok"
+        free = mcp_project / ".agentic" / "roles" / "free.md"
+        assert free.is_file()
+        assert "awf-draft" not in free.read_text(encoding="utf-8")
+        cand = mcp_project / ".agentic" / "roles" / "cand.md"
+        cand.write_text("LIVE\n", encoding="utf-8")
+        result = run(awf.awf_add_role(
+            project_dir=str(mcp_project), adopt="cand"))
+        assert result["status"] == "error"
+        assert "Adopt refused" in result["error"]
+        assert cand.read_text(encoding="utf-8") == "LIVE\n"
+        result = run(awf.awf_add_role(
+            project_dir=str(mcp_project), discard="cand"))
+        assert result["status"] == "ok"
+        assert Path(result["trace_file"]).is_file()
+        assert not (mcp_project / ".agentic" / "roles" / "draft" /
+                    "cand.md").exists()
+
 
 # ─── awf_analyze_roles ──────────────────────────────────────────────────
 

@@ -321,6 +321,42 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
 # ─── approve_commit ─────────────────────────────────────────────────────
 
 
+def _service_unit_refusal(todo_id: str) -> str:
+    """ORCH M5.2 (review fix F1): the refusal text for routing a service-run
+    unit's verdict through the generic approve/reject path.
+
+    The generic path writes the MAIN run's diary (outcomes/decisions),
+    counts rejects there and escalates a double-reject into stop_run of the
+    MAIN run — all wrong for a unit whose queue lives in
+    ``state/service-run.yaml`` (the main run must stay byte-identical
+    through a service run). The refusal is a NOOP with text (doctrine 03:
+    a refusal is not an exception and not a hidden routing) — no signal,
+    no REVIEW file, no verdict, no counter.
+    """
+    return (
+        f"{todo_id} is a service-run unit (its queue lives in "
+        "state/service-run.yaml, not in the main run) — the generic "
+        "approve/reject path writes the MAIN run's diary and must not be "
+        "used for it. Service verdict path: awf_run_service_approve("
+        "evidence=...) approves the unit at its verify stage (verdict "
+        "recorded in the service slot only). To REJECT the candidate: do "
+        "not approve — close the service run (awf_run_service_finish with "
+        "the reason) and re-issue awf_run_service_start with a corrected "
+        "description. No signal, no REVIEW file, no verdict was written; "
+        "the main run was not touched."
+    )
+
+
+def _is_service_unit(project_dir: Path, todo_id: str) -> bool:
+    """ORCH M5.2 (review fix F1): True when ``todo_id`` is owned by the
+    service slot's queue (``run_state.run_slot_for_todo`` == "service").
+    A corrupt or absent service file degrades to False — the main path
+    proceeds (the pre-M5.2 behavior)."""
+    from .. import run_state
+
+    return run_state.run_slot_for_todo(project_dir, todo_id) == "service"
+
+
 def approve_commit(
     project_dir: Path,
     todo_id: str,
@@ -360,6 +396,17 @@ def approve_commit(
         raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # ORCH M5.2 (review fix F1): a service-run unit's verdict goes through
+    # the service path only — refused BEFORE any side effect (no evidence
+    # file, no fingerprint, no APPROVE signal, no diary entry in the MAIN
+    # slot).
+    if _is_service_unit(project_dir, todo_id):
+        return ApproveResult(
+            todo_id=todo_id,
+            signal_file="",
+            message=_service_unit_refusal(todo_id),
+        )
 
     from ..run_state import read_run
 
@@ -580,6 +627,18 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         raise AwfApiError("reason is required (what to fix)")
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # ORCH M5.2 (review fix F1): a service-run unit is NOT in the main
+    # queue — routing its reject through the generic path would count
+    # rejects in the MAIN run and escalate a double-reject into stop_run
+    # of the main run. Refused BEFORE any side effect (no REVIEW file, no
+    # count, no escalation) — the verdict belongs to the service slot.
+    if _is_service_unit(project_dir, todo_id):
+        return RejectResult(
+            todo_id=todo_id,
+            review_file="",
+            message=_service_unit_refusal(todo_id),
+        )
 
     outbox = paths.outbox(project_dir)
     outbox.mkdir(parents=True, exist_ok=True)
