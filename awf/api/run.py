@@ -1334,7 +1334,14 @@ def run_revise(
     - the applied revision is recorded in the run state (state/run.yaml,
       ``revisions``: ``{ts, key, kind: "revision", reason, changes,
       generation, resume_from}`` — the decisions' path) in the SAME CAS
-      write as the queue change.
+      write as the queue change. The record's ``generation`` is the
+      generation the revision was applied AGAINST (the CAS identity).
+    - ORCH M6.3: an applied revision moves the run to a new CYCLE — the
+      queue is a new plan, so the state's ``generation`` is bumped in the
+      same CAS write (the record keeps the pre-bump value, see above).
+      Approvals published for the pre-revision generation are stale: the
+      commit gate refuses them (M2.1 binding, binding_refusal) and the
+      supervisor re-verifies and re-approves on the current cycle.
     """
     project_dir = _require_run_project(project_dir)
     requested = _validate_queue(queue)
@@ -1518,6 +1525,18 @@ def run_revise(
             for q in st.get("queue") or []:
                 if isinstance(q, dict) and str(q.get("todo_id", "")) == ch["todo_id"]:
                     q["pipeline"] = ch["to"]
+        # ORCH M6.3 (seam: binding×revision): a revision changes the run's
+        # PLAN — the queue the run continues with is new, so the run moves
+        # to a new cycle (the same bump a force-restart gets in run_start).
+        # Without it, an approval published for the pre-revision
+        # generation (M2.1 binding) survives the revision and unlocks the
+        # commit the revision was meant to invalidate: binding_refusal
+        # compares the binding's generation with the CURRENT one and
+        # documents the revised-run refusal, but nothing ever moved the
+        # current generation. The bump and the queue change are one CAS
+        # write; the revision record keeps `gen` — the generation the
+        # revision was applied AGAINST (the CAS identity).
+        st["generation"] = run_state.generation_of(st) + 1
         run_state.append_revision(
             st, key_clean, reason_clean, changes, gen, resume_from=resume_from
         )
