@@ -772,4 +772,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # awf/cmd_add_role.py, tools/awf.py) and the test_role_draft.py tests
 # carry no TODO id. files_over_400 stays 65 (the new e2e file is 276
 # lines — under the bar).
+# ORCH M6.2 (TODO-0147, мутации по инвариантам M1–M5): baseline raised
+# 4462 -> 4465 — the unit adds 3 TODO-bearing lines, all in the mutation
+# lists: the "ORCH M6.2 (TODO-0147)" section header in
+# scripts/mutations.txt (1) and in scripts/mutations-neg5.txt (1) plus
+# the "TODO без контрактного блока" wording in the M2.3 fallback-mutant
+# comment of scripts/mutations-neg5.txt (1). Same class as above: unit
+# references and mutant comments, not debt. files_over_400 stays 65 (the
+# unit touches no .py file).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

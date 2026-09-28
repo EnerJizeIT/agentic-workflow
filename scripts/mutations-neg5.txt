@@ -66,3 +66,50 @@ awf/api/pipeline.py @@     elif run_active and not evidence_file.is_file(): @@  
 # A-04: reject записан раньше → approve НЕ публикует APPROVE-сигнал
 # (конфликт verdict'ов). Мутация >= 1 → >= 2 снимает защиту.
 awf/api/pipeline.py @@             if int(rejects_map.get(todo_id, 0) or 0) >= 1: @@             if int(rejects_map.get(todo_id, 0) or 0) >= 2: @@ python3 -m pytest tests/negative/test_audit25_a04_verdict_signal.py::test_reject_then_approve_leaves_no_approve_signal -q
+
+# ORCH M6.2 (TODO-0147): мутации по инвариантам M1–M5 (ORCH-волны).
+# Те же строки, что и в mutations.txt (база CI), плюс добор по
+# подзонам: CAS/очистка служебного слота, свежесть выходов, fallback
+# снимка плана доказательств.
+
+# M2.1 (binding_refusal): устаревшее поколение забега не разблокирует
+# коммит. Мутация != → == пропускает approve мёртвого поколения.
+awf/commit_plan.py @@ if gen != current_gen: @@ if gen == current_gen: @@ python3 -m pytest tests/negative/test_approve_binding.py::test_approve_refused_on_stale_generation -q
+
+# ORCH M5.2 (service-слот, изоляция): служебный забег живёт в своём
+# файле, основной run.yaml побайто неприкосновенен. Мутация маппинга
+# слотов льёт служебное состояние в основной run.yaml.
+awf/run_state.py @@ _RUN_SLOT_FILES = {"main": "run.yaml", "service": "service-run.yaml"} @@ _RUN_SLOT_FILES = {"main": "run.yaml", "service": "run.yaml"} @@ python3 -m pytest tests/negative/test_service_run.py::test_service_run_keeps_main_run_intact -q
+
+# ORCH M5.2 (service-слот, CAS): «inactive → active» проверяется и
+# пишется в одном лок-окне. Мутация инвертирует guard: конкурентный
+# проигравший затирает состояние победителя вместо отката.
+awf/api/run.py @@ if st.get("active"): @@ if not st.get("active"): @@ python3 -m pytest tests/negative/test_service_run.py::test_concurrent_service_start_rollback_keeps_winner_state -q
+
+# ORCH M5.2 (service-слот, очистка): откат проваленного запуска чистит
+# служебный слот. Мутация чистит СЛУЖЕБНЫЙ → ОСНОВНОЙ забег.
+awf/api/run.py @@ run_state.clear_run(project_dir, slot="service") @@ run_state.clear_run(project_dir, slot="main") @@ python3 -m pytest tests/negative/test_service_run.py::test_service_start_rolls_back_on_launch_failure -q
+
+# ORCH M5.3 (adopt-конфликт): конфликт slug с живой ролью — явный отказ,
+# awf никогда не затирает live role. Мутация инвертирует условие:
+# конфликт adopt'ится, чистый adopt — откажется.
+awf/api/roles.py @@ if target.exists(): @@ if not target.exists(): @@ python3 -m pytest tests/negative/test_role_draft.py::test_adopt_refuses_name_conflict -q
+
+# ORCH M4.2 (stall-порог): тихая стадия короче порога — без
+# предупреждения. Мутация < → > предупреждает про тихую (5 < 30) и
+# прячет застрявшую (95 > 30).
+awf/stall_detect.py @@ if minutes < threshold: @@ if minutes > threshold: @@ python3 -m pytest tests/negative/test_run_progress_surfaces.py::TestStalledStageBrief::test_brief_warns_about_stalled_stage -q
+
+# ORCH M3.2 (свежесть объявленных выходов): выход старше старта стадии —
+# stale, не работа стадии. Мутация < → > засчитывает остаток предыдущей
+# стадии работой текущей.
+awf/pipeline_engine.py @@ if mtime < int(stage_start_wall): @@ if mtime > int(stage_start_wall): @@ python3 -m pytest tests/negative/test_service_run.py::test_engine_freshness_check_rejects_stale_candidate -q
+
+# ORCH M3.4 (идемпотентность ключа ревизии): повтор с тем же ключом —
+# no-op. Мутация инвертирует guard: ПЕРВОЕ применение становится no-op.
+awf/api/run.py @@ if existing is not None: @@ if existing is None: @@ python3 -m pytest tests/negative/test_run_revise.py::test_revise_is_idempotent_by_key -q
+
+# M2.3 (fallback снимка плана доказательств): TODO без контрактного
+# блока — пустой план + note, объясняющий почему. Мутация обнуляет
+# note: surface не может объяснить пустой план.
+awf/api/run.py @@ "note": "no contract block — the unit declares no verify commands", @@ "note": "", @@ python3 -m pytest tests/negative/test_run_evidence_plan.py::test_launch_without_contract_records_empty_plan_with_note -q
