@@ -179,6 +179,38 @@ class AddRoleResult:
 
 
 @dataclass
+class RoleDraftsResult:
+    """Result of :func:`awf.api.list_role_drafts` (ORCH M5.1).
+
+    ``drafts`` is a list of ``{"name", "source", "created", "file"}``
+    dicts — source is ``skill:<name>`` / ``builtin`` / ``template`` from
+    the draft marker, or ``file`` for a hand-placed candidate without one.
+    """
+
+    drafts: list[dict[str, str]]
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DiscardRoleDraftResult:
+    """Result of :func:`awf.api.discard_role_draft` (ORCH M5.1).
+
+    The candidate leaves ``.agentic/roles/draft/`` and is kept as a trace
+    under ``.agentic/context/`` (``trace_file``); ``draft_file`` names the
+    removed candidate.
+    """
+
+    role_name: str
+    draft_file: str
+    trace_file: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class StartResult:
     """Result of :func:`awf.api.start_pipeline` and :func:`awf.api.continue_pipeline`."""
 

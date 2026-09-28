@@ -339,6 +339,18 @@ Created: ./.agentic/roles/security-audit.md
   (content copied from skill 'agent-security-auditor')
 ```
 
+**Role draft area** — create a role candidate without touching the live
+team: `--draft` writes it to `.agentic/roles/draft/<name>.md` (live roles,
+config and the pipeline stay as they were; the candidate carries a source
+marker: skill / builtin / template). List candidates with `--list-drafts`
+(name + source, a hand-placed file lists as `file`), adopt one with
+`--adopt <name>` — a name conflict with a live role is an explicit
+refusal, awf never overwrites a live role — and remove one with
+`--discard <name>` (the candidate is kept as a trace in
+`.agentic/context/`). MCP: `awf_add_role(name, draft=True)`,
+`awf_add_role(list_drafts=True)`, `awf_add_role(adopt=...)`,
+`awf_add_role(discard=...)` — one action per call.
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -638,7 +650,7 @@ for every replan/split goes into the run report/note.
 ### Roles & Config
 | Tool | What it does |
 |---|---|
-| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`) |
+| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); draft area: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
 | `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop |

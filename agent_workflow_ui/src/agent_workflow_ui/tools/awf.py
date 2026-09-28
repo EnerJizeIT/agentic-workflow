@@ -1373,6 +1373,10 @@ async def awf_add_role(
     model: str = "",
     from_skill: str = "",
     force: bool = False,
+    draft: bool = False,
+    adopt: str = "",
+    discard: str = "",
+    list_drafts: bool = False,
 ) -> dict[str, Any]:
     """Generate a new role file at .agentic/roles/{name}.md.
 
@@ -1383,6 +1387,22 @@ async def awf_add_role(
     provenance comment. Skill search: project ``.opencode/skills/<name>/``
     first, then global ``~/.config/opencode/skills/<name>/``. An unknown
     skill is an error listing the available skills.
+
+    ORCH M5.1 draft area (candidate isolated until checked):
+    - ``draft=True``: write the candidate to
+      ``.agentic/roles/draft/{name}.md`` — live roles, config and
+      pipeline are NOT touched. ``force`` replaces an existing candidate
+      only (never a live role).
+    - ``list_drafts=True``: list candidates (name + source:
+      ``skill:<name>`` / ``builtin`` / ``template`` / ``file``).
+    - ``adopt="<name>"``: move a candidate to ``.agentic/roles/`` —
+      EXPLICIT refusal when a live role with the same slug exists (awf
+      never overwrites a live role; there is no force for this path).
+    - ``discard="<name>"``: remove a candidate (kept as a trace in
+      ``.agentic/context/``).
+
+    The four draft-area parameters are mutually exclusive — at most one
+    per call; without any of them the behavior is the original create.
 
     Args:
         name: Role slug (e.g. "qa", "reviewer", "auditor"). With
@@ -1395,19 +1415,51 @@ async def awf_add_role(
         from_skill: Skill slug to copy the role content from (e.g.
             "agent-security-auditor").
         force: Overwrite the role file if it already exists (default:
-            refuse — the file is user data).
+            refuse — the file is user data). With ``draft``, replaces
+            the candidate only.
+        draft: Write the candidate to .agentic/roles/draft/ (default:
+            False — live role file, original behavior).
+        adopt: Slug of a draft candidate to move to the live roles
+            (default: "" — not an adopt call).
+        discard: Slug of a draft candidate to remove (default: "" —
+            not a discard call).
+        list_drafts: List draft candidates instead of creating (default:
+            False).
 
     Returns:
-        Dict with: role_name, role_file (path), model.
+        Create: role_name, role_file (path), model. List: drafts (list
+        of {name, source, created, file}). Adopt: role_name, role_file.
+        Discard: role_name, draft_file, trace_file.
     """
+    modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
+    if modes > 1:
+        return {
+            "status": "error",
+            "error": (
+                "Pick ONE of draft / adopt / discard / list_drafts — "
+                "they are mutually exclusive."
+            ),
+        }
+    resolved = _resolve_project_dir(project_dir)
+    if list_drafts:
+        return await _exec(api.list_role_drafts, project_dir=resolved)
+    if adopt:
+        return await _exec(
+            api.adopt_role_draft, project_dir=resolved, role_name=adopt
+        )
+    if discard:
+        return await _exec(
+            api.discard_role_draft, project_dir=resolved, role_name=discard
+        )
     return await _exec(
         api.add_role,
-        project_dir=_resolve_project_dir(project_dir),
+        project_dir=resolved,
         role_name=name,
         description=description,
         model=model,
         from_skill=from_skill,
         force=force,
+        draft=draft,
     )
 
 

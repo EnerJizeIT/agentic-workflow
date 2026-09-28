@@ -734,4 +734,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # declared-output printf's "TODO %s" tag). The production fix
 # (awf/supervisor.py — _build_pipeline_context effective stage name)
 # carries no TODO id. Same class as above: test identifiers, not debt.
+# ORCH M5.1 (TODO-0143, draft-область ролей): baseline raised
+# 4422 -> 4424 — the unit adds 2 TODO-bearing lines: the module
+# docstring of the new tests/negative/test_role_draft.py (unit reference)
+# and the discard_role_draft docstring in awf/api/roles.py (the
+# trace-vs-delete decision, pointing at the unit). Same class as above:
+# test identifier and unit reference, not debt. files_over_400 stays 64
+# (the new test file is 206 lines — under the bar; awf/api/roles.py was
+# already over it).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

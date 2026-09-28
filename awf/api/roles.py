@@ -19,7 +19,12 @@ from .._atomic import atomic_write_text
 from ..xdg import xdg_config_home
 from ._errors import AwfApiError
 from ._helpers import require_agentic
-from ._results import AddRoleResult, AnalyzeRolesResult
+from ._results import (
+    AddRoleResult,
+    AnalyzeRolesResult,
+    DiscardRoleDraftResult,
+    RoleDraftsResult,
+)
 from ._templates import _ROLE_TEMPLATE
 
 log = logging.getLogger(__name__)
@@ -27,6 +32,18 @@ log = logging.getLogger(__name__)
 # ─── add_role ───────────────────────────────────────────────────────────
 
 _SKILL_FILENAME = "SKILL.md"
+
+# ORCH M5.1: draft area — role candidates isolated from live roles until
+# checked. A candidate is ``roles/draft/<slug>.md``; the first line is a
+# machine marker that records its source (``skill:<name>`` / ``builtin`` /
+# ``template``). A hand-placed candidate without the marker lists as
+# ``file``. Live ``roles/*.md``, config and the pipeline are never touched
+# by the draft path, and ``adopt_role_draft`` refuses a slug conflict with
+# a live role — awf never overwrites a live role.
+_DRAFT_DIRNAME = "draft"
+_DRAFT_MARKER_RE = re.compile(
+    r"^<!-- awf-draft source=(?P<source>[^ >]+) created=(?P<created>\S+) -->[ \t]*\n?"
+)
 
 
 def _skill_roots(project_dir: Path) -> list[Path]:
@@ -132,6 +149,7 @@ def add_role(
     model: str = "",
     from_skill: str = "",
     force: bool = False,
+    draft: bool = False,
 ) -> AddRoleResult:
     """Generate a new role at ``.agentic/roles/{role_name}.md``.
 
@@ -154,6 +172,15 @@ def add_role(
     RUN3 #3: an empty ``role_name`` together with ``from_skill`` takes the
     skill name as the role name; an empty ``role_name`` without it is an
     error as before.
+
+    ORCH M5.1: ``draft=True`` writes the candidate to
+    ``.agentic/roles/draft/{role_name}.md`` instead — the live roles,
+    config and pipeline files are not touched, and the file carries the
+    ``awf-draft`` source marker on its first line (see
+    :func:`list_role_drafts` / :func:`adopt_role_draft` /
+    :func:`discard_role_draft`). An existing candidate is refused without
+    ``force`` like a live role file (``force`` replaces the candidate
+    only — never a live role).
     """
     # RUN3 #3: from_skill is public input — slug-validated first, because
     # it also supplies the default role name.
@@ -186,13 +213,17 @@ def add_role(
     require_agentic(project_dir)
 
     roles_dir = project_dir / ".agentic" / "roles"
-    roles_dir.mkdir(parents=True, exist_ok=True)
-    role_file = roles_dir / f"{role_name}.md"
+    # ORCH M5.1: draft candidates live in roles/draft/ — live roles,
+    # config and the pipeline are not touched by the draft path.
+    target_dir = roles_dir / _DRAFT_DIRNAME if draft else roles_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    role_file = target_dir / f"{role_name}.md"
     # AUD06-06: defense in depth — even a slug that passed validation must
-    # resolve back inside roles/ (guards against future validation drift).
-    if not role_file.resolve().is_relative_to(roles_dir.resolve()):
+    # resolve back inside the target dir (guards against future
+    # validation drift).
+    if not role_file.resolve().is_relative_to(target_dir.resolve()):
         raise AwfApiError(
-            f"Invalid role name {role_name!r}: resolves outside .agentic/roles/."
+            f"Invalid role name {role_name!r}: resolves outside the roles area."
         )
 
     if skill_name:
@@ -206,6 +237,7 @@ def add_role(
             f"<!-- copied from skill `{skill_name}` ({skill_file}) "
             f"on {date.today().isoformat()} -->\n{body}\n"
         )
+        source = f"skill:{skill_name}"
     else:
         builtin = _builtin_role_template(role_name)
         if builtin is not None:
@@ -214,6 +246,7 @@ def add_role(
             # empty placeholder (the supervisor strategy works in other
             # projects, not only in this repo).
             content = builtin.read_text(encoding="utf-8")
+            source = "builtin"
         else:
             if not model:
                 model = "<set-me-in-.agentic/config.yaml>"
@@ -222,10 +255,21 @@ def add_role(
                 description=description or "new role",
                 model=model,
             )
+            source = "template"
+
+    # ORCH M5.1: the draft candidate records its source on the first line
+    # so list_role_drafts can report it; live role files carry no marker.
+    if draft:
+        content = (
+            f"<!-- awf-draft source={source} "
+            f"created={date.today().isoformat()} -->\n{content}"
+        )
 
     # AUD06-07: an existing role file is user data (hand-edited instructions)
     # — silently replacing it lost it without a trace or a backup. Refuse;
     # the caller edits the file instead (or passes force to overwrite).
+    # For a draft candidate, force replaces the candidate — never a live
+    # role (that path is adopt_role_draft's, and it has no force at all).
     if role_file.exists() and not force:
         raise AwfApiError(
             f"Role file already exists: {role_file} — edit it in place "
@@ -237,6 +281,167 @@ def add_role(
         role_name=role_name,
         role_file=str(role_file),
         model=model if not skill_name else "",
+    )
+
+
+# ─── Role draft area (ORCH M5.1) ────────────────────────────────────────
+#
+# Role candidates are isolated in .agentic/roles/draft/ until checked:
+# list_role_drafts reports them (name + source), adopt_role_draft moves a
+# candidate to the live roles area (refusing a slug conflict with a live
+# role), discard_role_draft removes it (kept as a trace in .agentic/
+# context/ — a discarded candidate may be hand-written content that cannot
+# be regenerated, and the context/ area already holds awf's traces).
+
+
+def _validate_draft_slug(role_name: str) -> str:
+    """Slug-validate a draft slug (public input from MCP/CLI).
+
+    Same rules as add_role's role_name (AUD06-06) — a draft slug is a
+    future role name, so it must be one already.
+    """
+    slug = role_name.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", slug):
+        raise AwfApiError(
+            f"Invalid role name {role_name!r}: use lowercase letters, digits, "
+            "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
+        )
+    return slug
+
+
+def _draft_path(project_dir: Path, slug: str) -> Path:
+    return project_dir / ".agentic" / "roles" / _DRAFT_DIRNAME / f"{slug}.md"
+
+
+def _draft_marker(content: str) -> tuple[str, str]:
+    """Parse the first-line marker → (source, created); ("file", "") if absent."""
+    m = _DRAFT_MARKER_RE.match(content)
+    if not m:
+        return "file", ""
+    return m.group("source"), m.group("created")
+
+
+def _strip_draft_marker(content: str) -> str:
+    """Drop the first-line awf-draft marker (adopted roles look regular).
+
+    A skill-sourced candidate keeps its own provenance comment — that one
+    is the second line and stays.
+    """
+    return _DRAFT_MARKER_RE.sub("", content, count=1)
+
+
+def _available_draft_names(project_dir: Path) -> list[str]:
+    draft_dir = project_dir / ".agentic" / "roles" / _DRAFT_DIRNAME
+    if not draft_dir.is_dir():
+        return []
+    return sorted(f.stem for f in draft_dir.glob("*.md") if f.is_file())
+
+
+def list_role_drafts(project_dir: Path) -> RoleDraftsResult:
+    """List role candidates in ``.agentic/roles/draft/`` (ORCH M5.1).
+
+    Returns one ``{"name", "source", "created", "file"}`` dict per
+    candidate. ``source`` comes from the draft marker written by
+    :func:`add_role` (``skill:<name>`` / ``builtin`` / ``template``); a
+    hand-placed file without the marker lists as ``file`` with an empty
+    ``created``. An absent or empty draft area yields ``drafts=[]``.
+    """
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    drafts: list[dict[str, str]] = []
+    for slug in _available_draft_names(project_dir):
+        path = _draft_path(project_dir, slug)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            source, created = "file", ""
+        else:
+            source, created = _draft_marker(content)
+        drafts.append(
+            {
+                "name": slug,
+                "source": source,
+                "created": created,
+                "file": str(path),
+            }
+        )
+    return RoleDraftsResult(drafts=drafts)
+
+
+def adopt_role_draft(project_dir: Path, role_name: str) -> AddRoleResult:
+    """Move a draft candidate into the live roles area (ORCH M5.1).
+
+    ``roles/draft/{slug}.md`` becomes ``roles/{slug}.md`` (the awf-draft
+    marker line is stripped) and the candidate is removed. A slug that
+    already has a live role is an EXPLICIT refusal — awf never
+    overwrites a live role, and there is deliberately no force for this
+    path: resolve the conflict (rename or discard one of the two) first.
+    """
+    slug = _validate_draft_slug(role_name)
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    draft = _draft_path(project_dir, slug)
+    if not draft.is_file():
+        available = ", ".join(_available_draft_names(project_dir)) or "(none)"
+        raise AwfApiError(
+            f"Draft role {slug!r} not found in .agentic/roles/draft/. "
+            f"Available drafts: {available}."
+        )
+
+    roles_dir = project_dir / ".agentic" / "roles"
+    target = roles_dir / f"{slug}.md"
+    if target.exists():
+        raise AwfApiError(
+            f"Adopt refused: live role {slug!r} already exists at {target}. "
+            "awf never overwrites a live role — rename or discard the "
+            "draft (discard_role_draft / awf add-role --discard), or "
+            "remove the live role, then adopt again."
+        )
+
+    content = _strip_draft_marker(draft.read_text(encoding="utf-8"))
+    atomic_write_text(target, content)
+    draft.unlink()
+    return AddRoleResult(role_name=slug, role_file=str(target), model="")
+
+
+def discard_role_draft(project_dir: Path, role_name: str) -> DiscardRoleDraftResult:
+    """Remove a draft candidate, keeping it as a trace in context/ (ORCH M5.1).
+
+    The candidate leaves ``roles/draft/`` and lands in
+    ``.agentic/context/role-draft-{slug}-{YYYYMMDD}.md`` (same-day
+    collisions get a ``-2``/``-3`` suffix). Decision (TODO-0143): keep
+    the trace, not delete — a discarded candidate may be hand-written
+    content that cannot be regenerated, and context/ already holds awf's
+    one-way artifacts (BASELINE-*, GATES-*, DONE-*).
+    """
+    slug = _validate_draft_slug(role_name)
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    draft = _draft_path(project_dir, slug)
+    if not draft.is_file():
+        available = ", ".join(_available_draft_names(project_dir)) or "(none)"
+        raise AwfApiError(
+            f"Draft role {slug!r} not found in .agentic/roles/draft/. "
+            f"Available drafts: {available}."
+        )
+
+    context_dir = project_dir / ".agentic" / "context"
+    stem = f"role-draft-{slug}-{date.today():%Y%m%d}"
+    trace = context_dir / f"{stem}.md"
+    counter = 2
+    while trace.exists():
+        trace = context_dir / f"{stem}-{counter}.md"
+        counter += 1
+
+    atomic_write_text(trace, draft.read_text(encoding="utf-8"))
+    draft.unlink()
+    return DiscardRoleDraftResult(
+        role_name=slug,
+        draft_file=str(draft),
+        trace_file=str(trace),
     )
 
 
@@ -641,8 +846,11 @@ def analyze_roles(
 
 __all__ = [
     "add_role",
+    "adopt_role_draft",
     "analyze_roles",
     "analyze_roles_core",
     "AnalyzeData",
     "AnalyzeError",
+    "discard_role_draft",
+    "list_role_drafts",
 ]

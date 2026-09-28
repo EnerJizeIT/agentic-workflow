@@ -288,8 +288,16 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
-    p_add_role = sub.add_parser("add-role", help="Generate a new role template")
-    p_add_role.add_argument("name")
+    p_add_role = sub.add_parser(
+        "add-role",
+        help="Generate a new role template (or manage the draft area)",
+    )
+    p_add_role.add_argument(
+        "name",
+        nargs="?",
+        default="",
+        help="Role slug (omit with --list-drafts / --adopt / --discard)",
+    )
     p_add_role.add_argument("--description", default="")
     p_add_role.add_argument("--model", default="")
     p_add_role.add_argument(
@@ -303,7 +311,34 @@ def _build_parser():
     p_add_role.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite the role file if it already exists",
+        help="Overwrite the role file if it already exists "
+        "(for --draft: replace the candidate)",
+    )
+    p_add_role.add_argument(
+        "--draft",
+        action="store_true",
+        help="Write the candidate to .agentic/roles/draft/ instead of the "
+        "live roles (live roles, config and pipeline stay untouched)",
+    )
+    p_add_role.add_argument(
+        "--adopt",
+        dest="adopt",
+        metavar="NAME",
+        default="",
+        help="Move a draft candidate to .agentic/roles/ (refuses a name "
+        "conflict with a live role — awf never overwrites live roles)",
+    )
+    p_add_role.add_argument(
+        "--discard",
+        dest="discard",
+        metavar="NAME",
+        default="",
+        help="Remove a draft candidate (kept as a trace in .agentic/context/)",
+    )
+    p_add_role.add_argument(
+        "--list-drafts",
+        action="store_true",
+        help="List draft candidates: name, source, created, file",
     )
     p_add_role.add_argument(
         "--project-dir",

@@ -497,7 +497,7 @@ reject'ы, причина остановки) и предложенный сле
 ### Роли и конфиг
 | Tool | Что делает |
 |---|---|
-| `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`) |
+| `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`); черновики: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Детекция перекрытий зон ролей |
 | `awf_check_model_config` | Валидация моделей в config.yaml vs opencode.json |
 | `awf_feedback` | Отчёт bug/feature о трении с awf на стол владельца |
@@ -514,6 +514,18 @@ $ awf add-role security-audit --from-skill agent-security-auditor
 Created: ./.agentic/roles/security-audit.md
   (content copied from skill 'agent-security-auditor')
 ```
+
+**Черновик роли** — кандидат без правки живой команды: `--draft`
+кладёт его в `.agentic/roles/draft/<name>.md` (живые роли, config и
+pipeline не изменяются; у кандидата — маркер источника: скилл /
+встроенный шаблон / шаблон). Список кандидатов: `--list-drafts`
+(имя + источник; рукописный файл без маркера — `file`). Принять:
+`--adopt <name>` — конфликт имени с живой ролью — явный отказ, awf
+никогда не перезаписывает живую роль. Убрать: `--discard <name>`
+(кандидат сохраняется как след в `.agentic/context/`). MCP:
+`awf_add_role(name, draft=True)`, `awf_add_role(list_drafts=True)`,
+`awf_add_role(adopt=...)`, `awf_add_role(discard=...)` — одно действие
+за вызов.
 
 ### UI (формы)
 | Tool | Что делает |

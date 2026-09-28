@@ -16,7 +16,7 @@ Layout:
                      list_orphans, remove_orphans
 - ``pipeline``     — start_pipeline, continue_pipeline, create_baseline,
                      rollback, approve_commit
-- ``roles``        — add_role, analyze_roles
+- ``roles``        — add_role (incl. draft area: adopt/discard/list), analyze_roles
 - ``setup``        — apply_project_setup (project-setup form materialization)
 - ``dispatch``     — dispatch_todo (atomic TODO + baseline + signal)
 - ``context``      — load_supervisor_context (aggregate bootstrap payload),
@@ -48,6 +48,7 @@ from ._results import (
     ApplyProjectSetupResult,
     ApproveResult,
     BaselineResult,
+    DiscardRoleDraftResult,
     DispatchTodoResult,
     InitResult,
     ListPipelinesResult,
@@ -57,6 +58,7 @@ from ._results import (
     ResetResult,
     RestoreResult,
     RetireTodoResult,
+    RoleDraftsResult,
     RollbackResult,
     RunFinishResult,
     RunNextResult,
@@ -99,7 +101,13 @@ from .pipeline import (
 )
 from .pipelines import list_pipelines, write_pipeline
 from .planning import apply_increment_plan
-from .roles import add_role, analyze_roles
+from .roles import (
+    add_role,
+    adopt_role_draft,
+    analyze_roles,
+    discard_role_draft,
+    list_role_drafts,
+)
 from .run import (
     run_brief,
     run_finish,
@@ -136,6 +144,8 @@ __all__ = [
     "ReportResult",
     "ResetResult",
     "AddRoleResult",
+    "DiscardRoleDraftResult",
+    "RoleDraftsResult",
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
@@ -197,7 +207,10 @@ __all__ = [
     "run_is_active",
     # Roles
     "add_role",
+    "adopt_role_draft",
     "analyze_roles",
+    "discard_role_draft",
+    "list_role_drafts",
     # Project-setup materialization
     "apply_project_setup",
     # TODO dispatch + supervisor context (dogfood-2 automation)
