@@ -31,6 +31,9 @@ Findings covered:
   вторая половина (предсуществующий сигнал не трогается)
 - test_concurrent_run_next_still_one_owner — A-13: конкурентность и
   idempotency существующих путей не ослаблены новым условием
+- test_reused_pid_file_is_not_a_running_pipeline — TODO-0153: pid из
+  PID-файла, переиспользованный живым awf-процессом ДРУГОГО проекта,
+  не считается нашим пайплайном (argv-идентичность + --project-dir)
 """
 from __future__ import annotations
 
@@ -234,6 +237,67 @@ def test_foreground_failure_keeps_preexisting_ready(tmp_git_repo, monkeypatch):
         "содержимое предсуществующего .ready не меняется"
     )
     _assert_state_unchanged(proj, before)
+
+
+def test_reused_pid_file_is_not_a_running_pipeline(tmp_git_repo):
+    """TODO-0153 (PR #28 CI, e2e сценарий 3): PID из PID-файла переиспользован
+    живым процессом ДРУГОГО проекта — его argv как раз ``python -m awf start
+    --project-dir <ЧУЖОЙ проект>`` (в CI параллельные xdist-воркеры запускают
+    собственные фоновые пайплайны). Baseline: resolve вернул
+    ``(True, pid, "pid_file")`` — argv-идентичность совпала — и ``run_revise``
+    отказал «a stage is running (source: pid_file)» (красный). После фикса:
+    чужой живой awf-процесс чужого проекта — НЕ наш пайплайн, stale-файл
+    убран, ревизия проходит."""
+    import subprocess
+    import sys
+
+    from awf.api import _liveness
+
+    proj = _project(tmp_git_repo)
+    _write_todo(proj, "TODO-0001")
+    api.run_start(proj, queue=["TODO-0001"])
+
+    # Реальный живой чужой процесс: пайплайн ДРУГОГО проекта. Каталог чужого
+    # проекта существует — как в CI, где второй прогон живёт рядом.
+    other = tmp_git_repo / "other-project"
+    other.mkdir(exist_ok=True)
+    foreign = subprocess.Popen(
+        [
+            sys.executable, "-c", "import time; time.sleep(120)",
+            "-m", "awf", "start", "--project-dir", str(other),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        # Sanity: процесс жив, и его argv выглядит как настоящий awf start —
+        # именно поэтому baseline его за наш пайплайн принимал.
+        assert _liveness.probe_alive(foreign.pid)
+        assert _liveness.cmdline_is_ours(_liveness.read_cmdline(foreign.pid))
+
+        pid_file = proj / ".agentic" / "logs" / "awf-start.pid"
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(f"{foreign.pid}\n", encoding="utf-8")
+
+        running, pid, source = _liveness.resolve(proj)
+        assert (running, pid, source) == (False, None, None), (
+            f"PID-файл указывает на живой awf-процесс ДРУГОГО проекта — "
+            f"это не наш пайплайн: {(running, pid, source)}"
+        )
+        assert not pid_file.is_file(), "stale PID file обязан быть убран"
+
+        # Сами CI-симптом: run_revise не обязан отказать по живости.
+        result = api.run_revise(
+            proj,
+            queue=[{"todo_id": "TODO-0001", "pipeline": "default"}],
+            reason="reused-pid regression", key="reused-pid-153",
+        )
+        assert result.action == "applied", (
+            f"ревизия обязана пройти при чужом живом pid в файле: {result.message}"
+        )
+    finally:
+        foreign.kill()
+        foreign.wait()
 
 
 def test_concurrent_run_next_still_one_owner(tmp_git_repo, monkeypatch):

@@ -7,11 +7,13 @@ verify instead of blocking. This unit pins the signal rule into the three
 QA role files and extends the NEG-3 broken-inputs matrix to the new zones
 (ORCH M5.1/M5.2: the role-draft area, the service run's own state file):
 
-- the QA role files (``.agentic/roles/``, ``awf/templates/roles/``, the
-  ``templates/roles/`` mirror) all carry the rule «verdict BLOCKED ⇒ ONLY
-  ``BLOCKED-{todo}.ready`` + ``BLOCKED-{todo}.md``; ``DONE-{todo}.*`` is
-  never written» (test_qa_role_says_blocked_signal — RED on the baseline:
-  the rule was absent, which is exactly what let 0140/0144 slip);
+- the shipped QA role files (``awf/templates/roles/`` + the
+  ``templates/roles/`` mirror — always; the project's own
+  ``.agentic/roles/`` copy only when present, a clean CI checkout has no
+  gitignored ``.agentic/`` — TODO-0153) carry the rule «verdict BLOCKED
+  ⇒ ONLY ``BLOCKED-{todo}.ready`` + ``BLOCKED-{todo}.md``; ``DONE-{todo}.*``
+  is never written» (test_qa_role_says_blocked_signal — RED on the
+  baseline: the rule was absent, which is exactly what let 0140/0144 slip);
 - a corrupt ``state/service-run.yaml`` (truncated / YAML garbage / binary)
   → ``run_service_status`` / ``brief`` / ``get_status`` degrade to "no
   service run" WITH a warning naming the file, no traceback, the file is
@@ -47,12 +49,14 @@ from awf.api._errors import AwfApiError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# The three QA role files that must all carry the rule (invariant 1).
-QA_ROLE_FILES = (
-    REPO_ROOT / ".agentic" / "roles" / "agent-qa-review.md",
+# TODO-0153 (PR #28 CI): a clean CI checkout has NO project `.agentic/`
+# (gitignored) — only the SHIPPED files (template + its mirror) are
+# mandatory; the project's own role file is checked only when present.
+SHIPPED_QA_ROLE_FILES = (
     REPO_ROOT / "awf" / "templates" / "roles" / "agent-qa-review.md",
     REPO_ROOT / "templates" / "roles" / "agent-qa-review.md",
 )
+PROJECT_QA_ROLE_FILE = REPO_ROOT / ".agentic" / "roles" / "agent-qa-review.md"
 
 # The minimal rule (TODO-0149 wording; the same one-liner in all three
 # files — the ambiguous lines are not duplicated).
@@ -91,11 +95,19 @@ def _valid_service_state() -> dict:
 
 
 def test_qa_role_says_blocked_signal():
-    """Invariant 1: all three QA role files carry the signal rule
-    (normalized compare). The rule is what the engine's verify wait
-    actually keys on: the SIGNAL decides, not the verdict in the report."""
+    """Invariant 1: the shipped QA role files (template + mirror) carry
+    the signal rule — always; the project's own role file is checked only
+    when present (a clean CI checkout has no gitignored `.agentic/`,
+    TODO-0153). Normalized compare. The rule is what the engine's verify
+    wait actually keys on: the SIGNAL decides, not the verdict in the
+    report."""
+    for p in SHIPPED_QA_ROLE_FILES:
+        assert p.is_file(), f"shipped QA role file missing: {p}"
+    checked = [
+        p for p in (PROJECT_QA_ROLE_FILE, *SHIPPED_QA_ROLE_FILES) if p.is_file()
+    ]
     rule = _norm(BLOCKED_RULE)
-    missing = [str(p) for p in QA_ROLE_FILES if rule not in _norm(_read(p))]
+    missing = [str(p) for p in checked if rule not in _norm(_read(p))]
     assert not missing, f"the BLOCKED-signal rule is missing in: {missing}"
 
 
