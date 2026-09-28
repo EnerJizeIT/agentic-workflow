@@ -939,6 +939,9 @@ def _handle_net_death(
         _run_state.add_downtime(
             project_dir, _time.monotonic() - backoff_start,
             reason=f"net-backoff:{todo_id}:{s_name}", logs_dir=logs_dir,
+            # ORCH M5.2: land in the run that owns this stage — a service
+            # run's backoff must not rewrite the main run.yaml.
+            slot=_run_state.run_slot_for_todo(project_dir, todo_id),
         )
         return net_retries, True
     print(
@@ -1195,6 +1198,9 @@ def execute_agent_stage(
         _run_state.add_downtime(
             project_dir, _time.monotonic() - salvage_detect,
             reason=f"salvage:{current_todo}:{s_name}", logs_dir=logs_dir,
+            # ORCH M5.2: land in the run that owns this stage — a service
+            # run's salvage window must not rewrite the main run.yaml.
+            slot=_run_state.run_slot_for_todo(project_dir, current_todo),
         )
         _ws(
             project_dir,

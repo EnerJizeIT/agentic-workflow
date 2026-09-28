@@ -73,7 +73,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 46 tools are registered with correct names (5 UI + 41 awf).
+    """All 50 tools are registered with correct names (5 UI + 45 awf).
 
     AUD08-08: this number is a fact-check, not a label — if it drifts from
     ``server.py``, ``tool_names == expected`` below fails first. Update both
@@ -152,6 +152,11 @@ def test_all_tools_registered():
         "awf_feedback",
         # RUN4 #1: supervisor onboarding/recovery card
         "awf_brief",
+        # ORCH M5.2: service run (role creation during the main run)
+        "awf_run_service_start",
+        "awf_run_service_status",
+        "awf_run_service_finish",
+        "awf_run_service_approve",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

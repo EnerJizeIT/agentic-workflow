@@ -379,7 +379,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-48 tools: 43 `awf_*` workflow + 5 UI (forms).
+52 tools: 47 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -524,6 +524,10 @@ commit by design. That protection used to be silent; now it is visible:
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
 | `awf_run_revise` | Revise the pipelines of the run's NOT-STARTED queue elements (preview + apply, idempotent by key; `stop_running` stops a live unit via the engine's kill path) |
+| `awf_run_service_start` | Start a SERVICE run — create a role candidate during the main run (separate state file; the main run is untouched) |
+| `awf_run_service_status` | One read, two snapshots — the service run and the main run |
+| `awf_run_service_finish` | Close the service run (SERVICE-RUN-REPORT) and name the main continuation |
+| `awf_run_service_approve` | Approve the service unit at verify (evidence required; verdict in the service slot) |
 
 **Per-item pipeline.** The queue accepts
 `{"todo_id": "TODO-0023", "pipeline": "audit-llm"}` objects alongside plain
@@ -556,6 +560,32 @@ stage, `stop_running=true` is a no-op stop, not an error. The applied
 revision is recorded in `state/run.yaml` (`revisions`, the decisions' path)
 in the same CAS write as the queue change (A-13 generation condition); the
 revised pipelines take effect at each element's launch (`awf_run_next`).
+
+**Service run (ORCH M5.2): role creation during the main run.**
+`awf_run_service_start(project_dir, slug, description)` starts a SERVICE
+run — a FULL run (queue, position, verdicts, report) in a SEPARATE state
+file, `state/service-run.yaml`. Its queue holds ONE unit: «создай роль
+`<slug>` по описанию …». The main `state/run.yaml` is never replaced or
+finished: after the service run completes or fails the main run is exactly
+as it was (the isolation is a byte-level invariant, tested). The unit runs
+the SAME engine: awf generates a pipeline (`pipelines/role-draft-<slug>.yaml`,
+a snapshot of the active composition) whose first non-supervisor stage
+declares the draft candidate (`.agentic/roles/draft/<slug>.md`) as its
+output (M3.2 freshness check) and whose verify never commits (the candidate
+stays in the draft area — adopt is a separate explicit step, M5.1). Launch
+is refused while any stage is live (one pipeline per project — stop the unit
+first) and rolls back every side effect of the call on a failed launch.
+`awf_run_service_approve(todo_id, evidence)` approves the service unit at
+verify (evidence required, as for any run unit; the verdict lands in the
+service slot, never the main run's diary). `awf_run_service_finish(reason)`
+closes the service run, writes `SERVICE-RUN-REPORT-{ts}.md` to the outbox,
+and names the main continuation (`awf_run_next` / `awf_continue`) with the
+main run's snapshot. `awf_run_service_status` reads both runs in one call.
+The generic `awf_approve` / `awf_reject` on a service unit is a REFUSAL
+with text (no signal, no REVIEW file, no verdict, no counter in the main
+run): the service unit's verdict goes through `awf_run_service_approve`
+only, and rejecting the candidate means closing the service run
+(`awf_run_service_finish`) and re-issuing the start.
 
 **Run plan (goal, criteria, decisions).** `awf_run_start` accepts
 `goal` (one line) and `criteria` (a list of lines) — stored in

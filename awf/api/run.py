@@ -28,6 +28,9 @@ from ._results import (
     RunReviseResult,
     RunStartResult,
     RunStatusResult,
+    ServiceRunApproveResult,
+    ServiceRunResult,
+    ServiceRunStatusResult,
 )
 
 
@@ -1599,5 +1602,761 @@ def run_revise(
             "element."
             if resume_from
             else "Continue the run with awf_run_next."
+        ),
+    )
+
+
+# ─── ORCH M5.2: service run (служебный забег создания роли) ─────────────
+#
+# A service run is a FULL run — queue, position, verdicts, report — in its
+# OWN state file (state/service-run.yaml, slot="service"): the supervisor
+# creates a role candidate DURING the main run without disturbing it. The
+# main run.yaml is never opened for writing by the service flow (the file
+# is the unit of atomicity — that is what makes the main run survive the
+# service run byte-for-byte, crash included). The unit runs the SAME
+# engine: the generated pipeline (a snapshot of the active composition)
+# declares the draft candidate as the worker stage's output (M3.2
+# freshness check) and verify never commits (the candidate stays in the
+# draft area — adopt is a separate explicit step, M5.1).
+
+
+#: Prefix of awf-GENERATED service pipeline files (role-draft-<slug>).
+#: Such a file is managed by run_service_start (regenerated on every
+#: start, never hand-edited); user pipelines keep other names.
+SERVICE_PIPELINE_PREFIX = "role-draft-"
+
+
+def _service_pipeline_name(slug: str) -> str:
+    return f"{SERVICE_PIPELINE_PREFIX}{slug}"
+
+
+def _draft_candidate_rel_path(slug: str) -> str:
+    """The service unit's declared output: the draft candidate path
+    (project-relative, M3.2)."""
+    return f".agentic/roles/draft/{slug}.md"
+
+
+def _service_todo_content(slug: str, description: str) -> str:
+    cand = _draft_candidate_rel_path(slug)
+    return (
+        f"# TODO — создать роль-кандидат `{slug}` (служебный забег, ORCH M5.2)\n"
+        "\n"
+        "Создай роль-кандидата в draft-области (ORCH M5.1):\n"
+        f"- путь кандидата (declared output стадии, движок проверит): `{cand}`\n"
+        "- содержимое — роль по описанию ниже: front-matter "
+        "(name/description) + инструкции роли, как у живых ролей в "
+        ".agentic/roles/.\n"
+        "\n"
+        "Описание роли (от супервизора):\n"
+        f"{str(description).strip()}\n"
+        "\n"
+        "Запреты: НЕ коммитить (кандидат остаётся в draft до adopt, M5.1); "
+        "не трогать живые роли; не расширять scope за пределы кандидата.\n"
+    )
+
+
+def _service_slug_of(state: dict) -> str:
+    """The slug of a service run state (derived from the unit's pipeline
+    name role-draft-<slug>; "" when the state carries no such item)."""
+    for q in state.get("queue") or []:
+        pipe = str(q.get("pipeline", "") or "") if isinstance(q, dict) else ""
+        if pipe.startswith(SERVICE_PIPELINE_PREFIX):
+            return pipe[len(SERVICE_PIPELINE_PREFIX):]
+    return ""
+
+
+def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
+    """ORCH M5.2: generate the service pipeline file.
+
+    A snapshot of the ACTIVE composition with the service deltas:
+    - the FIRST non-supervisor stage declares the draft candidate as its
+      output (``output: .agentic/roles/draft/<slug>.md``) — the engine
+      verifies exists+fresh before the stage advances (M3.2);
+    - non-supervisor stages are ``on_blocked: stop`` — a blocked service
+      unit stops the pipeline instead of replanning (a replan would
+      re-plan a NEW TODO and break the service queue's pinning; the unit
+      is disposable: retry = a fresh service run);
+    - the verify stage is ``on_approved: next`` — the service run NEVER
+      commits: the commit gate is bound to the MAIN run's generation, and
+      the candidate stays in the draft area until an explicit adopt
+      (M5.1).
+
+    The file is awf-managed (the role-draft- prefix, a marker header): it
+    is regenerated on every start and never overwrites a pipeline under
+    another name. The document is validated with the same schema as a
+    hand-written pipeline (A-06) before it is written.
+    """
+    import yaml
+
+    from ..pipeline import (
+        load_stages,
+        resolve_pipeline_file,
+        validate_pipeline_document,
+    )
+
+    source_file = resolve_pipeline_file(project_dir)
+    stages = load_stages(source_file)
+    if not stages:
+        raise AwfApiError(
+            f"cannot generate the service pipeline: the active pipeline "
+            f"{source_file.name} loads empty (broken YAML?) — fix it first."
+        )
+    worker_stage = next(
+        (s for s in stages if s.role.strip().lower() != "supervisor"), None
+    )
+    if worker_stage is None:
+        raise AwfApiError(
+            "cannot generate the service pipeline: the active pipeline has "
+            "no non-supervisor stage that could write the role candidate — "
+            "a service run needs a worker stage."
+        )
+    doc_stages: list[dict] = []
+    for st in stages:
+        entry: dict = {"name": st.name, "role": st.role}
+        if st.description:
+            entry["description"] = st.description
+        if st.id:
+            entry["id"] = st.id
+        if st.task:
+            entry["task"] = st.task
+        if st.input:
+            entry["input"] = st.input
+        if st.output:
+            entry["output"] = st.output
+        entry["on_blocked"] = st.on_blocked
+        entry["on_approved"] = st.on_approved
+        entry["on_rejected"] = st.on_rejected
+        entry["on_failed"] = st.on_failed
+        entry["max_retries"] = st.max_retries
+        entry["max_rollbacks"] = st.max_rollbacks
+        is_worker = st.role.strip().lower() != "supervisor"
+        if is_worker:
+            entry["on_blocked"] = "stop"
+        if st is worker_stage:
+            cand = _draft_candidate_rel_path(slug)
+            # The unit's contract (TODO-0144 invariant 3): the candidate
+            # IS the declared output — a source-declared output on this
+            # stage is replaced by it. The task is set too: the "Stage
+            # assignment" block (with the "Expected output:" line the
+            # worker must honor) only renders when the stage has a task
+            # (agent_stage._stage_assignment_block).
+            entry["task"] = (
+                f"Создай роль-кандидат `{slug}` по описанию из TODO и "
+                f"запиши файл в declared output `{cand}`."
+            )
+            entry["output"] = cand
+        if st.kind == "verify" and entry["on_approved"] != "next":
+            entry["on_approved"] = "next"
+        doc_stages.append(entry)
+    name = _service_pipeline_name(slug)
+    document = {"name": name, "stages": doc_stages}
+    validate_pipeline_document(document, name)
+    header = (
+        f"# {name}.yaml — ORCH M5.2 service-run pipeline "
+        f"(awf-generated, role draft)\n"
+        f"# source: pipelines/{source_file.name}.yaml\n"
+        f"# slug: {slug}\n"
+        f"# generated: {run_state.now_iso()}\n"
+    )
+    out = paths.agentic_dir(project_dir) / "pipelines" / f"{name}.yaml"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(out, header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True))
+    return out
+
+
+def _rollback_service_side_effects(
+    project_dir: Path,
+    todo_id: str,
+    pipe_name: str,
+    *,
+    clear_slot: bool = True,
+) -> None:
+    """V-01/V-02: undo EVERY side effect of a failed service start — the
+    service state file, the unit's TODO (md + .ready + baseline files) and
+    the generated pipeline file. The main run.yaml is a different file the
+    service flow never wrote, so there is nothing to restore there.
+    Best-effort: a cleanup failure is not raised (the refusal still
+    stands).
+
+    ``clear_slot`` (review fix F2): the service state file is cleared only
+    when it belongs to THIS call. On the conflict path the slot holds the
+    concurrent WINNER's state (the loser's mutator saw active=True and
+    returned it unchanged) — clearing it would orphan the winner's live
+    pipeline with no run record. The reference is run_start's conflict
+    path (just raise; the winner's state stands), so the conflict call
+    passes clear_slot=False and undoes only its own files."""
+    if clear_slot:
+        run_state.clear_run(project_dir, slot="service")
+    inbox = paths.inbox(project_dir)
+    for suffix in (".md", ".ready"):
+        try:
+            (inbox / f"{todo_id}{suffix}").unlink()
+        except OSError:
+            pass
+    ctx = paths.context_dir(project_dir)
+    for name in (
+        f"BASELINE-{todo_id}.sha",
+        f"BASELINE-{todo_id}.status",
+        f"BASELINE-{todo_id}.tests.log",
+        f"BASELINE-{todo_id}.env.log",
+        f"BASELINE-{todo_id}.untracked",
+        f"BASELINE-{todo_id}.include",
+        f"BASELINE-{todo_id}.carry_over",
+    ):
+        try:
+            (ctx / name).unlink()
+        except OSError:
+            pass
+    try:
+        (paths.agentic_dir(project_dir) / "pipelines" / f"{pipe_name}.yaml").unlink()
+    except OSError:
+        pass
+
+
+def run_service_start(
+    project_dir: Path,
+    *,
+    slug: str,
+    description: str,
+    background: bool = True,
+) -> ServiceRunResult:
+    """ORCH M5.2: launch a SERVICE run — role creation during the main run.
+
+    The service run is its own run in a SEPARATE state file
+    (``state/service-run.yaml``): a queue of ONE unit («создай роль
+    <slug> по описанию …»). The main ``state/run.yaml`` is not replaced
+    and not finished — after the service run completes or fails the main
+    run is exactly as it was (byte-level invariant, tested).
+
+    The unit runs the SAME engine: the generated pipeline (a snapshot of
+    the active composition; the first non-supervisor stage declares the
+    draft candidate as its output, M3.2; verify never commits) is launched
+    via the standard ``start_pipeline`` with the service TODO pinned.
+    One pipeline per project (the engine's guarantee): while any stage is
+    live the launch is refused BEFORE side effects — stop the unit first
+    (awf_kill) or wait for the stage (M4.1 stop semantics).
+
+    A failed launch rolls back every side effect of this call (V-01/V-02):
+    no service state, no unit TODO, no pipeline file; the main run is
+    untouched either way.
+    """
+    project_dir = _require_run_project(project_dir)
+    from .roles import _validate_draft_slug
+
+    slug_clean = _validate_draft_slug(slug)
+    description_clean = str(description or "").strip()
+    if not description_clean:
+        raise AwfApiError(
+            "description is required — the role creation task text "
+            "(what the role does)."
+        )
+
+    main_state = run_state.read_run(project_dir)
+    if not main_state or not main_state.get("active"):
+        raise AwfApiError(
+            "No active main run — a service run exists to create a role "
+            "DURING a run without disturbing it. Start the main run first "
+            "(awf_run_start), or create the role directly (awf_add_role "
+            "with draft=true)."
+        )
+    existing = run_state.read_run(project_dir, slot="service")
+    if existing and existing.get("active"):
+        ex_cur = str(
+            existing.get("current")
+            or (existing.get("queue") or [{}])[0].get("todo_id", "")
+        )
+        raise AwfApiError(
+            f"A service run is already active (unit {ex_cur}). Finish it "
+            "(awf_run_service_finish) or stop its pipeline (awf_kill) "
+            "first — one service run at a time."
+        )
+
+    # The engine's single-pipeline guarantee: a live stage (usually the
+    # main unit's) refuses the launch BEFORE any side effect.
+    running, pid, _source = _liveness.resolve(project_dir)
+    if running:
+        return ServiceRunResult(
+            action="refused",
+            slug=slug_clean,
+            pipeline=_service_pipeline_name(slug_clean),
+            candidate_path=_draft_candidate_rel_path(slug_clean),
+            main_active=True,
+            main_position=run_state.position(main_state),
+            main_current=str(main_state.get("current") or ""),
+            message=(
+                f"Refused: a pipeline is already running (PID {pid}) — the "
+                "engine allows one pipeline per project. Stop the current "
+                "unit first (awf_kill) or wait for the stage to finish, "
+                "then retry. The main run state was not touched."
+            ),
+            next_action=(
+                "awf_kill (stop the unit) or wait for the stage; then "
+                "awf_run_service_start again. The main run continues with "
+                "awf_run_next / awf_continue."
+            ),
+        )
+
+    pipe_name = _service_pipeline_name(slug_clean)
+    cand_path = _draft_candidate_rel_path(slug_clean)
+
+    # Side effects — rolled back as a set on launch failure (V-01/V-02).
+    _write_service_pipeline(project_dir, slug_clean)
+    from .dispatch import dispatch_todo
+
+    dispatch = dispatch_todo(
+        project_dir,
+        _service_todo_content(slug_clean, description_clean),
+        pipeline=pipe_name,
+    )
+    todo_id = dispatch.todo_id
+
+    outcome: dict = {}
+
+    def _start_mutator(st: dict) -> dict:
+        # The service slot's own "inactive → active" check inside the lock
+        # (the run_start pattern): a concurrent loser rolls back.
+        if st.get("active"):
+            outcome["conflict"] = st
+            return st
+        new_state = dict(st)
+        new_state.update(
+            active=True,
+            queue=[{"todo_id": todo_id, "pipeline": pipe_name}],
+            index=0,
+            current="",
+            completed=[],
+            rejects={},
+            outcomes={},
+            stop_flags={},
+            budget_minutes=0,
+            downtime_seconds=0,
+            started_at=run_state.now_iso(),
+            generation=run_state.generation_of(st) + 1,
+            stop_reason="",
+            report_file="",
+            note=f"service run: role candidate {slug_clean}",
+            no_checkpoints=True,
+            goal=f"service: create role candidate {slug_clean} (draft)",
+            criteria=[],
+            decisions=[],
+            evidence_plans=[],
+        )
+        return new_state
+
+    run_state.update_run(project_dir, _start_mutator, slot="service")
+    if "conflict" in outcome:
+        # F2: the slot now holds the concurrent WINNER's state (ownership
+        # CAS — the loser's mutator saw active=True, so the file no longer
+        # carries this call's todo_id). Undo this call's files only; the
+        # winner's run record stands (run_start's conflict reference).
+        _rollback_service_side_effects(
+            project_dir, todo_id, pipe_name, clear_slot=False
+        )
+        raise AwfApiError(
+            "A service run was started concurrently — this call rolled "
+            "back its own side effects (the other run's state was kept). "
+            "Check awf_run_service_status."
+        )
+
+    from .pipeline import start_pipeline
+
+    launch_failed = True
+    refusal_message = ""
+    run_mode = ""
+    run_id: int | None = None
+    log_file = ""
+    try:
+        result = start_pipeline(
+            project_dir,
+            background=background,
+            pipeline=pipe_name,
+            todo_id=todo_id,
+            # The service launch is its own process: the BD-36 checkpoint
+            # is skipped for it (the main run's no_checkpoints flag is the
+            # main's; the owner does not sit at a service run's checkpoint).
+            no_checkpoints=True,
+        )
+        run_mode = result.run_mode
+        run_id = result.run_id
+        log_file = result.log_file or ""
+        launch_failed = result.run_mode in ("noop", "error") or (
+            result.run_mode == "foreground" and (result.exit_code or 0) != 0
+        )
+        refusal_message = f"Launch failed: {result.message}"
+    except Exception as e:
+        # V-02: an exception in the launch window is a classified refusal
+        # that rolls back this call's own effects.
+        refusal_message = (
+            f"Launch failed: start_pipeline raised {type(e).__name__}: {e}"
+        )
+
+    if launch_failed:
+        _rollback_service_side_effects(project_dir, todo_id, pipe_name)
+        return ServiceRunResult(
+            action="refused",
+            slug=slug_clean,
+            pipeline=pipe_name,
+            candidate_path=cand_path,
+            main_active=True,
+            main_position=run_state.position(main_state),
+            main_current=str(main_state.get("current") or ""),
+            message=refusal_message,
+            next_action=(
+                "Investigate the pipeline state (awf_status), then retry "
+                "awf_run_service_start. The main run is untouched."
+            ),
+        )
+
+    # The position commit AFTER a successful launch (the run_next pattern):
+    # if the run closed inside the launch window, nothing is recorded —
+    # the launched pipeline is orphaned (accepted consequence, said in the
+    # result), never silently swallowed.
+    applied: dict = {}
+
+    def _advance_mutator(st: dict) -> dict:
+        if not st.get("active"):
+            return st  # closed during the window — veto, nothing recorded
+        st["index"] = 1
+        st["current"] = todo_id
+        todo_md = paths.inbox(project_dir) / f"{todo_id}.md"
+        run_state.append_evidence_plan(st, todo_id, _todo_evidence_plan(todo_md))
+        applied["ok"] = True
+        return st
+
+    run_state.update_run(project_dir, _advance_mutator, slot="service")
+
+    if not applied.get("ok"):
+        return ServiceRunResult(
+            action="started",
+            todo_id=todo_id,
+            slug=slug_clean,
+            pipeline=pipe_name,
+            candidate_path=cand_path,
+            run_mode=run_mode,
+            run_id=run_id,
+            log_file=log_file,
+            main_active=True,
+            main_position=run_state.position(main_state),
+            main_current=str(main_state.get("current") or ""),
+            message=(
+                f"Service unit {todo_id} launched ({run_mode}) — but the "
+                "service run was closed during the launch window, so the "
+                "position was NOT recorded. The launched pipeline is "
+                "orphaned: inspect it with awf_status and decide "
+                "(awf_kill + a fresh service run, or take it over)."
+            ),
+            next_action="Inspect the orphaned pipeline with awf_status, then decide.",
+        )
+
+    return ServiceRunResult(
+        action="started",
+        todo_id=todo_id,
+        slug=slug_clean,
+        pipeline=pipe_name,
+        candidate_path=cand_path,
+        run_mode=run_mode,
+        run_id=run_id,
+        log_file=log_file,
+        main_active=True,
+        main_position=run_state.position(main_state),
+        main_current=str(main_state.get("current") or ""),
+        message=(
+            f"Service run started: unit {todo_id} (role {slug_clean}, "
+            f"pipeline {pipe_name}) launched ({run_mode}). Main run "
+            f"untouched (active, position {run_state.position(main_state)}). "
+            f"Candidate: {cand_path}."
+        ),
+        next_action=(
+            "GO IDLE — wait for the verify event (awf_wait_for_event). On "
+            "verify: run your probes, then awf_run_service_approve("
+            "evidence=...) for the service unit. Close the service run "
+            "with awf_run_service_finish; the main run continues with "
+            "awf_run_next / awf_continue."
+        ),
+    )
+
+
+def _write_service_report(
+    project_dir: Path, svc: dict, reason: str
+) -> Path | None:
+    """SERVICE-RUN-REPORT-{ts}.md in the outbox — the service run's OWN
+    report (never a RUN-REPORT: those belong to the main run). It always
+    carries the main run's snapshot — the proof that the service run did
+    not touch it — and the continuation command."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    outbox = paths.outbox(project_dir)
+    outbox.mkdir(parents=True, exist_ok=True)
+    report = outbox / f"SERVICE-RUN-REPORT-{ts}.md"
+    slug = _service_slug_of(svc)
+    queue = list(svc.get("queue") or [])
+    completed = [str(c) for c in (svc.get("completed") or [])]
+    rejects = svc.get("rejects") or {}
+    main_state = run_state.read_run(project_dir)
+    main_pos = run_state.position(main_state) if main_state else "—"
+    main_cur = str((main_state or {}).get("current") or "")
+    main_active = bool(main_state and main_state.get("active"))
+    lines = [
+        f"# Service run report ({ts})",
+        "",
+        f"**Reason:** {reason}",
+        f"**Role:** {slug or '—'}"
+        + (f" (candidate: {_draft_candidate_rel_path(slug)})" if slug else ""),
+        f"**Queue:** {', '.join(_queue_item_label(q) for q in queue) or '—'}"
+        f" — {len(completed)}/{len(queue)} done",
+        f"**Current at stop:** {str(svc.get('current') or '—')}",
+        f"**Rejects:** {', '.join(f'{k}×{v}' for k, v in rejects.items()) or '—'}",
+        f"**Elapsed:** {int(run_state.elapsed_minutes(svc))} min",
+        "",
+        "## Main run (untouched)",
+        "",
+        f"- active: {main_active}",
+        f"- position: {main_pos}",
+        f"- current: {main_cur or '—'}",
+        "",
+        "Continue the main run: awf_run_next (launches the next queued "
+        "unit) or awf_continue (resumes a stopped unit from its stage).",
+        "",
+    ]
+    try:
+        atomic_write_text(report, "\n".join(lines))
+    except OSError:
+        return None
+    return report
+
+
+def run_service_finish(
+    project_dir: Path,
+    *,
+    reason: str = "service unit processed",
+) -> ServiceRunResult:
+    """ORCH M5.2: close the service run — the SERVICE-RUN-REPORT goes to
+    the outbox, the service slot is marked inactive, and the answer names
+    the main continuation («продолжай основной: awf_run_next /
+    awf_continue») with the main run's snapshot.
+
+    Refused while a pipeline is still live (the service unit is in
+    flight): wait for verify/salvage or awf_kill first (M4.1 stop
+    semantics — this call never kills). Idempotent: an already-closed
+    (or absent) service run is a no-op. The main run.yaml is never
+    written by this flow.
+    """
+    project_dir = _require_run_project(project_dir)
+    svc = run_state.read_run(project_dir, slot="service")
+    slug = _service_slug_of(svc) if svc else ""
+    pipe_name = _service_pipeline_name(slug) if slug else ""
+    cand_path = _draft_candidate_rel_path(slug) if slug else ""
+    if not svc:
+        return ServiceRunResult(
+            action="noop",
+            slug=slug,
+            message="No service run — nothing to finish.",
+        )
+    if not svc.get("active"):
+        return ServiceRunResult(
+            action="noop",
+            slug=slug,
+            pipeline=pipe_name,
+            candidate_path=cand_path,
+            message=(
+                "Service run already closed"
+                + (f" ({svc.get('stop_reason')})" if svc.get("stop_reason") else "")
+                + "."
+            ),
+        )
+
+    # M4.1 stop semantics: a live stage is refused (stop it explicitly),
+    # not killed here.
+    running, pid, _source = _liveness.resolve(project_dir)
+    if running:
+        return ServiceRunResult(
+            action="refused",
+            slug=slug,
+            pipeline=pipe_name,
+            candidate_path=cand_path,
+            message=(
+                f"Refused: a pipeline is still running (PID {pid}) — the "
+                "service unit is in flight. Wait for verify/salvage "
+                "(awf_wait_for_event), or awf_kill first, then retry. "
+                "The main run is untouched."
+            ),
+            next_action="Wait for the verify event or awf_kill, then retry awf_run_service_finish.",
+        )
+
+    report = _write_service_report(project_dir, svc, reason)
+
+    def _close_mutator(st: dict) -> dict:
+        st["active"] = False
+        st["stop_reason"] = reason
+        st["report_file"] = str(report) if report else ""
+        return st
+
+    run_state.update_run(project_dir, _close_mutator, slot="service")
+
+    main_state = run_state.read_run(project_dir)
+    main_pos = run_state.position(main_state) if main_state else "—"
+    main_cur = str((main_state or {}).get("current") or "")
+    return ServiceRunResult(
+        action="stopped",
+        slug=slug,
+        pipeline=pipe_name,
+        candidate_path=cand_path,
+        report_file=str(report) if report else "",
+        main_active=bool(main_state and main_state.get("active")),
+        main_position=main_pos,
+        main_current=main_cur,
+        message=(
+            f"Service run stopped: {reason}. Main run untouched (active: "
+            f"{bool(main_state and main_state.get('active'))}, position "
+            f"{main_pos}, current {main_cur or '—'})."
+        ),
+        next_action=(
+            "Continue the main run: awf_run_next(project_dir) launches the "
+            "next queued unit; awf_continue(project_dir) resumes the main "
+            "unit from its stopped stage (when one was stopped)."
+        ),
+    )
+
+
+def run_service_status(project_dir: Path) -> ServiceRunStatusResult:
+    """ORCH M5.2: one read, two snapshots — the service run (unit, slug,
+    pipeline, candidate path, position, close reason) and the main run
+    (position, current). Read-only; degrades to "no service run" on a
+    corrupt service file (the main run is unaffected)."""
+    project_dir = _require_run_project(project_dir)
+    svc = run_state.read_run(project_dir, slot="service")
+    main_state = run_state.read_run(project_dir)
+    slug = _service_slug_of(svc) if svc else ""
+    svc_queue = list((svc or {}).get("queue") or [])
+    todo_id = ""
+    pipeline = ""
+    if svc_queue and isinstance(svc_queue[0], dict):
+        todo_id = str(svc_queue[0].get("todo_id", ""))
+        pipeline = str(svc_queue[0].get("pipeline", "") or "")
+    service_active = bool(svc and svc.get("active"))
+    if svc:
+        message = (
+            f"Service run: {'active' if service_active else 'closed'}, "
+            f"position {run_state.position(svc)}, unit {todo_id or '—'} "
+            f"(role {slug or '—'}), candidate "
+            f"{_draft_candidate_rel_path(slug) if slug else '—'}."
+        )
+        if not service_active and svc.get("stop_reason"):
+            message += f" Closed: {svc.get('stop_reason')}."
+    else:
+        message = "No service run."
+    main_pos = run_state.position(main_state) if main_state else "—"
+    return ServiceRunStatusResult(
+        service_active=service_active,
+        message=message,
+        todo_id=todo_id,
+        slug=slug,
+        pipeline=pipeline,
+        candidate_path=_draft_candidate_rel_path(slug) if slug else "",
+        position=run_state.position(svc) if svc else "0/0",
+        index=int((svc or {}).get("index", 0) or 0),
+        current=str((svc or {}).get("current") or ""),
+        completed=[str(c) for c in ((svc or {}).get("completed") or [])],
+        stop_reason=str((svc or {}).get("stop_reason") or ""),
+        report_file=str((svc or {}).get("report_file") or ""),
+        main_active=bool(main_state and main_state.get("active")),
+        main_position=main_pos,
+        main_current=str((main_state or {}).get("current") or ""),
+        next_action=(
+            "Wait for the verify event (awf_wait_for_event), then "
+            "awf_run_service_approve(evidence=...) and "
+            "awf_run_service_finish; the main run continues with "
+            "awf_run_next / awf_continue."
+            if service_active
+            else ""
+        ),
+    )
+
+
+def run_service_approve(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    evidence: str,
+) -> ServiceRunApproveResult:
+    """ORCH M5.2: approve the service unit at its verify stage.
+
+    Publishes the signal pair the engine's verify wait accepts in run
+    mode: ``context/RUN-EVIDENCE-{todo}.md`` (the supervisor's
+    independent-verification trace — the engine's evidence gate, which is
+    ON while the MAIN run is active) and ``inbox/APPROVE-{todo}.ready``
+    (an EMPTY marker — the service pipeline never commits, so there is no
+    M2.1 binding to stamp and no verified_sha to record).
+
+    The verdict is recorded in the SERVICE slot only (outcomes + the
+    causal decision) — the main run's diary is never touched. Only the
+    CURRENT unit of an active service run can be approved, and evidence
+    is required (a service unit is a run unit).
+    """
+    project_dir = _require_run_project(project_dir)
+    if not re.match(r"^TODO-\d{4,}$", str(todo_id or "")):
+        raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
+    evidence_clean = str(evidence or "").strip()
+    if not evidence_clean:
+        raise AwfApiError(
+            "evidence is required: the commands you actually ran and the "
+            "verdict, e.g. evidence='pytest -q → 3 passed; verdict: "
+            "approve'."
+        )
+    svc = run_state.read_run(project_dir, slot="service")
+    if not svc or not svc.get("active"):
+        raise AwfApiError("No active service run — nothing to approve.")
+    if str(svc.get("current") or "") != todo_id:
+        raise AwfApiError(
+            f"{todo_id} is not the current unit of the service run "
+            f"(current: {svc.get('current') or '—'}) — a service approve "
+            "approves only the service unit at its verify stage."
+        )
+
+    ctx = paths.context_dir(project_dir)
+    ctx.mkdir(parents=True, exist_ok=True)
+    evidence_file = ctx / f"RUN-EVIDENCE-{todo_id}.md"
+
+    # Verdict first, signal second (the A-04 pattern): a counted reject
+    # must refuse WITHOUT the file — a leftover APPROVE would unlock the
+    # engine's wait on a rejected verdict.
+    conflict = {"no": True}
+
+    def _mut(state: dict) -> dict:
+        if not state.get("active"):
+            return state
+        rejects_map = state.get("rejects") or {}
+        if int(rejects_map.get(todo_id, 0) or 0) >= 1:
+            conflict["no"] = False
+            return state
+        outcomes = dict(state.get("outcomes") or {})
+        outcomes[todo_id] = {"verdict": "approved"}
+        state["outcomes"] = outcomes
+        run_state.append_decision(state, "approve", todo_id, evidence_clean[:200])
+        return state
+
+    run_state.update_run(project_dir, _mut, slot="service")
+    if not conflict["no"]:
+        raise AwfApiError(
+            f"{todo_id}: a rejection already counted for this service unit "
+            "— the verdict stays 'rejected'. Resolve it (a fresh service "
+            "run) before approving."
+        )
+    atomic_write_text(
+        evidence_file,
+        f"# Service run evidence — {todo_id}\n\n"
+        f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
+        f"{evidence_clean}\n",
+    )
+    inbox = paths.inbox(project_dir)
+    inbox.mkdir(parents=True, exist_ok=True)
+    signal = inbox / f"APPROVE-{todo_id}.ready"
+    signal.touch()
+    return ServiceRunApproveResult(
+        todo_id=todo_id,
+        signal_file=str(signal),
+        evidence_file=str(evidence_file),
+        message=(
+            f"{todo_id}: service unit approved — the verdict is recorded "
+            "in the service slot (the main run diary is untouched)."
         ),
     )

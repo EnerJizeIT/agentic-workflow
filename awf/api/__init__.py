@@ -64,6 +64,9 @@ from ._results import (
     RunNextResult,
     RunStartResult,
     RunStatusResult,
+    ServiceRunApproveResult,
+    ServiceRunResult,
+    ServiceRunStatusResult,
     StartResult,
     StatusResult,
     SupervisorContextResult,
@@ -114,6 +117,10 @@ from .run import (
     run_next,
     run_note,
     run_revise,
+    run_service_approve,
+    run_service_finish,
+    run_service_start,
+    run_service_status,
     run_start,
     run_status,
 )
@@ -157,6 +164,9 @@ __all__ = [
     "RunStatusResult",
     "RunNextResult",
     "RunFinishResult",
+    "ServiceRunResult",
+    "ServiceRunStatusResult",
+    "ServiceRunApproveResult",
     "RestoreResult",
     "UnblockResult",
     "UpdateTodoResult",
@@ -203,6 +213,11 @@ __all__ = [
     "run_brief",
     "run_note",
     "run_revise",
+    # ORCH M5.2: service run (role creation during the main run)
+    "run_service_start",
+    "run_service_finish",
+    "run_service_status",
+    "run_service_approve",
     # RUN10 #1: the single "run active" source (hints + done fuse + phase)
     "run_is_active",
     # Roles

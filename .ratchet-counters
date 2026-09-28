@@ -742,4 +742,21 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # test identifier and unit reference, not debt. files_over_400 stays 64
 # (the new test file is 206 lines — under the bar; awf/api/roles.py was
 # already over it).
+# ORCH M5.2 (TODO-0144, служебный забег создания роли): baseline raised
+# 4424 -> 4454, files_over_400 raised 64 -> 65 — the unit adds 30
+# TODO-bearing lines: the T1/T2 constants + the TODO-0001/0002/0003 fixture
+# and assert use-sites across the hermetic/e2e tests of the new
+# tests/negative/test_service_run.py (module docstring, the
+# AWF_SHIM_PLAN_TODO_ID wording, the run_start/queue fixtures, the
+# "TODO-0003.md" no-side-effect asserts, the e2e candidate/snapshot asserts),
+# the "создай роль-кандидат … TODO" wording in the generated service-pipeline
+# task + the unit TODO template in awf/api/run.py, the SERVICE-RUN-REPORT /
+# service-run.yaml lines in docs/file-bus.md (2) and the service-run tool
+# rows + paragraph in USAGE EN/RU (naming the role-draft candidate). Same
+# class as above: test identifiers and unit references, not debt. The +1
+# file over 400 is tests/negative/test_service_run.py (766 — its test
+# suite), same class as the test_orch_composition_scenarios.py raise above.
+# The production diff (awf/api/run.py, awf/run_state.py,
+# awf/pipeline_engine.py — the service slot + slot-aware downtime) carries
+# no TODO id in code.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
