@@ -646,10 +646,17 @@ class ServiceRunResult:
 class ServiceRunStatusResult:
     """Result of :func:`awf.api.run_service_status` — the service run's
     snapshot (unit, slug, pipeline, candidate path, position) PLUS the
-    main run's snapshot (position, current) in one read."""
+    main run's snapshot (position, current) in one read.
+
+    ``warning`` (ORCH M6.4) is non-empty when ``state/service-run.yaml``
+    EXISTS but is unreadable (broken YAML or invalid shape): the read
+    degrades to "no service run" and says so instead of being indistinguishable
+    from "never started" (the run.yaml precedent: RunRecord.warning). The
+    file is kept for inspection."""
 
     service_active: bool
     message: str
+    warning: str = ""
     todo_id: str = ""
     slug: str = ""
     pipeline: str = ""

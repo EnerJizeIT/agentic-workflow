@@ -2240,10 +2240,22 @@ def run_service_status(project_dir: Path) -> ServiceRunStatusResult:
     """ORCH M5.2: one read, two snapshots — the service run (unit, slug,
     pipeline, candidate path, position, close reason) and the main run
     (position, current). Read-only; degrades to "no service run" on a
-    corrupt service file (the main run is unaffected)."""
+    corrupt service file — with a ``warning`` naming the unreadable file,
+    since the file exists (the main run is unaffected)."""
     project_dir = _require_run_project(project_dir)
     svc = run_state.read_run(project_dir, slot="service")
     main_state = run_state.read_run(project_dir)
+    # ORCH M6.4: a state file that EXISTS but cannot be read is corrupt
+    # state, not "never started" — degrade to no service run and say so
+    # (the run.yaml precedent: run_plan_read.read_run_record's warning).
+    # The file is kept for inspection.
+    warning = ""
+    if svc is None and run_state.run_file(project_dir, slot="service").is_file():
+        warning = (
+            "service-run.yaml is unreadable (broken YAML or invalid shape) — "
+            "treated as no service run; the file is kept at "
+            ".agentic/state/service-run.yaml"
+        )
     slug = _service_slug_of(svc) if svc else ""
     svc_queue = list((svc or {}).get("queue") or [])
     todo_id = ""
@@ -2261,12 +2273,15 @@ def run_service_status(project_dir: Path) -> ServiceRunStatusResult:
         )
         if not service_active and svc.get("stop_reason"):
             message += f" Closed: {svc.get('stop_reason')}."
+    elif warning:
+        message = warning
     else:
         message = "No service run."
     main_pos = run_state.position(main_state) if main_state else "—"
     return ServiceRunStatusResult(
         service_active=service_active,
         message=message,
+        warning=warning,
         todo_id=todo_id,
         slug=slug,
         pipeline=pipeline,
