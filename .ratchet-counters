@@ -810,4 +810,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # assertions of the two scenario tests) and the module-docstring unit
 # reference. Same class as above: test identifiers, not debt. The USAGE
 # EN/RU example (the non-code composition) carries no TODO id.
+# CI-fix 2026-09-29 (TODO-0154, release 1.6.0): baseline raised
+# 4514 -> 4519 — the fragile-stall-assert unit adds 5 TODO-bearing
+# lines, all in tests/negative/test_run_progress_surfaces.py: the
+# marker comment's unit reference + the "- stall: {stage} (TODO-NNNN)"
+# line shape (2), the TODO-0154 notes in the strengthened positive
+# test's docstring and the fixed negative test's comment (2), and the
+# new CI-condition regression test's docstring unit reference (1).
+# Same class as above: test identifiers and unit references, not debt.
+# files_over_400 stays 66 (the test file is 396 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

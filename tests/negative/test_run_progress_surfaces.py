@@ -21,12 +21,14 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
 
 from awf import api, run_state
+from awf import brief as _brief
 
 T = "TODO-0001"
 T2 = "TODO-0002"
@@ -96,23 +98,59 @@ def _make_stalled_stage(
     )
 
 
+# TODO-0154 (PR #30 CI failure): the stall warning in the card is exactly
+# one line (awf/brief.py::_state_lines) — "- stall: {stage} (TODO-NNNN)
+# — quiet for N min (limit M min)": the "- stall:" prefix plus the
+# stall_detect.stall_line phrase "quiet for N min (limit M min)". The
+# tests match that marker, not the substring "stall": the card's
+# "What's new" section carries the changelog entry ("…sees stalled
+# stages…") and degradation lines like "…is not installed…" hold the
+# substring without a warning — the old bare-substring assert
+# false-negated on them in CI (awf/brief.py::latest_changelog).
+STALL_WARNING_RE = re.compile(
+    r"^- stall: .+ — quiet for \d+ min \(limit \d+ min\)$"
+)
+
+# The 1.6.0 changelog entry as the card's 40-word "What's new" clip
+# renders it — the exact tail the CI card carried (PR #30 failure log).
+_CHANGELOG_160 = (
+    "## [1.6.0] — 2026-09-29\n"
+    "\n"
+    "ORCH milestones M4–M7: the supervisor can stop and revise a running unit,\n"
+    "sees stalled stages and reconciles the run against its goal, gets a formal\n"
+    "stage result, creates project roles mid-run, and configures the worker\n"
+    "composition …\n"
+)
+
+
+def _card_stall_lines(card) -> list[str]:
+    """Card lines that are the stall warning (the marker above)."""
+    return [ln for ln in card.text.splitlines() if STALL_WARNING_RE.match(ln)]
+
+
 def _stall_line(card) -> str:
-    lines = [ln for ln in card.text.splitlines() if "stall" in ln]
+    lines = _card_stall_lines(card)
     assert lines, f"no stall line in the card:\n{card.text}"
     return lines[0]
 
 
 class TestStalledStageBrief:
-    def test_brief_warns_about_stalled_stage(self, tmp_git_repo: Path) -> None:
+    def test_brief_warns_about_stalled_stage(
+        self, tmp_git_repo: Path, monkeypatch
+    ) -> None:
         """(invariant 1) the brief card names the stalled stage: the
         stage, the TODO, the quiet duration (and the run_status surface
-        carries the same line). Red-before: no stall line at all."""
+        carries the same line). Red-before: no stall line at all.
+        TODO-0154: the card also carries the 1.6.0 changelog entry
+        ("…sees stalled stages…") — the marker must pick the warning line
+        out of the card, not any line holding the substring "stall"."""
         proj = _project(tmp_git_repo)
         api.run_start(
             proj, queue=[T, T2], goal="Stabilize ORCH M4", criteria=["gates green"]
         )
         _set_stall_minutes(proj, 30)
         _make_stalled_stage(proj, 95)
+        monkeypatch.setattr(_brief, "latest_changelog", lambda: _CHANGELOG_160)
         card = api.brief(proj)
         assert card.stall
         line = _stall_line(card)
@@ -135,7 +173,39 @@ class TestStalledStageBrief:
         _make_stalled_stage(proj, 95)
         card = api.brief(proj)
         assert not card.stall
-        assert "stall" not in card.text
+        # TODO-0154: absence of the WARNING — by the marker, not the
+        # substring "stall" (the card's "What's new" changelog entry says
+        # "…sees stalled stages…" — the old bare-substring assert
+        # false-negated on it in CI, PR #30).
+        assert not _card_stall_lines(card)
+
+    def test_stall_off_with_innocent_stall_substring(
+        self, tmp_git_repo: Path, monkeypatch
+    ) -> None:
+        """TODO-0154 (PR #30 CI failure): card lines that merely carry
+        the substring "stall" are not the warning. The CI card is modeled
+        through the card's two data seams (pure, argument-less calls in
+        awf.brief.build_brief — the same content class as tool_map.yaml /
+        recovery.md): latest_changelog → "What's new" (the repo's
+        CHANGELOG.md next to the package is what makes the CI card
+        carry the 1.6.0 entry) and load_recovery → "Recovery" (the
+        "…is not installed…" degradation line). Red-before: on this card
+        the old ``assert "stall" not in card.text`` fails — the
+        ``"stall" in card.text`` assert below pins that the substring is
+        present while the marker stays clean."""
+        proj = _project(tmp_git_repo)
+        api.run_start(proj, queue=[T])
+        _make_stalled_stage(proj, 95)
+        monkeypatch.setattr(_brief, "latest_changelog", lambda: _CHANGELOG_160)
+        monkeypatch.setattr(
+            _brief, "load_recovery", lambda: "The plugin package is not installed."
+        )
+        card = api.brief(proj)
+        # the CI condition is present: the card carries the substring…
+        assert "stall" in card.text
+        # …yet it is not a warning: the marker finds nothing.
+        assert not card.stall
+        assert not _card_stall_lines(card)
 
     def test_stall_zero_disables(self, tmp_git_repo: Path) -> None:
         """Explicit ``run.stall_minutes: 0`` → the warning is off."""
