@@ -57,6 +57,92 @@ def _collect_opencode_models() -> list[str]:
     return read_available_models()
 
 
+def _populate_pipeline_compose(
+    data: dict[str, Any],
+    project_dir: Path | None,
+) -> dict[str, Any]:
+    """M7.1: render context for the pipeline-compose form.
+
+    Prefills the form from the selected (or active) pipeline file and
+    offers suggestions the user picks from — the stage schema itself is
+    NOT duplicated here: ``policy_options`` is the awf/pipeline.py
+    registry (POLICY_ALLOWED), and the written document is validated by
+    the same shared validator the write path uses (awf.api.write_pipeline).
+
+    The prefill name is public input (MCP ``data`` dict) — it is validated
+    against the pipeline-name rule (AUD14-05 / public-name-validation
+    contract) before it becomes part of a path. An invalid or missing
+    name degrades to the active pipeline; a broken pipeline file degrades
+    to an empty stage list — the form always opens.
+    """
+    result: dict[str, Any] = {
+        "pipeline_names": [],
+        "active_pipeline": "",
+        "initial_pipeline": "",
+        "initial_stages": [],
+        "existing_pipeline": False,
+        "project_roles": [],
+        "policy_options": {},
+        "pipelines_dir": "",
+    }
+    try:
+        from awf._errors import AwfApiError
+        from awf.api.pipelines import validate_pipeline_name
+        from awf.pipeline import (
+            POLICY_ALLOWED,
+            active_pipeline_name,
+            list_pipeline_names,
+        )
+    except ImportError as e:
+        log.warning("pipeline-compose population unavailable (awf import): %s", e)
+        return result
+
+    result["policy_options"] = {k: list(v) for k, v in POLICY_ALLOWED.items()}
+    if project_dir is None:
+        return result
+
+    try:
+        names = list_pipeline_names(project_dir)
+        active = active_pipeline_name(project_dir)
+    except Exception as e:  # a broken config must not break opening the form
+        log.warning("pipeline-compose: cannot list pipelines: %s", e)
+        return result
+    result["pipeline_names"] = names
+    result["active_pipeline"] = active
+    result["pipelines_dir"] = str(project_dir / ".agentic" / "pipelines")
+
+    roles_dir = project_dir / ".agentic" / "roles"
+    if roles_dir.is_dir():
+        for rf in sorted(roles_dir.glob("*.md")):
+            if rf.stem == "supervisor":
+                continue
+            result["project_roles"].append({"id": rf.stem, "title": rf.stem})
+
+    initial = str(data.get("pipeline") or "").strip() or active
+    try:
+        validate_pipeline_name(initial)
+    except AwfApiError:
+        log.warning(
+            "pipeline-compose: invalid prefill name %r — falling back to %r",
+            initial,
+            active,
+        )
+        initial = active
+    result["initial_pipeline"] = initial
+
+    target = project_dir / ".agentic" / "pipelines" / f"{initial}.yaml"
+    if target.exists():
+        result["existing_pipeline"] = True
+        try:
+            doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+            stages = doc.get("stages") if isinstance(doc, dict) else None
+            if isinstance(stages, list):
+                result["initial_stages"] = [s for s in stages if isinstance(s, dict)]
+        except (yaml.YAMLError, OSError) as e:
+            log.warning("pipeline-compose: cannot read %s: %s", target.name, e)
+    return result
+
+
 def _collect_recent_models() -> list[str]:
     """Recent models from opencode.db sessions (user previously used these).
 
@@ -106,7 +192,12 @@ async def open_form(
     port = get_http_port()
 
     # P2: template whitelist — defense in depth against LLM passing arbitrary paths
-    _ALLOWED_TEMPLATES = {"project-setup", "increment-planning", "ack"}
+    _ALLOWED_TEMPLATES = {
+        "project-setup",
+        "increment-planning",
+        "ack",
+        "pipeline-compose",
+    }
     if template not in _ALLOWED_TEMPLATES:
         log.warning("Rejected open_form with non-whitelisted template: %r", template)
         return {
@@ -193,6 +284,13 @@ async def open_form(
     existing_supervisor_slugs = [sv["id"] for sv in supervisor_variants]
     existing_agent_slugs = [ca["id"] for ca in custom_agents]
 
+    # M7.1: pipeline-compose population — existing pipeline names, the
+    # prefill pipeline's stages, role + policy suggestions. Empty for
+    # other templates (the keys are simply absent from the context).
+    pipeline_compose: dict[str, Any] = {}
+    if template == "pipeline-compose":
+        pipeline_compose = _populate_pipeline_compose(data, project_dir_resolved)
+
     try:
         rendered = render_template(env, template, {
             **data,
@@ -206,6 +304,9 @@ async def open_form(
             "project_roles": project_roles,
             "existing_supervisor_slugs": existing_supervisor_slugs,
             "existing_agent_slugs": existing_agent_slugs,
+            # M7.1: pipeline-compose population (wins over the empty
+            # project_roles default for that template).
+            **pipeline_compose,
         })
     except TemplateNotFound:
         return {

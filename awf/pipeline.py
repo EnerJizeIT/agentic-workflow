@@ -121,6 +121,13 @@ _POLICY_ALLOWED = {
 # is ignored at runtime, so A-06 rejects it at load (it used to warn).
 _ROLLBACK_TO_KEYS = ("on_blocked", "on_rejected")
 
+# M7.1 (ORCH): public read-only aliases of the stage schema registry. The
+# pipeline-compose form (agent_workflow_ui) offers these exact policy words
+# as input suggestions — the form must not keep a second, drifting copy of
+# the allowed values. Validation itself stays in validate_pipeline_stages.
+POLICY_KEYS = _POLICY_KEYS
+POLICY_ALLOWED = _POLICY_ALLOWED
+
 # A-06 (audit 2026-09-25, layer 1): stage keys the pipeline schema accepts.
 # Single source of truth — the write path (awf/api/pipelines.py) imports
 # this set, so a hand-written YAML and an API write are held to the same

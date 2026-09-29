@@ -308,6 +308,16 @@ $ awf start --pipeline audit-llm
   error with the list of what exists — it never silently runs `default`.
 - `awf status` shows the active pipeline and how many are available.
 
+**Compose a pipeline in the browser.** The `pipeline-compose` form (MCP
+`open_form(template="pipeline-compose", project_dir=..., data={"pipeline": "<name>"})`)
+is the pipeline editor: stage rows (role, id, task, input, output,
+policies, budgets) in the run order, prefilled from the selected (or
+active) pipeline file, with role/policy suggestions from the project and
+the pipeline schema. "Preview" shows the target file and the exact stage
+list without writing. Submit applies through the same `write_pipeline`
+API as `awf_write_pipeline` (the "overwrite" checkbox is its `force`) and
+always warns: an active run is not changed — that is `awf_run_revise`.
+
 **Custom role file** (`.agentic/roles/my-custom-role.md`):
 ```markdown
 # My Custom Role

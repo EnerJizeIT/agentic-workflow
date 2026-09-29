@@ -1,0 +1,652 @@
+---
+description: Pipeline-compose form — редактор состава и порядка стадий пайплайна (предзаполнение из файла, предпросмотр без записи, запись через write_pipeline)
+required_data_keys: []
+optional_data_keys:
+  - pipeline
+  - pipeline_names
+  - active_pipeline
+  - initial_pipeline
+  - initial_stages
+  - existing_pipeline
+  - project_roles
+  - policy_options
+  - pipelines_dir
+---
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Состав пайплайна</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --bg-card: #252526;
+      --bg-input: #3c3c3c;
+      --bg-hover: #094771;
+      --text: #d4d4d4;
+      --text-muted: #858585;
+      --accent: #569cd6;
+      --accent-green: #4ec9b0;
+      --border: #464647;
+      --danger: #f14c4c;
+      --radius: 6px;
+      --spacing: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 32px 20px 60px;
+      line-height: 1.5;
+    }
+
+    h1 { font-size: 20px; font-weight: 600; margin-bottom: 2px; }
+
+    .page-hint {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+
+    .section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-bottom: var(--spacing);
+    }
+
+    .section-title {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .section-title .req { color: var(--accent-green); }
+
+    .section-hint {
+      color: var(--text-muted);
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+
+    .field-label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    input[type="text"], input[type="number"] {
+      background: var(--bg-input);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      width: 100%;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus, input[type="number"]:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); }
+
+    .btn {
+      background: var(--bg-input);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .btn-add {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 7px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .btn-add:hover { background: var(--bg-input); border-color: var(--accent); }
+
+    .btn-remove {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px;
+      opacity: 0.5;
+      line-height: 1;
+    }
+
+    .btn-remove:hover { opacity: 1; }
+
+    .btn-reorder {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 2px 5px;
+      opacity: 0.5;
+      line-height: 1;
+    }
+
+    .btn-reorder:hover { opacity: 1; color: var(--accent); }
+
+    .btn-preview {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      padding: 10px 16px;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      margin-bottom: var(--spacing);
+      width: 100%;
+    }
+
+    .btn-preview:hover { background: var(--bg-input); }
+
+    .btn-submit {
+      background: var(--accent-green);
+      color: var(--bg);
+      border: none;
+      border-radius: var(--radius);
+      padding: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      width: 100%;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.2s;
+    }
+
+    .btn-submit:hover:not(:disabled) { filter: brightness(1.15); }
+    .btn-submit:disabled { opacity: 0.35; cursor: not-allowed; background: var(--text-muted); }
+
+    /* === Stage cards === */
+
+    .stage-row {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      background: var(--bg);
+    }
+
+    .stage-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .stage-num {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      min-width: 22px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      padding: 1px 4px;
+    }
+
+    .stage-name {
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .stage-spacer { flex: 1; }
+
+    .stage-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0 14px;
+    }
+
+    @media (min-width: 700px) {
+      .stage-grid { grid-template-columns: repeat(3, 1fr); }
+      .field.wide { grid-column: span 3; }
+    }
+
+    .stage-empty {
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 14px 0;
+    }
+
+    /* === Preview === */
+
+    .preview-target {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: var(--accent-green);
+      margin-bottom: 4px;
+      word-break: break-all;
+    }
+
+    .preview-status {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .preview-status.warn { color: var(--danger); }
+
+    pre.preview-yaml {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 12px;
+      font-size: 12px;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    /* === Notes === */
+
+    .note {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+
+    .note.warn { color: var(--danger); }
+
+    .run-warning {
+      border-color: var(--accent-green);
+    }
+
+    .run-warning .section-title { color: var(--accent-green); }
+  </style>
+</head>
+<body>
+  <h1>Состав пайплайна</h1>
+  <p class="page-hint">
+    Соберите пайплайн из стадий: роли, порядок, политики и бюджеты.
+    Предпросмотр показывает, что будет записано, без записи.
+  </p>
+
+  <form id="compose-form" action="{{ submit_url }}" method="post">
+
+    <!-- === Section 1: Пайплайн === -->
+    <div class="section">
+      <div class="section-title">Пайплайн <span class="req">*</span></div>
+      <div class="field">
+        <label class="field-label" for="pipeline-name">Имя пайплайна</label>
+        <input type="text" id="pipeline-name" name="pipeline_name"
+               list="pipeline-names-list"
+               value="{{ initial_pipeline | default('', true) }}"
+               placeholder="default" required>
+      </div>
+      {% if existing_pipeline %}
+      <p class="note">Файл уже существует — для перезаписи нужна галочка «Перезаписать» (force).</p>
+      {% endif %}
+      <div class="field">
+        <label>
+          <input type="checkbox" name="force" id="force-cb"
+                 {% if existing_pipeline %}checked{% endif %}>
+          Перезаписать существующий пайплайн (force)
+        </label>
+      </div>
+    </div>
+
+    <!-- === Section 2: Стадии === -->
+    <div class="section">
+      <div class="section-title">Стадии <span class="req">*</span></div>
+      <p class="section-hint">
+        Порядок карточек = порядок стадий: первая — plan, последняя — verify.
+        Все поля, кроме <code>role</code>, необязательны; пустые поля не
+        попадут в файл. <code>id</code> нужен, если одна роль встречается
+        дважды. Пустые политики — дефолт движка.
+      </p>
+
+      <div id="stage-rows"></div>
+      <p class="stage-empty" id="stage-empty">Стадий нет — добавьте хотя бы одну</p>
+
+      <div class="field" style="margin-top: 10px;">
+        <button type="button" class="btn-add" id="add-stage-btn">+ Добавить стадию</button>
+      </div>
+    </div>
+
+    <!-- === Preview (dry, no write) === -->
+    <div class="section" id="preview-section" hidden>
+      <div class="section-title">Предпросмотр — без записи</div>
+      <div class="preview-target" id="preview-target"></div>
+      <div class="preview-status" id="preview-status"></div>
+      <pre class="preview-yaml" id="preview-yaml"></pre>
+    </div>
+
+    <!-- === Run warning === -->
+    <div class="section run-warning">
+      <div class="section-title">Активный забег не меняется</div>
+      <p class="note" style="color: var(--text);">
+        Форма пишет только файл <code>.agentic/pipelines/&lt;имя&gt;.yaml</code>.
+        Состав уже идущего забега меняется через <code>awf_run_revise</code>.
+      </p>
+    </div>
+
+    <button type="button" class="btn-preview" id="preview-btn">Предпросмотр</button>
+    <button type="submit" class="btn-submit" id="submit-btn" disabled>Сохранить пайплайн</button>
+    <p class="note warn" id="overwrite-note"></p>
+    <input type="hidden" name="stages_json" id="stages-json" value="">
+  </form>
+
+  <!-- Datalists: suggestions only, validation is server-side (awf/pipeline.py registry) -->
+  <datalist id="pipeline-names-list">
+    {% for n in (pipeline_names or []) %}<option value="{{ n }}">{% endfor %}
+  </datalist>
+  <datalist id="roles-list">
+    {% for r in (project_roles or []) %}<option value="{{ r.id }}">{% endfor %}
+  </datalist>
+  {% for key, options in (policy_options or {}).items() %}
+  <datalist id="pol-{{ key }}">
+    {% for o in options %}<option value="{{ o }}">{% endfor %}
+  </datalist>
+  {% endfor %}
+
+  <script>
+    (function () {
+      {# AUD09-03: data is tojson literals — raw interpolation broke the
+         whole <script> on backslash/newline/quote in stage values. #}
+      var initialStages = {{ initial_stages | default([]) | tojson }};
+      var pipelineNames = {{ (pipeline_names or []) | tojson }};
+      var pipelinesDir = {{ (pipelines_dir or '') | tojson }};
+      var prefillExisting = {{ 'true' if existing_pipeline else 'false' }};
+      var prefillName = {{ (initial_pipeline or '') | tojson }};
+
+      function slugify(name) {
+        var m = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};
+        var s = (name || '').toLowerCase().split('').map(function (c) { return m[c] !== undefined ? m[c] : c; }).join('');
+        s = s.replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '');
+        return s || name;
+      }
+
+      // The stage fields — the same keys the pipeline YAML accepts
+      // (awf/pipeline.py registry). Empty values are omitted on submit.
+      var FIELDS = [
+        { key: "role", label: "Роль (role) *" },
+        { key: "id", label: "id (адрес стадии)" },
+        { key: "task", label: "task (краткая задача)" },
+        { key: "input", label: "input (путь в проекте)" },
+        { key: "output", label: "output (путь в проекте)" },
+        { key: "description", label: "description", wide: true },
+        { key: "on_blocked", label: "on_blocked", policy: "on_blocked" },
+        { key: "on_approved", label: "on_approved", policy: "on_approved" },
+        { key: "on_rejected", label: "on_rejected", policy: "on_rejected" },
+        { key: "on_failed", label: "on_failed", policy: "on_failed" },
+        { key: "max_retries", label: "max_retries", type: "number" },
+        { key: "max_rollbacks", label: "max_rollbacks", type: "number" }
+      ];
+
+      function mkBtn(text, cls, title) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = cls;
+        b.title = title;
+        b.textContent = text;
+        return b;
+      }
+
+      function buildStageRow(stage) {
+        stage = stage || {};
+        var row = document.createElement('div');
+        row.className = 'stage-row';
+
+        var head = document.createElement('div');
+        head.className = 'stage-head';
+        var num = document.createElement('span');
+        num.className = 'stage-num';
+        var namePrev = document.createElement('span');
+        namePrev.className = 'stage-name';
+        var spacer = document.createElement('span');
+        spacer.className = 'stage-spacer';
+        head.appendChild(num);
+        head.appendChild(namePrev);
+        head.appendChild(spacer);
+        head.appendChild(mkBtn('▲', 'btn-reorder stage-up', 'Вверх'));
+        head.appendChild(mkBtn('▼', 'btn-reorder stage-down', 'Вниз'));
+        head.appendChild(mkBtn('×', 'btn-remove stage-remove', 'Удалить стадию'));
+        row.appendChild(head);
+
+        var grid = document.createElement('div');
+        grid.className = 'stage-grid';
+        FIELDS.forEach(function (f) {
+          var div = document.createElement('div');
+          div.className = 'field' + (f.wide ? ' wide' : '');
+          var label = document.createElement('label');
+          label.className = 'field-label';
+          label.textContent = f.label;
+          var inp = document.createElement('input');
+          inp.type = f.type || 'text';
+          inp.className = 'st-' + f.key;
+          if (f.key === 'role') inp.setAttribute('list', 'roles-list');
+          if (f.policy) inp.setAttribute('list', 'pol-' + f.policy);
+          if (f.type === 'number') { inp.min = '0'; inp.step = '1'; }
+          var v = stage[f.key];
+          if (v !== undefined && v !== null && v !== '') inp.value = String(v);
+          div.appendChild(label);
+          div.appendChild(inp);
+          grid.appendChild(div);
+        });
+        row.appendChild(grid);
+        refreshNames();
+        return row;
+      }
+
+      // Stage name the write path will compute: id, then the role slug.
+      function stageNameOf(row) {
+        var idInp = row.querySelector('.st-id');
+        var roleInp = row.querySelector('.st-role');
+        var id = idInp ? idInp.value.trim() : '';
+        var role = roleInp ? roleInp.value.trim() : '';
+        if (id) return id;
+        if (role) return slugify(role);
+        return '';
+      }
+
+      function refreshNames() {
+        var rows = document.querySelectorAll('#stage-rows .stage-row');
+        rows.forEach(function (row, i) {
+          row.querySelector('.stage-num').textContent = String(i + 1);
+          var name = stageNameOf(row);
+          row.querySelector('.stage-name').textContent = name ? name + ' (' + (row.querySelector('.st-role').value.trim() || '—') + ')' : '—';
+        });
+      }
+
+      function updateEmpty() {
+        var rows = document.querySelectorAll('#stage-rows .stage-row');
+        document.getElementById('stage-empty').style.display = rows.length > 0 ? 'none' : '';
+      }
+
+      function budgetBad(inp) {
+        var v = inp.value.trim();
+        if (v === '') return false;
+        var n = Number(v);
+        return !Number.isInteger(n) || n < 0;
+      }
+
+      function validate() {
+        var rows = document.querySelectorAll('#stage-rows .stage-row');
+        var name = document.getElementById('pipeline-name').value.trim();
+        var rowsOk = rows.length > 0 && Array.prototype.every.call(rows, function (row) {
+          var role = row.querySelector('.st-role').value.trim();
+          var badBudget = Array.prototype.some.call(
+            row.querySelectorAll('input[type="number"]'),
+            function (i) { return budgetBad(i); }
+          );
+          return role !== '' && !badBudget;
+        });
+        var overwriteBlocked =
+          prefillExisting &&
+          name === prefillName &&
+          !document.getElementById('force-cb').checked;
+        var ok = name !== '' && rowsOk && !overwriteBlocked;
+        document.getElementById('submit-btn').disabled = !ok;
+        document.getElementById('overwrite-note').textContent = overwriteBlocked
+          ? 'Файл существует — поставьте «Перезаписать» (force), чтобы сохранить поверх него'
+          : '';
+        refreshNames();
+      }
+
+      // Collect the stage list exactly as the write path expects
+      // (empty fields omitted; numbers as integers).
+      function collectStages() {
+        var out = [];
+        document.querySelectorAll('#stage-rows .stage-row').forEach(function (row) {
+          var st = {};
+          FIELDS.forEach(function (f) {
+            var inp = row.querySelector('.st-' + f.key);
+            if (!inp) return;
+            var v = inp.value.trim();
+            if (v === '') return;
+            if (f.type === 'number') {
+              var n = Number(v);
+              if (Number.isInteger(n) && n >= 0) st[f.key] = n;
+            } else {
+              st[f.key] = v;
+            }
+          });
+          if (st.role) out.push(st);
+        });
+        return out;
+      }
+
+      // Minimal YAML emitter for the preview. JSON double-quoted scalars
+      // are valid YAML, so values with spaces/colons stay readable and
+      // parseable.
+      function yamlValue(v) {
+        var s = String(v);
+        if (s !== '' && /^[A-Za-z0-9._/-]+$/.test(s) && !/^(true|false|null|yes|no|on|off)$/i.test(s)) {
+          return s;
+        }
+        return JSON.stringify(s);
+      }
+
+      function buildYamlPreview(name, stages) {
+        var lines = ['name: ' + yamlValue(name || '(имя не указано)')];
+        if (!stages.length) {
+          lines.push('stages: []');
+          return lines.join('\n');
+        }
+        lines.push('stages:');
+        stages.forEach(function (st) {
+          var role = slugify(st.role);
+          lines.push('- role: ' + yamlValue(role));
+          if (st.id) lines.push('  id: ' + yamlValue(st.id));
+          lines.push('  name: ' + yamlValue(st.id || role));
+          if (st.task) lines.push('  task: ' + yamlValue(st.task));
+          if (st.description) lines.push('  description: ' + yamlValue(st.description));
+          if (st.input) lines.push('  input: ' + yamlValue(st.input));
+          if (st.output) lines.push('  output: ' + yamlValue(st.output));
+          ['on_blocked', 'on_approved', 'on_rejected', 'on_failed'].forEach(function (k) {
+            if (st[k]) lines.push('  ' + k + ': ' + yamlValue(st[k]));
+          });
+          if (st.max_retries !== undefined) lines.push('  max_retries: ' + st.max_retries);
+          if (st.max_rollbacks !== undefined) lines.push('  max_rollbacks: ' + st.max_rollbacks);
+        });
+        return lines.join('\n');
+      }
+
+      document.getElementById('preview-btn').addEventListener('click', function () {
+        var name = document.getElementById('pipeline-name').value.trim();
+        var stages = collectStages();
+        var section = document.getElementById('preview-section');
+        section.hidden = false;
+        var dir = pipelinesDir || '.agentic/pipelines';
+        document.getElementById('preview-target').textContent =
+          dir + '/' + (name || '(имя не указано)') + '.yaml';
+        var exists = !!name && pipelineNames.indexOf(name) !== -1;
+        var force = document.getElementById('force-cb').checked;
+        var status = document.getElementById('preview-status');
+        status.textContent = exists
+          ? (force ? 'Существующий файл — будет перезаписан (force).'
+                   : 'Существующий файл — без force запись будет отказана.')
+          : 'Новый файл.';
+        status.classList.toggle('warn', exists && !force);
+        document.getElementById('preview-yaml').textContent = buildYamlPreview(name, stages);
+        section.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+
+      document.getElementById('add-stage-btn').addEventListener('click', function () {
+        document.getElementById('stage-rows').appendChild(buildStageRow());
+        updateEmpty();
+        validate();
+      });
+
+      document.getElementById('stage-rows').addEventListener('click', function (e) {
+        var row = e.target.closest('.stage-row');
+        if (!row) return;
+        if (e.target.classList.contains('stage-remove')) {
+          row.remove();
+          updateEmpty();
+          validate();
+        } else if (e.target.classList.contains('stage-up')) {
+          var prev = row.previousElementSibling;
+          if (prev) row.parentNode.insertBefore(row, prev);
+          refreshNames();
+        } else if (e.target.classList.contains('stage-down')) {
+          var next = row.nextElementSibling;
+          if (next) row.parentNode.insertBefore(next, row);
+          refreshNames();
+        }
+      });
+
+      document.getElementById('compose-form').addEventListener('submit', function (e) {
+        var stages = collectStages();
+        if (!stages.length) {
+          e.preventDefault();
+          return;
+        }
+        document.getElementById('stages-json').value = JSON.stringify(stages);
+      });
+
+      // Init: prefill rows from the selected/active pipeline.
+      var rowsBox = document.getElementById('stage-rows');
+      initialStages.forEach(function (s) { rowsBox.appendChild(buildStageRow(s)); });
+      updateEmpty();
+      validate();
+
+      document.addEventListener('input', function () { validate(); });
+      document.addEventListener('change', function () { validate(); });
+    })();
+  </script>
+</body>
+</html>

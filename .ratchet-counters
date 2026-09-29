@@ -795,4 +795,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # warning; awf/api/roles.py — the typed adopt refusal) and the QA role
 # files (awf/templates + the root mirror — the BLOCKED-signal rule line)
 # carry no TODO id (the rule uses the lowercase {todo} placeholder).
+# ORCH M7.1-2026-09-29 (TODO-0150): baseline raised 4496 -> 4497 — the
+# pipeline-compose form unit adds 1 TODO-bearing line: the unit-id
+# reference in the docstring of
+# tests/agent_workflow_ui/test_pipeline_compose_form.py. Same class as
+# above: unit reference, not debt. files_over_400 stays 66 (the new test
+# file is 346 lines — under the bar); the template and the production
+# changes (forms.py, http_endpoint.py, awf/pipeline.py, USAGE EN/RU,
+# docs/design.md) carry no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
