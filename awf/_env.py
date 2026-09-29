@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -107,12 +108,65 @@ def control_tool_permission_keys() -> list[str]:
     return [f"{MCP_CONTROL_SERVER}_{tool}" for tool in CONTROL_TOOLS]
 
 
+# ORCH M7.2 (29.09): tools-profile registry — the permission keys a stage
+# ``tools: {allow/deny}`` profile may name. The builtin tools opencode
+# gates by name, plus MCP tools as ``<server>_<tool>`` (the same
+# mechanism M2.2 uses: permission keys glob-match tool names). Single
+# source of truth — the loader (awf/pipeline.py) validates against it,
+# so an unknown key is a pipeline load error, not a silent no-op.
+BUILTIN_TOOLS: tuple[str, ...] = ("bash", "edit", "write", "webfetch")
+
+_MCP_KEY_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_-]*_[A-Za-z0-9][A-Za-z0-9_-]*\Z"
+)
+
+
+def is_known_permission_key(key: str) -> bool:
+    """ORCH M7.2: True when *key* is in the tools-profile registry."""
+    if key in BUILTIN_TOOLS:
+        return True
+    return _MCP_KEY_RE.fullmatch(key) is not None
+
+
+def merge_tool_profile(
+    base_permissions: dict[str, str],
+    tools_profile: dict[str, list[str]] | None,
+    locked_deny: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """ORCH M7.2: merge a stage tools-profile onto base permissions.
+
+    Rules (M7.2 contract):
+    - the profile adds ``allow``/``deny`` entries on top of the base
+      (host config + awf overrides + readonly_roles);
+    - deny beats allow — a key listed in both ends up denied;
+    - ``locked_deny`` stays denied no matter what the profile says —
+      the base control prohibitions (M2.2 control tools on execute
+      stages, edit/write for a readonly role) cannot be lifted by a
+      profile.
+
+    Returns a new dict; the inputs are not mutated. A profile narrows
+    the stage's discretionary tools — it is NOT a security boundary.
+    """
+    merged = dict(base_permissions)
+    if tools_profile:
+        profile: dict[str, str] = {}
+        for key in tools_profile.get("allow") or ():
+            profile[key] = "allow"
+        for key in tools_profile.get("deny") or ():
+            profile[key] = "deny"  # deny beats allow
+        merged.update(profile)
+    for key in locked_deny:
+        merged[key] = "deny"
+    return merged
+
+
 def awf_subprocess_env(
     *,
     role: str = "",
     project_dir: str | Path | None = None,
     agent_name: str = "",
     restrict_control_tools: bool = False,
+    tools_profile: dict[str, list[str]] | None = None,
 ) -> dict[str, str]:
     """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
@@ -139,6 +193,15 @@ def awf_subprocess_env(
     re-enable them for a listed role. ``bash`` stays ``allow``
     (deliberate: QA runs tests); ``webfetch`` and everything else stay
     as before.
+
+    ORCH M7.2 (29.09): ``tools_profile`` (a stage's ``tools:
+    {allow/deny}`` mapping, permission keys) merges on top of those base
+    rules — deny beats allow; the base control prohibitions (M2.2
+    control tools on execute stages, readonly edit/write) are locked and
+    a profile cannot lift them. Without a profile the payload is
+    unchanged. The profile narrows the stage's discretionary tools —
+    it is NOT a security boundary (``bash`` stays allowed unless the
+    profile denies it).
 
     KAUD-5: MERGES with user's existing opencode.json instead of replacing.
     Reads user's config, adds our permission overrides on top, preserves
@@ -183,8 +246,19 @@ def awf_subprocess_env(
     else:
         overrides["edit"] = "allow"
         overrides["write"] = "allow"
-    merged_permissions.update(overrides)
-    merged["permission"] = merged_permissions
+    # ORCH M7.2: base control prohibitions a stage tools-profile cannot
+    # lift — M2.2 control tools (execute stages) + readonly edit/write.
+    locked_deny: tuple[str, ...] = ()
+    if restrict_control_tools:
+        locked_deny = tuple(control_tool_permission_keys())
+    if readonly:
+        locked_deny = locked_deny + ("edit", "write")
+    base_permissions = dict(merged_permissions)
+    base_permissions.update(overrides)
+    final_permissions = merge_tool_profile(
+        base_permissions, tools_profile, locked_deny
+    )
+    merged["permission"] = final_permissions
 
     # ORCH M2.2: execute stages hide the control MCP tools from the
     # stage's agent only — an agent-scoped deny block, merged by opencode
@@ -201,7 +275,7 @@ def awf_subprocess_env(
     # providers, or other sensitive fields from opencode.json. Workers only
     # need the permission overrides; everything else is loaded by opencode
     # itself from the real config file.
-    payload: dict = {"permission": merged_permissions}
+    payload: dict = {"permission": final_permissions}
     if agent_block is not None:
         payload["agent"] = agent_block
     config_json = json.dumps(payload)

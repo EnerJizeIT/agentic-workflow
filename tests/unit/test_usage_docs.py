@@ -13,17 +13,10 @@ from pathlib import Path
 
 import yaml
 
-from awf.pipeline import Stage, load_stages
+from awf.pipeline import ALLOWED_STAGE_KEYS, Stage, load_stages
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 USAGE_MD = REPO_ROOT / "USAGE.md"
-
-# Keys load_stages accepts on a stage entry (awf/pipeline.py).
-ALLOWED_STAGE_KEYS = {
-    "name", "role", "description",
-    "on_blocked", "on_approved", "on_rejected", "on_failed",
-    "max_retries", "max_rollbacks",
-}
 
 
 def _stages_blocks() -> list[str]:

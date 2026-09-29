@@ -795,4 +795,19 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # warning; awf/api/roles.py — the typed adopt refusal) and the QA role
 # files (awf/templates + the root mirror — the BLOCKED-signal rule line)
 # carry no TODO id (the rule uses the lowercase {todo} placeholder).
+# ORCH M7.1-2026-09-29 (TODO-0150): baseline raised 4496 -> 4497 — the
+# pipeline-compose form unit adds 1 TODO-bearing line: the unit-id
+# reference in the docstring of
+# tests/agent_workflow_ui/test_pipeline_compose_form.py. Same class as
+# above: unit reference, not debt. files_over_400 stays 66 (the new test
+# file is 346 lines — under the bar); the template and the production
+# changes (forms.py, http_endpoint.py, awf/pipeline.py, USAGE EN/RU,
+# docs/design.md) carry no TODO id.
+# ORCH M7.3 (TODO-0152, аналитический сквозной сценарий): baseline raised
+# 4497 -> 4514 — the new tests/e2e/test_analytical_composition.py adds 17
+# TODO-bearing lines: the TODO-0001 fixture ids (inbox .md/.ready + APPROVE
+# signals, the done/handoff archive paths, the commit-subject and ack
+# assertions of the two scenario tests) and the module-docstring unit
+# reference. Same class as above: test identifiers, not debt. The USAGE
+# EN/RU example (the non-code composition) carries no TODO id.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

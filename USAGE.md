@@ -286,6 +286,32 @@ stages:
     on_rejected: replan
 ```
 
+**Non-code composition (analysis, research, documentation).** The same
+schema serves tasks whose product is documents, not code: each stage
+declares the document it produces as `output`, and the engine checks it
+(present, written by this stage) before the stage advances. The verify
+commit carries those documents — a unit commit is not code-only.
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    task: Gather and structure the requirements
+    output: docs/requirements.md
+    tools:
+      deny: [edit, write]
+  - name: writer
+    role: agent-writer
+    task: Write the final analysis
+    input: docs/requirements.md
+    output: docs/analysis.md
+  - name: verify
+    role: supervisor
+    on_approved: commit_and_next
+```
+
 **Multiple pipelines side by side.** Keep several pipelines in one
 project and run the needed one by name:
 
@@ -307,6 +333,16 @@ $ awf start --pipeline audit-llm
 - An unknown `--pipeline` name (or `awf_start(pipeline=...)`) is a clear
   error with the list of what exists — it never silently runs `default`.
 - `awf status` shows the active pipeline and how many are available.
+
+**Compose a pipeline in the browser.** The `pipeline-compose` form (MCP
+`open_form(template="pipeline-compose", project_dir=..., data={"pipeline": "<name>"})`)
+is the pipeline editor: stage rows (role, id, task, input, output,
+policies, budgets) in the run order, prefilled from the selected (or
+active) pipeline file, with role/policy suggestions from the project and
+the pipeline schema. "Preview" shows the target file and the exact stage
+list without writing. Submit applies through the same `write_pipeline`
+API as `awf_write_pipeline` (the "overwrite" checkbox is its `force`) and
+always warns: an active run is not changed — that is `awf_run_revise`.
 
 **Custom role file** (`.agentic/roles/my-custom-role.md`):
 ```markdown
@@ -439,6 +475,34 @@ search tools and observability tools (status, brief, report) stay
 available. `plan`/`verify` stages keep the full set. This reduces
 accidental errors — it is not a security boundary; strict isolation of
 a worker is a separate effort.
+
+**Stage tools profile (ORCH M7.2).** A stage may declare `tools` with
+`allow`/`deny` lists of opencode permission keys — `bash`, `edit`,
+`write`, `webfetch` and MCP tools as `<server>_<tool>`:
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    tools:
+      deny: [edit, write]
+  - name: verify
+    role: supervisor
+```
+
+The profile merges onto the base permission rules at spawn (host
+`opencode.json` → awf overrides → `readonly_roles` → the M2.2 control
+denial): deny beats allow, and the base control prohibitions are never
+cancelled — a profile cannot re-enable the control tools on an execute
+stage or `edit`/`write` for a readonly role. An unknown key is a
+pipeline load error (single registry, same rule set as the stage
+schema: load and write). Without `tools` the behavior is unchanged.
+The profile narrows the stage's discretionary tools — it is not a
+security boundary (`bash` stays allowed unless the profile denies it).
+`plan`/`verify` stages are unrestricted by default; a declared profile
+applies to any stage kind.
 
 ### TODO
 | Tool | What it does |

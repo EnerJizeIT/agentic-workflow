@@ -209,11 +209,14 @@ def run_agent_stage(
         # gets no edit/write permission overrides.
         # ORCH M2.2: execute stages hide the control MCP tools from the
         # stage's agent (plan/verify keep the full set).
+        # ORCH M7.2: the stage's tools profile (tools: allow/deny)
+        # merges onto the base rules; absent → unchanged behavior.
         env=awf_subprocess_env(
             role=role,
             project_dir=project_dir,
             agent_name=agent_name,
             restrict_control_tools=(kind == "execute"),
+            tools_profile=stage.tools or None,
         ),
         hard_timeout=hard_timeout,
         log_holder=log_holder,

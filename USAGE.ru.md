@@ -262,6 +262,59 @@ set-goal, confirm-normalized (22 всего, `awf._env.CONTROL_TOOLS`).
 случайных ошибок, а не граница безопасности; строгая изоляция воркера
 — отдельный этап.
 
+**Профиль tools стадии (ORCH M7.2).** Стадия может объявить `tools` со
+списками `allow`/`deny` permission-ключей opencode — `bash`, `edit`,
+`write`, `webfetch` и MCP-tools вида `<server>_<tool>`:
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    tools:
+      deny: [edit, write]
+  - name: verify
+    role: supervisor
+```
+
+Профиль мержится при спавне поверх базовых правил (host-`opencode.json`
+→ awf-оверрайды → `readonly_roles` → запрет M2.2): deny сильнее allow,
+и базовые управляющие запреты не отменяются — профиль не может
+включить управляющие tools на execute-стадии или `edit`/`write`
+readonly-роли. Неизвестный ключ — ошибка загрузки пайплайна (единый
+реестр, один ruleset загрузки и записи). Без `tools` поведение не
+меняется. Профиль сужает случайные возможности стадии — это не граница
+безопасности (`bash` остаётся доступным, если профиль его явно не
+запретил). Стадии `plan`/`verify` по умолчанию без ограничений;
+объявленный профиль действует на стадию любого вида.
+
+**Не-код-состав (аналитика, исследование, документация).** Та же схема
+работает для задач, где продукт — документы, а не код: каждая стадия
+объявляет документ, который создаёт, как `output`, и движок проверяет его
+(существует, написан этой стадией), прежде чем стадия пройдёт дальше.
+Коммит verify несёт эти документы — unit-коммит не только про код.
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    task: Gather and structure the requirements
+    output: docs/requirements.md
+    tools:
+      deny: [edit, write]
+  - name: writer
+    role: agent-writer
+    task: Write the final analysis
+    input: docs/requirements.md
+    output: docs/analysis.md
+  - name: verify
+    role: supervisor
+    on_approved: commit_and_next
+```
+
 **Именованные пайплайны.** Несколько пайплайнов в одном проекте,
 запуск нужного по имени:
 
@@ -283,6 +336,16 @@ $ awf start --pipeline audit-llm
 - Неизвестное имя в `--pipeline` (или `awf_start(pipeline=...)`) — внятная
   ошибка со списком доступных; молчаливого запуска `default` нет.
 - `awf status` показывает активный пайплайн и число доступных.
+
+**Составление пайплайна в браузере.** Форма `pipeline-compose` (MCP
+`open_form(template="pipeline-compose", project_dir=..., data={"pipeline": "<имя>"})`)
+— редактор пайплайна: строки стадий (роль, id, task, input, output,
+политики, бюджеты) в порядке прогона, предзаполнение из выбранного (или
+активного) файла пайплайна, подсказки ролей и политик из проекта и схемы
+пайплайна. «Предпросмотр» показывает файл и точный список стадий без
+записи. Submit применяется через тот же API `write_pipeline`, что и
+`awf_write_pipeline` (галочка «перезаписать» — его `force`), и всегда с
+предупреждением: активный забег не меняется — это `awf_run_revise`.
 
 ### TODO
 | Tool | Что делает |

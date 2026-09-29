@@ -555,14 +555,77 @@ def apply_form_submit(template: str, data: dict[str, Any], project_dir: Path | N
     """A-05: run the submit's materialization and report the outcome.
 
     project-setup → role save/delete + apply_project_setup (roles_processor);
-    increment-planning → apply_increment_plan; other templates have nothing
-    to materialize (empty ok result).
+    increment-planning → apply_increment_plan; pipeline-compose →
+    awf.api.write_pipeline (M7.1); other templates have nothing to
+    materialize (empty ok result).
     """
     if template == "project-setup":
         return _apply_project_setup_submit(data, project_dir)
     if template == "increment-planning":
         return _apply_increment_planning_submit(data, project_dir)
+    if template == "pipeline-compose":
+        return _apply_pipeline_compose_submit(data, project_dir)
     return ApplyResult(ok=True)
+
+
+def _apply_pipeline_compose_submit(data: dict[str, Any], project_dir: Path | None) -> ApplyResult:
+    """M7.1: pipeline-compose → awf.api.write_pipeline.
+
+    No duplicated stage validation: the stages list goes straight into
+    write_pipeline, whose shared validator (awf/pipeline.py registry) is
+    the single source of truth for the schema. The form's force checkbox
+    maps to write_pipeline's force (overwrite an existing pipeline file).
+
+    The result always carries the active-run warning: this form writes
+    ONLY the pipeline file — an in-flight run is revised with
+    awf_run_revise, never by this submit.
+    """
+    active_run_warning = (
+        "an active run is not changed by this form — "
+        "revise a running run with awf_run_revise"
+    )
+    if not project_dir:
+        return ApplyResult(
+            ok=True,
+            warnings=["no project_dir — pipeline not materialized", active_run_warning],
+        )
+
+    name = str(data.get("pipeline_name", "") or "").strip()
+    force = str(data.get("force", "") or "") == "on"
+    stages_raw = data.get("stages_json", "") or "[]"
+    try:
+        stages = json.loads(stages_raw) if isinstance(stages_raw, str) else stages_raw
+        if not isinstance(stages, list):
+            stages = None
+    except (json.JSONDecodeError, TypeError) as e:
+        return ApplyResult(
+            ok=False,
+            errors=[f"stages_json is not valid JSON: {e}"],
+            warnings=[active_run_warning],
+        )
+    if not stages:
+        return ApplyResult(
+            ok=False,
+            errors=["no stages submitted — the form must carry at least one stage"],
+            warnings=[active_run_warning],
+        )
+
+    try:
+        from awf.api import write_pipeline
+
+        result = write_pipeline(Path(project_dir), name, stages, force=force)
+    except Exception as e:
+        log.error("write_pipeline failed: %s", e)
+        return ApplyResult(ok=False, errors=[f"write_pipeline: {e}"], warnings=[active_run_warning])
+
+    return ApplyResult(
+        ok=True,
+        applied=[
+            f"pipeline '{result.name}' → {result.file} "
+            f"({result.stages} stages, overwritten={result.overwritten})"
+        ],
+        warnings=[active_run_warning],
+    )
 
 
 def _apply_project_setup_submit(data: dict[str, Any], project_dir: Path | None) -> ApplyResult:

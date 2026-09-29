@@ -270,11 +270,13 @@ def test_allowed_keys_set_pinned():
 
     ORCH M3.1: + ``id`` (адрес стадии) и ``task`` (поручение стадии).
     ORCH M3.2: + ``input``/``output`` (объявленные входы/выходы стадии).
+    ORCH M7.2: + ``tools`` (профиль allow/deny permission-ключей стадии).
     """
     from awf.pipeline import ALLOWED_STAGE_KEYS
 
     assert ALLOWED_STAGE_KEYS == {
         "name", "role", "description", "id", "task", "input", "output",
+        "tools",
         "on_blocked", "on_approved", "on_rejected", "on_failed",
         "max_retries", "max_rollbacks",
     }
