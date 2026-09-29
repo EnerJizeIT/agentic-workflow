@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-09-29
+
+ORCH milestones M4–M7: the supervisor can stop and revise a running unit,
+sees stalled stages and reconciles the run against its goal, gets a formal
+stage result, creates project roles mid-run, and configures the worker
+composition from a form; quality now has CI ratchets.
+
+### Added
+
+- **`awf_run_revise(stop_running=true)`.** Stops the live unit through the
+  standard kill path (TERM → grace → KILL, worker tree), keeps the resume
+  point, applies the revision, and `awf_continue` resumes from the stopped
+  stage; a failed stop leaves the previous plan in force.
+- **Progress control.** `run.stall_minutes` (off by default) warns about a
+  stalled stage in `brief`/`status`; the RUN-REPORT reconciles the goal and
+  criteria against what ran, lists risks, and names the next step.
+- **StageResult.** `DONE.json` accepts an optional `stage` block
+  (`stage_id`/`role`/`model`/`attempt`); the handoff carries "Stage facts"
+  filled by the engine even without a worker report.
+- **Role drafts.** `awf add-role --draft` writes a candidate to
+  `.agentic/roles/draft/<slug>.md`; list/adopt/discard; adopt refuses a slug
+  that collides with a live role.
+- **Service runs (4 tools).** A role can be created during an active run:
+  the service run keeps its own state file and slot, the main run stays
+  byte-intact, the candidate is the declared output, and finishing reports
+  how to resume the main queue.
+- **Incremental adopt.** Adopting a candidate refreshes zone-overlap
+  addenda through the existing mechanism — no setup-phase restart, existing
+  role files are never overwritten.
+- **Composition form.** `pipeline-compose` builds the stage list
+  (role/id/task/outputs) and submits through the shared validator
+  (`write_pipeline`); an active run is not touched.
+- **Per-assignment tool profiles.** A stage accepts `tools: {allow, deny}`;
+  deny beats allow and the base prohibitions (control tools of execute
+  stages, `edit`/`write` of readonly roles) cannot be lifted.
+- **Quality ratchets in CI.** `scripts/coverage.sh` (total plus per-module
+  floors for the new modules) and the mutation smoke (9 base mutants) run in
+  the test job; the full mutation report carries 22.
+
+### Changed
+
+- **A revision moves the run to a new cycle.** The applied revision bumps
+  the run generation in the same CAS write, so an approval published for the
+  pre-revision generation is refused instead of committing work the revision
+  was meant to invalidate.
+- **Liveness verifies the project.** A reused PID that holds another
+  project's pipeline is no longer treated as a running pipeline here.
+- MCP tool surface: 48 → **52**.
+
+### Fixed
+
+- A stale approval could survive a queue revision and unlock the commit.
+- A reused PID (parallel test workers) made `run_revise` refuse a legitimate
+  change as "a stage is running".
+- The QA role contract: a BLOCKED verdict must publish the BLOCKED signal
+  and must not write a DONE report.
+
 ## [1.5.0] — 2026-09-27
 
 The ORCH program (development strategy 2026-09-27): the supervisor keeps a

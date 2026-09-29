@@ -4,6 +4,41 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [1.6.0] — 2026-09-29
+
+The second half of the ORCH program: the supervisor stops and revises live
+units, sees the goal behind the run, and can grow the team mid-flight.
+
+### Added
+
+- **Stop a running unit and revise the queue in one call.**
+  `awf_run_revise(stop_running=true)` stops the live stage through the
+  standard kill path, keeps the resume point, applies the revision, and
+  `awf_continue` resumes from where the unit stopped.
+- **The run remembers and answers.** `run.stall_minutes` warns about a
+  stalled stage; the run report reconciles the goal against what actually
+  ran and names the next step; each stage's result can carry its identity
+  (`stage_id`/`attempt`) into the handoff automatically.
+- **Create a project role mid-run.** A candidate lands in
+  `.agentic/roles/draft/`, adoption refuses slug collisions and refreshes
+  zone addenda without touching existing roles; a **service run** does the
+  creation while the main run stays byte-intact.
+- **Composition from a form.** `pipeline-compose` builds the stage list and
+  submits through the same validator the API uses; the active run is
+  untouched.
+- **Tool profiles per assignment.** A stage can narrow its permissions
+  (`tools: {allow, deny}`); the base prohibitions (control tools, readonly
+  edits) cannot be lifted by a profile.
+- **Quality ratchets.** Coverage (total + key modules) and 9 base mutants
+  run in CI; the full mutation list has 22 entries.
+
+### Fixed
+
+- A queue revision now moves the run to a new cycle: a stale approval cannot
+  survive it.
+- A reused process id no longer masquerades as a running pipeline.
+- The QA role: a BLOCKED verdict publishes the BLOCKED signal only.
+
 ## [1.5.0] — 2026-09-27
 
 The ORCH program: the supervisor's memory survives sessions, decisions are
