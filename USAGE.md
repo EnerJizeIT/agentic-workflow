@@ -286,6 +286,32 @@ stages:
     on_rejected: replan
 ```
 
+**Non-code composition (analysis, research, documentation).** The same
+schema serves tasks whose product is documents, not code: each stage
+declares the document it produces as `output`, and the engine checks it
+(present, written by this stage) before the stage advances. The verify
+commit carries those documents — a unit commit is not code-only.
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    task: Gather and structure the requirements
+    output: docs/requirements.md
+    tools:
+      deny: [edit, write]
+  - name: writer
+    role: agent-writer
+    task: Write the final analysis
+    input: docs/requirements.md
+    output: docs/analysis.md
+  - name: verify
+    role: supervisor
+    on_approved: commit_and_next
+```
+
 **Multiple pipelines side by side.** Keep several pipelines in one
 project and run the needed one by name:
 

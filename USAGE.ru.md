@@ -289,6 +289,32 @@ readonly-роли. Неизвестный ключ — ошибка загруз
 запретил). Стадии `plan`/`verify` по умолчанию без ограничений;
 объявленный профиль действует на стадию любого вида.
 
+**Не-код-состав (аналитика, исследование, документация).** Та же схема
+работает для задач, где продукт — документы, а не код: каждая стадия
+объявляет документ, который создаёт, как `output`, и движок проверяет его
+(существует, написан этой стадией), прежде чем стадия пройдёт дальше.
+Коммит verify несёт эти документы — unit-коммит не только про код.
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    task: Gather and structure the requirements
+    output: docs/requirements.md
+    tools:
+      deny: [edit, write]
+  - name: writer
+    role: agent-writer
+    task: Write the final analysis
+    input: docs/requirements.md
+    output: docs/analysis.md
+  - name: verify
+    role: supervisor
+    on_approved: commit_and_next
+```
+
 **Именованные пайплайны.** Несколько пайплайнов в одном проекте,
 запуск нужного по имени:
 
