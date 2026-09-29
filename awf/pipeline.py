@@ -29,12 +29,13 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
 from . import paths
+from ._env import is_known_permission_key
 from ._errors import AwfApiError
 
 
@@ -61,6 +62,11 @@ class Stage:
     # stage advances; without one, behavior is unchanged (back-compat).
     input: str = ""
     output: str = ""
+    # ORCH M7.2: the stage's tools profile — a mapping with ``allow``
+    # and/or ``deny`` lists of opencode permission keys (bash/edit/
+    # write/webfetch + ``<server>_<tool>`` MCP). Merged onto the base
+    # permission rules at spawn (awf/_env.py); empty → unchanged behavior.
+    tools: dict = field(default_factory=dict)
     on_blocked: str = "escalate"
     on_approved: str = "next"
     on_rejected: str = "escalate"
@@ -145,6 +151,8 @@ ALLOWED_STAGE_KEYS = frozenset(
         # ORCH M3.2: declared stage inputs/outputs (project-relative).
         "input",
         "output",
+        # ORCH M7.2: the stage's tools profile (allow/deny permission keys).
+        "tools",
         "on_blocked",
         "on_approved",
         "on_rejected",
@@ -199,12 +207,14 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
 
     Raises:
         AwfApiError: stages not a non-empty list, a stage not a mapping,
-            unknown keys, a missing/empty/non-string role, an empty or
+            unknown keys, a missing/empty/            non-string role, an empty or
             non-slug ``id`` / an empty ``task`` (ORCH M3.1), a non-empty
             but non project-relative ``input``/``output`` (ORCH M3.2),
-            a duplicated stage ``id``, a policy that is not an allowed
-            string (rollback_to:<stage> only on on_blocked/on_rejected),
-            or a negative/non-integer budget.
+            a malformed ``tools`` profile (not a mapping, unknown
+            sub-key, a non-list value, an empty or unknown permission
+            key — ORCH M7.2), a duplicated stage ``id``, a policy that
+            is not an allowed string (rollback_to:<stage> only on
+            on_blocked/on_rejected), or a negative/non-integer budget.
     """
     if not isinstance(stages, list) or not stages:
         raise AwfApiError(
@@ -269,6 +279,50 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                         f"'{io_key}' (must be a project-relative path — "
                         f"no leading '/', no '..'), got {value!r}."
                     )
+        # ORCH M7.2: the stage tools profile — a mapping with ``allow``
+        # and/or ``deny`` lists of KNOWN permission keys (single registry,
+        # M3.1 style: an unknown key is a load error, not a silent no-op
+        # at runtime).
+        if "tools" in stage and stage["tools"] is not None:
+            value = stage["tools"]
+            if not isinstance(value, dict):
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' 'tools' must be "
+                    "a mapping with 'allow' and/or 'deny' lists of "
+                    f"permission keys, got {type(value).__name__}."
+                )
+            unknown = set(value) - {"allow", "deny"}
+            if unknown:
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' tools profile "
+                    f"uses unknown keys: {sorted(unknown)}. "
+                    "Allowed keys: 'allow', 'deny'."
+                )
+            for sub in ("allow", "deny"):
+                if sub not in value or value[sub] is None:
+                    continue
+                items = value[sub]
+                if not isinstance(items, list) or not all(
+                    isinstance(item, str) for item in items
+                ):
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' tools "
+                        f"{sub} must be a list of permission keys, "
+                        f"got {items!r}."
+                    )
+                for key in items:
+                    if not key.strip():
+                        raise AwfApiError(
+                            f"Pipeline {source}: stage '{label}' tools "
+                            f"{sub} has an empty permission key."
+                        )
+                    if not is_known_permission_key(key):
+                        raise AwfApiError(
+                            f"Pipeline {source}: stage '{label}' tools "
+                            f"profile has an unknown permission key: "
+                            f"'{key}'. Known keys: bash/edit/write/"
+                            "webfetch and MCP tools as <server>_<tool>."
+                        )
         for pk in _POLICY_KEYS:
             if pk in stage and stage[pk] is not None:
                 value = stage[pk]
@@ -383,6 +437,8 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         # ORCH M3.2: declared inputs/outputs (project-relative).
         kwargs["input"] = s.get("input") or ""
         kwargs["output"] = s.get("output") or ""
+        # ORCH M7.2: the stage's tools profile (empty → unchanged behavior).
+        kwargs["tools"] = s.get("tools") or {}
         for pk in _POLICY_KEYS:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         kwargs["max_retries"] = s.get("max_retries", _DEFAULTS["max_retries"])
@@ -476,6 +532,10 @@ def pipeline_snapshot_text(
             entry["input"] = st.input
         if st.output:
             entry["output"] = st.output
+        # ORCH M7.2: the tools profile round-trips through the snapshot
+        # (the snapshot is loaded with the same loader).
+        if st.tools:
+            entry["tools"] = dict(st.tools)
         entry["on_blocked"] = st.on_blocked
         entry["on_approved"] = st.on_approved
         entry["on_rejected"] = st.on_rejected

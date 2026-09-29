@@ -450,6 +450,34 @@ available. `plan`/`verify` stages keep the full set. This reduces
 accidental errors — it is not a security boundary; strict isolation of
 a worker is a separate effort.
 
+**Stage tools profile (ORCH M7.2).** A stage may declare `tools` with
+`allow`/`deny` lists of opencode permission keys — `bash`, `edit`,
+`write`, `webfetch` and MCP tools as `<server>_<tool>`:
+
+```yaml
+stages:
+  - name: plan
+    role: supervisor
+  - name: analyst
+    role: agent-analyst
+    tools:
+      deny: [edit, write]
+  - name: verify
+    role: supervisor
+```
+
+The profile merges onto the base permission rules at spawn (host
+`opencode.json` → awf overrides → `readonly_roles` → the M2.2 control
+denial): deny beats allow, and the base control prohibitions are never
+cancelled — a profile cannot re-enable the control tools on an execute
+stage or `edit`/`write` for a readonly role. An unknown key is a
+pipeline load error (single registry, same rule set as the stage
+schema: load and write). Without `tools` the behavior is unchanged.
+The profile narrows the stage's discretionary tools — it is not a
+security boundary (`bash` stays allowed unless the profile denies it).
+`plan`/`verify` stages are unrestricted by default; a declared profile
+applies to any stage kind.
+
 ### TODO
 | Tool | What it does |
 |---|---|

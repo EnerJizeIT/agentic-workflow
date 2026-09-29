@@ -134,12 +134,13 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `paths.py` | Пути `.agentic/` |
 | `git_utils.py` | Git-операции: tree fingerprint (`awf tree-sha`), diff, reset |
 | `_proc.py` | `kill_process_tree` (guard `proc.pid > 1` — safety invariant) |
-| `_env.py` | Worker-окружение: `OPENCODE_CONFIG_CONTENT`, `automation.readonly_roles` |
+| `_env.py` | Worker-окружение: `OPENCODE_CONFIG_CONTENT`, `automation.readonly_roles`, реестр permission-ключей и мерж профиля tools стадии (ORCH M7.2) |
 | `_atomic.py`, `_lock.py` | Атомарные записи, file lock (read→merge→write) |
 | `cli.py`, `cmd_*.py` | CLI: `awf start`, `awf baseline`, `awf brief`, `awf metrics`, ... |
 | `pipeline.py` | Разбор пайплайна: Stage, load_stages, kind по позиции (BD-29), валидация YAML (A-06) |
 | `pipeline.py` — тождество стадии | Stage `id` (адрес: имя стадии = id) + `task` (поручение): повторы роли с разными id, дубли id отвергаются (ORCH M3.1) |
 | `pipeline.py` — поручение стадии | Stage `input`/`output` (относительные пути проекта): execute-промпт несёт task/входы/выходы, движок проверяет объявленный выход (существует + свежий) перед переходом к следующей стадии, лимит повтора — на экземпляр стадии (ORCH M3.2) |
+| `pipeline.py` — профиль tools стадии | Stage `tools` (`allow`/`deny` списки permission-ключей: bash/edit/write/webfetch + `<server>_<tool>` MCP): единый реестр ключей (неизвестный — ошибка загрузки), мерж в `awf/_env.py` при спавне поверх M2.2 + readonly_roles — deny сильнее allow, базовые управляющие запреты профилем не отменяются (ORCH M7.2) |
 | `api/pipelines.py` | Named pipelines: write_pipeline / list_pipelines (RUN3 #1) |
 | `api/planning.py` | Increment planning: apply_increment_plan (форма → вариант) |
 | `api/roles.py` | Роли: add_role (draft-область: кандидаты в `roles/draft/`, adopt/discard/list) + zone-анализ для analyze_roles |
@@ -239,6 +240,7 @@ HTTP server (daemon thread in orchestrator, `127.0.0.1`):
 12. **Mutation smoke (U11).** `awf mutations` — supervisor проверяет, что ключевые инварианты реально ловятся тестами: подменить строку в файле, прогнать команду, ожидание красного.
 13. **Salvage-сценарий.** Worker умер без сигнала → `SALVAGE-{todo}.md` + рестарт стадии (`awf_retry_stage`); сценарий зафиксирован в brief-карточке (`awf/data/scenarios.yaml`) и в recovery-разделе USAGE.
 14. **Профили tools по стадии (ORCH M2.2, V-03 27.09).** Агент execute-стадии получает в `OPENCODE_CONFIG_CONTENT` блок `agent.<имя>.permission`, запрещающий управляющие MCP-tools (22: approve/reject, start/continue/kill/retry, reset/rollback/restore/unblock, init/baseline/dispatch/todo-*, run-*, set-goal/confirm-normalized) — модель не видит их в своём списке. `bash` остаётся; plan/verify сохраняют полный набор. Снижение случайных ошибок, не граница безопасности; строгая изоляция — отдельный этап.
+15. **Профиль tools по поручению (ORCH M7.2, 29.09).** Стадия может объявить `tools: {allow: [...], deny: [...]}` по permission-ключам opencode (bash/edit/write/webfetch + MCP `<server>_<tool>`). Профиль мержится при спавне поверх базовых правил (host-конфиг → awf-оверрайд → M2.2/readonly): deny сильнее allow; базовые управляющие запреты (контрольные tools M2.2 на execute, edit/write readonly-роли) — locked и профилем не отменяются. Единый реестр ключей: неизвестный ключ — ошибка загрузки пайплайна (один ruleset load/write, как M3.1). Профиль сужает случайные возможности стадии — не граница безопасности (`bash` остаётся, если профиль его явно не запретил); supervisor-стадии по умолчанию без ограничений, объявленный профиль действует на любую стадию.
 
 ## Связанные документы
 
