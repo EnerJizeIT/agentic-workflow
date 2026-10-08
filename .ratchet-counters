@@ -972,4 +972,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/agent_workflow_ui/test_server_smoke.py and
 # tests/negative/test_docs_counters.py (pin comments). Same class as
 # above: test identifiers and unit references, not debt.
+# CI-flake hardening (TODO-0167, 08.10): baseline raised 4879 -> 4882 —
+# the two flaky-test fixes add 3 TODO-bearing lines (net +3): the
+# TODO-0167 unit reference in the rewritten
+# test_verify_still_works_after_salvage_fix docstring
+# (tests/unit/test_salvage_signal.py, 1) and the TODO-0167 mechanism
+# comment + the two SVC_TODO fixture/assert use-sites in the rewritten
+# service-block wait of tests/e2e/test_seam_matrix.py (3), minus 1
+# rewritten docstring line. Same class as above: test identifiers and
+# unit references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
