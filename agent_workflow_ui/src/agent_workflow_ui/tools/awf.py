@@ -518,12 +518,15 @@ async def awf_todo_remove(
     todo_id: str,
     project_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Remove a TODO that never started; the file keeps a trace in done/.
+    """Remove a TODO that never started; the files keep a trace in done/.
 
-    RUN3 #5: an inert TODO (``.md`` without ``.ready``/signals/progress)
-    moves to ``done/<id>/removed-<timestamp>.md``. Refused when a
-    ``.ready`` or any signal/progress exists (hints: ``awf_unblock`` /
-    ``awf_reset(orphans=True)``).
+    RUN3 #5: an inert TODO moves to
+    ``done/<id>/removed-<timestamp>.md``. REPORTS26 B-f2 (TODO-0161):
+    the dispatch ``.ready`` is an artifact, not a start marker — it no
+    longer blocks the removal and moves to the trace dir; the unit's
+    ``context/BASELINE-<id>.*`` is deleted (reported in ``removed_files``).
+    Refused when PROGRESS, any outbox signal, or an inbox ACK/APPROVE
+    exists (hints: ``awf_unblock`` / ``awf_reset(orphans=True)``).
     """
     result = await _exec(
         api.remove_todo,
@@ -578,16 +581,28 @@ async def awf_todo_update(
     content: str = "",
     project_dir: str | None = None,
     reason: str = "",
+    include_untracked: list[str] | None = None,
 ) -> dict[str, Any]:
     """Reword a not-started TODO, keeping the number (RUN6 #4).
 
     Replaces the content of ``inbox/TODO-<id>.md`` in place — the number,
-    the dispatch ``.ready`` and the baseline stay untouched (the baseline
-    pins a git sha, not the text). The previous content is backed up to
-    ``context/TODO-<id>.md.bak-<timestamp>``. Refusals: no TODO file in
-    the inbox; empty ``content``; a started TODO (PROGRESS/signals/
-    closure — fix the unit via REVIEW/replan, or retire + re-dispatch);
-    a live pipeline on this id.
+    the dispatch ``.ready`` and the baseline sha stay untouched. The
+    previous content is backed up to
+    ``context/TODO-<id>.md.bak-<timestamp>``.
+
+    REPORTS26 B-f2 (TODO-0161): ``include_untracked`` — the unit's
+    pre-existing-untracked inclusion, editable before the unit starts.
+    Same validation as the dispatch (each path exists, untracked, not
+    gitignored, inside the project; all-or-nothing, refused before any
+    side effect). It recomputes ``BASELINE-<id>.untracked`` and the
+    ``BASELINE-<id>.include`` trace; an EMPTY list clears the inclusion.
+    When only ``include_untracked`` is given (empty ``content``), the
+    TODO text is not touched (no backup) and ``backup`` is ``""``.
+
+    Refusals: no TODO file in the inbox; empty ``content`` AND no
+    ``include_untracked``; an invalid ``include_untracked`` path; a
+    started TODO (PROGRESS/signals/closure — fix the unit via REVIEW/
+    replan, or retire + re-dispatch); a live pipeline on this id.
     """
     result = await _exec(
         api.update_todo,
@@ -595,13 +610,22 @@ async def awf_todo_update(
         todo_id=todo_id,
         content=content,
         reason=reason,
+        include_untracked=include_untracked,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
-        result["next_action"] = (
-            f"{result.get('todo_id', 'TODO')} reworded (backup: "
-            f"{result.get('backup', 'context/')}), the unit stays ready — "
-            "awf_start / awf_run_next."
-        )
+        backup = result.get("backup") or ""
+        if backup:
+            result["next_action"] = (
+                f"{result.get('todo_id', 'TODO')} reworded (backup: "
+                f"{backup}), the unit stays ready — "
+                "awf_start / awf_run_next."
+            )
+        else:
+            result["next_action"] = (
+                f"{result.get('todo_id', 'TODO')} baseline include updated "
+                "(content kept), the unit stays ready — "
+                "awf_start / awf_run_next."
+            )
     return result
 
 

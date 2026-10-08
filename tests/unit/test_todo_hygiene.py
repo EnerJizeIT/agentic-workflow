@@ -216,11 +216,20 @@ class TestRemoveTodo:
         assert log.is_file()
         assert "todo-remove: TODO-0002" in log.read_text()
 
-    def test_refuses_with_dispatch_ready(self, project):
+    def test_dispatch_ready_is_artifact_removed(self, project):
+        """REPORTS26 B-f2 (TODO-0161): a dispatch .ready without PROGRESS
+        and signals is a dispatch artifact, not a start marker — the unit
+        is removed and the .ready follows the .md into the trace dir."""
         _arm(project, "TODO-0002")
-        with pytest.raises(api.AwfApiError, match="awf unblock|reset --orphans"):
-            api.remove_todo(project, "TODO-0002")
-        assert (paths.inbox(project) / "TODO-0002.md").exists()
+
+        result = api.remove_todo(project, "TODO-0002")
+
+        assert not (paths.inbox(project) / "TODO-0002.md").exists()
+        assert not (paths.inbox(project) / "TODO-0002.ready").exists()
+        trace_dir = project / result.trace_path
+        assert trace_dir.is_file()
+        assert (trace_dir.parent / "TODO-0002.ready").is_file()
+        assert result.removed_files == []
 
     def test_refuses_with_outbox_signal(self, project):
         (paths.inbox(project) / "TODO-0002.md").write_text("body")

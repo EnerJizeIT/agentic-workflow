@@ -886,4 +886,18 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # USAGE.md/USAGE.ru.md, 2+2 the same steps in
 # awf/templates/roles/supervisor.md + the root mirror). Same class as
 # above: test identifiers, doc examples and unit-id references, not debt.
+# REPORTS26 B-f2 (TODO-0161, prestart remove + include_untracked):
+# baseline raised 4617 -> 4692 — the unit adds 75 TODO-bearing lines:
+# 54 in the new
+# tests/negative/test_reports26_b_f2_prestart_edit.py (module docstring
+# invariants, the TODO = "TODO-0001" constant and its fixture/assert
+# use-sites, the TODO-0161 unit references) and net 21 in the touched
+# tracked files (the TODO-0161 unit references in the awf/api/hygiene.py
+# docstrings/comments, the TODO-0002/TODO-0161 test ids in
+# tests/unit/test_todo_hygiene.py, the TODO-0003/TODO-0161 fixtures in
+# tests/integration/test_cli_entrypoints.py, the TODO-0161 references in
+# the agent_workflow_ui tools/awf.py docstrings; 11 replaced lines drop
+# out). Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays
+# 68 (the new test file is 253 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
