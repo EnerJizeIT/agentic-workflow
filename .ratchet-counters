@@ -940,4 +940,23 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # next_action names TODO-0001). Same class as above: test identifiers
 # and unit references, not debt. files_over_400 stays 69 (the new test
 # file is 176 lines — under the bar).
+# REPORTS26 F5 (TODO-0165, dispatch heading renumber): baseline raised
+# 4811 -> 4861, files_over_400 raised 69 -> 70 — the unit adds 50
+# TODO-bearing lines: 32 in the new
+# tests/negative/test_reports26_f5_dispatch_heading.py (module docstring
+# invariants, the "# TODO-9999"/"# TODO-7777"/"# TODO-1" fixture lines and
+# the TODO-0001/TODO-0002 fixture and assert use-sites), 10 in
+# awf/api/dispatch.py (the F5 docstring/Args/Raises lines and the
+# heading-mismatch + renumber comments naming TODO-NNNN), 5 in
+# tests/agent_workflow_ui/test_awf_tools.py (the allow_mismatch proxy
+# tests: the "# TODO-9999 x" fixture and the renumbered asserts), 1 in
+# tests/agent_workflow_ui/test_audit25_r06_registry.py (the pin comment
+# naming the TODO-0165 opt-out), 3 in agent_workflow_ui tools/awf.py
+# (the allow_mismatch/renumbered docstring lines) and 1 in
+# awf/api/_results.py (the renumbered field comment) minus 2 rewritten
+# lines. Same class as above: test identifiers and unit references, not
+# debt. The +1 file over 400 is awf/api/dispatch.py
+# (392 -> 466 — the F5 heading check + renumber helpers + docstrings),
+# same class as the commit_gate.py / unit_contract.py production-module
+# raises above.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

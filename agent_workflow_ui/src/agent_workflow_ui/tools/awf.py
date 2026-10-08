@@ -1844,6 +1844,7 @@ async def awf_dispatch_todo(
     pipeline: str | None = None,
     carry_over_from: str | None = None,
     include_untracked: list[str] | None = None,
+    allow_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -1884,12 +1885,22 @@ async def awf_dispatch_todo(
             ``.agentic/context/BASELINE-<id>.include``. The answer ALSO
             lists the files that stay excluded (``pre_existing_untracked``
             + ``untracked_warning``).
+        allow_mismatch: REPORTS26 F5 — heading/title mismatch policy. When
+            the first line of the content is a heading carrying a TODO
+            number different from the one being issued: with an explicit
+            ``todo_id`` the dispatch is refused (no side effects, the
+            message names both numbers); ``allow_mismatch=True`` accepts
+            the mismatch and writes the content as-is. With the auto
+            number the heading is renumbered instead — the answer then
+            carries ``renumbered: true``.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
         of paths created), carry_over_from, carry_over_files,
         pre_existing_untracked (list, excluded from the commit),
-        untracked_warning (one line, "" when nothing is excluded).
+        untracked_warning (one line, "" when nothing is excluded),
+        renumbered (True when the auto-issued number replaced a foreign
+        one in the first line's heading).
     """
     response = await _exec(
         api.dispatch_todo,
@@ -1900,6 +1911,7 @@ async def awf_dispatch_todo(
         pipeline=pipeline,
         carry_over_from=carry_over_from,
         include_untracked=include_untracked,
+        allow_mismatch=allow_mismatch,
     )
     if response.get("status") != "ok":
         return response
@@ -1930,6 +1942,14 @@ async def awf_dispatch_todo(
     if untracked_warning:
         response["next_action"] = (
             f"{response['next_action']} {untracked_warning}"
+        )
+    # REPORTS26 F5: a renumbered heading must be visible to the supervisor
+    # (the copied template carried a foreign number in its title).
+    if response.get("renumbered"):
+        response["next_action"] = (
+            f"{response['next_action']} Note: the heading was renumbered "
+            f"to {response.get('todo_id')} (the template carried a foreign "
+            "TODO number)."
         )
     return response
 

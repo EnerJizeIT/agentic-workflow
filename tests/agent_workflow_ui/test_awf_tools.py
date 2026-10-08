@@ -378,7 +378,8 @@ class TestDispatchCarryOverParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None, include_untracked=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -417,7 +418,8 @@ class TestDispatchCarryOverParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None, include_untracked=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -427,7 +429,8 @@ class TestDispatchCarryOverParam:
 
     def test_error_propagates(self, mcp_project, monkeypatch):
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None, include_untracked=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
             raise api.AwfApiError("REJECT-TODO-0001.files not found")
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
@@ -470,7 +473,8 @@ class TestDispatchIncludeUntrackedParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None, include_untracked=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -510,13 +514,97 @@ class TestDispatchIncludeUntrackedParam:
                 }
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
-                          pipeline=None, carry_over_from=None, include_untracked=None):
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
             captured["include_untracked"] = include_untracked
             return _R()
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
         run(awf.awf_dispatch_todo(content="# t", project_dir=str(mcp_project)))
         assert captured["include_untracked"] is None
+
+
+# ─── awf_dispatch_todo allow_mismatch (REPORTS26 F5, TODO-0165) ─────────
+
+
+class TestDispatchAllowMismatchParam:
+    """The MCP dispatch tool must expose allow_mismatch, proxy it to the
+    api, and carry the renumbered flag in the answer."""
+
+    def test_param_proxied_to_api(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            renumbered = True
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "renumbered": self.renumbered,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
+            captured["allow_mismatch"] = allow_mismatch
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# TODO-9999 x",
+            project_dir=str(mcp_project),
+            allow_mismatch=True,
+        ))
+        assert result["status"] == "ok"
+        assert captured["allow_mismatch"] is True, (
+            "allow_mismatch must be proxied to api.dispatch_todo"
+        )
+        assert result["renumbered"] is True
+        assert "renumbered" in result["next_action"], (
+            "the renumbered flag must reach the supervisor"
+        )
+
+    def test_absent_param_defaults_false(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            renumbered = False
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "renumbered": self.renumbered,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None):
+            captured["allow_mismatch"] = allow_mismatch
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# t", project_dir=str(mcp_project)
+        ))
+        assert result["status"] == "ok"
+        assert captured["allow_mismatch"] is False
+        assert result["renumbered"] is False
 
 
 # ─── awf_report ─────────────────────────────────────────────────────────

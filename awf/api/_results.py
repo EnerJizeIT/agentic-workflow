@@ -295,6 +295,11 @@ class DispatchTodoResult:
     # snapshot minus carry-over/include re-claims). Empty = nothing to say.
     pre_existing_untracked: list[str] = field(default_factory=list)
     untracked_warning: str = ""  # capped one-line warning; "" when the list is empty
+    # REPORTS26 F5: True when the auto-issued number replaced a foreign
+    # TODO-NNNN in the first line's heading (a copied template kept its
+    # old title). Always False for an explicit todo_id (mismatch is
+    # refused, or written as-is via allow_mismatch).
+    renumbered: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
