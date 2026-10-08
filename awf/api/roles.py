@@ -833,8 +833,15 @@ def analyze_roles_core(
         try:
             current = path.read_text(encoding="utf-8")
             if "BD-31: Pipeline-specific disambiguation" in current:
+                # TODO-0157: remove exactly the BD-31 block — from its
+                # `---` separator + heading to the NEXT `^## ` heading (or
+                # EOF) — so text written after the block (supervisor
+                # sections) survives byte-for-byte. A following BD-31
+                # heading is a legacy duplicate, not a boundary: the run
+                # swallows it whole.
                 pattern = re.compile(
-                    r"\n*---\n\n## BD-31: Pipeline-specific disambiguation.*$",
+                    r"\n?---\n+## BD-31: Pipeline-specific disambiguation"
+                    r".*?(?=\n## (?!BD-31)|\Z)",
                     re.DOTALL,
                 )
                 current = pattern.sub("", current).rstrip()

@@ -38,12 +38,16 @@ def project(tmp_git_repo: Path) -> Path:
 def initialized_project(project: Path) -> Path:
     """project after api.init_project (config.yaml present).
 
-    init_project resets the runtime dirs (R1), so re-create them.
+    init_project resets the runtime dirs (R1), so re-create them. The
+    bare .agentic/ made by ``project`` makes init a non-destructive
+    re-init (A-11) — it does not add config.yaml, so the fixture
+    supplies it (REPORTS26 B2: dispatch requires it).
     """
     api.init_project(project, project_name="Hygiene")
     ag = project / ".agentic"
     for d in ("inbox", "outbox", "context", "done", "logs"):
         (ag / d).mkdir(parents=True, exist_ok=True)
+    (ag / "config.yaml").write_text("project:\n  name: Hygiene\n")
     return project
 
 

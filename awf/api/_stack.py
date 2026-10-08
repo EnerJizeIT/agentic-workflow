@@ -11,6 +11,22 @@ import re
 from pathlib import Path
 
 
+def _detect_package_manager(project_dir: Path) -> str:
+    """Pick the package manager from the lockfile in project_dir.
+
+    ``bun.lockb``/``bun.lock`` → ``bun``, ``pnpm-lock.yaml`` → ``pnpm``,
+    ``yarn.lock`` → ``yarn``, otherwise ``npm``. When several lockfiles
+    coexist, bun wins (checked first).
+    """
+    if (project_dir / "bun.lockb").is_file() or (project_dir / "bun.lock").is_file():
+        return "bun"
+    if (project_dir / "pnpm-lock.yaml").is_file():
+        return "pnpm"
+    if (project_dir / "yarn.lock").is_file():
+        return "yarn"
+    return "npm"
+
+
 def detect_stack(project_dir: Path) -> dict[str, str]:
     """Auto-detect test/lint/typecheck/build commands from project files.
 
@@ -42,10 +58,18 @@ def detect_stack(project_dir: Path) -> dict[str, str]:
             data = json.loads(pkg.read_text(encoding="utf-8"))
             data = data if isinstance(data, dict) else {}
             scripts = _as_dict(data.get("scripts"))
-            result["test_cmd"] = str(scripts.get("test", "")) or ""
-            result["lint_cmd"] = str(scripts.get("lint", "")) or ""
-            result["build_cmd"] = str(scripts.get("build", "")) or ""
-            result["typecheck_cmd"] = str(scripts.get("typecheck", "")) or ""
+            # REPORTS26 B1: a script body (e.g. `vitest run`) is a bare
+            # binary that is often not in PATH — route every script
+            # through the package manager (picked by lockfile) instead.
+            pm = _detect_package_manager(project_dir)
+
+            def _script(name: str) -> str:
+                return str(scripts.get(name, "")).strip()
+
+            result["test_cmd"] = f"{pm} test" if _script("test") else ""
+            result["lint_cmd"] = f"{pm} run lint" if _script("lint") else ""
+            result["build_cmd"] = f"{pm} run build" if _script("build") else ""
+            result["typecheck_cmd"] = f"{pm} run typecheck" if _script("typecheck") else ""
             dev_deps = _as_dict(data.get("devDependencies"))
             deps = _as_dict(data.get("dependencies"))
             all_deps = {**dev_deps, **deps}

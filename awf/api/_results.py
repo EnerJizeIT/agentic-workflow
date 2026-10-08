@@ -76,10 +76,14 @@ class BaselineResult:
 
     todo_id: str
     sha: str
-    is_git_repo: bool
-    files_created: list[str]
-    test_status: str
-    test_log_excerpt: str
+    # REPORTS26 B2: where the baseline actually landed (absolute path) —
+    # the MCP answer passes it through so the supervisor can verify the
+    # unit went into the project it asked for, not the MCP process cwd.
+    resolved_project_dir: str = ""
+    is_git_repo: bool = False
+    files_created: list[str] = field(default_factory=list)
+    test_status: str = ""
+    test_log_excerpt: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -278,6 +282,10 @@ class DispatchTodoResult:
     baseline_sha: str
     role_hint: str | None
     files_written: list[str]
+    # REPORTS26 B2: where the unit actually landed (absolute path) — the
+    # MCP answer passes it through so the supervisor can verify the TODO
+    # went into the project it asked for, not the MCP process cwd.
+    resolved_project_dir: str = ""
     pre_check_warnings: list[str] = field(default_factory=list)
     # RUN5 #1 (Part A.2): leak-gate carry-over for a retry.
     carry_over_from: str | None = None  # the rejected origin TODO id

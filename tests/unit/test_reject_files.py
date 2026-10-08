@@ -44,6 +44,10 @@ def leak_project(tmp_git_repo: Path) -> Path:
     """Committed repo + .agentic skeleton; .agentic is gitignored."""
     for sub in ("inbox", "outbox", "context", "logs"):
         (tmp_git_repo / ".agentic" / sub).mkdir(parents=True, exist_ok=True)
+    # REPORTS26 B2 (TODO-0156): dispatch requires config.yaml
+    (tmp_git_repo / ".agentic" / "config.yaml").write_text(
+        "project:\n  name: Test\n"
+    )
     (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
     subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
     subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=tmp_git_repo, check=True)

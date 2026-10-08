@@ -39,10 +39,12 @@ class TestDetectStack:
         }))
         result = api.detect_stack(tmp_path)
         assert result["stack"] == "typescript"
-        assert result["test_cmd"] == "bun test"
-        assert result["lint_cmd"] == "biome check ."
-        assert result["build_cmd"] == "bun run build"
-        assert result["typecheck_cmd"] == "tsc --noEmit"
+        # REPORTS26 B1: scripts are routed through the package manager
+        # (no lockfile here → npm), never stored as a bare binary.
+        assert result["test_cmd"] == "npm test"
+        assert result["lint_cmd"] == "npm run lint"
+        assert result["build_cmd"] == "npm run build"
+        assert result["typecheck_cmd"] == "npm run typecheck"
 
     def test_package_json_without_typecheck_falls_back_to_tsc(self, tmp_path):
         """If tsconfig.json exists but scripts.typecheck is missing → tsc --noEmit."""
@@ -260,10 +262,16 @@ class TestCreateBaseline:
         result = api.create_baseline(tmp_git_repo, "TODO-0001")
         assert result.test_status == "failed"
 
-    def test_no_config_yields_no_config_status(self, tmp_git_repo):
+    def test_stale_agentic_without_config_refused(self, tmp_git_repo):
+        """REPORTS26 B2 (TODO-0156): a bare .agentic/ without config.yaml
+        (stale directory, e.g. an old ~/.agentic) is not an initialized
+        project — the write entry point refuses before any side effect."""
         (tmp_git_repo / ".agentic" / "context").mkdir(parents=True)
-        result = api.create_baseline(tmp_git_repo, "TODO-0001")
-        assert result.test_status == "no_config"
+        with pytest.raises(api.AwfApiError, match="config.yaml"):
+            api.create_baseline(tmp_git_repo, "TODO-0001")
+        assert not list(
+            (tmp_git_repo / ".agentic" / "context").glob("BASELINE-*")
+        ), "refused baseline left residue"
 
     def test_missing_agentic_raises(self, tmp_git_repo):
         with pytest.raises(api.AwfApiError, match="No .agentic/"):
@@ -1031,6 +1039,9 @@ class TestInitProject:
             "devDependencies": {"typescript": "^5.0"},
         }))
         (sub / "tsconfig.json").write_text("{}")
+        # REPORTS26 B1: pm is picked from the lockfile — bun.lockb routes
+        # scripts.test through `bun test` into config.yaml.
+        (sub / "bun.lockb").write_bytes(b"")
         (sub / "README.md").write_text("init")
 
         result = api.init_project(sub)
@@ -1424,6 +1435,10 @@ class TestDispatchIncludeUntracked:
         """Committed repo + .agentic skeleton; .agentic is gitignored."""
         for sub in ("inbox", "outbox", "context", "logs"):
             (tmp_git_repo / ".agentic" / sub).mkdir(parents=True)
+        # REPORTS26 B2 (TODO-0156): dispatch requires config.yaml
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text(
+            "project:\n  name: Test\n"
+        )
         (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
         subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
         subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=tmp_git_repo, check=True)
