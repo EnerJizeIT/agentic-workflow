@@ -838,4 +838,12 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # no_config test's create_baseline line). Same class as above: test
 # identifiers and unit references, not debt. files_over_400 stays 66
 # (the new test file is 133 lines — under the bar).
+# REPORTS26 B4 (TODO-0157, analyze-roles tail preservation): baseline
+# raised 4556 -> 4559 — the unit adds 3 TODO-bearing lines: 2 in the new
+# tests/negative/test_reports26_b4_analyze_roles_tail.py (the TAIL
+# fixture line "- receives: TODO unit" and its assert) and 1 in
+# awf/api/roles.py (the TODO-0157 fix comment in the patch-application
+# loop). Same class as above: test fixture wording and a unit
+# reference, not debt. files_over_400 stays 66 (the new test file is
+# 147 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
