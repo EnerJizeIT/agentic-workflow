@@ -505,6 +505,7 @@ class RemoveTodoResult:
 
     todo_id: str
     trace_path: str
+    removed_files: list[str]  # project-relative paths deleted by the removal
     message: str
 
     def as_dict(self) -> dict[str, Any]:

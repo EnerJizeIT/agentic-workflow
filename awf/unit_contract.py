@@ -7,6 +7,7 @@ skipped when locating the block)::
     verify: ["python3 -m pytest tests/unit/test_x.py -q"]
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
+    prove_red_cmd: "npm test -- --run"
     files: ["awf/x.py", "tests/unit/test_x.py"]
     pipeline: audit-llm
 
@@ -60,7 +61,13 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: an "unknown key" warning and no str-list validation.
 #: ``pipeline`` (RUN3 #2): the run launch's pipeline name (a string, not a
 #: list); run_next reads it for items without a queue-level pipeline.
-_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red", "files", "pipeline")
+#: ``prove_red_cmd`` (REPORTS26-B6): an optional shell command for the
+#: prove-red check on non-pytest projects (a string, not a list); it
+#: overrides the pytest default, the files from ``prove_red:`` are still
+#: copied into the baseline worktree.
+_CONTRACT_KEYS: tuple[str, ...] = (
+    "verify", "gates", "prove_red", "prove_red_cmd", "files", "pipeline"
+)
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
 #: AUD14-05) — a pipeline name is letters, digits, ``_``, ``.``, ``-``.
@@ -221,6 +228,13 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
                 )
     if "prove_red" in data:
         _check_str_list(data["prove_red"], "prove_red")
+    if "prove_red_cmd" in data:
+        v = data["prove_red_cmd"]
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(
+                "'prove_red_cmd' must be a non-empty shell command string, "
+                'e.g. prove_red_cmd: "npm test -- --run"'
+            )
     if "files" in data:
         _check_str_list(data["files"], "files")
     if "pipeline" in data:

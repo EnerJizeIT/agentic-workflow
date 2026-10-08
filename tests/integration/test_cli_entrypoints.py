@@ -1183,13 +1183,34 @@ class TestTodoRemoveEntrypoint:
         assert len(traces) == 1
         assert "never started" in traces[0].read_text()
 
-    def test_todo_remove_cli_refuses_armed(self, tmp_path, capsys):
+    def test_todo_remove_cli_removes_armed(self, tmp_path, capsys):
+        """REPORTS26 B-f2 (TODO-0161): the dispatch .ready is an artifact —
+        an armed but never-started unit is removed, .ready goes to the trace."""
         repo = _git_repo(tmp_path)
         api.init_project(repo, project_name="CliRemove2")
         capsys.readouterr()
         inbox = repo / ".agentic" / "inbox"
         (inbox / "TODO-0003.md").write_text("armed")
         (inbox / "TODO-0003.ready").touch()
+
+        rc = cli.main(["todo-remove", "TODO-0003", "--project-dir", str(repo)])
+
+        captured = capsys.readouterr()
+        assert rc == 0, captured.out
+        assert not (inbox / "TODO-0003.md").exists()
+        assert not (inbox / "TODO-0003.ready").exists()
+        done_dir = repo / ".agentic" / "done" / "TODO-0003"
+        assert (done_dir / "TODO-0003.ready").is_file()
+
+    def test_todo_remove_cli_refuses_started(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliRemove4")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        outbox = repo / ".agentic" / "outbox"
+        (inbox / "TODO-0003.md").write_text("started")
+        (inbox / "TODO-0003.ready").touch()
+        (outbox / "PROGRESS-TODO-0003.md").write_text("half done")
 
         rc = cli.main(["todo-remove", "TODO-0003", "--project-dir", str(repo)])
 

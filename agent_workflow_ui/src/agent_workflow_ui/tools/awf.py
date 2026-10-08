@@ -518,12 +518,15 @@ async def awf_todo_remove(
     todo_id: str,
     project_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Remove a TODO that never started; the file keeps a trace in done/.
+    """Remove a TODO that never started; the files keep a trace in done/.
 
-    RUN3 #5: an inert TODO (``.md`` without ``.ready``/signals/progress)
-    moves to ``done/<id>/removed-<timestamp>.md``. Refused when a
-    ``.ready`` or any signal/progress exists (hints: ``awf_unblock`` /
-    ``awf_reset(orphans=True)``).
+    RUN3 #5: an inert TODO moves to
+    ``done/<id>/removed-<timestamp>.md``. REPORTS26 B-f2 (TODO-0161):
+    the dispatch ``.ready`` is an artifact, not a start marker — it no
+    longer blocks the removal and moves to the trace dir; the unit's
+    ``context/BASELINE-<id>.*`` is deleted (reported in ``removed_files``).
+    Refused when PROGRESS, any outbox signal, or an inbox ACK/APPROVE
+    exists (hints: ``awf_unblock`` / ``awf_reset(orphans=True)``).
     """
     result = await _exec(
         api.remove_todo,
@@ -578,16 +581,47 @@ async def awf_todo_update(
     content: str = "",
     project_dir: str | None = None,
     reason: str = "",
+    include_untracked: list[str] | None = None,
+    append: str | None = None,
+    section_updates: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Reword a not-started TODO, keeping the number (RUN6 #4).
 
     Replaces the content of ``inbox/TODO-<id>.md`` in place — the number,
-    the dispatch ``.ready`` and the baseline stay untouched (the baseline
-    pins a git sha, not the text). The previous content is backed up to
-    ``context/TODO-<id>.md.bak-<timestamp>``. Refusals: no TODO file in
-    the inbox; empty ``content``; a started TODO (PROGRESS/signals/
-    closure — fix the unit via REVIEW/replan, or retire + re-dispatch);
-    a live pipeline on this id.
+    the dispatch ``.ready`` and the baseline sha stay untouched. The
+    previous content is backed up to
+    ``context/TODO-<id>.md.bak-<timestamp>``.
+
+    REPORTS26 B-f1 (TODO-0162): two partial-edit modes, each with the
+    same guarantees (backup, number/.ready/baseline kept, started
+    units refused):
+    - ``append`` — a block added to the END of the md, separated by one
+      blank line; the previous text is untouched;
+    - ``section_updates`` — ``{heading: new body}``: the BODY of the
+      ``## <heading>`` section (up to the next ``## `` line or EOF) is
+      replaced; an ABSENT heading is added at the end (replace-or-
+      append). A repeated identical call is idempotent.
+
+    Exactly ONE content mode per call: ``content`` OR ``append`` OR
+    ``section_updates``; two or more at once, an empty ``append`` or an
+    empty ``section_updates`` map are refused. ``include_untracked``
+    (below) is orthogonal and stays combinable with any content mode.
+
+    REPORTS26 B-f2 (TODO-0161): ``include_untracked`` — the unit's
+    pre-existing-untracked inclusion, editable before the unit starts.
+    Same validation as the dispatch (each path exists, untracked, not
+    gitignored, inside the project; all-or-nothing, refused before any
+    side effect). It recomputes ``BASELINE-<id>.untracked`` and the
+    ``BASELINE-<id>.include`` trace; an EMPTY list clears the inclusion.
+    When only ``include_untracked`` is given (no content mode), the
+    TODO text is not touched (no backup) and ``backup`` is ``""``.
+
+    Refusals: no TODO file in the inbox; more than one content mode (or
+    none, when no ``include_untracked`` either); an empty ``append``; an
+    empty ``section_updates`` map or an empty heading key; an invalid
+    ``include_untracked`` path; a started TODO (PROGRESS/signals/closure
+    — fix the unit via REVIEW/replan, or retire + re-dispatch); a live
+    pipeline on this id.
     """
     result = await _exec(
         api.update_todo,
@@ -595,13 +629,24 @@ async def awf_todo_update(
         todo_id=todo_id,
         content=content,
         reason=reason,
+        include_untracked=include_untracked,
+        append=append,
+        section_updates=section_updates,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
-        result["next_action"] = (
-            f"{result.get('todo_id', 'TODO')} reworded (backup: "
-            f"{result.get('backup', 'context/')}), the unit stays ready — "
-            "awf_start / awf_run_next."
-        )
+        backup = result.get("backup") or ""
+        if backup:
+            result["next_action"] = (
+                f"{result.get('todo_id', 'TODO')} updated (backup: "
+                f"{backup}), the unit stays ready — "
+                "awf_start / awf_run_next."
+            )
+        else:
+            result["next_action"] = (
+                f"{result.get('todo_id', 'TODO')} baseline include updated "
+                "(content kept), the unit stays ready — "
+                "awf_start / awf_run_next."
+            )
     return result
 
 
@@ -1029,6 +1074,7 @@ async def awf_prove_red(
     project_dir: str | None = None,
     *,
     tests: list[str] | None = None,
+    command: str | None = None,
 ) -> dict[str, Any]:
     """Prove the declared tests are red on the baseline sha (U4).
 
@@ -1042,9 +1088,15 @@ async def awf_prove_red(
     - ``not-red`` (1) — tests PASSED on the baseline: they prove nothing;
     - ``broken-runner`` (2) — 0 tests collected / collection error / broken
       runner / import error that is only a missing project symbol (the last
-      one is acceptable for new code — a warning is attached);
+      one is acceptable for new code — a warning is attached) / a custom
+      command that did not run on the baseline (timeout or shell rc
+      126/127 — not executable / not found);
     - ``green-after`` (1) — red on baseline but not passing in the current
-      tree.
+      tree;
+    - ``runner-unsupported`` (2) — the project manifest says the runner is
+      not pytest (js / go / cargo) and no ``prove_red_cmd`` was given: the
+      message names the runner and how to override (``prove_red_cmd`` in
+      the TODO contract or the ``command`` parameter).
 
     The worktree is removed in ``finally`` on every outcome.
 
@@ -1054,6 +1106,11 @@ async def awf_prove_red(
             NOT your project; always pass it explicitly (AUD08-12).
         tests: Test files and/or ``file::test`` ids. Default: the
             ``prove_red`` block of the TODO contract.
+        command: A shell command to run instead of pytest (shell
+            semantics, cwd = the tree) in the baseline worktree and in the
+            current tree. Default: the contract's ``prove_red_cmd`` key,
+            else pytest. Priority: this parameter > the contract key >
+            pytest.
 
     Returns:
         Dict with: todo_id, verdict, exit_code, baseline_sha, tests,
@@ -1065,6 +1122,7 @@ async def awf_prove_red(
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
         tests=tests,
+        command=command,
     )
 
 

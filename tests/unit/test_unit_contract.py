@@ -154,6 +154,29 @@ class TestParseTodoContract:
         except ValueError as e:
             assert "empty" in str(e)
 
+    def test_prove_red_cmd_is_a_contract_key(self):
+        # REPORTS26-B6: first-class key — no unknown-key warning.
+        content = '---\nprove_red_cmd: "npm test -- --run"\n---\nbody\n'
+        contract, unknown = parse_todo_contract(content)
+        assert contract["prove_red_cmd"] == "npm test -- --run"
+        assert unknown == []
+
+    def test_prove_red_cmd_not_a_string_raises(self):
+        content = '---\nprove_red_cmd: ["npm test"]\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "'prove_red_cmd' must be a non-empty" in str(e)
+
+    def test_prove_red_cmd_empty_raises(self):
+        content = '---\nprove_red_cmd: ""\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "'prove_red_cmd' must be a non-empty" in str(e)
+
     def test_files_valid_list_is_a_contract_key(self):
         # FU-21 D2: verify-pack already cross-checks the diff against
         # `files`, so the key must be first-class — no unknown-key warning,

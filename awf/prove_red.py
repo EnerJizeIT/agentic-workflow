@@ -14,9 +14,26 @@ Verdicts (CLI exit codes):
 - ``not-red`` (1) — tests PASSED on the baseline: they prove nothing;
 - ``broken-runner`` (2) — 0 tests collected, collection error, broken
   runner, or the failure is only a missing-symbol import (expected for
-  new code — a warning is attached);
+  new code — a warning is attached); for a custom command, also the
+  baseline run that did not run at all (timeout, or shell rc 126/127 —
+  not executable / not found);
 - ``green-after`` (1) — red on the baseline, but the tests do not pass in
-  the current tree either.
+  the current tree either;
+- ``runner-unsupported`` (2, REPORTS26-B6) — the project manifest says the
+  test runner is NOT pytest (js / go / cargo) and no ``prove_red_cmd`` was
+  given: the pytest path would only produce a misleading ``broken-runner``,
+  so the check declines to run and tells how to override.
+
+Custom check command (REPORTS26-B6): a shell command given as the
+``command`` parameter or the contract's ``prove_red_cmd`` key is run
+instead of pytest (shell semantics, cwd = the tree) in the baseline
+worktree AND the current tree; the ``prove_red:`` files are still copied
+into the worktree. Verdicts map by exit code: 0 on the baseline =
+``not-red``, non-zero on the baseline + 0 now = ``red-ok``, non-zero in
+both = ``green-after``. A baseline outcome that means "the check did not
+run" is ``broken-runner``, never a red: a timeout, or shell rc 126/127
+(found-but-not-executable / command-not-found) — the command failed to
+start, so there is no red to prove.
 
 The worktree is removed in ``finally`` on every outcome
 (``git worktree remove --force`` + ``git worktree prune``).
@@ -35,6 +52,7 @@ sees the fix).
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -58,6 +76,11 @@ VERDICT_RED_OK = "red-ok"
 VERDICT_NOT_RED = "not-red"
 VERDICT_BROKEN = "broken-runner"
 VERDICT_GREEN_AFTER = "green-after"
+#: REPORTS26-B6: the project's manifest says the runner is not pytest and
+#: no prove_red_cmd was given — same exit code as broken-runner (the check
+#: did not run), but a separate verdict line so the cause is honest.
+VERDICT_RUNNER_UNSUPPORTED = "runner-unsupported"
+EXIT_RUNNER_UNSUPPORTED = EXIT_BROKEN
 
 #: Default base directory for temporary worktrees (SPEC-2: /tmp/opencode/**).
 DEFAULT_TMP_BASE = "/tmp/opencode"
@@ -110,6 +133,7 @@ def prove_red(
     tests: list[str] | None = None,
     *,
     tmp_base: str | Path | None = None,
+    command: str | None = None,
 ) -> ProveRedResult:
     """Prove that ``tests`` are red on the baseline sha and green now.
 
@@ -120,9 +144,14 @@ def prove_red(
             ``prove_red`` block of the TODO contract (U3).
         tmp_base: Base directory for the temporary worktree. Default
             ``/tmp/opencode`` (SPEC-2); tests pass their tmp_path.
+        command: REPORTS26-B6 — a shell command to run instead of pytest
+            (shell semantics, cwd = the tree), in the baseline worktree and
+            in the current tree. Default: the contract's ``prove_red_cmd``
+            key, else the pytest path. Priority: this parameter > the
+            contract key > pytest.
 
     Returns:
-        ProveRedResult with verdict, exit code and both pytest outputs.
+        ProveRedResult with verdict, exit code and both run outputs.
 
     Raises:
         AwfApiError: bad todo_id, no .agentic/, not a git repo, missing or
@@ -136,13 +165,20 @@ def prove_red(
     _require_agentic(project_dir)
     _require_git_repo(project_dir)
 
+    # REPORTS26-B6: resolve the check command (parameter > contract key >
+    # pytest default) up front, so a custom command does not require a
+    # prove_red list and the runner detection can short-circuit.
+    if command is None:
+        command = _command_from_contract(project_dir, todo_id)
+
     if tests is None:
         tests = _tests_from_contract(project_dir, todo_id)
-    if not tests:
+    if not tests and not command:
         raise AwfApiError(
             f"no tests given and {todo_id} has no prove_red block in its "
             "contract — pass --tests explicitly (file paths and/or "
-            "file::test ids)"
+            "file::test ids), or a prove_red_cmd in the contract / a "
+            "command parameter"
         )
 
     baseline_sha = _read_baseline_sha(project_dir, todo_id)
@@ -150,74 +186,144 @@ def prove_red(
     # A-19: refuse test paths that escape the project BEFORE the worktree is
     # created, so no file outside the project is read and no worktree is spun
     # up for a bad id.
-    for tid in tests:
+    for tid in tests or []:
         _check_source_inside_project(project_dir, _split_test_id(tid), tid)
 
+    # REPORTS26-B6: on a non-pytest project WITHOUT a custom command the
+    # pytest path would only produce a misleading broken-runner — decline
+    # honestly, before any worktree is created.
+    if command is None:
+        unsupported = _runner_unsupported_message(project_dir)
+        if unsupported is not None:
+            return ProveRedResult(
+                todo_id=todo_id,
+                verdict=VERDICT_RUNNER_UNSUPPORTED,
+                exit_code=EXIT_RUNNER_UNSUPPORTED,
+                baseline_sha=baseline_sha,
+                tests=list(tests or []),
+                copied_files=[],
+                baseline_output="",
+                current_output="",
+                message=unsupported,
+            )
+
+    tests = list(tests or [])
     worktree = _new_worktree(project_dir, baseline_sha, tmp_base)
     warnings: list[str] = []
     current_output = ""
     try:
         copied = _copy_test_files(project_dir, worktree, tests)
-        baseline_rc, baseline_output = _run_pytest(worktree, tests, hermetic=True)
-        classification = _classify_pytest(baseline_rc, baseline_output, project_dir)
-
-        if classification == "passed":
-            verdict, code = VERDICT_NOT_RED, EXIT_NOT_RED
-            message = (
-                f"NOT RED: the tests PASSED on baseline {baseline_sha[:12]} — "
-                "they prove nothing. Rewrite them so the unfixed code fails."
+        if command is not None:
+            # REPORTS26-B6: the custom command path — exit codes, plus two
+            # "the check did not run" baseline outcomes (timeout, shell rc
+            # 126/127) that are broken-runner, never a red.
+            baseline_rc, baseline_output, baseline_timed_out = _run_command(
+                worktree, command
             )
-        elif classification == "real-red":
-            current_rc, current_output = _run_pytest(project_dir, tests)
-            if current_rc == 0:
-                verdict, code = VERDICT_RED_OK, EXIT_RED_OK
+            if baseline_timed_out:
+                verdict, code = VERDICT_BROKEN, EXIT_BROKEN
                 message = (
-                    f"RED-OK: on baseline {baseline_sha[:12]} the tests fail "
-                    "with a real red (assertions), and they pass in the "
-                    "current tree."
+                    "BROKEN-RUNNER: the check did not run (timeout) — on "
+                    f"baseline {baseline_sha[:12]} the command did not "
+                    f"finish within {PYTEST_RUN_TIMEOUT}s. A timeout is "
+                    "not a red result; make the command finish in time."
+                )
+            elif baseline_rc in (126, 127):
+                verdict, code = VERDICT_BROKEN, EXIT_BROKEN
+                message = (
+                    f"BROKEN-RUNNER: the command did not run on baseline "
+                    f"{baseline_sha[:12]} (shell rc {baseline_rc}: 127 = "
+                    "command not found, 126 = found but not executable). "
+                    "The check did not run, so this is not a red — verify "
+                    "the command exists and is executable in the baseline "
+                    "checkout (relative paths resolve inside the worktree; "
+                    "uncommitted scripts are not there)."
                 )
             else:
-                verdict, code = VERDICT_GREEN_AFTER, EXIT_NOT_RED
+                current_rc, current_output, _current_timed_out = _run_command(
+                    project_dir, command
+                )
+                if baseline_rc == 0:
+                    verdict, code = VERDICT_NOT_RED, EXIT_NOT_RED
+                    message = (
+                        f"NOT RED: the command PASSED on baseline "
+                        f"{baseline_sha[:12]} — it proves nothing. Rewrite "
+                        "it so the unfixed code fails."
+                    )
+                elif current_rc == 0:
+                    verdict, code = VERDICT_RED_OK, EXIT_RED_OK
+                    message = (
+                        f"RED-OK: on baseline {baseline_sha[:12]} the "
+                        "command fails, and it passes in the current tree."
+                    )
+                else:
+                    verdict, code = VERDICT_GREEN_AFTER, EXIT_NOT_RED
+                    message = (
+                        f"GREEN-AFTER: the command is red on baseline "
+                        f"{baseline_sha[:12]}, but it does NOT pass in the "
+                        "current tree — the fix is missing or broken."
+                    )
+        else:
+            baseline_rc, baseline_output = _run_pytest(worktree, tests, hermetic=True)
+            classification = _classify_pytest(baseline_rc, baseline_output, project_dir)
+
+            if classification == "passed":
+                verdict, code = VERDICT_NOT_RED, EXIT_NOT_RED
                 message = (
-                    f"GREEN-AFTER: the tests are red on baseline "
-                    f"{baseline_sha[:12]}, but they do NOT pass in the "
-                    "current tree — the fix is missing or broken."
+                    f"NOT RED: the tests PASSED on baseline {baseline_sha[:12]} — "
+                    "they prove nothing. Rewrite them so the unfixed code fails."
                 )
-        elif classification == "symbol-missing-red":
-            verdict, code = VERDICT_BROKEN, EXIT_BROKEN
-            message = (
-                f"BROKEN-RUNNER: the baseline failure is only a missing-symbol "
-                f"import — on {baseline_sha[:12]} the tested code does not "
-                "exist yet. 0 executed tests is not a red result."
-            )
-            warnings.append(
-                "acceptable for NEW code: the test falls because the symbol "
-                "does not exist on the baseline; verify the assertions bite "
-                "once the symbol exists (an empty test would fail the same "
-                "way)"
-            )
-        else:  # no-tests / collection-error / env-error / broken
-            verdict, code = VERDICT_BROKEN, EXIT_BROKEN
-            detail = {
-                "no-tests": "pytest collected 0 tests — nothing was executed",
-                "collection-error": "collection error — the test file did not import",
-                "env-error": "import error for a module outside this project "
-                "(broken environment, not the code)",
-                "broken": "the pytest run did not complete",
-            }[classification]
-            message = (
-                f"BROKEN-RUNNER: {detail}. 0 collected tests is not a red "
-                f"result — the check did not run (baseline {baseline_sha[:12]})."
-            )
-            if classification == "collection-error" and _mentions_project_symbol(
-                baseline_output, project_dir
-            ):
+            elif classification == "real-red":
+                current_rc, current_output = _run_pytest(project_dir, tests)
+                if current_rc == 0:
+                    verdict, code = VERDICT_RED_OK, EXIT_RED_OK
+                    message = (
+                        f"RED-OK: on baseline {baseline_sha[:12]} the tests fail "
+                        "with a real red (assertions), and they pass in the "
+                        "current tree."
+                    )
+                else:
+                    verdict, code = VERDICT_GREEN_AFTER, EXIT_NOT_RED
+                    message = (
+                        f"GREEN-AFTER: the tests are red on baseline "
+                        f"{baseline_sha[:12]}, but they do NOT pass in the "
+                        "current tree — the fix is missing or broken."
+                    )
+            elif classification == "symbol-missing-red":
+                verdict, code = VERDICT_BROKEN, EXIT_BROKEN
+                message = (
+                    f"BROKEN-RUNNER: the baseline failure is only a missing-symbol "
+                    f"import — on {baseline_sha[:12]} the tested code does not "
+                    "exist yet. 0 executed tests is not a red result."
+                )
                 warnings.append(
-                    "acceptable for NEW code: the collection error is a "
-                    "project module/symbol missing on the baseline; verify "
-                    "the assertions bite once the code exists (an empty "
-                    "test would fail the same way)"
+                    "acceptable for NEW code: the test falls because the symbol "
+                    "does not exist on the baseline; verify the assertions bite "
+                    "once the symbol exists (an empty test would fail the same "
+                    "way)"
                 )
+            else:  # no-tests / collection-error / env-error / broken
+                verdict, code = VERDICT_BROKEN, EXIT_BROKEN
+                detail = {
+                    "no-tests": "pytest collected 0 tests — nothing was executed",
+                    "collection-error": "collection error — the test file did not import",
+                    "env-error": "import error for a module outside this project "
+                    "(broken environment, not the code)",
+                    "broken": "the pytest run did not complete",
+                }[classification]
+                message = (
+                    f"BROKEN-RUNNER: {detail}. 0 collected tests is not a red "
+                    f"result — the check did not run (baseline {baseline_sha[:12]})."
+                )
+                if classification == "collection-error" and _mentions_project_symbol(
+                    baseline_output, project_dir
+                ):
+                    warnings.append(
+                        "acceptable for NEW code: the collection error is a "
+                        "project module/symbol missing on the baseline; verify "
+                        "the assertions bite once the code exists (an empty "
+                        "test would fail the same way)"
+                    )
     finally:
         _remove_worktree(project_dir, worktree)
 
@@ -310,6 +416,94 @@ def _tests_from_contract(project_dir: Path, todo_id: str) -> list[str] | None:
     if contract and contract.get("prove_red"):
         return [str(t) for t in contract["prove_red"]]
     return None
+
+
+def _command_from_contract(project_dir: Path, todo_id: str) -> str | None:
+    """The TODO contract's ``prove_red_cmd`` key (REPORTS26-B6), if any."""
+    todo_file = _find_todo_file(project_dir, todo_id)
+    if todo_file is None:
+        return None
+    try:
+        content = todo_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        contract, _ = parse_todo_contract(content)
+    except ValueError:
+        return None
+    if contract and contract.get("prove_red_cmd"):
+        return str(contract["prove_red_cmd"])
+    return None
+
+
+# ─── Runner detection (REPORTS26-B6) ─────────────────────────────────────
+
+#: js test runners recognized by name in scripts.test / dependencies.
+_JS_RUNNERS = (
+    "vitest", "jest", "mocha", "ava", "web-test-runner", "tap",
+    "playwright", "cypress",
+)
+
+
+def _detect_runner(project_dir: Path) -> tuple[str, str]:
+    """Detect the project's test runner from top-level manifests.
+
+    Returns ``(runner, manifest)``: runner is one of ``js``, ``go``,
+    ``cargo``, ``pytest`` or ``unknown`` (no manifest — the pytest path
+    stays the default, as before). Check order: ``package.json`` →
+    ``go.mod`` → ``Cargo.toml`` → ``pyproject.toml`` → ``setup.py``.
+    """
+    pkg = project_dir / "package.json"
+    if pkg.is_file():
+        return _js_runner_name(pkg), "package.json"
+    if (project_dir / "go.mod").is_file():
+        return "go", "go.mod"
+    if (project_dir / "Cargo.toml").is_file():
+        return "cargo", "Cargo.toml"
+    if (project_dir / "pyproject.toml").is_file():
+        return "pytest", "pyproject.toml"
+    if (project_dir / "setup.py").is_file():
+        return "pytest", "setup.py"
+    return "unknown", ""
+
+
+def _js_runner_name(pkg_path: Path) -> str:
+    """Best-effort js runner name: ``js (vitest)`` from scripts.test or
+    dependencies/devDependencies, the plain category ``js`` when nothing
+    matches or the manifest is unreadable."""
+    try:
+        data = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "js"
+    if not isinstance(data, dict):
+        return "js"
+    scripts = data.get("scripts")
+    test = scripts.get("test") if isinstance(scripts, dict) else None
+    deps: dict[str, object] = {}
+    for key in ("dependencies", "devDependencies"):
+        block = data.get(key)
+        if isinstance(block, dict):
+            deps.update(block)
+    found = [
+        r for r in _JS_RUNNERS
+        if (isinstance(test, str) and r in test)
+        or any(r in dep for dep in deps)
+    ]
+    return "js (" + "/".join(found) + ")" if found else "js"
+
+
+def _runner_unsupported_message(project_dir: Path) -> str | None:
+    """The runner-unsupported message for a non-pytest project, or None."""
+    runner, manifest = _detect_runner(project_dir)
+    if runner in ("pytest", "unknown"):
+        return None
+    return (
+        f"RUNNER-UNSUPPORTED: this project is a {runner} project (manifest: "
+        f"{manifest}), but prove-red runs pytest by default — the verdict "
+        "would only say 'broken-runner' and hide the real cause. Override "
+        "the check with prove_red_cmd in the TODO contract (or the command "
+        f"parameter), e.g. prove_red_cmd: \"npm test\"."
+    )
 
 
 def _split_test_id(tid: str) -> str:
@@ -536,6 +730,29 @@ def _run_pytest(cwd: Path, test_ids: list[str], *, hermetic: bool = False) -> tu
     return proc.returncode, (out + ("\n" + err if err else ""))[-8000:]
 
 
+def _run_command(cwd: Path, command: str) -> tuple[int, str, bool]:
+    """Run the custom prove-red command (REPORTS26-B6) with shell semantics.
+
+    Returns ``(returncode, output, timed_out)``. The timeout is a separate
+    flag, NOT an exit code: a timed-out command did not run at all, so the
+    verdict logic must not count it as a red. The timeout kills the whole
+    process group through ``run_tree``.
+    """
+    try:
+        proc = run_tree(
+            command, shell=True, cwd=str(cwd),
+            capture_output=True, text=True, timeout=PYTEST_RUN_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return 2, (
+            f"(timeout: the command did not finish within "
+            f"{PYTEST_RUN_TIMEOUT}s)"
+        ), True
+    out = proc.stdout or ""
+    err = proc.stderr or ""
+    return proc.returncode, (out + ("\n" + err if err else ""))[-8000:], False
+
+
 def _summary_tail(output: str) -> str:
     """The final `= N failed, M passed in Xs =` line, if any."""
     for line in reversed(output.splitlines()):
@@ -667,4 +884,6 @@ __all__ = [
     "VERDICT_NOT_RED",
     "VERDICT_BROKEN",
     "VERDICT_GREEN_AFTER",
+    "VERDICT_RUNNER_UNSUPPORTED",
+    "EXIT_RUNNER_UNSUPPORTED",
 ]

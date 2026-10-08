@@ -858,4 +858,59 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # class as above: test identifiers and unit references, not debt.
 # files_over_400 stays 66 (the new test file is 151 lines — under the
 # bar).
+# REPORTS26 B6 (TODO-0159, prove_red runner + prove_red_cmd): baseline
+# raised 4579 -> 4598, files_over_400 raised 66 -> 67 — the unit adds 19
+# TODO-bearing lines: the new
+# tests/negative/test_reports26_b6_prove_red_runner.py (16 — module
+# docstring + the TODO-0001 fixture use-sites of the runner-unsupported /
+# prove_red_cmd / python-path tests) and the TODO-contract wording in the
+# awf/prove_red.py docstring + the agent_workflow_ui tools/awf.py
+# awf_prove_red docstring (3). Same class as above: test identifiers and
+# unit wording, not debt. The +1 file over 400 is awf/unit_contract.py
+# (399 -> 413 — the prove_red_cmd contract key + its validation), same
+# class as the run_state.py / commit_plan.py production-module raises
+# above.
+# REPORTS26 B6 (TODO-0159, review fix: baseline timeout / rc 126-127 ->
+# broken-runner): baseline raised 4598 -> 4600, files_over_400 raised
+# 67 -> 68 — the two new TestCommandNotRunOnBaseline tests add 2
+# TODO-0001 fixture use-sites, and
+# tests/negative/test_reports26_b6_prove_red_runner.py crosses the bar
+# (361 -> 425 lines). Same class as above: test identifiers, not debt.
+# REPORTS26 B5 (TODO-0160, restart-recovery doctrine + regression test):
+# baseline raised 4600 -> 4617 — the unit adds 17 TODO-bearing lines: 9
+# in the new tests/negative/test_reports26_b5_restart_recovery.py (the
+# TODO_ID = "TODO-0155" constant and its fixture/wait/assert/consumption
+# use-sites in the three tests, one docstring line) and 8 in the
+# delivered docs (2+2 the restart-recovery steps naming "the dead stage
+# and the TODO" and the awf_continue todo_id="TODO-NNNN" command in
+# USAGE.md/USAGE.ru.md, 2+2 the same steps in
+# awf/templates/roles/supervisor.md + the root mirror). Same class as
+# above: test identifiers, doc examples and unit-id references, not debt.
+# REPORTS26 B-f2 (TODO-0161, prestart remove + include_untracked):
+# baseline raised 4617 -> 4692 — the unit adds 75 TODO-bearing lines:
+# 54 in the new
+# tests/negative/test_reports26_b_f2_prestart_edit.py (module docstring
+# invariants, the TODO = "TODO-0001" constant and its fixture/assert
+# use-sites, the TODO-0161 unit references) and net 21 in the touched
+# tracked files (the TODO-0161 unit references in the awf/api/hygiene.py
+# docstrings/comments, the TODO-0002/TODO-0161 test ids in
+# tests/unit/test_todo_hygiene.py, the TODO-0003/TODO-0161 fixtures in
+# tests/integration/test_cli_entrypoints.py, the TODO-0161 references in
+# the agent_workflow_ui tools/awf.py docstrings; 11 replaced lines drop
+# out). Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays
+# 68 (the new test file is 253 lines — under the bar).
+# REPORTS26 B-f1 (TODO-0162, prestart append/section_updates): baseline
+# raised 4692 -> 4739 — the unit adds 47 TODO-bearing lines: 39 in the
+# new tests/negative/test_reports26_b_f1_todo_append_sections.py
+# (module docstring invariants, the TODO = "TODO-0001" constant and its
+# fixture/assert use-sites, the TODO-0162 unit references) and net 8 in
+# the touched tracked files (the TODO-0162 unit references in the
+# awf/api/hygiene.py docstrings/comments, the TODO-0162 reference in the
+# agent_workflow_ui tools/awf.py awf_todo_update docstring, and the
+# TODO-0162 test-id comment in
+# tests/agent_workflow_ui/test_awf_tools.py). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 68
+# (the new test file is 268 lines — under the bar; the touched
+# production/test files were already over it).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

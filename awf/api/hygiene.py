@@ -8,8 +8,9 @@ operations that leave a trace:
 - :func:`unblock_todo` moves BLOCKED/ACK closure signals (canonical and
   legacy forms) into a timestamped ``context/`` directory. DONE signals are
   never touched — an archived TODO comes back only via ``awf restore``.
-- :func:`remove_todo` deletes a TODO that never started (no ``.ready``, no
-  signals, no progress); the file moves to ``done/<id>/removed-<ts>.md``.
+- :func:`remove_todo` deletes a TODO that never started (no PROGRESS, no
+  signals; the dispatch ``.ready`` is an artifact and moves to the trace
+  dir); ``context/BASELINE-<id>.*`` is deleted with the unit.
 - :func:`retire_todo` archives a rejected/abandoned ACTIVE TODO (battle
   case TODO-0035: reject leaves ``DONE-<id>.{md,json}`` without the
   ``.ready`` signal, so the TODO stays "active" forever) — the files move
@@ -28,7 +29,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import paths, todos
+from .. import git_utils, paths, todos
+from .._atomic import atomic_write_text
 from .._log import log as _log
 from .._names import unique_name
 from ..pipeline_state import read_state
@@ -149,14 +151,22 @@ def unblock_todo(project_dir: Path, todo_id: str) -> UnblockResult:
 
 
 def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
-    """Delete a TODO that never started; the file keeps a trace in done/.
+    """Delete a TODO that never started; the files keep a trace in done/.
 
-    RUN3 #5: an inert TODO (``.md`` present, no ``.ready``, no signals, no
-    progress) confuses ``awf status`` and blocks nothing — but it must not
-    be erased silently either, so the file moves to
-    ``done/<id>/removed-<timestamp>.md``. Refused when the TODO shows any
-    sign of having been started (``.ready``, outbox signals, inbox
-    ACK/APPROVE, progress) or while the pipeline is running.
+    RUN3 #5: an inert TODO confuses ``awf status`` and blocks nothing —
+    but it must not be erased silently either, so the file moves to
+    ``done/<id>/removed-<timestamp>.md``.
+
+    REPORTS26 B-f2 (TODO-0161): the dispatch ``.ready`` is an ARTIFACT of
+    dispatch, not a sign of having started — it is no longer a refusal.
+    The unit is removable when there is NO PROGRESS, NO outbound signal
+    (DONE/BLOCKED/REVIEW and any ``*-<id>.*`` in the outbox) and NO
+    inbound ACK/APPROVE. While removable, the ``.ready`` moves to the
+    trace directory beside the renamed ``.md``, and
+    ``context/BASELINE-<id>.*`` is DELETED (the unit no longer exists);
+    the deleted files are reported in ``removed_files`` (project-relative
+    paths). All other refusals are unchanged: a running pipeline, a
+    missing ``.md``, a DONE closure (``awf restore``).
     """
     _validate_id(todo_id)
     project_dir = Path(project_dir).resolve()
@@ -175,12 +185,6 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
         raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to remove.")
 
     short = short_id(todo_id)
-    if (inbox / f"{todo_id}.ready").is_file():
-        raise AwfApiError(
-            f"{todo_id} has a dispatch signal ({todo_id}.ready) — it was armed "
-            "for the pipeline. Use awf unblock or awf reset --orphans."
-        )
-
     ids = (todo_id, short) if short != todo_id else (todo_id,)
     outbox_signals = [
         p
@@ -213,11 +217,46 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
     trace = done_dir / f"removed-{_timestamp()}.md"
     shutil.move(str(md), str(trace))
     trace_rel = trace.relative_to(project_dir).as_posix()
-    _log(paths.logs_dir(project_dir), f"todo-remove: {todo_id} — {md.name} → {trace_rel}")
+
+    # REPORTS26 B-f2: the dispatch .ready is an artifact — it follows the
+    # .md into the trace directory instead of blocking the removal.
+    ready = inbox / f"{todo_id}.ready"
+    ready_moved = False
+    if ready.is_file():
+        # unique name: a re-dispatched number keeps its earlier trace copy
+        ready_target = done_dir / _unique_name(done_dir, ready.name)
+        shutil.move(str(ready), str(ready_target))
+        ready_moved = True
+
+    # The unit no longer exists — its baseline snapshot is dead weight
+    # (commit gate / prove-red would read it for a TODO that is gone).
+    removed_files: list[str] = []
+    context_dir = paths.context_dir(project_dir)
+    for tid in ids:
+        for p in sorted(context_dir.glob(f"BASELINE-{tid}.*")):
+            if p.is_file():
+                removed_files.append(p.relative_to(project_dir).as_posix())
+    removed_files.sort()
+    for rel in removed_files:
+        (project_dir / rel).unlink()
+
+    note = f"todo-remove: {todo_id} — {md.name} → {trace_rel}"
+    if ready_moved:
+        note += f", {ready.name} → {done_dir.name}/"
+    if removed_files:
+        note += f", deleted {len(removed_files)} baseline file(s)"
+    _log(paths.logs_dir(project_dir), note)
+
+    message = f"{todo_id} removed (never started). Trace: {trace_rel}."
+    if ready_moved:
+        message += f" The dispatch .ready moved to done/{todo_id}/."
+    if removed_files:
+        message += f" Deleted {len(removed_files)} baseline file(s)."
     return RemoveTodoResult(
         todo_id=todo_id,
         trace_path=trace_rel,
-        message=f"{todo_id} removed (never started). Trace: {trace_rel}.",
+        removed_files=removed_files,
+        message=message,
     )
 
 
@@ -368,8 +407,91 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
     )
 
 
+def _recompute_include_baseline(
+    project_dir: Path, todo_id: str, include_files: list[str]
+) -> None:
+    """REPORTS26 B-f2 (TODO-0161): recompute the unit's include metadata
+    in place (not-started units only — the caller checked).
+
+    ``BASELINE-<id>.untracked`` is rewritten from the CURRENT untracked
+    state minus the included files — the same exclusion the dispatch
+    applies (the unit never started, so everything untracked now is
+    pre-existing). ``BASELINE-<id>.include`` is rewritten as the include
+    trace, or CLEARED when the list is empty (the files return to the
+    untracked snapshot). The rest of the baseline (``.sha``/``.status``/
+    logs) is untouched — the sha still pins the dispatch moment.
+    """
+    from ..include_untracked import clear_include_audit, write_include_audit
+
+    untracked = git_utils.git_stdout(
+        project_dir, "ls-files", "--others", "--exclude-standard", check=False
+    )
+    excluded = set(include_files)
+    if excluded:
+        untracked = "\n".join(
+            ln for ln in untracked.splitlines() if ln.strip() not in excluded
+        )
+    atomic_write_text(
+        paths.context_dir(project_dir) / f"BASELINE-{todo_id}.untracked", untracked
+    )
+    if include_files:
+        write_include_audit(project_dir, todo_id, include_files)
+    else:
+        clear_include_audit(project_dir, todo_id)
+
+
+def _apply_append(text: str, block: str) -> str:
+    """Append a block to the end of the TODO text, separated by one blank
+    line (TODO-0162). The result always ends with a single newline."""
+    return text.rstrip("\n") + "\n\n" + block.strip("\n") + "\n"
+
+
+def _apply_section_update(text: str, heading: str, body: str) -> tuple[str, bool]:
+    """Replace the body of the ``## <heading>`` section with ``body``
+    (TODO-0162), up to the next level-2 ``## `` line or EOF. When the
+    heading is absent the section is APPENDED at the end (replace-or-
+    append) and the second return value is True.
+
+    The output is a deterministic function of (text, heading, body), so
+    a repeated identical update is idempotent: the file comes out
+    byte-identical. When the heading occurs several times, the FIRST
+    occurrence is the one replaced.
+    """
+    key = heading.strip()
+    body_core = body.strip("\n")
+    pat = re.compile(r"^##\s+" + re.escape(key) + r"\s*$")
+    if not text.strip():
+        section = f"## {key}" + ("\n" + body_core if body_core else "")
+        return section + "\n", True
+    ends_nl = text.endswith("\n")
+    lines = text.split("\n")
+    if ends_nl and lines and lines[-1] == "":
+        lines = lines[:-1]
+    h = next((i for i, ln in enumerate(lines) if pat.match(ln)), None)
+    if h is None:
+        section = f"## {key}" + (f"\n{body_core}" if body_core else "")
+        return text.rstrip("\n") + "\n\n" + section + "\n", True
+    n = next(
+        (i for i in range(h + 1, len(lines)) if re.match(r"^##\s", lines[i])),
+        len(lines),
+    )
+    mid = [lines[h]] + (body_core.split("\n") if body_core else [])
+    if n < len(lines):
+        mid.append("")
+    out = lines[:h] + mid + lines[n:]
+    if ends_nl:
+        out.append("")
+    return "\n".join(out), False
+
+
 def update_todo(
-    project_dir: Path, todo_id: str, content: str, reason: str = ""
+    project_dir: Path,
+    todo_id: str,
+    content: str = "",
+    reason: str = "",
+    include_untracked: list[str] | None = None,
+    append: str | None = None,
+    section_updates: dict[str, str] | None = None,
 ) -> UpdateTodoResult:
     """Reword a not-started TODO, keeping the number (RUN6 #4).
 
@@ -381,9 +503,43 @@ def update_todo(
     overwritten) and the operation is logged to the orchestrator log
     (with ``reason``, when given).
 
+    REPORTS26 B-f1 (TODO-0162): two partial-edit modes for a
+    not-started TODO, each keeping the number/``.ready``/baseline and
+    writing a backup like a full reword:
+    - ``append`` — a block is added to the END of the md, separated by
+      one blank line; the previous text is untouched;
+    - ``section_updates`` — a mapping ``{heading: new body}``: the BODY
+      of the ``## <heading>`` section (up to the next level-2 ``## ``
+      line or EOF) is replaced; an ABSENT heading is added as a new
+      section at the end (replace-or-append). A repeated identical call
+      is idempotent — the file comes out byte-identical.
+
+    Exactly ONE content mode per call: ``content`` OR ``append`` OR
+    ``section_updates``; two or more at once is refused, as is an empty
+    ``append`` or an empty ``section_updates`` map. ``include_untracked``
+    (below) is orthogonal and stays combinable with any content mode.
+
+    REPORTS26 B-f2 (TODO-0161): ``include_untracked`` — the unit's
+    pre-existing-untracked inclusion for a NOT-STARTED unit. Same
+    validation as the dispatch (each path must exist, be untracked, be
+    not gitignored, stay inside the project; all-or-nothing — the FIRST
+    invalid path refuses BEFORE any side effect). Accepted, it
+    recomputes ``BASELINE-<id>.untracked`` (current untracked state
+    minus the included files) and rewrites the
+    ``BASELINE-<id>.include`` trace; an EMPTY list clears the inclusion
+    (the files return to the untracked snapshot). An empty ``content``
+    is allowed WHEN ``include_untracked`` is given (and no ``append`` /
+    ``section_updates``) — the TODO text is not touched (no backup) and
+    the answer carries ``backup=""``.
+
     Refusals (clear errors, nothing written):
     - no ``TODO-<id>.md`` in the inbox;
-    - empty ``content``;
+    - two or more content modes at once (``content``/``append``/
+      ``section_updates``); an empty ``append``; an empty
+      ``section_updates`` map; an empty heading key in
+      ``section_updates``;
+    - no content mode at all AND no ``include_untracked``;
+    - an invalid ``include_untracked`` path (before any side effect);
     - the TODO already started — any outbox signal (``PROGRESS-*``,
       ``BLOCKED-*``, ``DONE-*``, ``REVIEW-*``, canonical or legacy), an
       inbox ``ACK-``/``APPROVE-`` closure, or a non-empty ``PROGRESS`` —
@@ -394,8 +550,41 @@ def update_todo(
     """
     _validate_id(todo_id)
     content = content or ""
-    if not content.strip():
-        raise AwfApiError("content is empty — nothing to update with")
+    has_content = bool(content.strip())
+    if append is not None and not append.strip():
+        raise AwfApiError(
+            "append is empty — nothing to append (omit append to keep the "
+            "text as is)"
+        )
+    if section_updates is not None and not section_updates:
+        raise AwfApiError(
+            "section_updates is an empty map — nothing to update (omit "
+            "section_updates to keep the text as is)"
+        )
+    if section_updates is not None and any(not k.strip() for k in section_updates):
+        raise AwfApiError(
+            "section_updates: an empty heading key — name the ## heading "
+            "to replace or add"
+        )
+    modes = [
+        name
+        for name, on in (
+            ("content", has_content),
+            ("append", append is not None),
+            ("section_updates", section_updates is not None),
+        )
+        if on
+    ]
+    if len(modes) > 1:
+        raise AwfApiError(
+            f"exactly one of content/append/section_updates per call — "
+            f"got {', '.join(modes)}"
+        )
+    if not modes and include_untracked is None:
+        raise AwfApiError(
+            "content is empty and no include_untracked — nothing to update with"
+        )
+    sections = section_updates if section_updates is not None else {}
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
@@ -437,6 +626,42 @@ def update_todo(
             "re-dispatch."
         )
 
+    # REPORTS26 B-f2: the inclusion is validated BEFORE any side effect —
+    # the dispatch's all-or-nothing contract (no backup, no snapshot
+    # rewrite on refusal). The baseline is recomputed before the content
+    # write, so a failed write still leaves a consistent include state.
+    include_files: list[str] | None = None
+    if include_untracked is not None:
+        from ..include_untracked import resolve_include_untracked
+
+        include_files = (
+            [] if not include_untracked
+            else resolve_include_untracked(project_dir, include_untracked)
+        )
+        _recompute_include_baseline(project_dir, todo_id, include_files)
+
+    has_any_content_mode = has_content or append is not None or section_updates is not None
+    if not has_any_content_mode:
+        if include_files:
+            what = (
+                f"include_untracked: {len(include_files)} pre-existing file(s) "
+                "re-claimed into the unit commit"
+            )
+        else:
+            what = (
+                "include_untracked cleared (files returned to the untracked "
+                "snapshot)"
+            )
+        _log(
+            paths.logs_dir(project_dir),
+            f"todo-update: {todo_id} — {what}; baseline recomputed, content kept",
+        )
+        return UpdateTodoResult(
+            todo_id=todo_id,
+            backup="",
+            message=f"{todo_id} updated: {what}; number/.ready/baseline sha kept.",
+        )
+
     old_content = md.read_text(encoding="utf-8")
     context_dir = paths.context_dir(project_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
@@ -446,21 +671,55 @@ def update_todo(
     backup.write_text(old_content, encoding="utf-8")
     backup_rel = backup.relative_to(project_dir).as_posix()
 
-    md.write_text(content, encoding="utf-8")
+    if has_content:
+        new_content = content
+        what = f"content replaced ({len(content)} chars)"
+    elif append is not None:
+        new_content = _apply_append(old_content, append)
+        what = f"appended ({len(append.strip())} chars)"
+    else:
+        new_content = old_content
+        replaced: list[str] = []
+        added: list[str] = []
+        for heading, body in sections.items():
+            new_content, is_added = _apply_section_update(new_content, heading, body)
+            (added if is_added else replaced).append(heading.strip())
+        parts = []
+        if replaced:
+            parts.append("replaced: " + ", ".join(replaced))
+        if added:
+            parts.append("added: " + ", ".join(added))
+        what = "section_updates — " + "; ".join(parts)
+
+    md.write_text(new_content, encoding="utf-8")
 
     why = f", reason: {reason.strip()}" if reason.strip() else ""
+    include_note = ""
+    if include_files is not None:
+        include_note = (
+            f", include_untracked: {len(include_files)} file(s)"
+            if include_files
+            else ", include_untracked: cleared"
+        )
     _log(
         paths.logs_dir(project_dir),
-        f"todo-update: {todo_id} — content replaced ({len(content)} chars, "
-        f"backup: {backup_rel}{why})",
+        f"todo-update: {todo_id} — {what}, "
+        f"backup: {backup_rel}{include_note}{why})",
     )
+    message = (
+        f"{todo_id} updated: {what}, number/.ready/baseline "
+        f"kept (backup: {backup_rel})."
+    )
+    if include_files is not None:
+        message += (
+            f" include_untracked: {len(include_files)} file(s)."
+            if include_files
+            else " include_untracked: cleared."
+        )
     return UpdateTodoResult(
         todo_id=todo_id,
         backup=backup_rel,
-        message=(
-            f"{todo_id} updated: content replaced, number/.ready/baseline "
-            f"kept (backup: {backup_rel})."
-        ),
+        message=message,
     )
 
 
