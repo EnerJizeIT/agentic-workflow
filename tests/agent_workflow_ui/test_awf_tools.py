@@ -2090,7 +2090,7 @@ class TestNextActionSmoke:
                     "run_mode": "background",
                     "run_id": 1,
                     "log_file": "x.log",
-                    "next_action": "GO IDLE — the run loop continues on `done`.",
+                    "next_action": "Run item 1/1 launched (TODO-0001). Continue the run loop: awf_wait_for_event(actionable_only=True, timeout=<suggested>) → verify → approve → done → awf_run_next.",
                 }
 
         monkeypatch.setattr(awf.api, "run_next", lambda **kw: _FakeRunNext())

@@ -1181,19 +1181,27 @@ def run_next(
             ),
         )
 
+    # REPORTS26 F4 (TODO-0164): the launched unit runs INSIDE a run — the
+    # standalone protocol ("GO IDLE — wait for user", awf_start) does not
+    # apply: the supervisor must keep the run loop, not go idle. The
+    # embedded pipeline message carries that sentence for background
+    # launches — strip it so one answer carries one protocol, and
+    # next_action names the run loop (phase-run.md) instead.
+    detail = result.message.replace(". GO IDLE — wait for user.", "")
     return RunNextResult(
         action="started",
         todo_id=next_id,
         message=(
             f"Run item {index + 1}/{len(queue)} launched: {next_id} "
-            f"({result.run_mode}). {result.message}"
+            f"({result.run_mode}). {detail}"
         ),
         run_mode=result.run_mode,
         run_id=result.run_id,
         log_file=result.log_file or "",
         next_action=(
-            "GO IDLE. Wait for the verify event with awf_wait_for_event, then run "
-            "your own probes and awf_approve(evidence=...) or awf_reject."
+            f"Run item {index + 1}/{len(queue)} launched ({next_id}). "
+            "Continue the run loop: awf_wait_for_event(actionable_only=True, "
+            "timeout=<suggested>) → verify → approve → done → awf_run_next."
         ),
     )
 
