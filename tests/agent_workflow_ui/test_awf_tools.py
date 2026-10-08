@@ -1911,6 +1911,30 @@ class TestAwfTodoUpdate:
         assert calls[0]["content"] == "new text"
         assert calls[0]["reason"] == "scope cut"
 
+    def test_partial_edit_params_are_proxied(self, monkeypatch):
+        """TODO-0162: append/section_updates reach api.update_todo."""
+        calls: list[dict] = []
+
+        def spy_update(project_dir, **kw):
+            calls.append(kw)
+            raise api.AwfApiError("spy: stop")
+
+        monkeypatch.setattr(api, "update_todo", spy_update)
+
+        result = run(
+            awf.awf_todo_update(
+                todo_id="TODO-0001",
+                project_dir="/tmp",
+                append="finding",
+                section_updates={"Границы": "new"},
+            )
+        )
+
+        assert result["status"] == "error"  # spy aborted the call
+        assert calls, "api.update_todo was not called"
+        assert calls[0]["append"] == "finding"
+        assert calls[0]["section_updates"] == {"Границы": "new"}
+
     def test_update_keeps_number_and_ready(self, mcp_project):
         result = run(
             awf.awf_todo_update(

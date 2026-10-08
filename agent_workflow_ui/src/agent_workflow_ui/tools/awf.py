@@ -582,6 +582,8 @@ async def awf_todo_update(
     project_dir: str | None = None,
     reason: str = "",
     include_untracked: list[str] | None = None,
+    append: str | None = None,
+    section_updates: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Reword a not-started TODO, keeping the number (RUN6 #4).
 
@@ -590,19 +592,36 @@ async def awf_todo_update(
     previous content is backed up to
     ``context/TODO-<id>.md.bak-<timestamp>``.
 
+    REPORTS26 B-f1 (TODO-0162): two partial-edit modes, each with the
+    same guarantees (backup, number/.ready/baseline kept, started
+    units refused):
+    - ``append`` — a block added to the END of the md, separated by one
+      blank line; the previous text is untouched;
+    - ``section_updates`` — ``{heading: new body}``: the BODY of the
+      ``## <heading>`` section (up to the next ``## `` line or EOF) is
+      replaced; an ABSENT heading is added at the end (replace-or-
+      append). A repeated identical call is idempotent.
+
+    Exactly ONE content mode per call: ``content`` OR ``append`` OR
+    ``section_updates``; two or more at once, an empty ``append`` or an
+    empty ``section_updates`` map are refused. ``include_untracked``
+    (below) is orthogonal and stays combinable with any content mode.
+
     REPORTS26 B-f2 (TODO-0161): ``include_untracked`` — the unit's
     pre-existing-untracked inclusion, editable before the unit starts.
     Same validation as the dispatch (each path exists, untracked, not
     gitignored, inside the project; all-or-nothing, refused before any
     side effect). It recomputes ``BASELINE-<id>.untracked`` and the
     ``BASELINE-<id>.include`` trace; an EMPTY list clears the inclusion.
-    When only ``include_untracked`` is given (empty ``content``), the
+    When only ``include_untracked`` is given (no content mode), the
     TODO text is not touched (no backup) and ``backup`` is ``""``.
 
-    Refusals: no TODO file in the inbox; empty ``content`` AND no
-    ``include_untracked``; an invalid ``include_untracked`` path; a
-    started TODO (PROGRESS/signals/closure — fix the unit via REVIEW/
-    replan, or retire + re-dispatch); a live pipeline on this id.
+    Refusals: no TODO file in the inbox; more than one content mode (or
+    none, when no ``include_untracked`` either); an empty ``append``; an
+    empty ``section_updates`` map or an empty heading key; an invalid
+    ``include_untracked`` path; a started TODO (PROGRESS/signals/closure
+    — fix the unit via REVIEW/replan, or retire + re-dispatch); a live
+    pipeline on this id.
     """
     result = await _exec(
         api.update_todo,
@@ -611,12 +630,14 @@ async def awf_todo_update(
         content=content,
         reason=reason,
         include_untracked=include_untracked,
+        append=append,
+        section_updates=section_updates,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         backup = result.get("backup") or ""
         if backup:
             result["next_action"] = (
-                f"{result.get('todo_id', 'TODO')} reworded (backup: "
+                f"{result.get('todo_id', 'TODO')} updated (backup: "
                 f"{backup}), the unit stays ready — "
                 "awf_start / awf_run_next."
             )
