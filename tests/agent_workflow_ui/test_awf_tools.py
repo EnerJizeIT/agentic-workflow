@@ -2239,3 +2239,79 @@ class TestNextActionSmoke:
         na = r.get("next_action", "")
         assert na
         assert "Nothing to stop" in na or "nothing to stop" in na
+
+
+# ─── REPORTS26 F6 (TODO-0168): awf_commit_workflow plugin coverage ─────
+#
+# CI coverage ratchet: PR #34 dropped tools/awf.py 74.37 -> 73.87 because
+# the awf_commit_workflow wrapper was never exercised by the plugin tests.
+# Red before: scripts/coverage.sh FAIL on that module (drop 0.50 > 0.1).
+
+
+class TestAwfCommitWorkflow:
+    @pytest.fixture
+    def wf_project(self, git_project):
+        """awf-init'ed repo with the .agentic skeleton committed.
+
+        Skeleton committed so each test's "uncommitted" workflow files are
+        exactly the ones the test creates (same pattern as the wf_repo
+        fixture in tests/negative/test_reports26_f6_commit_workflow.py).
+        """
+        api.init_project(git_project, project_name="F6")
+        subprocess.run(["git", "add", "-A"], cwd=git_project, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "skeleton"], cwd=git_project, check=True
+        )
+        return git_project
+
+    def test_success_commits_untracked_pipeline(self, wf_project):
+        (wf_project / ".agentic" / "pipelines").mkdir(exist_ok=True)
+        (wf_project / ".agentic" / "pipelines" / "x.yaml").write_text(
+            "name: x\n", encoding="utf-8"
+        )
+
+        result = run(awf.awf_commit_workflow(project_dir=str(wf_project)))
+
+        assert result["status"] == "ok"
+        # commit_gate reports the short sha (rev-parse --short HEAD).
+        head = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=wf_project, text=True
+        ).strip()
+        assert result["sha"] == head
+        assert result["files"] == [".agentic/pipelines/x.yaml"]
+        assert result["message"].startswith("awf(workflow):")
+        # The wrapper's own contribution: next_action on success.
+        assert "uncommitted_workflow_files" in result["next_action"]
+        # The commit really landed with the parser-compatible subject.
+        subject = subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"], cwd=wf_project, text=True
+        ).strip()
+        assert subject.startswith("awf(workflow):")
+        # After the commit the dry-run is empty — visibility and commit agree.
+        status = run(awf.awf_status(project_dir=str(wf_project)))
+        assert status["status"] == "ok"
+        assert status["uncommitted_workflow_files"] == []
+
+    def test_empty_set_is_error_passthrough(self, wf_project):
+        head_before = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=wf_project, text=True
+        ).strip()
+        result = run(awf.awf_commit_workflow(project_dir=str(wf_project)))
+        assert result["status"] == "error"
+        assert "nothing to commit" in result["error"]
+        head_after = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=wf_project, text=True
+        ).strip()
+        assert head_after == head_before
+
+    def test_status_passes_uncommitted_workflow_files(self, wf_project):
+        status = run(awf.awf_status(project_dir=str(wf_project)))
+        assert status["status"] == "ok"
+        assert status["uncommitted_workflow_files"] == []
+
+        (wf_project / ".agentic" / "pipelines").mkdir(exist_ok=True)
+        (wf_project / ".agentic" / "pipelines" / "x.yaml").write_text(
+            "name: x\n", encoding="utf-8"
+        )
+        status = run(awf.awf_status(project_dir=str(wf_project)))
+        assert status["uncommitted_workflow_files"] == [".agentic/pipelines/x.yaml"]
