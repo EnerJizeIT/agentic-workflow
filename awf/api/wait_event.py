@@ -184,10 +184,11 @@ def cap_advice(project_dir: Path | None = None) -> str:
 
 
 # RUN6 #1: the signs of a completed pipeline cycle. The commit comes from
-# commit_gate.maybe_commit (``awf(<stage>): TODO-NNNN``), the archive from
+# commit_gate.maybe_commit (``awf(<stage>): TODO-NNNN``, optionally with a
+# title suffix `` — <title>`` since REPORTS26 F3), the archive from
 # todos.archive_todo (``.agentic/done/<todo>/``) — either one is enough.
 _TODO_ID_RE = re.compile(r"^TODO-\d{4,}$")
-_AWF_COMMIT_RE = re.compile(r"^awf\([^)]+\):\s*(TODO-\d{4,})\s*$")
+_AWF_COMMIT_RE = re.compile(r"^awf\([^)]+\):\s*(TODO-\d{4,})(?:\s—\s.*|\s*)$")
 
 
 def _suggest_timeout(project_dir: Path) -> int:

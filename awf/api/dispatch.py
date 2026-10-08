@@ -22,6 +22,31 @@ from ._helpers import require_awf_project
 from ._results import DispatchTodoResult
 from .pipeline import create_baseline
 
+# REPORTS26 F5: a TODO number in the FIRST line's heading (a copied
+# template keeps its old title). Only the first line counts — a
+# TODO-NNNN deeper in the body is ordinary text about another unit.
+_HEADING_TODO_NUM_RE = re.compile(r"^#{1,6}\s+TODO-(\d+)")
+
+
+def _heading_todo_number(content: str) -> int | None:
+    """The number from a ``TODO-NNNN`` heading on the first line, else None."""
+    if not content:
+        return None
+    m = _HEADING_TODO_NUM_RE.match(content.splitlines()[0])
+    return int(m.group(1)) if m else None
+
+
+def _renumber_heading(content: str, todo_id: str) -> str:
+    """Replace the number in the first line's heading with ``todo_id``'s.
+
+    Only the first line is touched; the rest of the content stays byte-
+    for-byte. The regex matched ``#... TODO-<digits>`` at the start of the
+    line, so the first ``TODO-<digits>`` occurrence in it IS the heading's.
+    """
+    lines = content.splitlines(keepends=True)
+    lines[0] = re.sub(r"TODO-\d+", todo_id, lines[0], count=1)
+    return "".join(lines)
+
 
 def _next_todo_id(project_dir: Path) -> str:
     """Pick next TODO-NNNN id (max existing + 1).
@@ -65,6 +90,7 @@ def dispatch_todo(
     pipeline: str | None = None,
     carry_over_from: str | None = None,
     include_untracked: list[str] | None = None,
+    allow_mismatch: bool = False,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -102,19 +128,35 @@ def dispatch_todo(
             ``.agentic/context/BASELINE-<id>.include``. Independently, the
             answer always lists the files that STAY excluded
             (``pre_existing_untracked`` + ``untracked_warning``).
+        allow_mismatch: REPORTS26 F5 — heading/title mismatch policy. The
+            first line of the content is a heading carrying a ``TODO-NNNN``
+            number:
+
+            - auto number (``todo_id`` is None) and the number differs from
+              the issued one → the heading is renumbered to the issued id,
+              the result carries ``renumbered=True`` (rest of the text
+              untouched);
+            - explicit ``todo_id`` and the number differs → the dispatch is
+              refused BEFORE any side effect (the message names both
+              numbers); ``allow_mismatch=True`` accepts the mismatch and
+              writes the content as-is (``renumbered=False``).
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
     (use ``awf restore`` for an archived TODO).
 
     Returns:
-        DispatchTodoResult with todo_id, baseline_sha, files written.
+        DispatchTodoResult with todo_id, baseline_sha, files written,
+        and ``renumbered`` (REPORTS26 F5: True when the auto-issued
+        number replaced a foreign one in the first line's heading).
 
     Raises:
         AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
             already archived in done/, a DONE closure for ``todo_id`` is
             still in the outbox, a ``carry_over_from`` origin cannot be
-            validated, or an ``include_untracked`` path is invalid.
+            validated, an ``include_untracked`` path is invalid, or an
+            explicit ``todo_id`` disagrees with the first line's heading
+            number without ``allow_mismatch`` (REPORTS26 F5).
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -171,6 +213,24 @@ def dispatch_todo(
             f"invalid todo_id '{todo_id}' — expected format 'TODO-NNNN' (4+ digits)"
         )
 
+    # REPORTS26 F5: an explicit id + a foreign number in the first line's
+    # heading would land a unit titled after someone else's number. Refuse
+    # BEFORE any side effect (no reservation, no baseline); allow_mismatch
+    # is the conscious opt-out (content written as-is).
+    heading_num = _heading_todo_number(content)
+    if (
+        explicit_id
+        and not allow_mismatch
+        and heading_num is not None
+        and heading_num != int(todo_id.split("-", 1)[1])
+    ):
+        raise AwfApiError(
+            f"the content heading says TODO-{heading_num:04d} but "
+            f"todo_id is {todo_id} — the unit would land with a foreign "
+            "number in its title. Fix the heading to match, or pass "
+            "allow_mismatch=True to write the content as-is."
+        )
+
     # A-12 (audit 2026-09-25): an archived id is occupied — a re-dispatch
     # of done/<id>/ would let the next archive overwrite the history.
     # Refuse BEFORE the O_EXCL reservation: no file created, no baseline.
@@ -184,12 +244,6 @@ def dispatch_todo(
 
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)
-
-    # Optional role hint as HTML comment (invisible to LLM reading the .md,
-    # visible to grep / debugging).
-    body = content
-    if role:
-        body = f"<!-- role_hint: {role} -->\n" + body
 
     # AUD14-01: reserve the ID atomically before writing content. The old
     # exists() → write() window let two parallel dispatches pick the same
@@ -221,6 +275,24 @@ def dispatch_todo(
             f"could not reserve a free TODO id (16 consecutive collisions, "
             f"last tried {todo_id}) — check .agentic/inbox for stray TODO files"
         )
+
+    # REPORTS26 F5: auto number + a foreign number in the first line's
+    # heading (a copied template kept its old title) — renumber the
+    # heading to the ISSUED id (the reservation loop may have moved past
+    # the first candidate on collisions, hence here, not earlier). The
+    # rest of the content stays untouched; an explicit id never reaches
+    # here (mismatch refused above, matching number is a no-op).
+    renumbered = False
+    if not explicit_id and heading_num is not None:
+        if heading_num != int(todo_id.split("-", 1)[1]):
+            content = _renumber_heading(content, todo_id)
+            renumbered = True
+
+    # Optional role hint as HTML comment (invisible to LLM reading the .md,
+    # visible to grep / debugging).
+    body = content
+    if role:
+        body = f"<!-- role_hint: {role} -->\n" + body
 
     # RUN3 #4: never (re)issue a number whose DONE closure is still in the
     # outbox — the fresh TODO would be invisible (todos.is_closed). The
@@ -386,6 +458,7 @@ def dispatch_todo(
         carry_over_files=carry_over_files,
         pre_existing_untracked=pre_existing,
         untracked_warning=untracked_warning,
+        renumbered=renumbered,
     )
 
 
