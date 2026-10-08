@@ -913,4 +913,22 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # identifiers and unit references, not debt. files_over_400 stays 68
 # (the new test file is 268 lines — under the bar; the touched
 # production/test files were already over it).
+# REPORTS26 F3 (TODO-0163, unit commit subject+body): baseline raised
+# 4739 -> 4793 — the unit adds 54 TODO-bearing lines: 42 in the new
+# tests/negative/test_reports26_f3_commit_message.py (module docstring,
+# the TODO = "TODO-0002" constant and its fixture/assert use-sites, the
+# "awf(verify): TODO-0002" subject fixtures, the TODO-NNNN regex
+# docstring lines) and net 12 in awf/commit_gate.py (the REPORTS26 F3
+# header comment, the _todo_title/_commit_subject/build_commit_message
+# docstrings' TODO-NNNN and TODO-0163 lines). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 raised
+# 68 -> 69 — the message code pushes awf/commit_gate.py over the bar
+# (373 -> 474), same class as the commit_plan.py / wait_event.py
+# production-module raises above.
+# REPORTS26 F3 (TODO-0163, REVIEW P2: files line from the plan): baseline
+# raised 4793 -> 4794 — the new regression test
+# test_files_line_lists_only_planned_files adds 1 TODO-bearing line (its
+# _todo fixture's "# TODO — <title>" heading). Same class as above: a
+# test fixture line, not debt. files_over_400 stays 69 (the shortstat
+# helper removal keeps awf/commit_gate.py at 450 lines — still over).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

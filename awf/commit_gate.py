@@ -23,6 +23,7 @@ committed files as "foreign" (A-17).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,79 @@ def _get_approve_timeout() -> int:
     without restarting Python.
     """
     return _safe_int_env("AWF_APPROVE_TIMEOUT_SECONDS", 1800)
+
+
+# REPORTS26 F3 (TODO-0163): the unit commit message. The legacy subject
+# ``awf(<stage>): TODO-NNNN`` left ``git log`` blind — no essence, no files.
+# Now the subject carries the TODO's title (≤ _SUBJECT_MAX_LEN total) and
+# the body carries the full title, the unit id, and the files line.
+_SUBJECT_MAX_LEN = 72
+
+
+def _todo_title(project_dir: Path, todo_id: str) -> str:
+    """The first H1 heading of ``inbox/TODO-<id>.md`` → title, or "".
+
+    The dispatch boilerplate is stripped: the leading ``#``, the leading
+    ``TODO(-id)`` token, and the separators (``—``, ``-``, ``:``,
+    whitespace). A heading that is the boilerplate only (``# TODO-0001``)
+    yields "" — the caller degrades to the legacy subject.
+    """
+    todo_file = paths.inbox(project_dir) / f"{todo_id}.md"
+    try:
+        text = todo_file.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        m = re.match(r"^#\s+(.+)$", line)
+        if not m:
+            continue
+        title = m.group(1).strip()
+        title = re.sub(r"^TODO(?:-\d+)?\b", "", title)
+        title = title.lstrip("—-: \t")
+        return title.strip()
+    return ""
+
+
+def _commit_subject(stage_name: str, todo_id: str, title: str) -> str:
+    """``awf(<stage>): TODO-NNNN — <title>`` ≤ 72 chars, or the legacy
+    subject when there is no title (or the title cannot fit at all)."""
+    base = f"awf({stage_name}): {todo_id}"
+    if not title:
+        return base
+    subject = f"{base} — {title}"
+    if len(subject) <= _SUBJECT_MAX_LEN:
+        return subject
+    budget = _SUBJECT_MAX_LEN - len(base) - 3  # the " — " separator
+    if budget <= 1:
+        return base
+    return f"{base} — {title[: budget - 1]}…"
+
+
+def build_commit_message(
+    stage_name: str,
+    todo_id: str,
+    project_dir: Path,
+    plan: commit_plan.CommitPlan | None = None,
+) -> str:
+    """The unit commit message (REPORTS26 F3, TODO-0163).
+
+    subject = ``awf(<stage>): TODO-NNNN — <title>`` (≤ 72 chars — the
+    title is truncated, never the prefix), or the legacy
+    ``awf(<stage>): TODO-NNNN`` when there is no title. body = the full
+    title + ``unit: TODO-NNNN`` + the files line — ``plan.files``, the
+    authoritative set the commit actually contains (REVIEW P2: the tree
+    state is NOT the commit content — foreign staged changes live in the
+    tree but outside the plan). Relative paths, the plan's stable order;
+    absent without a plan or with an empty file set.
+    """
+    title = _todo_title(project_dir, todo_id)
+    subject = _commit_subject(stage_name, todo_id, title)
+    if not title:
+        return subject
+    body = [title, f"unit: {todo_id}"]
+    if plan is not None and plan.files:
+        body.append("files: " + ", ".join(plan.files))
+    return subject + "\n\n" + "\n".join(body)
 
 
 def _has_head(project_dir: Path) -> bool:
@@ -351,7 +425,10 @@ def maybe_commit(
         )
 
     outcome = _commit_via_isolated_index(
-        project_dir, plan, f"awf({stage_name}): {todo_id}", logs_dir=logs_dir
+        project_dir,
+        plan,
+        build_commit_message(stage_name, todo_id, project_dir, plan),
+        logs_dir=logs_dir,
     )
     if outcome.status == commit_plan.OUTCOME_COMMITTED:
         print(f"Auto-committed: {todo_id} at '{stage_name}' ({outcome.sha}).", file=sys.stderr)
