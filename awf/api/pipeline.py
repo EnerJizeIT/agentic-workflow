@@ -24,7 +24,7 @@ from ..pipeline_state import read_state
 from . import _lease, _liveness
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
-from ._helpers import require_agentic
+from ._helpers import require_agentic, require_awf_project
 from ._results import (
     ApproveResult,
     BaselineResult,
@@ -745,8 +745,9 @@ def create_baseline(
         raise AwfApiError("todo_id is required")
     if not re.match(r"^TODO-\d{4,}$", todo_id):
         raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
+    # REPORTS26 B2: write entry point — a bare .agentic/ without
+    # config.yaml (stale directory) is refused before any side effect.
+    project_dir = require_awf_project(project_dir)
 
     context_dir = paths.context_dir(project_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
@@ -889,6 +890,7 @@ def create_baseline(
         return BaselineResult(
             todo_id=todo_id,
             sha=sha,
+            resolved_project_dir=str(project_dir),
             is_git_repo=is_git,
             files_created=files_created,
             test_status=test_status,

@@ -18,7 +18,7 @@ from .. import paths
 from .._atomic import atomic_write_text
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
-from ._helpers import require_agentic
+from ._helpers import require_awf_project
 from ._results import DispatchTodoResult
 from .pipeline import create_baseline
 
@@ -137,8 +137,10 @@ def dispatch_todo(
     except ValueError as e:
         raise AwfApiError(f"TODO contract block: {e}") from None
 
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
+    # REPORTS26 B2: write entry point — a bare .agentic/ without
+    # config.yaml (stale directory) is refused before any side effect.
+    # The resolved path lands in the result (resolved_project_dir).
+    project_dir = require_awf_project(project_dir)
 
     # RUN5 #1 (leak-gate): validate the carry-over BEFORE reserving the id —
     # a refused carry-over must leave no side effects (no TODO, no baseline).
@@ -372,6 +374,7 @@ def dispatch_todo(
     return DispatchTodoResult(
         todo_id=todo_id,
         baseline_sha=baseline.sha,
+        resolved_project_dir=str(project_dir),
         role_hint=role,
         files_written=[
             f".agentic/inbox/{todo_id}.md",

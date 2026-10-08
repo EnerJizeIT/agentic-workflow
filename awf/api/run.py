@@ -22,6 +22,7 @@ from .._atomic import atomic_write_text
 from ..todo_ids import is_valid_todo_id
 from . import _liveness
 from ._errors import AwfApiError
+from ._helpers import require_awf_project
 from ._results import (
     RunFinishResult,
     RunNextResult,
@@ -41,20 +42,11 @@ def _require_run_project(project_dir: Path) -> Path:
     subprocess cwd ($HOME), where a bare ``.agentic/`` from old experiments
     existed — a ghost run was recorded there and every later message was
     misleading. Refuse loudly, with the path, before writing anything.
+
+    REPORTS26 B2 (TODO-0156): the strict check now lives in
+    :func:`require_awf_project` — one home for all write entry points.
     """
-    project_dir = Path(project_dir).resolve()
-    agentic = project_dir / ".agentic"
-    if not agentic.is_dir():
-        raise AwfApiError(
-            f"Not an awf project: {project_dir} has no .agentic/ — run 'awf init' first."
-        )
-    if not (agentic / "config.yaml").is_file():
-        raise AwfApiError(
-            f"Not an awf project root: {project_dir} (no .agentic/config.yaml). "
-            f"Pass project_dir explicitly — the default is the MCP process cwd, "
-            f"which is usually not your project."
-        )
-    return project_dir
+    return require_awf_project(project_dir)
 
 
 def _validate_queue(queue: list[str | dict] | None) -> list[dict]:

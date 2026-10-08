@@ -826,4 +826,16 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # the three invariant tests). Same class as above: test identifiers, not
 # debt. files_over_400 stays 66 (the new test file is 139 lines — under
 # the bar).
+# REPORTS26 B2 (TODO-0156, project_dir strict check): baseline raised
+# 4536 -> 4556 — the unit adds 20 TODO-bearing lines net: 15 in the new
+# tests/negative/test_reports26_b2_project_dir.py (module docstring, the
+# TODO-0001/TODO-0099 fixture and assert use-sites of the four invariant
+# tests, the resolved_project_dir asserts) and 5 net in the touched
+# files (the TODO-0156 unit references in awf/api/run.py, the
+# TODO-0156 comments in tests/unit/test_api.py and
+# tests/unit/test_reject_files.py, the TODO line in
+# awf/api/_results.py's resolved_project_dir comment, minus 1 the old
+# no_config test's create_baseline line). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 66
+# (the new test file is 133 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

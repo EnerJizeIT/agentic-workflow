@@ -262,10 +262,16 @@ class TestCreateBaseline:
         result = api.create_baseline(tmp_git_repo, "TODO-0001")
         assert result.test_status == "failed"
 
-    def test_no_config_yields_no_config_status(self, tmp_git_repo):
+    def test_stale_agentic_without_config_refused(self, tmp_git_repo):
+        """REPORTS26 B2 (TODO-0156): a bare .agentic/ without config.yaml
+        (stale directory, e.g. an old ~/.agentic) is not an initialized
+        project — the write entry point refuses before any side effect."""
         (tmp_git_repo / ".agentic" / "context").mkdir(parents=True)
-        result = api.create_baseline(tmp_git_repo, "TODO-0001")
-        assert result.test_status == "no_config"
+        with pytest.raises(api.AwfApiError, match="config.yaml"):
+            api.create_baseline(tmp_git_repo, "TODO-0001")
+        assert not list(
+            (tmp_git_repo / ".agentic" / "context").glob("BASELINE-*")
+        ), "refused baseline left residue"
 
     def test_missing_agentic_raises(self, tmp_git_repo):
         with pytest.raises(api.AwfApiError, match="No .agentic/"):
@@ -1429,6 +1435,10 @@ class TestDispatchIncludeUntracked:
         """Committed repo + .agentic skeleton; .agentic is gitignored."""
         for sub in ("inbox", "outbox", "context", "logs"):
             (tmp_git_repo / ".agentic" / sub).mkdir(parents=True)
+        # REPORTS26 B2 (TODO-0156): dispatch requires config.yaml
+        (tmp_git_repo / ".agentic" / "config.yaml").write_text(
+            "project:\n  name: Test\n"
+        )
         (tmp_git_repo / ".gitignore").write_text(".agentic/\n")
         subprocess.run(["git", "add", "-A"], cwd=tmp_git_repo, check=True)
         subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=tmp_git_repo, check=True)

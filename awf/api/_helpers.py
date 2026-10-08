@@ -70,6 +70,31 @@ def require_agentic(project_dir: Path) -> Path:
     return agentic
 
 
+def require_awf_project(project_dir: Path) -> Path:
+    """Strict check for WRITE entry points: .agentic/ AND config.yaml.
+
+    ``require_agentic`` (bare .agentic/ existence) stays for read-only
+    commands. A write entry point (dispatch_todo, create_baseline) must
+    land in an initialized project: a bare .agentic/ without config.yaml
+    is a stale directory (e.g. an old ~/.agentic under the MCP process
+    cwd, the 2026-10-07 incident) — refuse loudly BEFORE any side effect
+    instead of silently writing a unit into it.
+
+    Returns the resolved (absolute) project_dir Path on success.
+    """
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+    config = paths.config_file(project_dir)
+    if not config.is_file():
+        raise AwfApiError(
+            f".agentic/ found at {project_dir} but config.yaml is missing — "
+            "not an initialized awf project (possibly a stale directory). "
+            f"Run 'awf init' there, or pass the real project_dir "
+            f"(the MCP default is the process cwd, usually not the project)."
+        )
+    return project_dir
+
+
 def require_git_repo(project_dir: Path) -> None:
     """Ensure project is a git repo. Raise AwfApiError if not."""
     if not git_utils.is_git_repo(project_dir):
@@ -124,6 +149,7 @@ def read_log_tail(log_file: Path, n: int) -> str | None:
 
 __all__ = [
     "require_agentic",
+    "require_awf_project",
     "require_git_repo",
     "read_file_text",
     "read_log_tail",
