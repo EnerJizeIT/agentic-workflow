@@ -846,4 +846,16 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # loop). Same class as above: test fixture wording and a unit
 # reference, not debt. files_over_400 stays 66 (the new test file is
 # 147 lines — under the bar).
+# REPORTS26 B3 (TODO-0158, done after approve in a no-commit cycle):
+# baseline raised 4559 -> 4579 — the unit adds 20 TODO-bearing lines:
+# 10 in the new tests/negative/test_reports26_b3_done_after_approve.py
+# (the T1/T2 = "TODO-0001"/"TODO-0002" constants and the fixture/assert
+# use-sites of the three invariant tests) and net +10 in the touched
+# files (the TODO-0158 unit references in the awf/api/wait_event.py
+# _cycle_done_event/wait_for_event docstrings, the awf/api/run.py
+# _completed_view docstring + the two surface comments, the rewritten
+# TestRunDoneFuse test docstring in tests/unit/test_wait_event.py). Same
+# class as above: test identifiers and unit references, not debt.
+# files_over_400 stays 66 (the new test file is 151 lines — under the
+# bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

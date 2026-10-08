@@ -746,10 +746,14 @@ class TestRunDoneFuse:
         assert result.event_type != "done"
         assert "TODO-0001" not in result.message
 
-    def test_done_refused_when_evidence_is_not_current(self, awf_project):
-        """The current element IS finished, but the newest cycle sign
-        names a DIFFERENT TODO (e.g. an older manual awf commit on top) —
-        still no 'done': the sign must be the current element's."""
+    def test_done_names_current_despite_newer_foreign_commit(self, awf_project):
+        """REPORTS26 B3 (TODO-0158): the current element IS finished
+        (archived) and a newer awf commit on top names a DIFFERENT TODO
+        (an older manual commit) — 'done' still fires and names the
+        CURRENT element: in a run the cycle sign is the current element's
+        archive, not the newest commit (the pre-TODO-0158 behavior
+        refused here — which is exactly what lost the done in no-diff
+        cycles)."""
         self._finish_cycle(awf_project, "TODO-0001")
         self._active_run(awf_project)
         self._finish_cycle(awf_project, "TODO-0002")
@@ -766,7 +770,8 @@ class TestRunDoneFuse:
 
         result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
 
-        assert result.event_type != "done"
+        assert result.event_type == "done"
+        assert "TODO-0002" in result.message
         assert "TODO-0009" not in result.message
 
     def test_outside_run_behavior_unchanged(self, awf_project):

@@ -367,6 +367,13 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
     the run's CURRENT element, and that element must be finished
     (``_run_allows_done``) — a dead pipeline mid-iteration never yields a
     ``done`` for a previous cycle (RUN9 incident).
+
+    REPORTS26 B3 (TODO-0158): inside a run the sign is the current
+    element's ARCHIVE (the run gate's finished definition), NOT the newest
+    awf commit: in a no-diff cycle the commit is skipped and the newest
+    commit belongs to the PREVIOUS unit — preferring it lost the ``done``
+    (the owner report: ``idle`` after approve). Outside a run the newest
+    sign (commit-first) is unchanged.
     """
     from ..run_state import read_run, run_is_active
     from ._liveness import resolve
@@ -386,16 +393,25 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
         # means the pipeline died mid-iteration — never a 'done' for a
         # previous cycle (the caller keeps the old wait: idle/timeout).
         return None
-    evidence = _last_completed_todo(project_dir)
-    if evidence is None:
-        return None
-    todo_id, kind = evidence
     if run_is_active(project_dir):
-        # The finished-cycle sign must be the run's CURRENT element — a
-        # sign for any other TODO is a previous cycle, not this one.
+        # REPORTS26 B3 (TODO-0158): in a run the current unit's closing
+        # sign is its ARCHIVE — _run_allows_done above already proved
+        # _todo_finished(current) (archived and not active again, the run
+        # gate's finished definition). The newest awf commit is
+        # project-wide evidence and may belong to a PREVIOUS unit (a
+        # no-diff cycle commits nothing), so it is not consulted here.
         run = read_run(project_dir)
-        if todo_id != str((run or {}).get("current") or ""):
+        current = str((run or {}).get("current") or "")
+        if not current:
             return None
+        todo_id, kind = current, "archive"
+    else:
+        # Outside a run: unchanged — the newest cycle sign wins
+        # (commit-first, RUN6 #1).
+        evidence = _last_completed_todo(project_dir)
+        if evidence is None:
+            return None
+        todo_id, kind = evidence
 
     verb = {
         "commit+archive": "committed and archived",
@@ -442,13 +458,17 @@ def wait_for_event(
       command — ``awf_run_next`` inside a run, ``awf_dispatch_todo``
       outside it. Without a confirmed cycle the pipeline is simply not
       running → event_type ``idle`` (no more full-timeout-on-null-state).
-      A marker-less kill leftover without ``phase=done`` (only the salvage
-      counter — RUN7 #1) is NOT a finished cycle: the old wait behavior
-      (timeout), never a ``done`` for a past cycle. RUN10 #1 fuse: inside
-      an ACTIVE run a ``done`` requires the run's CURRENT element to be
-      finished (archived, not active again) — a pipeline death mid-
-      iteration keeps the old wait behavior (timeout/idle), never a
-      ``done`` for a previous cycle. Outside a run: unchanged.
+       A marker-less kill leftover without ``phase=done`` (only the salvage
+       counter — RUN7 #1) is NOT a finished cycle: the old wait behavior
+       (timeout), never a ``done`` for a past cycle. RUN10 #1 fuse: inside
+       an ACTIVE run a ``done`` requires the run's CURRENT element to be
+       finished (archived, not active again) — a pipeline death mid-
+       iteration keeps the old wait behavior (timeout/idle), never a
+       ``done`` for a previous cycle. REPORTS26 B3 (TODO-0158): in a run
+       that finished-current sign is the element's ARCHIVE, not the newest
+       awf commit — a no-diff cycle commits nothing, so the newest commit
+       is the PREVIOUS unit's and preferring it lost the ``done`` (``idle``
+       after approve). Outside a run: unchanged.
     - Timeout reached → event_type ``timeout``
 
     SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous

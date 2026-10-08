@@ -193,6 +193,25 @@ def _todo_finished(project_dir: Path, todo_id: str) -> bool:
     return todos.is_archived(project_dir, todo_id) and todo_id not in active_ids
 
 
+def _completed_view(project_dir: Path, state: dict) -> list[str]:
+    """REPORTS26 B3 (TODO-0158): ``completed`` as the surfaces must show it.
+
+    A run credits the finished ``current`` to ``completed`` only at the NEXT
+    launch (the run_next advance mutator) — so right after approve the
+    surfaces lag one cycle behind: the current TODO sits in done/ (and is
+    committed) while the status shows it outside ``completed`` (the owner
+    report: current TODO-0006, completed []). This view applies run_next's
+    own credit rule (:func:`_todo_finished`) at READ time — it returns the
+    list a supervisor should see and writes nothing: index/current stay
+    where run_next owns them.
+    """
+    completed = [str(c) for c in (state.get("completed") or [])]
+    current = str(state.get("current") or "")
+    if current and current not in completed and _todo_finished(project_dir, current):
+        completed.append(current)
+    return completed
+
+
 def run_brief(project_dir: Path) -> dict | None:
     """Compact run state for status/dashboard. None when no run state exists.
 
@@ -234,7 +253,9 @@ def run_brief(project_dir: Path) -> dict | None:
         "queue": [dict(q) for q in (state.get("queue") or [])],
         "note": str(state.get("note") or ""),
         "current": state.get("current", ""),
-        "completed": list(state.get("completed") or []),
+        # REPORTS26 B3 (TODO-0158): the finished current is credited at
+        # read time (run_next owns the position itself).
+        "completed": _completed_view(project_dir, state),
         "budget_minutes": budget,
         "budget_left_minutes": left,
         "elapsed_minutes": int(elapsed),
@@ -459,7 +480,9 @@ def run_status(project_dir: Path) -> RunStatusResult:
         queue=list(state.get("queue") or []),
         index=int(state.get("index", 0) or 0),
         current=current,
-        completed=list(state.get("completed") or []),
+        # REPORTS26 B3 (TODO-0158): the finished current is credited at
+        # read time (run_next owns the position itself).
+        completed=_completed_view(project_dir, state),
         rejects=dict(state.get("rejects") or {}),
         stop_flags=dict(state.get("stop_flags") or {}),
         budget_minutes=budget,
