@@ -858,4 +858,22 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # class as above: test identifiers and unit references, not debt.
 # files_over_400 stays 66 (the new test file is 151 lines — under the
 # bar).
+# REPORTS26 B6 (TODO-0159, prove_red runner + prove_red_cmd): baseline
+# raised 4579 -> 4598, files_over_400 raised 66 -> 67 — the unit adds 19
+# TODO-bearing lines: the new
+# tests/negative/test_reports26_b6_prove_red_runner.py (16 — module
+# docstring + the TODO-0001 fixture use-sites of the runner-unsupported /
+# prove_red_cmd / python-path tests) and the TODO-contract wording in the
+# awf/prove_red.py docstring + the agent_workflow_ui tools/awf.py
+# awf_prove_red docstring (3). Same class as above: test identifiers and
+# unit wording, not debt. The +1 file over 400 is awf/unit_contract.py
+# (399 -> 413 — the prove_red_cmd contract key + its validation), same
+# class as the run_state.py / commit_plan.py production-module raises
+# above.
+# REPORTS26 B6 (TODO-0159, review fix: baseline timeout / rc 126-127 ->
+# broken-runner): baseline raised 4598 -> 4600, files_over_400 raised
+# 67 -> 68 — the two new TestCommandNotRunOnBaseline tests add 2
+# TODO-0001 fixture use-sites, and
+# tests/negative/test_reports26_b6_prove_red_runner.py crosses the bar
+# (361 -> 425 lines). Same class as above: test identifiers, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

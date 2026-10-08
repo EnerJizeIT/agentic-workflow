@@ -1029,6 +1029,7 @@ async def awf_prove_red(
     project_dir: str | None = None,
     *,
     tests: list[str] | None = None,
+    command: str | None = None,
 ) -> dict[str, Any]:
     """Prove the declared tests are red on the baseline sha (U4).
 
@@ -1042,9 +1043,15 @@ async def awf_prove_red(
     - ``not-red`` (1) — tests PASSED on the baseline: they prove nothing;
     - ``broken-runner`` (2) — 0 tests collected / collection error / broken
       runner / import error that is only a missing project symbol (the last
-      one is acceptable for new code — a warning is attached);
+      one is acceptable for new code — a warning is attached) / a custom
+      command that did not run on the baseline (timeout or shell rc
+      126/127 — not executable / not found);
     - ``green-after`` (1) — red on baseline but not passing in the current
-      tree.
+      tree;
+    - ``runner-unsupported`` (2) — the project manifest says the runner is
+      not pytest (js / go / cargo) and no ``prove_red_cmd`` was given: the
+      message names the runner and how to override (``prove_red_cmd`` in
+      the TODO contract or the ``command`` parameter).
 
     The worktree is removed in ``finally`` on every outcome.
 
@@ -1054,6 +1061,11 @@ async def awf_prove_red(
             NOT your project; always pass it explicitly (AUD08-12).
         tests: Test files and/or ``file::test`` ids. Default: the
             ``prove_red`` block of the TODO contract.
+        command: A shell command to run instead of pytest (shell
+            semantics, cwd = the tree) in the baseline worktree and in the
+            current tree. Default: the contract's ``prove_red_cmd`` key,
+            else pytest. Priority: this parameter > the contract key >
+            pytest.
 
     Returns:
         Dict with: todo_id, verdict, exit_code, baseline_sha, tests,
@@ -1065,6 +1077,7 @@ async def awf_prove_red(
         project_dir=_resolve_project_dir(project_dir),
         todo_id=todo_id,
         tests=tests,
+        command=command,
     )
 
 
