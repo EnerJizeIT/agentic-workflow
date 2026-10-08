@@ -819,4 +819,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # new CI-condition regression test's docstring unit reference (1).
 # Same class as above: test identifiers and unit references, not debt.
 # files_over_400 stays 66 (the test file is 396 lines — under the bar).
+# REPORTS26 B1 (TODO-0155, baseline runner): baseline raised 4519 -> 4536 —
+# the new tests/negative/test_reports26_b1_baseline_runner.py adds 17
+# TODO-bearing lines (the module docstring's residue wording and the
+# TODO-9000/TODO-0001/TODO-9003/TODO-9004 fixture and assert use-sites of
+# the three invariant tests). Same class as above: test identifiers, not
+# debt. files_over_400 stays 66 (the new test file is 139 lines — under
+# the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

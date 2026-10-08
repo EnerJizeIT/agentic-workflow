@@ -39,10 +39,12 @@ class TestDetectStack:
         }))
         result = api.detect_stack(tmp_path)
         assert result["stack"] == "typescript"
-        assert result["test_cmd"] == "bun test"
-        assert result["lint_cmd"] == "biome check ."
-        assert result["build_cmd"] == "bun run build"
-        assert result["typecheck_cmd"] == "tsc --noEmit"
+        # REPORTS26 B1: scripts are routed through the package manager
+        # (no lockfile here → npm), never stored as a bare binary.
+        assert result["test_cmd"] == "npm test"
+        assert result["lint_cmd"] == "npm run lint"
+        assert result["build_cmd"] == "npm run build"
+        assert result["typecheck_cmd"] == "npm run typecheck"
 
     def test_package_json_without_typecheck_falls_back_to_tsc(self, tmp_path):
         """If tsconfig.json exists but scripts.typecheck is missing → tsc --noEmit."""
@@ -1031,6 +1033,9 @@ class TestInitProject:
             "devDependencies": {"typescript": "^5.0"},
         }))
         (sub / "tsconfig.json").write_text("{}")
+        # REPORTS26 B1: pm is picked from the lockfile — bun.lockb routes
+        # scripts.test through `bun test` into config.yaml.
+        (sub / "bun.lockb").write_bytes(b"")
         (sub / "README.md").write_text("init")
 
         result = api.init_project(sub)

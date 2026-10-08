@@ -751,125 +751,156 @@ def create_baseline(
     context_dir = paths.context_dir(project_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
 
-    is_git = git_utils.is_git_repo(project_dir)
-    if is_git:
-        try:
-            sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
-        except RuntimeError as e:
-            # AUD05-08: `git init` with zero commits → `rev-parse HEAD`
-            # fails. Surface a clean AwfApiError (MCP/CLI render it)
-            # instead of letting the raw RuntimeError escape every caller.
-            raise AwfApiError(
-                f"git repo at {project_dir} has no commits yet — create the "
-                "first commit, then retry. (git: "
-                f"{str(e).splitlines()[0] if str(e) else 'rev-parse HEAD failed'})"
-            ) from e
-        atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
-        status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
-        atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", status)
-        # QA-1: snapshot untracked files at baseline time so commit_gate
-        # can distinguish worker-created files from pre-existing untracked.
-        untracked = git_utils.git_stdout(
-            project_dir, "ls-files", "--others", "--exclude-standard", check=False,
-        )
-        # RUN5 #1 (leak-gate) + RUN10 #4 (TODO-0074): drop re-claimed paths
-        # (carry-over and/or include) from the snapshot so the commit gate
-        # treats them as THIS unit's work (it would otherwise exclude them
-        # as "pre-existing" and silently lose them from the unit commit).
-        excluded = set(carry_over or ()) | set(include or ())
-        if excluded:
-            untracked = "\n".join(
-                ln for ln in untracked.splitlines() if ln.strip() not in excluded
-            )
-        atomic_write_text(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
-    else:
-        sha = "(not a git repo)"
-        atomic_write_text(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
-        atomic_write_text(context_dir / f"BASELINE-{todo_id}.status", "")
+    # REPORTS26 B1: track the files THIS call writes — an unexpected
+    # exception after the first write removes them before re-raise (zero
+    # residue; a half-baseline would poison the next dispatch). A
+    # successful baseline (incl. failed tests) keeps its files.
+    written: list[Path] = []
 
-    config_file = paths.config_file(project_dir)
-    tests_log_path = context_dir / f"BASELINE-{todo_id}.tests.log"
-    test_status = "no_config"
-    test_log_excerpt = ""
+    def _write_baseline_file(path: Path, content: str) -> None:
+        atomic_write_text(path, content)
+        written.append(path)
 
-    if config_file.exists():
-        config_data = cfg_mod.load(project_dir)
-        # U1: dispatch-time baseline runs a fast smoke command (baseline_cmd)
-        # instead of the full test_cmd. Absent/empty/blank → legacy test_cmd.
-        baseline_cmd = (
-            cfg_mod.get(config_data, "verification.baseline_cmd", "") or ""
-        ).strip()
-        test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
-        run_cmd = baseline_cmd or test_cmd
-        cmd_key = "baseline_cmd" if baseline_cmd else "test_cmd"
-        if run_cmd:
+    try:
+        is_git = git_utils.is_git_repo(project_dir)
+        if is_git:
             try:
-                parts = shlex.split(run_cmd)
-            except ValueError as e:
-                # AUD14-02: bad quoting in test_cmd must not traceback baseline
+                sha = git_utils.git_stdout(project_dir, "rev-parse", "HEAD").strip()
+            except RuntimeError as e:
+                # AUD05-08: `git init` with zero commits → `rev-parse HEAD`
+                # fails. Surface a clean AwfApiError (MCP/CLI render it)
+                # instead of letting the raw RuntimeError escape every caller.
                 raise AwfApiError(
-                    f"verification.{cmd_key} не парсится: {e} (cmd: {run_cmd!r})"
+                    f"git repo at {project_dir} has no commits yet — create the "
+                    "first commit, then retry. (git: "
+                    f"{str(e).splitlines()[0] if str(e) else 'rev-parse HEAD failed'})"
                 ) from e
-            if parts:
+            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
+            status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
+            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", status)
+            # QA-1: snapshot untracked files at baseline time so commit_gate
+            # can distinguish worker-created files from pre-existing untracked.
+            untracked = git_utils.git_stdout(
+                project_dir, "ls-files", "--others", "--exclude-standard", check=False,
+            )
+            # RUN5 #1 (leak-gate) + RUN10 #4 (TODO-0074): drop re-claimed
+            # paths (carry-over and/or include) from the snapshot so the
+            # commit gate treats them as THIS unit's work (it would
+            # otherwise exclude them as "pre-existing" and silently lose
+            # them from the unit commit).
+            excluded = set(carry_over or ()) | set(include or ())
+            if excluded:
+                untracked = "\n".join(
+                    ln for ln in untracked.splitlines() if ln.strip() not in excluded
+                )
+            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
+        else:
+            sha = "(not a git repo)"
+            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
+            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", "")
+
+        config_file = paths.config_file(project_dir)
+        tests_log_path = context_dir / f"BASELINE-{todo_id}.tests.log"
+        test_status = "no_config"
+        test_log_excerpt = ""
+
+        if config_file.exists():
+            config_data = cfg_mod.load(project_dir)
+            # U1: dispatch-time baseline runs a fast smoke command (baseline_cmd)
+            # instead of the full test_cmd. Absent/empty/blank → legacy test_cmd.
+            baseline_cmd = (
+                cfg_mod.get(config_data, "verification.baseline_cmd", "") or ""
+            ).strip()
+            test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
+            run_cmd = baseline_cmd or test_cmd
+            cmd_key = "baseline_cmd" if baseline_cmd else "test_cmd"
+            if run_cmd:
                 try:
-                    result = run_tree(
-                        parts,
-                        cwd=str(project_dir),
-                        capture_output=True,
-                        text=True,
-                        timeout=300,
-                    )
-                except subprocess.TimeoutExpired:
-                    # cmd hung (watcher / stdin prompt / infinite loop).
-                    # Don't block baseline creation — record failure, continue.
-                    atomic_write_text(
-                        tests_log_path,
-                        f"{cmd_key} timed out after 300s: {run_cmd}\n",
-                    )
-                    test_status = "failed"
-                    test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
+                    parts = shlex.split(run_cmd)
+                except ValueError as e:
+                    # AUD14-02: bad quoting in test_cmd must not traceback baseline
+                    raise AwfApiError(
+                        f"verification.{cmd_key} не парсится: {e} (cmd: {run_cmd!r})"
+                    ) from e
+                if parts:
+                    try:
+                        result = run_tree(
+                            parts,
+                            cwd=str(project_dir),
+                            capture_output=True,
+                            text=True,
+                            timeout=300,
+                        )
+                    except subprocess.TimeoutExpired:
+                        # cmd hung (watcher / stdin prompt / infinite loop).
+                        # Don't block baseline creation — record failure, continue.
+                        _write_baseline_file(
+                            tests_log_path,
+                            f"{cmd_key} timed out after 300s: {run_cmd}\n",
+                        )
+                        test_status = "failed"
+                        test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
+                    except FileNotFoundError:
+                        # REPORTS26 B1: bare binary not in PATH (e.g. `vitest`
+                        # stored from package.json scripts). Same contract as
+                        # the timeout: record failure, continue — dispatch
+                        # must not die on a broken command.
+                        _write_baseline_file(
+                            tests_log_path,
+                            f"{cmd_key} не найдена в PATH: {run_cmd}. "
+                            "Поправьте verification.baseline_cmd/test_cmd\n",
+                        )
+                        test_status = "failed"
+                        test_log_excerpt = f"{cmd_key} не найдена в PATH: {run_cmd}"
+                    else:
+                        log_content = result.stdout + result.stderr
+                        _write_baseline_file(tests_log_path, log_content)
+                        test_status = "passed" if result.returncode == 0 else "failed"
+                        test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
                 else:
-                    log_content = result.stdout + result.stderr
-                    atomic_write_text(tests_log_path, log_content)
-                    test_status = "passed" if result.returncode == 0 else "failed"
-                    test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
+                    _write_baseline_file(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
+                    test_status = "no_test_cmd"
             else:
-                atomic_write_text(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
+                _write_baseline_file(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
                 test_status = "no_test_cmd"
         else:
-            atomic_write_text(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
-            test_status = "no_test_cmd"
-    else:
-        atomic_write_text(tests_log_path, "No config.yaml found, skipping test baseline.\n")
-        test_status = "no_config"
+            _write_baseline_file(tests_log_path, "No config.yaml found, skipping test baseline.\n")
+            test_status = "no_config"
 
-    python_cmd = "python3"
-    if not shutil.which("python3") and shutil.which("python"):
-        python_cmd = "python"
+        python_cmd = "python3"
+        if not shutil.which("python3") and shutil.which("python"):
+            python_cmd = "python"
 
-    env_parts: list[str] = []
-    for cmd in [[python_cmd, "--version"], [python_cmd, "-m", "pip", "list"]]:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            env_parts.append(result.stdout + result.stderr)
-        except subprocess.TimeoutExpired:
-            env_parts.append(f"{cmd[0]} timed out after 30s\n")
-        except (FileNotFoundError, OSError) as e:
-            env_parts.append(f"{cmd[0]} failed: {e}\n")
-    atomic_write_text(context_dir / f"BASELINE-{todo_id}.env.log", "".join(env_parts))
+        env_parts: list[str] = []
+        for cmd in [[python_cmd, "--version"], [python_cmd, "-m", "pip", "list"]]:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                env_parts.append(result.stdout + result.stderr)
+            except subprocess.TimeoutExpired:
+                env_parts.append(f"{cmd[0]} timed out after 30s\n")
+            except (FileNotFoundError, OSError) as e:
+                env_parts.append(f"{cmd[0]} failed: {e}\n")
+        _write_baseline_file(context_dir / f"BASELINE-{todo_id}.env.log", "".join(env_parts))
 
-    files_created = sorted(
-        f.name for f in context_dir.glob(f"BASELINE-{todo_id}.*") if f.is_file()
-    )
+        files_created = sorted(
+            f.name for f in context_dir.glob(f"BASELINE-{todo_id}.*") if f.is_file()
+        )
 
-    return BaselineResult(
-        todo_id=todo_id,
-        sha=sha,
-        is_git_repo=is_git,
-        files_created=files_created,
-        test_status=test_status,
-        test_log_excerpt=test_log_excerpt,
-    )
+        return BaselineResult(
+            todo_id=todo_id,
+            sha=sha,
+            is_git_repo=is_git,
+            files_created=files_created,
+            test_status=test_status,
+            test_log_excerpt=test_log_excerpt,
+        )
+    except Exception:
+        for path in written:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
 
 
 # ─── rollback ───────────────────────────────────────────────────────────
