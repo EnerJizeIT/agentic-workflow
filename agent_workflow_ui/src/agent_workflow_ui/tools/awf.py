@@ -2744,3 +2744,37 @@ async def awf_confirm_normalized(
         }
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+
+async def awf_commit_workflow(project_dir: str | None = None) -> dict[str, Any]:
+    """Commit .agentic/ workflow definitions that unit commits missed (REPORTS26 F6).
+
+    Roles/pipelines/doctrine added mid-project never reach unit commits
+    (a unit commit carries only the unit's diff; read-only units commit
+    nothing at all) — the portable role/pipeline composition is lost on
+    migration/backup. This tool commits the non-gitignored workflow
+    definitions: ``.agentic/config.yaml``, ``roles/``, ``pipelines/``,
+    ``phases/``, ``doctrine/`` (changed tracked + new untracked). Runtime
+    (inbox/outbox/state/logs/context/handoff) is never touched. The commit
+    runs through a throwaway git index (R-03 pattern) — the user's index
+    is never opened, foreign staged entries are not affected. The subject
+    starts ``awf(workflow):`` (parser-compatible — no TODO id in it); the
+    body is the file list. Empty set — a clear refusal, nothing committed.
+    ``awf_status`` shows the same list as ``uncommitted_workflow_files``.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: sha, files, message, next_action.
+        On error: {status: "error", error: "..."}.
+    """
+    result = await _exec(api.commit_workflow, project_dir=_resolve_project_dir(project_dir))
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            "Workflow definitions committed. awf_status shows "
+            "uncommitted_workflow_files — it must be empty now. "
+            "Remember to push: git push origin HEAD."
+        )
+    return result

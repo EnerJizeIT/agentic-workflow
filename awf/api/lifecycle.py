@@ -578,6 +578,14 @@ def get_status(project_dir: Path) -> StatusResult:
     active_pipeline = _active_name(project_dir, config_data)
     pipeline_count = len(_list_names(project_dir))
 
+    # REPORTS26 F6 (TODO-0166): workflow definitions not yet in git — the
+    # dry-run list commit_workflow would commit (roles/pipelines/doctrine
+    # added mid-project that read-only units never commit). Never raises:
+    # a status call must not fall over on git.
+    from .workflow_commit import uncommitted_workflow_files as _wf_files
+
+    uncommitted_wf = _wf_files(project_dir)
+
     pipeline_running, pipeline_pid, log_tail = check_pipeline_running(project_dir)
 
     # Dogfood-2/6: stage visibility + expected action (only when pipeline running)
@@ -668,6 +676,7 @@ def get_status(project_dir: Path) -> StatusResult:
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
         run_state=_run_brief(project_dir),
+        uncommitted_workflow_files=uncommitted_wf,
     )
 
 

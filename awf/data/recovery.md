@@ -1,12 +1,12 @@
 One recipe per situation. Check `awf_status` first.
 
 - **Approved, where's the next step?** → the `done` event names the next command (see Rituals / Defaults).
-- **Run stopped** (budget / stop-flag / queue) → read `RUN-REPORT-*.md`, then `awf_run_start`.
-- **Pipeline died / salvage** → infrastructure first (Rituals), then `awf_retry_stage` (restarts the pinned salvage unit).
+- **Run stopped** (budget/stop-flag/queue) → read `RUN-REPORT-*.md`, then `awf_run_start`.
+- **Pipeline died / salvage** → infrastructure first (Rituals), then `awf_retry_stage` (restarts the pinned unit).
 - **Stale BLOCKED holds a task** → `awf_unblock <id>`, or `awf_continue --ack <id>` (answer).
 - **Unit archived without work** → `awf_restore <id>`.
 - **Unit never started** → `awf_todo_remove <id>`.
 - **Rejected unit stuck active** (DONE without `.ready`) → `awf todo-retire <id> --reason "…"`.
 - **No checkpoint needed** → `no_checkpoints=True` (Defaults, above).
-- **MCP / network hangs** → bash: `python3 -m awf <command> --project-dir <path>`; stuck pipeline: `awf kill --project-dir <path>`.
+- **MCP / network hangs** → bash: `python3 -m awf <command> --project-dir <path>`; stuck: `awf kill --project-dir <path>`.
 - **Lost context / new session** → `awf brief`.

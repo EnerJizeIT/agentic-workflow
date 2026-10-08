@@ -11,6 +11,9 @@ could silently regress.
 """
 from __future__ import annotations
 
+import os
+import time
+
 import pytest
 
 from awf import api
@@ -133,23 +136,42 @@ class TestSalvageSignalDetection:
 
         TODO-0068: the signal is written on the first poll iteration (time.sleep
         hook, pattern from tests/negative/test_run_evidence_gate.py) — i.e.
-        strictly after the wait's wall_start. The old version pre-wrote the
-        file, which raced the AUD04-04 whole-second freshness gate
-        (_decision_signal_fresh): if the write and the call straddled a second
-        boundary the just-written signal read stale and the wait timed out —
-        a 2s TimeoutError flake under xdist -n auto, never standalone.
-        timeout=10 is a safety margin only: the wait ends on the second
-        poll iteration.
+        strictly after the wait's wall_start, not pre-written.
+
+        TODO-0167: both operands of the AUD04-04 freshness compare
+        (``int(st_mtime) >= int(wall_start)`` in _decision_signal_fresh) live
+        on ONE controlled timeline. The two operands are independent time
+        sources (kernel mtime vs the process wall clock read at wait start);
+        on a CI VM a backward wall-clock step (NTP / pause-resume) inside the
+        wait makes a signal written DURING the wait read stale, and its mtime
+        never changes — so it stays stale for the whole wait and the call
+        times out (the 08.10 CI flake: red once, green on retry). With
+        ``time.time`` patched to a synthetic clock that only advances in the
+        sleep hook, and the signal's mtime pinned to that same clock via
+        os.utime (T0+3s, comfortably fresh at whole-second resolution), the
+        compare cannot lose to wall-clock behavior. The gate itself runs
+        unpatched — the accept path stays pinned; the stale-reject half is
+        pinned by tests/negative/test_reports26_b5_restart_recovery.py.
         """
         inbox = project / ".agentic" / "inbox"
         todo_id = "TODO-0001"
         written = {"n": 0}
+        wall = {"now": time.time()}
+
+        def fake_time() -> float:
+            return wall["now"]
 
         def fake_sleep(*_a, **_kw):
             if written["n"] == 0:
                 written["n"] = 1
-                (inbox / f"APPROVE-{todo_id}.ready").write_text("", encoding="utf-8")
+                # The signal appears 3s into the wait on the synthetic
+                # timeline: strictly after wall_start, whole-second fresh.
+                wall["now"] += 3
+                sig = inbox / f"APPROVE-{todo_id}.ready"
+                sig.write_text("", encoding="utf-8")
+                os.utime(sig, (wall["now"], wall["now"]))
 
+        monkeypatch.setattr("time.time", fake_time)
         monkeypatch.setattr("time.sleep", fake_sleep)
 
         result = wait_for_supervisor_signal(

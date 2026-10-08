@@ -7,4 +7,4 @@ defaults:
   - "'pipeline finished' = state cleared + commit `awf(verify): TODO-NNNN`; `awf_wait_for_event` returns `done` — then `awf_run_next`"
   - "`awf_run_next` refuses until the previous unit is finished (verify → approve/reject)"
   - "several active tasks in a run is NORMAL — the queue waits its turn"
-  - "full documentation: `USAGE.md` (EN) / `USAGE.ru.md` (RU)"
+  - "full docs: `USAGE.md` (EN) / `USAGE.ru.md` (RU)"

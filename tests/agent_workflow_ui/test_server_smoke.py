@@ -73,7 +73,7 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 50 tools are registered with correct names (5 UI + 45 awf).
+    """All 53 tools are registered with correct names (5 UI + 48 awf).
 
     AUD08-08: this number is a fact-check, not a label — if it drifts from
     ``server.py``, ``tool_names == expected`` below fails first. Update both
@@ -157,6 +157,8 @@ def test_all_tools_registered():
         "awf_run_service_status",
         "awf_run_service_finish",
         "awf_run_service_approve",
+        # REPORTS26 F6: workflow definitions commit (TODO-0166)
+        "awf_commit_workflow",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

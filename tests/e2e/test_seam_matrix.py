@@ -217,6 +217,12 @@ def _stage_name(proj: Path) -> str:
     return str((read_state(proj) or {}).get("stage_name") or "")
 
 
+def _last_signal(proj: Path) -> str:
+    from awf.pipeline_state import read_state
+
+    return str((read_state(proj) or {}).get("last_signal") or "")
+
+
 def _pipelines_of(state: dict) -> dict:
     return {
         str(q.get("todo_id", "")): str(q.get("pipeline", "") or "")
@@ -581,9 +587,24 @@ def test_seam_service_failure_main_run_intact(tmp_path, monkeypatch):
     assert res.action == "started", res.message
     assert res.todo_id == SVC_TODO, res.todo_id
     try:
-        blocked = proj / ".agentic" / "outbox" / f"BLOCKED-{SVC_TODO}.ready"
-        assert _wait_until(blocked.is_file, what="service block signal"), (
-            f"the service worker never got blocked. stage={_stage_name(proj)!r}"
+        # TODO-0167: the .ready is TRANSIENT — the engine consumes it right
+        # after classifying the signal (NEG-4: the fired .ready is unlinked,
+        # the .md kept as evidence), and the signal watch polls every
+        # BD20_POLL_INTERVAL (3s) — the file's lifetime is that remainder
+        # plus teardown, and can be near zero. The old 0.5s poll could miss
+        # the whole window, then burn 120s on a file that never reappears
+        # (the 08.10 CI flake: green locally, red on the runner). The
+        # persistent records of the same event: last_signal in
+        # state/current.yaml (engine-written BEFORE the consumption) and the
+        # kept BLOCKED-*.md — asserting on those keeps "the signal appeared"
+        # strict while removing the sampling race.
+        blocked_md = proj / ".agentic" / "outbox" / f"BLOCKED-{SVC_TODO}.md"
+        assert _wait_until(
+            lambda: _last_signal(proj) == f"BLOCKED-{SVC_TODO}" and blocked_md.is_file(),
+            what="service block (engine-recorded signal + kept evidence)",
+        ), (
+            f"the service worker never got blocked. stage={_stage_name(proj)!r} "
+            f"last_signal={_last_signal(proj)!r}"
         )
         assert _wait_until(
             lambda: not _liveness.resolve(proj)[0], what="service pipeline exit"

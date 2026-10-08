@@ -111,6 +111,22 @@ push/PR; эта команда и `--report`-прогон по `scripts/mutation
 «Что пытался») и хвост последнего лога (≤20 строк). `--stdout` печатает
 отчёт, файл не пишет. Супервизор не молчит: молчание не чинит инструмент.
 
+## Коммит workflow
+
+**`awf commit-workflow`** (MCP: `awf_commit_workflow`) — коммитит
+не-игнорируемые workflow-определения `.agentic/`: `config.yaml`,
+`roles/`, `pipelines/`, `phases/`, `doctrine/` (изменённые tracked +
+новые untracked). Роли/пайплайны, добавленные в ходе проекта, не
+попадают в коммиты юнитов (коммит юнита несёт только его дифф; read-only
+юниты не коммитят вовсе) — это их коммит-путь. Runtime (inbox/outbox/
+state/logs/context/handoff) не трогается; коммит идёт через одноразовый
+git-индекс, поэтому индекс пользователя и чужие staged-изменения не
+затрагиваются. Subject: `awf(workflow): <n> files: <группы>`; body —
+список файлов. Пустой набор — понятный отказ, ничего не коммитится.
+`awf_status` показывает тот же список как `uncommitted_workflow_files`
+(пусто = коммитить нечего). Коммиты юнитов не меняются: workflow-файлы
+по-прежнему ездят в них как раньше.
+
 ## Метрики
 
 `awf metrics` (MCP: `awf_metrics`) собирает итоги программы по запросу: токены воркеров (in/out/cache-read)
@@ -224,7 +240,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 ## Все tools (справочник)
 
-52 инструментов: 47 `awf_*` workflow + 5 UI (формы).
+53 инструментов: 48 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -233,6 +249,7 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 | `awf_status` | Активные TODO, состояние пайплайна, инфо о стадии |
 | `awf_brief` | Карточка погружения/восстановления — живое состояние (забег: цель, последнее решение, источники), карта инструментов, ритуалы, рецепты |
 | `awf_report` | Статусы задач + git diff + последний лог тестов |
+| `awf_commit_workflow` | Коммитит workflow-определения `.agentic/` (config, roles, pipelines, phases, doctrine), которых не донесли юниты; dry-run список — в `awf_status` |
 | `awf_reset` | Очистка runtime (tasks_only / full / orphans) |
 
 ### Pipeline

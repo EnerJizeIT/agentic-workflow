@@ -959,4 +959,26 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # (392 -> 466 — the F5 heading check + renumber helpers + docstrings),
 # same class as the commit_gate.py / unit_contract.py production-module
 # raises above.
+# REPORTS26 F6 (TODO-0166, commit-workflow): baseline raised
+# 4861 -> 4879 — the unit adds 18 TODO-bearing lines: 6 in the new
+# tests/negative/test_reports26_f6_commit_workflow.py (module docstring
+# + the TODO-0001/TODO-0002 fixture lines), 3 in the new
+# tests/unit/test_awf_core.py (the same fixtures), 3 in the new
+# awf/api/workflow_commit.py (the F6 docstring/Args lines naming
+# TODO-0166 and the TODO-id parser note), 1 in awf/api/lifecycle.py
+# (the get_status comment), 1 in awf/api/_results.py (the field
+# comment), 1 in awf/brief.py (the changelog-cap comment), 1 in
+# agent_workflow_ui tools/awf.py (the wrapper docstring) and 1 each in
+# tests/agent_workflow_ui/test_server_smoke.py and
+# tests/negative/test_docs_counters.py (pin comments). Same class as
+# above: test identifiers and unit references, not debt.
+# CI-flake hardening (TODO-0167, 08.10): baseline raised 4879 -> 4882 —
+# the two flaky-test fixes add 3 TODO-bearing lines (net +3): the
+# TODO-0167 unit reference in the rewritten
+# test_verify_still_works_after_salvage_fix docstring
+# (tests/unit/test_salvage_signal.py, 1) and the TODO-0167 mechanism
+# comment + the two SVC_TODO fixture/assert use-sites in the rewritten
+# service-block wait of tests/e2e/test_seam_matrix.py (3), minus 1
+# rewritten docstring line. Same class as above: test identifiers and
+# unit references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
