@@ -876,4 +876,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # TODO-0001 fixture use-sites, and
 # tests/negative/test_reports26_b6_prove_red_runner.py crosses the bar
 # (361 -> 425 lines). Same class as above: test identifiers, not debt.
+# REPORTS26 B5 (TODO-0160, restart-recovery doctrine + regression test):
+# baseline raised 4600 -> 4617 — the unit adds 17 TODO-bearing lines: 9
+# in the new tests/negative/test_reports26_b5_restart_recovery.py (the
+# TODO_ID = "TODO-0155" constant and its fixture/wait/assert/consumption
+# use-sites in the three tests, one docstring line) and 8 in the
+# delivered docs (2+2 the restart-recovery steps naming "the dead stage
+# and the TODO" and the awf_continue todo_id="TODO-NNNN" command in
+# USAGE.md/USAGE.ru.md, 2+2 the same steps in
+# awf/templates/roles/supervisor.md + the root mirror). Same class as
+# above: test identifiers, doc examples and unit-id references, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

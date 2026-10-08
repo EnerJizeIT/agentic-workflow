@@ -603,6 +603,19 @@ Track how many iterations a task has taken:
 2. In the new TODO, describe the correct approach at a higher level (Mode B).
 3. Don't immediately jump to exact diffs — give the worker a chance to implement correctly.
 
+### Pipeline died on an opencode/MCP restart (parked at verify)
+
+Restarting opencode kills the MCP connection and the pipeline's process
+group — the detached pipeline does not survive (cgroup termination;
+`setsid` detaches from the terminal session, not from the group). Recovery:
+
+1. Read `.agentic/state/current.yaml` — it names the dead stage and TODO.
+2. Relaunch the stage: `awf_continue(todo_id="TODO-NNNN", from_stage="<stage>")`
+   (MCP) or `python3 -m awf continue --project-dir <path> --from-stage <stage> --background`.
+3. Approve AFTER the stage starts waiting. An ACK/APPROVE written before the
+   new wait is dropped as stale (AUD04-04: mtime predates the wait) — that is
+   expected; write the approval again (in an active run: `awf_approve(todo_id, evidence=...)`).
+
 ---
 
 ## 7. Checklist

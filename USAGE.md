@@ -209,9 +209,28 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 |---|---|
 | Worker didn't signal (no DONE/BLOCKED) | Salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
+| Pipeline killed by an opencode/MCP restart (parked at verify) | The restart terminates the pipeline's process group — the `setsid`-detached process does not survive. Recovery: relaunch the stage + re-approve (below) |
 | `awf_kill` while the worker runs | Kill stops the stage TOGETHER WITH the worker (its process group). The answer names the pipeline + worker pids; a worker that survived gets a loud warning with its pid. The next `awf_start`/`awf_continue` warns about a live orphan from a previous kill — its edits would land in the new unit. CLI twin (recovery without MCP): `python3 -m awf kill --project-dir <path>` — same API, same behavior |
 | Orphan TODO (failed dispatch) | Not auto-cleaned. Remove with `awf_reset(orphans=True)` |
 | Commit failed (pre-commit hook) | TODO NOT archived, changes left for manual review |
+
+### Pipeline died on an opencode/MCP restart
+
+Restarting opencode kills the MCP connection and the pipeline's process
+group — the `setsid`-detached pipeline process does not survive it. That
+is a fact, not a bug: cgroup termination takes the whole group, `setsid`
+only detaches from the terminal session. Recovery:
+
+1. Restart opencode. Read `.agentic/state/current.yaml` — it names the
+   dead stage and the TODO.
+2. Relaunch the stage — MCP `awf_continue(todo_id="TODO-NNNN",
+   from_stage="<stage from state>")`, or CLI
+   `python3 -m awf continue --project-dir <path> --from-stage <stage>
+   --background`.
+3. Approve AFTER the stage starts waiting. An ACK/APPROVE written before
+   the new wait started is dropped as stale (AUD04-04: its mtime predates
+   the wait). That is expected, not a failure — write the approval again;
+   the second one is the one consumed.
 
 ## Where things live
 
