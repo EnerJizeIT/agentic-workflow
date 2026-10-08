@@ -140,6 +140,22 @@ task, awf-repo git sha best-effort, date), the skeleton «Что пытался 
 `--stdout` prints the report without writing a file. The supervisor does
 not stay silent: silence does not fix the tool.
 
+## Workflow commit
+
+**`awf commit-workflow`** (MCP: `awf_commit_workflow`) — commits the
+non-gitignored workflow definitions of `.agentic/`: `config.yaml`,
+`roles/`, `pipelines/`, `phases/`, `doctrine/` (changed tracked + new
+untracked). Roles/pipelines added mid-project never reach unit commits
+(a unit commit carries only the unit's diff; read-only units commit
+nothing at all) — this is the commit path for them. Runtime
+(inbox/outbox/state/logs/context/handoff) is never touched; the commit
+runs through a throwaway git index, so the user's index and any foreign
+staged changes are unaffected. Subject: `awf(workflow): <n> files:
+<groups>`; body: the file list. Empty set — a clear refusal, nothing
+committed. `awf_status` shows the same list as
+`uncommitted_workflow_files` (empty = nothing left to commit). Unit
+commits are unchanged: workflow files still ride along in them as before.
+
 ## Metrics
 
 `awf metrics` (MCP: `awf_metrics`) collects the work program on demand: worker
@@ -438,7 +454,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-52 tools: 47 `awf_*` workflow + 5 UI (forms).
+53 tools: 48 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -447,6 +463,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 | `awf_status` | Active TODOs, pipeline state, stage info, suggestion |
 | `awf_brief` | Onboarding/recovery card — live state (run: goal, last decision, sources), tool map, rituals, recovery recipes |
 | `awf_report` | Task statuses + git diff + latest test log |
+| `awf_commit_workflow` | Commit `.agentic/` workflow definitions (config, roles, pipelines, phases, doctrine) the units missed; `awf_status` shows the dry-run list |
 | `awf_reset` | Clear runtime data (tasks_only / full / orphans) |
 
 ### Pipeline

@@ -32,14 +32,16 @@ MAX_WORDS = 900
 # without touching MAX_WORDS. ORCH M4.2 (TODO-0140): the changelog tail
 # shrank again (45 → 40 words) to pay for the stalled-stage line — same
 # rule: new card content is paid by the verbose blocks, not MAX_WORDS.
+# REPORTS26 F6 (TODO-0166): 40 → 32 words — the tool map gained the
+# awf_commit_workflow line.
 _PHASE_PROMPT_MAX_WORDS = 45
 _CHANGELOG_MAX_LINES = 10
-_CHANGELOG_MAX_WORDS = 40
+_CHANGELOG_MAX_WORDS = 32
 _NEXT_ACTION_MAX_WORDS = 26
 
 SETUP_HINT = (
     "New project — setup chain: `awf_init` → `awf_set_goal` → "
-    "`awf_open_project_setup_form` (owner submits) → `awf_confirm_normalized` "
+    "`awf_open_project_setup_form` → `awf_confirm_normalized` "
     "→ first TODO (`awf_dispatch_todo`)."
 )
 LIVE_LINE = "Live project: continue the working cycle."
@@ -65,7 +67,7 @@ RITUALS: list[str] = [
     "`done` → `awf_run_next` (no `git log` needed)",
     "run close: `awf_run_finish` — RUN-REPORT to the outbox",
     "incident: infrastructure first "
-    "(`opencode run --auto --agent <role> -- 'say hello'`) → "
+    "(`opencode run --auto --agent <role> -- hi`) → "
     "`awf_retry_stage` / `awf_continue --from-stage <stage>`",
     "hygiene: `awf_unblock` (stale closure), `awf_todo_remove` (never "
     "started), `awf_restore` (archived without work), `awf_todo_retire`",

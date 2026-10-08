@@ -29,6 +29,9 @@ groups:
       - mcp: awf_status
         cli: status
         when: "state: units, pipeline, signal"
+      - mcp: awf_commit_workflow
+        cli: commit-workflow
+        when: "workflow files → git"
       - mcp: awf_current_step
         when: "phase + its full prompt"
       - mcp: awf_load_supervisor_context

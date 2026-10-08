@@ -25,6 +25,8 @@ Layout:
 - ``pipelines``    — write_pipeline, list_pipelines (RUN3 #1 named pipelines)
 - ``feedback``     — feedback (RUN4 #2 feedback contour: report to owner)
 - ``brief``        — brief (RUN4 #1 supervisor onboarding/recovery card)
+- ``workflow_commit`` — commit_workflow, uncommitted_workflow_files
+                        (REPORTS26 F6: workflow-определения в git)
 
 Error convention: every function returns a Result dataclass (success)
 or raises AwfApiError with a human-readable message. Callers wrap in
@@ -135,6 +137,11 @@ from .wait_event import (
     wait_cap,
     wait_for_event,
 )
+from .workflow_commit import (
+    WorkflowCommitResult,
+    commit_workflow,
+    uncommitted_workflow_files,
+)
 
 __all__ = [
     # Exception
@@ -178,6 +185,7 @@ __all__ = [
     "ListPipelinesResult",
     "FeedbackResult",
     "BriefResult",
+    "WorkflowCommitResult",
     # Stack detection
     "detect_stack",
     "derive_project_name",
@@ -242,6 +250,9 @@ __all__ = [
     "feedback",
     # Supervisor onboarding/recovery card (RUN4 #1 — live state + tool map)
     "brief",
+    # Workflow definitions commit (REPORTS26 F6 — the units that commit nothing)
+    "commit_workflow",
+    "uncommitted_workflow_files",
     # Supervisor wake-up (DASH Phase 3 — no more polling)
     "TRANSPORT_CAP",
     "WAIT_CAP_MARGIN",

@@ -65,6 +65,10 @@ class StatusResult:
     pipeline_count: int = 0
     # SPEC A-run: autonomous run state (active run only; None otherwise)
     run_state: dict[str, Any] | None = None
+    # REPORTS26 F6 (TODO-0166): workflow definitions not yet in git
+    # (.agentic/config.yaml, roles/, pipelines/, phases/, doctrine/ —
+    # changed tracked + untracked non-gitignored). [] = nothing to commit.
+    uncommitted_workflow_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

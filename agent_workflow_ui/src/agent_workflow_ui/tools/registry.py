@@ -128,6 +128,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_pipelines", awf.awf_pipelines),
     # RUN4 #2: feedback contour (supervisor friction → report to owner)
     _spec("awf_feedback", awf.awf_feedback),
+    # REPORTS26 F6: workflow definitions commit (the units that commit nothing)
+    _spec("awf_commit_workflow", awf.awf_commit_workflow),
 )
 
 

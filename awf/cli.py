@@ -692,6 +692,19 @@ def _build_parser():
         help="Show proposed patches without writing to role files",
     )
 
+    # REPORTS26 F6: workflow definitions (config/roles/pipelines/phases/
+    # doctrine) into git — for the units that commit nothing (read-only).
+    p_workflow_commit = sub.add_parser(
+        "commit-workflow",
+        help="Commit .agentic/ workflow definitions "
+             "(config.yaml, roles/, pipelines/, phases/, doctrine/)",
+    )
+    p_workflow_commit.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     return parser, sub
 
 
@@ -781,6 +794,9 @@ def _run_command(args) -> int:
         if args.command == "todo-draft":
             from . import cmd_todo_draft
             return cmd_todo_draft.run(args)
+        if args.command == "commit-workflow":
+            from . import cmd_workflow_commit
+            return cmd_workflow_commit.run(args)
         return 1
     except AwfApiError as e:
         print(f"ERROR: {e}", file=sys.stderr)
