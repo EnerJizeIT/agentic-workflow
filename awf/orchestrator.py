@@ -217,31 +217,16 @@ def run_pipeline(args: Any) -> int:
     retry_counts = [0] * total
 
     # Start dashboard HTTP server (live updates, no file:// reload)
+    # REPORTS29: rebinds the previous launch's port (state/dashboard_port
+    # is the reuse token — the browser tab keeps its URL across
+    # start/continue/run_next); a foreign-held port falls back to a new one.
     dashboard_port = 0
     _dashboard_server = None
     try:
-        from .api.dashboard_server import start_dashboard_server
+        from .api.dashboard_server import start_dashboard_with_reuse
 
-        # Day-3 (dashboard review): reuse the previous port so an already-open
-        # browser tab survives restarts (retry_stage/continue/kill+continue).
-        # If the old port is still busy, fall back to a random one.
-        port_file = paths.agentic_dir(project_dir) / "state" / "dashboard_port"
-        prev_port = 0
-        try:
-            if port_file.is_file():
-                prev_port = int(port_file.read_text(encoding="utf-8").strip() or 0)
-        except (OSError, ValueError):
-            prev_port = 0
-        try:
-            dashboard_port, _dashboard_server = start_dashboard_server(
-                project_dir, port=prev_port
-            )
-        except OSError:
-            dashboard_port, _dashboard_server = start_dashboard_server(project_dir)
+        dashboard_port, _dashboard_server = start_dashboard_with_reuse(project_dir)
         _log(logs_dir, f"Dashboard server: http://127.0.0.1:{dashboard_port}")
-        # Write port to separate file (survives state overwrites in stage loop)
-        port_file.parent.mkdir(parents=True, exist_ok=True)
-        port_file.write_text(str(dashboard_port), encoding="utf-8")
     except Exception as e:
         _log(logs_dir, f"Dashboard server failed to start: {e}")
 
@@ -386,13 +371,12 @@ def run_pipeline(args: Any) -> int:
             os.environ["AWF_NO_CHECKPOINTS"] = _prev_no_checkpoints
         else:
             os.environ.pop("AWF_NO_CHECKPOINTS", None)
-        # AUD10-05: the dashboard server is a daemon of THIS process — once
-        # we exit the port is dead, and a stale port file makes
-        # awf_open_pipeline_dashboard open a dead URL (no file:// fallback,
-        # its condition is "file absent"). Clean exit unlinks it; killed
-        # runs are covered by the liveness check in _open_dashboard_browser.
-        try:
-            port_file = paths.agentic_dir(project_dir) / "state" / "dashboard_port"
-            port_file.unlink(missing_ok=True)
-        except OSError:
-            pass
+        # REPORTS29: stop the server (in-process consecutive launches must
+        # rebind the port). The port file is NOT unlinked — it is the reuse
+        # token for the next launch (start/continue/run_next rebind it, the
+        # browser tab keeps its URL). A dead port is harmless:
+        # _open_dashboard_sync liveness-checks the port before opening a
+        # URL and falls back to file:// otherwise.
+        from .api.dashboard_server import stop_dashboard_server
+
+        stop_dashboard_server(_dashboard_server)

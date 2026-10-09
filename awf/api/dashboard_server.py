@@ -11,6 +11,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .. import paths
+
 
 class _Flight:
     """One in-flight generate_state_dict; concurrent polls join it."""
@@ -140,9 +142,77 @@ def start_dashboard_server(
     server.project_dir = project_dir  # type: ignore[attr-defined]
     server._state_coalescer = _StateCoalescer()  # type: ignore[attr-defined]
     actual_port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # REPORTS29: fast poll so the exit-path stop (stop_dashboard_server)
+    # returns promptly — the 0.5s default would stretch the pipeline
+    # epilogue and race the next in-process launch ("Pipeline already
+    # running" false refusal, seam matrix).
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True,
+    )
     thread.start()
     return actual_port, server
 
 
-__all__ = ["start_dashboard_server"]
+def _port_file(project_dir: Path) -> Path:
+    return paths.agentic_dir(project_dir) / "state" / "dashboard_port"
+
+
+def _read_reuse_port(project_dir: Path) -> int:
+    """The previous launch's port (0 when absent/garbage/out of range)."""
+    try:
+        if _port_file(project_dir).is_file():
+            port = int(_port_file(project_dir).read_text(encoding="utf-8").strip() or 0)
+            return port if 0 < port <= 65535 else 0
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def start_dashboard_with_reuse(
+    project_dir: Path,
+) -> tuple[int, ThreadingHTTPServer]:
+    """Start the dashboard server, reusing the previous launch's port (REPORTS29).
+
+    state/dashboard_port is the reuse token: it survives EVERY exit (clean
+    or killed), so consecutive launches (start/continue/run_next) rebind the
+    same port and the browser tab keeps its URL. A dead own server leaves
+    TIME_WAIT sockets — SO_REUSEADDR (set by HTTPServer by default) rebinds
+    over them. A port held by a FOREIGN process is a bind failure → an
+    honest fallback to a random port, and the file is rewritten with it
+    (only on a real change).
+    """
+    prev_port = _read_reuse_port(project_dir)
+    try:
+        port, server = start_dashboard_server(project_dir, port=prev_port)
+    except OSError:
+        port, server = start_dashboard_server(project_dir)
+    if port != prev_port:
+        f = _port_file(project_dir)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(str(port), encoding="utf-8")
+    return port, server
+
+
+def stop_dashboard_server(server: ThreadingHTTPServer | None) -> None:
+    """Stop a dashboard server on the exit path (REPORTS29).
+
+    In a real launch the process death stops the daemon thread; explicit
+    stop matters for in-process consecutive launches (MCP continue, tests),
+    which must rebind the port. The port file is NOT touched here — it is
+    the reuse token for the next launch (a dead port is harmless: the
+    open-dashboard path liveness-checks before opening a URL).
+    """
+    if server is None:
+        return
+    try:
+        server.shutdown()
+        server.server_close()
+    except OSError:
+        pass
+
+
+__all__ = [
+    "start_dashboard_server",
+    "start_dashboard_with_reuse",
+    "stop_dashboard_server",
+]
