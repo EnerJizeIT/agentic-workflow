@@ -1122,3 +1122,11 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # references and test identifiers, not debt. files_over_400 is untouched
 # at 72 (the new test file is 259 lines — under the bar; the touched
 # production modules were already over it).
+# RUN11 (TODO-0179, CI-фикс: покрытие awf/run_state.py до baseline):
+# baseline raised 5026 -> 5029 — the unit adds 3 TODO-bearing lines, all in
+# tests/negative/test_reports29_run_budget_downtime.py (the three new test
+# class docstrings' unit references: TestThresholdParsing /
+# TestBeatStateVariants / TestBeatRaceGuard). Same class as above: unit-id
+# references and test identifiers, not debt. files_over_400 is untouched at
+# 72 (the file ends at 397 lines — under the bar; no production code
+# touched).

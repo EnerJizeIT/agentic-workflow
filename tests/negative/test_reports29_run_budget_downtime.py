@@ -257,3 +257,141 @@ class TestDegradation:
         # проект без .agentic — тоже no-op без исключений
         result = api.supervisor_beat(tmp_git_repo)
         assert result["status"] == "ok"
+
+
+class TestThresholdParsing:
+    """TODO-0179: разбор ``automation.owner_idle_minutes`` — bool и мусор
+    не должны выключать учёт (дефолт 15), числовая строка — число."""
+
+    def test_bool_threshold_falls_back_to_default(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        _set_idle_minutes(proj, True)
+        assert run_state.owner_idle_threshold_minutes(proj) == 15.0
+        _set_idle_minutes(proj, False)
+        assert run_state.owner_idle_threshold_minutes(proj) == 15.0
+
+    def test_garbage_threshold_falls_back_to_default(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        _set_idle_minutes(proj, "fifteen minutes")
+        assert run_state.owner_idle_threshold_minutes(proj) == 15.0
+
+    def test_numeric_string_threshold_is_a_number(self, tmp_git_repo):
+        proj = _project(tmp_git_repo)
+        _set_idle_minutes(proj, "30")
+        assert run_state.owner_idle_threshold_minutes(proj) == 30.0
+
+
+class TestBeatStateVariants:
+    """TODO-0179: beat на состоянии с отсутствующей отметкой, сломанным
+    снимком и серией разрывов — без кредита-призрака и без исключений."""
+
+    def test_absent_beat_field_reinitializes(self, tmp_git_repo):
+        """Поле потеряно (null в run.yaml) — как первый beat: референс
+        восстановлен, кредит не начислен (прошлое неизвестно)."""
+        proj = _project(tmp_git_repo)
+        _active_run(proj)
+        now = datetime.now(timezone.utc)
+        run_state.write_run(proj, last_supervisor_beat=None)
+
+        run_state.supervisor_beat(proj, now=now)
+
+        state = _state(proj)
+        assert run_state._parse_started_at(
+            state["last_supervisor_beat"]
+        ), "the absent reference must be restored"
+        assert state.get("downtime_seconds", 0) == 0
+
+    def test_corrupt_snapshot_disables_credit(self, tmp_git_repo):
+        """Сломанный снимок ``downtime_seconds_at_last_beat``: кредит
+        не начисляется (нельзя вычесть неизвестное), базовая линия
+        при этом обновляется числом."""
+        proj = _project(tmp_git_repo)
+        _active_run(proj)
+        now = datetime.now(timezone.utc)
+        run_state.write_run(
+            proj,
+            started_at=_iso(now - timedelta(minutes=60)),
+            last_supervisor_beat=_iso(now - timedelta(minutes=40)),
+            downtime_seconds_at_last_beat="garbage",
+        )
+
+        run_state.supervisor_beat(proj, now=now)
+
+        state = _state(proj)
+        assert state.get("downtime_seconds", 0) == 0, "no ghost credit"
+        assert float(state["downtime_seconds_at_last_beat"]) == 0.0, (
+            "the baseline must be refreshed to a number"
+        )
+
+    def test_corrupt_downtime_value_degrades_to_zero(self, tmp_git_repo):
+        """Сломанное ``downtime_seconds`` деградирует в 0 — кредит
+        считается от нуля, без исключения."""
+        proj = _project(tmp_git_repo)
+        _active_run(proj)
+        now = datetime.now(timezone.utc)
+        run_state.write_run(
+            proj,
+            started_at=_iso(now - timedelta(minutes=60)),
+            last_supervisor_beat=_iso(now - timedelta(minutes=40)),
+            downtime_seconds="garbage",
+            downtime_seconds_at_last_beat=0,
+        )
+
+        run_state.supervisor_beat(proj, now=now)
+
+        state = _state(proj)
+        assert state["downtime_seconds"] == 40 * 60, (
+            "credit is computed from the degraded zero, not from garbage"
+        )
+
+    def test_several_gaps_credit_increments(self, tmp_git_repo):
+        """Серия разрывов: 40 мин → кредит 40, потом 30 мин → ещё 30.
+        Учёт инкрементальный (снимок после каждого beat), без
+        сканирования истории и без повторного счёта."""
+        proj = _project(tmp_git_repo)
+        _active_run(proj)
+        t0 = datetime(2026, 10, 9, 12, 0, 0, tzinfo=timezone.utc)
+        run_state.write_run(
+            proj,
+            started_at=_iso(t0 - timedelta(minutes=10)),
+            last_supervisor_beat=_iso(t0),
+            downtime_seconds_at_last_beat=0,
+        )
+
+        run_state.supervisor_beat(proj, now=t0 + timedelta(minutes=40))
+        assert _state(proj)["downtime_seconds"] == 40 * 60
+
+        run_state.supervisor_beat(proj, now=t0 + timedelta(minutes=70))
+        state = _state(proj)
+        assert state["downtime_seconds"] == 70 * 60, "40 + 30 incremental credits"
+        assert state["downtime_seconds_at_last_beat"] == 70 * 60
+
+
+class TestBeatRaceGuard:
+    """TODO-0179: ре-чек ``active`` под локом — если забег закрылся между
+    пробой beat и муотацией под локом, beat ничего не пишет."""
+
+    def test_run_closed_between_probe_and_lock_is_untouched(
+        self, tmp_git_repo, monkeypatch
+    ):
+        proj = _project(tmp_git_repo)
+        _active_run(proj)
+        now = datetime.now(timezone.utc)
+        before = _state(proj)
+        real_update_run = run_state.update_run
+
+        def update_run_after_close(project_dir, mutator, **kwargs):
+            # забег закрылся в окне между пробой (active=True) и
+            # муотацией под локом — как конкурентный awf_run_finish
+            run_state.write_run(project_dir, active=False)
+            return real_update_run(project_dir, mutator, **kwargs)
+
+        monkeypatch.setattr(run_state, "update_run", update_run_after_close)
+        run_state.supervisor_beat(proj, now=now)
+
+        state = _state(proj)
+        assert state["active"] is False
+        assert state.get("last_supervisor_beat") == before["last_supervisor_beat"], (
+            "a closed run must not receive a beat"
+        )
+        assert state.get("downtime_seconds", 0) == before.get("downtime_seconds", 0)
