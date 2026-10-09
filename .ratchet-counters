@@ -1021,4 +1021,11 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/negative/test_run_progress_surfaces.py (395 -> 407 — its test
 # suite plus the archive helper), same class as the
 # test_audit25_* / test_service_run.py test-suite raises above.
+# F1 (TODO-0171, salvage sibling flake hardening): baseline raised
+# 4943 -> 4944 — the three sibling salvage tests moved to the 0167
+# controlled-timeline pattern; the +1 TODO-bearing line is the
+# "TODO-0171:" docstring line in
+# tests/unit/test_salvage_signal.py::test_salvage_detects_approve.
+# Same class as above: a unit reference, not debt. files_over_400
+# stays 71 (the file is 250 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
