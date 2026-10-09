@@ -39,7 +39,7 @@ _ROLE_TEMPLATE = """# ROLE: {role_name}
 
 **Role:** {description}
 **Runs as:** `opencode run --agent {role_name}`
-**Model:** {model}
+**Модель:** {model}
 
 ## 1. Who you are
 

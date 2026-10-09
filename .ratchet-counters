@@ -1069,3 +1069,15 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # value (every future launch loses the dashboard). Fix on the next
 # REVIEW pass: range-check in _read_reuse_port (or catch OverflowError);
 # then this test goes green.
+# REPORTS29 (TODO-0175, роль называет свою модель): baseline raised
+# 4972 -> 4986 — the unit adds 14 TODO-bearing lines: 5 in
+# awf/api/roles.py (the model-line format helpers' header comment + the
+# add_role docstring lines + the two injection/resolution comments), 3 in
+# awf/api/model_check.py (module + check_model_config docstrings, the
+# cross-check comment), 2+2 in tests/unit/test_api.py and
+# tests/negative/test_audit25_w7_protocol_ship.py (the updated tests'
+# docstring unit references) and 2 in the new
+# tests/negative/test_reports29_role_model.py (module docstring + the
+# updated test docstring). Same class as above: unit-id references, not
+# debt. files_over_400 stays 71 (no file crossed the bar: the new test
+# file is 274 lines, the touched modules were already over it).

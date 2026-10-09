@@ -445,6 +445,18 @@ the pipeline are untouched, the setup phase is not re-run. MCP:
 `awf_add_role(list_drafts=True)`, `awf_add_role(adopt=...)`,
 `awf_add_role(discard=...)` — one action per call.
 
+**Role model line** — every role file created by `awf add-role`
+names its model in a uniform line near the top
+(`**Модель:** \`vllm/llm\``), resolved as: explicit `--model`/`model=`
+→ `models:` of `.agentic/config.yaml` by role name → "not assigned
+(the config's default model applies)" (built-in templates, the
+placeholder and `from_skill` sources all get the line). The config
+stays the source of truth — which model a stage actually runs is
+decided by the engine, the line is a marker.
+`awf_check_model_config` cross-checks the role files against the
+config and reports a drift as a warning (role file says X, config
+says Y); a missing line is not an error.
+
 ## Troubleshooting
 
 | Problem | Solution |

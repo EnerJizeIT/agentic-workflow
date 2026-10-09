@@ -778,10 +778,14 @@ class TestAddRole:
         assert "claude-sonnet" in content
         assert "QA engineer" in content
 
-    def test_default_model_placeholder(self, tmp_git_repo):
+    def test_default_model_unassigned(self, tmp_git_repo):
+        """TODO-0175: no model= and nothing in the config → the line carries
+        the unassigned placeholder, result.model is empty."""
         (tmp_git_repo / ".agentic").mkdir()
         result = api.add_role(tmp_git_repo, "tester")
-        assert "<set-me-in-.agentic/config.yaml>" in result.model
+        content = (tmp_git_repo / ".agentic" / "roles" / "tester.md").read_text()
+        assert result.model == ""
+        assert "не назначена" in content
 
     def test_empty_role_name_raises(self, tmp_git_repo):
         (tmp_git_repo / ".agentic").mkdir()
@@ -917,7 +921,9 @@ class TestAddRoleFromSkill:
         assert "ROLE: plain" in content
         assert "copied from skill" not in content
 
-    def test_description_model_ignored_for_skill(self, skill_env):
+    def test_description_ignored_model_line_for_skill(self, skill_env):
+        """TODO-0175: for from_skill, description is still ignored, but
+        model= lands in the uniform model line (like every other source)."""
         repo, _ = skill_env
         result = api.add_role(
             repo, "demo-skill", from_skill="demo-skill",
@@ -925,7 +931,7 @@ class TestAddRoleFromSkill:
         )
         content = Path(result.role_file).read_text(encoding="utf-8")
         assert "Custom desc" not in content
-        assert "custom-model" not in content
+        assert "**Модель:** `custom-model`" in content
         assert "ROLE: demo-skill" not in content
 
     def test_unreadable_skill_file_is_clean_error(self, skill_env):
