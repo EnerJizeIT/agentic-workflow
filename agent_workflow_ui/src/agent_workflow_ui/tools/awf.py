@@ -36,7 +36,20 @@ def _resolve_project_dir(project_dir: str | None) -> Path:
 
 
 async def _exec(api_fn: Any, /, **kwargs: Any) -> dict[str, Any]:
-    """AUD-12.3: Standard try/except wrapper for all awf API calls."""
+    """AUD-12.3: Standard try/except wrapper for all awf API calls.
+
+    TODO-0178: every awf-* call is also a supervisor heartbeat — the
+    active run's owner-idle accounting credits the gaps between these
+    beats into downtime (owner pauses stop burning the productive
+    budget). The beat never changes the call's result and never raises:
+    a failure degrades to a silent no-op.
+    """
+    project_dir = kwargs.get("project_dir")
+    if project_dir is not None:
+        try:
+            await asyncio.to_thread(api.supervisor_beat, project_dir)
+        except Exception:
+            pass
     try:
         result = await asyncio.to_thread(api_fn, **kwargs)
         return _ok(result)

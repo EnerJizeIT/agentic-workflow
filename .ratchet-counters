@@ -1108,3 +1108,17 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # negative file; the touched awf/verify_pack.py / awf/unit_contract.py were
 # already over the bar, and tests/unit/test_verify_pack.py was kept under
 # it).
+# RUN11 (TODO-0178, run budget: owner-idle downtime): baseline raised
+# 5014 -> 5026 — the unit adds 12 TODO-bearing lines: 3 in the new
+# tests/negative/test_reports29_run_budget_downtime.py (module docstring
+# unit reference + the invariants header + the T = "TODO-0001" constant),
+# 2 in awf/run_state.py (the supervisor_beat +
+# owner_idle_threshold_minutes docstring headers + the log message),
+# 2 in awf/api/run.py (the run_start beat-init comment + the
+# supervisor_beat docstring), 1 in awf/api/__init__.py (the __all__
+# comment), 1 in agent_workflow_ui tools/awf.py (the _exec docstring)
+# and 2 in tests/agent_workflow_ui/test_awf_tools.py (the wiring section
+# comment + the queue=["TODO-0001"] fixture). Same class as above: unit-id
+# references and test identifiers, not debt. files_over_400 is untouched
+# at 72 (the new test file is 259 lines — under the bar; the touched
+# production modules were already over it).
