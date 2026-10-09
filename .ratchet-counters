@@ -1155,3 +1155,17 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # fallback wrote into the isolated HOME and tripped its assertion in CI).
 # Same class as above: a unit-id reference in an infra-script comment,
 # not debt.
+# REPORTS30 (TODO-0184, dashboard tab on server reuse): baseline raised
+# 5044 -> 5051 — the new tests/negative/test_reports30_dashboard_open_reuse.py
+# adds 7 TODO-bearing lines: the module docstring's unit/incident references
+# (TODO-0184, TODO-0174), the worker-role "Execute TODO." stub, and the four
+# TODO-0001/TODO-0002 fixture use-sites of the three engine-invariant tests.
+# Same class as above: test identifiers and unit references, not debt. The
+# production diff (awf/api/dashboard_server.py, agent_workflow_ui
+# tools/awf.py) and the touched test_awf_tools.py are TODO-line neutral.
+# files_over_400 stays 73 (the new test file is 335 lines — under the bar).
+# TODO-0184 QA review (agent-qa-review stage): 5051 -> 5053 — the review
+# added two invariant-4 tests (continue/run_next reuse next_action text)
+# to tests/negative/test_reports30_dashboard_open_reuse.py; both fakes
+# carry a TODO-0001 unit reference. Same class as above: test
+# identifiers, not debt.

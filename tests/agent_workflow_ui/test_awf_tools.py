@@ -1742,7 +1742,7 @@ class TestStartNextActionDashboard:
         self._fake_start(monkeypatch)
         monkeypatch.setattr(
             awf, "_open_dashboard_sync",
-            lambda pd, wait=False: {"opened": False, "method": "none"},
+            lambda pd, wait=False, launched_at=None: {"opened": False, "method": "none"},
         )
         result = run(awf.awf_start(project_dir=str(mcp_project), background=True))
         assert result["status"] == "ok"
@@ -1754,7 +1754,7 @@ class TestStartNextActionDashboard:
         self._fake_start(monkeypatch)
         monkeypatch.setattr(
             awf, "_open_dashboard_sync",
-            lambda pd, wait=False: {"opened": True, "method": "http", "url": "http://x"},
+            lambda pd, wait=False, launched_at=None: {"opened": True, "method": "http", "url": "http://x"},
         )
         result = run(awf.awf_start(project_dir=str(mcp_project), background=True))
         assert result["status"] == "ok"

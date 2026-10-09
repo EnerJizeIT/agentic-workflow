@@ -6,6 +6,7 @@ problem: JavaScript polls /api/state every 3s and patches DOM smoothly.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -168,6 +169,27 @@ def _read_reuse_port(project_dir: Path) -> int:
     return 0
 
 
+def _boot_marker_file(project_dir: Path) -> Path:
+    return paths.agentic_dir(project_dir) / "state" / "dashboard_boot"
+
+
+def _write_boot_marker(project_dir: Path) -> None:
+    """REPORTS30: write the actual-start marker (pid + ts).
+
+    Callers: only ``start_dashboard_with_reuse`` on a REAL start (a new
+    port). The marker survives exit, exactly like the port file: the next
+    launch's plugin reads it to decide whether THIS launch started the
+    server fresh (open a tab) or merely reused the previous port (a live
+    tab already points at the same URL — do not open a second one).
+    """
+    f = _boot_marker_file(project_dir)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(
+        json.dumps({"pid": os.getpid(), "ts": time.time()}),
+        encoding="utf-8",
+    )
+
+
 def start_dashboard_with_reuse(
     project_dir: Path,
 ) -> tuple[int, ThreadingHTTPServer]:
@@ -180,6 +202,11 @@ def start_dashboard_with_reuse(
     over them. A port held by a FOREIGN process is a bind failure → an
     honest fallback to a random port, and the file is rewritten with it
     (only on a real change).
+
+    REPORTS30: a real start (``port != prev_port``) also writes the boot
+    marker state/dashboard_boot — BEFORE the port file, so a poller that
+    sees the port file always sees the marker too. On a port reuse the
+    marker is NOT updated: it stays with the last actual start.
     """
     prev_port = _read_reuse_port(project_dir)
     try:
@@ -187,6 +214,7 @@ def start_dashboard_with_reuse(
     except OSError:
         port, server = start_dashboard_server(project_dir)
     if port != prev_port:
+        _write_boot_marker(project_dir)
         f = _port_file(project_dir)
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(str(port), encoding="utf-8")
