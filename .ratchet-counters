@@ -1081,3 +1081,14 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # updated test docstring). Same class as above: unit-id references, not
 # debt. files_over_400 stays 71 (no file crossed the bar: the new test
 # file is 274 lines, the touched modules were already over it).
+# REPORTS29 (TODO-0176, дашборд: чат после возврата стадии): baseline
+# raised 4986 -> 5000, files_over_400 raised 71 -> 72 — the unit adds 14
+# TODO-bearing lines, all in the new
+# tests/negative/test_reports29_dashboard_chat_reentry.py (the six
+# TODO-0001..TODO-0004 handoff-fixture writes + the six write_state
+# todo_id fixtures of the six tests). Same class as above: test
+# identifiers, not debt. The +1 file over 400 is awf/_log_reader.py
+# (389 -> 401 — the cross-run all_transitions accumulator the chat's
+# attempt mapping reads), same class as the production-module raises
+# above. The rest of the production diff (awf/api/dashboard.py — already
+# over the bar, the template JS) carries no TODO id.

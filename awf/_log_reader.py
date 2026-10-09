@@ -47,6 +47,7 @@ _RUN_COMPLETE = "Pipeline complete"
 
 EVENTS_CAP = 400  # the dashboard shows the last 30
 STAGE_STAMP_CAP = 32  # the suggestion uses the last 5 deltas
+ALL_TRANSITIONS_CAP = 1024  # the chat needs recent attempts, not log history
 
 _TS_FMT = "%Y-%m-%dT%H:%M:%S"
 
@@ -119,7 +120,7 @@ class _Aggregates:
 
     __slots__ = (
         "events", "run_start", "first_agent", "last_verify", "transitions",
-        "closed_seconds", "open_start", "stage_stamps",
+        "all_transitions", "closed_seconds", "open_start", "stage_stamps",
     )
 
     def __init__(self) -> None:
@@ -128,6 +129,10 @@ class _Aggregates:
         self.first_agent: datetime | None = None    # first agent stage of current run
         self.last_verify: datetime | None = None    # last verify line of current run
         self.transitions: list[tuple[int, str]] = []  # current run (epoch, stage name)
+        # REPORTS29: stage starts across ALL runs (no reset on 'Pipeline
+        # started') — the chat maps each handoff to the attempt that wrote
+        # it; a re-entered stage's first attempt lived in an earlier run.
+        self.all_transitions: list[tuple[int, str]] = []
         self.closed_seconds: int = 0                # across ALL runs (substring rule)
         self.open_start: datetime | None = None     # open run of the total machine
         self.stage_stamps: list[int] = []           # rolling 'Stage N/M:' epochs
@@ -179,7 +184,11 @@ class _Aggregates:
                 self.last_verify = dt3
             sm = _STAGE.search(line)
             if sm:
-                self.transitions.append((int(dt3.timestamp()), sm.group(1)))
+                ts = int(dt3.timestamp())
+                self.transitions.append((ts, sm.group(1)))
+                self.all_transitions.append((ts, sm.group(1)))
+                if len(self.all_transitions) > ALL_TRANSITIONS_CAP:
+                    del self.all_transitions[: len(self.all_transitions) - ALL_TRANSITIONS_CAP]
 
         sm2 = _STAGE_STAMP.search(line)
         if sm2 is not None:
@@ -199,6 +208,8 @@ class LogSnapshot:
     first_agent_epoch: int | None = None
     last_verify_epoch: int | None = None
     transitions: list[tuple[int, str]] = field(default_factory=list)
+    # REPORTS29: same, but across all runs (the dashboard's attempt mapping).
+    all_transitions: list[tuple[int, str]] = field(default_factory=list)
     closed_seconds: int = 0
     open_run_start_epoch: int | None = None
     stage_stamps: list[int] = field(default_factory=list)
@@ -342,6 +353,7 @@ class OrchestratorLogReader:
             first_agent_epoch=_epoch(a.first_agent),
             last_verify_epoch=_epoch(a.last_verify),
             transitions=list(a.transitions),
+            all_transitions=list(a.all_transitions),
             closed_seconds=a.closed_seconds,
             open_run_start_epoch=_epoch(a.open_start),
             stage_stamps=list(a.stage_stamps),
