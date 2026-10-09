@@ -1130,3 +1130,14 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # references and test identifiers, not debt. files_over_400 is untouched at
 # 72 (the file ends at 397 lines — under the bar; no production code
 # touched).
+# REPORTS30 (TODO-0180, CPU-aware watchdog): baseline raised
+# 5029 -> 5034, files_over_400 raised 72 -> 73 — the unit adds 5
+# TODO-bearing lines: 2 in the new tests/negative/test_reports30_watchdog_cpu_aware.py
+# (the module docstring's unit and incident references) and 3 in the
+# production diff (the U6c/TODO-0180 state comment + the CPU-aware comment
+# in awf/signal_watch.py, the probe docstring's unit reference in
+# awf/_proc.py). Same class as above: unit-id references and test
+# identifiers, not debt. The +1 file over 400 is awf/signal_watch.py
+# (366 -> 416 — the CPU-aware watchdog branch next to the log-mtime check),
+# same class as the commit_gate.py / dispatch.py production-module raises
+# above.

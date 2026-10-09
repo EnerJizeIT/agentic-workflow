@@ -284,6 +284,15 @@ def run_subprocess_until_signal(
                 pass  # best-effort — the run goes on without the record
         deadline = time.monotonic() + hard_timeout
         signal_seen_at: float | None = None
+        # U6c/TODO-0180: CPU-aware watchdog state. ``last_cpu`` — the
+        # worker tree's total CPU (utime+stime of the whole tree) at the
+        # previous reading, taken only while the log is past the silence
+        # threshold; ``last_cpu_busy_at`` — the wall moment CPU growth was
+        # last observed. It refreshes the effective silence so a
+        # busy-but-quiet tree (a silent full test run) is not killed as
+        # hung.
+        last_cpu: float | None = None
+        last_cpu_busy_at: float | None = None
 
         while True:
             rc = proc.poll()
@@ -313,6 +322,12 @@ def run_subprocess_until_signal(
             # Kill the tree well before the hard timeout, but never after a
             # signal has been seen (the worker is logically done and may
             # still be flushing buffers — the hard timeout covers that case).
+            # CPU-aware (TODO-0180): silence alone is not a hang — a quiet
+            # long command (a full test run) can burn CPU for tens of
+            # minutes without a log line. The kill requires the log silence
+            # AND a frozen tree CPU: any growth between two readings
+            # refreshes the effective silence and the watchdog keeps
+            # watching (the stage hard timeout stays the last resort).
             if (
                 signal_seen_at is None
                 and worker_log is not None
@@ -323,20 +338,55 @@ def run_subprocess_until_signal(
                 except OSError:
                     mtime = None
                 if mtime is not None:
-                    silent_for = time.time() - mtime
+                    # Effective silence: the log's quiet time, restarted by
+                    # the last observed CPU growth (a busy tree is not
+                    # silent, whatever its log says).
+                    last_activity = mtime
+                    if last_cpu_busy_at is not None:
+                        last_activity = max(last_activity, last_cpu_busy_at)
+                    silent_for = time.time() - last_activity
                     if silent_for > no_output_timeout:
-                        if logs_dir:
-                            _log(
-                                logs_dir,
-                                f"U6c: worker silent for {silent_for / 60:.0f} min — "
-                                f"killing process tree (pid={proc.pid})",
+                        cpu_now = _proc.cpu_time_of_tree(proc.pid)
+                        if cpu_now is None:
+                            # /proc unreadable — the tree cannot be proven
+                            # busy; the legacy log-only decision stands.
+                            if logs_dir:
+                                _log(
+                                    logs_dir,
+                                    f"U6c: worker silent for {silent_for / 60:.0f} min — "
+                                    f"killing process tree (pid={proc.pid})",
+                                )
+                            _proc.kill_process_tree(proc)
+                            raise TimeoutError(
+                                f"Worker produced no output for "
+                                f"{silent_for / 60:.0f} min (watchdog) — "
+                                "process tree killed"
                             )
-                        _proc.kill_process_tree(proc)
-                        raise TimeoutError(
-                            f"Worker produced no output for "
-                            f"{silent_for / 60:.0f} min (watchdog) — "
-                            "process tree killed"
-                        )
+                        if last_cpu is None:
+                            # First reading in the silent zone: store it and
+                            # give the tree one more poll to prove itself.
+                            last_cpu = cpu_now
+                        elif cpu_now > last_cpu:
+                            # The tree burned CPU since the last reading —
+                            # a silent long command, not a hang. Refresh the
+                            # effective silence; keep watching.
+                            last_cpu = cpu_now
+                            last_cpu_busy_at = time.time()
+                        else:
+                            if logs_dir:
+                                _log(
+                                    logs_dir,
+                                    f"U6c: worker silent for {silent_for / 60:.0f} min "
+                                    f"and tree CPU shows no progress — "
+                                    f"killing process tree (pid={proc.pid})",
+                                )
+                            _proc.kill_process_tree(proc)
+                            raise TimeoutError(
+                                f"Worker produced no output for "
+                                f"{silent_for / 60:.0f} min and tree CPU "
+                                f"shows no progress (watchdog) — "
+                                "process tree killed"
+                            )
 
             if now >= deadline:
                 if logs_dir:
