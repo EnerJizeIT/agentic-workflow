@@ -1059,6 +1059,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # REPORTS29 QA pass 2 (agent-qa-review): baseline raised 4971 -> 4972
 # — the new garbage port-file test adds 1 TODO-bearing line (its
 # fixture todo id). Same class as above: a test identifier, not debt.
+# TODO-0182 (recovery docs: resume != MCP recreation, inbox check after
+# "Connection closed"): baseline raised 5037 -> 5043 — the new recovery
+# sections add 6 TODO-bearing doc lines: 2 per USAGE.md/USAGE.ru.md
+# ("TODO + baseline + .ready on disk" and the ".agentic/inbox/TODO-*.md"
+# path) and 1 per supervisor template copy ("TODO-*.md, .ready" in the
+# inbox-check bullet). Same class as above: doc examples of file names,
+# not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS29 QA (agent-qa-review red test): baseline raised 4970 -> 4971 —
 # the new out-of-range port-file test adds 1 TODO-bearing line (its

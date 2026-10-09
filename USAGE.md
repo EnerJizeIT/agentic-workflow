@@ -226,6 +226,8 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 | Worker didn't signal (no DONE/BLOCKED) | Salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
 | Pipeline killed by an opencode/MCP restart (parked at verify) | The restart terminates the pipeline's process group — the `setsid`-detached process does not survive. Recovery: relaunch the stage + re-approve (below) |
+| awf tools gone from the session after a "restart" | A "restart" that is really a resume keeps the dead MCP connections (the run id in the log is unchanged). Recovery: a NEW session, not "continue" (below) |
+| "Connection closed" on a dispatch/approve | The call may have SUCCEEDED — the unit was created and only the answer was lost. Check the inbox before retrying (below) |
 | `awf_kill` while the worker runs | Kill stops the stage TOGETHER WITH the worker (its process group). The answer names the pipeline + worker pids; a worker that survived gets a loud warning with its pid. The next `awf_start`/`awf_continue` warns about a live orphan from a previous kill — its edits would land in the new unit. CLI twin (recovery without MCP): `python3 -m awf kill --project-dir <path>` — same API, same behavior |
 | Orphan TODO (failed dispatch) | Not auto-cleaned. Remove with `awf_reset(orphans=True)` |
 | Commit failed (pre-commit hook) | TODO NOT archived, changes left for manual review |
@@ -247,6 +249,37 @@ only detaches from the terminal session. Recovery:
    the new wait started is dropped as stale (AUD04-04: its mtime predates
    the wait). That is expected, not a failure — write the approval again;
    the second one is the one consumed.
+
+### Tools didn't come back after the "restart"
+
+The previous recipe assumes the tools come back with the restart. They
+do not, when the "restart" was a resume of the SAME session — the run id
+in the opencode log is unchanged, and session resume does not recreate
+MCP connections that dropped before the restart. The awf tools
+(`agent-workflow-ui_*`) stay unavailable to that session even though the
+server itself starts fine. When the tools are gone after a restart:
+
+- Open a NEW session, not "continue". On start, opencode launches the
+  MCP server and registers the tools.
+- The run and unit state live on disk (`.agentic/`) — the new session
+  picks them up immediately; just continue the run (`awf_run_next` /
+  `awf_continue`).
+
+MCP auto-restart after a dropped connection is opencode client behavior,
+not awf — awf cannot make the client reconnect. From the awf side, the
+server's fault log (below) shows where the server died.
+
+### "Connection closed" on a dispatch/approve
+
+A dropped MCP connection can mask a SUCCESSFUL call: the unit was
+created (TODO + baseline + `.ready` on disk) and only the answer was
+lost. After "Connection closed" on a mutating call (dispatch, approve):
+
+- Check the inbox BEFORE retrying: `.agentic/inbox/TODO-*.md`, the
+  `.ready` signals, and `.agentic/outbox/`.
+- The idempotent check is `awf_status` (MCP or
+  `python3 -m awf status --project-dir <path>`): it names what already
+  exists. Retry only when the unit is genuinely absent.
 
 ### Traces of the MCP server
 
