@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .agents_md import ensure_agents_md
 from .config import detect_project_dir, ensure_directories, load
+from .fault_log import setup_fault_log
 from .http_endpoint import start_http_server
 from .opencode_config import read_opencode_models, read_recent_models
 from .render.engine import create_env
@@ -21,6 +22,10 @@ DEFAULT_TEMPLATES_DIR = Path(__file__).parent / "render" / "default_templates"
 
 def main() -> int:
     """Run the MCP server on stdio transport, with HTTP endpoint in background."""
+    # TODO-0181: fault log first — lifecycle + crash traces survive even a
+    # hard kill of the MCP session (owner diagnosis 2026-10-09).
+    setup_fault_log()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

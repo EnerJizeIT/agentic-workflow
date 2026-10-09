@@ -248,6 +248,16 @@ only detaches from the terminal session. Recovery:
    the wait). That is expected, not a failure — write the approval again;
    the second one is the one consumed.
 
+### Traces of the MCP server
+
+When opencode kills the MCP session, the plugin leaves a small fault log
+— lifecycle and crash traces, not just pipeline state: a `START` line
+(plugin version, pid, argv), a `STOP` line on clean exit, and a
+`CRASH`/`THREAD-CRASH` traceback if the server dies on an unhandled
+exception. The file lives at `$XDG_STATE_HOME/awf/mcp-server.log`
+(fallback `~/.local/state/awf/mcp-server.log`); point it elsewhere with
+the `AWF_MCP_LOG` env var. It rotates once to `.1` past 1 MB.
+
 ## Where things live
 
 ```
