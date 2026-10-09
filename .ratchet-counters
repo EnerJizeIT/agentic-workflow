@@ -1028,4 +1028,24 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/unit/test_salvage_signal.py::test_salvage_detects_approve.
 # Same class as above: a unit reference, not debt. files_over_400
 # stays 71 (the file is 250 lines — under the bar).
+# TODO-0173 (quick tier, 09.10): baseline raised 4944 -> 4963 — the
+# quick-pipeline unit adds 19 TODO-bearing lines: 7 in awf/api/setup.py
+# (the _QA_ROLE_SLUGS comment, the _QUICK_PIPELINE_NAME comment, the
+# build_pipeline_stages exclude_roles docstring, the write_quick_pipeline
+# docstrings, the apply_project_setup side-effect line, the wiring
+# comment), 1 in awf/api/_results.py (the quick_pipeline_file field
+# comment), 3 in awf/templates/roles/supervisor.md (the "Unit levels"
+# section: the TODO front-matter line, the TODO-NNNN queue-item example,
+# the S-trivia pack line) + 3 in the root mirror
+# templates/roles/supervisor.md, 2 in USAGE.md and 2 in USAGE.ru.md
+# (the same front-matter / TODO-NNNN doctrine lines) and 1 in the new
+# tests/negative/test_reports29_quick_tier.py (the module docstring unit
+# reference). Same class as above: unit references and doctrine wording,
+# not debt. files_over_400 stays 71 (the new test file is 208 lines —
+# under the bar).
+# TODO-0173 QA (agent-qa-review, 09.10): baseline raised 4963 -> 4964 —
+# the F1 resilience test (TestQuickWriteResilience: a hard write failure
+# of quick.yaml must warn, not fail the submit) adds 1 TODO-bearing line
+# (its docstring unit reference). The wiring fix in awf/api/setup.py reuses
+# the existing TODO-0173 comment line (net zero).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'

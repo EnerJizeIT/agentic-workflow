@@ -270,8 +270,12 @@ class ApplyProjectSetupResult:
     """Result of :func:`awf.api.apply_project_setup`."""
 
     pipeline_file: str | None
-    config_updated: bool
-    supervisor_md_updated: bool
+    # TODO-0173 (quick tier): the S-class variant written next to the
+    # active pipeline (pipelines/quick.yaml); None when skipped
+    # (QA-only team / active pipeline already named 'quick').
+    quick_pipeline_file: str | None = None
+    config_updated: bool = False
+    supervisor_md_updated: bool = False
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:

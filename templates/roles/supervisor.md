@@ -558,6 +558,26 @@ Every TODO must start with a prohibitions section adapted to the project:
 - **Optimal:** 1–5 tasks per TODO (the worker is capable, but keep scope manageable).
 - **Maximum:** 10 tasks. Beyond that, split into multiple TODOs.
 
+### Unit levels (quick vs full)
+
+The setup form writes a second pipeline, `.agentic/pipelines/quick.yaml` —
+the same team without the QA stage. Pick the level per unit:
+
+- **quick** — S-class units: docs, shield tests, counters, one-line fixes
+  that change no behavior.
+- **full** (the active pipeline) — engine, security, behavior, data
+  schemas. When in doubt, full.
+- How to choose: `pipeline: quick` in the TODO front-matter, or a
+  per-item `{"todo_id": "TODO-NNNN", "pipeline": "quick"}` in the run
+  queue (the queue item wins over the front-matter).
+- **Fewer probes, but targeted.** A quick unit's `verify` block is a
+  slice of the suite that covers the changed behavior — not the full run.
+- **Pack S-trivia into one unit.** Several small quick tasks go into ONE
+  TODO, not five pipeline runs.
+- The level changes the pipeline, not the contract: gates
+  (contracts/ratchet/instructions), `prove_red` (where declared), binding
+  and evidence, the full CI — all still apply to quick units.
+
 ### Quality bar (unit protocol)
 
 - **One unit — one invariant.** A TODO carries one invariant (or one

@@ -32,6 +32,16 @@ _DEFAULT_AGENT_FOR_ROLE = "worker"
 # (supervisor = current session, not a subprocess).
 _SKIP_ROLE_MAPPING = {"supervisor"}
 
+# TODO-0173 (quick tier): the QA role stages dropped from the quick
+# pipeline. The quick tier is for S-class units (docs, shield tests,
+# counters, one-line fixes) — the full QA stage there is pure overhead.
+_QA_ROLE_SLUGS = frozenset({"agent-qa-review"})
+
+# Fixed file name of the quick variant: .agentic/pipelines/quick.yaml.
+# It is an ALTERNATE pipeline (selected per unit via the TODO's
+# `pipeline: quick` or a run-queue item) — never the active one.
+_QUICK_PIPELINE_NAME = "quick"
+
 
 # ─── Pipeline materialization ───────────────────────────────────────────
 
@@ -52,7 +62,11 @@ def _stage_yaml(name: str, role: str, **extra: Any) -> dict[str, Any]:
 _slugify_role = slugify_role
 
 
-def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def build_pipeline_stages(
+    team_order: list[dict[str, Any]],
+    *,
+    exclude_roles: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
     """Build ordered pipeline stages from team selection.
 
     Wraps the user's team with supervisor at both ends
@@ -61,6 +75,8 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
     Args:
         team_order: list of team member dicts (from form's team_config JSON).
             Each dict has at least: ``{agent: <role_name>, type: 'default'|'custom', ...}``.
+        exclude_roles: role slugs to skip (TODO-0173: the quick variant
+            passes the QA slugs). None/empty — the full team, unchanged.
 
     Returns:
         List of stage dicts:
@@ -68,8 +84,10 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
 
     Raises:
         ValueError: if team_order is empty or has no valid role entries
-            (empty pipeline would be plan→verify with no work — useless).
+            (empty pipeline would be plan→verify with no work — useless),
+            or every role is in ``exclude_roles`` (nothing to run).
     """
+    exclude = set(exclude_roles or ())
     valid_roles = [
         _slugify_role(str(m.get("agent") or m.get("role") or ""))
         for m in team_order
@@ -79,6 +97,12 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
         raise ValueError(
             "Cannot build pipeline with zero agent roles — at least one "
             "role is required between supervisor plan and verify."
+        )
+    if exclude and all(r in exclude for r in valid_roles):
+        raise ValueError(
+            "Cannot build pipeline: every team role is excluded "
+            f"({', '.join(sorted(set(valid_roles) & exclude))}) — at least "
+            "one non-excluded role is required between plan and verify."
         )
 
     stages: list[dict[str, Any]] = [
@@ -93,6 +117,8 @@ def build_pipeline_stages(team_order: list[dict[str, Any]]) -> list[dict[str, An
     for member in team_order:
         role = _slugify_role(str(member.get("agent") or member.get("role") or ""))
         if not role:
+            continue
+        if role in exclude:
             continue
         if role in seen_roles:
             log.warning("Duplicate role %r in team_order — skipping", role)
@@ -199,6 +225,74 @@ def write_pipeline(
     )
     atomic_write_text(target, content)
     log.info("Wrote pipeline with %d team stages to %s", len(stages) - 2, target)
+    return target
+
+
+def write_quick_pipeline(
+    team_order: list[dict[str, Any]],
+    project_dir: Path,
+    *,
+    warnings: list[str] | None = None,
+) -> Path | None:
+    """Write ``.agentic/pipelines/quick.yaml`` — the team without QA stages.
+
+    TODO-0173 (quick tier): the S-class variant of the same team — the
+    QA role stages (``_QA_ROLE_SLUGS``) removed: plan(supervisor) →
+    worker stages → verify(supervisor). The normal pipeline and
+    ``default_pipeline`` are untouched; quick is an alternate pipeline
+    selected per unit (``pipeline: quick`` in the TODO front-matter or a
+    run-queue item).
+
+    Skipped (``None`` + a warning naming the reason) when:
+    - no worker stage survives the QA removal (QA-only team), or
+    - the ACTIVE pipeline already has the name ``quick`` — writing the
+      variant would clobber the active file.
+
+    An existing quick.yaml is backed up to ``.bak`` (same as
+    :func:`write_pipeline`).
+    """
+    pipelines_dir = project_dir / ".agentic" / "pipelines"
+
+    if _active_pipeline_name(project_dir) == _QUICK_PIPELINE_NAME:
+        reason = (
+            "the active pipeline is named 'quick' — writing the quick "
+            "variant would overwrite the active file"
+        )
+        log.warning("write_quick_pipeline: %s — not written", reason)
+        if warnings is not None:
+            warnings.append(f"quick pipeline: {reason}, quick.yaml not written")
+        return None
+
+    try:
+        stages = build_pipeline_stages(team_order, exclude_roles=_QA_ROLE_SLUGS)
+    except ValueError as e:
+        reason = str(e)
+        log.warning("write_quick_pipeline: %s — not written", reason)
+        if warnings is not None:
+            warnings.append(f"quick pipeline: {reason} — quick.yaml not written")
+        return None
+
+    pipelines_dir.mkdir(parents=True, exist_ok=True)
+    pipeline_dict: dict[str, Any] = {
+        "name": _QUICK_PIPELINE_NAME,
+        "description": "Quick tier (S-class units): the team without the QA stage",
+        "stages": stages,
+    }
+
+    target = pipelines_dir / f"{_QUICK_PIPELINE_NAME}.yaml"
+    if target.exists():
+        backup = target.with_name(f"{target.name}.bak")
+        try:
+            target.rename(backup)
+            log.info("Backed up existing quick pipeline to %s", backup)
+        except OSError:
+            pass
+
+    content = yaml.safe_dump(
+        pipeline_dict, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
+    atomic_write_text(target, content)
+    log.info("Wrote quick pipeline with %d team stages to %s", len(stages) - 2, target)
     return target
 
 
@@ -535,7 +629,9 @@ def apply_project_setup(
     1. Writes the active pipeline file from team order — the
        ``default_pipeline`` from config.yaml when it declares a valid
        custom name, otherwise ``default.yaml`` (AUD06-04). Existing file
-       backed up to ``.bak``.
+       backed up to ``.bak``. Also writes ``pipelines/quick.yaml`` — the
+       S-class variant without the QA stages (TODO-0173); a skip (QA-only
+       team / active pipeline named 'quick') is a warning, not a failure.
     2. Patches ``.agentic/config.yaml``:
         - ``models.<role>.agent_name = "worker"`` for each non-supervisor
           team role (BD-12), keyed by role slug (AUD06-01).
@@ -564,12 +660,25 @@ def apply_project_setup(
     warnings: list[str] = []
     pipeline_path: Path | None = None
 
+    quick_path: Path | None = None
     if team:
         try:
             pipeline_path = write_pipeline(team, project_dir, warnings=warnings)
         except ValueError as e:
             warnings.append(f"pipeline: {e}")
             log.warning("apply_project_setup: %s", e)
+
+        if pipeline_path:
+            # TODO-0173 (quick tier): the S-class variant of the same team
+            # — the QA role stages removed. Best-effort: the variant is
+            # non-essential, so neither a skip nor a hard write failure
+            # may fail the submit — both are named warnings.
+            try:
+                quick_path = write_quick_pipeline(team, project_dir, warnings=warnings)
+            except Exception as e:  # noqa: BLE001 — the quick variant must not fail setup
+                quick_path = None
+                warnings.append(f"quick pipeline: {e}")
+                log.warning("apply_project_setup: %s", e)
 
         config_updated = update_config_role_mapping(
             team, project_dir, warnings=warnings
@@ -628,6 +737,7 @@ def apply_project_setup(
 
     return ApplyProjectSetupResult(
         pipeline_file=str(pipeline_path) if pipeline_path else None,
+        quick_pipeline_file=str(quick_path) if quick_path else None,
         config_updated=config_updated or bool(context_message) or bool(supervisor_instructions),
         supervisor_md_updated=sup_md_updated,
         warnings=warnings,
@@ -637,6 +747,7 @@ def apply_project_setup(
 __all__ = [
     "apply_project_setup",
     "write_pipeline",
+    "write_quick_pipeline",
     "build_pipeline_stages",
     "update_config_role_mapping",
     "save_context_and_instructions",

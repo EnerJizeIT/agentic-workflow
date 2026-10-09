@@ -321,6 +321,25 @@ stages:
     on_rejected: replan
 ```
 
+**Unit levels: quick vs full.** The setup form writes a second pipeline
+next to the active one — `.agentic/pipelines/quick.yaml`, the same team
+minus the QA stage (`agent-qa-review`). Pick the level per unit:
+
+- **quick** — S-class units: docs, shield tests, counters, one-line fixes
+  that change no behavior.
+- **full** (the active pipeline) — engine, security, behavior, data
+  schemas. When in doubt, full.
+
+How to choose: `pipeline: quick` in the TODO front-matter, or a per-item
+`{"todo_id": "TODO-NNNN", "pipeline": "quick"}` in the run queue (the
+queue item wins over the front-matter). A quick unit's `verify` block is
+a slice of the suite that covers the changed behavior — fewer probes,
+but targeted.
+
+The level changes the pipeline, not the contract: the gates
+(contracts/ratchet/instructions), `prove_red` (where declared), binding
+and evidence, and the full CI still apply to quick units.
+
 **Non-code composition (analysis, research, documentation).** The same
 schema serves tasks whose product is documents, not code: each stage
 declares the document it produces as `output`, and the engine checks it
