@@ -742,19 +742,37 @@ async def awf_run_finish(
     *,
     reason: str = "finished by supervisor",
     summary: str = "",
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Close the run: write RUN-REPORT-{ts}.md to outbox and mark inactive."""
+    """Close the run: write RUN-REPORT-{ts}.md to outbox and mark inactive.
+
+    REPORTS29 (TODO-0170): refused while the active run's ``current``
+    unit is unfinished (not archived, stage state not cleared, or the
+    pipeline alive) — the message names what is left (pipeline
+    alive/dead with pid, signals lying, tree status) and what to do
+    (continue/approve/reject); the run stays active. ``force=True`` is
+    the conscious close with loss: the RUN-REPORT carries the
+    "closed with unfinished unit TODO-NNNN (force)" mark.
+    """
     result = await _exec(
         api.run_finish,
         project_dir=_resolve_project_dir(project_dir),
         reason=reason,
         summary=summary,
+        force=force,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
-        result["next_action"] = (
-            "Run closed (RUN-REPORT in the outbox). Next unit — "
-            "awf_dispatch_todo, or a new awf_run_start if the queue continues."
-        )
+        if result.get("active"):
+            result["next_action"] = (
+                "Run stays ACTIVE — finish the current unit first (the "
+                "message names what is left and what to do), then retry "
+                "awf_run_finish. Close with loss: awf_run_finish(force=True)."
+            )
+        else:
+            result["next_action"] = (
+                "Run closed (RUN-REPORT in the outbox). Next unit — "
+                "awf_dispatch_todo, or a new awf_run_start if the queue continues."
+            )
     return result
 
 

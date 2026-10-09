@@ -40,6 +40,12 @@ def _project(tmp_git_repo: Path) -> Path:
     return tmp_git_repo
 
 
+def _archive(proj: Path, todo_id: str) -> None:
+    done = proj / ".agentic" / "done" / todo_id
+    done.mkdir(parents=True, exist_ok=True)
+    (done / "TODO.md").write_text(f"# {todo_id}\n", encoding="utf-8")
+
+
 def _raw_write(proj: Path, state: dict) -> None:
     """Write run.yaml exactly as given — simulates an on-disk corruption
     the sanitized reader must survive (the normal write path cannot
@@ -299,7 +305,11 @@ class TestGoalVsDoneReport:
             goal="Ship M4.2",
             criteria=["gates green", "no second store"],
         )
-        # T approved + credited, T2 in flight, T3 not started
+        # T approved + credited, T2 in flight (work finished: archived,
+        # the credit to completed lags one cycle — REPORTS26 B3), T3 not
+        # started. Archived current → the REPORTS29 (TODO-0170)
+        # finish-guard lets the close through.
+        _archive(proj, T2)
         run_state.write_run(proj, completed=[T], index=1, current=T2)
         result = api.run_finish(proj, reason="test finish")
         assert result.report_file

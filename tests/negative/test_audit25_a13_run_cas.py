@@ -63,6 +63,12 @@ def _project(tmp_git_repo: Path) -> Path:
     return tmp_git_repo
 
 
+def _archive(proj: Path, todo_id: str = "TODO-0001") -> None:
+    done = proj / ".agentic" / "done" / todo_id
+    done.mkdir(parents=True, exist_ok=True)
+    (done / "TODO.md").write_text(f"# {todo_id}\n", encoding="utf-8")
+
+
 def _write_todo(proj: Path, todo_id: str = "TODO-0001", body: str = "# Task\n") -> None:
     inbox = proj / ".agentic" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
@@ -430,6 +436,9 @@ def test_single_start_next_status_finish_with_generation(tmp_git_repo, monkeypat
     status = api.run_status(proj)
     assert status.active is True and status.index == 1
 
+    # юнит завершён (заархивирован) — REPORTS29 (TODO-0170): guard
+    # пропуск закрытия завершённого current-юнита
+    _archive(proj, "TODO-0001")
     finish = api.run_finish(proj, reason="owner asked")
     assert finish.active is False
     state = run_state.read_run(proj)
