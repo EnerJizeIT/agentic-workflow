@@ -321,6 +321,25 @@ stages:
     on_rejected: replan
 ```
 
+**Unit levels: quick vs full.** The setup form writes a second pipeline
+next to the active one — `.agentic/pipelines/quick.yaml`, the same team
+minus the QA stage (`agent-qa-review`). Pick the level per unit:
+
+- **quick** — S-class units: docs, shield tests, counters, one-line fixes
+  that change no behavior.
+- **full** (the active pipeline) — engine, security, behavior, data
+  schemas. When in doubt, full.
+
+How to choose: `pipeline: quick` in the TODO front-matter, or a per-item
+`{"todo_id": "TODO-NNNN", "pipeline": "quick"}` in the run queue (the
+queue item wins over the front-matter). A quick unit's `verify` block is
+a slice of the suite that covers the changed behavior — fewer probes,
+but targeted.
+
+The level changes the pipeline, not the contract: the gates
+(contracts/ratchet/instructions), `prove_red` (where declared), binding
+and evidence, and the full CI still apply to quick units.
+
 **Non-code composition (analysis, research, documentation).** The same
 schema serves tasks whose product is documents, not code: each stage
 declares the document it produces as `output`, and the engine checks it
@@ -425,6 +444,18 @@ the pipeline are untouched, the setup phase is not re-run. MCP:
 `awf_add_role(name, draft=True)`,
 `awf_add_role(list_drafts=True)`, `awf_add_role(adopt=...)`,
 `awf_add_role(discard=...)` — one action per call.
+
+**Role model line** — every role file created by `awf add-role`
+names its model in a uniform line near the top
+(`**Модель:** \`vllm/llm\``), resolved as: explicit `--model`/`model=`
+→ `models:` of `.agentic/config.yaml` by role name → "not assigned
+(the config's default model applies)" (built-in templates, the
+placeholder and `from_skill` sources all get the line). The config
+stays the source of truth — which model a stage actually runs is
+decided by the engine, the line is a marker.
+`awf_check_model_config` cross-checks the role files against the
+config and reports a drift as a warning (role file says X, config
+says Y); a missing line is not an error.
 
 ## Troubleshooting
 

@@ -1028,4 +1028,56 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # tests/unit/test_salvage_signal.py::test_salvage_detects_approve.
 # Same class as above: a unit reference, not debt. files_over_400
 # stays 71 (the file is 250 lines — under the bar).
+# TODO-0173 (quick tier, 09.10): baseline raised 4944 -> 4963 — the
+# quick-pipeline unit adds 19 TODO-bearing lines: 7 in awf/api/setup.py
+# (the _QA_ROLE_SLUGS comment, the _QUICK_PIPELINE_NAME comment, the
+# build_pipeline_stages exclude_roles docstring, the write_quick_pipeline
+# docstrings, the apply_project_setup side-effect line, the wiring
+# comment), 1 in awf/api/_results.py (the quick_pipeline_file field
+# comment), 3 in awf/templates/roles/supervisor.md (the "Unit levels"
+# section: the TODO front-matter line, the TODO-NNNN queue-item example,
+# the S-trivia pack line) + 3 in the root mirror
+# templates/roles/supervisor.md, 2 in USAGE.md and 2 in USAGE.ru.md
+# (the same front-matter / TODO-NNNN doctrine lines) and 1 in the new
+# tests/negative/test_reports29_quick_tier.py (the module docstring unit
+# reference). Same class as above: unit references and doctrine wording,
+# not debt. files_over_400 stays 71 (the new test file is 208 lines —
+# under the bar).
+# TODO-0173 QA (agent-qa-review, 09.10): baseline raised 4963 -> 4964 —
+# the F1 resilience test (TestQuickWriteResilience: a hard write failure
+# of quick.yaml must warn, not fail the submit) adds 1 TODO-bearing line
+# (its docstring unit reference). The wiring fix in awf/api/setup.py reuses
+# the existing TODO-0173 comment line (net zero).
+# REPORTS29 (TODO-0174, dashboard port reuse): baseline raised 4964 -> 4970
+# — the new tests/negative/test_reports29_dashboard_port_reuse.py adds 6
+# TODO-bearing lines: the module docstring's unit reference (TODO-0174),
+# the worker-role "Execute TODO." stub, and the four TODO-0001/TODO-0002
+# fixture use-sites of the three invariant tests. Same class as above:
+# test identifiers and a unit reference, not debt. The production diff
+# (awf/orchestrator.py, awf/api/dashboard_server.py — reuse token + exit
+# stop + fast poll interval) and the e2e test update carry no TODO id.
+# REPORTS29 QA pass 2 (agent-qa-review): baseline raised 4971 -> 4972
+# — the new garbage port-file test adds 1 TODO-bearing line (its
+# fixture todo id). Same class as above: a test identifier, not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
+# REPORTS29 QA (agent-qa-review red test): baseline raised 4970 -> 4971 —
+# the new out-of-range port-file test adds 1 TODO-bearing line (its
+# fixture todo id). The test is RED on the current tree: _read_reuse_port
+# returns 99999 for an out-of-range file and bind() raises OverflowError
+# (not OSError), so the except-OSError fallback in
+# start_dashboard_with_reuse is skipped and the file keeps the poison
+# value (every future launch loses the dashboard). Fix on the next
+# REVIEW pass: range-check in _read_reuse_port (or catch OverflowError);
+# then this test goes green.
+# REPORTS29 (TODO-0175, роль называет свою модель): baseline raised
+# 4972 -> 4986 — the unit adds 14 TODO-bearing lines: 5 in
+# awf/api/roles.py (the model-line format helpers' header comment + the
+# add_role docstring lines + the two injection/resolution comments), 3 in
+# awf/api/model_check.py (module + check_model_config docstrings, the
+# cross-check comment), 2+2 in tests/unit/test_api.py and
+# tests/negative/test_audit25_w7_protocol_ship.py (the updated tests'
+# docstring unit references) and 2 in the new
+# tests/negative/test_reports29_role_model.py (module docstring + the
+# updated test docstring). Same class as above: unit-id references, not
+# debt. files_over_400 stays 71 (no file crossed the bar: the new test
+# file is 274 lines, the touched modules were already over it).

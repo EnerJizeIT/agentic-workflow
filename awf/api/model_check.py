@@ -2,6 +2,10 @@
 
 Prevents silent fallback to wrong model (dogfood issue: supervisor claimed
 'opencode.json empty' when it wasn't — diagnosis error).
+
+TODO-0175: also cross-checks the model lines carried by
+``.agentic/roles/*.md`` against the config (the config stays the source
+of truth — the engine behavior is unchanged, drift is only reported).
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ._helpers import require_agentic
+from .roles import parse_role_model_line
 
 
 def _load_opencode_config(
@@ -118,9 +123,14 @@ def _load_recent_models(db_path: Path) -> set[str]:
 def check_model_config(project_dir: Path) -> dict[str, Any]:
     """Check that models in config.yaml have valid providers in opencode.json.
 
+    Also cross-checks the model lines of ``.agentic/roles/*.md`` against
+    the config (TODO-0175): a drift is a warning, a missing line is not
+    an error.
+
     Returns dict with:
     - models: list of {role, model, provider, valid}
     - warnings: list of human-readable warnings
+    - role_files: list of {role, file_model, config_model, match}
     - opencode_path: path to opencode.json used
     """
     project_dir = Path(project_dir).resolve()
@@ -257,9 +267,44 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
             "note": note,
         })
 
+    # TODO-0175: cross-check the model lines carried by .agentic/roles/*.md
+    # against the config. The config stays the source of truth — the engine
+    # behavior is unchanged, this only reports drift. A missing line (or
+    # the unassigned placeholder) is not an error: nothing to compare.
+    role_files: list[dict[str, Any]] = []
+    roles_dir = project_dir / ".agentic" / "roles"
+    if roles_dir.is_dir():
+        for f in sorted(roles_dir.glob("*.md")):
+            try:
+                content = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            file_model = parse_role_model_line(content)
+            role_cfg = models_config.get(f.stem)
+            config_model = (
+                role_cfg.get("model", "") if isinstance(role_cfg, dict) else ""
+            )
+            if not isinstance(config_model, str):
+                config_model = ""
+            match = file_model is None or file_model == config_model
+            role_files.append({
+                "role": f.stem,
+                "file_model": file_model,
+                "config_model": config_model or None,
+                "match": match,
+            })
+            if not match:
+                warnings.append(
+                    f"Role '{f.stem}': role file says model={file_model}, "
+                    f"config models:{f.stem}.model is "
+                    f"{config_model or '(default)'} — the config stays "
+                    "the source of truth (update the role file or the config)."
+                )
+
     return {
         "models": results,
         "warnings": warnings,
+        "role_files": role_files,
         "opencode_path": str(oc_path) if oc_path.exists() else None,
         "providers_available": list(oc_providers.keys()),
     }

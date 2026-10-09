@@ -35,6 +35,102 @@ log = logging.getLogger(__name__)
 
 _SKILL_FILENAME = "SKILL.md"
 
+# TODO-0175: the role file carries a uniform model line for every source
+# (built-in / template / from_skill). The config stays the source of
+# truth — the engine behavior is unchanged; ``check_model_config``
+# cross-checks the line against the config and reports drift.
+MODEL_LINE_RE = re.compile(
+    r"^\*\*(?:Модель|Model):\*\*[ \t]*(?P<value>.*)$", re.MULTILINE
+)
+UNASSIGNED_MODEL_TEXT = "не назначена (действует модель конфига по умолчанию)"
+
+
+def model_line_value(model: str) -> str:
+    """The value part of the model line: `` `vllm/llm` `` or the
+    unassigned placeholder text (empty model → nothing to name)."""
+    if model:
+        return f"`{model}`"
+    return UNASSIGNED_MODEL_TEXT
+
+
+def model_line(model: str) -> str:
+    """The canonical model line for a role file (uniform for all sources).
+
+    ``model_line("vllm/llm")`` → ``**Модель:** `vllm/llm` ``; an empty
+    model renders the unassigned placeholder (the config's default model
+    applies — nothing to cross-check against).
+    """
+    return f"**Модель:** {model_line_value(model)}"
+
+
+def parse_role_model_line(content: str) -> str | None:
+    """Extract the model from a role file's model line.
+
+    Returns the model id or None: the line is absent, or it carries the
+    unassigned placeholder. A legacy line without backticks
+    (``**Model:** vllm/llm``) is read too — old placeholder files are
+    still cross-checked.
+    """
+    m = MODEL_LINE_RE.search(content)
+    if not m:
+        return None
+    value = m.group("value").strip()
+    if value == UNASSIGNED_MODEL_TEXT:
+        return None
+    if value.startswith("`"):
+        end = value.find("`", 1)
+        if end > 1:
+            model = value[1:end].strip()
+            if model:
+                return model
+        return None
+    return value or None
+
+
+def _resolve_role_model(project_dir: Path, role_name: str, explicit: str) -> str:
+    """Resolve the role's model: explicit ``model=`` → config ``models:``.
+
+    Priority: an explicit ``model=`` wins; otherwise
+    ``models.<role_name>.model`` of ``.agentic/config.yaml``. Empty
+    result = unassigned (the config's default model applies).
+    """
+    if explicit:
+        return explicit.strip()
+    try:
+        config_data = cfg_mod.load(project_dir)
+    except Exception:  # noqa: BLE001 — a broken config degrades to unassigned
+        return ""
+    models_cfg = cfg_mod.get(config_data, "models", {}) or {}
+    if not isinstance(models_cfg, dict):
+        return ""
+    role_cfg = models_cfg.get(role_name)
+    if isinstance(role_cfg, dict):
+        m = role_cfg.get("model", "")
+        if isinstance(m, str) and m.strip():
+            return m.strip()
+    return ""
+
+
+def _inject_model_line(content: str, line: str) -> str:
+    """Ensure the uniform model line is present in the role content.
+
+    Placement: after the provenance comment (from_skill), after the
+    ``# ROLE:`` title's blank line (built-in), at the top otherwise.
+    Content that already carries a model line (the placeholder template)
+    is left untouched — no duplicate line.
+    """
+    if MODEL_LINE_RE.search(content):
+        return content
+    lines = content.split("\n")
+    if lines and lines[0].startswith("<!-- copied from skill"):
+        pos = 1
+    elif lines and lines[0].startswith("# ROLE:"):
+        pos = 2 if len(lines) > 2 and lines[1] == "" else 1
+    else:
+        pos = 0
+    lines[pos:pos] = [line, ""]
+    return "\n".join(lines)
+
 # ORCH M5.1: draft area — role candidates isolated from live roles until
 # checked. A candidate is ``roles/draft/<slug>.md``; the first line is a
 # machine marker that records its source (``skill:<name>`` / ``builtin`` /
@@ -163,8 +259,9 @@ def add_role(
       template (``description``/``model`` fill its sections);
     - ``from_skill="name"``: an opencode skill — the SKILL.md body with
       its own YAML front-matter stripped, under a one-line provenance
-      comment (source path + date). ``description``/``model`` are ignored
-      for that source. Search order: project-local
+      comment (source path + date). ``description`` is ignored for that
+      source; the uniform model line is still added (TODO-0175).
+      Search order: project-local
       ``.opencode/skills/<name>/SKILL.md`` first, then global
       ``$XDG_CONFIG_HOME/opencode/skills/<name>/SKILL.md``.
 
@@ -183,6 +280,14 @@ def add_role(
     :func:`discard_role_draft`). An existing candidate is refused without
     ``force`` like a live role file (``force`` replaces the candidate
     only — never a live role).
+
+    TODO-0175: every generated role file carries a uniform model line
+    near the top (``**Модель:** `vllm/llm` ``), resolved as: explicit
+    ``model=`` → ``models.<role_name>.model`` of the project config →
+    the unassigned placeholder (the config's default model applies).
+    The config stays the source of truth — the engine behavior is
+    unchanged; ``check_model_config`` cross-checks the line.
+    ``AddRoleResult.model`` is the resolved model ("" when unassigned).
     """
     # RUN3 #3: from_skill is public input — slug-validated first, because
     # it also supplies the default role name.
@@ -213,6 +318,10 @@ def add_role(
 
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # TODO-0175: one model resolution for every source — explicit model=
+    # beats the project config; empty = unassigned (config default applies).
+    resolved_model = _resolve_role_model(project_dir, role_name, model)
 
     roles_dir = project_dir / ".agentic" / "roles"
     # ORCH M5.1: draft candidates live in roles/draft/ — live roles,
@@ -250,14 +359,17 @@ def add_role(
             content = builtin.read_text(encoding="utf-8")
             source = "builtin"
         else:
-            if not model:
-                model = "<set-me-in-.agentic/config.yaml>"
             content = _ROLE_TEMPLATE.format(
                 role_name=role_name,
                 description=description or "new role",
-                model=model,
+                model=model_line_value(resolved_model),
             )
             source = "template"
+
+    # TODO-0175: the uniform model line for every source. The placeholder
+    # template already renders it in its header (the injector is a no-op
+    # there); built-in and skill-sourced content get it injected.
+    content = _inject_model_line(content, model_line(resolved_model))
 
     # ORCH M5.1: the draft candidate records its source on the first line
     # so list_role_drafts can report it; live role files carry no marker.
@@ -282,7 +394,7 @@ def add_role(
     return AddRoleResult(
         role_name=role_name,
         role_file=str(role_file),
-        model=model if not skill_name else "",
+        model=resolved_model,
     )
 
 

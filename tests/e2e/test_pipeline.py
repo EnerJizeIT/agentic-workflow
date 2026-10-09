@@ -32,6 +32,17 @@ def _two_stage_pipeline(proj: Path) -> None:
     )
 
 
+def _port_listening(port: int) -> bool:
+    """Is anyone actually listening on 127.0.0.1:<port> right now?"""
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
 def _orphan_sleep_pids(seconds: int) -> list[str]:
     """Scan /proc for leftover `sleep <seconds>` processes (AUD12-10).
 
@@ -83,11 +94,18 @@ class TestPipeline:
         assert (initialized_project / ".agentic/done/TODO-0001").is_dir(), \
             f"Expected done/TODO-0001/ (DF6-1 archive). stdout={result.stdout.decode()!r} stderr={result.stderr.decode()!r}"
 
-        # AUD10-05: the dashboard server was a daemon of the orchestrator —
-        # after a clean exit the port file must be gone, or
-        # awf_open_pipeline_dashboard would open a dead URL.
+        # REPORTS29: the port file now SURVIVES the exit — it is the reuse
+        # token for the next launch (same port, same tab URL). What must
+        # NOT survive is a live listener: the server was a daemon of the
+        # exited pipeline process, so its port must be dead. (A dead port
+        # is safe: the open-dashboard path liveness-checks before opening
+        # a URL and falls back to file://.)
         port_file = initialized_project / ".agentic" / "state" / "dashboard_port"
-        assert not port_file.exists(), "stale dashboard_port file after pipeline exit"
+        if port_file.exists():
+            port = int(port_file.read_text(encoding="utf-8").strip())
+            assert not _port_listening(port), (
+                f"dashboard port {port} still listening after pipeline exit"
+            )
 
     def test_pipeline_blocked_then_replan(self, initialized_project: Path, awf_bin: str, awf_env: dict):
         """When stub writes BLOCKED, pipeline detects it and exits non-zero."""

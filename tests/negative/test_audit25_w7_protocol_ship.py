@@ -99,8 +99,26 @@ def test_supervisor_template_has_quality_bar():
 # ─── 2. add-role кладёт встроенный шаблон ───────────────────────────────
 
 
+def _without_model_line(text: str) -> str:
+    """Убирает единообразную строку модели (TODO-0175) и строку после неё.
+
+    Шаблон в репо не обязан содержать плейсхолдер — строка инжектится
+    после копирования, поэтому равенство тела проверяется после
+    её вычета.
+    """
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith("**Модель:**"):
+            del lines[i]
+            if i < len(lines) and lines[i] == "":
+                del lines[i]
+            break
+    return "\n".join(lines)
+
+
 def test_add_role_ships_builtin_templates(tmp_git_repo):
-    """add-role для agent-qa-review / agent-implementer кладёт шипующийся шаблон."""
+    """add-role кладёт шипующийся шаблон; строка модели добавлена
+    (TODO-0175), тело шаблона не искажено."""
     api.init_project(tmp_git_repo, project_name="W7Ship")
     for name in ("agent-qa-review", "agent-implementer"):
         built_in = (TEMPLATES / "roles" / f"{name}.md").read_text(encoding="utf-8")
@@ -108,7 +126,9 @@ def test_add_role_ships_builtin_templates(tmp_git_repo):
         role_file = tmp_git_repo / ".agentic" / "roles" / f"{name}.md"
         assert result.role_name == name
         assert role_file.is_file()
-        assert role_file.read_text(encoding="utf-8") == built_in
+        content = role_file.read_text(encoding="utf-8")
+        assert "**Модель:**" in content
+        assert _without_model_line(content) == built_in
 
 
 def test_add_role_other_names_keep_placeholder(tmp_git_repo):
