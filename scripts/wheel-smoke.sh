@@ -191,23 +191,28 @@ echo "  awf --help: OK ($(wc -l < "$workdir/help.log") lines)"
     print('  render project-setup: OK (%d chars)' % len(html))" )
 
 # A-18 supplement (TODO-0111): the declared console entry point starts under
-# a fully isolated environment — XDG_CONFIG_HOME/XDG_DATA_HOME (and HOME)
-# pointed at throwaway dirs, PATH restricted so the `opencode` CLI (and any
-# other external command) cannot be reached: no network, no $HOME access.
+# a fully isolated environment — XDG_CONFIG_HOME/XDG_DATA_HOME/
+# XDG_STATE_HOME (and HOME) pointed at throwaway dirs, PATH restricted so
+# the `opencode` CLI (and any other external command) cannot be reached:
+# no network, no $HOME access. TODO-0183: XDG_STATE_HOME joined the
+# isolation — the fault log (fault_log.py) falls back to ~/.local/state
+# without it, writing into the isolated HOME and tripping the assertion.
 # stdin is /dev/null so the stdio MCP server exits at EOF instead of blocking.
 # The restricted PATH is what keeps `read_available_models` on its offline
 # fallback (no `opencode models` subprocess).
 entry_home="$workdir/entry-home"
 entry_cfg="$workdir/entry-xdg-config"
 entry_data="$workdir/entry-xdg-data"
+entry_state="$workdir/entry-xdg-state"
 entry_cwd="$workdir/entry-cwd"
-mkdir -p "$entry_home" "$entry_cfg" "$entry_data" "$entry_cwd"
+mkdir -p "$entry_home" "$entry_cfg" "$entry_data" "$entry_state" "$entry_cwd"
 
 if [ -x "$venv/bin/agent-workflow-ui" ]; then
   # Run from $entry_cwd (not the repo): the entry point creates .agentic/
   # runtime dirs against its cwd — a throwaway dir keeps the tree clean.
   ( cd "$entry_cwd" && timeout 30 env HOME="$entry_home" \
       XDG_CONFIG_HOME="$entry_cfg" XDG_DATA_HOME="$entry_data" \
+      XDG_STATE_HOME="$entry_state" \
       PATH="$venv/bin:/usr/bin:/bin" \
       "$venv/bin/agent-workflow-ui" > "$workdir/entry.log" 2>&1 ) < /dev/null || {
       echo "wheel-smoke: plugin entry point exited non-zero (rc=$?)" >&2
@@ -228,12 +233,13 @@ if [ -x "$venv/bin/agent-workflow-ui" ]; then
     ls -A "$entry_home" | head -n 3 >&2
     exit 1
   }
-  echo "  entry point agent-workflow-ui: OK (isolated XDG, HOME untouched)"
+  echo "  entry point agent-workflow-ui: OK (isolated XDG (config/data/state), HOME untouched)"
 else
   # No console script declared — the fallback still proves the server module
   # imports from the wheel and registers tools, under the same isolation.
   ( cd "$smoke_cwd" && env -u PYTHONPATH \
       HOME="$entry_home" XDG_CONFIG_HOME="$entry_cfg" XDG_DATA_HOME="$entry_data" \
+      XDG_STATE_HOME="$entry_state" \
       "$venv/bin/python" -c \
     "import asyncio, agent_workflow_ui, pathlib; \
       f = pathlib.Path(agent_workflow_ui.__file__); \

@@ -1059,6 +1059,13 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # REPORTS29 QA pass 2 (agent-qa-review): baseline raised 4971 -> 4972
 # — the new garbage port-file test adds 1 TODO-bearing line (its
 # fixture todo id). Same class as above: a test identifier, not debt.
+# TODO-0182 (recovery docs: resume != MCP recreation, inbox check after
+# "Connection closed"): baseline raised 5037 -> 5043 — the new recovery
+# sections add 6 TODO-bearing doc lines: 2 per USAGE.md/USAGE.ru.md
+# ("TODO + baseline + .ready on disk" and the ".agentic/inbox/TODO-*.md"
+# path) and 1 per supervisor template copy ("TODO-*.md, .ready" in the
+# inbox-check bullet). Same class as above: doc examples of file names,
+# not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS29 QA (agent-qa-review red test): baseline raised 4970 -> 4971 —
 # the new out-of-range port-file test adds 1 TODO-bearing line (its
@@ -1130,3 +1137,21 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # references and test identifiers, not debt. files_over_400 is untouched at
 # 72 (the file ends at 397 lines — under the bar; no production code
 # touched).
+# REPORTS30 (TODO-0180, CPU-aware watchdog): baseline raised
+# 5029 -> 5034, files_over_400 raised 72 -> 73 — the unit adds 5
+# TODO-bearing lines: 2 in the new tests/negative/test_reports30_watchdog_cpu_aware.py
+# (the module docstring's unit and incident references) and 3 in the
+# production diff (the U6c/TODO-0180 state comment + the CPU-aware comment
+# in awf/signal_watch.py, the probe docstring's unit reference in
+# awf/_proc.py). Same class as above: unit-id references and test
+# identifiers, not debt. The +1 file over 400 is awf/signal_watch.py
+# (366 -> 416 — the CPU-aware watchdog branch next to the log-mtime check),
+# same class as the commit_gate.py / dispatch.py production-module raises
+# above.
+# CI-fix (TODO-0183, wheel-smoke XDG_STATE_HOME isolation): baseline raised
+# 5043 -> 5044 — the unit adds 1 TODO-bearing line: the TODO-0183 note in
+# the entry-point isolation comment of scripts/wheel-smoke.sh (why
+# XDG_STATE_HOME joined the isolation — the fault log's ~/.local/state
+# fallback wrote into the isolated HOME and tripped its assertion in CI).
+# Same class as above: a unit-id reference in an infra-script comment,
+# not debt.

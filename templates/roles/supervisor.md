@@ -636,6 +636,18 @@ group — the detached pipeline does not survive (cgroup termination;
    new wait is dropped as stale (AUD04-04: mtime predates the wait) — that is
    expected; write the approval again (in an active run: `awf_approve(todo_id, evidence=...)`).
 
+### Tools gone after a "restart" / "Connection closed" on dispatch
+
+- The run id in the log unchanged after a "restart" = opencode resumed the
+  SAME session; resume does not recreate dropped MCP connections. Tools
+  gone → open a NEW session (state is on disk; the new session continues
+  the run immediately).
+- "Connection closed" on a mutating call (dispatch/approve) may mean the
+  unit WAS created and only the answer was lost. Check the inbox
+  (TODO-*.md, .ready) and `awf_status` BEFORE retrying.
+- MCP auto-restart is opencode client behavior, not awf; the server's
+  fault log (`$XDG_STATE_HOME/awf/mcp-server.log`) shows where it died.
+
 ---
 
 ## 7. Checklist
