@@ -585,6 +585,9 @@ def wait_for_supervisor_signal(
     stale_decision_logged: set[str] = set()
     # AUD11-03: log the evidence-gate rejection once per wait.
     evidence_gate_logged = False
+    # REPORTS29: pre-existing APPROVEs whose binding mismatch was already
+    # logged with the re-approve instruction (once per wait).
+    stale_binding_logged: set[str] = set()
 
     while True:
         if kind == "plan":
@@ -616,14 +619,50 @@ def wait_for_supervisor_signal(
             # the evidence file (RUN-EVIDENCE-{todo}.md) — a bare ACK/APPROVE
             # is the bypass the run protocol exists to prevent. Recomputed
             # each poll: the run can finish (or the evidence arrive) mid-wait.
+            from . import commit_plan
+
             evidence_ok = _run_evidence_ok(project_dir, todo_id)
             for sig_path in (
                 inbox / f"ACK-{todo_id}.ready",
                 inbox / f"APPROVE-{todo_id}.ready",
             ):
-                if not (sig_path.exists() and _decision_signal_fresh(
+                if not sig_path.exists():
+                    continue
+                if not _decision_signal_fresh(
                     sig_path, wall_start, stale_decision_logged, logs_dir
-                )):
+                ):
+                    # REPORTS29 (TODO-0169): the mtime gate rejected this
+                    # file (older than this wait — the pipeline died between
+                    # the approval and its consumption). For an APPROVE, a
+                    # binding that still matches the CURRENT attempt (the
+                    # same validator the commit gate enforces, M2.1) is a
+                    # live decision: the tree it approved is the tree that
+                    # will be committed, and re-approval would republish the
+                    # same binding. A mismatched (or absent) binding stays
+                    # ignored — U6b/AUD04-04.
+                    if sig_path.name.startswith("APPROVE-"):
+                        status, reason = commit_plan.preexisting_approval_status(
+                            project_dir,
+                            todo_id,
+                            commit_plan.read_baseline_sha(project_dir, todo_id),
+                        )
+                        if status == "valid":
+                            _log(
+                                logs_dir,
+                                f"REPORTS29: pre-existing "
+                                f"APPROVE-{todo_id}.ready matches the "
+                                "current attempt — consuming it without "
+                                "re-approval",
+                            )
+                            return sig_path.stem
+                        if sig_path.name not in stale_binding_logged:
+                            stale_binding_logged.add(sig_path.name)
+                            _log(
+                                logs_dir,
+                                f"REPORTS29: APPROVE-{todo_id}.ready found, "
+                                "but it does not match the current attempt "
+                                f"— re-approve (awf_approve): {reason}",
+                            )
                     continue
                 if not evidence_ok:
                     if not evidence_gate_logged:

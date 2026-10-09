@@ -981,4 +981,18 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # service-block wait of tests/e2e/test_seam_matrix.py (3), minus 1
 # rewritten docstring line. Same class as above: test identifiers and
 # unit references, not debt.
+# REPORTS29 (TODO-0169, continue на verify): baseline raised 4883 -> 4908
+# — the unit adds 25 TODO-bearing lines: 20 in the new
+# tests/negative/test_reports29_continue_verify_approve.py (module
+# docstring, the TODO = "TODO-0001" constant and its fixture/assert
+# use-sites of the four tests, the TODO-0169/TODO-0027 unit references)
+# and 5 in the production diff (the REPORTS29 unit references in
+# awf/supervisor.py's pre-existing-approve branch comment,
+# awf/commit_plan.py's preexisting_approval_status docstring,
+# awf/api/wait_event.py's _stale_decision_hint docstring + the verify
+# branch comment, awf/api/_results.py's stale_decision_hint field
+# comment). Same class as above: test identifiers and unit references,
+# not debt. files_over_400 stays 70 (no file crossed the bar: the new
+# test file is 222 lines, the touched production modules were already
+# over it).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
