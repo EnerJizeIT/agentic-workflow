@@ -1092,3 +1092,19 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # attempt mapping reads), same class as the production-module raises
 # above. The rest of the production diff (awf/api/dashboard.py — already
 # over the bar, the template JS) carries no TODO id.
+# REPORTS29 (TODO-0177, prove_red_pin): baseline raised 5000 -> 5014 —
+# the pin-ok unit adds 14 TODO-bearing lines: 9 in the new
+# tests/negative/test_reports29_prove_red_pin.py (the TODOS = "TODO-0001"
+# constant, its 5 verify-pack/baseline/inbox/report use-sites, and the
+# "# TODO" line in the PIN_CONTRACT fixture), 2 in awf/unit_contract.py
+# (the module docstring's "one TODO either proves a fix" line + the
+# mutual-exclusion error message), 1 in awf/verify_pack.py (the pin
+# section's "no `prove_red_pin:` block in the TODO contract" skip line),
+# 1 in tests/unit/test_unit_contract.py (the dispatch test's
+# TODO-0001.md assert) and 1 in docs/unit-contract.md (the prove_red_pin
+# bullet's "в одном TODO это ошибка контракта" wording). Same class as
+# above: test identifiers, doc wording and unit wording, not debt.
+# files_over_400 is untouched at 72 (the pin tests live in the 155-line
+# negative file; the touched awf/verify_pack.py / awf/unit_contract.py were
+# already over the bar, and tests/unit/test_verify_pack.py was kept under
+# it).
