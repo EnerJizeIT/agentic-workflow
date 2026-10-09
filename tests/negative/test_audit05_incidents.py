@@ -119,12 +119,16 @@ class TestApproveRejectRace:
 class TestRunNextRunFinishWindow:
     """run_next + run_finish racing: the launch is faked as slow (0.5s),
     run_finish lands inside the launch window. The item must NOT be
-    recorded as current of a closed run — either it is not recorded at all
-    (deterministic with the fake: finish wins the race), or the run is
-    still active. active=False + current=<launched TODO> with an
-    unadvanced index is the forbidden combination (orphan no one owns)."""
+    recorded as current of a closed run. REPORTS29 (TODO-0170): the
+    finish-guard makes this deterministic — the reservation already owns
+    the item (current=<launched TODO>, not archived) when the finish
+    lands, so the finish is REFUSED and the run stays active; the launch
+    then commits normally. active=False + current=<launched TODO> is the
+    forbidden combination (orphan no one owns)."""
 
-    def test_finish_in_launch_window_does_not_record_item(self, tmp_git_repo, monkeypatch):
+    def test_finish_in_launch_window_refused_over_reserved_item(
+        self, tmp_git_repo, monkeypatch
+    ):
         proj = _project(tmp_git_repo)
         _write_todo(proj)
         api.run_start(proj, queue=[TODO])
@@ -144,9 +148,15 @@ class TestRunNextRunFinishWindow:
         t = threading.Thread(target=launch)
         t.start()
         time.sleep(0.25)  # inside the fake launch window
-        api.run_finish(proj, reason="owner stop")
+        finish = api.run_finish(proj, reason="owner stop")
         t.join(timeout=15)
         assert not t.is_alive(), "run_next hung"
+
+        # deterministic with the fake: the reservation (current=TODO) is
+        # committed before the finish lands → the guard refuses, the run
+        # stays active, and the launch commits into it.
+        assert finish.active is True, "finish over a reserved item must be refused"
+        assert "refused" in finish.message
 
         state = run_state.read_run(proj) or {}
         # the general criterion: a closed run cannot own a current item
@@ -155,20 +165,14 @@ class TestRunNextRunFinishWindow:
                 f"forbidden combination: active={state.get('active')}, "
                 f"current={state.get('current')}, index={state.get('index')}"
             )
-        # deterministic with the fake: finish landed before the advance →
-        # index/current were NOT committed
-        assert state.get("active") is False
-        assert state.get("index") == 0, f"index advanced to {state.get('index')}"
-        assert not state.get("current"), f"current set to {state.get('current')!r}"
+        assert state.get("active") is True
+        assert state.get("index") == 1, f"index not committed: {state.get('index')!r}"
+        assert state.get("current") == TODO
 
-        # the result must tell the supervisor the pipeline is orphaned
+        # the launch ran into a still-active run — no orphan, no race note
         result = box["result"]
         assert result.todo_id == TODO
         assert result.action == "started"
-        text = (result.message + " " + result.next_action).lower()
-        assert "closed" in text or "orphan" in text, (
-            f"result does not report the closed-run race: {result.message!r}"
-        )
 
 
 class TestUpdateRunAtomic:

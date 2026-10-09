@@ -17,7 +17,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import paths, pipeline_state, run_state, todos
+from .. import git_utils, paths, pipeline_state, run_state, todos
 from .._atomic import atomic_write_text
 from ..todo_ids import is_valid_todo_id
 from . import _liveness
@@ -596,8 +596,15 @@ def _write_report(
     state: dict,
     reason: str,
     summary: str = "",
+    forced: bool = False,
 ) -> Path | None:
-    """Write RUN-REPORT-{ts}.md to outbox. Returns the path (or None on OSError)."""
+    """Write RUN-REPORT-{ts}.md to outbox. Returns the path (or None on OSError).
+
+    REPORTS29 (TODO-0170): when the state still names a ``current`` unit,
+    the report carries the honest facts — archived or not, pipeline
+    alive or dead — and, for a forced close over an unfinished unit, the
+    explicit "closed with unfinished unit TODO-NNNN (force)" mark.
+    """
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     outbox = paths.outbox(project_dir)
     outbox.mkdir(parents=True, exist_ok=True)
@@ -634,6 +641,25 @@ def _write_report(
         f"**Elapsed:** {int(run_state.elapsed_minutes(state))} min "
         f"(budget {state.get('budget_minutes', 0)} min)",
     ]
+    # REPORTS29 (TODO-0170): the current unit's honest facts — the report
+    # must not say "8/8 done" while the 8th unit is not archived.
+    current_unit = str(state.get("current") or "")
+    if current_unit:
+        unit_archived = _unit_archived(project_dir, current_unit)
+        unit_running, unit_pid, _unit_source = _liveness.resolve(project_dir)
+        pipe = f"running (pid {unit_pid})" if unit_running else "not running"
+        if unit_archived:
+            lines.append(f"**Unit:** {current_unit} archived (done/{current_unit}/TODO.md)")
+            lines.append(f"**Pipeline:** {pipe}")
+        else:
+            lines.append(
+                f"**Unit:** pipeline is {pipe}; unit {current_unit} NOT archived"
+            )
+        if forced:
+            lines.append(
+                f"**Closed with loss:** closed with unfinished unit "
+                f"{current_unit} (force)"
+            )
     # ORCH M1.1: the run plan — goal and criteria, when set (old runs and
     # runs started without a plan show nothing, as before).
     goal = str(state.get("goal") or "").strip()
@@ -1206,13 +1232,137 @@ def run_next(
     )
 
 
+def _unit_archived(project_dir: Path, todo_id: str) -> bool:
+    """REPORTS29 (TODO-0170): the unit's archive file on disk
+    (``done/<id>/TODO.md`` — the stricter check: an empty done/<id>/
+    from a failed archive is NOT archived)."""
+    return (paths.done_dir(project_dir) / todo_id / "TODO.md").is_file()
+
+
+def _leftover_signals(project_dir: Path, todo_id: str) -> list[str]:
+    """REPORTS29 (TODO-0170): decision signals still lying for the unit
+    (inbox APPROVE/ACK, outbox REVIEW) — project-relative paths."""
+    found = []
+    for p in (
+        paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready",
+        paths.inbox(project_dir) / f"ACK-{todo_id}.ready",
+        paths.outbox(project_dir) / f"REVIEW-{todo_id}.md",
+    ):
+        if p.is_file():
+            found.append(p.relative_to(project_dir).as_posix())
+    return found
+
+
+def _finish_facts(project_dir: Path, current: str) -> dict:
+    """REPORTS29 (TODO-0170): what the close gate must weigh for the
+    current unit — archived on disk, stage state cleared, pipeline
+    liveness. ``unfinished`` is the refusal condition."""
+    archived = _unit_archived(project_dir, current)
+    running, pid, _source = _liveness.resolve(project_dir)
+    pstate = pipeline_state.read_state(project_dir)
+    stage_cleared = pstate is None
+    return {
+        "archived": archived,
+        "running": running,
+        "pid": pid,
+        "stage_cleared": stage_cleared,
+        "stage": str((pstate or {}).get("stage_name") or ""),
+        "stage_todo": str((pstate or {}).get("todo_id") or ""),
+        "unfinished": (not archived) or (not stage_cleared) or running,
+    }
+
+
+def _finish_refusal(project_dir: Path, current: str, facts: dict) -> str:
+    """REPORTS29 (TODO-0170): the refusal text — what exactly is left
+    (pipeline alive/dead with pid, signals lying, tree status) and what
+    to do (continue/approve/reject). One message: it is the supervisor's
+    only surface."""
+    signals = _leftover_signals(project_dir, current)
+    tree = git_utils.status_porcelain(project_dir).strip()
+    paths_changed = tree.splitlines()
+    if paths_changed:
+        shown = ", ".join(line.strip()[:48] for line in paths_changed[:3])
+        more = f" +{len(paths_changed) - 3}" if len(paths_changed) > 3 else ""
+        tree_fact = f"dirty ({len(paths_changed)} path(s): {shown}{more})"
+    else:
+        tree_fact = "clean"
+
+    lines = [
+        "run_finish refused: the run is ACTIVE and unit "
+        f"{current} is not finished — nothing was closed, no report "
+        "written. What is left:",
+        (
+            f"- pipeline: ALIVE (pid {facts['pid']})"
+            if facts["running"]
+            else "- pipeline: dead (no live pid)"
+        ),
+        (
+            "- stage state: cleared"
+            if facts["stage_cleared"]
+            else "- stage state: NOT cleared "
+            f"({facts['stage'] or '?'} for {facts['stage_todo'] or '—'})"
+        ),
+        (
+            f"- unit: archived (done/{current}/TODO.md)"
+            if facts["archived"]
+            else f"- unit: NOT archived (done/{current}/TODO.md absent)"
+        ),
+        ("- signals lying: " + ", ".join(signals) if signals else "- signals: none lying"),
+        f"- tree: {tree_fact}",
+        "What to do:",
+    ]
+    if facts["running"]:
+        lines.append(
+            "- the pipeline is still running: wait for the stage to end "
+            "(awf_wait_for_event) or stop it (awf_kill), then retry "
+            "awf_run_finish"
+        )
+    if not facts["stage_cleared"]:
+        lines.append(
+            "- the pipeline is dead on a stage: resume the unit with "
+            f"awf_continue (from {facts['stage'] or 'the last stage'} — "
+            "a valid pre-existing APPROVE is consumed, REPORTS29)"
+        )
+    if any(s.endswith(f"APPROVE-{current}.ready") for s in signals):
+        lines.append(
+            f"- an APPROVE signal lies for {current}: approve the unit "
+            "(awf_approve with evidence + verified_sha) — the commit gate "
+            "archives it"
+        )
+    if any(s.endswith(f"REVIEW-{current}.md") for s in signals):
+        lines.append(
+            f"- a REVIEW rejection lies for {current}: fix and re-run the "
+            "unit (awf_dispatch_todo + awf_start) or close the run on "
+            "purpose (force=True)"
+        )
+    if not facts["archived"] and facts["stage_cleared"] and not facts["running"]:
+        lines.append(
+            f"- the unit {current} is not closed and nothing is waiting: "
+            "finish the verify ritual (approve with evidence), or close "
+            "with loss: awf_run_finish(force=True) — the RUN-REPORT will "
+            "carry the 'closed with unfinished unit' mark"
+        )
+    return "\n".join(lines)
+
+
 def run_finish(
     project_dir: Path,
     *,
     reason: str = "finished by supervisor",
     summary: str = "",
+    force: bool = False,
 ) -> RunFinishResult:
-    """Close the run: write the report and mark it inactive."""
+    """Close the run: write the report and mark it inactive.
+
+    REPORTS29 (TODO-0170): while the run is active and ``current`` is
+    set, the close is REFUSED when the unit is not finished — not
+    archived (``done/<id>/TODO.md`` absent), the stage state not cleared,
+    or the pipeline alive. The refusal names what is left and what to do
+    (see :func:`_finish_refusal`) and the run stays active.
+    ``force=True`` is the conscious close with loss: the report is
+    written and the run closed, the RUN-REPORT carries the
+    "closed with unfinished unit TODO-NNNN (force)" mark.
+    """
     project_dir = _require_run_project(project_dir)
     state = run_state.read_run(project_dir)
     if not state:
@@ -1222,7 +1372,21 @@ def run_finish(
             report_file="",
             message="No run state found — nothing to finish.",
         )
-    report = _write_report(project_dir, state, reason, summary)
+    current = str(state.get("current") or "")
+    facts: dict = {}
+    if state.get("active") and current:
+        facts = _finish_facts(project_dir, current)
+        if facts["unfinished"] and not force:
+            return RunFinishResult(
+                active=True,
+                reason=reason,
+                report_file="",
+                message=_finish_refusal(project_dir, current, facts),
+            )
+    report = _write_report(
+        project_dir, state, reason, summary,
+        forced=force and bool(facts) and not facts.get("archived"),
+    )
     report_str = str(report) if report else ""
     run_state.write_run(
         project_dir, active=False, stop_reason=reason, report_file=report_str,

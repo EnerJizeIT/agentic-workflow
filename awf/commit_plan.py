@@ -600,3 +600,58 @@ def binding_refusal(plan: CommitPlan, project_dir: Path, authorized_by: str) -> 
             "supervisor did not verify. Re-approve on the current tree."
         )
     return ""
+
+
+def preexisting_approval_status(
+    project_dir: Path,
+    todo_id: str,
+    baseline_sha: str = "",
+) -> tuple[str, str]:
+    """REPORTS29 (TODO-0169): a PRE-EXISTING APPROVE validated against the
+    current attempt.
+
+    A verify wait that starts AFTER ``APPROVE-{todo_id}.ready`` was written
+    (the pipeline died between the approval and its consumption — the
+    restart-recovery case) drops the file by mtime (AUD04-04). This helper
+    answers whether that drop is right, using the same fields and the same
+    validator the commit gate enforces (M2.1, :func:`binding_refusal`):
+
+    - ``("valid", "")`` — the signal carries a binding and it matches the
+      current attempt: the ACTIVE run's generation, the stored verified
+      fingerprint, and the current file-set digest. A fresh wait may
+      consume the signal — the tree it approved is the tree that will be
+      committed, and re-approval would republish the same binding.
+    - ``("stale", reason)`` — present, but not valid for the current
+      attempt (no binding, no active run, or a binding mismatch). ``reason``
+      is the human-readable re-approval instruction for the log and for the
+      supervisor's hint.
+    - ``("absent", "")`` — no APPROVE signal file.
+
+    Outside a run the signal is an empty marker (no binding to validate —
+    legacy approve), so a pre-existing approval is always ``stale`` there:
+    the AUD04-04 mtime gate keeps its old behavior.
+    """
+    signal = paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready"
+    if not signal.is_file():
+        return "absent", ""
+    binding = read_approval_binding(project_dir, todo_id)
+    if binding is None:
+        return "stale", (
+            f"the APPROVE-{todo_id}.ready signal carries no binding "
+            "(legacy or hand-made) — a pre-existing approval cannot be "
+            "validated against the current attempt"
+        )
+    try:
+        state = run_state.read_run(project_dir)
+    except Exception:
+        state = None
+    if not (state and state.get("active")):
+        return "stale", (
+            f"the APPROVE-{todo_id}.ready binding is only honored inside an "
+            "active run — no run is active now"
+        )
+    plan = build_commit_plan(project_dir, todo_id, baseline_sha)
+    reason = binding_refusal(plan, project_dir, "APPROVE")
+    if reason:
+        return "stale", reason
+    return "valid", ""

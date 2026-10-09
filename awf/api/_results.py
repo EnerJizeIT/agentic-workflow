@@ -402,6 +402,13 @@ class WaitEventResult:
     # AWF_WAIT_CAP / config wait.cap_seconds, default TRANSPORT_CAP); 0 when
     # not computed for this event type.
     suggested_timeout: int = 0
+    # REPORTS29 (TODO-0169): on a ``verify`` event — the text about a
+    # pre-existing APPROVE the verify wait will IGNORE (older than the wait
+    # and its binding does not match the current attempt): why + the
+    # re-approve instruction. "" when there is nothing to warn about
+    # (no signal, a fresh signal, or a valid pre-existing one the engine
+    # will consume).
+    stale_decision_hint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

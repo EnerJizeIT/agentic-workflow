@@ -621,6 +621,42 @@ def wait_for_event(
     )
 
 
+def _stale_decision_hint(project_dir: Path, todo_id: str) -> str:
+    """REPORTS29 (TODO-0169): a pre-existing APPROVE the verify wait will
+    IGNORE — the text the supervisor needs instead of waiting for a signal
+    that will never be accepted.
+
+    "Ignored" = the signal predates any new wait (whole-second mtime, the
+    same convention as _decision_signal_fresh) AND its binding does not
+    match the current attempt (or it carries no binding) — the same
+    validator the engine's wait applies (commit_plan.
+    preexisting_approval_status). A VALID pre-existing approve is consumed
+    by the engine (no hint); a FRESH signal takes the normal wait path (no
+    hint either).
+    """
+    from .. import commit_plan, paths
+
+    sig = paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready"
+    try:
+        mtime = sig.stat().st_mtime
+    except OSError:
+        return ""
+    if int(mtime) >= int(time.time()):
+        return ""  # fresh — the new wait takes the normal path
+    status, reason = commit_plan.preexisting_approval_status(
+        project_dir,
+        todo_id,
+        commit_plan.read_baseline_sha(project_dir, todo_id),
+    )
+    if status != "stale":
+        return ""
+    return (
+        f"APPROVE-{todo_id}.ready is ignored by the verify wait — it does "
+        f"not match the current attempt ({reason}) — re-approve: "
+        "awf_approve(verified_sha=..., evidence=...)"
+    )
+
+
 def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = None) -> WaitEventResult | None:
     """Check if current state has an interesting event. Return result or None."""
     # RUN10 #1: a fully cleared state file (None) now reaches this check on
@@ -669,6 +705,7 @@ def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = No
         # SPEC A-run (second tier): the verify callback carries the diff-stat —
         # the supervisor sees the shape of the change before opening it.
         todo_id = str(state.get("todo_id") or "")
+        hint = ""
         if project_dir and todo_id:
             try:
                 from ..verify import diff_stat_for_todo
@@ -676,6 +713,10 @@ def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = No
                 snapshot["diff_stat"] = diff_stat_for_todo(project_dir, todo_id)
             except Exception:
                 snapshot["diff_stat"] = ""
+            # REPORTS29 (TODO-0169): a pre-existing APPROVE the new verify
+            # wait will ignore — the re-approve instruction instead of a
+            # wait for a signal that will never be accepted.
+            hint = _stale_decision_hint(project_dir, todo_id)
         return WaitEventResult(
             event_type="verify",
             message=(
@@ -684,6 +725,7 @@ def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = No
                 "Then awf_approve or write REVIEW-*.md."
             ),
             state_snapshot=snapshot,
+            stale_decision_hint=hint,
         )
 
     return None

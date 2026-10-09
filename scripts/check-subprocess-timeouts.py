@@ -1,11 +1,15 @@
 """U2 gate helper: every awf subprocess.run/Popen must carry a timeout.
 
-Walks ``awf/`` with ``ast`` (multi-line calls included), finds
-``subprocess.run(...)`` / ``subprocess.Popen(...)`` / ``_sp.run(...)``,
-and checks each call for a ``timeout=`` keyword. Calls without one are
-compared against the explicit allowlist below — an exact match is green,
-anything else (new offender, or an allowed one silently fixed) is red, so
-every change to this surface is a conscious decision.
+Walks ``awf/`` with ``ast`` (multi-line calls included), finds calls to
+``subprocess.run`` / ``subprocess.Popen`` — plain, aliased
+(``import subprocess as _s``) or from-imported
+(``from subprocess import Popen as P``) — and checks each call for a
+``timeout=`` keyword. The callee names are resolved per file from that
+file's own import statements, so a renamed import cannot hide a call
+site. Calls without a timeout are compared against the explicit
+allowlist below — an exact match is green, anything else (new offender,
+or an allowed one silently fixed) is red, so every change to this
+surface is a conscious decision.
 
 Denominator is printed on every run: a gate that found no call sites
 exits 2 (measured nothing), not 0.
@@ -40,6 +44,71 @@ EXPECTED_NO_TIMEOUT: dict[str, int] = {
 
 MIN_CALL_SITES = 20  # awf/ has 25+ today; below this the gate looks at nothing
 
+GATE_MEMBERS = ("run", "Popen")
+
+
+def resolve_subprocess_names(tree: ast.Module) -> tuple[set[str], dict[str, str]]:
+    """Names this file binds to subprocess or its gated members.
+
+    Returns ``(module_aliases, member_aliases)``:
+    - ``module_aliases``: the name per ``import subprocess`` and
+      ``import subprocess as X`` — a call ``<name>.run(...)`` or
+      ``<name>.Popen(...)`` is in scope;
+    - ``member_aliases``: the name per ``from subprocess import run`` /
+      ``from subprocess import Popen as Y`` — a direct call ``<name>(...)``
+      is in scope.
+    """
+    module_aliases: set[str] = set()
+    member_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            for alias in node.names:
+                if alias.name in GATE_MEMBERS:
+                    member_aliases[alias.asname or alias.name] = alias.name
+    return module_aliases, member_aliases
+
+
+def _has_timeout(call: ast.Call) -> bool:
+    return any(
+        kw.arg is not None and kw.arg.startswith("timeout") for kw in call.keywords
+    )
+
+
+def analyze_file(path: Path) -> tuple[int, int]:
+    """Count the gated call sites in one file.
+
+    Returns ``(total, without_timeout)``. A call is gated when its callee
+    is a name resolved by :func:`resolve_subprocess_names`: an attribute
+    call ``<module_alias>.run/Popen`` or a direct call to a from-import
+    alias.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    module_aliases, member_aliases = resolve_subprocess_names(tree)
+    total = 0
+    without_timeout = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if func.attr not in GATE_MEMBERS or not isinstance(func.value, ast.Name):
+                continue
+            if func.value.id not in module_aliases:
+                continue
+        elif isinstance(func, ast.Name):
+            if func.id not in member_aliases:
+                continue
+        else:
+            continue
+        total += 1
+        if not _has_timeout(node):
+            without_timeout += 1
+    return total, without_timeout
+
 
 def main() -> int:
     root = Path("awf")
@@ -51,25 +120,14 @@ def main() -> int:
     no_timeout: dict[str, int] = {}
     for path in sorted(root.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            sites, missing = analyze_file(path)
         except SyntaxError as e:
             print(f"check-subprocess-timeouts: cannot parse {path}: {e}", file=sys.stderr)
             return 2
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr not in ("run", "Popen"):
-                continue
-            callee = node.func.value
-            if not isinstance(callee, ast.Name) or callee.id not in ("subprocess", "_sp"):
-                continue
-            total += 1
-            has_timeout = any(
-                kw.arg is not None and kw.arg.startswith("timeout") for kw in node.keywords
-            )
-            if not has_timeout:
-                rel = str(path)
-                no_timeout[rel] = no_timeout.get(rel, 0) + 1
+        total += sites
+        if missing:
+            rel = str(path)
+            no_timeout[rel] = no_timeout.get(rel, 0) + missing
 
     if total < MIN_CALL_SITES:
         print(

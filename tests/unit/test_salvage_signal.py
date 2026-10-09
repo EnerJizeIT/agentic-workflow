@@ -53,29 +53,52 @@ def project(tmp_git_repo):
 class TestSalvageSignalDetection:
     """Critical: salvage kind must detect ACK/APPROVE signals."""
 
-    def test_salvage_detects_approve(self, project):
+    def test_salvage_detects_approve(self, project, monkeypatch):
         """salvage wait_for_supervisor_signal finds APPROVE signal.
 
         Before fix: kind=='verify' excluded salvage → signal invisible.
         After fix: kind in ('verify','salvage') → signal detected.
+
+        TODO-0171: both operands of the AUD04-04 freshness compare
+        (``int(st_mtime) >= int(wall_start)`` in _decision_signal_fresh)
+        live on ONE controlled timeline — the pattern 0167 applied to
+        test_verify_still_works_after_salvage_fix. The signal is written
+        on the first poll iteration (time.sleep hook), strictly after
+        wall_start, and its mtime is pinned to the same synthetic clock
+        via os.utime (T0+3s, comfortably fresh at whole-second
+        resolution). The old pattern — file pre-written before the wait,
+        kernel mtime vs the process wall clock — loses when the
+        write→wall_start gap crosses a second boundary (a ~1/20 flake
+        under load). The gate itself runs unpatched.
         """
         inbox = project / ".agentic" / "inbox"
         todo_id = "TODO-0001"
+        written = {"n": 0}
+        wall = {"now": time.time()}
 
-        # Simulate supervisor creating APPROVE signal
-        (inbox / f"APPROVE-{todo_id}.ready").write_text("")
+        def fake_time() -> float:
+            return wall["now"]
 
-        logs_dir = project / ".agentic" / "logs"
+        def fake_sleep(*_a, **_kw):
+            if written["n"] == 0:
+                written["n"] = 1
+                # The signal appears 3s into the wait on the synthetic
+                # timeline: strictly after wall_start, whole-second fresh.
+                wall["now"] += 3
+                sig = inbox / f"APPROVE-{todo_id}.ready"
+                sig.write_text("", encoding="utf-8")
+                os.utime(sig, (wall["now"], wall["now"]))
 
-        # wait_for_supervisor_signal with kind="salvage" should find it
-        # Use very short timeout — signal already exists, should return immediately
+        monkeypatch.setattr("time.time", fake_time)
+        monkeypatch.setattr("time.sleep", fake_sleep)
+
         result = wait_for_supervisor_signal(
             kind="salvage",
             todo_id=todo_id,
             project_dir=project,
-            logs_dir=logs_dir,
+            logs_dir=project / ".agentic" / "logs",
             poll_interval=0,
-            timeout=2,
+            timeout=10,
         )
 
         assert result == f"APPROVE-{todo_id}", (
@@ -83,12 +106,32 @@ class TestSalvageSignalDetection:
             f"Check: kind in ('verify', 'salvage') in wait_for_supervisor_signal."
         )
 
-    def test_salvage_detects_ack(self, project):
-        """salvage wait_for_supervisor_signal finds ACK signal."""
+    def test_salvage_detects_ack(self, project, monkeypatch):
+        """salvage wait_for_supervisor_signal finds ACK signal.
+
+        Same controlled-timeline pattern as test_salvage_detects_approve
+        (the 0167/0171 fix): the signal appears inside the wait on a
+        synthetic clock, its mtime pinned to that same clock — one
+        timeline for the AUD04-04 freshness compare.
+        """
         inbox = project / ".agentic" / "inbox"
         todo_id = "TODO-0001"
+        written = {"n": 0}
+        wall = {"now": time.time()}
 
-        (inbox / f"ACK-{todo_id}.ready").write_text("")
+        def fake_time() -> float:
+            return wall["now"]
+
+        def fake_sleep(*_a, **_kw):
+            if written["n"] == 0:
+                written["n"] = 1
+                wall["now"] += 3
+                sig = inbox / f"ACK-{todo_id}.ready"
+                sig.write_text("", encoding="utf-8")
+                os.utime(sig, (wall["now"], wall["now"]))
+
+        monkeypatch.setattr("time.time", fake_time)
+        monkeypatch.setattr("time.sleep", fake_sleep)
 
         result = wait_for_supervisor_signal(
             kind="salvage",
@@ -96,17 +139,38 @@ class TestSalvageSignalDetection:
             project_dir=project,
             logs_dir=project / ".agentic" / "logs",
             poll_interval=0,
-            timeout=2,
+            timeout=10,
         )
 
         assert result == f"ACK-{todo_id}"
 
-    def test_salvage_detects_review(self, project):
-        """salvage wait_for_supervisor_signal finds REVIEW in outbox."""
+    def test_salvage_detects_review(self, project, monkeypatch):
+        """salvage wait_for_supervisor_signal finds REVIEW in outbox.
+
+        Same controlled-timeline pattern as test_salvage_detects_approve
+        (the 0167/0171 fix): the REVIEW file appears inside the wait on a
+        synthetic clock, its mtime pinned to that same clock — one
+        timeline for the AUD04-04 freshness compare.
+        """
         todo_id = "TODO-0001"
         outbox = project / ".agentic" / "outbox"
         outbox.mkdir(parents=True, exist_ok=True)
-        (outbox / f"REVIEW-{todo_id}.md").write_text("# Issues\nfix needed\n")
+        written = {"n": 0}
+        wall = {"now": time.time()}
+
+        def fake_time() -> float:
+            return wall["now"]
+
+        def fake_sleep(*_a, **_kw):
+            if written["n"] == 0:
+                written["n"] = 1
+                wall["now"] += 3
+                sig = outbox / f"REVIEW-{todo_id}.md"
+                sig.write_text("# Issues\nfix needed\n", encoding="utf-8")
+                os.utime(sig, (wall["now"], wall["now"]))
+
+        monkeypatch.setattr("time.time", fake_time)
+        monkeypatch.setattr("time.sleep", fake_sleep)
 
         result = wait_for_supervisor_signal(
             kind="salvage",
@@ -114,7 +178,7 @@ class TestSalvageSignalDetection:
             project_dir=project,
             logs_dir=project / ".agentic" / "logs",
             poll_interval=0,
-            timeout=2,
+            timeout=10,
         )
 
         assert result == f"REVIEW-{todo_id}"

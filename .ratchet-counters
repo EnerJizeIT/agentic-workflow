@@ -981,4 +981,51 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # service-block wait of tests/e2e/test_seam_matrix.py (3), minus 1
 # rewritten docstring line. Same class as above: test identifiers and
 # unit references, not debt.
+# REPORTS29 (TODO-0169, continue на verify): baseline raised 4883 -> 4908
+# — the unit adds 25 TODO-bearing lines: 20 in the new
+# tests/negative/test_reports29_continue_verify_approve.py (module
+# docstring, the TODO = "TODO-0001" constant and its fixture/assert
+# use-sites of the four tests, the TODO-0169/TODO-0027 unit references)
+# and 5 in the production diff (the REPORTS29 unit references in
+# awf/supervisor.py's pre-existing-approve branch comment,
+# awf/commit_plan.py's preexisting_approval_status docstring,
+# awf/api/wait_event.py's _stale_decision_hint docstring + the verify
+# branch comment, awf/api/_results.py's stale_decision_hint field
+# comment). Same class as above: test identifiers and unit references,
+# not debt. files_over_400 stays 70 (no file crossed the bar: the new
+# test file is 222 lines, the touched production modules were already
+# over it).
+# REPORTS29 (TODO-0170, run_finish guard): baseline raised 4908 -> 4933 —
+# the unit adds 25 TODO-bearing lines: 8 in the new
+# tests/negative/test_reports29_run_finish_guard.py (module docstring
+# invariants, the T = "TODO-0001" constant, fixture/assert use-sites, the
+# TODO-0170 unit reference), 15 in awf/api/run.py (the REPORTS29 unit
+# references in the _unit_archived/_leftover_signals/_finish_facts/
+# _finish_refusal/run_finish docstrings, the _write_report docstring +
+# unit-facts comment, the done/<id>/TODO.md path strings) and 2 in
+# agent_workflow_ui tools/awf.py (the awf_run_finish docstring lines).
+# Same class as above: test identifiers and unit references, not debt.
+# files_over_400 stays 70 (the new test file is 221 lines — under the
+# bar).
+# REPORTS29 (TODO-0170, guard regression updates): baseline raised
+# 4933 -> 4943, files_over_400 raised 70 -> 71 — the old finish tests
+# that closed over an unarchived current had to follow the new
+# contract: +10 TODO-bearing lines net in
+# tests/negative/test_audit25_a13_run_cas.py (the _archive helper's
+# TODO-0001 fixture + the REPORTS29 comment),
+# tests/negative/test_audit05_incidents.py (the class docstring's
+# TODO-0170 line, the "current=<launched TODO>" wording) and
+# tests/negative/test_run_progress_surfaces.py (the _archive helper's
+# TODO.md fixture + the TODO-0170 comment). Same class as above: test
+# identifiers and unit references, not debt. The +1 file over 400 is
+# tests/negative/test_run_progress_surfaces.py (395 -> 407 — its test
+# suite plus the archive helper), same class as the
+# test_audit25_* / test_service_run.py test-suite raises above.
+# F1 (TODO-0171, salvage sibling flake hardening): baseline raised
+# 4943 -> 4944 — the three sibling salvage tests moved to the 0167
+# controlled-timeline pattern; the +1 TODO-bearing line is the
+# "TODO-0171:" docstring line in
+# tests/unit/test_salvage_signal.py::test_salvage_detects_approve.
+# Same class as above: a unit reference, not debt. files_over_400
+# stays 71 (the file is 250 lines — under the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
