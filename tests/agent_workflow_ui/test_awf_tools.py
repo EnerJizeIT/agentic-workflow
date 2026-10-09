@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from agent_workflow_ui.tools import awf
 
-from awf import api, git_utils
+from awf import api, git_utils, run_state
 
 # AUD12-13 / test infra: import mcp at COLLECTION time, not inside a test.
 # The autouse conftest fixture replaces subprocess.Popen with a function, and
@@ -2315,3 +2316,53 @@ class TestAwfCommitWorkflow:
         )
         status = run(awf.awf_status(project_dir=str(wf_project)))
         assert status["uncommitted_workflow_files"] == [".agentic/pipelines/x.yaml"]
+
+
+# ─── TODO-0178: the supervisor heartbeat in _exec ───────────────────────
+
+
+class TestSupervisorBeatWiring:
+    """_exec marks "the supervisor is alive" on every awf-* call: the
+    active run's beat is refreshed, and a gap above the threshold is
+    credited into downtime (owner pauses stop burning the budget)."""
+
+    def _start_run(self, proj: Path) -> None:
+        api.run_start(proj, queue=["TODO-0001"], budget_minutes=240)
+
+    def test_awf_call_refreshes_the_beat(self, mcp_project):
+        self._start_run(mcp_project)
+        old = (
+            datetime.now(timezone.utc) - timedelta(minutes=40)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        run_state.write_run(mcp_project, last_supervisor_beat=old)
+
+        result = run(awf.awf_run_status(project_dir=str(mcp_project)))
+
+        assert result["status"] == "ok"
+        state = run_state.read_run(mcp_project)
+        # the 40-minute gap (> 15) is credited…
+        assert int(run_state.downtime_minutes(state)) >= 39
+        # …and the beat is now "just now", not the stale value
+        beat = run_state._parse_started_at(state["last_supervisor_beat"])
+        assert abs((datetime.now(timezone.utc) - beat).total_seconds()) < 60
+
+    def test_awf_call_without_run_is_a_noop(self, mcp_project):
+        result = run(awf.awf_run_status(project_dir=str(mcp_project)))
+
+        assert result["status"] == "ok"
+        assert run_state.read_run(mcp_project) is None, (
+            "a beat must never CREATE the run state file"
+        )
+
+    def test_beat_failure_never_breaks_the_call(self, mcp_project, monkeypatch):
+        def _boom(project_dir):
+            raise RuntimeError("beat exploded")
+
+        monkeypatch.setattr(api, "supervisor_beat", _boom)
+        self._start_run(mcp_project)
+
+        result = run(awf.awf_run_status(project_dir=str(mcp_project)))
+
+        assert result["status"] == "ok", (
+            "the accompanying call must survive a beat failure"
+        )

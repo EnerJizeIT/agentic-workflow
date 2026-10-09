@@ -126,6 +126,7 @@ from .run import (
     run_service_status,
     run_start,
     run_status,
+    supervisor_beat,
 )
 from .setup import apply_project_setup
 from .wait_event import (
@@ -223,6 +224,8 @@ __all__ = [
     "run_brief",
     "run_note",
     "run_revise",
+    # TODO-0178: the supervisor heartbeat (owner-idle → downtime)
+    "supervisor_beat",
     # ORCH M5.2: service run (role creation during the main run)
     "run_service_start",
     "run_service_finish",

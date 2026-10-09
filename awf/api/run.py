@@ -359,6 +359,12 @@ def run_start(
             # budget.
             downtime_seconds=0,
             started_at=run_state.now_iso(),
+            # TODO-0178: the owner-idle accounting starts with the run —
+            # the first heartbeat reference is "now", the downtime
+            # snapshot is fresh (a force replace must not inherit the
+            # previous run's beat, or its gap would be credited here).
+            last_supervisor_beat=run_state.now_iso(),
+            downtime_seconds_at_last_beat=0,
             # A-13: the run generation — identity of the run for the
             # conditional run_next transitions. A fresh run is always one
             # older than whatever existed (absent = 0).
@@ -427,6 +433,24 @@ def run_note(project_dir: Path, text: str) -> RunStatusResult:
         raise AwfApiError("No active run — nothing to annotate. Start one with awf_run_start.")
     run_state.write_run(project_dir, note=str(text).strip())
     return run_status(project_dir)
+
+
+def supervisor_beat(project_dir: Path) -> dict:
+    """TODO-0178: the supervisor heartbeat — "the owner is present".
+
+    Called by the plugin's ``_exec`` wrapper on EVERY awf-* tool call,
+    so the active main run's owner-idle accounting (gaps between beats
+    → ``downtime_seconds``) sees the supervisor's real activity.
+
+    Never raises and never changes the caller's result: a beat failure
+    degrades to a silent no-op (the accompanying tool call must not
+    break because of the accounting). Returns ``{"status": "ok"}``.
+    """
+    try:
+        run_state.supervisor_beat(project_dir)
+    except Exception:
+        pass
+    return {"status": "ok"}
 
 
 def run_status(project_dir: Path) -> RunStatusResult:

@@ -298,6 +298,9 @@ def _read_handoffs(
             "preview": content[:200].strip(),
             "content_html": content_html,
             "rev": f"{mtime}-{len(content)}",
+            # REPORTS29: the chat maps the handoff to the ATTEMPT that
+            # wrote it — the file mtime is the write time.
+            "mtime": mtime,
         })
 
     # Sort by pipeline order (roles not in pipeline go last, alphabetically)
@@ -665,6 +668,98 @@ def _stage_spans(project_dir: Path) -> dict[str, dict[str, int]]:
     return spans
 
 
+def _attempt_spans(project_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    """REPORTS29: {stage_name: [attempt, ...]} across ALL runs.
+
+    Each occurrence of a stage name in the log is one attempt:
+    ``{"start": epoch, "end": epoch|None, "attempt": n}`` — start is the
+    stage's 'Stage N:' line, end the NEXT transition (any stage), so
+    ``end=None`` means the attempt is still running. ``transitions`` is
+    scoped to the current run and loses a re-entered stage's earlier
+    attempts (rollback/replan, kill+continue) — ``all_transitions``
+    keeps them.
+    """
+    trans = _log_snapshot(project_dir).all_transitions
+    out: dict[str, list[dict[str, Any]]] = {}
+    for i, (ts, name) in enumerate(trans):
+        end = trans[i + 1][0] if i + 1 < len(trans) else None
+        lst = out.setdefault(name, [])
+        lst.append({"start": ts, "end": end, "attempt": len(lst) + 1})
+    return out
+
+
+def _attempt_for_handoff(
+    attempts: list[dict[str, Any]] | None, mtime_ns: int,
+) -> dict[str, Any] | None:
+    """REPORTS29: the attempt whose window contains the handoff write time.
+
+    The engine writes the handoff after 'Agent stage finished' and BEFORE
+    the next 'Stage N:' line — the file mtime falls inside the attempt's
+    [start, end]. Returns None when no window contains it (the handoff
+    predates the log data — rotated away); the caller then falls back to
+    the plain last-occurrence span.
+    """
+    if not attempts or not mtime_ns:
+        return None
+    t = mtime_ns / 1e9
+    for a in attempts:
+        if a["start"] <= t and (a["end"] is None or t <= a["end"]):
+            return a
+    return None
+
+
+def _reentry_label(
+    transitions: list[tuple[int, str]], stage_name: str, attempt: int,
+    name_label: dict[str, str],
+) -> str:
+    """REPORTS29: the visible mark for a stage's re-entry, or "".
+
+    'возврат: <откуда> → <куда> (попытка N)' — <откуда> is the stage that
+    started right before this attempt in the transition sequence (a
+    rollback's replan logs no 'Stage' line, so the source stage is the
+    one that sent the stage back). The same stage twice in a row (silent
+    retry after a crash) is a repeat, not a return: 'попытка N' without
+    a direction.
+    """
+    if attempt < 2:
+        return ""
+    seen = 0
+    prev_name = ""
+    for _, name in transitions:
+        if name == stage_name:
+            seen += 1
+            if seen == attempt:
+                break
+        prev_name = name
+    if not prev_name or prev_name == stage_name:
+        return f"попытка {attempt}"
+    return (
+        f"возврат: {name_label.get(prev_name, prev_name)} → "
+        f"{name_label.get(stage_name, stage_name)} (попытка {attempt})"
+    )
+
+
+def _entry_direction(
+    transitions: list[tuple[int, str]], stage_name: str, attempt: int,
+    name_label: dict[str, str], stages: list[dict[str, Any]],
+) -> str:
+    """REPORTS29: the baton direction shown on a chat entry, or "".
+
+    Re-entry (attempt >= 2) — the 'возврат: A → B (попытка N)' mark;
+    otherwise 'B → C' — this stage's handoff to the next pipeline stage
+    ('конец' for the last one). '' when the stage is not in the displayed
+    pipeline (its name is unknown for the labels).
+    """
+    if attempt >= 2:
+        return _reentry_label(transitions, stage_name, attempt, name_label)
+    for i, st in enumerate(stages):
+        if st["name"] == stage_name:
+            if i + 1 < len(stages):
+                return f"{st['label']} → {stages[i + 1]['label']}"
+            return f"{st['label']} → конец"
+    return ""
+
+
 def _total_elapsed(project_dir: Path) -> tuple[int, bool, int]:
     """(closed_seconds, running, open_run_start_epoch) across ALL runs.
 
@@ -971,6 +1066,11 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # Stage spans of the CURRENT run — start/end times for the chat entries.
     # Keyed by the stage NAME as written in the log.
     spans = _stage_spans(project_dir)
+    # REPORTS29: attempt-scoped spans across ALL runs — a re-entered stage
+    # (rollback/replan, kill+continue) keeps each attempt's OWN times; the
+    # handoff file's mtime picks the attempt that wrote it.
+    all_transitions = _log_snapshot(project_dir).all_transitions
+    attempts = _attempt_spans(project_dir)
     # AUD10-04: handoff files (and thus chat entries) are keyed by ROLE,
     # while spans are keyed by stage NAME — for supervisor stages (plan,
     # verify) the two never matched, so those entries had no times. Merge
@@ -997,6 +1097,8 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     role_order: dict[str, int] = {}
     for i, st in enumerate(stages):
         role_order.setdefault(st["role"], i)
+    # REPORTS29: stage name → human label for the direction marks.
+    name_label = {st["name"]: st["label"] for st in stages}
 
     # Handoffs (chat-style, NEWEST FIRST) + the active stage entry on top
     handoffs = _read_handoffs(
@@ -1006,7 +1108,15 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
 
     if current_stage and status in ("running", "verify"):
         rv = _role_visual(current_stage)
-        span = spans.get(current_stage) or role_spans.get(current_stage) or {}
+        # REPORTS29: the active entry's span is the CURRENT attempt's span —
+        # the last occurrence of the stage in the (cross-run) transitions.
+        cur_attempts = attempts.get(current_stage) or []
+        cur_attempt = cur_attempts[-1] if cur_attempts else None
+        if cur_attempt is not None:
+            span = cur_attempt
+        else:
+            span = spans.get(current_stage) or role_spans.get(current_stage) or {}
+        attempt_no = cur_attempt["attempt"] if cur_attempt else 1
         # AUD10-03: the worker's last line is the ONLY live content of the
         # active entry — it must be part of the re-render key, or the chat
         # freezes on the first line for the whole stage (sidebar stayed live).
@@ -1018,7 +1128,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "label": rv["label"],
             "content_html": "",
             "duration": "",
-            "rev": f"active|{current_stage}|{span.get('start', 0)}|{line}",
+            "rev": f"active|{current_stage}|{span.get('start', 0)}|{attempt_no}|{line}",
             "started_at": _fmt_clock(span.get("start")),
             "ended_at": "",
             "started_epoch": int(span.get("start") or 0),
@@ -1026,18 +1136,34 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "awaiting": stage_kind_now == "verify",
             "is_verify": stage_kind_now == "verify",
             "line": line,
+            "attempt": attempt_no,
+            "direction": _entry_direction(
+                all_transitions, current_stage, attempt_no, name_label, stages,
+            ),
         })
 
     completed: list[dict[str, Any]] = []
     for h in handoffs:
         rv = _role_visual(h["role"])
-        # By role name when the log used it (agent-* stages: name == role),
-        # else via the merged role spans (supervisor: plan + verify).
-        span = spans.get(h["role"]) or role_spans.get(h["role"]) or {}
-        started, ended = span.get("start"), span.get("end")
+        # Handoff files are keyed by STAGE name (agent_stage.py); the log
+        # names match. REPORTS29: map the file to the ATTEMPT that wrote it
+        # by its mtime — a re-entered stage's finished handoff keeps the
+        # first attempt's own times instead of borrowing the new one's.
+        stage_name = h["role"]
+        h_attempts = attempts.get(stage_name) or []
+        a = _attempt_for_handoff(h_attempts, h.get("mtime", 0))
+        if a is not None:
+            started, ended, attempt_no = a["start"], a["end"], a["attempt"]
+        else:
+            # The log never covered the handoff (rotated away) — the plain
+            # last-occurrence span, as before the attempt accounting.
+            span = spans.get(stage_name) or role_spans.get(stage_name) or {}
+            started, ended = span.get("start"), span.get("end")
+            attempt_no = h_attempts[-1]["attempt"] if h_attempts else 1
         duration = ""
         if started and ended:
             duration = _format_elapsed_from_seconds(int(ended - started))
+        # REPORTS29: honest '—' when no span data covers the handoff.
         completed.append({
             "role": h["role"],
             "icon": rv["icon"],
@@ -1045,14 +1171,18 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "label": rv["label"],
             "content_html": h.get("content_html", ""),
             "duration": duration,
-            "rev": h.get("rev", ""),
-            "started_at": _fmt_clock(started),
-            "ended_at": _fmt_clock(ended),
+            "rev": f"{h.get('rev', '')}|{int(started or 0)}|{int(ended or 0)}",
+            "started_at": _fmt_clock(started) or "—",
+            "ended_at": _fmt_clock(ended) if started else "—",
             "started_epoch": int(started or 0),
             "active": False,
             "awaiting": False,
             "is_verify": False,
             "line": "",
+            "attempt": attempt_no,
+            "direction": _entry_direction(
+                all_transitions, stage_name, attempt_no, name_label, stages,
+            ),
         })
     # AUD10-04: newest first by ACTUAL start time (the old pipeline-order
     # sort put untimed supervisor entries on top). Untimed entries keep

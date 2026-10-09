@@ -866,6 +866,136 @@ def add_downtime(
         _log(logs_dir, f"B2: downtime +{secs:.0f}s{suffix}")
 
 
+def _downtime_seconds_of(state: dict) -> float:
+    """The run's recorded downtime in seconds; a corrupt value degrades
+    to 0.0 (the same way :func:`downtime_minutes` reads it)."""
+    try:
+        return max(0.0, float(state.get("downtime_seconds", 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _format_iso(moment: datetime) -> str:
+    """The run-state ISO stamp (UTC) — the same format ``now_iso`` writes
+    and ``_parse_started_at`` reads."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def owner_idle_threshold_minutes(project_dir: Path) -> float:
+    """TODO-0178: ``automation.owner_idle_minutes`` — the owner-idle
+    threshold for the run budget.
+
+    A gap between supervisor heartbeats strictly GREATER than this
+    threshold (minutes) is owner absence: it is credited into the run's
+    ``downtime_seconds``, so the pause stops counting as productive
+    budget minutes (``productive = elapsed − downtime`` keeps the
+    formula).
+
+    Degradation (never raises):
+    - key absent / unreadable config → the default 15 (the feature is on
+      by default — the bug it fixes is silent budget burn);
+    - a numeric value <= 0 → 0.0, i.e. the feature is DISABLED (an
+      explicit opt-out, not an error);
+    - a present non-numeric value → the default 15 (a typo should not
+      switch accounting off).
+    """
+    from . import config as _config
+
+    value = _config.get(_config.load(project_dir), "automation.owner_idle_minutes")
+    if value is None:
+        return 15.0
+    if isinstance(value, bool):
+        return 15.0
+    try:
+        minutes = float(value)
+    except (TypeError, ValueError):
+        return 15.0
+    return minutes if minutes > 0 else 0.0
+
+
+def supervisor_beat(project_dir: Path, *, now: datetime | None = None) -> None:
+    """TODO-0178: the supervisor heartbeat — "the owner is present" for
+    the ACTIVE main run, plus owner-idle accounting.
+
+    Every awf-* tool call for the project passes through here (the
+    plugin's ``_exec`` wrapper; the CLI is out of scope). The call
+    refreshes ``last_supervisor_beat`` in the run state; when the gap
+    since the previous beat exceeds
+    :func:`owner_idle_threshold_minutes` (default 15, <= 0 = disabled),
+    the gap is added to ``downtime_seconds`` — pauses while the owner
+    thinks/is away stop burning the productive budget.
+
+    Credit formula (incremental — no history is scanned):
+        credit = max(0, gap_seconds − downtime_added_since_last_beat)
+    where the second term is the change of ``downtime_seconds`` since the
+    previous beat (the engine's own checkpoint-wait / salvage /
+    net-backoff credits, snapshotted in
+    ``downtime_seconds_at_last_beat``). That subtraction is the
+    double-count protection: a checkpoint wait inside the owner's
+    absence was already credited by the engine — only the remainder is
+    credited as owner-idle. The gap is measured in whole seconds
+    (floor) — minute-level accounting, no sub-second noise.
+
+    No-op (nothing written): no run state (absent or corrupt — a state
+    file is never CREATED by a beat), or the run not active. The FIRST
+    beat after the feature upgrade (or a corrupt/unparseable
+    ``last_supervisor_beat``) only refreshes the reference — no credit
+    (the absence before the first beat is unknown). ``now`` is injectable
+    for tests.
+
+    The beat is refreshed even when the feature is disabled (threshold
+    <= 0) — so re-enabling it later cannot credit a stale multi-day gap.
+    """
+    moment = now if now is not None else datetime.now(timezone.utc)
+    threshold = owner_idle_threshold_minutes(project_dir)
+    state = read_run(project_dir)
+    if state is None or not state.get("active"):
+        return
+
+    credited: list[float] = [0.0]
+
+    def _mut(st: dict) -> dict:
+        if not st.get("active"):
+            return st
+        last_raw = st.get("last_supervisor_beat")
+        last = _parse_started_at(last_raw) if last_raw not in (None, "") else None
+        if last is None:
+            # first beat / corrupt reference: refresh, no credit
+            st["last_supervisor_beat"] = _format_iso(moment)
+            st["downtime_seconds_at_last_beat"] = _downtime_seconds_of(st)
+            return st
+        raw_gap = (moment - last).total_seconds()
+        if raw_gap > 0 and threshold > 0 and int(raw_gap) > int(threshold * 60):
+            snapshot_raw = st.get("downtime_seconds_at_last_beat")
+            current = _downtime_seconds_of(st)
+            try:
+                snapshot = (
+                    float(snapshot_raw) if snapshot_raw is not None else None
+                )
+            except (TypeError, ValueError):
+                snapshot = None  # corrupt: no credit, refresh the baseline
+            if snapshot is not None:
+                engine = max(0.0, current - snapshot)
+                credit = max(0.0, int(raw_gap) - engine)
+                if credit > 0:
+                    st["downtime_seconds"] = current + credit
+                    credited[0] = credit
+            st["downtime_seconds_at_last_beat"] = _downtime_seconds_of(st)
+        elif raw_gap > 0:
+            # under the threshold (or disabled): keep the snapshot fresh
+            st["downtime_seconds_at_last_beat"] = _downtime_seconds_of(st)
+        st["last_supervisor_beat"] = _format_iso(moment)
+        return st
+
+    update_run(project_dir, _mut)
+    if credited[0] > 0:
+        _log(
+            paths.logs_dir(project_dir),
+            f"TODO-0178: owner-idle downtime +{credited[0]:.0f}s "
+            f"(gap > {threshold:g} min)",
+        )
+
+
 def position(state: dict) -> str:
     """Human position like ``1/3`` — the RUNNING item's number.
 

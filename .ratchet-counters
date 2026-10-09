@@ -1081,3 +1081,52 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # updated test docstring). Same class as above: unit-id references, not
 # debt. files_over_400 stays 71 (no file crossed the bar: the new test
 # file is 274 lines, the touched modules were already over it).
+# REPORTS29 (TODO-0176, дашборд: чат после возврата стадии): baseline
+# raised 4986 -> 5000, files_over_400 raised 71 -> 72 — the unit adds 14
+# TODO-bearing lines, all in the new
+# tests/negative/test_reports29_dashboard_chat_reentry.py (the six
+# TODO-0001..TODO-0004 handoff-fixture writes + the six write_state
+# todo_id fixtures of the six tests). Same class as above: test
+# identifiers, not debt. The +1 file over 400 is awf/_log_reader.py
+# (389 -> 401 — the cross-run all_transitions accumulator the chat's
+# attempt mapping reads), same class as the production-module raises
+# above. The rest of the production diff (awf/api/dashboard.py — already
+# over the bar, the template JS) carries no TODO id.
+# REPORTS29 (TODO-0177, prove_red_pin): baseline raised 5000 -> 5014 —
+# the pin-ok unit adds 14 TODO-bearing lines: 9 in the new
+# tests/negative/test_reports29_prove_red_pin.py (the TODOS = "TODO-0001"
+# constant, its 5 verify-pack/baseline/inbox/report use-sites, and the
+# "# TODO" line in the PIN_CONTRACT fixture), 2 in awf/unit_contract.py
+# (the module docstring's "one TODO either proves a fix" line + the
+# mutual-exclusion error message), 1 in awf/verify_pack.py (the pin
+# section's "no `prove_red_pin:` block in the TODO contract" skip line),
+# 1 in tests/unit/test_unit_contract.py (the dispatch test's
+# TODO-0001.md assert) and 1 in docs/unit-contract.md (the prove_red_pin
+# bullet's "в одном TODO это ошибка контракта" wording). Same class as
+# above: test identifiers, doc wording and unit wording, not debt.
+# files_over_400 is untouched at 72 (the pin tests live in the 155-line
+# negative file; the touched awf/verify_pack.py / awf/unit_contract.py were
+# already over the bar, and tests/unit/test_verify_pack.py was kept under
+# it).
+# RUN11 (TODO-0178, run budget: owner-idle downtime): baseline raised
+# 5014 -> 5026 — the unit adds 12 TODO-bearing lines: 3 in the new
+# tests/negative/test_reports29_run_budget_downtime.py (module docstring
+# unit reference + the invariants header + the T = "TODO-0001" constant),
+# 2 in awf/run_state.py (the supervisor_beat +
+# owner_idle_threshold_minutes docstring headers + the log message),
+# 2 in awf/api/run.py (the run_start beat-init comment + the
+# supervisor_beat docstring), 1 in awf/api/__init__.py (the __all__
+# comment), 1 in agent_workflow_ui tools/awf.py (the _exec docstring)
+# and 2 in tests/agent_workflow_ui/test_awf_tools.py (the wiring section
+# comment + the queue=["TODO-0001"] fixture). Same class as above: unit-id
+# references and test identifiers, not debt. files_over_400 is untouched
+# at 72 (the new test file is 259 lines — under the bar; the touched
+# production modules were already over it).
+# RUN11 (TODO-0179, CI-фикс: покрытие awf/run_state.py до baseline):
+# baseline raised 5026 -> 5029 — the unit adds 3 TODO-bearing lines, all in
+# tests/negative/test_reports29_run_budget_downtime.py (the three new test
+# class docstrings' unit references: TestThresholdParsing /
+# TestBeatStateVariants / TestBeatRaceGuard). Same class as above: unit-id
+# references and test identifiers, not debt. files_over_400 is untouched at
+# 72 (the file ends at 397 lines — under the bar; no production code
+# touched).

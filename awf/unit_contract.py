@@ -7,6 +7,7 @@ skipped when locating the block)::
     verify: ["python3 -m pytest tests/unit/test_x.py -q"]
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
+    prove_red_pin: ["tests/unit/test_x.py::test_y"]
     prove_red_cmd: "npm test -- --run"
     files: ["awf/x.py", "tests/unit/test_x.py"]
     pipeline: audit-llm
@@ -19,6 +20,12 @@ hard errors (AwfApiError at the API level); unknown keys are warnings only.
 ``awf_run_next`` starts this TODO without a queue-level pipeline, it reads
 the name from here. Validated as a plain name (letters, digits, ``_``,
 ``.``, ``-``); an empty pipeline = the config default.
+
+``prove_red_pin`` (REPORTS29): a list of regression shields of EXISTING
+behavior — on the baseline they must be GREEN, the teeth are proven by
+mutation outside the tool. It is mutually exclusive with ``prove_red``:
+declaring both is a contract error (one TODO either proves a fix or pins a
+behavior).
 
 DONE.json (optional, written by the worker to ``.agentic/outbox/``)::
 
@@ -65,8 +72,13 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: prove-red check on non-pytest projects (a string, not a list); it
 #: overrides the pytest default, the files from ``prove_red:`` are still
 #: copied into the baseline worktree.
+#: ``prove_red_pin`` (REPORTS29): the pin-ok — a list of regression shields
+#: of EXISTING behavior that must be GREEN on the baseline (mutually
+#: exclusive with ``prove_red``); the teeth are proven by mutation, outside
+#: the tool.
 _CONTRACT_KEYS: tuple[str, ...] = (
-    "verify", "gates", "prove_red", "prove_red_cmd", "files", "pipeline"
+    "verify", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
+    "files", "pipeline",
 )
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
@@ -228,6 +240,15 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
                 )
     if "prove_red" in data:
         _check_str_list(data["prove_red"], "prove_red")
+    if "prove_red_pin" in data:
+        _check_str_list(data["prove_red_pin"], "prove_red_pin")
+    if "prove_red" in data and "prove_red_pin" in data:
+        raise ValueError(
+            "'prove_red' and 'prove_red_pin' are mutually exclusive — one "
+            "TODO either proves a fix (red on the baseline, green now) or "
+            "pins existing behavior (green on the baseline, teeth by "
+            "mutation); declare exactly one of the two"
+        )
     if "prove_red_cmd" in data:
         v = data["prove_red_cmd"]
         if not isinstance(v, str) or not v.strip():

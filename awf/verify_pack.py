@@ -30,7 +30,12 @@ Sections (each: status + details + denominator):
 6. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
    each with a timeout (``run_tree``).
 7. ``prove_red`` — the contract's ``prove_red`` list through
-   :func:`awf.prove_red.prove_red`; the verdict goes into the report.
+   :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
+   mutually exclusive ``prove_red_pin`` list runs the same baseline check
+   but for regression shields of EXISTING behavior: green on the baseline
+   is ``pin-ok`` (a pass, the teeth are proven by mutation outside the
+   tool), red on the baseline is a ``fail`` (a finding, not a pin), and a
+   collection error is ``broken-runner``.
 8. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
    explicitly marked as executor data (unverified).
 9. ``lint`` — ``ruff check .``.
@@ -55,7 +60,13 @@ from . import paths
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._proc import run_tree
-from .prove_red import VERDICT_RED_OK, prove_red
+from .prove_red import (
+    VERDICT_BROKEN,
+    VERDICT_GREEN_AFTER,
+    VERDICT_NOT_RED,
+    VERDICT_RED_OK,
+    prove_red,
+)
 from .unit_contract import parse_done_json, parse_todo_contract, render_done_json
 
 #: Per-gate subprocess timeout (seconds).
@@ -480,7 +491,12 @@ def _prove_red_section(
     contract: dict | None,
     tmp_base: str | Path | None,
 ) -> Section:
-    tests = (contract or {}).get("prove_red")
+    contract = contract or {}
+    # The contract forbids both at once; a pin takes the same section slot
+    # with shield semantics (green on the baseline is a pass, not a fail).
+    if contract.get("prove_red_pin"):
+        return _prove_red_pin_section(project, todo_id, contract, tmp_base)
+    tests = contract.get("prove_red")
     if not isinstance(tests, list) or not tests:
         return Section(
             name="prove_red",
@@ -510,6 +526,79 @@ def _prove_red_section(
         lines=lines,
         measured=True,
         detail=f"verdict {res.verdict}",
+    )
+
+
+def _prove_red_pin_section(
+    project: Path,
+    todo_id: str,
+    contract: dict,
+    tmp_base: str | Path | None,
+) -> Section:
+    """The ``prove_red_pin:`` check — a shield of EXISTING behavior (REPORTS29).
+
+    A pin must be GREEN on the baseline (that is the invariant: it guards
+    behavior that already holds); its teeth — that it would actually catch a
+    regression — are proven by mutation, outside this tool. So the baseline
+    outcome maps to shield verdicts, NOT to the red-before-fix ones:
+
+    - ``not-red`` (green on the baseline) -> ``pin-ok`` (pass, with a note);
+    - ``red-ok``/``green-after`` (red on the baseline) -> ``fail`` — a
+      finding: the test falls on the old code, so it is not a shield;
+    - ``broken-runner`` (collection error / 0 tests) -> ``broken-runner``.
+    """
+    tests = contract.get("prove_red_pin")
+    if not isinstance(tests, list) or not tests:
+        return Section(
+            name="prove_red",
+            status="skipped",
+            lines=["skipped — no `prove_red_pin:` block in the TODO contract"],
+        )
+    try:
+        res = prove_red(project, todo_id, tests=list(tests), tmp_base=tmp_base)
+    except AwfApiError as e:
+        return Section(
+            name="prove_red",
+            status="fail",
+            lines=[f"prove-red-pin could not run: {e}"],
+            measured=True,
+            detail="error",
+        )
+    base = res.baseline_sha[:12]
+    if res.verdict == VERDICT_NOT_RED:  # green on the baseline
+        status, detail = "pass", "pin-ok"
+        lines = [
+            f"verdict: pin-ok (exit {res.exit_code}) — baseline {base}",
+            "regression shield: GREEN on the baseline, as a pin must be. The "
+            "teeth (that it would catch a regression) are proven by mutation, "
+            "outside this tool.",
+        ]
+    elif res.verdict in (VERDICT_RED_OK, VERDICT_GREEN_AFTER):  # red on the baseline
+        status, detail = "fail", "fail"
+        lines = [
+            f"verdict: fail (exit {res.exit_code}) — baseline {base}",
+            "NOT A PIN: the test is RED on the baseline — it falls on the old "
+            "code, so it is not a shield of existing behavior. This is a "
+            "finding (a broken test), not a pin.",
+        ]
+    elif res.verdict == VERDICT_BROKEN:  # collection error / 0 tests
+        status, detail = "fail", "broken-runner"
+        lines = [
+            f"verdict: broken-runner (exit {res.exit_code}) — baseline {base}",
+            "collection error / 0 tests: the pin could not be run on the "
+            "baseline — the check did not run.",
+        ]
+    else:  # runner-unsupported or anything unexpected
+        status, detail = "fail", res.verdict
+        lines = [f"verdict: {res.verdict} (exit {res.exit_code}) — baseline {base}", res.message]
+    if res.baseline_output:
+        lines.append(_tail(res.baseline_output))
+    return Section(
+        name="prove_red",
+        status=status,
+        lines=lines,
+        measured=True,
+        detail=detail,
     )
 
 

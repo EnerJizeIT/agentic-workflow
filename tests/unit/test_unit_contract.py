@@ -154,6 +154,51 @@ class TestParseTodoContract:
         except ValueError as e:
             assert "empty" in str(e)
 
+    def test_prove_red_pin_is_a_contract_key(self):
+        # REPORTS29: first-class key — no unknown-key warning.
+        content = '---\nprove_red_pin: ["tests/unit/test_x.py::test_y"]\n---\nbody\n'
+        contract, unknown = parse_todo_contract(content)
+        assert contract["prove_red_pin"] == ["tests/unit/test_x.py::test_y"]
+        assert unknown == []
+
+    def test_prove_red_pin_not_a_list_raises(self):
+        content = '---\nprove_red_pin: "tests/unit/test_x.py::test_y"\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "'prove_red_pin' must be a list" in str(e)
+
+    def test_prove_red_pin_empty_list_raises(self):
+        content = '---\nprove_red_pin: []\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "empty" in str(e)
+
+    def test_prove_red_pin_non_string_item_raises(self):
+        content = '---\nprove_red_pin: [42]\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError")
+        except ValueError as e:
+            assert "non-empty string" in str(e)
+
+    def test_prove_red_and_pin_mutually_exclusive(self):
+        # REPORTS29: both blocks at once is a contract error, not a warning.
+        content = (
+            '---\n'
+            'prove_red: ["tests/unit/test_x.py::test_y"]\n'
+            'prove_red_pin: ["tests/unit/test_x.py::test_z"]\n'
+            '---\nbody\n'
+        )
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError for both keys at once")
+        except ValueError as e:
+            assert "mutually exclusive" in str(e)
+
     def test_prove_red_cmd_is_a_contract_key(self):
         # REPORTS26-B6: first-class key — no unknown-key warning.
         content = '---\nprove_red_cmd: "npm test -- --run"\n---\nbody\n'
@@ -357,6 +402,20 @@ class TestDispatchContractValidation:
         except api.AwfApiError as e:
             assert "unknown gate" in str(e)
             assert "contracts" in str(e)
+
+    def test_both_prove_keys_refused_on_dispatch(self, tmp_git_repo):
+        # REPORTS29: prove_red + prove_red_pin is a contract error at dispatch.
+        api.init_project(tmp_git_repo, project_name="CBothProve")
+        try:
+            api.dispatch_todo(
+                tmp_git_repo,
+                '---\nprove_red: ["t.py::test_a"]\n'
+                'prove_red_pin: ["t.py::test_b"]\n---\nbody\n',
+            )
+            raise AssertionError("expected AwfApiError for both prove keys")
+        except api.AwfApiError as e:
+            assert "mutually exclusive" in str(e)
+        assert not (paths.inbox(tmp_git_repo) / "TODO-0001.md").exists()
 
     def test_empty_verify_raises(self, tmp_git_repo):
         api.init_project(tmp_git_repo, project_name="CEmptyVerify")
