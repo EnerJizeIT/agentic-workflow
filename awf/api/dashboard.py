@@ -282,6 +282,8 @@ def _read_handoffs(
         # LLM workers; markup must not survive into the dashboard.
         import html as _html
 
+        from .._log_reader import extract_stage_model
+
         try:
             import markdown as _md
 
@@ -301,6 +303,11 @@ def _read_handoffs(
             # REPORTS29: the chat maps the handoff to the ATTEMPT that
             # wrote it — the file mtime is the write time.
             "mtime": mtime,
+            # TODO-0185: the model of the attempt that wrote this file —
+            # from the file's own "Stage facts" (the record belongs to
+            # the same attempt whose window the mtime picks, so the
+            # model cannot drift to another attempt).
+            "model": extract_stage_model(content),
         })
 
     # Sort by pipeline order (roles not in pipeline go last, alphabetically)
@@ -1137,6 +1144,10 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "is_verify": stage_kind_now == "verify",
             "line": line,
             "attempt": attempt_no,
+            # TODO-0185: the current attempt's span has no stage record
+            # yet (the handoff is written at the stage's end) — an honest
+            # "—", not a guess from the config.
+            "model": "",
             "direction": _entry_direction(
                 all_transitions, current_stage, attempt_no, name_label, stages,
             ),
@@ -1180,6 +1191,9 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "is_verify": False,
             "line": "",
             "attempt": attempt_no,
+            # TODO-0185: from the file's "Stage facts" — the model of the
+            # attempt whose window the file's mtime belongs to.
+            "model": h.get("model", ""),
             "direction": _entry_direction(
                 all_transitions, stage_name, attempt_no, name_label, stages,
             ),

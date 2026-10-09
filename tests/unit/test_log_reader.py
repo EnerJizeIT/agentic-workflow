@@ -12,7 +12,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from awf._log_reader import read_log_snapshot, read_tail_lines
+from awf._log_reader import (
+    extract_stage_model,
+    read_log_snapshot,
+    read_tail_lines,
+)
 
 _TS = "%Y-%m-%dT%H:%M:%S"
 
@@ -408,3 +412,49 @@ class TestSuggestTimeoutSharedReader:
             f"second suggestion read {incr} bytes — expected the append "
             f"plus the 32 B continuity fingerprint"
         )
+
+
+class TestExtractStageModel:
+    """TODO-0185: the model id of a handoff's "Stage facts" section.
+
+    The engine writes ``- model: `<id>``` (ORCH M4.3) — the dashboard's
+    chat chip reads it. The search is section-scoped: a "model:" mention
+    in the worker's free text must not leak into the chip.
+    """
+
+    def test_model_from_stage_facts(self):
+        content = (
+            "# Handoff from `agent-implementer` (TODO TODO-0001)\n"
+            "\n## Run facts\n\n- worker run: 1\n"
+            "\n## Stage facts\n\n"
+            "- stage_id: `agent-implementer`\n- attempt: 1\n"
+            "- role: `agent-implementer`\n- model: `vllm/llm`\n"
+            "- check vs DONE.json: matched\n"
+        )
+        assert extract_stage_model(content) == "vllm/llm"
+
+    def test_no_stage_facts_section_is_empty(self):
+        content = "# Handoff\n\n## Run facts\n\n- worker run: 1\n"
+        assert extract_stage_model(content) == ""
+
+    def test_section_without_model_line_is_empty(self):
+        content = (
+            "## Stage facts\n\n- stage_id: `s`\n- attempt: 1\n"
+            "- role: `r`\n- check vs DONE.json: matched\n"
+        )
+        assert extract_stage_model(content) == ""
+
+    def test_free_text_mention_does_not_leak(self):
+        content = (
+            "## Stage facts\n\n- role: `r`\n- model: `vllm/llm`\n"
+            "\n## DONE summary (from worker)\n\n"
+            "- model: `rogue/model` — free text\n"
+        )
+        assert extract_stage_model(content) == "vllm/llm"
+
+    def test_model_line_before_the_section_does_not_count(self):
+        content = (
+            "## Run facts\n\n- model: `rogue/model`\n"
+            "\n## Stage facts\n\n- role: `r`\n"
+        )
+        assert extract_stage_model(content) == ""

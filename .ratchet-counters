@@ -1169,3 +1169,20 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # to tests/negative/test_reports30_dashboard_open_reuse.py; both fakes
 # carry a TODO-0001 unit reference. Same class as above: test
 # identifiers, not debt.
+# REPORTS30 (TODO-0185, dashboard: model on the chat cards): baseline
+# raised 5053 -> 5080 — the unit adds 27 TODO-bearing lines: 20 in the
+# new tests/negative/test_reports30_dashboard_model_chip.py (module
+# docstring + the TODO-0001 handoff/state fixtures and the
+# TODO-0185/TODO-0175/TODO-0176 unit references) and 7 in the touched
+# files (the TODO-0185 notes in awf/_log_reader.py, awf/api/dashboard.py
+# (2), awf/templates/dashboard.html.j2 and
+# tests/unit/test_log_reader.py). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 73
+# (the new test file is 309 lines — under the bar).
+# REPORTS30 QA (agent-qa-review stage, 09.10): baseline raised
+# 5080 -> 5083 — the QA scoping regression test
+# test_done_summary_stage_facts_heading_does_not_leak adds 3
+# TODO-bearing lines (the TODO-0001 handoff skeleton + the
+# _write_handoff / _qa_active fixture use-sites). Same class as
+# above: test identifiers, not debt. files_over_400 stays 73
+# (the file is 340 lines — under the bar).

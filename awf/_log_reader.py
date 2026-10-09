@@ -365,6 +365,41 @@ def read_log_snapshot(log_file: Path) -> LogSnapshot:
     return OrchestratorLogReader.for_path(log_file).snapshot(log_file)
 
 
+# ─── TODO-0185: the model fact of a stage record ───────────────────────
+
+_STAGE_MODEL_LINE = re.compile(r"^-\s*model:\s*`?([^`\r\n]+?)`?\s*$", re.MULTILINE)
+
+
+def extract_stage_model(content: str) -> str:
+    """The model id of a handoff's "## Stage facts" section, or "".
+
+    The engine writes ``- model: `<id>``` into the section (ORCH M4.3,
+    awf/unit_contract.render_stage_facts) when the role has a model. The
+    dashboard's chat card shows it next to the role. The search is
+    scoped to the section: a "model:" mention in the worker's free text
+    (DONE summary, PROGRESS notes) must not leak into the chip. ""
+    when the section or the line is absent (pre-M4.3 handoffs, roles
+    without a model) — the template renders an honest "—".
+    """
+    lines = content.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## Stage facts":
+            start = i + 1
+            break
+    if start is None:
+        return ""
+    end = len(lines)
+    for j in range(start, len(lines)):
+        if lines[j].lstrip().startswith("#"):
+            end = j
+            break
+    m = _STAGE_MODEL_LINE.search("\n".join(lines[start:end]))
+    if not m:
+        return ""
+    return m.group(1).strip()
+
+
 # ─── AUD15-06: bounded tail reads (worker logs, TEST-RESULTS) ──────────
 
 def read_tail_lines(
@@ -396,6 +431,7 @@ def read_tail_lines(
 __all__ = [
     "LogSnapshot",
     "OrchestratorLogReader",
+    "extract_stage_model",
     "read_log_snapshot",
     "read_tail_lines",
 ]
