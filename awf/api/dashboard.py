@@ -967,6 +967,34 @@ def _display_pipeline_name(
     return ""
 
 
+def _active_stage_model(
+    project_dir: Path, stages: list[dict[str, Any]], stage_name: str
+) -> str:
+    """TODO-0194: the model of the ACTIVE chat entry — from the config.
+
+    The stage's log record (0185) appears only at the handoff, at the
+    stage's end — the active card must not wait for it. The source is
+    the same one the engine uses to launch the worker (config.yaml
+    ``models.<role>.model``, awf/supervisor.get_role_model). The role is
+    the pipeline stage's role; a stage missing from the displayed
+    pipeline falls back to the stage name as slug (custom roles,
+    supervisor — by slug). A missing key or a placeholder value (e.g.
+    ``<из сессии>``) → "" — the chip renders an honest «—». F1 QA
+    (REVIEW 10.10): YAML 1.1 may hand a non-string value (``123`` →
+    int, ``on`` → bool, ``1.5`` → float) — the engine tolerates it
+    (prompt interpolation), the chip shows its string form.
+    """
+    from .. import config as cfg_mod
+    from .. import supervisor
+
+    role = next((s["role"] for s in stages if s["name"] == stage_name), stage_name)
+    model = supervisor.get_role_model(cfg_mod.load(project_dir), role)
+    model = str(model).strip() if model is not None else ""
+    if not model or re.fullmatch(r"<[^>]+>", model):
+        return ""
+    return model
+
+
 def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     """Generate full dashboard state as dict (for /api/state JSON endpoint).
 
@@ -1144,10 +1172,11 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
             "is_verify": stage_kind_now == "verify",
             "line": line,
             "attempt": attempt_no,
-            # TODO-0185: the current attempt's span has no stage record
-            # yet (the handoff is written at the stage's end) — an honest
-            # "—", not a guess from the config.
-            "model": "",
+            # TODO-0194: the model comes from the project config
+            # immediately (the engine's own source) — the stage's log
+            # record appears only at the handoff, the card must not
+            # wait for it.
+            "model": _active_stage_model(project_dir, stages, current_stage),
             "direction": _entry_direction(
                 all_transitions, current_stage, attempt_no, name_label, stages,
             ),

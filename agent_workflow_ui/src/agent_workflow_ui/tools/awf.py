@@ -11,6 +11,7 @@ shell commands — directly through MCP protocol.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -20,6 +21,86 @@ from typing import Any
 from awf import api, git_utils
 
 log = logging.getLogger(__name__)
+
+
+# ─── Mutation serialization (TODO-0193) ───────────────────────────────────
+#
+# Parallel MCP tool calls run the awf API in REAL threads
+# (asyncio.to_thread). Two mutating calls on the same project race on the
+# same files: 2026-10-10 (awf-bug report «mcp-connection-closed»): the
+# parallel pair awf_dispatch_todo + awf_todo_update — one write was lost
+# (the «Решения владельца» append never landed) while the server connection
+# died. Every wrapper that can write project state (.agentic/, the git
+# repo, the working tree) is decorated with @_mutating below: the calls
+# queue under one lock (FIFO-ish asyncio.Lock).
+#
+# Read-only tools are NOT decorated, deliberately:
+# - they never write project state (reads see whole files: awf writes are
+#   atomic temp+rename or single write_text — no torn reads, a stale read
+#   is the worst case);
+# - the long-blocking ones (awf_wait_for_event, awf_prove_red) must not be
+#   queued behind a mutation — that would stall the run loop.
+# A deadlock is impossible by construction (no tool calls another tool,
+# so no re-entrant acquire) and bounded anyway: the wait below is capped,
+# a stuck queue returns a clean error dict instead of a hung connection.
+
+
+#: Max seconds to wait for the mutation lock. Aligned with opencode's MCP
+#: timeout (600000 ms): a call that cannot get the lock in time is answered
+#: with an error, not left hanging the connection.
+MUTATION_LOCK_TIMEOUT = 600.0
+
+_mutation_lock: asyncio.Lock | None = None
+_mutation_lock_loop = None
+
+
+def _get_mutation_lock() -> asyncio.Lock:
+    """The shared mutation lock, one per event loop.
+
+    asyncio.Lock binds to the running loop on first use; tests run several
+    asyncio.run() loops in one process, so the lock is recreated when the
+    loop changes. The live server has exactly one loop for its lifetime.
+    """
+    global _mutation_lock, _mutation_lock_loop
+    loop = asyncio.get_running_loop()
+    if _mutation_lock is None or _mutation_lock_loop is not loop:
+        _mutation_lock = asyncio.Lock()
+        _mutation_lock_loop = loop
+    return _mutation_lock
+
+
+def _mutating(fn):
+    """Serialize a mutating awf tool under the shared lock (TODO-0193).
+
+    A second mutating call WAITS for the first (queue, not refusal — the
+    doctrine's refusal form is for launches; here the caller already
+    expects the call to run). Acquisition is bounded by
+    ``MUTATION_LOCK_TIMEOUT``: on timeout the tool answers with a clean
+    error dict (status: "error") — never an exception, so the stdio loop
+    and the connection survive.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        lock = _get_mutation_lock()
+        try:
+            await asyncio.wait_for(lock.acquire(), MUTATION_LOCK_TIMEOUT)
+        except (TimeoutError, asyncio.TimeoutError):
+            return {
+                "status": "error",
+                "error": (
+                    f"another awf mutation is still running after "
+                    f"{MUTATION_LOCK_TIMEOUT:.0f}s — the queue did not "
+                    "drain (a hung operation is the likely cause). Check "
+                    "awf_status, then retry."
+                ),
+            }
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            lock.release()
+
+    return wrapper
 
 
 def _ok(result: Any) -> dict[str, Any]:
@@ -64,6 +145,7 @@ async def _exec(api_fn: Any, /, **kwargs: Any) -> dict[str, Any]:
 # ─── Lifecycle ──────────────────────────────────────────────────────────
 
 
+@_mutating
 async def awf_init(
     project_dir: str | None = None,
     *,
@@ -148,6 +230,7 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
 # ─── Pipeline execution ─────────────────────────────────────────────────
 
 
+@_mutating
 async def awf_start(
     project_dir: str | None = None,
     *,
@@ -265,6 +348,7 @@ async def awf_start(
     return result
 
 
+@_mutating
 async def awf_continue(
     project_dir: str | None = None,
     *,
@@ -349,6 +433,7 @@ async def awf_continue(
     return result
 
 
+@_mutating
 async def awf_retry_stage(
     project_dir: str | None = None,
     *,
@@ -413,6 +498,7 @@ async def awf_retry_stage(
 # ─── Autonomous run (забег) — SPEC A-run v1 ─────────────────────────────
 
 
+@_mutating
 async def awf_run_start(
     project_dir: str | None = None,
     *,
@@ -502,6 +588,7 @@ async def awf_run_start(
     return result
 
 
+@_mutating
 async def awf_run_note(
     project_dir: str | None = None,
     *,
@@ -520,6 +607,7 @@ async def awf_run_note(
     )
 
 
+@_mutating
 async def awf_restore(
     todo_id: str,
     project_dir: str | None = None,
@@ -543,6 +631,7 @@ async def awf_restore(
     return result
 
 
+@_mutating
 async def awf_unblock(
     todo_id: str,
     project_dir: str | None = None,
@@ -569,6 +658,7 @@ async def awf_unblock(
     return result
 
 
+@_mutating
 async def awf_todo_remove(
     todo_id: str,
     project_dir: str | None = None,
@@ -596,6 +686,7 @@ async def awf_todo_remove(
     return result
 
 
+@_mutating
 async def awf_todo_retire(
     todo_id: str,
     reason: str = "",
@@ -631,6 +722,7 @@ async def awf_todo_retire(
     return result
 
 
+@_mutating
 async def awf_todo_update(
     todo_id: str,
     content: str = "",
@@ -752,6 +844,7 @@ async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     return result
 
 
+@_mutating
 async def awf_run_next(
     project_dir: str | None = None,
     *,
@@ -806,6 +899,7 @@ async def awf_run_next(
     return response
 
 
+@_mutating
 async def awf_run_finish(
     project_dir: str | None = None,
     *,
@@ -845,6 +939,7 @@ async def awf_run_finish(
     return result
 
 
+@_mutating
 async def awf_run_revise(
     project_dir: str | None = None,
     *,
@@ -937,6 +1032,7 @@ async def awf_run_revise(
 # ─── Service run (ORCH M5.2): role creation during the main run ─────────
 
 
+@_mutating
 async def awf_run_service_start(
     project_dir: str | None = None,
     *,
@@ -1002,6 +1098,7 @@ async def awf_run_service_status(
     )
 
 
+@_mutating
 async def awf_run_service_finish(
     project_dir: str | None = None,
     *,
@@ -1033,6 +1130,7 @@ async def awf_run_service_finish(
     )
 
 
+@_mutating
 async def awf_run_service_approve(
     project_dir: str | None = None,
     *,
@@ -1071,6 +1169,7 @@ async def awf_run_service_approve(
 # ─── Baseline / rollback ────────────────────────────────────────────────
 
 
+@_mutating
 async def awf_baseline(
     todo_id: str,
     project_dir: str | None = None,
@@ -1109,6 +1208,7 @@ async def awf_baseline(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+@_mutating
 async def awf_rollback(
     todo_id: str,
     project_dir: str | None = None,
@@ -1213,6 +1313,7 @@ async def awf_prove_red(
     )
 
 
+@_mutating
 async def awf_verify_pack(
     todo_id: str,
     project_dir: str | None = None,
@@ -1392,6 +1493,7 @@ async def awf_feedback(
 # ─── Auto-commit approval ───────────────────────────────────────────────
 
 
+@_mutating
 async def awf_approve(
     todo_id: str,
     project_dir: str | None = None,
@@ -1502,6 +1604,7 @@ async def awf_approve(
     return response
 
 
+@_mutating
 async def awf_reject(
     todo_id: str,
     reason: str,
@@ -1637,6 +1740,7 @@ async def awf_report(project_dir: str | None = None) -> dict[str, Any]:
 # ─── Maintenance ────────────────────────────────────────────────────────
 
 
+@_mutating
 async def awf_reset(
     project_dir: str | None = None,
     *,
@@ -1678,6 +1782,7 @@ async def awf_reset(
     )
 
 
+@_mutating
 async def awf_add_role(
     name: str = "",
     project_dir: str | None = None,
@@ -1782,6 +1887,7 @@ async def awf_add_role(
     )
 
 
+@_mutating
 async def awf_analyze_roles(
     project_dir: str | None = None,
     *,
@@ -1848,6 +1954,7 @@ async def awf_analyze_roles(
 # ─── RUN3 #1: named pipelines (create + list) ────────────────────────────
 
 
+@_mutating
 async def awf_write_pipeline(
     name: str,
     stages: list[dict[str, Any]],
@@ -1922,6 +2029,7 @@ async def awf_pipelines(project_dir: str | None = None) -> dict[str, Any]:
 # ─── Dogfood-2 automation: dispatch + context ────────────────────────────
 
 
+@_mutating
 async def awf_dispatch_todo(
     content: str,
     project_dir: str | None = None,
@@ -2672,6 +2780,7 @@ async def awf_check_model_config(
 # ─── Kill pipeline (SELF-2) ─────────────────────────────────────────────
 
 
+@_mutating
 async def awf_kill(
     project_dir: str | None = None,
 ) -> dict[str, Any]:
@@ -2806,6 +2915,7 @@ async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
     return await _exec(api.brief, project_dir=_resolve_project_dir(project_dir))
 
 
+@_mutating
 async def awf_set_goal(
     goal: str,
     project_dir: str | None = None,
@@ -2847,6 +2957,7 @@ async def awf_set_goal(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+@_mutating
 async def awf_confirm_normalized(
     project_dir: str | None = None,
 ) -> dict[str, Any]:
@@ -2884,6 +2995,7 @@ async def awf_confirm_normalized(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
+@_mutating
 async def awf_commit_workflow(project_dir: str | None = None) -> dict[str, Any]:
     """Commit .agentic/ workflow definitions that unit commits missed (REPORTS26 F6).
 
