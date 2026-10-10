@@ -232,7 +232,9 @@ class TestCleanStageSignals:
         clean_stage_signals(outbox, "TODO-0001", "REVIEW-APPROVED", "REVIEW-REJECTED", "BLOCKED")
 
         assert not (outbox / "REVIEW-APPROVED-TODO-0001.ready").exists()
-        assert not (outbox / "REVIEW-APPROVED-TODO-0001.md").exists()
+        # NEG-4 (TODO-0190): the .md report is evidence, not a signal —
+        # it survives the clean (only the .ready forms are consumed).
+        assert (outbox / "REVIEW-APPROVED-TODO-0001.md").exists()
         assert (outbox / "DONE-TODO-0001.ready").exists()
         assert (outbox / "DONE-TODO-0001.md").exists()
 
