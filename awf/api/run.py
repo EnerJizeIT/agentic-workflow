@@ -13,7 +13,9 @@ rejected twice, or the previous TODO is not finished.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -779,6 +781,20 @@ def stop_run(
     )
 
 
+def _reservation_owner() -> str:
+    """TODO-0189 (A-13 residual angle): the owner of a queue-position
+    reservation — the (pid, thread) that reserved it.
+
+    The reservation (``run.yaml`` ``current``) used to carry no owner: the
+    takeover path (TODO-0103) re-reserved the same value as a no-op, and a
+    refused launch's release matched the (generation, index, current) CAS
+    tuple of ANOTHER caller's live reservation and clobbered it. The stamp
+    makes the capture visible (the taker re-stamps it) and the release
+    owner-checked: it removes only its own reservation.
+    """
+    return f"{os.getpid()}:{threading.get_ident()}"
+
+
 def run_next(
     project_dir: Path,
     *,
@@ -976,8 +992,13 @@ def run_next(
     # (generation, index, current) — a concurrent run_next (or a force
     # replace) can no longer clobber the launch: the loser's CAS misses and
     # it refuses with the index untouched.
+    # TODO-0189 (A-13 residual angle): the reservation also carries its
+    # OWNER (``reserved_by`` stamp) — the release below matches it, so a
+    # refused launch cannot clobber a reservation captured by another
+    # caller (the takeover path re-stamps it with its own identity).
     gen = run_state.generation_of(state)
     cur = str(state.get("current", "") or "")
+    me = _reservation_owner()
 
     # TODO-0103 (A-13 hole): the pre-read can land AFTER an earlier
     # run_next's reservation write — then cur already equals next_id and
@@ -1014,6 +1035,10 @@ def run_next(
 
     def _reserve_mutator(st: dict) -> dict:
         st["current"] = next_id
+        # TODO-0189: the owner stamp — the takeover path falls through to
+        # this same mutator, so a capture re-stamps the reservation with
+        # the taker's identity (the capture becomes visible on disk).
+        st["reserved_by"] = me
         return st
 
     _, reserved = run_state.update_run_cas(
@@ -1040,8 +1065,12 @@ def run_next(
         # A-13: restore the pre-reservation `current` — only while we still
         # own the position (the same CAS tuple). A run closed or
         # force-replaced inside the launch window is not written back.
+        # TODO-0189 (A-13 residual angle): the CAS also matches the owner
+        # stamp — a reservation captured by another caller (takeover) or a
+        # legacy unstamped one is not ours anymore and is left untouched.
         def _release_mutator(st: dict) -> dict:
             st["current"] = cur
+            st.pop("reserved_by", None)
             return st
 
         run_state.update_run_cas(
@@ -1050,6 +1079,7 @@ def run_next(
             generation=gen,
             index=index,
             current=next_id,
+            reserved_by=me,
         )
 
     # Baseline before the signal (same order as dispatch_todo).

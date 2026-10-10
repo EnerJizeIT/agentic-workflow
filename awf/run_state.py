@@ -487,11 +487,19 @@ def cas_match(
     generation: int | None = None,
     index: int | None = None,
     current: str | None = None,
+    reserved_by: str | None = None,
 ) -> bool:
-    """A-13: does the state match the expected (generation, index, current)
-    tuple — the compare of compare-and-swap? An absent (None) component is
-    not checked. The swap (``update_run_cas``) happens only when every
-    given component matches the state exactly."""
+    """A-13: does the state match the expected (generation, index, current,
+    reserved_by) tuple — the compare of compare-and-swap? An absent (None)
+    component is not checked. The swap (``update_run_cas``) happens only
+    when every given component matches the state exactly.
+
+    ``reserved_by`` (TODO-0189, A-13 residual angle): the owner stamp of
+    the queue-position reservation — set by the reserving caller, and
+    re-stamped by the takeover path. A release that carries a stamp only
+    matches a state it still owns; a captured (or legacy, unstamped)
+    reservation never matches, so a refused launch cannot clobber
+    someone else's reservation."""
     if generation is not None and generation_of(state) != int(generation):
         return False
     if index is not None:
@@ -502,6 +510,10 @@ def cas_match(
         if disk_index != int(index):
             return False
     if current is not None and str(state.get("current", "") or "") != str(current):
+        return False
+    if reserved_by is not None and str(
+        state.get("reserved_by", "") or ""
+    ) != str(reserved_by):
         return False
     return True
 
@@ -514,6 +526,7 @@ def update_run_cas(
     generation: int | None = None,
     index: int | None = None,
     current: str | None = None,
+    reserved_by: str | None = None,
 ) -> tuple[dict | None, bool]:
     """A-13: conditional read → mutate → write in ONE lock hold.
 
@@ -522,6 +535,9 @@ def update_run_cas(
     Mismatch (or a missing/corrupt run.yaml, which never matches): nothing
     is written, returns ``(None, False)`` — the caller treats this as
     "another caller owns this run position" and refuses, not retries.
+
+    ``reserved_by`` (TODO-0189): the owner-stamp component — see
+    :func:`cas_match`.
 
     ``update_run`` stays for unconditional RMW (approve/reject diary); the
     run queue transitions (reserve → launch → commit/release in
@@ -534,7 +550,11 @@ def update_run_cas(
     with locked(project_dir):
         state = read_run(project_dir, slot=slot)
         if state is None or not cas_match(
-            state, generation=generation, index=index, current=current
+            state,
+            generation=generation,
+            index=index,
+            current=current,
+            reserved_by=reserved_by,
         ):
             return None, False
         new_state = mutator(state)

@@ -36,6 +36,9 @@ def _stub_git(monkeypatch, changed_files: list[str], stat: str = ""):
 
 
 def test_facts_block_with_run_metadata(tmp_path, monkeypatch):
+    """REPORTS30 (TODO-0187): run metadata lives in the single "Stage
+    facts" block — the old "Run facts" section duplicated the identity
+    (stage role / worker run vs the render_stage_facts role / attempt)."""
     proj = _project(tmp_path)
     _stub_git(monkeypatch, [])
 
@@ -44,9 +47,12 @@ def test_facts_block_with_run_metadata(tmp_path, monkeypatch):
         exit_code=0, duration_sec=187.6, attempt=2,
     )
     body = out.read_text(encoding="utf-8")
-    assert "## Run facts" in body
-    assert "- stage role: `agent-implementer`" in body
-    assert "- worker run: 2" in body
+    assert "## Run facts" not in body
+    assert "- stage role:" not in body
+    assert "- worker run:" not in body
+    assert "## Stage facts" in body
+    assert "- role: `agent-implementer`" in body
+    assert "- attempt: 2" in body
     assert "- worker exit code: 0" in body
     assert "- worker duration: 188s" in body
     assert "- signals: DONE=no, BLOCKED=no, REVIEW=no" in body
