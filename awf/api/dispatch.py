@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from pathlib import Path
 
 from .. import paths
@@ -46,6 +47,87 @@ def _renumber_heading(content: str, todo_id: str) -> str:
     lines = content.splitlines(keepends=True)
     lines[0] = re.sub(r"TODO-\d+", todo_id, lines[0], count=1)
     return "".join(lines)
+
+
+# TODO-0186: file extensions that mark a token as a path even without a
+# separator. Deliberately short — the heuristic stays conservative
+# ("in doubt, don't warn"), so only the extensions that actually appear in
+# verify commands are listed.
+_PATH_EXTS = (".py", ".sh", ".md", ".yaml", ".yml", ".j2")
+
+#: Flags that take their value as the NEXT token (not ``--flag=value``). A
+#: path-like token right after one of these is the flag's argument, not a
+#: positional path — skipped (in doubt, don't warn).
+_VALUE_TAKING_FLAGS = frozenset({
+    "-k", "--keyword",
+    "-m", "--marker",
+    "-p", "--plug-in", "--plugin",
+    "-c", "--config",
+    "-W", "--pythonwarnings",
+    "--timeout", "--rootdir", "--confcutdir",
+    "--ds", "--durations", "--maxfail",
+    "-n",
+})
+
+
+def _shlex_tokens(cmd: str) -> list[str]:
+    """Shell-split a verify command, tolerating broken quoting.
+
+    ``shlex.split`` handles the quote wrappers (``-k "stack or init"`` is
+    one token, not fragments); a ValueError from unbalanced quotes falls
+    back to a plain whitespace split (the heuristic is best-effort and must
+    never raise).
+    """
+    try:
+        return shlex.split(cmd, posix=True)
+    except ValueError:
+        return cmd.split()
+
+
+def _looks_like_path(token: str, prev: str) -> bool:
+    """Whether a verify-command token is a file-path candidate.
+
+    A candidate contains ``/`` or ends with a known extension, and is not a
+    flag (leading ``-``), a URL (``://``), a shell variable (``$``), or the
+    separate value of a value-taking flag (``-k EXPR``). In doubt the token
+    is NOT a path — the heuristic has no right to warn falsely.
+    """
+    if not token or token.startswith("-"):
+        return False
+    if "://" in token or "$" in token:
+        return False
+    if prev in _VALUE_TAKING_FLAGS:
+        return False
+    return "/" in token or token.endswith(_PATH_EXTS)
+
+
+def _verify_path_tokens(commands: list[str]) -> list[str]:
+    """Extract the path-like tokens from verify commands (TODO-0186).
+
+    Runs the :func:`_looks_like_path` heuristic over the shell-split tokens
+    of every command. Returns the unique candidates in first-seen order —
+    the caller checks their existence relative to the project.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for cmd in commands:
+        tokens = _shlex_tokens(cmd)
+        prev = ""
+        for token in tokens:
+            if _looks_like_path(token, prev) and token not in seen:
+                seen.add(token)
+                found.append(token)
+            prev = token
+    return found
+
+
+def _missing_verify_paths(project_dir: Path, tokens: list[str]) -> list[str]:
+    """The path tokens that do NOT exist relative to ``project_dir``.
+
+    A relative token is joined onto the project root; an absolute token
+    keeps its own root (pathlib semantics).
+    """
+    return [t for t in tokens if not (project_dir / t).exists()]
 
 
 def _next_todo_id(project_dir: Path) -> str:
@@ -147,8 +229,10 @@ def dispatch_todo(
 
     Returns:
         DispatchTodoResult with todo_id, baseline_sha, files written,
-        and ``renumbered`` (REPORTS26 F5: True when the auto-issued
-        number replaced a foreign one in the first line's heading).
+        ``renumbered`` (REPORTS26 F5: True when the auto-issued
+        number replaced a foreign one in the first line's heading) and
+        ``verify_path_warnings`` (TODO-0186: the contract's verify: path
+        tokens missing from the project — a warning, never a refusal).
 
     Raises:
         AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
@@ -183,6 +267,19 @@ def dispatch_todo(
     # config.yaml (stale directory) is refused before any side effect.
     # The resolved path lands in the result (resolved_project_dir).
     project_dir = require_awf_project(project_dir)
+
+    # TODO-0186: verify-path validation at dispatch. A verify: command may
+    # reference a file that does not exist (a typo, a renamed test) — that
+    # would surface later as a red contract gate. Extract the path tokens
+    # now and collect the missing ones as a WARNING (never a refusal: the
+    # heuristic has no right to block a dispatch).
+    verify_path_warnings: list[str] = []
+    if _contract is not None:
+        verify_cmds = _contract.get("verify")
+        if isinstance(verify_cmds, list):
+            verify_path_warnings = _missing_verify_paths(
+                project_dir, _verify_path_tokens(verify_cmds)
+            )
 
     # RUN5 #1 (leak-gate): validate the carry-over BEFORE reserving the id —
     # a refused carry-over must leave no side effects (no TODO, no baseline).
@@ -359,6 +456,16 @@ def dispatch_todo(
             + ", ".join(_CONTRACT_KEYS)
         )
 
+    # TODO-0186: surface the missing verify paths as one warning line (the
+    # structured field is verify_path_warnings on the result). The dispatch
+    # still succeeds — a false positive would be worse than a missed typo.
+    if verify_path_warnings:
+        pre_check_warnings.append(
+            "verify: command(s) reference path(s) not found in the project — "
+            + ", ".join(verify_path_warnings)
+            + " (warning only; the contract gate may go red)"
+        )
+
     # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the
     # placeholder — the id is already claimed, no one else can take it).
     atomic_write_text(md_path, body)
@@ -459,6 +566,7 @@ def dispatch_todo(
         pre_existing_untracked=pre_existing,
         untracked_warning=untracked_warning,
         renumbered=renumbered,
+        verify_path_warnings=verify_path_warnings,
     )
 
 

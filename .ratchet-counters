@@ -1186,3 +1186,16 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # _write_handoff / _qa_active fixture use-sites). Same class as
 # above: test identifiers, not debt. files_over_400 stays 73
 # (the file is 340 lines — under the bar).
+# REPORTS30 (TODO-0186, verify-path validation at dispatch): baseline
+# raised 5083 -> 5094 — the unit adds 11 TODO-bearing lines: 5 in
+# awf/api/dispatch.py (the _PATH_EXTS header comment, the
+# _verify_path_tokens docstring, the dispatch_todo Returns line, the
+# verify-path validation comment and the warning-line comment — all
+# TODO-0186 unit references), 1 in awf/api/_results.py (the
+# verify_path_warnings field comment) and 5 in the new
+# tests/negative/test_reports30_verify_path_warnings.py (the module
+# docstring unit reference + four "TODO is created / a TODO" test
+# wording lines). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 73 (the new test file is
+# 189 lines — under the bar; the touched production modules were already
+# over it).

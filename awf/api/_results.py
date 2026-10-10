@@ -308,6 +308,11 @@ class DispatchTodoResult:
     # old title). Always False for an explicit todo_id (mismatch is
     # refused, or written as-is via allow_mismatch).
     renumbered: bool = False
+    # TODO-0186: verify-path validation at dispatch — the contract's
+    # verify: path tokens that do not exist relative to the project.
+    # Warning only (the dispatch never refuses); [] when the verify
+    # commands carry no paths or all of them exist.
+    verify_path_warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
