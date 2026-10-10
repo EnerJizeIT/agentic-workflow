@@ -96,11 +96,16 @@ prove_red: ["tests/unit/test_x.py::test_y"]
 
 Движок при сборке handoff (`awf/agent_stage.py::collect_handoff`) включает
 валидный файл в секцию «Machine facts (DONE.json)» handoff-файла следующей
-роли и в Run facts (`DONE-json=present`). Независимо от DONE.json handoff
-всегда несёт секцию «Stage facts»: stage_id/attempt/role и model, если он
-известен из конфига, — движок заполняет её сам, из стадии и счётчика
-ретраев. Если в DONE.json есть блок `stage`, секция получает строку
+роли. Независимо от DONE.json handoff всегда несёт ЕДИНУЮ секцию
+«Stage facts»: stage_id/attempt/role и model, если он известен из
+конфига, — движок заполняет её сам, из стадии и счётчика ретраев, — плюс
+метаданные прогона (время генерации, exit code, длительность, сигналы,
+изменения к baseline) и факт `DONE-json=present/absent` в строке
+«worker notes». Если в DONE.json есть блок `stage`, секция получает строку
 сверки (matched/mismatched — пометка для следующей роли, не ошибка).
+Секция «DONE summary (from worker)» — дайджест (первые 10 непустых строк
+отчёта) и ссылка `full report: .agentic/outbox/DONE-<id>.md`; полная
+вклейка отчёта в handoff убрана (0187).
 
 Отчёт на стадии verify: `.agentic/context/GATES-<todo>.md` (собирает
 `awf verify-pack --todo <id>`, U5) — быстрые гейты, safety-канарейки,
