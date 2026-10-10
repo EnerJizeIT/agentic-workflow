@@ -130,14 +130,23 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
 
 
 def clean_stage_signals(outbox: Path, todo_id: str, *prefixes: str) -> None:
-    """Remove stale signals this action would produce, preserving earlier-stage ones."""
+    """Remove stale signal markers this action would produce, preserving earlier-stage ones.
+
+    NEG-4 (reports30/TODO-0190): only the signal forms are removed
+    (".ready", ".md.ready"). The ".md" report is evidence, not a signal —
+    read_signal_for_todo reads only .ready forms, so a surviving .md is
+    inert for the next stage and stays as handoff evidence (the transition
+    in pipeline_engine consumes only .ready/.md.ready for the same reason).
+    A caller that must delete a stale .md does it at the call site
+    (e.g. _consume_verify_decision for AUD04-04), not through this default.
+    """
     short = short_id(todo_id)
     for prefix in prefixes:
         for candidate_id in (todo_id, short):
             # AUD01-03: ".md.ready" (the BD-21 agent typo form) must be
             # cleaned too — read_signal_for_todo accepts it, so a clean that
             # skipped it left a VALID signal behind for the next stage.
-            for ext in (".ready", ".md", ".md.ready"):
+            for ext in (".ready", ".md.ready"):
                 p = outbox / f"{prefix}-{candidate_id}{ext}"
                 try:
                     p.unlink()

@@ -161,7 +161,8 @@ class TestSignalFileRaceRules:
         clean_stage_signals(outbox, "TODO-0001", "DONE")
 
         assert not (outbox / "DONE-TODO-0001.ready").exists()
-        assert not (outbox / "DONE-TODO-0001.md").exists()
+        # NEG-4 (TODO-0190): the .md evidence survives the clean.
+        assert (outbox / "DONE-TODO-0001.md").exists()
         # Other prefixes and other TODOs survive.
         assert (outbox / "REVIEW-APPROVED-TODO-0001.ready").exists()
         assert (outbox / "PROGRESS-TODO-0002.md").exists()

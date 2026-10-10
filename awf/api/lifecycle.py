@@ -428,8 +428,14 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
     """Bring an archived TODO back from done/{id}/ to the inbox (active again).
 
     NEG-2026-09-19 R2a safety net: the manual recovery path for TODOs
-    archived without work. Restores TODO.md and re-creates .ready; handoff
-    files move back too. PROGRESS/DONE reports stay in done/ as history.
+    archived without work. Restores TODO.md and re-creates .ready.
+    PROGRESS/DONE reports stay in done/ as history — and so does the
+    handoff tail (TODO-0191): the re-run's stages write their own
+    handoffs, and the previous attempt's tail under the canonical
+    ``{stage}-{todo_id}.md`` names in the live dir looked like fresh work
+    to the next stage (resume from a later stage, the salvage prompt for
+    a stage that died without writing its handoff). The tail is audit
+    evidence — done/{id}/handoff/ is where it stays.
     """
     import re as _re
     import shutil
@@ -460,19 +466,18 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
     shutil.move(str(md), str(target))
     (inbox / f"{todo_id}.ready").touch()
 
-    restored_handoffs = 0
+    # TODO-0191 (REPORTS30): the handoff tail is NOT moved back to the
+    # live .agentic/handoff/ — the bare shutil.move there silently
+    # overwrote any live copy of the same name (the archive's A-12
+    # "never overwrite" rule had no counterpart on the restore side) and
+    # left the previous attempt's files under the canonical
+    # {stage}-{todo_id}.md names, where the re-run's next stage read them
+    # as fresh. The tail stays in the archive as audit evidence, exactly
+    # like the PROGRESS/DONE reports above.
+    handoff_kept = 0
     handoff_src = done_dir / "handoff"
     if handoff_src.is_dir():
-        handoff_dst = paths.agentic_dir(project_dir) / "handoff"
-        handoff_dst.mkdir(parents=True, exist_ok=True)
-        for f in sorted(handoff_src.iterdir()):
-            if f.is_file():
-                shutil.move(str(f), str(handoff_dst / f.name))
-                restored_handoffs += 1
-        try:
-            handoff_src.rmdir()
-        except OSError:
-            pass
+        handoff_kept = sum(1 for f in handoff_src.iterdir() if f.is_file())
 
     remaining = sorted(p.name for p in done_dir.iterdir())
     if not remaining:
@@ -485,7 +490,12 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
         todo_id=todo_id,
         message=(
             f"{todo_id} restored to inbox (active)."
-            + (f" Handoffs restored: {restored_handoffs}." if restored_handoffs else "")
+            + (
+                f" Handoff history kept in done/{todo_id}/handoff/ "
+                f"({handoff_kept} file(s)) — the re-run sees only its own handoffs."
+                if handoff_kept
+                else ""
+            )
             + (f" History kept in done/{todo_id}/: {', '.join(remaining)}." if remaining else "")
         ),
     )
