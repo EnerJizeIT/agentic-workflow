@@ -47,7 +47,7 @@ stops lying; quality work comes in two tiers.
 
 ### Changed
 
-- **Unit commits tell the story**: subject `awf(<stage>): TODO-NNNN —
+- **Unit commits tell the story**: subject `awf(<stage>): <unit id> —
   <title>`, body with the title, unit id and the files from the commit
   plan.
 - `awf_run_next` answers a running run with the run-loop instruction —
@@ -76,7 +76,7 @@ stops lying; quality work comes in two tiers.
 - `analyze_roles` no longer wipes role text after the BD-31 block.
 - Baseline: a missing test binary is a failed record with a PATH hint,
   not a crash; zero residue when the baseline fails unexpectedly.
-- Dispatch: a foreign TODO number in the heading is renumbered (or
+- Dispatch: a foreign unit number in the heading is renumbered (or
   refused with `allow_mismatch`); a stale `.agentic` without
   `config.yaml` is refused with a clear message.
 - `run_finish` refuses to close a run over an unfinished unit (unless
