@@ -1233,3 +1233,14 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # tests/negative/test_transition_matrix.py's updated NEG-4 asserts).
 # Same class as above: test identifiers and unit references, not debt.
 # files_over_400 stays 73 (the new test file is 99 lines — under the bar).
+# REPORTS30 (TODO-0191, handoff в restore-цикле): baseline raised
+# 5163 -> 5192 — the unit adds 29 TODO-bearing lines: 25 in the new
+# tests/negative/test_reports30_restore_handoff.py (the module
+# docstring's unit/defect references, the TODO_ID = "TODO-0191" constant
+# and its fixture/assert use-sites in the four invariant tests), 3 in
+# tests/negative/test_run_queue_safety.py (the TODO-0191 comment on the
+# updated roundtrip assert) and 1 in awf/api/lifecycle.py (the fix
+# comment naming the unit). Same class as above: test identifiers and
+# unit references, not debt. files_over_400 stays 73 (the new test file
+# is 156 lines — under the bar; awf/api/lifecycle.py shrank by the
+# removed move-back block).

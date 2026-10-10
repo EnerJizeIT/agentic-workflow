@@ -171,7 +171,13 @@ class TestRestoreTodo:
 
         assert (inbox / "TODO-0015.md").read_text(encoding="utf-8") == "# Task 15\n\nreal work\n"
         assert (inbox / "TODO-0015.ready").is_file(), "restored TODO must be active again"
-        assert (handoff / "agent-x-TODO-0015.md").is_file()
+        # TODO-0191: the handoff tail is audit evidence — it stays in the
+        # archive, the re-run writes its own handoffs (a live copy under
+        # the canonical name looked like fresh work to the next stage).
+        assert not (handoff / "agent-x-TODO-0015.md").exists()
+        assert (
+            proj / ".agentic" / "done" / "TODO-0015" / "handoff" / "agent-x-TODO-0015.md"
+        ).is_file()
 
     def test_restore_missing_raises(self, tmp_git_repo):
         proj = _project(tmp_git_repo)
