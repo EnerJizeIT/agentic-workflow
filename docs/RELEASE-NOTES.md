@@ -4,6 +4,37 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [1.7.0] — 2026-10-10
+
+A week of running awf on real projects, turned into fixes: the supervisor
+can trust the run loop through restarts, empty diffs and owner pauses;
+the dashboard shows which model plays each role and stops opening empty
+tabs; quality work now comes in two tiers — full for behavior, quick for
+chores.
+
+### Highlights
+
+- **Honest recovery.** `continue` on verify consumes a valid pending
+  approve; the "restart that is really a resume" trap is documented with
+  its exact recovery (a NEW session, plus the inbox check after a
+  "Connection closed").
+- **Honest verdicts.** prove_red never fakes red (timeouts and unrunnable
+  commands are `broken-runner`); regression shields get `pin-ok`;
+  dispatch warns about dead paths in verify commands before a unit ever
+  starts.
+- **Honest records.** Unit commits carry titles and file lists; handoffs
+  are ~73% slimmer with the DONE referenced, not pasted; `.md` evidence
+  survives stage transitions; the MCP server writes a fault log you can
+  actually read.
+- **Honest budget.** Owner idle time counts as downtime, not as work.
+
+### Upgrade notes
+
+- Nothing breaking: the plugin requires `awf>=1.7.0`; the install flow is
+  unchanged (`pip install -U awf agent-workflow-ui`).
+- Optional knobs: `automation.owner_idle_minutes` (default 15) for the
+  downtime accounting; `quick.yaml` is created by new project setups.
+
 ## [1.6.0] — 2026-09-29
 
 The second half of the ORCH program: the supervisor stops and revises live

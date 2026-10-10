@@ -5,6 +5,90 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-10-10
+
+A week of field reports turned into honesty fixes: the run loop keeps its
+promises through restarts, empty diffs and owner pauses; the dashboard
+stops lying; quality work comes in two tiers.
+
+### Added
+
+- **`awf commit-workflow`** (CLI + MCP, the 53rd tool): commits the
+  non-ignored `.agentic` workflow definitions (config, roles, pipelines,
+  phases, doctrine) through the isolated-add path;
+  `awf_status` lists `uncommitted_workflow_files`.
+- **Quick unit tier.** Project setup writes `quick.yaml` (implementer →
+  verify, no QA stage); `USAGE` and the supervisor templates explain
+  when a unit is quick (docs, tests, counters, one-liners) and what stays
+  mandatory on it (gates, prove_red, binding, evidence, full CI).
+- **prove_red beyond pytest.** Runner detection from the project
+  manifest; non-pytest projects get the honest `runner-unsupported`
+  verdict, plus the new `prove_red_cmd` contract key; a timed-out or
+  unrunnable command is `broken-runner`, never a false red.
+- **`prove_red_pin` → `pin-ok`**: regression shields of existing behavior
+  are no longer misreported as failures.
+- **`verify_path_warnings`** on dispatch: missing files in `verify:`
+  commands are named in the response (a warning, never a refusal).
+- **Roles carry their model.** Role files get a model line from `model=`
+  or the project config; `awf_check_model_config` cross-checks it.
+- **Dashboard.** Model chips on the Agent Chat cards; per-attempt
+  timestamps and an explicit return mark after continue/replan; the
+  browser tab opens only when the dashboard server actually started (the
+  port itself is reused).
+- **MCP fault log.** `$XDG_STATE_HOME/awf/mcp-server.log` (override
+  `AWF_MCP_LOG`): start/stop/version lines, tracebacks via excepthook and
+  threading.excepthook, size rotation.
+- **Honest run budget.** Owner-idle gaps longer than
+  `automation.owner_idle_minutes` (default 15) are credited to downtime.
+- **Pre-start unit editing.** `awf_todo_update` gains `append` and
+  `section_updates`; `include_untracked` and removal work for
+  dispatched-but-not-started units.
+- **`awf_run_finish(force=...)`** with an unfinished-unit guard.
+
+### Changed
+
+- **Unit commits tell the story**: subject `awf(<stage>): <unit id> —
+  <title>`, body with the title, unit id and the files from the commit
+  plan.
+- `awf_run_next` answers a running run with the run-loop instruction —
+  no more GO IDLE inside a run.
+- **Handoffs are slim**: the "Run facts"/"Stage facts" overlap is merged
+  into one section; the worker DONE report is a digest plus a reference
+  (−73% on real handoffs).
+- **The U6c watchdog is CPU-aware**: a quiet log with a live,
+  CPU-burning child (a full suite run) no longer gets the worker killed;
+  a frozen tree still does.
+- Baseline JS commands go through the package manager detected from the
+  lockfile (npm/yarn/pnpm/bun); `require_awf_project` (config.yaml)
+  guards write entry points; `resolved_project_dir` is reported.
+- `clean_stage_signals` keeps `.md` evidence (NEG-4); `restore_todo` no
+  longer moves the archived handoff tail back over live files.
+- The subprocess-timeout scanner resolves import aliases.
+
+### Fixed
+
+- **continue on verify consumes an already-present VALID approve**
+  (binding of the current attempt) and otherwise prints an exact
+  "re-approve" line, surfaced as `stale_decision_hint` in the wait; the
+  dead-approve protection (U6b) is intact.
+- `done` after approve in no-commit cycles; `run_status` reconciles
+  archived units into `completed`.
+- `analyze_roles` no longer wipes role text after the BD-31 block.
+- Baseline: a missing test binary is a failed record with a PATH hint,
+  not a crash; zero residue when the baseline fails unexpectedly.
+- Dispatch: a foreign unit number in the heading is renumbered (or
+  refused with `allow_mismatch`); a stale `.agentic` without
+  `config.yaml` is refused with a clear message.
+- `run_finish` refuses to close a run over an unfinished unit (unless
+  forced); the report says "pipeline is not running; unit NOT
+  archived".
+- A-13: a release no longer clobbers a captured reservation (owner
+  stamp).
+- CI flakes: salvage-signal and seam waits pinned to one controlled
+  clock timeline; sibling pre-write tests converted; wheel-smoke
+  isolates `XDG_STATE_HOME`; coverage ratchet restored for the plugin
+  tool and `run_state`.
+
 ## [1.6.0] — 2026-09-29
 
 ORCH milestones M4–M7: the supervisor can stop and revise a running unit,
