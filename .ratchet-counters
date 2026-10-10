@@ -1255,3 +1255,14 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # The production fix (agent_workflow_ui tools/awf.py — the @_mutating
 # serialization lock) is TODO-line neutral. Same class as above: test
 # identifiers and unit references, not debt.
+# REPORTS31 (TODO-0194, dashboard: the active stage's model from the
+# config): baseline raised 5209 -> 5222 — the new
+# tests/negative/test_reports31_dashboard_active_model.py adds 12
+# TODO-bearing lines (the module docstring's TODO-0194 unit reference,
+# the TODO-0001 handoff/fixture ids and their fixture/assert use-sites
+# of the eight invariant tests plus the F1 QA non-string-model test) and
+# awf/api/dashboard.py nets +1 (the removed TODO-0185 note on the active
+# entry replaced by the TODO-0194 note, plus the _active_stage_model
+# docstring's unit reference). Same class as above: test identifiers and
+# unit references, not debt. files_over_400 stays 74 (the new test file
+# is 293 lines — under the bar).
