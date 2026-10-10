@@ -1199,3 +1199,15 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # identifiers, not debt. files_over_400 stays 73 (the new test file is
 # 189 lines — under the bar; the touched production modules were already
 # over it).
+# REPORTS30 (TODO-0187, handoff slimming): baseline raised
+# 5094 -> 5103 — the unit adds 9 TODO-bearing lines: 4 in the new
+# tests/negative/test_reports30_handoff_slim.py (the module docstring's
+# TODO-0187/TODO-0185 unit references, the T = "TODO-0001" constant,
+# one test docstring unit reference), 4 in awf/agent_stage.py (the
+# DONE_DIGEST_LINES header comment, the merged-facts-block comment and
+# its extract_stage_model/TODO-0185 note, the digest+link comment —
+# unit-id references) and 1 in tests/unit/test_handoff_v2.py (the
+# updated test_facts_block_with_run_metadata docstring unit reference).
+# Same class as above: unit-id references and test identifiers, not
+# debt. files_over_400 stays 73 (the new test file is 188 lines —
+# under the bar; awf/agent_stage.py was already over it).

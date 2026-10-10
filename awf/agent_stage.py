@@ -49,6 +49,19 @@ def _stage_assignment_block(stage: Stage) -> str:
     return "\n".join(lines)
 
 
+# REPORTS30 (TODO-0187): the DONE summary in the handoff is a digest, not
+# a paste — the full report already lives at .agentic/outbox/DONE-<id>.md
+# and the next worker reads it from there. The limit keeps the dashboard
+# chat short; the link line in the section names the file.
+DONE_DIGEST_LINES = 10
+
+
+def _done_digest(body: str) -> list[str]:
+    """First ``DONE_DIGEST_LINES`` meaningful (non-empty) lines of a report."""
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    return lines[:DONE_DIGEST_LINES]
+
+
 def run_agent_stage(
     stage: Stage,
     todo_id: str,
@@ -361,18 +374,25 @@ def collect_handoff(
     else:
         changes_fact = "- changes vs baseline: none"
 
-    facts: list[str] = [
-        "## Run facts",
-        "",
+    # ORCH M4.3: the engine fills the stage identity itself — the section
+    # is always present, even when the worker wrote no DONE.json.
+    # REPORTS30 (TODO-0187): ONE non-intersecting facts block — identity
+    # (stage_id/attempt/role/model + the DONE.json cross-check) and run
+    # metadata under a single "## Stage facts" heading. The old "Run facts"
+    # section duplicated the identity ("stage role" / "worker run"); the
+    # heading + "- model:" line is what the dashboard model chip parses
+    # (extract_stage_model, TODO-0185) and stays in place.
+    stage_facts_lines = render_stage_facts(
+        stage_id, attempt, role, model=model, declared=declared_stage,
+    )
+    run_facts: list[str] = [
         f"- generated: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
-        f"- stage role: `{role}`",
-        f"- worker run: {attempt}",
     ]
     if exit_code is not None:
-        facts.append(f"- worker exit code: {exit_code}")
+        run_facts.append(f"- worker exit code: {exit_code}")
     if duration_sec is not None:
-        facts.append(f"- worker duration: {duration_sec:.0f}s")
-    facts += [
+        run_facts.append(f"- worker duration: {duration_sec:.0f}s")
+    run_facts += [
         f"- signals: DONE={_signal('DONE', '.ready')}, "
         f"BLOCKED={_signal('BLOCKED', '.ready')}, "
         f"REVIEW={'yes' if (outbox / f'REVIEW-{todo_id}.md').is_file() else 'no'}",
@@ -380,25 +400,26 @@ def collect_handoff(
         f"DONE-report={'present' if done_body else 'absent'}{done_json_fact}",
         changes_fact,
     ]
-
-    # ORCH M4.3: the engine fills the stage identity itself — the section
-    # is always present, even when the worker wrote no DONE.json.
-    stage_facts_lines = render_stage_facts(
-        stage_id, attempt, role, model=model, declared=declared_stage,
-    )
     parts: list[str] = [
         f"# Handoff from `{role}` (TODO {todo_id})",
-        "",
-        *facts,
         "",
         "## Stage facts",
         "",
         *stage_facts_lines,
+        *run_facts,
         "",
     ]
 
+    # REPORTS30 (TODO-0187): digest + an explicit file link instead of a
+    # full paste — the complete report is .agentic/outbox/DONE-<id>.md.
     if done_body:
-        parts += ["## DONE summary (from worker)", "", done_body, ""]
+        parts += [
+            "## DONE summary (from worker)",
+            "",
+            *_done_digest(done_body),
+            f"full report: `.agentic/outbox/{done_path.name}`",
+            "",
+        ]
 
     if machine_facts_lines:
         parts += ["## Machine facts (DONE.json)", "", *machine_facts_lines, ""]
