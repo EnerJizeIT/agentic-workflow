@@ -106,6 +106,9 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 .chat-body { flex: 1; min-width: 0; }
 .chat-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .chat-name { font-weight: 600; font-size: 13px; }
+/* TODO-0185: the model chip next to the role — the existing pill look
+   (rounded, translucent, mono), sized down to the chat header. */
+.chat-model { padding: 1px 8px; border-radius: 20px; font-size: 10px; font-family: var(--mono); background: rgba(88,166,255,0.08); color: var(--text-muted); white-space: nowrap; }
 .chat-dir { font-size: 11px; color: var(--text-dim); margin-left: 8px; }
 .chat-content { background: var(--bg-card); border-radius: 0 var(--radius-sm) var(--radius-sm) var(--radius-sm); padding: 12px 14px; border-left: 3px solid; }
 .chat-content h1, .chat-content h2, .chat-content h3 { margin: 8px 0 4px; }
@@ -427,6 +430,7 @@ function updateChat(s) {
       + '<div class="chat-body">'
       + '<div class="chat-header">'
       + '<span class="chat-name" style="color:' + h.color + '">' + escapeHtml(h.label) + '</span>'
+      + '<span class="chat-model">' + escapeHtml(h.model || '—') + '</span>'
       + (h.direction ? '<span class="chat-dir">' + escapeHtml(h.direction) + '</span>' : '')
       + (times ? '<span class="chat-time">' + times + '</span>' : '')
       + (h.active && !h.awaiting ? '<span class="chat-live" id="chat-active-timer" data-start="' + (h.started_epoch || 0) + '"></span>' : '')

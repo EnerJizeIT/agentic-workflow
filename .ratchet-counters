@@ -1155,3 +1155,47 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # fallback wrote into the isolated HOME and tripped its assertion in CI).
 # Same class as above: a unit-id reference in an infra-script comment,
 # not debt.
+# REPORTS30 (TODO-0184, dashboard tab on server reuse): baseline raised
+# 5044 -> 5051 — the new tests/negative/test_reports30_dashboard_open_reuse.py
+# adds 7 TODO-bearing lines: the module docstring's unit/incident references
+# (TODO-0184, TODO-0174), the worker-role "Execute TODO." stub, and the four
+# TODO-0001/TODO-0002 fixture use-sites of the three engine-invariant tests.
+# Same class as above: test identifiers and unit references, not debt. The
+# production diff (awf/api/dashboard_server.py, agent_workflow_ui
+# tools/awf.py) and the touched test_awf_tools.py are TODO-line neutral.
+# files_over_400 stays 73 (the new test file is 335 lines — under the bar).
+# TODO-0184 QA review (agent-qa-review stage): 5051 -> 5053 — the review
+# added two invariant-4 tests (continue/run_next reuse next_action text)
+# to tests/negative/test_reports30_dashboard_open_reuse.py; both fakes
+# carry a TODO-0001 unit reference. Same class as above: test
+# identifiers, not debt.
+# REPORTS30 (TODO-0185, dashboard: model on the chat cards): baseline
+# raised 5053 -> 5080 — the unit adds 27 TODO-bearing lines: 20 in the
+# new tests/negative/test_reports30_dashboard_model_chip.py (module
+# docstring + the TODO-0001 handoff/state fixtures and the
+# TODO-0185/TODO-0175/TODO-0176 unit references) and 7 in the touched
+# files (the TODO-0185 notes in awf/_log_reader.py, awf/api/dashboard.py
+# (2), awf/templates/dashboard.html.j2 and
+# tests/unit/test_log_reader.py). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 73
+# (the new test file is 309 lines — under the bar).
+# REPORTS30 QA (agent-qa-review stage, 09.10): baseline raised
+# 5080 -> 5083 — the QA scoping regression test
+# test_done_summary_stage_facts_heading_does_not_leak adds 3
+# TODO-bearing lines (the TODO-0001 handoff skeleton + the
+# _write_handoff / _qa_active fixture use-sites). Same class as
+# above: test identifiers, not debt. files_over_400 stays 73
+# (the file is 340 lines — under the bar).
+# REPORTS30 (TODO-0186, verify-path validation at dispatch): baseline
+# raised 5083 -> 5094 — the unit adds 11 TODO-bearing lines: 5 in
+# awf/api/dispatch.py (the _PATH_EXTS header comment, the
+# _verify_path_tokens docstring, the dispatch_todo Returns line, the
+# verify-path validation comment and the warning-line comment — all
+# TODO-0186 unit references), 1 in awf/api/_results.py (the
+# verify_path_warnings field comment) and 5 in the new
+# tests/negative/test_reports30_verify_path_warnings.py (the module
+# docstring unit reference + four "TODO is created / a TODO" test
+# wording lines). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 73 (the new test file is
+# 189 lines — under the bar; the touched production modules were already
+# over it).

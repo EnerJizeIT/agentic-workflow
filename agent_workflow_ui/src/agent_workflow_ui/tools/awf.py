@@ -11,7 +11,9 @@ shell commands — directly through MCP protocol.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -192,6 +194,9 @@ async def awf_start(
         run_id (PID for background, None otherwise), log_file,
         exit_code (foreground only), message, dashboard_opened (bool).
     """
+    # REPORTS30: the launch moment — the boot-marker freshness check
+    # compares the marker's ts against it.
+    launched_at = time.time()
     result = await _exec(
         api.start_pipeline,
         project_dir=_resolve_project_dir(project_dir),
@@ -210,21 +215,34 @@ async def awf_start(
     if result.get("status") == "ok" and result.get("run_mode") == "background":
         try:
             dash = await asyncio.to_thread(
-                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True,
+                launched_at=launched_at,
             )
             result["dashboard_opened"] = dash["opened"]
             if dash["method"] == "http":
                 result["dashboard_url"] = dash["url"]
+            if dash.get("reused"):
+                result["dashboard_reused"] = True
         except Exception:
             result["dashboard_opened"] = False
     # SMO: explicit next_action — weak models need this to avoid polling.
     # AUD08-15: the text must agree with the fact in `dashboard_opened` —
     # a failed open (headless) used to be claimed as "already opened".
+    # REPORTS30: the third fact — the launch reused the previous server,
+    # so a tab was NOT opened, but the dashboard IS running at the URL.
     if result.get("status") == "ok" and result.get("run_mode") == "background":
         if result.get("dashboard_opened"):
             result["next_action"] = (
                 "GO IDLE. Dashboard already opened. Do NOT call awf_wait_for_event "
                 "or awf_status in a loop. Wait for the user to write you."
+            )
+        elif result.get("dashboard_reused"):
+            result["next_action"] = (
+                f"GO IDLE. Dashboard already running at {result.get('dashboard_url')} "
+                "— this launch reused the previous server, so no new tab was "
+                "created; the existing tab shows this run. Do NOT call "
+                "awf_wait_for_event or awf_status in a loop. Wait for the user "
+                "to write you."
             )
         else:
             result["next_action"] = (
@@ -293,6 +311,8 @@ async def awf_continue(
     Returns:
         Same shape as :func:`awf_start`.
     """
+    # REPORTS30: the launch moment — the boot-marker freshness check.
+    launched_at = time.time()
     result = await _exec(
         api.continue_pipeline,
         project_dir=_resolve_project_dir(project_dir),
@@ -308,14 +328,24 @@ async def awf_continue(
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
         # AUD08-05: shared dashboard-open in a worker thread (no loop block).
+        dash: dict[str, Any] = {}
         try:
             dash = await asyncio.to_thread(
-                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True,
+                launched_at=launched_at,
             )
             result["dashboard_opened"] = dash["opened"]
         except Exception:
             pass
-        result["next_action"] = "Pipeline resumed. GO IDLE — wait for user."
+        if dash.get("reused"):
+            result["dashboard_url"] = dash["url"]
+            result["next_action"] = (
+                f"Pipeline resumed. Dashboard already running at {dash['url']} "
+                "— no new tab was created (reused server); the existing tab "
+                "shows this run. GO IDLE — wait for user."
+            )
+        else:
+            result["next_action"] = "Pipeline resumed. GO IDLE — wait for user."
     return result
 
 
@@ -348,6 +378,8 @@ async def awf_retry_stage(
     Returns:
         Same shape as :func:`awf_start`.
     """
+    # REPORTS30: the launch moment — the boot-marker freshness check.
+    launched_at = time.time()
     result = await _exec(
         api.retry_stage,
         project_dir=_resolve_project_dir(project_dir),
@@ -357,14 +389,24 @@ async def awf_retry_stage(
     )
     if isinstance(result, dict) and result.get("run_mode") == "background":
         # AUD08-05: shared dashboard-open in a worker thread (no loop block).
+        dash: dict[str, Any] = {}
         try:
             dash = await asyncio.to_thread(
-                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True,
+                launched_at=launched_at,
             )
             result["dashboard_opened"] = dash["opened"]
         except Exception:
             pass
-        result["next_action"] = "Stage retried. GO IDLE — wait for user."
+        if dash.get("reused"):
+            result["dashboard_url"] = dash["url"]
+            result["next_action"] = (
+                f"Stage retried. Dashboard already running at {dash['url']} "
+                "— no new tab was created (reused server); the existing tab "
+                "shows this run. GO IDLE — wait for user."
+            )
+        else:
+            result["next_action"] = "Stage retried. GO IDLE — wait for user."
     return result
 
 
@@ -730,6 +772,8 @@ async def awf_run_next(
         degrades to ``{status: "error", error: ...}`` instead of escaping
         the tool (this was the only awf_ tool without the error wrapper).
     """
+    # REPORTS30: the launch moment — the boot-marker freshness check.
+    launched_at = time.time()
     result = await _exec(
         api.run_next,
         project_dir=_resolve_project_dir(project_dir),
@@ -740,13 +784,25 @@ async def awf_run_next(
     response = result  # _exec returns {status: ok|error, ...as_dict()}
     if response.get("status") == "ok" and response.get("action") == "started":
         # AUD08-05: shared dashboard-open in a worker thread (no loop block).
+        dash: dict[str, Any] = {}
         try:
             dash = await asyncio.to_thread(
-                _open_dashboard_sync, _resolve_project_dir(project_dir), True
+                _open_dashboard_sync, _resolve_project_dir(project_dir), True,
+                launched_at=launched_at,
             )
             response["dashboard_opened"] = dash["opened"]
         except Exception:
             pass
+        if dash.get("reused"):
+            response["dashboard_url"] = dash["url"]
+            # AUD08-15: the run-loop instruction stays, the dashboard fact
+            # is appended — text = truth (no tab was created).
+            response["next_action"] = (
+                f"{response.get('next_action', '')} "
+                f"Dashboard already running at {dash['url']} — no new tab "
+                "was created (reused server); the existing tab shows this "
+                "run."
+            ).strip()
     return response
 
 
@@ -2197,7 +2253,42 @@ def _port_alive(port: int, timeout: float = 0.3) -> bool:
         return False
 
 
-def _open_dashboard_sync(pd: Path, wait: bool = False) -> dict[str, Any]:
+# REPORTS30: slop for the boot-marker freshness check. The marker is
+# written by the spawned pipeline process, slightly AFTER the launch call
+# returned, so a real start has marker_ts >= launched_at (same wall
+# clock); a small negative slop absorbs clock/sequence slop. 5 s cannot
+# swallow a reuse — that would need the WHOLE previous pipeline to
+# finish within 5 s, and even then the consequence is the legacy
+# behavior (an extra tab), never a missed dashboard.
+_BOOT_MARKER_SLOP_SECONDS = 5.0
+
+
+def _boot_marker_fresh(pd: Path, launched_at: float) -> bool:
+    """REPORTS30: did THIS launch start the dashboard server on a NEW port?
+
+    The engine (``start_dashboard_with_reuse``) writes state/dashboard_boot
+    (pid + ts) on an actual start and leaves it untouched on a port reuse,
+    so a marker with ``ts`` at/after the launch start means the current
+    launch bound a new port — any old tab is dead, open a new one. A
+    marker older than the launch start means the port was reused — a live
+    tab from a previous launch still points at the same URL.
+
+    Absent or corrupt markers return True: open conservatively (first-
+    launch behavior). The ts is read from the file, not from mtime.
+    """
+    f = pd / ".agentic" / "state" / "dashboard_boot"
+    if not f.is_file():
+        return True
+    try:
+        ts = float(json.loads(f.read_text(encoding="utf-8"))["ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    return ts >= launched_at - _BOOT_MARKER_SLOP_SECONDS
+
+
+def _open_dashboard_sync(
+    pd: Path, wait: bool = False, launched_at: float | None = None,
+) -> dict[str, Any]:
     """Open dashboard in browser — single implementation (AUD08-05).
 
     Prefers the live HTTP server (polling + liveness-checked port), falls
@@ -2208,8 +2299,12 @@ def _open_dashboard_sync(pd: Path, wait: bool = False) -> dict[str, Any]:
     ``wait=True`` (just launched the pipeline): poll the port file up to
     ~5 s while the orchestrator boots its server. ``wait=False`` (standalone
     open): one immediate check, no sleeping.
+
+    REPORTS30: with ``wait=True`` and a ``launched_at`` timestamp, the
+    boot marker decides — a reused port (stale marker) does NOT open a
+    second tab: it returns ``opened=False`` + the URL (the previous
+    launch's tab already shows this run). ``wait=False`` always opens.
     """
-    import time
     import webbrowser
 
     port_file = pd / ".agentic" / "state" / "dashboard_port"
@@ -2222,6 +2317,18 @@ def _open_dashboard_sync(pd: Path, wait: bool = False) -> dict[str, Any]:
                 port = 0
             if port and _port_alive(port):
                 url = f"http://127.0.0.1:{port}"
+                if (
+                    wait
+                    and launched_at is not None
+                    and not _boot_marker_fresh(pd, launched_at)
+                ):
+                    return {
+                        "opened": False,
+                        "url": url,
+                        "method": "http",
+                        "reused": True,
+                        "next_action": f"Dashboard already running at {url}",
+                    }
                 webbrowser.open(url)
                 return {"opened": True, "url": url, "method": "http"}
         if wait and attempt < attempts - 1:
