@@ -1211,3 +1211,15 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # Same class as above: unit-id references and test identifiers, not
 # debt. files_over_400 stays 73 (the new test file is 188 lines —
 # under the bar; awf/agent_stage.py was already over it).
+# REPORTS30 (TODO-0188, mid-window re-entry pin): baseline raised
+# 5103 -> 5121 — the new tests/negative/test_reports30_run_next_mid_window.py
+# adds 18 TODO-bearing lines: 6 in the module docstring (the
+# TODO-0103/TODO-0082 design references, the DONE-TODO-0188.md mutation
+# pointer, the M1-M3 mutant wording), 5 in the _mid_window_project /
+# helper fixtures (the TODO-0001 fixture id: _write_todo default, the
+# .ready path, the run_start/write_run fixture calls, the docstring
+# example) and 7 in the asserts (the current/queue fixture asserts of
+# _assert_owner_claim_intact, the two CAS-trace fixture lines, the
+# "активный TODO" wording). Same class as above: test identifiers and
+# unit references, not debt. files_over_400 stays 73 (the new test file
+# is 251 lines — under the bar; no production code touched).
