@@ -681,6 +681,7 @@ def _write_report(
     reason: str,
     summary: str = "",
     forced: bool = False,
+    stale_note: str = "",
 ) -> Path | None:
     """Write RUN-REPORT-{ts}.md to outbox. Returns the path (or None on OSError).
 
@@ -744,6 +745,11 @@ def _write_report(
                 f"**Closed with loss:** closed with unfinished unit "
                 f"{current_unit} (force)"
             )
+        # TODO-0196: the close gate cleared a stale stage state before the
+        # close — the report names it (unit + stage), so the owner sees the
+        # reset instead of a silent state-file disappearance.
+        if stale_note:
+            lines.append(f"**Stale state:** {stale_note}")
     # ORCH M1.1: the run plan — goal and criteria, when set (old runs and
     # runs started without a plan show nothing, as before).
     goal = str(state.get("goal") or "").strip()
@@ -1374,10 +1380,32 @@ def _leftover_signals(project_dir: Path, todo_id: str) -> list[str]:
 def _finish_facts(project_dir: Path, current: str) -> dict:
     """REPORTS29 (TODO-0170): what the close gate must weigh for the
     current unit — archived on disk, stage state cleared, pipeline
-    liveness. ``unfinished`` is the refusal condition."""
+    liveness. ``unfinished`` is the refusal condition.
+
+    TODO-0196: an archived unit on a dead pipeline owes no resume point —
+    a hanging stage state is STALE. The gate clears it via the stock
+    cleanup (``pipeline_state.clear_state``) and records the reset
+    (``stale_*``) for the RUN-REPORT; the refusal then keeps only its
+    original grounds (not archived / pipeline alive). Only the current
+    unit's own state is cleared — a state for another unit is someone
+    else's resume point and stays as is."""
     archived = _unit_archived(project_dir, current)
     running, pid, _source = _liveness.resolve(project_dir)
     pstate = pipeline_state.read_state(project_dir)
+    stale_cleared = False
+    stale_stage = ""
+    stale_todo = ""
+    if (
+        archived
+        and not running
+        and pstate is not None
+        and str(pstate.get("todo_id") or "") in ("", current)
+    ):
+        stale_stage = str(pstate.get("stage_name") or "")
+        stale_todo = str(pstate.get("todo_id") or current)
+        pipeline_state.clear_state(project_dir)
+        pstate = None
+        stale_cleared = True
     stage_cleared = pstate is None
     return {
         "archived": archived,
@@ -1386,6 +1414,9 @@ def _finish_facts(project_dir: Path, current: str) -> dict:
         "stage_cleared": stage_cleared,
         "stage": str((pstate or {}).get("stage_name") or ""),
         "stage_todo": str((pstate or {}).get("todo_id") or ""),
+        "stale_cleared": stale_cleared,
+        "stale_stage": stale_stage,
+        "stale_todo": stale_todo,
         "unfinished": (not archived) or (not stage_cleared) or running,
     }
 
@@ -1501,9 +1532,18 @@ def run_finish(
                 report_file="",
                 message=_finish_refusal(project_dir, current, facts),
             )
+    # TODO-0196: the close gate cleared a stale stage state on its way in —
+    # the report must record the reset, not pretend it was never there.
+    stale_note = ""
+    if facts.get("stale_cleared"):
+        stale_note = (
+            f"stale stage-state cleared before close "
+            f"({facts['stale_todo']}, stage {facts['stale_stage'] or '?'})"
+        )
     report = _write_report(
         project_dir, state, reason, summary,
         forced=force and bool(facts) and not facts.get("archived"),
+        stale_note=stale_note,
     )
     report_str = str(report) if report else ""
     run_state.write_run(

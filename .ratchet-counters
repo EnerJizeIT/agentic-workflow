@@ -1291,3 +1291,16 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # identifiers and unit references, not debt. files_over_400 stays 74
 # (the test file is 368 lines — under the bar; commit_gate.py was
 # already over it).
+# TODO-0196 (reports32 recovery): baseline raised 5291 -> 5317 (+26) —
+# the recovery unit adds 20 TODO-bearing lines in the new
+# tests/negative/test_reports32_recovery.py (docstring source lines,
+# the T/T2 = TODO-0001/TODO-0002 fixtures, the archive/signal path
+# asserts) and 6 in the fix sites: awf/pipeline_engine.py (the
+# silent-work retry comment + the _log marker), awf/api/run.py (the
+# stale-state gate comment + the report-line comment),
+# awf/api/_results.py + awf/api/lifecycle.py + awf/brief.py (the
+# zombie_state field comments), tests/unit/test_pipeline_engine.py
+# (the renamed continue-push test docstring). Same class as above:
+# unit-id references in test/docstring lines, not debt.
+# files_over_400 stays 74 (pipeline_engine.py / api/run.py were
+# already over the bar; the new test file is under it).

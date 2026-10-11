@@ -501,6 +501,30 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
     )
 
 
+def _zombie_state_hint(project_dir: Path, state: dict[str, Any]) -> str | None:
+    """TODO-0196: dead pipeline + stage state on disk + no decision signal
+    for the unit → the resume hint. None when a signal lies (another
+    surface owns that case) or the state names no unit."""
+    todo_id = str(state.get("todo_id") or "")
+    if not todo_id:
+        return None
+    outbox = paths.outbox(project_dir)
+    inbox = paths.inbox(project_dir)
+    for p in (
+        outbox / f"DONE-{todo_id}.ready",
+        outbox / f"BLOCKED-{todo_id}.ready",
+        outbox / f"REVIEW-{todo_id}.md",
+        inbox / f"APPROVE-{todo_id}.ready",
+    ):
+        if p.is_file():
+            return None
+    stage = str(state.get("stage_name") or "?")
+    return (
+        f"stage state lingers after engine death ({stage} for {todo_id}, "
+        f"no signal) → awf_continue(todo_id='{todo_id}')"
+    )
+
+
 def get_status(project_dir: Path) -> StatusResult:
     """Get current workflow state — active TODOs, progress, blocked, conflicts."""
     project_dir = Path(project_dir).resolve()
@@ -662,6 +686,14 @@ def get_status(project_dir: Path) -> StatusResult:
                 f"Review git diff, then ACK, retry, or split the task."
             )
 
+    # TODO-0196: zombie-state — the engine died with the stage state still
+    # on disk and no signal for the unit: without the hint the run limps in
+    # every status until someone notices. Salvage and a lying signal own
+    # their own surfaces; the running pipeline is normal.
+    zombie_state: str | None = None
+    if _state and not pipeline_running and not salvage_needed:
+        zombie_state = _zombie_state_hint(project_dir, _state)
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -683,6 +715,7 @@ def get_status(project_dir: Path) -> StatusResult:
         checkpoint_form_url=checkpoint_form_url,
         salvage_needed=salvage_needed,
         salvage_stage=salvage_stage,
+        zombie_state=zombie_state,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
         run_state=_run_brief(project_dir),

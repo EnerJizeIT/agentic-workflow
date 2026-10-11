@@ -107,8 +107,10 @@ class TestSilentExitFamily:
         assert not _state(project).get("salvage_needed")
         assert not (project / ".agentic" / "inbox" / "SALVAGE-TODO-0001.md").exists()
 
-    def test_silent_with_real_diff_no_retry(self, tmp_path, monkeypatch):
-        """Worker wrote a tracked change → no rerun risk, straight to salvage."""
+    def test_silent_with_real_diff_continue_push_then_salvage(self, tmp_path, monkeypatch):
+        """Worker wrote a tracked change but no signal → one continue-push
+        retry (the work is in the tree — finish it, do not redo it), then
+        salvage after the budget (TODO-0196, retry.silent_work_attempts=1)."""
         from conftest import _git_init
 
         # Real git repo: baseline sha = HEAD, worker edits a tracked file.
@@ -128,9 +130,13 @@ class TestSilentExitFamily:
         journal = _mock_pipeline(monkeypatch, behavior, baseline_sha=sha)
         result = _run_stage(project, tmp_path)
 
-        assert journal["runs"] == 1  # work evidence stops the retry loop
+        assert journal["runs"] == 2  # one continue-push retry before salvage
+        note = journal["retry_notes"][1]
+        assert "left WORK in the tree but NO signal" in note
+        assert "Do NOT redo" in note
         assert result[2] == 1
         assert _state(project).get("salvage_count") == 1
+        assert _state(project).get("sw_retry_count") == 1
 
     def test_stale_signal_from_previous_run_not_honored(self, project, tmp_path, monkeypatch):
         """A leftover DONE from an earlier attempt must not satisfy a new run."""

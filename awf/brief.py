@@ -33,10 +33,12 @@ MAX_WORDS = 900
 # shrank again (45 → 40 words) to pay for the stalled-stage line — same
 # rule: new card content is paid by the verbose blocks, not MAX_WORDS.
 # REPORTS26 F6 (TODO-0166): 40 → 32 words — the tool map gained the
-# awf_commit_workflow line.
+# awf_commit_workflow line. TODO-0196: 32 → 19 words — the State section
+# gained the zombie-state line (engine dead + stage state + no signal);
+# same rule, the line is paid by the changelog tail, not MAX_WORDS.
 _PHASE_PROMPT_MAX_WORDS = 45
 _CHANGELOG_MAX_LINES = 10
-_CHANGELOG_MAX_WORDS = 32
+_CHANGELOG_MAX_WORDS = 19
 _NEXT_ACTION_MAX_WORDS = 26
 
 SETUP_HINT = (
@@ -119,6 +121,10 @@ class BriefResult:
     # stage, TODO, quiet minutes, threshold. Computed from the stock
     # timestamps (current.yaml updated_at + the stage's log stamp).
     stall: str = ""
+    # TODO-0196: the zombie-state hint from the status ("" when none) —
+    # dead engine + stage state on disk + no signal; the State section
+    # names the resume (awf_continue).
+    zombie_state: str = ""
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -371,6 +377,8 @@ def _state_lines(r: BriefResult) -> list[str]:
         lines.append(f"- pipeline: RUNNING (PID {r.pipeline_pid}){stage}")
     if r.stall:
         lines.append(f"- stall: {r.stall}")
+    if r.zombie_state:
+        lines.append(f"- zombie-state: {r.zombie_state}")
     for t in r.active_todos:
         prog = t.get("progress")
         if prog:
@@ -585,6 +593,7 @@ def build_brief(
     pipeline_running = False
     pipeline_pid: int | None = None
     current_stage: str | None = None
+    zombie_state = ""
     if status is not None:
         active_todos = [dict(t) for t in status.active_todos]
         blocked = list(status.blocked_ids)
@@ -594,6 +603,13 @@ def build_brief(
         pipeline_running = status.pipeline_running
         pipeline_pid = status.pipeline_pid
         current_stage = status.current_stage_name
+        # TODO-0196: the zombie hint comes from the same status read the
+        # card already has — no extra state probing here.
+        zombie_state = str(
+            status.get("zombie_state") or ""
+            if isinstance(status, dict)
+            else getattr(status, "zombie_state", "") or ""
+        )
 
     # ORCH M4.2: the stalled-stage warning — the active stage's quiet
     # duration against the stock timestamps (current.yaml updated_at +
@@ -670,6 +686,7 @@ def build_brief(
         run_warning=run_warning,
         run_evidence_plan_lines=run_evidence_plan_lines,
         stall=stall,
+        zombie_state=zombie_state,
     )
     result.text = render_brief(result)
     return result

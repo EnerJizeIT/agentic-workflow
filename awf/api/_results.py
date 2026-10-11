@@ -59,6 +59,11 @@ class StatusResult:
     # DF5-4: salvage state (worker didn't signal)
     salvage_needed: bool = False
     salvage_stage: str | None = None
+    # TODO-0196: zombie-state — the pipeline is dead, the stage state still
+    # sits on disk, and no decision signal lies for the unit: the run limps
+    # in every status until someone resumes it. The hint text (with the
+    # exact awf_continue call) when detected; None otherwise.
+    zombie_state: str | None = None
     # RUN3 #1: named pipelines — active (config default_pipeline, "default"
     # when undeclared) + number of pipeline files in .agentic/pipelines/
     active_pipeline: str | None = None
