@@ -22,6 +22,7 @@ committed files as "foreign" (A-17).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -31,9 +32,16 @@ import time
 from pathlib import Path
 
 from . import commit_plan, git_utils, paths
+from ._atomic import atomic_write_text
 from ._log import log as _log
 
 APPROVE_POLL_INTERVAL: int = 2
+
+#: TODO-0195: the refusal marker for a quiet-diff skip over a NON-EMPTY
+#: plan (the unit's work reached HEAD outside the unit — catch-up commit,
+#: or HEAD moved since the baseline). The audit file and the RUN-REPORT
+#: key off this prefix.
+_PLAN_SKIP_INCONSISTENT = "plan-skip-inconsistent"
 
 
 def _safe_int_env(name: str, default: int) -> int:
@@ -208,6 +216,55 @@ def _sync_real_index(project_dir: Path, plan: commit_plan.CommitPlan) -> str:
     return ""
 
 
+def _short_paths(paths_list: list[str], cap: int = 10) -> str:
+    """The first ``cap`` paths for a refusal/audit message (… when more)."""
+    shown = paths_list[:cap]
+    more = len(paths_list) - len(shown)
+    return ", ".join(shown) + (f" …({more} more)" if more else "")
+
+
+def _unit_already_committed(
+    project_dir: Path, baseline_sha: str, todo_id: str
+) -> bool:
+    """TODO-0195: does HEAD already carry the unit's OWN commit?
+
+    The unit commit's subject is ``awf(<stage>): TODO-NNNN`` or
+    ``awf(<stage>): TODO-NNNN — <title>`` (REPORTS26 F3) — so the scan of
+    the ``baseline..HEAD`` subjects matches that FORMAT, not a bare id
+    mention (REVIEW-F2): a catch-up like «chore: pick up TODO-NNNN
+    leftovers» only MENTIONS the id and must not be mistaken for the unit's
+    own commit. This keeps the double-commit pipeline shape (the execute
+    stage committed, the verify stage re-runs the gate on the same tree —
+    the quiet diff is then honest, the unit's own commit is in HEAD) on the
+    legal-skip path. False (no unit-format commit in the range) makes the
+    non-empty-plan quiet diff a REFUSAL instead of a silent archive — the
+    0068 case: the work reached HEAD in someone else's catch-up commit and
+    the unit was archived without its commit.
+    """
+    if not baseline_sha or not todo_id:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%s", f"{baseline_sha}..HEAD"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,  # AUD04-11: hung git must not hang the commit gate
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    if result.returncode != 0:
+        return False
+    # REVIEW-F2: the unit's own commit is recognized by its OWN format
+    # (REPORTS26 F3), not by a bare id mention — re.match pins the start,
+    # (\\s|$) keeps the id boundary (TODO-0001 is not TODO-00012).
+    own_format = re.compile(rf"awf\([^)]*\):\s*{re.escape(todo_id)}(\s|$)")
+    return any(
+        own_format.match(line) for line in result.stdout.splitlines() if line.strip()
+    )
+
+
 def _commit_via_isolated_index(
     project_dir: Path,
     plan: commit_plan.CommitPlan,
@@ -258,9 +315,40 @@ def _commit_via_isolated_index(
             if _has_head(project_dir):
                 diff = _git_isolated(project_dir, ["diff", "--cached", "--quiet"], env)
                 if diff.returncode == 0:
+                    if not plan.files:
+                        return commit_plan.CommitOutcome(
+                            commit_plan.OUTCOME_SKIPPED,
+                            "the plan's files match HEAD — nothing to commit",
+                        )
+                    # TODO-0195 (рана G): a NON-EMPTY plan whose files all
+                    # match HEAD means the unit's work reached HEAD — but
+                    # WHOSE commit carries it is the question. The unit's
+                    # own earlier commit (the double-commit pipeline shape)
+                    # is an honest skip; anything else (a catch-up commit,
+                    # a moved HEAD) must not archive the unit silently.
+                    if _unit_already_committed(
+                        project_dir, plan.baseline_sha, plan.todo_id
+                    ):
+                        return commit_plan.CommitOutcome(
+                            commit_plan.OUTCOME_SKIPPED,
+                            "the plan's files match HEAD and the unit's own "
+                            "commit is already in HEAD (an earlier stage of "
+                            "this unit committed them) — nothing left to "
+                            "commit",
+                        )
                     return commit_plan.CommitOutcome(
-                        commit_plan.OUTCOME_SKIPPED,
-                        "the plan's files match HEAD — nothing to commit",
+                        commit_plan.OUTCOME_REFUSED,
+                        f"{_PLAN_SKIP_INCONSISTENT}: the plan's file set is "
+                        f"not empty ({len(plan.files)} file(s): "
+                        f"{_short_paths(list(plan.files))}) but every plan "
+                        "file matches HEAD and no unit commit is in "
+                        "baseline..HEAD — the unit's work reached HEAD "
+                        "outside the unit (a catch-up commit, or HEAD moved "
+                        "since the baseline). The silent archive is "
+                        "refused: the TODO stays active. Inspect "
+                        "`git log` (baseline..HEAD) for the plan's files, "
+                        "then re-verify (or re-dispatch when the work is "
+                        "genuinely missing).",
                     )
             result = _git_isolated(project_dir, ["commit", "-m", message], env)
         except (subprocess.SubprocessError, OSError) as e:
@@ -295,6 +383,42 @@ def _commit_via_isolated_index(
             os.unlink(index_path)
         except OSError:
             pass
+
+
+def _write_commit_audit(
+    project_dir: Path,
+    plan: commit_plan.CommitPlan,
+    outcome: commit_plan.CommitOutcome,
+    logs_dir: Path,
+) -> None:
+    """TODO-0195: ``context/COMMIT-AUDIT-{todo}.json`` — the per-unit fact
+    the RUN-REPORT renders («вне коммита остались»): the paths left outside
+    the commit with their reasons, the worker-staged files (included,
+    warned), and the refused silent skip (non-empty plan, files match
+    HEAD). Best effort: a failed write logs and moves on — the audit is a
+    trace, not a gate.
+    """
+    if not plan.todo_id:
+        return
+    skip_inconsistent = (
+        outcome.status == commit_plan.OUTCOME_REFUSED
+        and outcome.reason.startswith(_PLAN_SKIP_INCONSISTENT)
+    )
+    record = {
+        "todo_id": plan.todo_id,
+        "status": outcome.status,
+        "excluded": [[p, r] for p, r in plan.excluded],
+        "worker_staged": list(plan.worker_staged),
+        "skip_inconsistent": skip_inconsistent,
+        "skip_reason": outcome.reason if skip_inconsistent else "",
+    }
+    try:
+        atomic_write_text(
+            paths.context_dir(project_dir) / f"COMMIT-AUDIT-{plan.todo_id}.json",
+            json.dumps(record, ensure_ascii=False, indent=1) + "\n",
+        )
+    except OSError as e:
+        _log(logs_dir, f"TODO-0195: commit audit for {plan.todo_id} not written: {e}")
 
 
 def maybe_commit(
@@ -343,6 +467,13 @@ def maybe_commit(
 
     plan = commit_plan.build_commit_plan(project_dir, todo_id, baseline_sha)
 
+    # TODO-0195: every post-plan outcome (refused/skipped/committed/error)
+    # leaves the per-unit audit fact for the RUN-REPORT. The closure reads
+    # ``plan`` at call time, so the auto-mode refresh below is covered.
+    def _finalize(outcome: commit_plan.CommitOutcome) -> commit_plan.CommitOutcome:
+        _write_commit_audit(project_dir, plan, outcome, logs_dir)
+        return outcome
+
     refusal = commit_plan.verdict_refusal(plan, project_dir)
     if refusal:
         print(
@@ -351,7 +482,7 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"A-04: commit refused for {todo_id} — {refusal}")
-        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
 
     # BD-17: accept either APPROVE-{todo}.ready (from `awf approve` /
     # human) or ACK-{todo}.ready (from supervisor verify subprocess in
@@ -402,7 +533,7 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"A-15: commit refused for {todo_id} — {refusal}")
-        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
 
     # M2.1: the approval's binding — which run generation it was made in,
     # and the file set it covered. Runs after A-15 so a moved tree still
@@ -415,14 +546,27 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"M2.1: commit refused for {todo_id} — {refusal}")
-        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
 
     if not plan.files:
         print(f"No changes to commit — skip commit at '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
-        return commit_plan.CommitOutcome(
-            commit_plan.OUTCOME_SKIPPED, "no changes to commit"
+        return _finalize(
+            commit_plan.CommitOutcome(commit_plan.OUTCOME_SKIPPED, "no changes to commit")
         )
+
+    # TODO-0195: the worker staged files AFTER the baseline (a hard-rule
+    # violation) — its own work, so it JOINS the unit commit; the warning
+    # is the loud part (stderr + log), not a refusal.
+    if plan.worker_staged:
+        worker_warning = (
+            f"worker staged {len(plan.worker_staged)} file(s) after the "
+            f"baseline (the unit must not stage — hard rule): "
+            f"{_short_paths(list(plan.worker_staged))} — included in the "
+            "unit commit"
+        )
+        print(f"WARNING: {worker_warning}", file=sys.stderr)
+        _log(logs_dir, f"TODO-0195: {worker_warning}")
 
     outcome = _commit_via_isolated_index(
         project_dir,
@@ -447,4 +591,4 @@ def maybe_commit(
             logs_dir,
             f"Commit {outcome.status} at {stage_name} for {todo_id}: {outcome.reason}",
         )
-    return outcome
+    return _finalize(outcome)

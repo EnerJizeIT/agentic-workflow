@@ -313,6 +313,12 @@ class DispatchTodoResult:
     # Warning only (the dispatch never refuses); [] when the verify
     # commands carry no paths or all of them exist.
     verify_path_warnings: list[str] = field(default_factory=list)
+    # TODO-0195: the dirty tree at dispatch — tracked-dirty / staged /
+    # untracked non-ignored paths that pre-date the unit and will NOT
+    # enter its commit (gitignored and a clean tree → []). The warning is
+    # the loud part; the dispatch itself never refuses on dirt.
+    dirty_files: list[str] = field(default_factory=list)
+    dirty_warning: str = ""  # capped one-line warning; "" on a clean tree
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

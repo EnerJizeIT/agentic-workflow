@@ -1266,3 +1266,28 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # docstring's unit reference). Same class as above: test identifiers and
 # unit references, not debt. files_over_400 stays 74 (the new test file
 # is 293 lines — under the bar).
+# TODO-0195 (commit integrity): baseline raised 5222 -> 5275 (+53) —
+# the unit's TODO-0195 references in awf/commit_plan.py (12),
+# awf/commit_gate.py (8), awf/api/dispatch.py (5), awf/api/run.py (3),
+# awf/api/_results.py (1) and the TODO-0001 test ids of
+# tests/negative/test_reports32_commit_integrity.py (2), plus the
+# docstring/comment TODO lines of those files. Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays
+# 74 (the new test file is under the bar).
+# TODO-0195 (QA): baseline raised 5275 -> 5276 (+1) — the gitignore
+# fixture comment in tests/negative/test_audit25_r03f1_stale_index.py
+# (the COMMIT-AUDIT trace must not land in the next unit's plan).
+# TODO-0195 (REVIEW-F1/F2): baseline raised 5276 -> 5291 (+15) — the
+# review-fix tests add 13 TODO-bearing lines in
+# tests/negative/test_reports32_commit_integrity.py (test_d2b /
+# test_d3_named_catchup / test_f1_legacy_baseline: the TODO-NNNN
+# subject-format docstring lines, the «chore: pick up TODO-0001
+# leftovers» catch-up subject fixtures, the TODO id use-sites in
+# build_commit_plan / maybe_commit / the COMMIT-AUDIT- and
+# BASELINE-{TODO}.status path asserts) and 2 in awf/commit_gate.py
+# (the REVIEW-F2 _unit_already_committed docstring line naming the
+# «chore: pick up TODO-NNNN leftovers» catch-up + the regex-boundary
+# comment TODO-0001 is not TODO-00012). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 74
+# (the test file is 368 lines — under the bar; commit_gate.py was
+# already over it).

@@ -13,6 +13,7 @@ rejected twice, or the previous TODO is not finished.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import threading
@@ -617,6 +618,63 @@ def _goal_check_lines(state: dict, reason: str, salvage: int) -> list[str]:
     return lines
 
 
+def _read_commit_audit(project_dir: Path, todo_id: str) -> dict | None:
+    """TODO-0195: ``context/COMMIT-AUDIT-{todo}.json`` — the commit gate's
+    per-unit fact (excluded paths + reasons, worker-staged, the refused
+    silent skip). None when absent or unreadable (degrade, not crash)."""
+    f = paths.context_dir(project_dir) / f"COMMIT-AUDIT-{todo_id}.json"
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
+    """TODO-0195: the RUN-REPORT section «вне коммита остались» — the
+    per-unit commit audits: the paths left outside the commit with the
+    reason, the worker-staged files (included in the commit, warned), and
+    the refused silent skips. No facts → no section (nothing to say)."""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in todo_ids:
+        todo = str(raw or "")
+        if not todo or todo in seen:
+            continue
+        seen.add(todo)
+        audit = _read_commit_audit(project_dir, todo)
+        if not audit:
+            continue
+        excluded = [
+            (str(e[0]), str(e[1]))
+            for e in (audit.get("excluded") or [])
+            if isinstance(e, (list, tuple)) and len(e) == 2
+        ]
+        if excluded:
+            lines.append(
+                f"- {todo} — outside the commit: "
+                + ", ".join(f"{p} ({r})" for p, r in excluded)
+            )
+        worker_staged = [str(f) for f in (audit.get("worker_staged") or [])]
+        if worker_staged:
+            lines.append(
+                f"- {todo} — worker staged {len(worker_staged)} file(s) after "
+                "the baseline (included in the unit commit): "
+                + ", ".join(worker_staged)
+            )
+        if audit.get("skip_inconsistent"):
+            lines.append(
+                f"- {todo} — the commit gate refused the silent skip "
+                "(non-empty plan, all plan files match HEAD): "
+                + str(audit.get("skip_reason") or "")[:200]
+            )
+    if not lines:
+        return []
+    return ["## Outside the commit", ""] + lines + [""]
+
+
 def _write_report(
     project_dir: Path,
     state: dict,
@@ -730,6 +788,12 @@ def _write_report(
             else:
                 lines.append(f"- {todo}: {verdict}")
         lines.append("")
+    # TODO-0195: what the unit commits left outside the commit (path +
+    # reason) and the refused silent skips — the completed units, the
+    # current one, and the rejected attempts (all deduped in the helper).
+    lines += _outside_commit_lines(
+        project_dir, [current_unit, *completed, *rejects.keys()]
+    )
     # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,
     # so the owner can audit the run after the fact. The approve entries
     # carry the evidence excerpt (the full text stays in RUN-EVIDENCE).
