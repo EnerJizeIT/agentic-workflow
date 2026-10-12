@@ -138,6 +138,14 @@ def run_create(args: Any) -> int:
     print(f"Created: {result.role_file}")
     if from_skill:
         print(f"  (content copied from skill '{from_skill}')")
+    # REPORTS32 (TODO-0202): name where the model actually lives — the
+    # config entry is written by add_role now, so the old "Add model
+    # config" manual step is gone (the .md line stays in sync as reference).
+    if result.model_config:
+        print(
+            f"Model: {result.model} → {result.model_config} in "
+            ".agentic/config.yaml (the .md line is kept in sync)"
+        )
     print()
     if draft:
         print("Next steps:")
@@ -149,6 +157,5 @@ def run_create(args: Any) -> int:
         return 0
     print("Next steps:")
     print(f"  1. Edit the role instructions in {result.role_file}")
-    print(f"  2. Add model config to .agentic/config.yaml under models:{role_name}")
-    print(f"  3. Add a stage to your pipeline YAML that uses role: {role_name}")
+    print(f"  2. Add a stage to your pipeline YAML that uses role: {role_name}")
     return 0

@@ -1266,3 +1266,116 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # docstring's unit reference). Same class as above: test identifiers and
 # unit references, not debt. files_over_400 stays 74 (the new test file
 # is 293 lines — under the bar).
+# TODO-0195 (commit integrity): baseline raised 5222 -> 5275 (+53) —
+# the unit's TODO-0195 references in awf/commit_plan.py (12),
+# awf/commit_gate.py (8), awf/api/dispatch.py (5), awf/api/run.py (3),
+# awf/api/_results.py (1) and the TODO-0001 test ids of
+# tests/negative/test_reports32_commit_integrity.py (2), plus the
+# docstring/comment TODO lines of those files. Same class as above:
+# test identifiers and unit references, not debt. files_over_400 stays
+# 74 (the new test file is under the bar).
+# TODO-0195 (QA): baseline raised 5275 -> 5276 (+1) — the gitignore
+# fixture comment in tests/negative/test_audit25_r03f1_stale_index.py
+# (the COMMIT-AUDIT trace must not land in the next unit's plan).
+# TODO-0195 (REVIEW-F1/F2): baseline raised 5276 -> 5291 (+15) — the
+# review-fix tests add 13 TODO-bearing lines in
+# tests/negative/test_reports32_commit_integrity.py (test_d2b /
+# test_d3_named_catchup / test_f1_legacy_baseline: the TODO-NNNN
+# subject-format docstring lines, the «chore: pick up TODO-0001
+# leftovers» catch-up subject fixtures, the TODO id use-sites in
+# build_commit_plan / maybe_commit / the COMMIT-AUDIT- and
+# BASELINE-{TODO}.status path asserts) and 2 in awf/commit_gate.py
+# (the REVIEW-F2 _unit_already_committed docstring line naming the
+# «chore: pick up TODO-NNNN leftovers» catch-up + the regex-boundary
+# comment TODO-0001 is not TODO-00012). Same class as above: test
+# identifiers and unit references, not debt. files_over_400 stays 74
+# (the test file is 368 lines — under the bar; commit_gate.py was
+# already over it).
+# TODO-0196 (reports32 recovery): baseline raised 5291 -> 5317 (+26) —
+# the recovery unit adds 20 TODO-bearing lines in the new
+# tests/negative/test_reports32_recovery.py (docstring source lines,
+# the T/T2 = TODO-0001/TODO-0002 fixtures, the archive/signal path
+# asserts) and 6 in the fix sites: awf/pipeline_engine.py (the
+# silent-work retry comment + the _log marker), awf/api/run.py (the
+# stale-state gate comment + the report-line comment),
+# awf/api/_results.py + awf/api/lifecycle.py + awf/brief.py (the
+# zombie_state field comments), tests/unit/test_pipeline_engine.py
+# (the renamed continue-push test docstring). Same class as above:
+# unit-id references in test/docstring lines, not debt.
+# files_over_400 stays 74 (pipeline_engine.py / api/run.py were
+# already over the bar; the new test file is under it).
+# TODO-0197 (REPORTS32 events/status): baseline raised 5317 -> 5337
+# (+20) — the unit adds 8 TODO-bearing lines in the new
+# tests/negative/test_reports32_events_status.py (the T1/T2/T3 =
+# TODO-0001/0002/0003 constants, the "TODO.md" archive fixture line, the
+# module docstring's unit/incident reference lines and the
+# "называет TODO-0001" test docstring line) and 12 in the fix sites
+# (the TODO-0197 unit references in awf/api/wait_event.py docstrings and
+# the out-of-run comment (5), awf/api/pipeline.py's start_pipeline
+# comment (1), awf/api/_results.py's checkpoint_warning /
+# standalone_todos field comments (2), awf/api/lifecycle.py's get_status
+# comment (1) and awf/brief.py's BriefResult field + rendering/build
+# comments (3)). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 74 (the new test file is
+# under the bar; the touched modules were already over it).
+# REPORTS32 (TODO-0198, awf_run_revise append/insert): baseline raised
+# 5337 -> 5370 (+33) — the unit adds 26 TODO-bearing lines in the new
+# tests/negative/test_reports32_revise_append.py (the module docstring's
+# unit/incident references, the T1/T2/T3 = TODO-0001/0002/0003 and
+# NEW/NEW2 = TODO-0004/0005 constants, the _write_todo / fixture and
+# assert use-sites, the "no TODO file" refusal docstring) and 7 in the
+# fix sites (the REPORTS32 unit references in awf/api/run.py's
+# _revision_items / run_revise docstrings and the TODO-file-missing
+# refusal reason, awf/run_state.py's append_revision /
+# _normalize_revision docstrings, awf/api/_results.py's RunReviseResult
+# docstring and the agent_workflow_ui tools/awf.py awf_run_revise
+# docstring). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 74 (the new test file is
+# 398 lines — under the bar; the touched modules were already over it).
+# REPORTS32 (TODO-0200, prove-red command mode: diffed test files +
+# the pipe guard): baseline raised 5370 -> 5382 — the new
+# tests/negative/test_reports32_prove_red_command.py adds 12
+# TODO-bearing lines (the module docstring's TODO-0100 report
+# reference, the TODO_ID = "TODO-0001" constant and its fixture/assert
+# use-sites in the nine tests). Same class as above: test identifiers
+# and unit references, not debt. files_over_400 stays 74 (the new test
+# file is 300 lines — under the bar; the touched production modules
+# were already over it).
+# TODO-0201 (coverage kind: prove_red_kind + prove_red_note): baseline
+# raised 5382 -> 5393 (+11) — the new
+# tests/negative/test_reports32_coverage_kind.py adds 5 TODO-bearing
+# lines (the module docstring's unit reference, the T = "TODO-0001"
+# constant, the "# TODO" lines of the two contract fixtures, the
+# _cov_repo docstring's "inbox TODO" wording) and the production diff
+# adds 6 (awf/unit_contract.py: the docstring + the _CONTRACT_KEYS
+# comment unit references; awf/verify_pack.py: the docstring's
+# TODO-0201 line, the _coverage_hint docstring line, the coverage
+# branch comment and the hint text's "in the TODO contract" line).
+# Same class as above: test identifiers and unit references, not debt.
+# files_over_400 stays 74 (the new test file is 231 lines — under the
+# bar; the touched production modules were already over it).
+# REPORTS32 (TODO-0202, add_role writes the model to config.yaml + the
+# status/brief "office"): baseline raised 5393 -> 5404 (+11) — the 11
+# TODO-0202 unit references: 3 in awf/api/roles.py (the config-write
+# header comment, the add_role docstring line, the add_role write comment),
+# 2 in awf/brief.py (the BriefResult.office field comment + the build_brief
+# extraction comment), 2 in awf/api/_results.py (the AddRoleResult.
+# model_config + the StatusResult.office field comments), 1 each in
+# awf/api/lifecycle.py (the get_status office comment), awf/cmd_add_role.py
+# (the CLI model-locus comment) and agent_workflow_ui tools/awf.py (the
+# awf_add_role docstring line), and 1 in the new
+# tests/negative/test_reports32_role_model_config.py (module docstring).
+# Same class as above: unit-id references and a test identifier, not debt.
+# files_over_400 stays 74 (the new test file is 364 lines — under the bar;
+# the touched production modules were already over it).
+# REPORTS32 (TODO-0203, preset catalog of roles "office" + models=):
+# baseline raised 5404 -> 5410 (+6) — the 6 unit-id references: 1 in
+# awf/api/roles.py (the seed section header comment), 1 in
+# awf/api/_results.py (the SeedRolesResult docstring), 1 in
+# agent_workflow_ui tools/awf.py (the awf_add_role docstring line),
+# 2 in the new tests/negative/test_reports32_role_preset.py (module
+# docstring: the TODO-0203 unit id + the TODO-0202 mechanism reference),
+# 1 in awf/api/roles.py (the models-pass comment citing the TODO-0202
+# merge). Same class as above: unit-id references, not debt.
+# files_over_400 stays 74 (the new test file is 322 lines — under the
+# bar; the touched production modules were already over it).

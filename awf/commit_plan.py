@@ -19,7 +19,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import git_utils, paths, run_state
@@ -55,6 +55,21 @@ class CommitPlan:
     verified_sha: str | None
     files: tuple[str, ...]
     expected_verdict: str = "approved"
+    # TODO-0195: the baseline the file set was read against ("" when the
+    # no-baseline full-change-set path was used). The gate's quiet-diff
+    # check needs it to find the unit's own commit in baseline..HEAD.
+    baseline_sha: str = ""
+    # TODO-0195: what the plan leaves OUTSIDE the unit commit, as
+    # (path, reason) pairs — reasons: "staged-at-baseline" (foreign WIP in
+    # the index at dispatch), "staged" (legacy fallback: no baseline
+    # status snapshot, the staged-vs-baseline proxy), "pre-existing
+    # untracked". () when the no-baseline path was used or nothing was
+    # excluded.
+    excluded: tuple[tuple[str, str], ...] = ()
+    # TODO-0195: paths the worker staged AFTER the baseline (a hard-rule
+    # violation) — they ARE in ``files`` (the worker's own work joins the
+    # unit commit); the gate warns, it does not refuse. () otherwise.
+    worker_staged: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,25 +85,98 @@ class CommitOutcome:
     sha: str = ""
 
 
-def _files_changed_since_baseline(
-    project_dir: Path,
-    baseline_sha: str,
-    todo_id: str = "",
-) -> list[str]:
-    """A1 fix: list files changed since baseline SHA.
+def _status_path(token: str) -> str:
+    """The path in a ``git status --short`` token.
 
-    Returns relative paths (POSIX). Empty list on error or no baseline.
+    A staged rename/copy carries ``ORIG -> DEST``; the diffs show the
+    DEST, so that is what the exclusion set must hold.
+    """
+    token = token.strip()
+    if " -> " in token:
+        token = token.rsplit(" -> ", 1)[1].strip()
+    return token
 
-    QA-1: ``todo_id`` used to locate ``BASELINE-{todo_id}.untracked`` snapshot
-    so pre-existing untracked files are excluded from worker commit.
 
-    Now combines:
-    1. ``git diff --name-only <sha>`` — modified tracked files since baseline.
+def staged_at_baseline(project_dir: Path, todo_id: str) -> set[str] | None:
+    """TODO-0195: the paths the index already held at baseline time.
+
+    ``create_baseline`` snapshots ``git status --short`` into
+    ``BASELINE-{todo_id}.status``; an entry whose index column (XY: X) is
+    neither blank nor ``?`` was STAGED at dispatch. Only those are the
+    unit's "foreign WIP": files staged AFTER the baseline are the worker's
+    own (a hard-rule violation, but its work) and join the unit commit.
+
+    None when the snapshot is absent or unreadable (a legacy baseline, e.g.
+    the auto-created one carries only ``.sha``): the caller falls back to
+    the legacy rule (subtract everything staged vs the baseline at commit
+    time) and marks the plan.
+    """
+    if not todo_id:
+        return None
+    status_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.status"
+    if not status_file.is_file():
+        return None
+    try:
+        text = status_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    staged: set[str] = set()
+    for line in text.splitlines():
+        if len(line) < 4:
+            continue
+        if line[0] in (" ", "?"):
+            continue  # clean or untracked — not in the index
+        staged.add(_status_path(line[3:]))
+    return staged
+
+
+@dataclass(frozen=True)
+class PlanSplit:
+    """TODO-0195: one pass over the tree → the unit's commit set and what
+    it leaves outside.
+
+    - ``files`` — the exact commit content (what the gate commits).
+    - ``excluded`` — (path, reason) pairs for the tracked change /
+      untracked file the baseline diff saw but the plan leaves outside:
+      "staged-at-baseline" (foreign WIP in the index at dispatch),
+      "staged" (legacy fallback — no baseline status snapshot, the
+      staged-vs-baseline proxy), "pre-existing untracked".
+    - ``worker_staged`` — paths staged AFTER the baseline (the worker
+      violated the hard rule); they are in ``files`` — the commit gate
+      warns, it does not refuse.
+    - ``legacy_fallback`` — True when ``BASELINE-{todo}.status`` was
+      missing and the legacy whole-staged subtraction was used.
+    """
+
+    files: list[str]
+    excluded: list[tuple[str, str]] = field(default_factory=list)
+    worker_staged: list[str] = field(default_factory=list)
+    legacy_fallback: bool = False
+
+
+def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
+    """A1 + TODO-0195: the unit's commit file set + its exclusions.
+
+    Combines:
+    1. ``git diff --name-only <sha>`` — modified tracked files since
+       baseline (staged and unstaged alike).
     2. ``git ls-files --others --exclude-standard`` — new untracked files
-       (respects .gitignore — awf runtime dirs stay excluded).
+       (respects .gitignore — awf runtime dirs stay excluded), minus the
+       pre-existing ones from ``BASELINE-{todo_id}.untracked`` (QA-1).
+
+    The foreign-staged subtraction (R-03/A-01) is now baseline-anchored
+    (TODO-0195, рана C): ONLY the paths the index held at dispatch
+    (``BASELINE-{todo_id}.status``) are subtracted. A file staged after
+    the baseline (the worker's ``git add``) stays in the plan and is
+    reported as ``worker_staged``. No status snapshot (legacy baseline) →
+    the old whole-staged-vs-baseline subtraction, marked
+    ``legacy_fallback``.
+
+    Returns an empty :class:`PlanSplit` on error or no baseline (the gate
+    degrades to its no-changes path, as before).
     """
     if not baseline_sha:
-        return []
+        return PlanSplit(files=[])
 
     # 1. Modified tracked files
     try:
@@ -108,18 +196,24 @@ def _files_changed_since_baseline(
                     f"WARNING: git diff vs baseline {baseline_sha!r} failed "
                     f"(rc={result.returncode}): {result.stderr.strip()}",
                 )
-            return []
-        modified = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            return PlanSplit(files=[])
+        modified_raw = [
+            line.strip() for line in result.stdout.splitlines() if line.strip()
+        ]
     except (subprocess.SubprocessError, OSError):
-        return []
+        return PlanSplit(files=[])
 
-    # R-03: subtract what the user's index staged against the baseline.
-    # The unit never stages (worker hard rule); anything staged vs baseline
-    # is the user's WIP. With the isolated index it can no longer leak into
-    # the commit, so the plan EXCLUDES it instead of refusing (A-01).
+    # R-03 + TODO-0195: the foreign-staged set. The unit never stages
+    # (worker hard rule); what the user's index held AT BASELINE is foreign
+    # WIP and is excluded from the plan. What the worker staged AFTER the
+    # baseline is its own work — it joins the plan and is reported
+    # (``worker_staged``) so the gate can warn. The index-vs-HEAD diff is
+    # what "the worker staged, not yet committed" means: after the unit's
+    # own commit (the double-commit pipeline shape) the index matches HEAD
+    # and nothing is reported.
     try:
-        foreign = subprocess.run(
-            ["git", "diff", "--cached", "--name-only", baseline_sha],
+        staged_head = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
             cwd=project_dir,
             capture_output=True,
             text=True,
@@ -127,20 +221,60 @@ def _files_changed_since_baseline(
             timeout=30,  # AUD04-11
         )
     except (subprocess.SubprocessError, OSError):
-        return []  # can't tell what is foreign — no plan, no commit
-    if foreign.returncode != 0:
+        return PlanSplit(files=[])  # can't tell what is staged — no plan, no commit
+    if staged_head.returncode != 0:
         logs_dir = project_dir / ".agentic" / "logs"
         if logs_dir.is_dir():
             _log(
                 logs_dir,
-                f"WARNING: git diff --cached vs baseline {baseline_sha!r} failed "
-                f"(rc={foreign.returncode}): {foreign.stderr.strip()}",
+                f"WARNING: git diff --cached failed "
+                f"(rc={staged_head.returncode}): {staged_head.stderr.strip()}",
             )
-        return []
-    foreign_paths = {
-        line.strip() for line in foreign.stdout.splitlines() if line.strip()
+        return PlanSplit(files=[])
+    staged_vs_head = {
+        _status_path(line) for line in staged_head.stdout.splitlines() if line.strip()
     }
-    modified = [p for p in modified if p not in foreign_paths]
+
+    baseline_staged = staged_at_baseline(project_dir, todo_id)
+    legacy = baseline_staged is None
+    if legacy:
+        # No baseline status snapshot (legacy/auto baseline): the old rule
+        # — subtract everything the index staged vs the baseline NOW.
+        try:
+            foreign = subprocess.run(
+                ["git", "diff", "--cached", "--name-only", baseline_sha],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,  # AUD04-11
+            )
+        except (subprocess.SubprocessError, OSError):
+            return PlanSplit(files=[])
+        if foreign.returncode != 0:
+            logs_dir = project_dir / ".agentic" / "logs"
+            if logs_dir.is_dir():
+                _log(
+                    logs_dir,
+                    f"WARNING: git diff --cached vs baseline {baseline_sha!r} failed "
+                    f"(rc={foreign.returncode}): {foreign.stderr.strip()}",
+                )
+            return PlanSplit(files=[])
+        foreign_paths = {
+            _status_path(line) for line in foreign.stdout.splitlines() if line.strip()
+        }
+        if todo_id:
+            _log(
+                project_dir / ".agentic" / "logs",
+                f"TODO-0195: no BASELINE-{todo_id}.status snapshot (legacy "
+                "baseline) — the whole staged-vs-baseline set is treated "
+                "as foreign (old rule)",
+            )
+    else:
+        foreign_paths = baseline_staged
+
+    modified = [p for p in modified_raw if p not in foreign_paths]
+    worker_staged = sorted(staged_vs_head - foreign_paths)
 
     # 2. Untracked files (new files worker created since baseline)
     # QA-1: exclude pre-existing untracked files (existed before baseline).
@@ -155,13 +289,13 @@ def _files_changed_since_baseline(
             timeout=30,  # AUD04-11
         )
         if untracked_result.returncode == 0:
-            untracked = [
+            untracked_now = [
                 line.strip() for line in untracked_result.stdout.splitlines() if line.strip()
             ]
         else:
-            untracked = []
+            untracked_now = []
     except (subprocess.SubprocessError, OSError):
-        untracked = []
+        untracked_now = []
 
     # QA-1: filter out files that were already untracked at baseline time.
     # BASELINE-{todo_id}.untracked was written by create_baseline().
@@ -181,6 +315,7 @@ def _files_changed_since_baseline(
                 file=sys.stderr,
             )
 
+    pre_existing: set[str] = set()
     if baseline_untracked_path and baseline_untracked_path.exists():
         try:
             pre_existing = {
@@ -188,19 +323,58 @@ def _files_changed_since_baseline(
                 for line in baseline_untracked_path.read_text(encoding="utf-8").splitlines()
                 if line.strip()
             }
-            untracked = [f for f in untracked if f not in pre_existing]
+            untracked_new = [f for f in untracked_now if f not in pre_existing]
         except OSError:
-            pass  # best effort — if can't read, include all untracked
+            untracked_new = untracked_now  # best effort — include all untracked
+    else:
+        untracked_new = untracked_now
 
     # Combine + dedupe (a file could be in both lists if it was deleted
     # then re-created). Order: modified first, then new untracked.
     seen: set[str] = set()
     combined: list[str] = []
-    for path in [*modified, *untracked]:
+    for path in [*modified, *untracked_new]:
         if path and path not in seen:
             seen.add(path)
             combined.append(path)
-    return combined
+
+    # TODO-0195: what the plan left outside (with the reason) — the raw
+    # baseline-diff set minus the commit set. REVIEW-F1: the reason is
+    # precise in BOTH branches — a path excluded because it is foreign
+    # staged (foreign_paths — baseline-anchored or the legacy staged-vs-
+    # baseline proxy) is "staged-at-baseline"/"staged" respectively;
+    # everything else left outside is a pre-existing untracked file.
+    files_set = set(combined)
+    excluded: list[tuple[str, str]] = []
+    for path in dict.fromkeys([*modified_raw, *untracked_now]):
+        if not path or path in files_set:
+            continue
+        if path in (foreign_paths or ()):
+            reason = "staged" if legacy else "staged-at-baseline"
+        else:
+            reason = "pre-existing untracked"
+        excluded.append((path, reason))
+
+    return PlanSplit(
+        files=combined,
+        excluded=sorted(excluded),
+        worker_staged=worker_staged,
+        legacy_fallback=legacy,
+    )
+
+
+def _files_changed_since_baseline(
+    project_dir: Path,
+    baseline_sha: str,
+    todo_id: str = "",
+) -> list[str]:
+    """A1 fix: list files changed since baseline SHA.
+
+    Thin compatibility wrapper over :func:`_plan_split` (TODO-0195): the
+    commit set only, without the exclusion facts. Returns relative paths
+    (POSIX). Empty list on error or no baseline.
+    """
+    return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
 
 
 def _all_changed_files(project_dir: Path) -> list[str]:
@@ -290,7 +464,7 @@ def plan_files(
     their digests are computed over the same file set by construction.
     """
     if baseline_sha:
-        return _files_changed_since_baseline(project_dir, baseline_sha, todo_id=todo_id)
+        return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
     return _all_changed_files(project_dir)
 
 
@@ -353,6 +527,10 @@ def build_commit_plan(
     - ``files``: the baseline diff (A1 isolation) when ``baseline_sha`` is
       given, the full change set (legacy ``git add -A`` back-compat)
       otherwise.
+    - ``excluded`` / ``worker_staged`` (TODO-0195): what the plan leaves
+      outside the commit (path + reason) and what the worker staged after
+      the baseline (included, the gate warns) — the same pass that built
+      ``files``, so the facts always describe the committed set.
     """
     generation = 0
     try:
@@ -364,12 +542,22 @@ def build_commit_plan(
 
     verified = _read_verified_sha(project_dir, todo_id)
 
-    files = plan_files(project_dir, baseline_sha, todo_id)
+    if baseline_sha:
+        split = _plan_split(project_dir, baseline_sha, todo_id)
+        return CommitPlan(
+            todo_id=todo_id,
+            generation=generation,
+            verified_sha=verified,
+            files=tuple(split.files),
+            baseline_sha=baseline_sha,
+            excluded=tuple(split.excluded),
+            worker_staged=tuple(split.worker_staged),
+        )
     return CommitPlan(
         todo_id=todo_id,
         generation=generation,
         verified_sha=verified,
-        files=tuple(files),
+        files=tuple(_all_changed_files(project_dir)),
     )
 
 

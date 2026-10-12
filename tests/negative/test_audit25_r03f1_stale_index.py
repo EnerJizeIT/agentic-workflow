@@ -93,6 +93,13 @@ def test_second_unit_commit_keeps_touched_file(tmp_git_repo: Path):
     repo = tmp_git_repo
     logs = _logs(repo)
 
+    # Runtime dir ignored (init projects do the same via update_gitignore):
+    # the gate's COMMIT-AUDIT trace (TODO-0195) must not land in the NEXT
+    # unit's plan as untracked — it is runtime state, not unit work.
+    (repo / ".gitignore").write_text(".agentic/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "gitignore"], cwd=repo, check=True)
+
     # юнит 1: рабочая правка файла, коммит через гейт
     base1 = _head(repo)
     (repo / "README.md").write_text("v1\n", encoding="utf-8")

@@ -687,6 +687,23 @@ def _silent_retry_note(attempt: int, todo_id: str) -> str:
     )
 
 
+def _silent_work_retry_note(attempt: int, todo_id: str) -> str:
+    """TODO-0196: push text for a stage retried after a silent exit that
+    LEFT WORK in the tree. The previous run changed files but ended without
+    the signal — the retry continues the work instead of redoing it."""
+    return (
+        f"## ⚠️ RETRY {attempt}: previous attempt left WORK in the tree but NO signal\n"
+        f"The stage restarted because the previous run wrote file changes but did\n"
+        f"not create DONE-{todo_id}.ready — the work exists, only the finish is missing.\n"
+        f"Do NOT redo or rewrite what is already in the tree: check git status / git\n"
+        f"diff, continue from where the previous run stopped, and finish the work.\n"
+        f"Finish by creating the signal file:\n"
+        f"  touch .agentic/outbox/DONE-{todo_id}.ready\n"
+        f"If you truly cannot proceed, create the BLOCKED signal instead of ending\n"
+        f"with plain text.\n"
+    )
+
+
 def _declared_output_problem(
     project_dir: Path, output: str, stage_start_wall: float,
 ) -> str:
@@ -1039,6 +1056,21 @@ def execute_agent_stage(
         except (TypeError, ValueError):
             net_retries = 0
 
+    # TODO-0196: the silent-exit-WITH-WORK budget — the worker left a diff
+    # but no signal. A continue-push ("the work is already in the tree —
+    # do not redo it, finish with the signal") instead of an instant
+    # salvage. Separate from the no-work silent budget above; persisted in
+    # state like the net counter (keyed by (TODO, stage)) so a kill+continue
+    # does not hand out a fresh budget. The attempt loop stays the hard cap.
+    SILENT_WORK_LIMIT = _cfg_int(config, "retry.silent_work_attempts", 1)
+    if _prev_net_state.get("sw_retry_key") != net_key:
+        sw_retries = 0
+    else:
+        try:
+            sw_retries = int(_prev_net_state.get("sw_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            sw_retries = 0
+
     log_holder: dict[str, str] = {}
     signal = None
     # U6c: bound BEFORE the attempt loop — the crash path (except branch)
@@ -1046,12 +1078,18 @@ def execute_agent_stage(
     # below still needs the prefixes.
     prefixes = expected_signal_prefixes(s_kind)
     worker_run = 0  # cumulative worker run number (handoff fact "worker run")
+    # TODO-0196: the retry note is decided at the retry point (the no-work
+    # and the with-work paths push different texts) and consumed by the
+    # next iteration. Always None at loop breaks — a decision sets it
+    # immediately before `continue`.
+    pending_note: str | None = None
     for _net_round in range(net_limit + 1):
         net_retry_scheduled = False
         for attempt_no in range(MAX_SILENT_RETRIES + 1):
             import time as _time
             agent_start = _time.monotonic()
-            retry_note = _silent_retry_note(attempt_no, current_todo) if attempt_no else None
+            retry_note = pending_note
+            pending_note = None
             worker_run += 1
             try:
                 _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
@@ -1130,10 +1168,41 @@ def execute_agent_stage(
                 )
                 break  # scheduled → next net round; exhausted → failure path
 
-            # dogfood-11: no signal — retry only when the worker left NO work
-            # evidence. With work present, salvage lets the supervisor ACK it;
-            # a rerun could overwrite or duplicate usable changes.
+            # TODO-0196: no signal, but the stage LEFT WORK in the tree —
+            # only the finish (the signal) is missing. A continue-push with
+            # its own budget (retry.silent_work_attempts) instead of an
+            # instant salvage: the retry continues the work instead of
+            # redoing it. After the budget — the salvage path below, as
+            # before. (Net deaths above are classified first and keep their
+            # own budget — unchanged.)
             worker_has_work = stage_produced_work
+            if worker_has_work and sw_retries < SILENT_WORK_LIMIT:
+                # TOCTOU guard (same as the no-work retry): a signal may
+                # have landed between the wait timeout above and this
+                # decision — a valid signal must never be deleted by the
+                # retry cleanup.
+                signal = read_signal_for_todo(outbox, current_todo, *prefixes)
+                if signal:
+                    break
+                sw_retries += 1
+                print(
+                    f"Worker exited with work in the tree but no signal — "
+                    f"continue-push retry ({sw_retries}/{SILENT_WORK_LIMIT})...",
+                    file=sys.stderr,
+                )
+                _log(logs_dir, f"TODO-0196: silent exit WITH work — continue-push "
+                    f"retry {sw_retries}/{SILENT_WORK_LIMIT} for {s_name} "
+                    f"(elapsed={agent_elapsed:.0f}s, diff in tree, no signal)")
+                _ws(project_dir, sw_retry_count=sw_retries, sw_retry_key=net_key,
+                    logs_dir=logs_dir)
+                pending_note = _silent_work_retry_note(sw_retries, current_todo)
+                from .signals import clean_stage_signals
+                clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                continue
+
+            # dogfood-11: no signal — retry only when the worker left NO work
+            # evidence (the work-present case takes the continue-push retry
+            # above). A rerun of an empty stage risks nothing.
             if attempt_no < MAX_SILENT_RETRIES and not worker_has_work:
                 # TOCTOU guard (dogfood-11): a signal may have landed between the
                 # wait timeout above and this cleanup (e.g. the worker wrote DONE
@@ -1153,6 +1222,7 @@ def execute_agent_stage(
                     f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
                 from .signals import clean_stage_signals
                 clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                pending_note = _silent_retry_note(attempt_no + 1, current_todo)
                 continue
 
             break

@@ -657,20 +657,22 @@ class TestSalvageEscalation:
         )
         assert rc == 1, "verify commit-gate timeout must stop the pipeline"
 
-    def test_no_retry_when_work_present(self, tmp_path, monkeypatch):
-        """Worker left changes (diff) → straight to salvage, no rerun.
+    def test_work_present_continue_push_then_salvage(self, tmp_path, monkeypatch):
+        """Worker left changes (diff) but no signal → one continue-push
+        retry ("the work is in the tree — do not redo it"), then salvage
+        after the budget (TODO-0196, retry.silent_work_attempts=1).
 
-        Retrying over existing work could overwrite or duplicate it; the
-        supervisor ACK path handles partial work better. NEG-4: the check is
-        stage-scoped — a fingerprint taken at stage entry vs after the run.
+        NEG-4: the work check is stage-scoped — a fingerprint taken at
+        stage entry vs after the run.
         """
         project = tmp_path / "proj"
         (project / ".agentic" / "outbox").mkdir(parents=True)
 
-        calls = {"n": 0}
+        calls = {"n": 0, "notes": []}
 
         def mock_agent(stage, todo_id, project_dir, config, logs_dir, **kw):
             calls["n"] += 1
+            calls["notes"].append(kw.get("retry_note"))
 
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
@@ -697,9 +699,14 @@ class TestSalvageEscalation:
             pipeline_name=None,
         )
 
-        assert calls["n"] == 1  # no retry — work evidence stops the loop
+        assert calls["n"] == 2  # one continue-push retry, then salvage
+        assert calls["notes"][0] is None
+        assert "left WORK in the tree but NO signal" in calls["notes"][1]
+        assert "Do NOT redo" in calls["notes"][1]
         from awf.pipeline_state import read_state
-        assert read_state(project).get("salvage_count") == 1
+        state = read_state(project)
+        assert state.get("salvage_count") == 1
+        assert state.get("sw_retry_count") == 1
 
     def test_silent_retry_note_content(self):
         note = pipeline_engine._silent_retry_note(2, "TODO-0042")

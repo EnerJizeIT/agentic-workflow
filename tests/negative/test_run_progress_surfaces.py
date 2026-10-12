@@ -117,15 +117,15 @@ STALL_WARNING_RE = re.compile(
     r"^- stall: .+ — quiet for \d+ min \(limit \d+ min\)$"
 )
 
-# The 1.6.0 changelog entry as the card's 40-word "What's new" clip
-# renders it — the exact tail the CI card carried (PR #30 failure log).
-_CHANGELOG_160 = (
+# The 1.6.0 changelog entry as the card's "What's new" clip renders it
+# (TODO-0196: the clip shrank to 19 words to pay for the zombie-state
+# line) — the worst-case "What's new" block for the word-budget test.
+# Keeps the substring "stall" the TODO-0154 tests match against.
+_CHANGELOG_CARD = (
     "## [1.6.0] — 2026-09-29\n"
     "\n"
-    "ORCH milestones M4–M7: the supervisor can stop and revise a running unit,\n"
-    "sees stalled stages and reconciles the run against its goal, gets a formal\n"
-    "stage result, creates project roles mid-run, and configures the worker\n"
-    "composition …\n"
+    "Run control: stop and revise a running unit, stalled-stage warnings,\n"
+    "run plan …\n"
 )
 
 
@@ -156,7 +156,7 @@ class TestStalledStageBrief:
         )
         _set_stall_minutes(proj, 30)
         _make_stalled_stage(proj, 95)
-        monkeypatch.setattr(_brief, "latest_changelog", lambda: _CHANGELOG_160)
+        monkeypatch.setattr(_brief, "latest_changelog", lambda: _CHANGELOG_CARD)
         card = api.brief(proj)
         assert card.stall
         line = _stall_line(card)
@@ -202,7 +202,7 @@ class TestStalledStageBrief:
         proj = _project(tmp_git_repo)
         api.run_start(proj, queue=[T])
         _make_stalled_stage(proj, 95)
-        monkeypatch.setattr(_brief, "latest_changelog", lambda: _CHANGELOG_160)
+        monkeypatch.setattr(_brief, "latest_changelog", lambda: _CHANGELOG_CARD)
         monkeypatch.setattr(
             _brief, "load_recovery", lambda: "The plugin package is not installed."
         )

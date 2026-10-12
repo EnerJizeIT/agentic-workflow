@@ -29,13 +29,17 @@ Sections (each: status + details + denominator):
    fix advice.
 6. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
    each with a timeout (``run_tree``).
-7. ``prove_red`` — the contract's ``prove_red`` list through
-   :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
-   mutually exclusive ``prove_red_pin`` list runs the same baseline check
-   but for regression shields of EXISTING behavior: green on the baseline
-   is ``pin-ok`` (a pass, the teeth are proven by mutation outside the
-   tool), red on the baseline is a ``fail`` (a finding, not a pin), and a
-   collection error is ``broken-runner``.
+  7. ``prove_red`` — the contract's ``prove_red`` list through
+    :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
+    mutually exclusive ``prove_red_pin`` list runs the same baseline check
+    but for regression shields of EXISTING behavior: green on the baseline
+    is ``pin-ok`` (a pass, the teeth are proven by mutation outside the
+    tool), red on the baseline is a ``fail`` (a finding, not a pin), and a
+    collection error is ``broken-runner``. The declared coverage kind
+    (TODO-0201, ``prove_red_kind: coverage`` + ``prove_red_note``) makes a
+    ``not-red`` verdict a pass (annotated, with the note in the report);
+    an UNdeclared ``not-red`` on a tests-only diff gets a hint line
+    suggesting the declaration — the verdict is never auto-substituted.
 8. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
    explicitly marked as executor data (unverified).
 9. ``lint`` — ``ruff check .``.
@@ -65,6 +69,7 @@ from .prove_red import (
     VERDICT_GREEN_AFTER,
     VERDICT_NOT_RED,
     VERDICT_RED_OK,
+    _looks_like_test_file,
     prove_red,
 )
 from .unit_contract import parse_done_json, parse_todo_contract, render_done_json
@@ -485,6 +490,61 @@ def _contract_tests_section(project: Path, contract: dict | None, timeout: int) 
     return s
 
 
+def _changed_paths(project: Path, todo_id: str) -> list[str] | None:
+    """The unit's changed paths vs its baseline — mirrors the ``diff``
+    section: tracked changes (modified or deleted) + new untracked, minus
+    the pre-baseline untracked and bytecode noise. None when the diff
+    cannot be measured (no baseline, an unreadable baseline file, or a
+    git error)."""
+    baseline_file = paths.context_dir(project) / f"BASELINE-{todo_id}.sha"
+    sha = ""
+    if baseline_file.is_file():
+        try:
+            raw = baseline_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        sha = raw.splitlines()[0] if raw else ""
+    if not sha:
+        return None
+    rc, names = _git_lines(project, "diff", "--name-only", sha)
+    if rc != 0:
+        return None
+    rc, untracked = _git_lines(project, "ls-files", "--others", "--exclude-standard")
+    untracked_set = set(untracked.splitlines()) if rc == 0 and untracked else set()
+    old_untracked_file = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
+    old_untracked: set[str] = set()
+    if old_untracked_file.is_file():
+        try:
+            old_untracked = {
+                ln.strip()
+                for ln in old_untracked_file.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            }
+        except OSError:
+            old_untracked = set()
+    changed = {f for f in names.splitlines() if f and not _is_noise(f)}
+    changed |= {f for f in untracked_set - old_untracked if not _is_noise(f)}
+    return sorted(changed)
+
+
+def _coverage_hint(project: Path, todo_id: str) -> str | None:
+    """TODO-0201: the auto-detect hint for an UNDECLARED not-red.
+
+    The unit's diff is non-empty and every changed path looks like a test
+    file (so no source was touched): a coverage unit by construction,
+    where not-red is expected. A hint line for the GATES report only —
+    the verdict is NOT altered (no auto-substitution)."""
+    changed = _changed_paths(project, todo_id)
+    if not changed or not all(_looks_like_test_file(f) for f in changed):
+        return None
+    return (
+        "hint: the diff is tests-only (no source changed) and the verdict "
+        "is not-red — this looks like a coverage unit; declare "
+        "`prove_red_kind: coverage` + `prove_red_note:` in the TODO "
+        "contract"
+    )
+
+
 def _prove_red_section(
     project: Path,
     todo_id: str,
@@ -513,13 +573,41 @@ def _prove_red_section(
             measured=True,
             detail="error",
         )
-    status = "pass" if res.verdict == VERDICT_RED_OK else "fail"
     lines = [
         f"verdict: {res.verdict} (exit {res.exit_code}) — baseline {res.baseline_sha[:12]}",
         res.message,
     ]
     for w in res.warnings:
         lines.append(f"warning: {w}")
+    kind = contract.get("prove_red_kind")
+    # TODO-0201: a declared coverage unit — not-red is expected by
+    # construction (the tests guard already-implemented behavior), so it
+    # is a pass with the justification; every other verdict is unchanged
+    # (the declaration exempts nothing else).
+    if kind == "coverage" and res.verdict == VERDICT_NOT_RED:
+        note = contract.get("prove_red_note")
+        lines.append(
+            "coverage unit — not-red is expected (declared "
+            "`prove_red_kind: coverage`): the tests guard "
+            "already-implemented behavior, so they are green on this "
+            "unit's baseline by construction."
+        )
+        if isinstance(note, str) and note.strip():
+            lines.append(f"note: {note.strip()}")
+        return Section(
+            name="prove_red",
+            status="pass",
+            lines=lines,
+            measured=True,
+            detail="coverage-ok (declared not-red)",
+        )
+    # An undeclared not-red keeps its fail; a tests-only diff suggests the
+    # unit is coverage (a hint line only, the verdict is untouched).
+    if res.verdict == VERDICT_NOT_RED and kind is None:
+        hint = _coverage_hint(project, todo_id)
+        if hint:
+            lines.append(hint)
+    status = "pass" if res.verdict == VERDICT_RED_OK else "fail"
     return Section(
         name="prove_red",
         status=status,

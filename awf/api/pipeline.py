@@ -1167,6 +1167,17 @@ def start_pipeline(
         # — the new unit's commit would absorb its edits. Say so in the answer.
         orphan_warn = orphan_worker_warning(project_dir)
 
+        # TODO-0197 (REPORTS32 п.3): the background launch will open the
+        # BD-36 plan checkpoint form at the plan stage — name it in the
+        # answer (a single awf_start used to open the form silently).
+        # checkpoint_active already folds in no_checkpoints/auto/env/config.
+        checkpoint_warn = ""
+        if background and checkpoint_active:
+            checkpoint_warn = (
+                "A planned BD-36 checkpoint form will open at the plan "
+                "stage — pass no_checkpoints=true to skip it."
+            )
+
         if background:
             # A-02: the PID file is written inside start_in_background, so
             # the shared liveness resolver now sees the child.
@@ -1211,6 +1222,7 @@ def start_pipeline(
                 log_file=str(log_file),
                 exit_code=None,
                 message=msg,
+                checkpoint_warning=checkpoint_warn,
             )
 
         # Dogfood-8: foreground + checkpoint enabled = incompatible

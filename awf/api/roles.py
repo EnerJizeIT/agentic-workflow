@@ -14,6 +14,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from .. import config as cfg_mod
 from .. import paths
 from .._atomic import atomic_write_text
@@ -26,6 +28,7 @@ from ._results import (
     AnalyzeRolesResult,
     DiscardRoleDraftResult,
     RoleDraftsResult,
+    SeedRolesResult,
 )
 from ._templates import _ROLE_TEMPLATE
 
@@ -239,6 +242,232 @@ def _strip_yaml_frontmatter(content: str) -> str:
     return content  # opening fence without a closing one — not frontmatter
 
 
+# ─── add_role: config.yaml model write (REPORTS32, TODO-0202) ────────────
+#
+# The config is the source of truth for a role's model
+# (awf/supervisor.py get_role_model reads ``models.<role>.model``). Before
+# REPORTS32, ``add_role(model=…)`` wrote only the ``**Модель:**`` line in
+# the role file and left the config entry a manual step — "easy to be
+# fooled into thinking the role is already configured". Now the explicit
+# ``model=`` is also merged into ``.agentic/config.yaml``.
+#
+# The write is a SURGICAL text edit, not a full yaml re-dump: a re-dump
+# would drop the user's comments in config.yaml (the hard rules forbid
+# touching what is not the model entry). The edit is validated before the
+# file is written: the result must parse as YAML and carry the exact
+# value, otherwise the original file is left untouched.
+
+
+def _yaml_scalar(value: str) -> str:
+    """Canonical YAML scalar for *value* (round-trips through safe_load).
+
+    A top-level scalar document may carry a ``...`` document-end marker
+    (    plain scalars do) — only the scalar line itself is kept, so the
+    value can be embedded in a mapping without ending the document.
+    """
+    for line in yaml.safe_dump(value, default_flow_style=False).splitlines():
+        line = line.strip()
+        if line and line != "...":
+            return line
+    return ""
+
+
+def _line_indent(line: str) -> int:
+    """Number of leading spaces (YAML indent is spaces, not tabs)."""
+    return len(line) - len(line.lstrip(" "))
+
+
+class _StrictYamlLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate mapping keys.
+
+    Plain PyYAML silently tolerates duplicates (last one wins) — writing a
+    config with two ``qa:`` lines would be a structural corruption the
+    engine reads as "the last one", so the validator must catch it.
+    """
+
+
+def _construct_no_dup_mapping(loader, node):
+    seen = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=False)
+        if key in seen:
+            raise yaml.YAMLError(f"duplicate key {key!r} in mapping")
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=False)
+
+
+_StrictYamlLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_no_dup_mapping,
+)
+
+
+def _validate_config_update(new_text: str, role_name: str, model: str) -> None:
+    """The edit must round-trip: valid YAML with the exact value set.
+
+    Raises :class:`AwfApiError` otherwise — the caller does not write the
+    file, so a failed edit can never corrupt config.yaml. Duplicate mapping
+    keys (silently tolerated by plain PyYAML) are refused too.
+    """
+    try:
+        data = yaml.load(new_text, Loader=_StrictYamlLoader)
+    except yaml.YAMLError as e:
+        raise AwfApiError(
+            f"config.yaml edit for models.{role_name}.model produced invalid "
+            f"YAML — the file was left untouched: {e}"
+        ) from e
+    models = data.get("models") if isinstance(data, dict) else None
+    entry = models.get(role_name) if isinstance(models, dict) else None
+    got = entry.get("model") if isinstance(entry, dict) else None
+    if got != model:
+        raise AwfApiError(
+            f"config.yaml edit for models.{role_name}.model did not take "
+            f"(got {got!r}, want {model!r}) — the file was left untouched."
+        )
+
+
+def _compute_config_update(
+    raw: str, role_name: str, model: str
+) -> tuple[str, str] | None:
+    """Surgically set ``models.<role_name>.model`` in *raw* config text.
+
+    Returns ``(new_text, description)`` when a write is needed, or
+    ``None`` when the value already equals *model* (idempotent no-op).
+    Every other byte (comments, unrelated keys, ordering) is preserved.
+    """
+    value = _yaml_scalar(model)
+    lines = raw.split("\n")
+
+    # Idempotency: the value is already there (as a YAML value) → no-op.
+    try:
+        data = yaml.safe_load(raw) or {}
+    except yaml.YAMLError:
+        data = {}
+    models = data.get("models") if isinstance(data, dict) else None
+    entry = models.get(role_name) if isinstance(models, dict) else None
+    current = entry.get("model") if isinstance(entry, dict) else None
+    if current == model:
+        return None
+
+    # Locate the top-level ``models:`` key (column 0, optional comment).
+    models_idx = next(
+        (i for i, ln in enumerate(lines) if re.match(r"^models:\s*(#.*)?$", ln)),
+        None,
+    )
+
+    if models_idx is None:
+        # No models section: append one (trim trailing blank lines first).
+        out = list(lines)
+        while out and not out[-1].strip():
+            out.pop()
+        if out:
+            out.append("")
+        out += ["models:", f"  {role_name}:", f"    model: {value}"]
+        new_text = "\n".join(out)
+        if not new_text.endswith("\n"):
+            new_text += "\n"
+        _validate_config_update(new_text, role_name, model)
+        return new_text, "created the models section"
+
+    # The models block spans until the next top-level key (column 0,
+    # non-blank, non-comment) or EOF.
+    block_end = len(lines)
+    for i in range(models_idx + 1, len(lines)):
+        ln = lines[i]
+        if ln.strip() and not ln.lstrip().startswith("#") and _line_indent(ln) == 0:
+            block_end = i
+            break
+
+    # Role-key indent = the shallowest content line in the block; the
+    # child delta comes from the first existing role's first child
+    # (2-space files → 2, 4-space → 4; default 2).
+    role_indent: int | None = None
+    child_delta = 2
+    for i in range(models_idx + 1, block_end):
+        ln = lines[i]
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        ind = _line_indent(ln)
+        if role_indent is None:
+            role_indent = ind
+        elif ind > role_indent:
+            child_delta = ind - role_indent
+            break
+    if role_indent is None:
+        # ``models:`` with no entries (empty block).
+        role_indent = 2
+
+    role_re = re.compile(rf"^\s*{re.escape(role_name)}:\s*(#.*)?$")
+    role_idx = None
+    for i in range(models_idx + 1, block_end):
+        if role_re.match(lines[i]) and _line_indent(lines[i]) == role_indent:
+            role_idx = i
+            break
+
+    if role_idx is not None:
+        # The role block spans until a line back at (or above) role_indent.
+        role_block_end = block_end
+        for i in range(role_idx + 1, block_end):
+            ln = lines[i]
+            if (
+                ln.strip()
+                and not ln.lstrip().startswith("#")
+                and _line_indent(ln) <= role_indent
+            ):
+                role_block_end = i
+                break
+        model_re = re.compile(r"^(\s*)model:\s*(.*)$")
+        model_idx = None
+        for i in range(role_idx + 1, role_block_end):
+            m = model_re.match(lines[i])
+            if m:
+                model_idx = i
+                break
+        if model_idx is not None:
+            indent = " " * _line_indent(lines[model_idx])
+            lines[model_idx] = f"{indent}model: {value}"
+            desc = "updated the existing model value"
+        else:
+            # Add the model key as the role block's last child.
+            child_indent = None
+            for i in range(role_idx + 1, role_block_end):
+                ln = lines[i]
+                if (
+                    ln.strip()
+                    and not ln.lstrip().startswith("#")
+                    and _line_indent(ln) > role_indent
+                ):
+                    child_indent = _line_indent(ln)
+                    break
+            if child_indent is None:
+                child_indent = role_indent + child_delta
+            insert_idx = role_idx + 1
+            for i in range(role_idx + 1, role_block_end):
+                if lines[i].strip():
+                    insert_idx = i + 1
+            lines.insert(
+                insert_idx, f"{' ' * child_indent}model: {value}"
+            )
+            desc = "added the model key to the role block"
+    else:
+        # No role block: append one at the end of the models block.
+        insert_idx = models_idx + 1
+        for i in range(models_idx + 1, block_end):
+            if lines[i].strip():
+                insert_idx = i + 1
+        lines[
+            insert_idx:insert_idx
+        ] = [
+            f"{' ' * role_indent}{role_name}:",
+            f"{' ' * (role_indent + child_delta)}model: {value}",
+        ]
+        desc = "added the role block under models"
+
+    new_text = "\n".join(lines)
+    _validate_config_update(new_text, role_name, model)
+    return new_text, desc
+
+
 def add_role(
     project_dir: Path,
     role_name: str,
@@ -288,6 +517,20 @@ def add_role(
     The config stays the source of truth — the engine behavior is
     unchanged; ``check_model_config`` cross-checks the line.
     ``AddRoleResult.model`` is the resolved model ("" when unassigned).
+
+    REPORTS32 (TODO-0202): an explicit ``model=`` is ALSO merged into
+    ``.agentic/config.yaml`` as ``models.<role_name>.model`` (the config
+    is the source of truth the engine reads) — the manual "add model
+    config" step is gone. The merge is a comment-preserving surgical
+    edit: it creates the ``models:`` section when absent, never touches
+    unrelated keys, is idempotent (same model → no rewrite), and refuses
+    (leaving the file untouched) if the result would not round-trip as
+    valid YAML. The ``**Модель:**`` line in the role file stays in sync
+    as the human reference. Only a non-empty ``model=`` writes the
+    config; a model resolved from the config is already there, and the
+    draft path (ORCH M5.1) never touches the config.
+    ``AddRoleResult.model_config`` names the written locus
+    (``models.<role_name>.model``) when the config was set, "" otherwise.
     """
     # RUN3 #3: from_skill is public input — slug-validated first, because
     # it also supplies the default role name.
@@ -389,13 +632,276 @@ def add_role(
             f"Role file already exists: {role_file} — edit it in place "
             "(add_role only creates new roles)."
         )
+
+    # REPORTS32 (TODO-0202): an explicit ``model=`` is also merged into
+    # config.yaml (the engine's source of truth). Compute AND VALIDATE the
+    # edit before the role file is written, so a failed edit never leaves
+    # an orphaned role file. ``draft`` never touches the config (ORCH M5.1);
+    # a model already resolved from the config is a no-op.
+    config_path = paths.config_file(project_dir)
+    config_update = None
+    model_config = ""
+    if model.strip() and not draft:
+        raw_cfg = (
+            config_path.read_text(encoding="utf-8")
+            if config_path.is_file()
+            else ""
+        )
+        config_update = _compute_config_update(
+            raw_cfg, role_name, model.strip()
+        )
+        # The model is (or already is) the config's — name the locus so the
+        # caller knows where it lives, whether this call wrote it or a
+        # previous one did (idempotent no-op).
+        model_config = f"models.{role_name}.model"
+
     atomic_write_text(role_file, content)
+
+    if config_update is not None:
+        atomic_write_text(config_path, config_update[0])
 
     return AddRoleResult(
         role_name=role_name,
         role_file=str(role_file),
         model=resolved_model,
+        model_config=model_config,
     )
+
+
+# ─── Role preset seeding (REPORTS32, TODO-0203) ─────────────────────────
+#
+# The "typical office" is assembled by hand in every project: each role
+# copied from its agent-* skill one by one, then models.<role>.model
+# written into config.yaml manually. A preset catalog makes it one call.
+# The catalog is embedded (it is awf's own office, not user data); skill
+# search mirrors from_skill: project .opencode/skills/ first, then
+# $XDG_CONFIG_HOME/opencode/skills/. A missing skill is a NOTE (a row in
+# the result), not an error — the machine decides which part of the
+# office it can afford. Existing role files are user data: never touched,
+# never overwritten (the hard rule — there is no force on this path).
+
+
+#: role slug → source skill. "product" lands in the office only when its
+#: skill exists on the machine (the skip row says so).
+OFFICE_PRESET: tuple[tuple[str, str], ...] = (
+    ("system-analyst", "agent-system-analyst"),
+    ("spec-writer", "agent-spec-writer"),
+    ("architector", "agent-architector"),
+    ("project-auditor", "agent-project-auditor"),
+    ("qa-review", "agent-qa-review"),
+    ("qa-table", "agent-qa-table"),
+    ("auditor-table", "agent-auditor-table"),
+    ("product", "agent-product"),
+)
+
+#: preset name → catalog. New presets are added here, not in callers.
+PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
+    "office": OFFICE_PRESET,
+}
+
+
+def seed_roles(
+    project_dir: Path,
+    *,
+    preset: str = "office",
+    models: dict[str, str] | None = None,
+) -> SeedRolesResult:
+    """Seed the built-in role catalog into an existing project.
+
+    Example (MCP): ``awf_add_role(project_dir=..., preset="office",
+    models={"qa-review": "vllm/llm"})``.
+
+    For every ``(role, skill)`` pair of the preset catalog:
+    - the role file ``.agentic/roles/<role>.md`` exists → skipped
+      (``"already exists"``) — an existing role is user data and is never
+      touched or overwritten (no force on this path);
+    - the skill is not found (project ``.opencode/skills/<skill>/``
+      first, then ``$XDG_CONFIG_HOME/opencode/skills/<skill>/`` — the
+      same search as ``from_skill``) → skipped
+      (``"skill not found: <skill>"``) — a note, not an error;
+    - otherwise the role is created through :func:`add_role`
+      (``from_skill`` content: provenance comment + body, front-matter
+      stripped; the uniform model line per the resolved model).
+
+    ``models={role: model}`` writes the role→model mapping into
+    ``.agentic/config.yaml`` as ``models.<role>.model`` — the same
+    surgical, comment-preserving, idempotent merge as the explicit
+    ``model=`` of :func:`add_role` (the config is the source of truth the
+    engine reads). Keys are validated against the preset catalog (an
+    unknown key is a typed refusal). Models are applied to every catalog
+    role they name — created in this run (via the add_role path, so the
+    role file's model line stays in sync) or already present (config
+    only, the role file is not touched).
+
+    The answer is the table the owner reads to check the office:
+    ``created`` (role / role_file / skill / model), ``skipped``
+    (role / reason), ``models`` (role / model / locus / action —
+    ``written`` or ``unchanged`` on an idempotent repeat). A second call
+    on the same project is a no-op: created empty, everything skipped,
+    config and role files byte-for-byte untouched.
+
+    Raises :class:`AwfApiError` on an unknown preset or a ``models=`` key
+    outside the preset catalog (nothing is written in that case).
+    """
+    preset = (preset or "").strip().lower()
+    if preset not in PRESETS:
+        raise AwfApiError(
+            f"Unknown preset {preset!r}. Available presets: "
+            + ", ".join(sorted(PRESETS))
+            + "."
+        )
+    catalog = PRESETS[preset]
+    catalog_roles = [role for role, _ in catalog]
+
+    normalized_models: dict[str, str] = {}
+    for key, value in (models or {}).items():
+        slug = str(key).strip().lower()
+        if slug not in catalog_roles:
+            raise AwfApiError(
+                f"models= key {key!r} is not a role of the {preset!r} "
+                f"preset. Preset roles: {', '.join(catalog_roles)}."
+            )
+        model = str(value or "").strip()
+        if model:
+            normalized_models[slug] = model
+
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    roles_dir = project_dir / ".agentic" / "roles"
+    # Pre-creation snapshot of the config: it labels the models= rows of
+    # the roles this run creates (written vs already there) — the file
+    # itself is re-read after the run for the remaining roles.
+    config_path = paths.config_file(project_dir)
+    pre_cfg = (
+        config_path.read_text(encoding="utf-8")
+        if config_path.is_file()
+        else ""
+    )
+    created: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for role, skill in catalog:
+        if (roles_dir / f"{role}.md").is_file():
+            skipped.append({"role": role, "reason": "already exists"})
+            continue
+        try:
+            _find_skill_file(skill, project_dir)
+        except AwfApiError:
+            skipped.append(
+                {"role": role, "reason": f"skill not found: {skill}"}
+            )
+            continue
+        model = normalized_models.get(role, "")
+        result = add_role(project_dir, role, from_skill=skill, model=model)
+        created.append(
+            {
+                "role": role,
+                "role_file": result.role_file,
+                "skill": skill,
+                "model": result.model,
+            }
+        )
+
+    # models → config.yaml (the TODO-0202 mechanism: surgical, validated,
+    # idempotent). Roles created above already carry their model in the
+    # config (add_role merged it with the file write); the pass below
+    # covers the rest and reports the truth for every models= entry.
+    models_rows: list[dict[str, str]] = []
+    raw_cfg = (
+        config_path.read_text(encoding="utf-8")
+        if config_path.is_file()
+        else ""
+    )
+    created_roles = {row["role"] for row in created}
+    for role in catalog_roles:
+        model = normalized_models.get(role)
+        if not model:
+            continue
+        if role in created_roles:
+            action = (
+                "unchanged"
+                if _compute_config_update(pre_cfg, role, model) is None
+                else "written"
+            )
+        else:
+            update = _compute_config_update(raw_cfg, role, model)
+            if update is None:
+                action = "unchanged"
+            else:
+                raw_cfg = update[0]
+                atomic_write_text(config_path, raw_cfg)
+                action = "written"
+        models_rows.append(
+            {
+                "role": role,
+                "model": model,
+                "locus": f"models.{role}.model",
+                "action": action,
+            }
+        )
+
+    return SeedRolesResult(
+        preset=preset, created=created, skipped=skipped, models=models_rows
+    )
+
+
+# ─── Office: who is on the team and on which model (REPORTS32) ──────────
+
+
+def role_model_office(project_dir: Path) -> list[dict[str, Any]]:
+    """One call: the project's roles, their model, and where it comes from.
+
+    For every live ``.agentic/roles/*.md`` (the draft area excluded — a
+    candidate is not team yet) report ``{"role", "model", "source"}``:
+
+    - ``source="config"`` — ``models.<role>.model`` is set in
+      ``.agentic/config.yaml`` (the source of truth; ``model`` is that
+      value);
+    - ``source="md"`` — the model is set ONLY in the role file's
+      ``**Модель:**`` line (``model`` is that value);
+    - ``source="none"`` — no model anywhere (``model`` is None).
+
+    Sorted by slug. Deliberately narrower than ``check_model_config``
+    (which validates models against opencode.json): this only answers
+    «who do I have and on which model» (awf_status / awf_brief office
+    section).
+    """
+    project_dir = Path(project_dir).resolve()
+
+    config_data = cfg_mod.load(project_dir)
+    models_cfg = cfg_mod.get(config_data, "models", {}) or {}
+    if not isinstance(models_cfg, dict):
+        models_cfg = {}
+
+    roles_dir = paths.agentic_dir(project_dir) / "roles"
+    entries: list[dict[str, Any]] = []
+    if roles_dir.is_dir():
+        for f in sorted(roles_dir.glob("*.md")):
+            if not f.is_file():
+                continue
+            role = f.stem
+            role_cfg = models_cfg.get(role)
+            config_model = (
+                role_cfg.get("model") if isinstance(role_cfg, dict) else None
+            )
+            if not isinstance(config_model, str) or not config_model.strip():
+                config_model = None
+            md_model: str | None = None
+            try:
+                md_model = parse_role_model_line(
+                    f.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeDecodeError):
+                md_model = None
+
+            if config_model:
+                model, source = config_model, "config"
+            elif md_model:
+                model, source = md_model, "md"
+            else:
+                model, source = None, "none"
+            entries.append({"role": role, "model": model, "source": source})
+    return entries
 
 
 # ─── Role draft area (ORCH M5.1) ────────────────────────────────────────
@@ -1022,4 +1528,5 @@ __all__ = [
     "AnalyzeError",
     "discard_role_draft",
     "list_role_drafts",
+    "role_model_office",
 ]

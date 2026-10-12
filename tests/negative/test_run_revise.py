@@ -223,7 +223,13 @@ def test_apply_refused_when_current_element_requested(tmp_git_repo: Path, monkey
     assert not state.get("revisions")
 
 
-def test_apply_refused_when_todo_not_in_queue(tmp_git_repo: Path, monkeypatch) -> None:
+def test_apply_not_in_queue_is_append_or_missing_file_refusal(
+    tmp_git_repo: Path, monkeypatch
+) -> None:
+    """REPORTS32 (TODO-0198): "not in the run queue" is no longer a blind
+    conflict — the third outcome is APPEND/INSERT. Without the inbox TODO
+    file the new element is refused (the launch would not find it); with
+    the file it is appended (test_reports32_revise_append.py)."""
     proj = _project(tmp_git_repo)
     for t in (T1, T2, T3):
         _write_todo(proj, t)
@@ -233,8 +239,16 @@ def test_apply_refused_when_todo_not_in_queue(tmp_git_repo: Path, monkeypatch) -
         proj, queue=[{"todo_id": "TODO-0099", "pipeline": ALT}], reason="why", key="k1"
     )
     assert result.action == "refused"
-    assert result.conflicts[0]["reason"] == "not in the run queue"
+    assert "TODO file" in result.conflicts[0]["reason"]
     assert not run_state.read_run(proj).get("revisions")
+
+    # with a launchable TODO file the same request is an APPEND
+    _write_todo(proj, "TODO-0099")
+    appended = api.run_revise(
+        proj, queue=[{"todo_id": "TODO-0099", "pipeline": ALT}], reason="why", key="k2"
+    )
+    assert appended.action == "applied"
+    assert appended.changes[0]["class"] == "appended"
 
 
 def test_apply_refused_when_completed_requested(tmp_git_repo: Path, monkeypatch) -> None:

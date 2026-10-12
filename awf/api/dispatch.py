@@ -15,13 +15,17 @@ import re
 import shlex
 from pathlib import Path
 
-from .. import paths
+from .. import git_utils, paths
 from .._atomic import atomic_write_text
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
 from ._helpers import require_awf_project
 from ._results import DispatchTodoResult
 from .pipeline import create_baseline
+
+#: TODO-0195: the dirty-tree warning lists at most this many files
+#: (the rest as "…N more") — the same cap convention as the untracked one.
+_DIRTY_WARNING_CAP = 10
 
 # REPORTS26 F5: a TODO number in the FIRST line's heading (a copied
 # template keeps its old title). Only the first line counts — a
@@ -130,6 +134,47 @@ def _missing_verify_paths(project_dir: Path, tokens: list[str]) -> list[str]:
     return [t for t in tokens if not (project_dir / t).exists()]
 
 
+def _dirty_tree_files(project_dir: Path) -> list[str]:
+    """TODO-0195: the paths that are NOT clean at dispatch time.
+
+    One ``git status --short`` pass: any entry with a non-clean index
+    column (staged) or worktree column (tracked-dirty, deleted) plus every
+    untracked non-ignored file. First-seen order, duplicates dropped.
+    ``[]`` on a clean tree, and on git failure too (best effort — this is
+    a warning, it must never refuse a dispatch).
+    """
+    text = git_utils.status_porcelain(project_dir)
+    files: list[str] = []
+    for line in text.splitlines():
+        if len(line) < 4:
+            continue
+        if line[0] == " " and line[1] == " ":
+            continue  # clean
+        path = line[3:].strip()
+        if " -> " in path:  # staged rename/copy: the diff shows the dest
+            path = path.rsplit(" -> ", 1)[1].strip()
+        if path and path not in files:
+            files.append(path)
+    return files
+
+
+def _format_dirty_warning(todo_id: str, files: list[str]) -> str:
+    """TODO-0195: one-line dispatch warning for a dirty tree. ``""`` when
+    the tree is clean (nothing to say)."""
+    if not files:
+        return ""
+    shown = files[:_DIRTY_WARNING_CAP]
+    more = len(files) - len(shown)
+    tail = f" (…{more} more)" if more else ""
+    return (
+        f"⚠️ the tree is dirty at dispatch: {len(files)} file(s) "
+        f"({', '.join(shown)}{tail}) will NOT enter the {todo_id} commit — "
+        "these changes pre-date the unit. To claim them into the unit: "
+        "include_untracked (untracked files) / carry_over_from (a rejected "
+        "retry); otherwise they stay WIP for whoever commits them."
+    )
+
+
 def _next_todo_id(project_dir: Path) -> str:
     """Pick next TODO-NNNN id (max existing + 1).
 
@@ -230,9 +275,12 @@ def dispatch_todo(
     Returns:
         DispatchTodoResult with todo_id, baseline_sha, files written,
         ``renumbered`` (REPORTS26 F5: True when the auto-issued
-        number replaced a foreign one in the first line's heading) and
+        number replaced a foreign one in the first line's heading),
         ``verify_path_warnings`` (TODO-0186: the contract's verify: path
-        tokens missing from the project — a warning, never a refusal).
+        tokens missing from the project — a warning, never a refusal) and
+        ``dirty_files``/``dirty_warning`` (TODO-0195: the tracked-dirty /
+        staged / untracked paths present at dispatch — they will NOT enter
+        the unit's commit; a warning, never a refusal).
 
     Raises:
         AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
@@ -550,6 +598,14 @@ def dispatch_todo(
     pre_existing = pre_existing_untracked(project_dir, todo_id)
     untracked_warning = format_untracked_warning(todo_id, pre_existing)
 
+    # TODO-0195 (рана C): a dirty tree at dispatch (tracked-dirty / staged /
+    # untracked, gitignored excluded) is LOUD, not a refusal — these changes
+    # pre-date the unit and will not enter its commit. Same moment as the
+    # baseline's own .status snapshot, so the warning describes the tree the
+    # baseline actually saw.
+    dirty_files = _dirty_tree_files(project_dir)
+    dirty_warning = _format_dirty_warning(todo_id, dirty_files)
+
     return DispatchTodoResult(
         todo_id=todo_id,
         baseline_sha=baseline.sha,
@@ -567,6 +623,8 @@ def dispatch_todo(
         untracked_warning=untracked_warning,
         renumbered=renumbered,
         verify_path_warnings=verify_path_warnings,
+        dirty_files=dirty_files,
+        dirty_warning=dirty_warning,
     )
 
 

@@ -216,7 +216,9 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
         Dict with: project_name, active_todos (list of {todo_id, ack?,
         progress?}), done_count, blocked_count, blocked_ids,
         conflict_warning (str or None), suggestion (str or None),
-        next_action (the supervisor's next step derived from the state).
+        next_action (the supervisor's next step derived from the state),
+        office (list of {role, model, source} — the team's roles with
+        their model and where it comes from: "config" / "md" / "none").
     """
     result = await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
     # RUN6 #5 (TODO-0060): every answer leads to the next step.
@@ -948,21 +950,41 @@ async def awf_run_revise(
     key: str = "",
     preview: bool = False,
     stop_running: bool = False,
+    position: int | None = None,
 ) -> dict[str, Any]:
-    """Revise the pipelines of the not-started queue elements of the active run (ORCH M3.4).
+    """Revise the not-started queue elements of the active run (ORCH M3.4);
+    add new elements to it (REPORTS32).
 
     One typed operation with a preview and an idempotency key.
     ``preview=True`` shows the current queue, the elements that would
-    change and the conflicts (current/started/completed/not in the queue)
-    with NO side effects. The apply changes the pipeline of the
-    NOT-STARTED elements only — completed and current are never touched —
-    and records the revision in the run state (state/run.yaml, the
-    decisions' path). A repeat with the same ``key`` is a no-op.
+    change, the elements that would be appended/inserted and the conflicts
+    (current/started/completed/TODO file missing) with NO side effects.
+    The apply changes the pipeline of the NOT-STARTED elements only —
+    completed and current are never touched — and records the revision in
+    the run state (state/run.yaml, the decisions' path). A repeat with the
+    same ``key`` is a no-op.
+
+    APPEND/INSERT (REPORTS32): a ``queue`` item whose todo_id is NOT in
+    the run queue joins it — appended at the queue END (``changes`` carry
+    ``class: "appended"``) or inserted at ``position`` (class
+    ``"inserted"``) — when its TODO file is launchable
+    (``inbox/<id>.md`` present and non-empty) and the id is not
+    completed/current; otherwise it is a conflict and the whole apply is
+    refused (atomic). An empty pipeline on a new element = the config
+    default.
+
+    ``position``: the queue position the NEW element(s) stand at — valid
+    zone ``index .. len(queue)`` (the NOT-STARTED region; ``len`` = the
+    same as append), never before a started/current/completed element.
+    Invalid (non-int, out of range) → refusal. Without ``position`` new
+    elements are appended.
+
     Refusals (each returns the current state; the previous plan stays in
     force): no active run; a stage is running without ``stop_running``
-    (stop the unit first); any conflict; a missing key; a generation
-    mismatch (CAS, A-13); a failed stop (ORCH M4.1 — the stage survived
-    the kill, the revision is NOT applied, retry is possible).
+    (stop the unit first); any conflict; a missing key; an invalid
+    position; a generation mismatch (CAS, A-13); a failed stop (ORCH M4.1
+    — the stage survived the kill, the revision is NOT applied, retry is
+    possible).
 
     ``stop_running=True`` (ORCH M4.1) allows stopping the live unit in
     the SAME call: the stop goes through the engine's standard kill path
@@ -977,7 +999,8 @@ async def awf_run_revise(
             NOT your project; always pass it explicitly (AUD08-12).
         queue: Items to revise — a list of {"todo_id": "TODO-NNNN",
             "pipeline": "<name>"}; an empty pipeline reverts the element to
-            the config default.
+            the config default. An id not in the run queue is appended /
+            inserted (needs its inbox TODO file).
         reason: Why the composition changes (stored in the revision record).
         key: Idempotency key — required for the apply; a repeat with the
             same key is a no-op (no second revision).
@@ -985,10 +1008,14 @@ async def awf_run_revise(
         stop_running: True — allow stopping the live unit (the standard
             kill path) before applying the revision; without it a running
             stage is a refusal (default: False).
+        position: Queue position for NEW (not-in-queue) elements — an int
+            in [index, len(queue)]; None (default) = append at the end.
+            Invalid → refusal.
 
     Returns:
         Dict with: action (preview/applied/noop/refused), key, generation,
-        current_queue, changes, conflicts, unchanged, revision,
+        current_queue, changes (entries for new elements carry
+        "class": "appended"/"inserted"), conflicts, unchanged, revision,
         resume_from, message, next_action.
     """
     result = await _exec(
@@ -999,6 +1026,7 @@ async def awf_run_revise(
         key=key,
         preview=preview,
         stop_running=stop_running,
+        position=position,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         action = result.get("action")
@@ -1297,7 +1325,13 @@ async def awf_prove_red(
             semantics, cwd = the tree) in the baseline worktree and in the
             current tree. Default: the contract's ``prove_red_cmd`` key,
             else pytest. Priority: this parameter > the contract key >
-            pytest.
+            pytest. With an empty test list the command mode gathers the
+            tree's test files changed since the baseline (a ``tests``
+            directory in the path, or the file name contains test/spec)
+            and copies them into the worktree; an empty set is named in
+            the message. A pipe/redirect in the command warns (shell rc
+            = the last command's rc) and a pipe runs under
+            ``bash -o pipefail`` when bash is available (REPORTS32).
 
     Returns:
         Dict with: todo_id, verdict, exit_code, baseline_sha, tests,
@@ -1795,6 +1829,8 @@ async def awf_add_role(
     adopt: str = "",
     discard: str = "",
     list_drafts: bool = False,
+    preset: str = "",
+    models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Generate a new role file at .agentic/roles/{name}.md.
 
@@ -1805,6 +1841,29 @@ async def awf_add_role(
     provenance comment. Skill search: project ``.opencode/skills/<name>/``
     first, then global ``~/.config/opencode/skills/<name>/``. An unknown
     skill is an error listing the available skills.
+
+    REPORTS32 (TODO-0202): an explicit ``model=`` is ALSO merged into
+    ``.agentic/config.yaml`` as ``models.<name>.model`` — the config is
+    the source of truth the engine reads, so the manual "add model
+    config" step is gone. The merge is comment-preserving, idempotent,
+    and only runs for a non-empty ``model=`` on the live path (the draft
+    path never touches the config). ``model_config`` in the result names
+    the written locus.
+
+    REPORTS32 (TODO-0203): ``preset="office"`` seeds the built-in role
+    catalog ("typical office") in ONE call: system-analyst, spec-writer,
+    architector, project-auditor, qa-review, qa-table, auditor-table —
+    each from its ``agent-*`` skill — plus ``product`` when its skill
+    exists on the machine. Existing roles are skipped (never touched or
+    overwritten); a missing skill is a row in the result, not an error.
+    ``models={role: model}`` writes the role→model mapping into
+    ``.agentic/config.yaml`` (the same surgical merge as ``model=``),
+    including for roles that already exist. Preset mode is mutually
+    exclusive with the single-role parameters.
+
+    Example:
+        awf_add_role(project_dir=..., preset="office",
+                     models={"qa-review": "vllm/llm"})
 
     ORCH M5.1 draft area (candidate isolated until checked):
     - ``draft=True``: write the candidate to
@@ -1848,13 +1907,58 @@ async def awf_add_role(
             not a discard call).
         list_drafts: List draft candidates instead of creating (default:
             False).
+        preset: Seed the built-in role catalog instead of creating one
+            role (default: "" — not a preset call). Currently:
+            "office". Mutually exclusive with the single-role
+            parameters (name/description/model/from_skill/force and the
+            draft-area modes).
+        models: For preset mode only — {role: model} mapping written
+            into ``.agentic/config.yaml`` as ``models.<role>.model``
+            (default: None). Keys must be preset roles.
 
     Returns:
-        Create: role_name, role_file (path), model. List: drafts (list
-        of {name, source, created, file}). Adopt: role_name, role_file,
-        normalization ({overlaps, addenda, failed} or {error}).
-        Discard: role_name, draft_file, trace_file.
+        Create: role_name, role_file (path), model, model_config (where
+        an explicit ``model=`` was written in config.yaml —
+        ``models.<name>.model``; "" when nothing was written). List:
+        drafts (list of {name, source, created, file}). Adopt:
+        role_name, role_file, normalization ({overlaps, addenda, failed}
+        or {error}). Discard: role_name, draft_file, trace_file.
+        Preset: preset, created (list of {role, role_file, skill,
+        model}), skipped (list of {role, reason}), models (list of
+        {role, model, locus, action}).
     """
+    if preset:
+        clashing = [
+            label
+            for label, value in (
+                ("name", name),
+                ("description", description),
+                ("model", model),
+                ("from_skill", from_skill),
+                ("force", force),
+                ("draft", draft),
+                ("adopt", adopt),
+                ("discard", discard),
+                ("list_drafts", list_drafts),
+            )
+            if value
+        ]
+        if clashing:
+            return {
+                "status": "error",
+                "error": (
+                    "preset mode seeds the whole catalog at once and is "
+                    "mutually exclusive with: "
+                    + ", ".join(clashing)
+                    + ". Use models={role: model} for per-role models."
+                ),
+            }
+        return await _exec(
+            api.seed_roles,
+            project_dir=_resolve_project_dir(project_dir),
+            preset=preset,
+            models=models,
+        )
     modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
     if modes > 1:
         return {
@@ -2908,7 +3012,9 @@ async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
         Dict with: status ("ok"), version, project, phase, date,
         is_live_project, next_action, run, active_todos, blocked,
         salvage_stage, last_signal, pipeline_running, stall (the
-        stalled-stage line, "" when off), tool_map (groups),
+        stalled-stage line, "" when off), office (list of {role, model,
+        source} — the team's roles with their model and where it comes
+        from: "config" / "md" / "none"), tool_map (groups),
         rituals, recovery, doctrine, what_new, text (the rendered card).
         On error: {status: "error", error: "..."}.
     """

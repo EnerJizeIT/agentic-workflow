@@ -184,18 +184,25 @@ def _revision_entry_ok(e: object) -> bool:
 
 
 def _normalize_revision(e: dict) -> dict:
-    """ORCH M3.4/M4.1: the canonical revision shape
+    """ORCH M3.4/M4.1/REPORTS32: the canonical revision shape
     ``{ts, key, kind, reason, changes, generation, resume_from}``; absent
     or mistyped fields degrade to empty (a partial entry survives as far
     as its key allows). ``resume_from`` (ORCH M4.1) — the stage the
-    stopped unit resumes from; absent in v1 (M3.4) records → ``""``."""
+    stopped unit resumes from; absent in v1 (M3.4) records → ``""``.
+    A change's ``class`` (REPORTS32, TODO-0198: ``appended`` /
+    ``inserted``) survives the normalization; absent (a plain pipeline
+    change) the key is not added — legacy records stay as-is."""
 
     def _norm_change(c: dict) -> dict:
-        return {
+        norm = {
             "todo_id": str(c.get("todo_id") or "").strip(),
             "from": str(c.get("from") or ""),
             "to": str(c.get("to") or ""),
         }
+        cls = str(c.get("class") or "").strip()
+        if cls:
+            norm["class"] = cls
+        return norm
 
     changes = e.get("changes")
     norm_changes = [
@@ -664,7 +671,8 @@ def append_revision(
     generation: int,
     resume_from: str = "",
 ) -> None:
-    """ORCH M3.4: append an applied revision to the state dict IN PLACE.
+    """ORCH M3.4 / REPORTS32 (TODO-0198): append an applied revision to the
+    state dict IN PLACE.
 
     A mutator fragment for :func:`update_run` / :func:`update_run_cas` —
     the caller runs it inside the lock so the revision lands in the SAME
@@ -672,14 +680,29 @@ def append_revision(
     one lock hold, one write). The entry is
     ``{ts, key, kind: "revision", reason, changes, generation,
     resume_from}``. ``resume_from`` (ORCH M4.1) names the stage the
-    stopped unit resumes from (``""`` when the stop was a no-op). The
-    caller checks :func:`find_revision` first — a repeat with the same key
-    is a no-op, never a second entry.
+    stopped unit resumes from (``""`` when the stop was a no-op). A change's
+    ``class`` (REPORTS32: ``appended`` / ``inserted`` — the element joined
+    the queue rather than changing a pipeline) is kept; a plain pipeline
+    change has no key, so legacy records stay as-is. The caller checks
+    :func:`find_revision` first — a repeat with the same key is a no-op,
+    never a second entry.
     """
     revisions = state.get("revisions")
     if not isinstance(revisions, list):
         revisions = []
         state["revisions"] = revisions
+
+    def _norm_change(c: dict) -> dict:
+        entry = {
+            "todo_id": str(c.get("todo_id") or "").strip(),
+            "from": str(c.get("from") or ""),
+            "to": str(c.get("to") or ""),
+        }
+        cls = str(c.get("class") or "").strip()
+        if cls:
+            entry["class"] = cls
+        return entry
+
     revisions.append(
         {
             "ts": now_iso(),
@@ -687,11 +710,7 @@ def append_revision(
             "kind": "revision",
             "reason": str(reason or "").strip(),
             "changes": [
-                {
-                    "todo_id": str(c.get("todo_id") or "").strip(),
-                    "from": str(c.get("from") or ""),
-                    "to": str(c.get("to") or ""),
-                }
+                _norm_change(c)
                 for c in (changes or [])
                 if isinstance(c, dict) and str(c.get("todo_id") or "").strip()
             ],

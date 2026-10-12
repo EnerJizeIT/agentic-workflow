@@ -223,8 +223,10 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 
 | Situation | What happens |
 |---|---|
-| Worker didn't signal (no DONE/BLOCKED) | Salvage path — awf writes SALVAGE prompt, supervisor decides |
+| Worker didn't signal, but work is in the tree | Continue-push retry with the note "the work is already in the tree — do not redo it, finish it and signal" — budget `retry.silent_work_attempts` (config.yaml, default 1), counted per (TODO, stage), survives kill+continue. After the budget — the salvage path |
+| Worker didn't signal, no work | Two auto continue-push retries, then the salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
+| Stage state lingers after the engine died, no signal | Zombie-state: `awf_status`/`awf_brief` show the hint with `awf_continue(todo_id=…)`. When the unit is already archived, `awf_run_finish` clears the stale state itself and records the reset in the RUN-REPORT |
 | Pipeline killed by an opencode/MCP restart (parked at verify) | The restart terminates the pipeline's process group — the `setsid`-detached process does not survive. Recovery: relaunch the stage + re-approve (below) |
 | awf tools gone from the session after a "restart" | A "restart" that is really a resume keeps the dead MCP connections (the run id in the log is unchanged). Recovery: a NEW session, not "continue" (below) |
 | "Connection closed" on a dispatch/approve | The call may have SUCCEEDED — the unit was created and only the answer was lost. Check the inbox before retrying (below) |

@@ -59,6 +59,11 @@ class StatusResult:
     # DF5-4: salvage state (worker didn't signal)
     salvage_needed: bool = False
     salvage_stage: str | None = None
+    # TODO-0196: zombie-state — the pipeline is dead, the stage state still
+    # sits on disk, and no decision signal lies for the unit: the run limps
+    # in every status until someone resumes it. The hint text (with the
+    # exact awf_continue call) when detected; None otherwise.
+    zombie_state: str | None = None
     # RUN3 #1: named pipelines — active (config default_pipeline, "default"
     # when undeclared) + number of pipeline files in .agentic/pipelines/
     active_pipeline: str | None = None
@@ -69,6 +74,16 @@ class StatusResult:
     # (.agentic/config.yaml, roles/, pipelines/, phases/, doctrine/ —
     # changed tracked + untracked non-gitignored). [] = nothing to commit.
     uncommitted_workflow_files: list[str] = field(default_factory=list)
+    # TODO-0197 (REPORTS32 п.4): active inbox units that are NOT part of
+    # the active run's queue — ready to start standalone or closing a
+    # previous cycle. Same entry shape as active_todos. [] when there is
+    # no active run (everything is "active" — unchanged behavior) or no
+    # such units.
+    standalone_todos: list[dict[str, Any]] = field(default_factory=list)
+    # REPORTS32 (TODO-0202): the "office" — one line per team role with its
+    # model and where it comes from ({role, model, source}); source is
+    # "config" / "md" / "none". See role_model_office.
+    office: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -181,6 +196,36 @@ class AddRoleResult:
     role_name: str
     role_file: str
     model: str
+    # REPORTS32 (TODO-0202): where an explicit ``model=`` was written in
+    # config.yaml ("models.<role>.model"); "" when nothing was written
+    # (no model, or the draft path, which never touches the config).
+    model_config: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class SeedRolesResult:
+    """Result of :func:`awf.api.seed_roles` (REPORTS32, TODO-0203).
+
+    The preset seed ("typical office") answers with three tables:
+    - ``created`` — ``{"role", "role_file", "skill", "model"}`` per role
+      file created from its catalog skill (``model``: the resolved model,
+      "" when unassigned);
+    - ``skipped`` — ``{"role", "reason"}`` per existing role ("already
+      exists" — never touched) or missing skill ("skill not found: …" —
+      not an error, a note);
+    - ``models`` — ``{"role", "model", "locus", "action"}`` per
+      ``models=`` entry: what was set where
+      (``models.<role>.model``), action ``written`` / ``unchanged``
+      (idempotent repeat).
+    """
+
+    preset: str
+    created: list[dict[str, str]]
+    skipped: list[dict[str, str]]
+    models: list[dict[str, str]]
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -248,6 +293,11 @@ class StartResult:
     log_file: str | None
     exit_code: int | None
     message: str
+    # TODO-0197 (REPORTS32 п.3): the launch will open the BD-36 plan
+    # checkpoint form (checkpoint enabled, no no_checkpoints bypass) —
+    # the warning the supervisor needs to warn the user BEFORE the form
+    # pops up. "" when the checkpoint is off for this launch.
+    checkpoint_warning: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -313,6 +363,12 @@ class DispatchTodoResult:
     # Warning only (the dispatch never refuses); [] when the verify
     # commands carry no paths or all of them exist.
     verify_path_warnings: list[str] = field(default_factory=list)
+    # TODO-0195: the dirty tree at dispatch — tracked-dirty / staged /
+    # untracked non-ignored paths that pre-date the unit and will NOT
+    # enter its commit (gitignored and a clean tree → []). The warning is
+    # the loud part; the dispatch itself never refuses on dirt.
+    dirty_files: list[str] = field(default_factory=list)
+    dirty_warning: str = ""  # capped one-line warning; "" on a clean tree
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -602,18 +658,22 @@ class RunFinishResult:
 
 @dataclass
 class RunReviseResult:
-    """Result of :func:`awf.api.run_revise` (ORCH M3.4 / M4.1).
+    """Result of :func:`awf.api.run_revise` (ORCH M3.4 / M4.1 /
+    REPORTS32).
 
     ``action`` is one of:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
-    - ``applied`` — the not-started elements' pipelines changed, the
-      revision is recorded (``revision`` = the stored entry);
+    - ``applied`` — the not-started elements' pipelines changed and/or new
+      elements joined the queue (``changes`` entries carry
+      ``class: "appended"`` / ``"inserted"``), the revision is recorded
+      (``revision`` = the stored entry);
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
-    - ``refused`` — no active run / live engine / conflicts / missing key /
-      CAS mismatch / a failed stop (M4.1); ``current_queue`` +
-      ``generation`` carry the current state (the previous plan stays in
-      force).
+    - ``refused`` — no active run / live engine / conflicts (current /
+      started / completed / TODO file missing) / missing key / invalid
+      ``position`` / CAS mismatch / a failed stop (M4.1);
+      ``current_queue`` + ``generation`` carry the current state (the
+      previous plan stays in force).
 
     ``resume_from`` (ORCH M4.1, ``stop_running=True``): the stage the
     stopped unit resumes from — the ``awf continue`` answer and the

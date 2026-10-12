@@ -501,6 +501,30 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
     )
 
 
+def _zombie_state_hint(project_dir: Path, state: dict[str, Any]) -> str | None:
+    """TODO-0196: dead pipeline + stage state on disk + no decision signal
+    for the unit → the resume hint. None when a signal lies (another
+    surface owns that case) or the state names no unit."""
+    todo_id = str(state.get("todo_id") or "")
+    if not todo_id:
+        return None
+    outbox = paths.outbox(project_dir)
+    inbox = paths.inbox(project_dir)
+    for p in (
+        outbox / f"DONE-{todo_id}.ready",
+        outbox / f"BLOCKED-{todo_id}.ready",
+        outbox / f"REVIEW-{todo_id}.md",
+        inbox / f"APPROVE-{todo_id}.ready",
+    ):
+        if p.is_file():
+            return None
+    stage = str(state.get("stage_name") or "?")
+    return (
+        f"stage state lingers after engine death ({stage} for {todo_id}, "
+        f"no signal) → awf_continue(todo_id='{todo_id}')"
+    )
+
+
 def get_status(project_dir: Path) -> StatusResult:
     """Get current workflow state — active TODOs, progress, blocked, conflicts."""
     project_dir = Path(project_dir).resolve()
@@ -519,15 +543,37 @@ def get_status(project_dir: Path) -> StatusResult:
         inbox, outbox, paths.done_dir(project_dir)
     )
 
-    active_todos_list: list[dict[str, Any]] = []
-    for todo_id in active_ids:
+    # TODO-0197 (REPORTS32 п.4): the "active" list shows ONLY the units of
+    # the active run's queue; other active inbox units (ready to start
+    # standalone / closing a previous cycle) are reported separately so
+    # the run's queue is not mixed with foreign units.
+    from ..run_state import read_run
+
+    _run = read_run(project_dir)
+    run_queue_ids: set[str] = set()
+    if _run and _run.get("active"):
+        for item in _run.get("queue") or []:
+            tid = item.get("todo_id") if isinstance(item, dict) else str(item)
+            if tid:
+                run_queue_ids.add(tid)
+
+    def _todo_entry(todo_id: str) -> dict[str, Any]:
         entry: dict[str, Any] = {"todo_id": todo_id}
         ack = _read_ack(inbox, todo_id)
         if ack is not None:
             entry["ack"] = ack
         progress = _read_progress(outbox, todo_id)
         entry["progress"] = progress if progress else None
-        active_todos_list.append(entry)
+        return entry
+
+    active_todos_list: list[dict[str, Any]] = []
+    standalone_todos_list: list[dict[str, Any]] = []
+    for todo_id in active_ids:
+        entry = _todo_entry(todo_id)
+        if run_queue_ids and todo_id not in run_queue_ids:
+            standalone_todos_list.append(entry)
+        else:
+            active_todos_list.append(entry)
 
     conflict_warning: str | None = None
     if len(active_ids) > 1:
@@ -535,9 +581,6 @@ def get_status(project_dir: Path) -> StatusResult:
         # for their turn and each todo_id is pinned by awf_run_next. The old
         # "stale — rollback or reset" text was a false alarm on every run
         # status call. Outside a run the old warning stands.
-        from ..run_state import read_run
-
-        _run = read_run(project_dir)
         if _run and _run.get("active"):
             conflict_warning = (
                 f"Run queue: {len(active_ids)} items wait for a turn — "
@@ -662,6 +705,24 @@ def get_status(project_dir: Path) -> StatusResult:
                 f"Review git diff, then ACK, retry, or split the task."
             )
 
+    # TODO-0196: zombie-state — the engine died with the stage state still
+    # on disk and no signal for the unit: without the hint the run limps in
+    # every status until someone notices. Salvage and a lying signal own
+    # their own surfaces; the running pipeline is normal.
+    zombie_state: str | None = None
+    if _state and not pipeline_running and not salvage_needed:
+        zombie_state = _zombie_state_hint(project_dir, _state)
+
+    # REPORTS32 (TODO-0202): the "office" — who is on the team and on which
+    # model, one call. Never raises: a status call must not fall over on a
+    # malformed role file (the helper degrades per-role).
+    from .roles import role_model_office
+
+    try:
+        office = role_model_office(project_dir)
+    except Exception:  # noqa: BLE001 — status must never fall over
+        office = []
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -683,10 +744,13 @@ def get_status(project_dir: Path) -> StatusResult:
         checkpoint_form_url=checkpoint_form_url,
         salvage_needed=salvage_needed,
         salvage_stage=salvage_stage,
+        zombie_state=zombie_state,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
         run_state=_run_brief(project_dir),
         uncommitted_workflow_files=uncommitted_wf,
+        standalone_todos=standalone_todos_list,
+        office=office,
     )
 
 

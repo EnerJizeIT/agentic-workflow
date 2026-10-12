@@ -283,26 +283,41 @@ def _last_completed_todo(project_dir: Path) -> tuple[str, str] | None:
 
     kind is ``"commit+archive"`` (both signs, same TODO), ``"commit"``
     (newest ``awf(<stage>): TODO-NNNN`` commit) or ``"archive"`` (newest
-    ``done/TODO-*/`` directory — non-git projects). The commit is the
-    first sign of a finished cycle (the archive follows it in the same
-    cycle), so it wins when present; the archive is the fallback.
+    ``done/TODO-*/`` directory — non-git projects).
+
+    Same TODO on both signs → both signs. Different TODOs (the report
+    case, REPORTS32 / TODO-0197): the FRESHER closing sign wins — a
+    no-commit cycle (no-diff, the commit is skipped) closes by ARCHIVE
+    alone, so the newest commit may belong to a PREVIOUS unit; plain
+    commit-first named that unit. No commit → the archive; a commit
+    newer than the archive (its own archive not laid yet) → the commit;
+    equal time (same second) → the archive of the unit being closed.
     """
     from .. import git_utils, paths
 
     commit_id: str | None = None
+    commit_ts = 0
     try:
         out = git_utils.git_stdout(
-            project_dir, "log", "-n", "30", "--pretty=%s", check=False
+            project_dir, "log", "-n", "30", "--pretty=%ct%x00%s", check=False
         )
     except (RuntimeError, OSError):
         out = ""
     for line in out.splitlines():
-        m = _AWF_COMMIT_RE.match(line.strip())
+        if "\x00" not in line:
+            continue
+        ts_raw, subject = line.split("\x00", 1)
+        m = _AWF_COMMIT_RE.match(subject.strip())
         if m:
             commit_id = m.group(1)
+            try:
+                commit_ts = int(ts_raw)
+            except ValueError:
+                commit_ts = 0
             break
 
     archive_id: str | None = None
+    archive_mtime = 0.0
     done_dir = paths.done_dir(project_dir)
     if done_dir.is_dir():
         candidates = [
@@ -312,14 +327,17 @@ def _last_completed_todo(project_dir: Path) -> tuple[str, str] | None:
         if candidates:
             newest = max(candidates, key=lambda d: d.stat().st_mtime)
             archive_id = newest.name
+            archive_mtime = newest.stat().st_mtime
 
     if commit_id and commit_id == archive_id:
         return commit_id, "commit+archive"
-    if commit_id:
+    if not commit_id:
+        return (archive_id, "archive") if archive_id else None
+    if not archive_id:
         return commit_id, "commit"
-    if archive_id:
-        return archive_id, "archive"
-    return None
+    if commit_ts > int(archive_mtime):
+        return commit_id, "commit"
+    return archive_id, "archive"
 
 
 def _run_allows_done(project_dir: Path) -> bool:
@@ -373,8 +391,10 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
     element's ARCHIVE (the run gate's finished definition), NOT the newest
     awf commit: in a no-diff cycle the commit is skipped and the newest
     commit belongs to the PREVIOUS unit — preferring it lost the ``done``
-    (the owner report: ``idle`` after approve). Outside a run the newest
-    sign (commit-first) is unchanged.
+    (the owner report: ``idle`` after approve). Outside a run the freshest
+    closing sign wins — the newest commit vs the newest archive by time
+    (REPORTS32 / TODO-0197: a no-commit cycle closes by archive alone, so
+    the newest commit may be a PREVIOUS unit's).
     """
     from ..run_state import read_run, run_is_active
     from ._liveness import resolve
@@ -407,8 +427,9 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
             return None
         todo_id, kind = current, "archive"
     else:
-        # Outside a run: unchanged — the newest cycle sign wins
-        # (commit-first, RUN6 #1).
+        # Outside a run: the freshest closing sign wins (RUN6 #1,
+        # refined in REPORTS32 / TODO-0197 — a no-commit cycle closes
+        # by archive alone, so commit-first named the PREVIOUS unit).
         evidence = _last_completed_todo(project_dir)
         if evidence is None:
             return None
@@ -467,9 +488,11 @@ def wait_for_event(
        iteration keeps the old wait behavior (timeout/idle), never a
        ``done`` for a previous cycle. REPORTS26 B3 (TODO-0158): in a run
        that finished-current sign is the element's ARCHIVE, not the newest
-       awf commit — a no-diff cycle commits nothing, so the newest commit
-       is the PREVIOUS unit's and preferring it lost the ``done`` (``idle``
-       after approve). Outside a run: unchanged.
+        awf commit — a no-diff cycle commits nothing, so the newest commit
+        is the PREVIOUS unit's and preferring it lost the ``done`` (``idle``
+        after approve). Outside a run: the freshest closing sign (the
+        newest commit vs the newest archive by time — REPORTS32 /
+        TODO-0197).
     - Timeout reached → event_type ``timeout``
 
     SPEC A-run: in a run (забег) loop pass ``timeout`` from the previous

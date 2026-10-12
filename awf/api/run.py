@@ -13,6 +13,7 @@ rejected twice, or the previous TODO is not finished.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import threading
@@ -617,12 +618,70 @@ def _goal_check_lines(state: dict, reason: str, salvage: int) -> list[str]:
     return lines
 
 
+def _read_commit_audit(project_dir: Path, todo_id: str) -> dict | None:
+    """TODO-0195: ``context/COMMIT-AUDIT-{todo}.json`` — the commit gate's
+    per-unit fact (excluded paths + reasons, worker-staged, the refused
+    silent skip). None when absent or unreadable (degrade, not crash)."""
+    f = paths.context_dir(project_dir) / f"COMMIT-AUDIT-{todo_id}.json"
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
+    """TODO-0195: the RUN-REPORT section «вне коммита остались» — the
+    per-unit commit audits: the paths left outside the commit with the
+    reason, the worker-staged files (included in the commit, warned), and
+    the refused silent skips. No facts → no section (nothing to say)."""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in todo_ids:
+        todo = str(raw or "")
+        if not todo or todo in seen:
+            continue
+        seen.add(todo)
+        audit = _read_commit_audit(project_dir, todo)
+        if not audit:
+            continue
+        excluded = [
+            (str(e[0]), str(e[1]))
+            for e in (audit.get("excluded") or [])
+            if isinstance(e, (list, tuple)) and len(e) == 2
+        ]
+        if excluded:
+            lines.append(
+                f"- {todo} — outside the commit: "
+                + ", ".join(f"{p} ({r})" for p, r in excluded)
+            )
+        worker_staged = [str(f) for f in (audit.get("worker_staged") or [])]
+        if worker_staged:
+            lines.append(
+                f"- {todo} — worker staged {len(worker_staged)} file(s) after "
+                "the baseline (included in the unit commit): "
+                + ", ".join(worker_staged)
+            )
+        if audit.get("skip_inconsistent"):
+            lines.append(
+                f"- {todo} — the commit gate refused the silent skip "
+                "(non-empty plan, all plan files match HEAD): "
+                + str(audit.get("skip_reason") or "")[:200]
+            )
+    if not lines:
+        return []
+    return ["## Outside the commit", ""] + lines + [""]
+
+
 def _write_report(
     project_dir: Path,
     state: dict,
     reason: str,
     summary: str = "",
     forced: bool = False,
+    stale_note: str = "",
 ) -> Path | None:
     """Write RUN-REPORT-{ts}.md to outbox. Returns the path (or None on OSError).
 
@@ -686,6 +745,11 @@ def _write_report(
                 f"**Closed with loss:** closed with unfinished unit "
                 f"{current_unit} (force)"
             )
+        # TODO-0196: the close gate cleared a stale stage state before the
+        # close — the report names it (unit + stage), so the owner sees the
+        # reset instead of a silent state-file disappearance.
+        if stale_note:
+            lines.append(f"**Stale state:** {stale_note}")
     # ORCH M1.1: the run plan — goal and criteria, when set (old runs and
     # runs started without a plan show nothing, as before).
     goal = str(state.get("goal") or "").strip()
@@ -730,6 +794,12 @@ def _write_report(
             else:
                 lines.append(f"- {todo}: {verdict}")
         lines.append("")
+    # TODO-0195: what the unit commits left outside the commit (path +
+    # reason) and the refused silent skips — the completed units, the
+    # current one, and the rejected attempts (all deduped in the helper).
+    lines += _outside_commit_lines(
+        project_dir, [current_unit, *completed, *rejects.keys()]
+    )
     # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,
     # so the owner can audit the run after the fact. The approve entries
     # carry the evidence excerpt (the full text stays in RUN-EVIDENCE).
@@ -1310,10 +1380,32 @@ def _leftover_signals(project_dir: Path, todo_id: str) -> list[str]:
 def _finish_facts(project_dir: Path, current: str) -> dict:
     """REPORTS29 (TODO-0170): what the close gate must weigh for the
     current unit — archived on disk, stage state cleared, pipeline
-    liveness. ``unfinished`` is the refusal condition."""
+    liveness. ``unfinished`` is the refusal condition.
+
+    TODO-0196: an archived unit on a dead pipeline owes no resume point —
+    a hanging stage state is STALE. The gate clears it via the stock
+    cleanup (``pipeline_state.clear_state``) and records the reset
+    (``stale_*``) for the RUN-REPORT; the refusal then keeps only its
+    original grounds (not archived / pipeline alive). Only the current
+    unit's own state is cleared — a state for another unit is someone
+    else's resume point and stays as is."""
     archived = _unit_archived(project_dir, current)
     running, pid, _source = _liveness.resolve(project_dir)
     pstate = pipeline_state.read_state(project_dir)
+    stale_cleared = False
+    stale_stage = ""
+    stale_todo = ""
+    if (
+        archived
+        and not running
+        and pstate is not None
+        and str(pstate.get("todo_id") or "") in ("", current)
+    ):
+        stale_stage = str(pstate.get("stage_name") or "")
+        stale_todo = str(pstate.get("todo_id") or current)
+        pipeline_state.clear_state(project_dir)
+        pstate = None
+        stale_cleared = True
     stage_cleared = pstate is None
     return {
         "archived": archived,
@@ -1322,6 +1414,9 @@ def _finish_facts(project_dir: Path, current: str) -> dict:
         "stage_cleared": stage_cleared,
         "stage": str((pstate or {}).get("stage_name") or ""),
         "stage_todo": str((pstate or {}).get("todo_id") or ""),
+        "stale_cleared": stale_cleared,
+        "stale_stage": stale_stage,
+        "stale_todo": stale_todo,
         "unfinished": (not archived) or (not stage_cleared) or running,
     }
 
@@ -1437,9 +1532,18 @@ def run_finish(
                 report_file="",
                 message=_finish_refusal(project_dir, current, facts),
             )
+    # TODO-0196: the close gate cleared a stale stage state on its way in —
+    # the report must record the reset, not pretend it was never there.
+    stale_note = ""
+    if facts.get("stale_cleared"):
+        stale_note = (
+            f"stale stage-state cleared before close "
+            f"({facts['stale_todo']}, stage {facts['stale_stage'] or '?'})"
+        )
     report = _write_report(
         project_dir, state, reason, summary,
         forced=force and bool(facts) and not facts.get("archived"),
+        stale_note=stale_note,
     )
     report_str = str(report) if report else ""
     run_state.write_run(
@@ -1454,9 +1558,14 @@ def run_finish(
 
 
 def _revision_items(
-    state: dict, requested: list[dict]
+    project_dir: Path,
+    state: dict,
+    requested: list[dict],
+    *,
+    position: int | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-    """ORCH M3.4: classify the run queue + the requested changes.
+    """ORCH M3.4 / REPORTS32 (TODO-0198): classify the run queue + the
+    requested changes.
 
     Queue lifecycle per item (the launch position from ``run_next``):
     positions ``< index`` are STARTED (the in-flight element sits at
@@ -1464,13 +1573,21 @@ def _revision_items(
     NOT STARTED. ``completed`` ids count as completed regardless of
     position (the last item is credited only at exhaustion).
 
+    A requested id NOT in the queue is the third outcome (REPORTS32):
+    APPEND/INSERT — it joins the queue (at the end, or at ``position``
+    when given), when the TODO file is launchable (``inbox/<id>.md``
+    present and non-empty) and the id is neither completed nor current.
+    Without a file it is a conflict (the launch would refuse it anyway).
+
     Returns ``(current_queue, changes, conflicts, unchanged)``:
     - ``current_queue`` — every queue item with its lifecycle state
       (``completed`` | ``current`` | ``started`` | ``queued``);
     - ``changes`` — requested items that change a not-started element's
-      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default);
-    - ``conflicts`` — requested items that cannot be changed
-      (current / started / completed / not in the queue);
+      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default)
+      OR add a new element (``{"todo_id", "from": "", "to", "class"}``
+      with ``class`` = ``appended`` / ``inserted``);
+    - ``conflicts`` — requested items that cannot be changed or added
+      (current / started / completed / TODO file missing);
     - ``unchanged`` — requested items whose pipeline already matches.
     """
     queue = list(state.get("queue") or [])
@@ -1519,18 +1636,49 @@ def _revision_items(
         tid = req["todo_id"]
         to = str(req.get("pipeline", "") or "")
         entry = by_id.get(tid)
-        if entry is None:
-            conflicts_list.append({"todo_id": tid, "reason": "not in the run queue"})
+        if entry is not None:
+            pos, pipe = entry
+            lifecycle = _lifecycle(tid, pos)
+            if lifecycle != "queued":
+                conflicts_list.append({"todo_id": tid, "reason": conflicts[lifecycle]})
+                continue
+            if pipe == to:
+                unchanged.append({"todo_id": tid, "pipeline": to})
+            else:
+                changes.append({"todo_id": tid, "from": pipe, "to": to})
             continue
-        pos, pipe = entry
-        lifecycle = _lifecycle(tid, pos)
-        if lifecycle != "queued":
-            conflicts_list.append({"todo_id": tid, "reason": conflicts[lifecycle]})
+        # REPORTS32 (TODO-0198): the third outcome — the id is not in the
+        # queue: APPEND/INSERT it, or refuse (completed / current / no
+        # launchable TODO file).
+        if tid in completed:
+            conflicts_list.append({"todo_id": tid, "reason": "already completed"})
             continue
-        if pipe == to:
-            unchanged.append({"todo_id": tid, "pipeline": to})
-        else:
-            changes.append({"todo_id": tid, "from": pipe, "to": to})
+        if tid == current:
+            conflicts_list.append(
+                {"todo_id": tid, "reason": "the current (in-flight) element"}
+            )
+            continue
+        todo_md = paths.inbox(project_dir) / f"{tid}.md"
+        if not todo_md.is_file() or todo_md.stat().st_size == 0:
+            conflicts_list.append(
+                {
+                    "todo_id": tid,
+                    "reason": (
+                        f"TODO file missing — inbox/{tid}.md is absent or "
+                        "empty; a new element joins the run only with a "
+                        "launchable TODO"
+                    ),
+                }
+            )
+            continue
+        changes.append(
+            {
+                "todo_id": tid,
+                "from": "",
+                "to": to,
+                "class": "inserted" if position is not None else "appended",
+            }
+        )
     return current_queue, changes, conflicts_list, unchanged
 
 
@@ -1542,24 +1690,38 @@ def run_revise(
     key: str = "",
     preview: bool = False,
     stop_running: bool = False,
+    position: int | None = None,
 ) -> RunReviseResult:
-    """ORCH M3.4: revise the pipeline of the NOT-STARTED elements of the
-    active run's queue — one typed operation with a preview and an
+    """ORCH M3.4 / REPORTS32 (TODO-0198): revise the NOT-STARTED elements
+    of the active run's queue — one typed operation with a preview and an
     idempotency key.
 
     - ``preview=True`` — no side effects: the current queue (per-item
-      lifecycle state), which elements would change, the conflicts
-      (current/started/completed/not in the queue), the key. The preview is
-      not refused by a live engine (it is read-only).
+      lifecycle state), which elements would change, which would be
+      appended/inserted, the conflicts (current/started/completed/TODO
+      file missing), the key. The preview is not refused by a live engine
+      (it is read-only).
     - apply (``preview=False``) — changes the pipeline of the not-started
       elements only; the completed and the current element are never
       touched. Refusals (each returns the current state, the previous plan
       stays in force): no active run; the engine is alive and
       ``stop_running`` is false (stop the unit first); ANY conflict in the
-      request (atomic — nothing is applied); a missing ``key``; a
-      generation mismatch (CAS, A-13 — the run changed between the read
-      and the write); the stop failed (ORCH M4.1 — the stage survived the
-      kill, so the revision is NOT applied and the retry is possible).
+      request (atomic — nothing is applied); a missing ``key``; an invalid
+      ``position``; a generation mismatch (CAS, A-13 — the run changed
+      between the read and the write); the stop failed (ORCH M4.1 — the
+      stage survived the kill, so the revision is NOT applied and the
+      retry is possible).
+    - REPORTS32 (TODO-0198) — APPEND/INSERT: a requested id NOT in the
+      queue joins it (the third outcome, instead of a blind conflict) when
+      its TODO file is launchable (``inbox/<id>.md`` present, non-empty)
+      and the id is not completed/current. Without ``position`` it is
+      APPENDED at the queue end (changes carry ``class: "appended"``);
+      with ``position`` it is INSERTED at that queue position (class
+      ``"inserted"``) — the valid zone is the NOT-STARTED region
+      (``index`` .. ``len(queue)``, ``len`` = the same as append), so the
+      new element never lands before a started/current/completed element.
+      The added element's pipeline is the requested one (empty = config
+      default); the revision record keeps the class.
     - ``stop_running=True`` (ORCH M4.1) — the caller allows stopping the
       live unit: the stop goes through the engine's STANDARD kill path
       (``kill_pipeline``: TERM → grace → KILL the pipeline, the worker
@@ -1607,13 +1769,56 @@ def run_revise(
     except (TypeError, ValueError):
         index = 0
     current = str(state.get("current") or "")
-    current_queue, changes, conflicts, unchanged = _revision_items(state, requested)
+    queue_len = len(state.get("queue") or [])
+    current_queue, changes, conflicts, unchanged = _revision_items(
+        project_dir, state, requested, position=position
+    )
+
+    # REPORTS32 (TODO-0198): the insert position is the NEW element's
+    # position in the queue — the valid zone is the NOT-STARTED region
+    # (index .. len(queue), len = an append). Outside it the element would
+    # land before a started/current/completed element → refusal.
+    if position is not None and (
+        isinstance(position, bool)
+        or not isinstance(position, int)
+        or not index <= position <= queue_len
+    ):
+        return RunReviseResult(
+            action="refused",
+            preview=bool(preview),
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                f"Refused: invalid position {position!r} — it must be an "
+                f"integer in [{index}, {queue_len}] (the NOT-STARTED "
+                "region: the new element may stand at index or later, up "
+                "to the queue end for an append; it must never land "
+                "before a started/current/completed element). Nothing was "
+                "changed."
+            ),
+        )
+
+    n_repipelined = len([c for c in changes if "class" not in c])
+    n_appended = len([c for c in changes if c.get("class") == "appended"])
+    n_inserted = len([c for c in changes if c.get("class") == "inserted"])
 
     if preview:
-        bits = [
-            f"{len(changes)} element(s) would change",
-            f"{len(conflicts)} conflict(s)" if conflicts else "no conflicts",
-        ]
+        bits = [f"{n_repipelined} element(s) would change"]
+        if n_appended:
+            ids = ", ".join(
+                c["todo_id"] for c in changes if c.get("class") == "appended"
+            )
+            bits.append(f"{n_appended} would be appended ({ids})")
+        if n_inserted:
+            ids = ", ".join(
+                c["todo_id"] for c in changes if c.get("class") == "inserted"
+            )
+            bits.append(f"{n_inserted} would be inserted at position {position} ({ids})")
+        bits.append(f"{len(conflicts)} conflict(s)" if conflicts else "no conflicts")
         return RunReviseResult(
             action="preview",
             preview=True,
@@ -1762,10 +1967,27 @@ def run_revise(
         if existing is not None:
             outcome["existing"] = existing
             return st
+        queue = list(st.get("queue") or [])
+        insert_at = position
         for ch in changes:
-            for q in st.get("queue") or []:
-                if isinstance(q, dict) and str(q.get("todo_id", "")) == ch["todo_id"]:
-                    q["pipeline"] = ch["to"]
+            cls = str(ch.get("class") or "")
+            if not cls:
+                for q in queue:
+                    if (
+                        isinstance(q, dict)
+                        and str(q.get("todo_id", "")) == ch["todo_id"]
+                    ):
+                        q["pipeline"] = ch["to"]
+            elif cls == "inserted":
+                # REPORTS32 (TODO-0198): insert at the validated position;
+                # several new elements keep the request order.
+                queue.insert(
+                    insert_at, {"todo_id": ch["todo_id"], "pipeline": ch["to"]}
+                )
+                insert_at += 1
+            else:  # "appended"
+                queue.append({"todo_id": ch["todo_id"], "pipeline": ch["to"]})
+        st["queue"] = queue
         # ORCH M6.3 (seam: binding×revision): a revision changes the run's
         # PLAN — the queue the run continues with is new, so the run moves
         # to a new cycle (the same bump a force-restart gets in run_start).
@@ -1793,7 +2015,9 @@ def run_revise(
     )
     if not cas_ok:
         fresh = run_state.read_run(project_dir) or {}
-        fresh_queue, _c, _f, _u = _revision_items(fresh, requested)
+        fresh_queue, _c, _f, _u = _revision_items(
+            project_dir, fresh, requested, position=position
+        )
         return RunReviseResult(
             action="refused",
             preview=False,
@@ -1840,6 +2064,40 @@ def run_revise(
             f" The stopped unit: continue will resume from stage "
             f"'{resume_from}' (awf continue)."
         )
+    # REPORTS32 (TODO-0198): the answer names what happened per class —
+    # re-pipelined / appended / inserted.
+    parts = []
+    if n_repipelined:
+        parts.append(f"{n_repipelined} element(s) re-pipelined")
+    if n_appended:
+        ids = ", ".join(
+            c["todo_id"] for c in changes if c.get("class") == "appended"
+        )
+        parts.append(f"{n_appended} appended at the queue end ({ids})")
+    if n_inserted:
+        ids = ", ".join(
+            c["todo_id"] for c in changes if c.get("class") == "inserted"
+        )
+        parts.append(f"{n_inserted} inserted at position {position} ({ids})")
+    if resume_from:
+        next_action = (
+            f"Resume the stopped unit with awf_continue (it continues from "
+            f"stage '{resume_from}'), then awf_run_next for the next "
+            "element."
+        )
+    elif n_inserted:
+        next_action = (
+            f"Continue the run with awf_run_next — the inserted element(s) "
+            f"stand at position {position}; the later elements shift one "
+            "place."
+        )
+    elif n_appended:
+        next_action = (
+            "Continue the run with awf_run_next — the appended element(s) "
+            "run at the end of the queue."
+        )
+    else:
+        next_action = "Continue the run with awf_run_next."
     return RunReviseResult(
         action="applied",
         preview=False,
@@ -1852,17 +2110,11 @@ def run_revise(
         revision=entry,
         resume_from=resume_from,
         message=(
-            f"Queue revised (key {key_clean}): {len(changes)} element(s) "
-            f"changed — the pipelines take effect at each element's launch "
+            f"Queue revised (key {key_clean}): " + ", ".join(parts)
+            + " — the changes take effect at each element's launch "
             f"(awf_run_next).{resume_note}"
         ),
-        next_action=(
-            f"Resume the stopped unit with awf_continue (it continues from "
-            f"stage '{resume_from}'), then awf_run_next for the next "
-            "element."
-            if resume_from
-            else "Continue the run with awf_run_next."
-        ),
+        next_action=next_action,
     )
 
 
