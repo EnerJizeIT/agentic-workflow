@@ -69,8 +69,7 @@
   супервизоре (heartbeat каждые ~4.5 мин) накопилось 97 мин downtime при
   elapsed 118; в забеге 9 — 342 при 441 (продуктивных 99) — похоже на
   переучёт (разобрать формулу на живом забеге).
-- ⬜ **Заметки забега 9 (11–12.10, из jql-репортов):**
-  (а) `run_revise` preview next_action не называет position — apply без
+- ⬜ **Заметки забега 9 (11–12.10, из jql-репортов):**  (а) `run_revise` preview next_action не называет position — apply без
   position молча превращает insert в append (F1-0198, P2);
   (б) `seed_roles` пишет `models.<role>.model` для роли, чей скилл не нашёлся
   (T1-0203, low — typed-отказ или skip+пометка);
@@ -183,3 +182,5 @@
 - rename-aware исключение в коммит-гейте (R-03): staged-переименования юнита сейчас исключаются из коммита как WIP владельца (инцидент 8.1, TODO-0122) — решить, менять ли семантику
 - `awf_verify_pack` рвётся по MCP-таймауту, когда verify-команды юнита включают полный сьют (транспорт ~60 с) — либо чанкинг команд, либо явный «долгий» режим
 - Два теста с одним basename (`tests/agent_workflow_ui/test_audit25_w7_protocol_ship.py` — sync-чек шаблон↔зеркало, и `tests/negative/test_audit25_w7_protocol_ship.py`) — переименовать/слить при следующей чистке
+- **noop-continue молча взводит ACK.** `awf_continue(ack=…)` при живом пайплайне отвечает «Pipeline already running» (noop), но ACK-сигнал всё равно записывается — это сделано нарочно, чтобы ответ супервизора не потерялся при гонке запусков. Проблема: супервизор видит «ничего не произошло» и не знает, что ответ уже взведён и лежит в inbox. Фикс: в текст noop-ответа добавлять строку «ACK для TODO-NNNN записан и ждёт; чтобы применить — сначала kill, затем continue» (и то же для APPROVE).
+- **Blocked-событие советует неработающий инструмент.** next_action blocked-события говорит «fix context and awf_retry_stage», но `awf_retry_stage` работает только при `salvage_stage` — на blocked он отказывает. Правильный рецепт для blocked: дополнить TODO (## REVIEW-фикс), затем `awf_kill` → `awf_continue(ack=…, from_stage=<нужная стадия>)`; либо правка + `awf_unblock` → continue. Фикс: вписать этот рецепт в текст blocked-события.
