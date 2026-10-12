@@ -5,6 +5,71 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-10-12
+
+Two fix waves born from a full day of running awf on a real JS project:
+unit commits keep every file the unit touched, recovery stops needing
+python workarounds, and prove-red and roles become first-class citizens.
+
+### Added
+
+- **`prove_red_kind: coverage`** (+ required `prove_red_note`) — a
+  coverage/validation unit whose tests are green on the baseline by
+  construction declares itself: the gate records the rationale instead of
+  a manual waiver. A tests-only diff with a `not-red` verdict gets a hint.
+- **prove-red command mode copies the tree's test files** — changed and
+  untracked test files (patterns derived from the unit diff) land in the
+  baseline worktree, as the docs always promised; an empty set is stated
+  explicitly in the verdict; a piped command runs under `bash -o pipefail`
+  with a warning that a pipe masks the exit code.
+- **`awf_run_revise` append/insert** — not-started units join an active
+  run queue (at the end, or before a queued element); CAS, idempotency
+  and the stop path are unchanged.
+- **Role preset `office`** — `awf_add_role(preset="office", models=…)`
+  seeds the standard set (system-analyst, spec-writer, architector,
+  project-auditor, qa-review, qa-table, auditor-table) from the installed
+  skills in one call; existing roles are never touched, a missing skill is
+  a reported skip.
+- **Roles write their model to the config** — `awf_add_role(model=…)`
+  records `models.<role>.model` in `.agentic/config.yaml` (the engine's
+  source of truth) and names the storage in its answer; `awf_status` lists
+  the office (role → model → source).
+- **Dirty-tree dispatch warning** — dispatching while the working tree is
+  dirty names every file that will stay outside the unit commit.
+
+### Fixed
+
+- **Unit commits no longer lose files.** Foreign staged files are
+  subtracted only per the dispatch-time snapshot; files staged during the
+  unit count as its work; a skipped commit with a non-empty diff is loud
+  (never a silent archive); RUN-REPORT lists everything left out; a
+  catch-up commit mentioning the unit id is no longer mistaken for the
+  unit's own commit.
+- **Recovery without python workarounds.** `run_finish` clears a stale
+  stage-state of the current unit itself (already archived, pipeline dead)
+  and records it in RUN-REPORT; a worker that exited without a signal but
+  left work gets one continue-push retry ("do not redo it") before salvage;
+  a zombie stage-state shows a hint in `awf_status`.
+- **The MCP server survives parallel awf calls.** Mutating tools run
+  under a mutex: the two parallel calls whose out-of-order replies used to
+  kill the connection now both answer, with a deterministic repro stand in
+  the tests.
+- **Event attribution.** A standalone close without a commit no longer
+  reports another unit's id; the done event names the unit actually
+  archived.
+- **Dashboard shows the active model immediately**, from the config
+  through the engine's own resolver; a non-string model value can no
+  longer 500 `/api/state`.
+- **`awf_start` warns about the plan checkpoint** and how to skip it;
+  `awf_status` separates the active run's units from standalone ones.
+
+### Upgrade notes
+
+- Nothing breaking: the plugin requires `awf>=1.8.0`; the install flow is
+  unchanged (`pip install -U awf agent-workflow-ui`).
+- New optional knob: `retry.silent_work_attempts` (default 1) — the
+  continue-push budget for a silent worker that left work in the tree.
+
 ## [1.7.0] — 2026-10-10
 
 A week of field reports turned into honesty fixes: the run loop keeps its

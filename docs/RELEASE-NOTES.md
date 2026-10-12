@@ -4,6 +4,40 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [1.8.0] — 2026-10-12
+
+Trust the commits, trust the loop. A day of running awf on a real project
+produced two fix waves: unit commits keep their word, recovery is
+hands-free, and prove-red and roles grew into first-class tools.
+
+### Highlights
+
+- **Commits keep their word.** Every file a unit touched lands in its
+  commit — files staged during the unit count as its work, a dirty-tree
+  dispatch warns loudly about what stays outside, and a skipped commit
+  with a non-empty diff can no longer slip through as a silent archive.
+- **Recovery is hands-free.** A stale stage-state clears itself at
+  `run_finish`; a worker that died silently but left work gets one "finish
+  what you started, do not redo it" push before salvage; a zombie
+  stage-state is visible in the status.
+- **prove-red grew up.** Command mode copies your tests into the baseline
+  worktree (as documented), a pipe can no longer mask the exit code, and
+  coverage units declare themselves instead of waiving the gate by hand.
+- **Roles are one call.** `preset="office"` seeds the standard team from
+  the installed skills; models live in the config where the engine reads
+  them, and the status shows role → model → source.
+- **The MCP server survives parallel calls.** Mutating tools run under a
+  mutex — the parallel pair that used to kill the connection now both
+  answer; events name the right unit; the dashboard shows the active model
+  at once.
+
+### Upgrade notes
+
+- Nothing breaking: `pip install -U awf agent-workflow-ui`; the plugin
+  requires `awf>=1.8.0`.
+- Optional: `retry.silent_work_attempts` (default 1) tunes the
+  continue-push budget for silent workers.
+
 ## [1.7.0] — 2026-10-10
 
 A week of running awf on real projects, turned into fixes: the supervisor
