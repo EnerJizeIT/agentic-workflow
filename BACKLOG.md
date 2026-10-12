@@ -69,7 +69,8 @@
   супервизоре (heartbeat каждые ~4.5 мин) накопилось 97 мин downtime при
   elapsed 118; в забеге 9 — 342 при 441 (продуктивных 99) — похоже на
   переучёт (разобрать формулу на живом забеге).
-- ⬜ **Заметки забега 9 (11–12.10, из jql-репортов):**  (а) `run_revise` preview next_action не называет position — apply без
+- ⬜ **Заметки забега 9 (11–12.10, из jql-репортов):**
+  (а) `run_revise` preview next_action не называет position — apply без
   position молча превращает insert в append (F1-0198, P2);
   (б) `seed_roles` пишет `models.<role>.model` для роли, чей скилл не нашёлся
   (T1-0203, low — typed-отказ или skip+пометка);
