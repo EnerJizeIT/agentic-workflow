@@ -305,6 +305,40 @@ def _head_position(
     return snap_line + shift
 
 
+def _head_end_position(
+    snap_end: int,
+    pre_hunks: list[tuple[int, list[tuple[str, str]]]],
+) -> int:
+    """The 0-based insertion position in HEAD of the snapshot BOUNDARY
+    ``snap_end`` (QA F8, REVIEW 2026-10-12: the unit's append point — one
+    past the LAST base-side line of its hunk).
+
+    A boundary sits BETWEEN lines, unlike a line in ``_head_position``:
+    a pre-dispatch insertion AT or before the boundary (a '+' of a
+    pre-hunk whose next base line starts at ``snap_end`` or earlier)
+    pushes the HEAD boundary past the inserted lines — the unit appended
+    after them; a pre-dispatch deletion of a line BEFORE the boundary
+    pulls it back. Context lines before the boundary are in both files
+    and shift nothing.
+    """
+    shift = 0
+    for base_pos, ops in pre_hunks:
+        if base_pos > snap_end:
+            continue  # the hunk starts after the boundary — no effect
+        pos = base_pos
+        for op, _text in ops:
+            if op == "+":
+                # an insertion sits at boundary ``pos`` (before the next
+                # base line, or at the pre-hunk's end)
+                if pos <= snap_end:
+                    shift += 1
+            else:
+                if op == "-" and pos < snap_end:
+                    shift -= 1
+                pos += 1
+    return snap_end + shift
+
+
 def _apply_unit_delta(
     head_text: str,
     patch_text: str,
@@ -344,6 +378,16 @@ def _apply_unit_delta(
     a ``\\r`` in ``head_text`` or ``patch_text`` means the merge would
     normalize the whole file's line endings silently (the worktree keeps
     CRLF — phantom dirt after the commit), so it returns None (QA F7).
+    An append hunk (the unit's '+' lines at the END of the hunk) is
+    spliced at the HEAD coordinate of the hunk's END
+    (``_head_end_position``: pre-dispatch insertions at or past the
+    window end count, deletions before it count back), never at
+    ``anchor + len(seq)`` of the matched fuzz variant — a variant that
+    dropped trailing context would move the unit's lines to the start
+    of the window (F8a/F8b) and a pre-dispatch line added after the
+    window would keep sitting after them (F8c); both were silent
+    hybrids (QA F8, REVIEW 2026-10-12). The verbatim check at the
+    exact anchor still guards the window's placement (F1/F3 class).
     Returns the merged content, or None when a hunk cannot be placed
     (overlap, or no anchor) or the content is CRLF — the caller
     degrades to the legacy full-worktree commit, loudly.
@@ -367,6 +411,18 @@ def _apply_unit_delta(
             and expected[len(expected) - 1 - trail_ctx][0] == " "
         ):
             trail_ctx += 1
+        # QA F8 (REVIEW 2026-10-12): the unit's lines come at the END of
+        # the hunk (no base-side content after them) — an append hunk.
+        # Its insertion point is the HEAD coordinate of the hunk's END
+        # (one past the last base-side line), computed independently of
+        # the matched variant; ``anchor + len(seq)`` is NOT that point:
+        # a fuzz variant that dropped trailing context ends its window
+        # earlier, and splicing there moved the unit's lines to the
+        # start of the window (F8a/F8b) — silently, mid-file. A
+        # pre-dispatch line added after the window (F8c) likewise kept
+        # sitting after them.
+        first_plus = next((i for i, (op, _t) in enumerate(hunk) if op == "+"), None)
+        is_append = first_plus is not None and all(op == "+" for op, _t in hunk[first_plus:])
         placed: tuple[int, int, list[str]] | None = None
         for lead in range(0, min(2, lead_ctx) + 1):
             for trail in range(0, min(2, trail_ctx) + 1):
@@ -393,16 +449,44 @@ def _apply_unit_delta(
                     # anchor means a duplicated context pattern
                     # captured the edit (F1/F3 class).
                     continue
-                out: list[str] = []
-                e = 0
-                for op, text in hunk:
-                    if op == "+":
-                        out.append(text)
-                    else:
+                if is_append:
+                    # The window itself is verified verbatim at its
+                    # exact anchor (the F1/F3 guard, the fuzz variant
+                    # only decides WHICH context lines the check keeps);
+                    # the unit's lines go at the mapped hunk END — the
+                    # pre-dispatch lines HEAD gained between the window
+                    # end and that end (``target[anchor + len(seq):
+                    # ins]``) stay put and the addition comes after
+                    # them.
+                    ins = _head_end_position(base_pos + len(expected), pre_hunks) + shift
+                    if ins < anchor + len(seq):
+                        # a pre-dispatch change inside the window would
+                        # have broken the verbatim match — this is
+                        # unreachable; degrade loudly rather than
+                        # splice anyway.
+                        continue
+                    e = 0
+                    kept: list[str] = []
+                    for op, text in hunk:
+                        if op == "+":
+                            continue
                         if op == " " and lead <= e < end:
-                            out.append(text)
+                            kept.append(text)
                         e += 1
-                placed = (anchor, len(seq), out)
+                    plus = [text for _op, text in hunk[first_plus:]]
+                    out = kept + target[anchor + len(seq) : ins] + plus
+                    placed = (anchor, ins - anchor, out)
+                else:
+                    out: list[str] = []
+                    e = 0
+                    for op, text in hunk:
+                        if op == "+":
+                            out.append(text)
+                        else:
+                            if op == " " and lead <= e < end:
+                                out.append(text)
+                            e += 1
+                    placed = (anchor, len(seq), out)
                 break
             if placed is not None:
                 break

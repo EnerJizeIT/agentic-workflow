@@ -1525,3 +1525,10 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # above: unit-id references and test identifiers, not debt.
 # files_over_400 stays 76 (the new test file is 339 lines — under the
 # bar; awf/api/dashboard_server.py lands at 397 — under the bar too).
+# TODO-0212 (delta-watchdog property test): baseline raised 76 -> 77
+# (files_over_400) — tests/negative/test_reports33_delta_property.py
+# is the new 828-line watchdog (scenario generators + harness + named
+# F1-F8 regressions); the length is the scenario catalogue, not
+# production debt. todos raised 5558 -> 5560 — the watchdog docstring
+# references TODO-0212 and TODO-0204 (unit-id references, the same
+# class as the already-counted test identifiers).
