@@ -1479,3 +1479,19 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # references, not debt. files_over_400 stays 76 (the new test file is
 # 137 lines — under the bar; the touched awf/api/lifecycle.py was
 # already over it).
+# REPORTS33 (TODO-0208, меньше церемонии: awf-блок в ролях из скиллов +
+# brief-детект продолжения): baseline raised 5486 -> 5517 (+31) — the 31
+# TODO-bearing lines: 15 in the new
+# tests/negative/test_reports33_less_ceremony.py (the module docstring's
+# source/unit references, the TODO-0001 done-history fixture use-sites of
+# the brief-continuation tests, the "называет TODO-0001" wording), 6 in
+# awf/phase.py (the _has_work_history docstring + the detect_phase /
+# get_phase_prompt fix-site comments), 5 in awf/brief.py (the
+# CONTINUE_LINE comment, the build_brief continuation comment + the
+# render-gate comment), 3 in awf/api/roles.py (the AWF-OVERRIDES section
+# header comment, the apply_awf_overrides docstring, the add_role
+# docstring line) and 2 in tests/unit/test_phase.py +
+# tests/unit/test_phase_live.py (the updated pins' docstring unit
+# references). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 76 (the new test file is
+# 318 lines — under the bar; the touched modules were already over it).

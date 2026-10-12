@@ -134,6 +134,60 @@ def _inject_model_line(content: str, line: str) -> str:
     lines[pos:pos] = [line, ""]
     return "\n".join(lines)
 
+# TODO-0208 (REPORTS33): a skill-sourced role carries the awf override
+# block. The SKILL.md body is a STANDALONE protocol — it ships its own
+# "Commit. Stage only the needed files" instructions that contradict the
+# awf cycle, where the ENGINE commits after the supervisor's verify. A
+# weak model following the skill body could commit inside a unit, bypassing
+# the engine. The block overrides exactly that (BD-31 style: appended at
+# the end, marker-delimited, idempotent, never touches the skill body):
+# commit ownership stays with the engine, no nested agents, work inside
+# the TODO's boundaries, finish with a signal — not a commit.
+
+_AWF_OVERRIDES_HEADING = (
+    "## AWF-OVERRIDE: awf pipeline overrides (added by awf add_role)"
+)
+_AWF_OVERRIDES_BLOCK = (
+    "\n---\n\n"
+    f"{_AWF_OVERRIDES_HEADING}\n"
+    "\n"
+    "**Commit ownership:** the awf engine commits after the supervisor's "
+    "verify and approve — never run `git add`, `git commit`, or "
+    "`git push` in a unit; leave your changes in the working tree.\n"
+    "\n"
+    "**No nested agents:** do not launch nested opencode sessions or "
+    "other agents from inside the unit — you are one stage of a single "
+    "pipeline run.\n"
+    "\n"
+    "**Scope and finish:** work strictly inside the TODO's boundaries "
+    "(the planned files). When done, write the signal file "
+    "(`DONE-<todo>.ready` / `BLOCKED-<todo>.ready`) — not a commit.\n"
+)
+# TODO-0157-style removal: from the block's `---` separator + heading to
+# the NEXT `^## ` heading (or EOF). A following `## BD-31` addendum (or
+# vice versa) is a boundary, not part of this block — the two blocks
+# coexist, each refreshable independently.
+_AWF_OVERRIDES_RE = re.compile(
+    r"\n?---\n+## AWF-OVERRIDE: awf pipeline overrides"
+    r".*?(?=\n## (?!AWF-OVERRIDE)|\Z)",
+    re.DOTALL,
+)
+
+
+def apply_awf_overrides(content: str) -> str:
+    """Append (or refresh) the awf override block — idempotent.
+
+    An existing block (same heading) is removed first — up to the next
+    ``## `` heading or EOF — before the fresh one is appended, so a
+    repeated materialization never duplicates it. The skill body is
+    never touched; the block is the file's last section (a BD-31
+    addendum appended later by ``analyze_roles_core`` follows it).
+    """
+    if _AWF_OVERRIDES_HEADING in content:
+        content = _AWF_OVERRIDES_RE.sub("", content).rstrip()
+    return content.rstrip() + _AWF_OVERRIDES_BLOCK
+
+
 # ORCH M5.1: draft area — role candidates isolated from live roles until
 # checked. A candidate is ``roles/draft/<slug>.md``; the first line is a
 # machine marker that records its source (``skill:<name>`` / ``builtin`` /
@@ -518,6 +572,18 @@ def add_role(
     unchanged; ``check_model_config`` cross-checks the line.
     ``AddRoleResult.model`` is the resolved model ("" when unassigned).
 
+    TODO-0208 (REPORTS33): a skill-sourced role (``from_skill``) ALSO
+    carries the awf override block at the end of the file (BD-31 style,
+    marker-delimited): the engine commits after the supervisor's verify
+    — the role never runs ``git add``/``git commit``/``git push``; no
+    nested opencode/agents; work inside the TODO's boundaries, finish
+    with a signal, not a commit. The block overrides the skill body's
+    standalone "Commit." instructions without touching the body, is
+    refreshed (never duplicated) on a repeated materialization, and
+    coexists with the BD-31 disambiguation addendum. Existing role files
+    are never modified (creation only); built-in and template sources
+    keep their own protocols and get no block.
+
     REPORTS32 (TODO-0202): an explicit ``model=`` is ALSO merged into
     ``.agentic/config.yaml`` as ``models.<role_name>.model`` (the config
     is the source of truth the engine reads) — the manual "add model
@@ -613,6 +679,15 @@ def add_role(
     # template already renders it in its header (the injector is a no-op
     # there); built-in and skill-sourced content get it injected.
     content = _inject_model_line(content, model_line(resolved_model))
+
+    # TODO-0208 (REPORTS33): the awf override block for skill-sourced
+    # roles — the standalone "Commit." instructions of the skill body are
+    # overridden by the awf cycle (the engine commits after verify).
+    # Idempotent via the AWF-OVERRIDE marker; a repeated materialization
+    # (force) refreshes the block, never duplicates it. Existing role
+    # files are never touched (add_role only creates).
+    if skill_name:
+        content = apply_awf_overrides(content)
 
     # ORCH M5.1: the draft candidate records its source on the first line
     # so list_role_drafts can report it; live role files carry no marker.
@@ -1526,6 +1601,7 @@ __all__ = [
     "analyze_roles_core",
     "AnalyzeData",
     "AnalyzeError",
+    "apply_awf_overrides",
     "discard_role_draft",
     "list_role_drafts",
     "role_model_office",

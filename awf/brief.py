@@ -47,6 +47,14 @@ SETUP_HINT = (
     "→ first TODO (`awf_dispatch_todo`)."
 )
 LIVE_LINE = "Live project: continue the working cycle."
+# TODO-0208 (REPORTS33): a project with work history (completed units in
+# done/ or a run record in state/) but without the RUN3-7 "configured"
+# signal is a continuation, not a new project — the header says so and
+# the setup chain (goal → form → normalize) is not pushed.
+CONTINUE_LINE = (
+    "Продолжение проекта: история работ есть — рабочий цикл, "
+    "setup-цепочка не нужна."
+)
 NEW_LINE = "New project (setup chain applies)."
 
 FEEDBACK_LINE = (
@@ -84,6 +92,10 @@ class BriefResult:
     project: str
     phase: str
     date: str
+    # True when the card treats the project as a continuation (working
+    # cycle, not the setup chain): configured + completed work
+    # (RUN3-7/TODO-0049), OR work history alone — completed units in
+    # done/ or a run record in state/ (TODO-0208/REPORTS33).
     is_live_project: bool
     live_line: str
     setup_hint: str
@@ -502,7 +514,14 @@ def render_brief(r: BriefResult) -> str:
     if r.is_live_project:
         if r.next_action:
             L.append(f"- next: {r.next_action}")
-        if r.phase_summary:
+        if r.phase_summary and r.run is None:
+            # TODO-0208 (REPORTS33): a continued card (work history,
+            # e.g. an active run) now renders next_action + phase_summary
+            # where the setup hint used to be — the card pays that with
+            # the verbose block, not MAX_WORDS. When a run exists
+            # (active or finished), the State section and the run-aware
+            # next action already carry the working context — the static
+            # phase prompt would only duplicate it and blow the budget.
             L.append("")
             L.append(_demote_headings(r.phase_summary))
             if r.phase_clipped:
@@ -651,16 +670,26 @@ def build_brief(
         pass
 
     is_live = False
+    has_history = False
     if has_agentic:
         try:
             is_live = _phase._is_live_project(project_dir)
+            has_history = _phase._has_work_history(project_dir)
         except Exception:
             is_live = False
+            has_history = False
+    # TODO-0208 (REPORTS33): work history marks a CONTINUED project —
+    # the card names it and keeps the next action in the working cycle
+    # instead of pushing the setup chain (goal → form → normalize).
+    # is_live (RUN3-7: configured + done) implies history; history
+    # without the configured team is a continuation too. A brand-new
+    # project (no history) stays exactly as before.
+    continues = is_live or has_history
 
     next_action = ""
     phase_summary = ""
     phase_clipped = False
-    if is_live and status is not None:
+    if continues and status is not None:
         raw_action = str(status.expected_action or status.suggestion or "")
         next_action, clipped_action = _clip_by_words(raw_action, _NEXT_ACTION_MAX_WORDS)
         if clipped_action:
@@ -713,11 +742,12 @@ def build_brief(
 
     # RUN6 #5 (TODO-0060): every answer leads to the next step — a new
     # project's next action is the setup chain itself (before: empty); a
-    # live project without an explicit expected_action gets one derived
-    # from its state (next_action_from_status).
-    if not is_live and not next_action:
+    # live/continued project without an explicit expected_action gets one
+    # derived from its state (next_action_from_status — working steps,
+    # never the setup chain; TODO-0208).
+    if not continues and not next_action:
         next_action = "New project — run the setup chain (above); start with `awf_init`."
-    elif is_live and not next_action:
+    elif continues and not next_action:
         next_action = next_action_from_status(status) if status is not None else LIVE_LINE
 
     # ORCH M1.2: the card's compact view of the shared run record — the
@@ -752,9 +782,13 @@ def build_brief(
         project=project,
         phase=phase,
         date=date.today().isoformat(),
-        is_live_project=is_live,
-        live_line=LIVE_LINE if is_live else NEW_LINE,
-        setup_hint="" if is_live else SETUP_HINT,
+        is_live_project=continues,
+        live_line=(
+            LIVE_LINE
+            if is_live
+            else (CONTINUE_LINE if has_history else NEW_LINE)
+        ),
+        setup_hint="" if continues else SETUP_HINT,
         next_action=next_action,
         phase_summary=phase_summary,
         phase_clipped=phase_clipped,
