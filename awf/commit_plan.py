@@ -70,6 +70,12 @@ class CommitPlan:
     # violation) — they ARE in ``files`` (the worker's own work joins the
     # unit commit); the gate warns, it does not refuse. () otherwise.
     worker_staged: tuple[str, ...] = ()
+    # REPORTS33 (TODO-0204): the tracked-dirty-at-baseline files in
+    # ``files`` — the commit gate commits only the unit's own edit for
+    # them (worktree vs the ``BASELINE-{todo}.worktree`` snapshot), so
+    # the pre-dispatch WIP stays in the worktree. () when the delta
+    # mechanism is unavailable (legacy behavior: the whole diff).
+    delta_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -130,6 +136,63 @@ def staged_at_baseline(project_dir: Path, todo_id: str) -> set[str] | None:
     return staged
 
 
+def worktree_dirty_at_baseline(project_dir: Path, todo_id: str) -> set[str] | None:
+    """REPORTS33 (TODO-0204): the paths whose WORKTREE column was dirty at
+    baseline time — unstaged tracked changes (`` M``, `` D``, ...) that
+    pre-date the unit. The delta mechanism applies to exactly these:
+    their pre-dispatch content is captured in the worktree snapshot and
+    must stay OUTSIDE the unit commit.
+
+    Complementary to :func:`staged_at_baseline` (the INDEX column): an
+    ``MM`` entry is foreign staged WIP (0195 rules it), a ``M `` entry is
+    clean in the worktree (nothing pre-dates the unit there).
+
+    None when the snapshot is absent or unreadable (a legacy baseline):
+    the caller keeps the legacy behavior (the whole diff enters the
+    commit, as before).
+    """
+    if not todo_id:
+        return None
+    status_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.status"
+    if not status_file.is_file():
+        return None
+    try:
+        text = status_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    dirty: set[str] = set()
+    for line in text.splitlines():
+        if len(line) < 4:
+            continue
+        if line[0] != " ":
+            continue  # staged (foreign WIP — 0195) or untracked ("?")
+        if line[1] == " ":
+            continue  # clean
+        dirty.add(_status_path(line[3:]))
+    return dirty
+
+
+def read_worktree_snapshot(project_dir: Path, todo_id: str) -> str:
+    """REPORTS33 (TODO-0204): the ``BASELINE-{todo_id}.worktree`` content
+    — the sha of the worktree snapshot ``create_baseline`` took at
+    dispatch time (a ``git stash create`` commit object).
+
+    "" when the file is absent or empty: a legacy baseline, a non-git
+    project, a clean tree at dispatch (nothing to snapshot), or a
+    failed snapshot. Without it the delta mechanism is unavailable and
+    the legacy behavior holds (the whole diff enters the commit).
+    """
+    if not todo_id:
+        return ""
+    snap_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.worktree"
+    if not snap_file.is_file():
+        return ""
+    try:
+        return snap_file.read_text(encoding="utf-8").strip().split("\n")[0]
+    except OSError:
+        return ""
+
+
 @dataclass(frozen=True)
 class PlanSplit:
     """TODO-0195: one pass over the tree → the unit's commit set and what
@@ -146,12 +209,19 @@ class PlanSplit:
       warns, it does not refuse.
     - ``legacy_fallback`` — True when ``BASELINE-{todo}.status`` was
       missing and the legacy whole-staged subtraction was used.
+    - ``delta_files`` (REPORTS33, TODO-0204) — the tracked-dirty-at-
+      baseline files that ARE in ``files``: for them the commit gate
+      commits only the unit's own edit (worktree vs the dispatch-time
+      worktree snapshot), not the pre-dispatch WIP. () when the delta
+      mechanism is unavailable (legacy baseline / no snapshot) — the
+      legacy full-diff commit holds.
     """
 
     files: list[str]
     excluded: list[tuple[str, str]] = field(default_factory=list)
     worker_staged: list[str] = field(default_factory=list)
     legacy_fallback: bool = False
+    delta_files: list[str] = field(default_factory=list)
 
 
 def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
@@ -276,6 +346,46 @@ def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> Plan
     modified = [p for p in modified_raw if p not in foreign_paths]
     worker_staged = sorted(staged_vs_head - foreign_paths)
 
+    # REPORTS33 (TODO-0204): the delta mechanism. A file tracked-dirty at
+    # dispatch pre-dates the unit: the commit may carry only the unit's
+    # own edit (worktree vs the dispatch-time worktree snapshot). A file
+    # the unit never touched since the dispatch has an EMPTY delta — it
+    # is excluded from the plan and stays dirty in the worktree (the
+    # dispatch warning's promise, made true). The mechanism needs both
+    # snapshots (``.status`` + ``.worktree``); on absence (legacy
+    # baseline, clean tree at dispatch, git failure) the legacy behavior
+    # holds — the whole diff enters the commit, as before.
+    delta_files: list[str] = []
+    no_delta: set[str] = set()
+    snap_sha = read_worktree_snapshot(project_dir, todo_id)
+    dirty_at_baseline = worktree_dirty_at_baseline(project_dir, todo_id)
+    if snap_sha and dirty_at_baseline:
+        try:
+            snap_diff = subprocess.run(
+                ["git", "diff", "--name-only", snap_sha],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,  # AUD04-11: hung git must not hang the commit gate
+            )
+        except (subprocess.SubprocessError, OSError):
+            snap_diff = None
+        if snap_diff is not None and snap_diff.returncode == 0:
+            touched_since_snap = {
+                _status_path(line)
+                for line in snap_diff.stdout.splitlines()
+                if line.strip()
+            }
+            for p in modified:
+                if p not in dirty_at_baseline:
+                    continue
+                if p in touched_since_snap:
+                    delta_files.append(p)
+                else:
+                    no_delta.add(p)
+            modified = [p for p in modified if p not in no_delta]
+
     # 2. Untracked files (new files worker created since baseline)
     # QA-1: exclude pre-existing untracked files (existed before baseline).
     # Read BASELINE-{todo_id}.untracked snapshot to filter them out.
@@ -351,6 +461,8 @@ def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> Plan
             continue
         if path in (foreign_paths or ()):
             reason = "staged" if legacy else "staged-at-baseline"
+        elif path in no_delta:
+            reason = "pre-dispatch changes only (no unit delta)"
         else:
             reason = "pre-existing untracked"
         excluded.append((path, reason))
@@ -360,6 +472,7 @@ def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> Plan
         excluded=sorted(excluded),
         worker_staged=worker_staged,
         legacy_fallback=legacy,
+        delta_files=sorted(delta_files),
     )
 
 
@@ -552,6 +665,7 @@ def build_commit_plan(
             baseline_sha=baseline_sha,
             excluded=tuple(split.excluded),
             worker_staged=tuple(split.worker_staged),
+            delta_files=tuple(split.delta_files),
         )
     return CommitPlan(
         todo_id=todo_id,

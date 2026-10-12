@@ -172,7 +172,11 @@ def test_c_dirty_tree_dispatch_warns_with_paths(project: Path):
     assert result.dirty_warning, "грязное дерево на диспатче обязано предупреждать"
     for path in ("core.py", "staged.txt", "loose.txt"):
         assert path in result.dirty_warning
-    assert "will NOT enter the TODO-0001 commit" in result.dirty_warning
+    # TODO-0204 (REPORTS33): warning обещает по факту — у tracked-dirty
+    # файла pre-dispatch-правки останутся вне коммита (снапшот worktree
+    # на диспатче есть), staged/untracked — вне коммита в любом случае
+    assert "stay OUTSIDE the unit commit" in result.dirty_warning
+    assert "tracked-dirty files (core.py)" in result.dirty_warning
     # warning, не отказ: диспатч состоялся
     assert result.todo_id == TODO
     assert (project / ".agentic" / "inbox" / f"{TODO}.md").is_file()

@@ -78,9 +78,12 @@ def _todo_title(project_dir: Path, todo_id: str) -> str:
     """The first H1 heading of ``inbox/TODO-<id>.md`` → title, or "".
 
     The dispatch boilerplate is stripped: the leading ``#``, the leading
-    ``TODO(-id)`` token, and the separators (``—``, ``-``, ``:``,
-    whitespace). A heading that is the boilerplate only (``# TODO-0001``)
-    yields "" — the caller degrades to the legacy subject.
+    ``TODO(-id)`` token, and the separator run (``—``, ``–``, ``-``,
+    ``:``, ``·``, ``•``, whitespace — any combination, any repetition).
+    REPORTS33 (TODO-0204): the bullet (``·``) is stripped too — a heading
+    ``# TODO-0001 — · Text`` must not yield the ``— ·`` subject artifact.
+    A heading that is the boilerplate only (``# TODO-0001``) yields "" —
+    the caller degrades to the legacy subject.
     """
     todo_file = paths.inbox(project_dir) / f"{todo_id}.md"
     try:
@@ -93,7 +96,7 @@ def _todo_title(project_dir: Path, todo_id: str) -> str:
             continue
         title = m.group(1).strip()
         title = re.sub(r"^TODO(?:-\d+)?\b", "", title)
-        title = title.lstrip("—-: \t")
+        title = title.lstrip("—–-: \t·•")
         return title.strip()
     return ""
 
@@ -223,6 +226,403 @@ def _short_paths(paths_list: list[str], cap: int = 10) -> str:
     return ", ".join(shown) + (f" …({more} more)" if more else "")
 
 
+# ─── REPORTS33 (TODO-0204): the unit delta of a pre-dirty file ─────────
+
+
+def _parse_delta_hunks(
+    patch_text: str,
+) -> list[tuple[int, list[tuple[str, str]]]] | None:
+    """The ``@`` hunks of a unified diff as ``(base_pos, ops)`` pairs, or
+    None when the text is not a parseable text diff (binary, garbage).
+
+    ``base_pos`` — the 0-based position in the BASE content the hunk is
+    anchored at; ``ops`` — ``(op, text)`` lines with op in ``{' ', '-',
+    '+'}`` (a blank context line arrives as ``("", "")``-normalized to
+    ``(" ", "")``).
+    """
+    hunks: list[tuple[int, list[tuple[str, str]]]] = []
+    in_hunk = False
+    for line in patch_text.splitlines():
+        if line.startswith("@@"):
+            m = re.match(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@", line)
+            if m is None:
+                return None
+            in_hunk = True
+            hunks.append((int(m.group(1)) - 1, []))
+        elif in_hunk:
+            if line.startswith(("diff --git", "Binary files")):
+                in_hunk = False  # a next-file header (a pathspec keeps one)
+            elif line == "":
+                hunks[-1][1].append((" ", ""))  # a blank context line
+            elif line[:1] in (" ", "-", "+"):
+                hunks[-1][1].append((line[:1], line[1:]))
+            elif line.startswith("\\"):
+                continue  # "\ No newline at end of file"
+            else:
+                return None  # an unexpected line — not a text diff
+    if not hunks or not any(hunk for _, hunk in hunks):
+        return None
+    return hunks
+
+
+def _head_position(
+    snap_line: int,
+    pre_hunks: list[tuple[int, list[tuple[str, str]]]],
+) -> int:
+    """The 0-based position in HEAD of the snapshot line ``snap_line``
+    (QA F1, REVIEW 2026-10-12: the exact hunk anchor in HEAD coordinates).
+
+    ``pre_hunks`` — the parsed snapshot→HEAD diff (``_parse_delta_hunks``):
+    each hunk is ``(base_pos in snapshot coordinates, ops)`` with op in
+    ``{' ', '-', '+'}``. Insertions ('+') before the line raise its
+    position in HEAD, deletions ('-') before it lower it. A pre-dispatch
+    hunk that removes the line itself still yields a position (the line
+    is simply absent from HEAD — the caller's verbatim match fails and
+    degrades); a hunk that merely surrounds the line is exact.
+    """
+    shift = 0
+    for base_pos, ops in pre_hunks:
+        if base_pos > snap_line:
+            continue  # the hunk starts after the line — no effect
+        pos = base_pos
+        delta = 0
+        found = False
+        for op, _text in ops:
+            if op == "+":
+                delta += 1
+            elif op == "-":
+                delta -= 1
+            if op != "+":
+                if pos == snap_line:
+                    shift += delta
+                    found = True
+                    break
+                pos += 1
+        if not found:
+            # The line was deleted by this hunk (a '-' line), or the hunk
+            # ends before it: the full hunk delta applies either way.
+            shift += delta
+    return snap_line + shift
+
+
+def _apply_unit_delta(
+    head_text: str,
+    patch_text: str,
+    pre_hunks: list[tuple[int, list[tuple[str, str]]]],
+) -> str | None:
+    """Apply the unit's edit (the snapshot→worktree diff) to the HEAD
+    content — the content the unit commit must carry.
+
+    A hunk's context may name pre-dispatch lines that are ABSENT from
+    HEAD: with a fuzz of up to 2 the hunk may fail to match only at its
+    EDGE context (deleted lines and the inner context must match
+    verbatim). The anchor is computed exactly in HEAD coordinates
+    (``_head_position``: the snapshot position shifted by the
+    pre-dispatch insertions/deletions before it) and only the EXACT
+    anchor is accepted: a verbatim match at ``anchor`` places the hunk,
+    a miss tries the next fuzz variant, and when no variant places it
+    the merge returns None (QA F1: an unbounded from-0 scan placed the
+    unit's edit into the first duplicated context far away; QA F3: a
+    window scan from ``anchor - window`` let a duplicate pattern inside
+    the window capture it; REVIEW iter 4: the window scan was removed
+    outright — it was unreachable for placeable hunks, whose anchors
+    are exact, and could only fire on an unplaceable hunk, where
+    matching anywhere is an F1-class corruption). A hunk whose base
+    side is all context (an empty seq after the fuzz drop) is never
+    placed either: its old placement at ``min(base_pos + shift,
+    len(target))`` was prepend semantics, ignoring both "the addition
+    comes AFTER the context" and the pre-dispatch shift — the unit's
+    lines could land in the middle (or the start) of the file silently
+    (QA F5); a placeable hunk matches a non-empty variant at its exact
+    anchor, otherwise the merge degrades. A hunk with no base side at
+    all (``base_pos < 0``: the file was emptied before the dispatch,
+    git ``@@ -0,0``) has no anchor in HEAD — the merge would splice at
+    a negative index and leak HEAD lines into the commit; it is
+    unplaceable and returns None (QA F4). CRLF content is never merged
+    either: ``splitlines()`` eats the ``\\r`` (in the HEAD line split and
+    the patch parse alike) and the join reassembles the file with LF —
+    a ``\\r`` in ``head_text`` or ``patch_text`` means the merge would
+    normalize the whole file's line endings silently (the worktree keeps
+    CRLF — phantom dirt after the commit), so it returns None (QA F7).
+    Returns the merged content, or None when a hunk cannot be placed
+    (overlap, or no anchor) or the content is CRLF — the caller
+    degrades to the legacy full-worktree commit, loudly.
+    """
+    if "\r" in head_text or "\r" in patch_text:
+        # QA F7 (REVIEW 2026-10-12, iter 6): CRLF — see the docstring.
+        return None
+    hunks = _parse_delta_hunks(patch_text)
+    if hunks is None:
+        return None
+    target = head_text.splitlines()
+    shift = 0
+    for base_pos, hunk in hunks:
+        expected = [(op, text) for op, text in hunk if op != "+"]
+        lead_ctx = 0
+        while lead_ctx < len(expected) and expected[lead_ctx][0] == " ":
+            lead_ctx += 1
+        trail_ctx = 0
+        while (
+            trail_ctx < len(expected)
+            and expected[len(expected) - 1 - trail_ctx][0] == " "
+        ):
+            trail_ctx += 1
+        placed: tuple[int, int, list[str]] | None = None
+        for lead in range(0, min(2, lead_ctx) + 1):
+            for trail in range(0, min(2, trail_ctx) + 1):
+                if lead + trail > 2:
+                    continue
+                end = len(expected) - trail if trail else len(expected)
+                seq = [text for _, text in expected[lead:end]]
+                if not seq:
+                    # QA F5 (REVIEW 2026-10-12): the fuzz dropped the
+                    # whole base side — the variant has no anchor of its
+                    # own. The old placement at min(base_pos + shift,
+                    # len(target)) was prepend semantics: it ignored
+                    # both "the addition comes AFTER the context" and
+                    # the pre-dispatch shift, and could splice the
+                    # unit's lines into the middle (or the start) of
+                    # the file silently. Never place it: a placeable
+                    # hunk matches a non-empty variant at its exact
+                    # anchor, otherwise the merge degrades loudly below.
+                    continue
+                anchor = _head_position(base_pos + lead, pre_hunks) + shift
+                if anchor < 0 or target[anchor:anchor + len(seq)] != seq:
+                    # the exact anchor missed: the next fuzz variant,
+                    # never a search elsewhere — matching away from the
+                    # anchor means a duplicated context pattern
+                    # captured the edit (F1/F3 class).
+                    continue
+                out: list[str] = []
+                e = 0
+                for op, text in hunk:
+                    if op == "+":
+                        out.append(text)
+                    else:
+                        if op == " " and lead <= e < end:
+                            out.append(text)
+                        e += 1
+                placed = (anchor, len(seq), out)
+                break
+            if placed is not None:
+                break
+        if placed is None:
+            return None
+        idx, span, out = placed
+        target = target[:idx] + out + target[idx + span:]
+        shift += len(out) - span
+    text = "\n".join(target)
+    if target and (not head_text or head_text.endswith("\n")):
+        text += "\n"
+    return text
+
+
+def _commit_delta_file(
+    project_dir: Path,
+    env: dict[str, str],
+    file: str,
+    snap_sha: str,
+    logs_dir: Path | None,
+) -> None:
+    """Commit ONLY the unit's own edit of a tracked-dirty-at-baseline file
+    (REPORTS33, TODO-0204) into the throwaway index.
+
+    The unit started from the dispatch-time worktree (the snapshot's
+    blob) and produced the current worktree; the commit must carry that
+    edit applied to the HEAD content, not the pre-dispatch WIP (which
+    stays in the worktree uncommitted). The unit's edit is the
+    snapshot→worktree diff applied to the HEAD content with the
+    edge-context fuzz (the pre-dispatch lines are absent from HEAD); on a
+    placeable failure (overlap, binary, CRLF line endings, any git
+    error) the file degrades to the legacy full-worktree commit —
+    loudly logged, never silent.
+    """
+    def _warn(msg: str) -> None:
+        print(f"WARNING: {msg}", file=sys.stderr)
+        if logs_dir is not None:
+            _log(logs_dir, msg)
+
+    def _degrade(why: str) -> None:
+        _warn(
+            f"REPORTS33 delta mechanism for {file!r}: {why} — the full "
+            "worktree content enters the unit commit (legacy behavior)"
+        )
+        add = _git_isolated(project_dir, ["add", "--", file], env)
+        if add.returncode != 0:
+            _warn(
+                f"REPORTS33 delta fallback add for {file!r} failed "
+                f"(rc={add.returncode}): "
+                f"{add.stderr.strip() or add.stdout.strip()}"
+            )
+
+    # the three content states: HEAD / snapshot (pre-dispatch) / worktree
+    head_r = _git_isolated(
+        project_dir, ["rev-parse", "-q", "--verify", f"HEAD:{file}"], env
+    )
+    if head_r.returncode != 0:
+        _degrade("the file is not in HEAD — the content merge is unavailable")
+        return
+    head_blob = head_r.stdout.strip()
+    snap_r = _git_isolated(
+        project_dir, ["rev-parse", "-q", "--verify", f"{snap_sha}:{file}"], env
+    )
+    snap_blob = snap_r.stdout.strip() if snap_r.returncode == 0 else None
+    if (project_dir / file).is_file():
+        unit_r = _git_isolated(project_dir, ["hash-object", "--", file], env)
+        unit_blob = unit_r.stdout.strip() if unit_r.returncode == 0 else None
+    else:
+        unit_blob = None
+
+    if unit_blob is None:
+        # The file is deleted in the worktree: a pre-dispatch deletion
+        # cannot "stay in the worktree" — commit the worktree state as-is.
+        _warn(
+            f"REPORTS33 delta mechanism for {file!r}: the file is missing "
+            "in the worktree (a deletion) — the worktree state is "
+            "committed as-is"
+        )
+        _git_isolated(project_dir, ["add", "--", file], env)
+        return
+    if snap_blob is None:
+        # Absent from the dispatch-time snapshot (deleted pre-dispatch);
+        # what the unit (re)created is wholly its own edit.
+        _warn(
+            f"REPORTS33 delta mechanism for {file!r}: the file is absent "
+            "from the dispatch-time snapshot (deleted pre-dispatch) — the "
+            "whole worktree content is committed as the unit's edit"
+        )
+        _git_isolated(project_dir, ["add", "--", file], env)
+        return
+    if unit_blob == snap_blob:
+        # The worktree matches the snapshot — the unit never touched the
+        # file since the dispatch (the plan would have excluded it; a
+        # worktree move between the plan and the commit). No delta: keep
+        # the HEAD index entry, the file is not in the commit.
+        _warn(
+            f"REPORTS33 delta mechanism for {file!r}: the worktree matches "
+            "the dispatch-time snapshot (no unit delta) — the file is "
+            "left out of the unit commit"
+        )
+        return
+
+    head_bytes = subprocess.run(
+        ["git", "cat-file", "blob", head_blob],
+        cwd=project_dir,
+        capture_output=True,
+        check=False,
+        timeout=30,  # AUD04-11
+        env=env,
+    )
+    if head_bytes.returncode != 0:
+        _degrade("the HEAD content could not be read")
+        return
+    try:
+        head_text = head_bytes.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        _degrade("binary content — the text merge is unavailable")
+        return
+    try:
+        diff_r = _git_isolated(
+            project_dir,
+            ["diff", "--no-renames", "--no-color", snap_sha, "--", file],
+            env,
+        )
+    except UnicodeDecodeError:
+        _degrade("the snapshot→worktree diff is not text")
+        return
+    if diff_r.returncode != 0:
+        _degrade(
+            f"the snapshot→worktree diff failed (rc={diff_r.returncode})"
+        )
+        return
+    # QA F1: the hunk anchors are computed in HEAD coordinates — the
+    # snapshot→HEAD (pre-dispatch) diff tells how snapshot line positions
+    # shift into HEAD. Without it the anchor is unknown: degrade loudly.
+    try:
+        pre_r = _git_isolated(
+            project_dir,
+            ["diff", "--no-renames", "--no-color", snap_sha, "HEAD", "--", file],
+            env,
+        )
+    except UnicodeDecodeError:
+        _degrade("the snapshot→HEAD diff is not text — the anchor is unavailable")
+        return
+    if pre_r.returncode != 0:
+        _degrade(f"the snapshot→HEAD diff failed (rc={pre_r.returncode})")
+        return
+    pre_hunks = _parse_delta_hunks(pre_r.stdout)
+    if pre_hunks is None:
+        _degrade("the snapshot→HEAD diff is not a parseable text diff")
+        return
+    # QA F7 (REVIEW 2026-10-12, iter 6): CRLF in the HEAD content or the
+    # unit diff — the text merge would normalize the line endings to LF
+    # silently (splitlines() eats the \r, the join reassembles with LF).
+    # Degrade loudly with the reason in the log; the legacy worktree
+    # commit keeps CRLF intact.
+    if "\r" in head_text or "\r" in diff_r.stdout:
+        _degrade(
+            "CRLF line endings in the HEAD content or the unit diff — "
+            "the text merge would normalize them to LF (line endings) — "
+            "no clean unit delta"
+        )
+        return
+    merged = _apply_unit_delta(head_text, diff_r.stdout, pre_hunks)
+    if merged is None:
+        _degrade(
+            "the unit edit cannot be merged into the HEAD content (it "
+            "overlaps the pre-dispatch edit, or a hunk has no anchor — "
+            "e.g. the file was emptied before the dispatch) — no clean "
+            "unit delta"
+        )
+        return
+    blob_r = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=project_dir,
+        input=merged,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,  # AUD04-11
+        env=env,
+    )
+    if blob_r.returncode != 0:
+        _degrade("the merged content could not be written as a blob")
+        return
+    # QA F2 (REVIEW 2026-10-12): the mode is the file's HEAD mode, not a
+    # hardcoded 100644 — an executable (100755) must not silently lose
+    # its exec bit in the delta commit.
+    mode_r = _git_isolated(
+        project_dir, ["ls-tree", "HEAD", "--", file], env
+    )
+    if mode_r.returncode != 0:
+        _degrade(
+            f"the HEAD mode could not be read (rc={mode_r.returncode})"
+        )
+        return
+    mode = mode_r.stdout.split()
+    if not mode or mode[0] not in ("100644", "100755", "120000"):
+        _degrade(
+            f"unexpected HEAD mode {mode[0] if mode else '?'} — refusing "
+            "to guess the file mode"
+        )
+        return
+    upd = _git_isolated(
+        project_dir,
+        [
+            "update-index",
+            "--cacheinfo",
+            f"{mode[0]},{blob_r.stdout.strip()},{file}",
+        ],
+        env,
+    )
+    if upd.returncode != 0:
+        _degrade(
+            "the merged content could not be seeded into the isolated index "
+            f"(rc={upd.returncode}): {upd.stderr.strip() or upd.stdout.strip()}"
+        )
+        return
+
+
 def _unit_already_committed(
     project_dir: Path, baseline_sha: str, todo_id: str
 ) -> bool:
@@ -305,13 +705,40 @@ def _commit_via_isolated_index(
                         f"git read-tree HEAD failed (rc={read.returncode}): "
                         f"{read.stderr.strip()}",
                     )
-            add = _git_isolated(project_dir, ["add", "--", *plan.files], env)
-            if add.returncode != 0:
-                return commit_plan.CommitOutcome(
-                    commit_plan.OUTCOME_ERROR,
-                    f"git add failed (rc={add.returncode}): "
-                    f"{add.stderr.strip() or add.stdout.strip()}",
+            # REPORTS33 (TODO-0204): a tracked-dirty-at-baseline file is
+            # committed as the unit's delta ONLY (the pre-dispatch WIP
+            # stays in the worktree); everything else is added as before.
+            delta = set(plan.delta_files)
+            plain = [f for f in plan.files if f not in delta]
+            if plain:
+                add = _git_isolated(project_dir, ["add", "--", *plain], env)
+                if add.returncode != 0:
+                    return commit_plan.CommitOutcome(
+                        commit_plan.OUTCOME_ERROR,
+                        f"git add failed (rc={add.returncode}): "
+                        f"{add.stderr.strip() or add.stdout.strip()}",
+                    )
+            if delta:
+                snap_sha = commit_plan.read_worktree_snapshot(
+                    project_dir, plan.todo_id
                 )
+                if not snap_sha:
+                    # The plan marked delta files but the snapshot is gone
+                    # (moved out from under the gate) — legacy behavior.
+                    add = _git_isolated(
+                        project_dir, ["add", "--", *sorted(delta)], env
+                    )
+                    if add.returncode != 0:
+                        return commit_plan.CommitOutcome(
+                            commit_plan.OUTCOME_ERROR,
+                            f"git add failed (rc={add.returncode}): "
+                            f"{add.stderr.strip() or add.stdout.strip()}",
+                        )
+                else:
+                    for file in sorted(delta):
+                        _commit_delta_file(
+                            project_dir, env, file, snap_sha, logs_dir
+                        )
             if _has_head(project_dir):
                 diff = _git_isolated(project_dir, ["diff", "--cached", "--quiet"], env)
                 if diff.returncode == 0:

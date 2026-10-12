@@ -1379,3 +1379,66 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # merge). Same class as above: unit-id references, not debt.
 # files_over_400 stays 74 (the new test file is 322 lines — under the
 # bar; the touched production modules were already over it).
+# REPORTS33 (TODO-0204, dirty-warning says what the commit will do):
+# baseline raised 5410 -> 5441 (+31) — the unit adds 37 TODO-bearing
+# lines and drops 6: 18 in the new
+# tests/negative/test_reports33_dirty_delta.py (the module docstring's
+# unit/report references, the TODO = "TODO-0001" constant and its
+# fixture/assert use-sites of the four invariant tests), the
+# TODO-0204 unit references in awf/commit_plan.py (5 — the
+# worktree_dirty_at_baseline / read_worktree_snapshot docstrings, the
+# PlanSplit / CommitPlan delta_files field comments, the _plan_split
+# mechanism comment), awf/commit_gate.py (7 added / 2 dropped — the
+# section header, the _commit_delta_file docstring and the
+# no-snapshot / delta-file comments, the _todo_title docstring's
+# REPORTS33 line), awf/api/pipeline.py (2 — the create_baseline
+# docstring + mechanism comment), awf/api/dispatch.py (4 added /
+# 3 dropped — the _dirty_tree_classes / _format_dirty_warning
+# docstrings and the dispatch call-site comment) and 1 in
+# tests/negative/test_reports32_commit_integrity.py (the updated
+# test_c comment naming the unit; the dropped "will NOT enter" assert
+# line leaves). Same class as above: test identifiers and unit
+# references, not debt. files_over_400 stays 74 (the new test file is
+# 233 lines — under the bar; the touched production modules were
+# already over it).
+# +5 (todos 5441 -> 5446) — QA REVIEW pass 2026-10-12: two red tests
+# (F1 delta misplacement, F2 executable mode) appended to
+# tests/negative/test_reports33_dirty_delta.py; test identifiers and
+# unit references, not debt.
+# REVIEW iter 3 QA (2026-10-12, TODO-0204): baseline raised 5446 -> 5452 —
+# the two new QA red tests (test_qa_f3_*, test_qa_f4_* in
+# tests/negative/test_reports33_dirty_delta.py) add 6 TODO-bearing lines
+# (3 per test: the {TODO} f-string and the build_commit_plan/maybe_commit
+# calls). Same class as the already-counted test identifiers in tests/ —
+# not debt.
+# REVIEW iter 4 QA (2026-10-12, TODO-0204): baseline raised 5452 -> 5455
+# (+3) and files_over_400 74 -> 75 (+1) — the red test
+# test_qa_f5_unit_append_misplaced_when_context_edited_pre_dispatch
+# appended to tests/negative/test_reports33_dirty_delta.py (REVIEW-фикс 3,
+# added before the fix pass) adds 3 TODO-bearing lines (the same 3-per-test
+# shape: the {TODO} f-string in the BASELINE assert, the
+# build_commit_plan/maybe_commit calls) and pushes the file past the
+# 400-line bar (399 -> 445 lines). Same class as the already-counted test
+# identifiers in tests/ — not debt. The fix pass itself only REMOVED lines
+# from awf/commit_gate.py (the window scan + _find_seq + _DELTA_ANCHOR_WINDOW
+# are dead after F1/F3/iter 4 and are gone).
+# REVIEW iter 5 QA (2026-10-12, TODO-0204): baseline raised 5455 -> 5460
+# (+5) — the red test test_qa_f6_stale_worktree_snapshot_on_redispatch
+# appended to tests/negative/test_reports33_dirty_delta.py (stale
+# BASELINE-{id}.worktree on same-id re-dispatch after a stash-create
+# failure — the user's WIP change between attempts enters the commit
+# silently). Same class as the already-counted test identifiers in
+# tests/ — not debt. files_over_400 stays 75 (the file was already over
+# the bar and counted once).
+# REVIEW iter 6 QA (2026-10-12, TODO-0204): baseline raised 5460 -> 5463
+# (+3) — the red test test_qa_f7_crlf_file_degrades_loudly_not_lf_normalized
+# appended to tests/negative/test_reports33_dirty_delta.py (a CRLF file in
+# the delta path must degrade loudly to the legacy worktree commit — the
+# merge would otherwise normalize the whole file's line endings to LF
+# silently) adds the same 3-per-test TODO-bearing lines: the {TODO}
+# f-string in the BASELINE assert, the build_commit_plan call, the
+# maybe_commit "worker", TODO line. Same class as the already-counted test
+# identifiers in tests/ — not debt. files_over_400 stays 75 (the file was
+# already over the bar and counted once). The production fix (awf/
+# commit_gate.py — the CRLF guard in _apply_unit_delta + the loud degrade
+# in _commit_delta_file) carries no TODO id.
