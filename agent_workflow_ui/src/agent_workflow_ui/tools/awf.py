@@ -948,21 +948,41 @@ async def awf_run_revise(
     key: str = "",
     preview: bool = False,
     stop_running: bool = False,
+    position: int | None = None,
 ) -> dict[str, Any]:
-    """Revise the pipelines of the not-started queue elements of the active run (ORCH M3.4).
+    """Revise the not-started queue elements of the active run (ORCH M3.4);
+    add new elements to it (REPORTS32).
 
     One typed operation with a preview and an idempotency key.
     ``preview=True`` shows the current queue, the elements that would
-    change and the conflicts (current/started/completed/not in the queue)
-    with NO side effects. The apply changes the pipeline of the
-    NOT-STARTED elements only — completed and current are never touched —
-    and records the revision in the run state (state/run.yaml, the
-    decisions' path). A repeat with the same ``key`` is a no-op.
+    change, the elements that would be appended/inserted and the conflicts
+    (current/started/completed/TODO file missing) with NO side effects.
+    The apply changes the pipeline of the NOT-STARTED elements only —
+    completed and current are never touched — and records the revision in
+    the run state (state/run.yaml, the decisions' path). A repeat with the
+    same ``key`` is a no-op.
+
+    APPEND/INSERT (REPORTS32): a ``queue`` item whose todo_id is NOT in
+    the run queue joins it — appended at the queue END (``changes`` carry
+    ``class: "appended"``) or inserted at ``position`` (class
+    ``"inserted"``) — when its TODO file is launchable
+    (``inbox/<id>.md`` present and non-empty) and the id is not
+    completed/current; otherwise it is a conflict and the whole apply is
+    refused (atomic). An empty pipeline on a new element = the config
+    default.
+
+    ``position``: the queue position the NEW element(s) stand at — valid
+    zone ``index .. len(queue)`` (the NOT-STARTED region; ``len`` = the
+    same as append), never before a started/current/completed element.
+    Invalid (non-int, out of range) → refusal. Without ``position`` new
+    elements are appended.
+
     Refusals (each returns the current state; the previous plan stays in
     force): no active run; a stage is running without ``stop_running``
-    (stop the unit first); any conflict; a missing key; a generation
-    mismatch (CAS, A-13); a failed stop (ORCH M4.1 — the stage survived
-    the kill, the revision is NOT applied, retry is possible).
+    (stop the unit first); any conflict; a missing key; an invalid
+    position; a generation mismatch (CAS, A-13); a failed stop (ORCH M4.1
+    — the stage survived the kill, the revision is NOT applied, retry is
+    possible).
 
     ``stop_running=True`` (ORCH M4.1) allows stopping the live unit in
     the SAME call: the stop goes through the engine's standard kill path
@@ -977,7 +997,8 @@ async def awf_run_revise(
             NOT your project; always pass it explicitly (AUD08-12).
         queue: Items to revise — a list of {"todo_id": "TODO-NNNN",
             "pipeline": "<name>"}; an empty pipeline reverts the element to
-            the config default.
+            the config default. An id not in the run queue is appended /
+            inserted (needs its inbox TODO file).
         reason: Why the composition changes (stored in the revision record).
         key: Idempotency key — required for the apply; a repeat with the
             same key is a no-op (no second revision).
@@ -985,10 +1006,14 @@ async def awf_run_revise(
         stop_running: True — allow stopping the live unit (the standard
             kill path) before applying the revision; without it a running
             stage is a refusal (default: False).
+        position: Queue position for NEW (not-in-queue) elements — an int
+            in [index, len(queue)]; None (default) = append at the end.
+            Invalid → refusal.
 
     Returns:
         Dict with: action (preview/applied/noop/refused), key, generation,
-        current_queue, changes, conflicts, unchanged, revision,
+        current_queue, changes (entries for new elements carry
+        "class": "appended"/"inserted"), conflicts, unchanged, revision,
         resume_from, message, next_action.
     """
     result = await _exec(
@@ -999,6 +1024,7 @@ async def awf_run_revise(
         key=key,
         preview=preview,
         stop_running=stop_running,
+        position=position,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         action = result.get("action")

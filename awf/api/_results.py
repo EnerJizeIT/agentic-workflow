@@ -624,18 +624,22 @@ class RunFinishResult:
 
 @dataclass
 class RunReviseResult:
-    """Result of :func:`awf.api.run_revise` (ORCH M3.4 / M4.1).
+    """Result of :func:`awf.api.run_revise` (ORCH M3.4 / M4.1 /
+    REPORTS32).
 
     ``action`` is one of:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
-    - ``applied`` — the not-started elements' pipelines changed, the
-      revision is recorded (``revision`` = the stored entry);
+    - ``applied`` — the not-started elements' pipelines changed and/or new
+      elements joined the queue (``changes`` entries carry
+      ``class: "appended"`` / ``"inserted"``), the revision is recorded
+      (``revision`` = the stored entry);
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
-    - ``refused`` — no active run / live engine / conflicts / missing key /
-      CAS mismatch / a failed stop (M4.1); ``current_queue`` +
-      ``generation`` carry the current state (the previous plan stays in
-      force).
+    - ``refused`` — no active run / live engine / conflicts (current /
+      started / completed / TODO file missing) / missing key / invalid
+      ``position`` / CAS mismatch / a failed stop (M4.1);
+      ``current_queue`` + ``generation`` carry the current state (the
+      previous plan stays in force).
 
     ``resume_from`` (ORCH M4.1, ``stop_running=True``): the stage the
     stopped unit resumes from — the ``awf continue`` answer and the

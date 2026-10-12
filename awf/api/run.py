@@ -1558,9 +1558,14 @@ def run_finish(
 
 
 def _revision_items(
-    state: dict, requested: list[dict]
+    project_dir: Path,
+    state: dict,
+    requested: list[dict],
+    *,
+    position: int | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-    """ORCH M3.4: classify the run queue + the requested changes.
+    """ORCH M3.4 / REPORTS32 (TODO-0198): classify the run queue + the
+    requested changes.
 
     Queue lifecycle per item (the launch position from ``run_next``):
     positions ``< index`` are STARTED (the in-flight element sits at
@@ -1568,13 +1573,21 @@ def _revision_items(
     NOT STARTED. ``completed`` ids count as completed regardless of
     position (the last item is credited only at exhaustion).
 
+    A requested id NOT in the queue is the third outcome (REPORTS32):
+    APPEND/INSERT — it joins the queue (at the end, or at ``position``
+    when given), when the TODO file is launchable (``inbox/<id>.md``
+    present and non-empty) and the id is neither completed nor current.
+    Without a file it is a conflict (the launch would refuse it anyway).
+
     Returns ``(current_queue, changes, conflicts, unchanged)``:
     - ``current_queue`` — every queue item with its lifecycle state
       (``completed`` | ``current`` | ``started`` | ``queued``);
     - ``changes`` — requested items that change a not-started element's
-      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default);
-    - ``conflicts`` — requested items that cannot be changed
-      (current / started / completed / not in the queue);
+      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default)
+      OR add a new element (``{"todo_id", "from": "", "to", "class"}``
+      with ``class`` = ``appended`` / ``inserted``);
+    - ``conflicts`` — requested items that cannot be changed or added
+      (current / started / completed / TODO file missing);
     - ``unchanged`` — requested items whose pipeline already matches.
     """
     queue = list(state.get("queue") or [])
@@ -1623,18 +1636,49 @@ def _revision_items(
         tid = req["todo_id"]
         to = str(req.get("pipeline", "") or "")
         entry = by_id.get(tid)
-        if entry is None:
-            conflicts_list.append({"todo_id": tid, "reason": "not in the run queue"})
+        if entry is not None:
+            pos, pipe = entry
+            lifecycle = _lifecycle(tid, pos)
+            if lifecycle != "queued":
+                conflicts_list.append({"todo_id": tid, "reason": conflicts[lifecycle]})
+                continue
+            if pipe == to:
+                unchanged.append({"todo_id": tid, "pipeline": to})
+            else:
+                changes.append({"todo_id": tid, "from": pipe, "to": to})
             continue
-        pos, pipe = entry
-        lifecycle = _lifecycle(tid, pos)
-        if lifecycle != "queued":
-            conflicts_list.append({"todo_id": tid, "reason": conflicts[lifecycle]})
+        # REPORTS32 (TODO-0198): the third outcome — the id is not in the
+        # queue: APPEND/INSERT it, or refuse (completed / current / no
+        # launchable TODO file).
+        if tid in completed:
+            conflicts_list.append({"todo_id": tid, "reason": "already completed"})
             continue
-        if pipe == to:
-            unchanged.append({"todo_id": tid, "pipeline": to})
-        else:
-            changes.append({"todo_id": tid, "from": pipe, "to": to})
+        if tid == current:
+            conflicts_list.append(
+                {"todo_id": tid, "reason": "the current (in-flight) element"}
+            )
+            continue
+        todo_md = paths.inbox(project_dir) / f"{tid}.md"
+        if not todo_md.is_file() or todo_md.stat().st_size == 0:
+            conflicts_list.append(
+                {
+                    "todo_id": tid,
+                    "reason": (
+                        f"TODO file missing — inbox/{tid}.md is absent or "
+                        "empty; a new element joins the run only with a "
+                        "launchable TODO"
+                    ),
+                }
+            )
+            continue
+        changes.append(
+            {
+                "todo_id": tid,
+                "from": "",
+                "to": to,
+                "class": "inserted" if position is not None else "appended",
+            }
+        )
     return current_queue, changes, conflicts_list, unchanged
 
 
@@ -1646,24 +1690,38 @@ def run_revise(
     key: str = "",
     preview: bool = False,
     stop_running: bool = False,
+    position: int | None = None,
 ) -> RunReviseResult:
-    """ORCH M3.4: revise the pipeline of the NOT-STARTED elements of the
-    active run's queue — one typed operation with a preview and an
+    """ORCH M3.4 / REPORTS32 (TODO-0198): revise the NOT-STARTED elements
+    of the active run's queue — one typed operation with a preview and an
     idempotency key.
 
     - ``preview=True`` — no side effects: the current queue (per-item
-      lifecycle state), which elements would change, the conflicts
-      (current/started/completed/not in the queue), the key. The preview is
-      not refused by a live engine (it is read-only).
+      lifecycle state), which elements would change, which would be
+      appended/inserted, the conflicts (current/started/completed/TODO
+      file missing), the key. The preview is not refused by a live engine
+      (it is read-only).
     - apply (``preview=False``) — changes the pipeline of the not-started
       elements only; the completed and the current element are never
       touched. Refusals (each returns the current state, the previous plan
       stays in force): no active run; the engine is alive and
       ``stop_running`` is false (stop the unit first); ANY conflict in the
-      request (atomic — nothing is applied); a missing ``key``; a
-      generation mismatch (CAS, A-13 — the run changed between the read
-      and the write); the stop failed (ORCH M4.1 — the stage survived the
-      kill, so the revision is NOT applied and the retry is possible).
+      request (atomic — nothing is applied); a missing ``key``; an invalid
+      ``position``; a generation mismatch (CAS, A-13 — the run changed
+      between the read and the write); the stop failed (ORCH M4.1 — the
+      stage survived the kill, so the revision is NOT applied and the
+      retry is possible).
+    - REPORTS32 (TODO-0198) — APPEND/INSERT: a requested id NOT in the
+      queue joins it (the third outcome, instead of a blind conflict) when
+      its TODO file is launchable (``inbox/<id>.md`` present, non-empty)
+      and the id is not completed/current. Without ``position`` it is
+      APPENDED at the queue end (changes carry ``class: "appended"``);
+      with ``position`` it is INSERTED at that queue position (class
+      ``"inserted"``) — the valid zone is the NOT-STARTED region
+      (``index`` .. ``len(queue)``, ``len`` = the same as append), so the
+      new element never lands before a started/current/completed element.
+      The added element's pipeline is the requested one (empty = config
+      default); the revision record keeps the class.
     - ``stop_running=True`` (ORCH M4.1) — the caller allows stopping the
       live unit: the stop goes through the engine's STANDARD kill path
       (``kill_pipeline``: TERM → grace → KILL the pipeline, the worker
@@ -1711,13 +1769,56 @@ def run_revise(
     except (TypeError, ValueError):
         index = 0
     current = str(state.get("current") or "")
-    current_queue, changes, conflicts, unchanged = _revision_items(state, requested)
+    queue_len = len(state.get("queue") or [])
+    current_queue, changes, conflicts, unchanged = _revision_items(
+        project_dir, state, requested, position=position
+    )
+
+    # REPORTS32 (TODO-0198): the insert position is the NEW element's
+    # position in the queue — the valid zone is the NOT-STARTED region
+    # (index .. len(queue), len = an append). Outside it the element would
+    # land before a started/current/completed element → refusal.
+    if position is not None and (
+        isinstance(position, bool)
+        or not isinstance(position, int)
+        or not index <= position <= queue_len
+    ):
+        return RunReviseResult(
+            action="refused",
+            preview=bool(preview),
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                f"Refused: invalid position {position!r} — it must be an "
+                f"integer in [{index}, {queue_len}] (the NOT-STARTED "
+                "region: the new element may stand at index or later, up "
+                "to the queue end for an append; it must never land "
+                "before a started/current/completed element). Nothing was "
+                "changed."
+            ),
+        )
+
+    n_repipelined = len([c for c in changes if "class" not in c])
+    n_appended = len([c for c in changes if c.get("class") == "appended"])
+    n_inserted = len([c for c in changes if c.get("class") == "inserted"])
 
     if preview:
-        bits = [
-            f"{len(changes)} element(s) would change",
-            f"{len(conflicts)} conflict(s)" if conflicts else "no conflicts",
-        ]
+        bits = [f"{n_repipelined} element(s) would change"]
+        if n_appended:
+            ids = ", ".join(
+                c["todo_id"] for c in changes if c.get("class") == "appended"
+            )
+            bits.append(f"{n_appended} would be appended ({ids})")
+        if n_inserted:
+            ids = ", ".join(
+                c["todo_id"] for c in changes if c.get("class") == "inserted"
+            )
+            bits.append(f"{n_inserted} would be inserted at position {position} ({ids})")
+        bits.append(f"{len(conflicts)} conflict(s)" if conflicts else "no conflicts")
         return RunReviseResult(
             action="preview",
             preview=True,
@@ -1866,10 +1967,27 @@ def run_revise(
         if existing is not None:
             outcome["existing"] = existing
             return st
+        queue = list(st.get("queue") or [])
+        insert_at = position
         for ch in changes:
-            for q in st.get("queue") or []:
-                if isinstance(q, dict) and str(q.get("todo_id", "")) == ch["todo_id"]:
-                    q["pipeline"] = ch["to"]
+            cls = str(ch.get("class") or "")
+            if not cls:
+                for q in queue:
+                    if (
+                        isinstance(q, dict)
+                        and str(q.get("todo_id", "")) == ch["todo_id"]
+                    ):
+                        q["pipeline"] = ch["to"]
+            elif cls == "inserted":
+                # REPORTS32 (TODO-0198): insert at the validated position;
+                # several new elements keep the request order.
+                queue.insert(
+                    insert_at, {"todo_id": ch["todo_id"], "pipeline": ch["to"]}
+                )
+                insert_at += 1
+            else:  # "appended"
+                queue.append({"todo_id": ch["todo_id"], "pipeline": ch["to"]})
+        st["queue"] = queue
         # ORCH M6.3 (seam: binding×revision): a revision changes the run's
         # PLAN — the queue the run continues with is new, so the run moves
         # to a new cycle (the same bump a force-restart gets in run_start).
@@ -1897,7 +2015,9 @@ def run_revise(
     )
     if not cas_ok:
         fresh = run_state.read_run(project_dir) or {}
-        fresh_queue, _c, _f, _u = _revision_items(fresh, requested)
+        fresh_queue, _c, _f, _u = _revision_items(
+            project_dir, fresh, requested, position=position
+        )
         return RunReviseResult(
             action="refused",
             preview=False,
@@ -1944,6 +2064,40 @@ def run_revise(
             f" The stopped unit: continue will resume from stage "
             f"'{resume_from}' (awf continue)."
         )
+    # REPORTS32 (TODO-0198): the answer names what happened per class —
+    # re-pipelined / appended / inserted.
+    parts = []
+    if n_repipelined:
+        parts.append(f"{n_repipelined} element(s) re-pipelined")
+    if n_appended:
+        ids = ", ".join(
+            c["todo_id"] for c in changes if c.get("class") == "appended"
+        )
+        parts.append(f"{n_appended} appended at the queue end ({ids})")
+    if n_inserted:
+        ids = ", ".join(
+            c["todo_id"] for c in changes if c.get("class") == "inserted"
+        )
+        parts.append(f"{n_inserted} inserted at position {position} ({ids})")
+    if resume_from:
+        next_action = (
+            f"Resume the stopped unit with awf_continue (it continues from "
+            f"stage '{resume_from}'), then awf_run_next for the next "
+            "element."
+        )
+    elif n_inserted:
+        next_action = (
+            f"Continue the run with awf_run_next — the inserted element(s) "
+            f"stand at position {position}; the later elements shift one "
+            "place."
+        )
+    elif n_appended:
+        next_action = (
+            "Continue the run with awf_run_next — the appended element(s) "
+            "run at the end of the queue."
+        )
+    else:
+        next_action = "Continue the run with awf_run_next."
     return RunReviseResult(
         action="applied",
         preview=False,
@@ -1956,17 +2110,11 @@ def run_revise(
         revision=entry,
         resume_from=resume_from,
         message=(
-            f"Queue revised (key {key_clean}): {len(changes)} element(s) "
-            f"changed — the pipelines take effect at each element's launch "
+            f"Queue revised (key {key_clean}): " + ", ".join(parts)
+            + " — the changes take effect at each element's launch "
             f"(awf_run_next).{resume_note}"
         ),
-        next_action=(
-            f"Resume the stopped unit with awf_continue (it continues from "
-            f"stage '{resume_from}'), then awf_run_next for the next "
-            "element."
-            if resume_from
-            else "Continue the run with awf_run_next."
-        ),
+        next_action=next_action,
     )
 
 

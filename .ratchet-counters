@@ -1318,3 +1318,17 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # comments (3)). Same class as above: unit-id references and test
 # identifiers, not debt. files_over_400 stays 74 (the new test file is
 # under the bar; the touched modules were already over it).
+# REPORTS32 (TODO-0198, awf_run_revise append/insert): baseline raised
+# 5337 -> 5370 (+33) — the unit adds 26 TODO-bearing lines in the new
+# tests/negative/test_reports32_revise_append.py (the module docstring's
+# unit/incident references, the T1/T2/T3 = TODO-0001/0002/0003 and
+# NEW/NEW2 = TODO-0004/0005 constants, the _write_todo / fixture and
+# assert use-sites, the "no TODO file" refusal docstring) and 7 in the
+# fix sites (the REPORTS32 unit references in awf/api/run.py's
+# _revision_items / run_revise docstrings and the TODO-file-missing
+# refusal reason, awf/run_state.py's append_revision /
+# _normalize_revision docstrings, awf/api/_results.py's RunReviseResult
+# docstring and the agent_workflow_ui tools/awf.py awf_run_revise
+# docstring). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 74 (the new test file is
+# 398 lines — under the bar; the touched modules were already over it).
