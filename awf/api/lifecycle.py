@@ -713,6 +713,16 @@ def get_status(project_dir: Path) -> StatusResult:
     if _state and not pipeline_running and not salvage_needed:
         zombie_state = _zombie_state_hint(project_dir, _state)
 
+    # REPORTS32 (TODO-0202): the "office" — who is on the team and on which
+    # model, one call. Never raises: a status call must not fall over on a
+    # malformed role file (the helper degrades per-role).
+    from .roles import role_model_office
+
+    try:
+        office = role_model_office(project_dir)
+    except Exception:  # noqa: BLE001 — status must never fall over
+        office = []
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -740,6 +750,7 @@ def get_status(project_dir: Path) -> StatusResult:
         run_state=_run_brief(project_dir),
         uncommitted_workflow_files=uncommitted_wf,
         standalone_todos=standalone_todos_list,
+        office=office,
     )
 
 

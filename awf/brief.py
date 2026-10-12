@@ -130,6 +130,12 @@ class BriefResult:
     # as their own "outside run" line, never mixed into the "active:"
     # lines. [] when there is no active run or no such units.
     standalone_todos: list[dict[str, Any]] = field(default_factory=list)
+    # REPORTS32 (TODO-0202): the "office" — the team roles with their
+    # model and source ({role, model, source}; source is "config" / "md" /
+    # "none"), the same data awf_status exposes. Carried in the structured
+    # result (NOT rendered in the card text, which has a fixed section
+    # order and a word budget).
+    office: list[dict[str, Any]] = field(default_factory=list)
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -600,6 +606,7 @@ def build_brief(
 
     active_todos: list[dict[str, Any]] = []
     standalone_todos: list[dict[str, Any]] = []
+    office: list[dict[str, Any]] = []
     blocked: list[str] = []
     salvage_stage: str | None = None
     last_signal: str | None = None
@@ -613,6 +620,8 @@ def build_brief(
         standalone_todos = [
             dict(t) for t in getattr(status, "standalone_todos", None) or []
         ]
+        # REPORTS32 (TODO-0202): the office from the same status read.
+        office = [dict(e) for e in getattr(status, "office", None) or []]
         blocked = list(status.blocked_ids)
         if status.salvage_needed:
             salvage_stage = status.salvage_stage
@@ -685,6 +694,7 @@ def build_brief(
         run=dict(run) if run else None,
         active_todos=active_todos,
         standalone_todos=standalone_todos,
+        office=office,
         blocked=blocked,
         salvage_stage=salvage_stage,
         last_signal=last_signal,

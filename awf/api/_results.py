@@ -80,6 +80,10 @@ class StatusResult:
     # no active run (everything is "active" — unchanged behavior) or no
     # such units.
     standalone_todos: list[dict[str, Any]] = field(default_factory=list)
+    # REPORTS32 (TODO-0202): the "office" — one line per team role with its
+    # model and where it comes from ({role, model, source}); source is
+    # "config" / "md" / "none". See role_model_office.
+    office: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -192,6 +196,10 @@ class AddRoleResult:
     role_name: str
     role_file: str
     model: str
+    # REPORTS32 (TODO-0202): where an explicit ``model=`` was written in
+    # config.yaml ("models.<role>.model"); "" when nothing was written
+    # (no model, or the draft path, which never touches the config).
+    model_config: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

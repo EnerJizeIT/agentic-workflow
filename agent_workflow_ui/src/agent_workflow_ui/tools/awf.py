@@ -216,7 +216,9 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
         Dict with: project_name, active_todos (list of {todo_id, ack?,
         progress?}), done_count, blocked_count, blocked_ids,
         conflict_warning (str or None), suggestion (str or None),
-        next_action (the supervisor's next step derived from the state).
+        next_action (the supervisor's next step derived from the state),
+        office (list of {role, model, source} — the team's roles with
+        their model and where it comes from: "config" / "md" / "none").
     """
     result = await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
     # RUN6 #5 (TODO-0060): every answer leads to the next step.
@@ -1838,6 +1840,14 @@ async def awf_add_role(
     first, then global ``~/.config/opencode/skills/<name>/``. An unknown
     skill is an error listing the available skills.
 
+    REPORTS32 (TODO-0202): an explicit ``model=`` is ALSO merged into
+    ``.agentic/config.yaml`` as ``models.<name>.model`` — the config is
+    the source of truth the engine reads, so the manual "add model
+    config" step is gone. The merge is comment-preserving, idempotent,
+    and only runs for a non-empty ``model=`` on the live path (the draft
+    path never touches the config). ``model_config`` in the result names
+    the written locus.
+
     ORCH M5.1 draft area (candidate isolated until checked):
     - ``draft=True``: write the candidate to
       ``.agentic/roles/draft/{name}.md`` — live roles, config and
@@ -1882,10 +1892,12 @@ async def awf_add_role(
             False).
 
     Returns:
-        Create: role_name, role_file (path), model. List: drafts (list
-        of {name, source, created, file}). Adopt: role_name, role_file,
-        normalization ({overlaps, addenda, failed} or {error}).
-        Discard: role_name, draft_file, trace_file.
+        Create: role_name, role_file (path), model, model_config (where
+        an explicit ``model=`` was written in config.yaml —
+        ``models.<name>.model``; "" when nothing was written). List:
+        drafts (list of {name, source, created, file}). Adopt:
+        role_name, role_file, normalization ({overlaps, addenda, failed}
+        or {error}). Discard: role_name, draft_file, trace_file.
     """
     modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
     if modes > 1:
@@ -2940,7 +2952,9 @@ async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
         Dict with: status ("ok"), version, project, phase, date,
         is_live_project, next_action, run, active_todos, blocked,
         salvage_stage, last_signal, pipeline_running, stall (the
-        stalled-stage line, "" when off), tool_map (groups),
+        stalled-stage line, "" when off), office (list of {role, model,
+        source} — the team's roles with their model and where it comes
+        from: "config" / "md" / "none"), tool_map (groups),
         rituals, recovery, doctrine, what_new, text (the rendered card).
         On error: {status: "error", error: "..."}.
     """

@@ -1354,3 +1354,17 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # Same class as above: test identifiers and unit references, not debt.
 # files_over_400 stays 74 (the new test file is 231 lines — under the
 # bar; the touched production modules were already over it).
+# REPORTS32 (TODO-0202, add_role writes the model to config.yaml + the
+# status/brief "office"): baseline raised 5393 -> 5404 (+11) — the 11
+# TODO-0202 unit references: 3 in awf/api/roles.py (the config-write
+# header comment, the add_role docstring line, the add_role write comment),
+# 2 in awf/brief.py (the BriefResult.office field comment + the build_brief
+# extraction comment), 2 in awf/api/_results.py (the AddRoleResult.
+# model_config + the StatusResult.office field comments), 1 each in
+# awf/api/lifecycle.py (the get_status office comment), awf/cmd_add_role.py
+# (the CLI model-locus comment) and agent_workflow_ui tools/awf.py (the
+# awf_add_role docstring line), and 1 in the new
+# tests/negative/test_reports32_role_model_config.py (module docstring).
+# Same class as above: unit-id references and a test identifier, not debt.
+# files_over_400 stays 74 (the new test file is 364 lines — under the bar;
+# the touched production modules were already over it).
