@@ -9,6 +9,8 @@ skipped when locating the block)::
     prove_red: ["tests/unit/test_x.py::test_y"]
     prove_red_pin: ["tests/unit/test_x.py::test_y"]
     prove_red_cmd: "npm test -- --run"
+    prove_red_kind: "coverage"
+    prove_red_note: "tests cover behavior implemented in an earlier unit"
     files: ["awf/x.py", "tests/unit/test_x.py"]
     pipeline: audit-llm
 
@@ -26,6 +28,23 @@ behavior — on the baseline they must be GREEN, the teeth are proven by
 mutation outside the tool. It is mutually exclusive with ``prove_red``:
 declaring both is a contract error (one TODO either proves a fix or pins a
 behavior).
+
+``prove_red_kind`` + ``prove_red_note`` (TODO-0201): the declared kind of
+the prove-red check. The only kind is ``coverage`` — a
+coverage/validation unit whose tests check behavior implemented EARLIER
+(other units), so on this unit's baseline they are green by construction
+and prove-red honestly returns ``not-red``. With the kind declared, a
+``not-red`` verdict is a PASS of the verify-pack ``prove_red`` section
+(annotated "coverage unit — not-red is expected (declared)", with the
+note in the report) instead of a failure; every other verdict and every
+other section are unaffected by the declaration. The kind requires
+``prove_red`` (the kind modifies that check) and ``prove_red_note`` (a
+one-line justification); the two keys are a pair — either both or
+neither is a contract error. The kind is mutually exclusive with
+``prove_red_pin`` (both expect green on the baseline, for different
+reasons). An UNdeclared ``not-red`` on a tests-only diff gets a hint line
+in the GATES report suggesting the declaration — the verdict itself is
+never auto-substituted.
 
 DONE.json (optional, written by the worker to ``.agentic/outbox/``)::
 
@@ -76,8 +95,13 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: of EXISTING behavior that must be GREEN on the baseline (mutually
 #: exclusive with ``prove_red``); the teeth are proven by mutation, outside
 #: the tool.
+#: ``prove_red_kind`` / ``prove_red_note`` (TODO-0201): the declared
+#: coverage kind (only ``coverage``) + its one-line justification — a pair:
+#: either both or neither; the kind requires a ``prove_red`` list and is
+#: mutually exclusive with ``prove_red_pin``.
 _CONTRACT_KEYS: tuple[str, ...] = (
     "verify", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
+    "prove_red_kind", "prove_red_note",
     "files", "pipeline",
 )
 
@@ -256,6 +280,47 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
                 "'prove_red_cmd' must be a non-empty shell command string, "
                 'e.g. prove_red_cmd: "npm test -- --run"'
             )
+    if "prove_red_kind" in data:
+        v = data["prove_red_kind"]
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(
+                "'prove_red_kind' must be a non-empty kind string, "
+                "e.g. prove_red_kind: coverage"
+            )
+        kind = v.strip()
+        if kind != "coverage":
+            raise ValueError(
+                f"unknown prove_red_kind {kind!r} — the only declared kind "
+                "is 'coverage' (a coverage/validation unit: its tests check "
+                "already-implemented behavior, so not-red is expected)"
+            )
+        if "prove_red_pin" in data:
+            raise ValueError(
+                "'prove_red_kind' and 'prove_red_pin' are mutually "
+                "exclusive — both expect green on the baseline, for "
+                "different reasons (declared coverage vs a regression "
+                "shield); declare exactly one of the two"
+            )
+        note = data.get("prove_red_note")
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError(
+                "'prove_red_kind' requires 'prove_red_note' — a one-line "
+                "justification of why this unit is coverage (not-red on "
+                "the baseline is expected); the note goes into the GATES "
+                "report"
+            )
+        pr = data.get("prove_red")
+        if not isinstance(pr, list) or not pr:
+            raise ValueError(
+                "'prove_red_kind' requires a 'prove_red' list — the kind "
+                "modifies the prove-red check, so the tests must be "
+                "declared too"
+            )
+    if "prove_red_note" in data and "prove_red_kind" not in data:
+        raise ValueError(
+            "'prove_red_note' without 'prove_red_kind' — the note "
+            "justifies the declared kind; declare both keys or neither"
+        )
     if "files" in data:
         _check_str_list(data["files"], "files")
     if "pipeline" in data:

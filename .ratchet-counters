@@ -1341,3 +1341,16 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # and unit references, not debt. files_over_400 stays 74 (the new test
 # file is 300 lines — under the bar; the touched production modules
 # were already over it).
+# TODO-0201 (coverage kind: prove_red_kind + prove_red_note): baseline
+# raised 5382 -> 5393 (+11) — the new
+# tests/negative/test_reports32_coverage_kind.py adds 5 TODO-bearing
+# lines (the module docstring's unit reference, the T = "TODO-0001"
+# constant, the "# TODO" lines of the two contract fixtures, the
+# _cov_repo docstring's "inbox TODO" wording) and the production diff
+# adds 6 (awf/unit_contract.py: the docstring + the _CONTRACT_KEYS
+# comment unit references; awf/verify_pack.py: the docstring's
+# TODO-0201 line, the _coverage_hint docstring line, the coverage
+# branch comment and the hint text's "in the TODO contract" line).
+# Same class as above: test identifiers and unit references, not debt.
+# files_over_400 stays 74 (the new test file is 231 lines — under the
+# bar; the touched production modules were already over it).
