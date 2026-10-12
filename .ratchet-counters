@@ -1459,3 +1459,13 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # The +1 file over 400 is tests/negative/test_run_plan_recovery.py
 # (399 -> 403 — the comment in the updated position assert), same class
 # as the test-suite raises above.
+# REPORTS33 (TODO-0206, brief what's-new cut on paragraph/sentence
+# boundaries): baseline raised 5478 -> 5483 (+5) — the 5 unit-id
+# references: 2 in the new
+# tests/negative/test_reports33_brief_whatsnew.py (the module
+# docstring's unit line + the invariants header) and 3 in awf/brief.py
+# (the _SENTENCE_END comment, the _clip_changelog_section docstring, the
+# latest_changelog docstring line). Same class as above: unit-id
+# references, not debt. files_over_400 stays 76 (the new test file is
+# 118 lines — under the bar; the touched awf/brief.py was already over
+# it).

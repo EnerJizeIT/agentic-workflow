@@ -287,13 +287,82 @@ def _clip_by_words(text: str, max_words: int) -> tuple[str, bool]:
     return "\n".join(kept).rstrip(), True
 
 
+def _split_paragraphs(text: str) -> list[str]:
+    """Blocks of ``text`` separated by blank lines (order preserved)."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.strip():
+            current.append(line)
+        elif current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+# REPORTS33 (TODO-0206): a sentence ends at ". " / "! " / "? " — the
+# boundary needs the following space, so "v1.2" and "citizens." at the
+# paragraph end are not boundaries.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _clip_changelog_section(section: str, max_words: int) -> str:
+    """Clamp one changelog section to the word budget on clean cuts
+    (REPORTS33, TODO-0206).
+
+    A section within the budget is returned whole. Over the budget:
+    whole paragraphs are kept until the next one would exceed the
+    budget — the cut lands on the blank line and the "…" follows a
+    complete paragraph. When even the first paragraph alone exceeds the
+    budget, it is cut at a sentence boundary within the remaining
+    words; without a fitting sentence the cut falls back to the
+    paragraph boundary. The budget itself is unchanged — only the cut
+    point moved from mid-word to paragraph/sentence boundaries.
+    """
+    section = section.strip()
+    if len(section.split()) <= max_words:
+        return section
+    paragraphs = _split_paragraphs(section)
+    kept: list[str] = []
+    count = 0
+    for para in paragraphs:
+        if count + len(para.split()) <= max_words:
+            kept.append(para)
+            count += len(para.split())
+        else:
+            break
+    if len(kept) >= 2:
+        return "\n\n".join(kept) + " …"
+    # Only the heading was kept: the first paragraph alone exceeds the
+    # budget — cut it at a sentence boundary within the remaining words.
+    first = paragraphs[len(kept)]
+    s_kept: list[str] = []
+    for sentence in _SENTENCE_END.split(first):
+        if count + len(sentence.split()) <= max_words:
+            s_kept.append(sentence)
+            count += len(sentence.split())
+        else:
+            break
+    if s_kept:
+        prefix = "\n\n".join(kept) if kept else ""
+        return (prefix + "\n\n" if prefix else "") + " ".join(s_kept) + " …"
+    if kept:
+        return "\n\n".join(kept) + " …"
+    clipped, _ = _clip_by_words(section, max_words)
+    return clipped + " …"
+
+
 def latest_changelog(
     max_lines: int = _CHANGELOG_MAX_LINES, max_words: int = _CHANGELOG_MAX_WORDS
 ) -> str:
     """Latest section of the awf-repo CHANGELOG, '' if absent.
 
     Capped by lines (spec) AND words (the card has a 900-word budget —
-    a long Unreleased entry would otherwise eat half of it).
+    a long Unreleased entry would otherwise eat half of it). The word
+    cap is applied on clean boundaries — whole paragraphs, then a
+    sentence cut, never mid-word (REPORTS33, TODO-0206).
     Only the repo layout (CHANGELOG.md next to the package parent) — an
     installed wheel does not ship it, and the card degrades gracefully.
     """
@@ -314,9 +383,7 @@ def latest_changelog(
         out.append(ln)
         if len(out) >= max_lines:
             break
-    text = "\n".join(out).rstrip()
-    clipped, was = _clip_by_words(text, max_words)
-    return clipped + (" …" if was else "")
+    return _clip_changelog_section("\n".join(out).rstrip(), max_words)
 
 
 def doctrine_lines(project_dir: Path) -> list[str]:
