@@ -1510,3 +1510,18 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # references). Same class as above: unit-id references and test
 # identifiers, not debt. files_over_400 stays 76 (the new test file is
 # 318 lines — under the bar; the touched modules were already over it).
+# REPORTS33 (TODO-0210, dashboard one-window dedup + run tabs): baseline
+# raised 5532 -> 5558 (+26) — 11 in the new
+# tests/negative/test_reports33_dashboard_tabs.py (the module docstring's
+# unit/owner-request references and the TODO-0001/TODO-0002/TODO-0003
+# run-state + DONE-TODO-0001 fixture use-sites), 4 in awf/api/
+# dashboard_server.py (the REPORTS33 (TODO-0210) comments in the
+# _run_report_summary / build_runs_dict / _render_report_html /
+# _serve_run_report docstrings), 5 in agent_workflow_ui tools/awf.py
+# (the dedup constant comment, the _open_marker_file / _open_marker_fresh
+# docstrings and the awf_open_pipeline_dashboard docstring/Returns lines)
+# and 6 in awf/templates/dashboard.html.j2 (the runbar HTML comment, the
+# JS section header + the two switchTab/init comments). Same class as
+# above: unit-id references and test identifiers, not debt.
+# files_over_400 stays 76 (the new test file is 339 lines — under the
+# bar; awf/api/dashboard_server.py lands at 397 — under the bar too).
