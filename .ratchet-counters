@@ -1442,3 +1442,20 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # already over the bar and counted once). The production fix (awf/
 # commit_gate.py — the CRLF guard in _apply_unit_delta + the loud degrade
 # in _commit_delta_file) carries no TODO id.
+# REPORTS33 (TODO-0205, run_revise/run_status: a done unit is not
+# "current", no id in two states): baseline raised 5463 -> 5478 (+15)
+# and files_over_400 raised 75 -> 76 — the new
+# tests/negative/test_reports33_revise_current.py adds 6 TODO-bearing
+# lines (the "Invariants (TODO-0205)" header, the T1/T2/T3 =
+# TODO-0001/0002/0003 constants, the TODO-0001/0002 fixture ids in the
+# two red-test docstrings) and the updated tests add 3 (the REPORTS33
+# docstring lines in test_reports26_b3_done_after_approve.py and the
+# position-comment line in test_run_plan_recovery.py); the fix sites
+# add 6 (the REPORTS33 (TODO-0205) comments in awf/api/run.py — the
+# run_status/run_brief display comments and the _revision_items
+# docstring + completed-view comment, 4 — and awf/run_plan_read.py —
+# the _current_finished docstring + the record correction comment, 2).
+# Same class as above: test identifiers and unit references, not debt.
+# The +1 file over 400 is tests/negative/test_run_plan_recovery.py
+# (399 -> 403 — the comment in the updated position assert), same class
+# as the test-suite raises above.

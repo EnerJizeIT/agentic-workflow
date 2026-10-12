@@ -250,12 +250,15 @@ def run_brief(project_dir: Path) -> dict | None:
         pipeline_info = {"active_pipeline": None, "pipeline_count": 0}
     return {
         "active": bool(state.get("active")),
-        "position": run_state.position(state),
+        # REPORTS33 (TODO-0205): the record's corrected position/current —
+        # a finished current is credited to completed (REPORTS26 B3) and
+        # is not shown as current at the same time.
+        "position": record.position,
         # RUN3 #2: the queue with per-item pipelines ({"todo_id",
         # "pipeline"}; empty pipeline = the config default).
         "queue": [dict(q) for q in (state.get("queue") or [])],
         "note": str(state.get("note") or ""),
-        "current": state.get("current", ""),
+        "current": record.current,
         # REPORTS26 B3 (TODO-0158): the finished current is credited at
         # read time (run_next owns the position itself).
         "completed": _completed_view(project_dir, state),
@@ -478,6 +481,11 @@ def run_status(project_dir: Path) -> RunStatusResult:
     productive = run_state.productive_minutes(state) if state else 0.0
     # B2: the budget is in PRODUCTIVE minutes (elapsed − recorded downtime).
     left = record.budget_left_minutes if budget else 0
+    # REPORTS33 (TODO-0205): a finished current is credited to completed
+    # at read time (REPORTS26 B3) — the record corrects the display so
+    # the same id is never shown in completed AND current at once (the
+    # shared reader, awf/run_plan_read.py, applies the rule for every
+    # surface: status, brief, card, context).
     current = record.current
     position = record.position
 
@@ -1571,7 +1579,9 @@ def _revision_items(
     positions ``< index`` are STARTED (the in-flight element sits at
     ``index - 1`` while ``current`` is set), positions ``>= index`` are
     NOT STARTED. ``completed`` ids count as completed regardless of
-    position (the last item is credited only at exhaustion).
+    position (the last item is credited only at exhaustion); the
+    finished ``current`` joins the set at read time (REPORTS26 B3 /
+    REPORTS33, TODO-0205) — a done unit is never ``current``.
 
     A requested id NOT in the queue is the third outcome (REPORTS32):
     APPEND/INSERT — it joins the queue (at the end, or at ``position``
@@ -1596,7 +1606,11 @@ def _revision_items(
     except (TypeError, ValueError):
         index = 0
     current = str(state.get("current") or "")
-    completed = {str(c) for c in (state.get("completed") or [])}
+    # REPORTS33 (TODO-0205): the read-time view (REPORTS26 B3) — a
+    # finished current is credited to completed here, so a done unit is
+    # never "current" in the listing (run_next credits it only at the
+    # NEXT launch; until then the raw list lags one cycle behind).
+    completed = set(_completed_view(project_dir, state))
 
     def _item_fields(item: object) -> tuple[str, str]:
         if isinstance(item, dict):
