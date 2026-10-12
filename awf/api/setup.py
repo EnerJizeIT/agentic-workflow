@@ -66,21 +66,42 @@ def build_pipeline_stages(
     team_order: list[dict[str, Any]],
     *,
     exclude_roles: frozenset[str] | None = None,
+    stage_mode: str = "chain",
+    primary_role: str = "",
+    include_qa: bool = False,
+    warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build ordered pipeline stages from team selection.
 
     Wraps the user's team with supervisor at both ends
     (always plan → agents → verify).
 
+    REPORTS33 (TODO-0209): ``stage_mode`` picks the working part — the
+    composition is a conscious choice, not a surprise:
+    - ``"chain"`` (default, the pre-REPORTS33 behavior): every team role
+      in order — each unit passes through all of them;
+    - ``"single"``: one working role per unit — ``primary_role`` (or the
+      first team role) plus, when ``include_qa`` is set and the team has
+      a QA role that is not the primary, that QA role. A primary that is
+      already the QA role adds no duplicate stage.
+
     Args:
         team_order: list of team member dicts (from form's team_config JSON).
             Each dict has at least: ``{agent: <role_name>, type: 'default'|'custom', ...}``.
         exclude_roles: role slugs to skip (TODO-0173: the quick variant
             passes the QA slugs). None/empty — the full team, unchanged.
+        stage_mode: ``"chain"`` (default) or ``"single"``; an unknown
+            value degrades to ``"chain"`` with a warning.
+        primary_role: ``"single"`` mode only — the primary role (name or
+            slug). Empty — the first team role; a role not in the team —
+            the first team role + a warning (degrade, not fail).
+        include_qa: ``"single"`` mode only — add the team's QA role
+            (``_QA_ROLE_SLUGS``) after the primary.
+        warnings: optional list collecting the degradations above.
 
     Returns:
         List of stage dicts:
-        ``[plan(supervisor)] + [team stages] + [verify(supervisor)]``.
+        ``[plan(supervisor)] + [working stages] + [verify(supervisor)]``.
 
     Raises:
         ValueError: if team_order is empty or has no valid role entries
@@ -105,6 +126,60 @@ def build_pipeline_stages(
             "one non-excluded role is required between plan and verify."
         )
 
+    mode = str(stage_mode or "chain").strip().lower()
+    if mode not in ("chain", "single"):
+        log.warning("Unknown stage_mode %r — using the linear chain", stage_mode)
+        if warnings is not None:
+            warnings.append(
+                f"unknown stage_mode {stage_mode!r} — the linear chain "
+                "(all team roles) is used"
+            )
+        mode = "chain"
+
+    work_roles: list[str] = []
+    if mode == "single":
+        primary = (
+            _slugify_role(primary_role) if str(primary_role or "").strip() else ""
+        )
+        if primary and primary not in valid_roles:
+            log.warning(
+                "Primary role %r is not in the team — using %r",
+                primary,
+                valid_roles[0],
+            )
+            if warnings is not None:
+                warnings.append(
+                    f"primary role {primary!r} is not in the team — "
+                    f"the first team role ({valid_roles[0]!r}) is the primary"
+                )
+            primary = ""
+        if not primary:
+            primary = valid_roles[0]
+        work_roles.append(primary)
+        if include_qa:
+            qa_role = next((r for r in valid_roles if r in _QA_ROLE_SLUGS), None)
+            if qa_role is None:
+                log.warning("include_qa requested but the team has no QA role")
+                if warnings is not None:
+                    warnings.append(
+                        "include_qa requested but the team has no QA role "
+                        f"({', '.join(sorted(_QA_ROLE_SLUGS))}) — the QA "
+                        "stage is not added"
+                    )
+            elif qa_role != primary:
+                work_roles.append(qa_role)
+            # qa_role == primary: the primary stage IS the QA — no duplicate
+    else:
+        seen_roles: set[str] = set()
+        for role in valid_roles:
+            if role in exclude:
+                continue
+            if role in seen_roles:
+                log.warning("Duplicate role %r in team_order — skipping", role)
+                continue
+            seen_roles.add(role)
+            work_roles.append(role)
+
     stages: list[dict[str, Any]] = [
         _stage_yaml(
             "plan",
@@ -113,17 +188,7 @@ def build_pipeline_stages(
         ),
     ]
 
-    seen_roles: set[str] = set()
-    for member in team_order:
-        role = _slugify_role(str(member.get("agent") or member.get("role") or ""))
-        if not role:
-            continue
-        if role in exclude:
-            continue
-        if role in seen_roles:
-            log.warning("Duplicate role %r in team_order — skipping", role)
-            continue
-        seen_roles.add(role)
+    for role in work_roles:
         stages.append(
             _stage_yaml(
                 name=role,
@@ -149,6 +214,44 @@ def build_pipeline_stages(
     )
 
     return stages
+
+
+def _dump_pipeline(name: str, description: str, stages: list[dict[str, Any]]) -> str:
+    """The pipeline document as YAML text (the write path's exact dump)."""
+    doc: dict[str, Any] = {
+        "name": name,
+        "description": description,
+        "stages": stages,
+    }
+    return yaml.safe_dump(
+        doc, default_flow_style=False, allow_unicode=True, sort_keys=False
+    )
+
+
+def pipeline_yaml_text(
+    team_order: list[dict[str, Any]],
+    *,
+    name: str = "default",
+    description: str = "Generated by awf.api from project-setup form",
+    stage_mode: str = "chain",
+    primary_role: str = "",
+    include_qa: bool = False,
+    warnings: list[str] | None = None,
+) -> str:
+    """REPORTS33 (TODO-0209): the exact YAML text ``write_pipeline`` writes.
+
+    The project-setup form's preview renders this text — the same builder
+    and dump as the write path, so what the user sees before saving is
+    byte-identical to the resulting ``.agentic/pipelines/<name>.yaml``.
+    """
+    stages = build_pipeline_stages(
+        team_order,
+        stage_mode=stage_mode,
+        primary_role=primary_role,
+        include_qa=include_qa,
+        warnings=warnings,
+    )
+    return _dump_pipeline(name, description, stages)
 
 
 def _active_pipeline_name(project_dir: Path, *, warnings: list[str] | None = None) -> str:
@@ -181,6 +284,9 @@ def write_pipeline(
     team_order: list[dict[str, Any]],
     project_dir: Path,
     *,
+    stage_mode: str = "chain",
+    primary_role: str = "",
+    include_qa: bool = False,
     warnings: list[str] | None = None,
 ) -> Path | None:
     """Write the active pipeline file from team selection.
@@ -191,11 +297,18 @@ def write_pipeline(
     used to silently ignore the form's team in projects with a custom
     default_pipeline (repro S9).
 
+    REPORTS33 (TODO-0209): ``stage_mode``/``primary_role``/``include_qa``
+    pass the form's composition choice to :func:`build_pipeline_stages`
+    (default ``"chain"`` — the pre-REPORTS33 linear composition).
+
     Args:
         team_order: form team_config list (ordered).
         project_dir: absolute path to awf project.
+        stage_mode: ``"chain"`` (default) or ``"single"``.
+        primary_role: ``"single"`` mode — the primary role (name/slug).
+        include_qa: ``"single"`` mode — add the team's QA role.
         warnings: optional list to collect config problems (invalid
-            default_pipeline name).
+            default_pipeline name) and composition degradations.
 
     Returns:
         Path to written file. Backups the existing file to .bak.
@@ -203,13 +316,14 @@ def write_pipeline(
     pipelines_dir = project_dir / ".agentic" / "pipelines"
     pipelines_dir.mkdir(parents=True, exist_ok=True)
 
-    stages = build_pipeline_stages(team_order)
+    stages = build_pipeline_stages(
+        team_order,
+        stage_mode=stage_mode,
+        primary_role=primary_role,
+        include_qa=include_qa,
+        warnings=warnings,
+    )
     name = _active_pipeline_name(project_dir, warnings=warnings)
-    pipeline_dict: dict[str, Any] = {
-        "name": name,
-        "description": "Generated by awf.api from project-setup form",
-        "stages": stages,
-    }
 
     target = pipelines_dir / f"{name}.yaml"
     if target.exists():
@@ -220,9 +334,7 @@ def write_pipeline(
         except OSError:
             pass
 
-    content = yaml.safe_dump(
-        pipeline_dict, default_flow_style=False, allow_unicode=True, sort_keys=False
-    )
+    content = _dump_pipeline(name, "Generated by awf.api from project-setup form", stages)
     atomic_write_text(target, content)
     log.info("Wrote pipeline with %d team stages to %s", len(stages) - 2, target)
     return target
@@ -273,11 +385,6 @@ def write_quick_pipeline(
         return None
 
     pipelines_dir.mkdir(parents=True, exist_ok=True)
-    pipeline_dict: dict[str, Any] = {
-        "name": _QUICK_PIPELINE_NAME,
-        "description": "Quick tier (S-class units): the team without the QA stage",
-        "stages": stages,
-    }
 
     target = pipelines_dir / f"{_QUICK_PIPELINE_NAME}.yaml"
     if target.exists():
@@ -288,8 +395,10 @@ def write_quick_pipeline(
         except OSError:
             pass
 
-    content = yaml.safe_dump(
-        pipeline_dict, default_flow_style=False, allow_unicode=True, sort_keys=False
+    content = _dump_pipeline(
+        _QUICK_PIPELINE_NAME,
+        "Quick tier (S-class units): the team without the QA stage",
+        stages,
     )
     atomic_write_text(target, content)
     log.info("Wrote quick pipeline with %d team stages to %s", len(stages) - 2, target)
@@ -617,6 +726,9 @@ def apply_project_setup(
     team: list[dict[str, Any]],
     context_message: str = "",
     supervisor_instructions: str = "",
+    stage_mode: str = "chain",
+    primary_role: str = "",
+    include_qa: bool = False,
 ) -> ApplyProjectSetupResult:
     """Apply a project-setup form submit to awf project files.
 
@@ -624,6 +736,12 @@ def apply_project_setup(
     choices into awf-managed files. Called by the plugin's submit handler
     after global custom-role CRUD (which stays in the plugin — UI persistence
     is not awf's concern).
+
+    REPORTS33 (TODO-0209): ``stage_mode``/``primary_role``/``include_qa``
+    carry the form's composition choice. The API default is ``"chain"`` —
+    a submit without the field (older form) keeps the pre-REPORTS33 linear
+    composition; the NEW form defaults its radio to ``"single"`` (one
+    working role per unit) and always sends the field.
 
     Side effects (all idempotent):
     1. Writes the active pipeline file from team order — the
@@ -650,6 +768,9 @@ def apply_project_setup(
         team: list of team member dicts from form team_config.
         context_message: optional free-text project context (UI-2).
         supervisor_instructions: optional additional supervisor guidance (UI-3).
+        stage_mode: ``"chain"`` (default) or ``"single"``.
+        primary_role: ``"single"`` mode — the primary role (name/slug).
+        include_qa: ``"single"`` mode — add the team's QA role.
 
     Returns:
         ApplyProjectSetupResult with paths written + flags.
@@ -663,7 +784,14 @@ def apply_project_setup(
     quick_path: Path | None = None
     if team:
         try:
-            pipeline_path = write_pipeline(team, project_dir, warnings=warnings)
+            pipeline_path = write_pipeline(
+                team,
+                project_dir,
+                stage_mode=stage_mode,
+                primary_role=primary_role,
+                include_qa=include_qa,
+                warnings=warnings,
+            )
         except ValueError as e:
             warnings.append(f"pipeline: {e}")
             log.warning("apply_project_setup: %s", e)
@@ -749,6 +877,7 @@ __all__ = [
     "write_pipeline",
     "write_quick_pipeline",
     "build_pipeline_stages",
+    "pipeline_yaml_text",
     "update_config_role_mapping",
     "save_context_and_instructions",
 ]

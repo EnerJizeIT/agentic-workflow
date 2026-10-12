@@ -1067,6 +1067,21 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # inbox-check bullet). Same class as above: doc examples of file names,
 # not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
+# REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
+# baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
+# new tests/negative/test_reports33_setup_form.py (the module docstring's
+# unit reference + the incident wording), 4 in awf/api/setup.py (the
+# REPORTS33 (TODO-0209) unit references in build_pipeline_stages /
+# write_pipeline / pipeline_yaml_text / apply_project_setup docstrings),
+# 1 in agent_workflow_ui roles_processor.py (the stage_mode wiring
+# comment), 3 in agent_workflow_ui tools/forms.py (the
+# _populate_project_setup_preview docstring + the open_form comment and
+# context-key comment) and 5 in the project-setup.html.j2 template (the
+# "выполняет TODO" hint, the two REPORTS33 (TODO-0209) JS comments and the
+# two preview description strings "creates a TODO" / "executes the TODO").
+# Same class as above: unit-id references and test identifiers, not debt.
+# files_over_400 stays 76 (the new test file is under the 400-line bar;
+# the touched production modules were already over it).
 # REPORTS29 QA (agent-qa-review red test): baseline raised 4970 -> 4971 —
 # the new out-of-range port-file test adds 1 TODO-bearing line (its
 # fixture todo id). The test is RED on the current tree: _read_reuse_port

@@ -218,6 +218,11 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None,
                     team=team,
                     context_message=context_msg,
                     supervisor_instructions=sup_instr,
+                    # REPORTS33 (TODO-0209): the composition choice from the
+                    # form; an absent field (older form) keeps the chain.
+                    stage_mode=str(data.get("stage_mode") or "").strip() or "chain",
+                    primary_role=str(data.get("primary_role") or "").strip(),
+                    include_qa=data.get("include_qa") in ("on", "true", True),
                 )
                 if result.pipeline_file:
                     log.info("Pipeline written to %s", result.pipeline_file)
