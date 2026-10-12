@@ -1469,3 +1469,13 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # references, not debt. files_over_400 stays 76 (the new test file is
 # 118 lines — under the bar; the touched awf/brief.py was already over
 # it).
+# REPORTS33 (TODO-0207, awf_init: vision_excerpt from the actual anchor):
+# baseline raised 5483 -> 5486 (+3) — the 3 unit-id references, all in
+# awf/api/lifecycle.py (the _read_vision_excerpt docstring header, the
+# fresh-init call-site comment and the fresh dry-run call-site comment
+# naming the unit). The new test file
+# tests/negative/test_reports33_vision_excerpt.py carries no TODO line
+# (init tests need no TODO fixture). Same class as above: unit-id
+# references, not debt. files_over_400 stays 76 (the new test file is
+# 137 lines — under the bar; the touched awf/api/lifecycle.py was
+# already over it).
