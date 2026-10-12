@@ -206,6 +206,32 @@ class AddRoleResult:
 
 
 @dataclass
+class SeedRolesResult:
+    """Result of :func:`awf.api.seed_roles` (REPORTS32, TODO-0203).
+
+    The preset seed ("typical office") answers with three tables:
+    - ``created`` — ``{"role", "role_file", "skill", "model"}`` per role
+      file created from its catalog skill (``model``: the resolved model,
+      "" when unassigned);
+    - ``skipped`` — ``{"role", "reason"}`` per existing role ("already
+      exists" — never touched) or missing skill ("skill not found: …" —
+      not an error, a note);
+    - ``models`` — ``{"role", "model", "locus", "action"}`` per
+      ``models=`` entry: what was set where
+      (``models.<role>.model``), action ``written`` / ``unchanged``
+      (idempotent repeat).
+    """
+
+    preset: str
+    created: list[dict[str, str]]
+    skipped: list[dict[str, str]]
+    models: list[dict[str, str]]
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class AdoptRoleDraftResult:
     """Result of :func:`awf.api.adopt_role_draft` (ORCH M5.1 + M5.3).
 

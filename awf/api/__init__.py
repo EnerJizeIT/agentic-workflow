@@ -108,11 +108,14 @@ from .pipeline import (
 from .pipelines import list_pipelines, write_pipeline
 from .planning import apply_increment_plan
 from .roles import (
+    OFFICE_PRESET,
+    PRESETS,
     add_role,
     adopt_role_draft,
     analyze_roles,
     discard_role_draft,
     list_role_drafts,
+    seed_roles,
 )
 from .run import (
     run_brief,
@@ -239,6 +242,9 @@ __all__ = [
     "analyze_roles",
     "discard_role_draft",
     "list_role_drafts",
+    "seed_roles",
+    "OFFICE_PRESET",
+    "PRESETS",
     # Project-setup materialization
     "apply_project_setup",
     # TODO dispatch + supervisor context (dogfood-2 automation)

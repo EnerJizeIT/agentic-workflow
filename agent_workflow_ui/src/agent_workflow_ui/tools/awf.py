@@ -1829,6 +1829,8 @@ async def awf_add_role(
     adopt: str = "",
     discard: str = "",
     list_drafts: bool = False,
+    preset: str = "",
+    models: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Generate a new role file at .agentic/roles/{name}.md.
 
@@ -1847,6 +1849,21 @@ async def awf_add_role(
     and only runs for a non-empty ``model=`` on the live path (the draft
     path never touches the config). ``model_config`` in the result names
     the written locus.
+
+    REPORTS32 (TODO-0203): ``preset="office"`` seeds the built-in role
+    catalog ("typical office") in ONE call: system-analyst, spec-writer,
+    architector, project-auditor, qa-review, qa-table, auditor-table —
+    each from its ``agent-*`` skill — plus ``product`` when its skill
+    exists on the machine. Existing roles are skipped (never touched or
+    overwritten); a missing skill is a row in the result, not an error.
+    ``models={role: model}`` writes the role→model mapping into
+    ``.agentic/config.yaml`` (the same surgical merge as ``model=``),
+    including for roles that already exist. Preset mode is mutually
+    exclusive with the single-role parameters.
+
+    Example:
+        awf_add_role(project_dir=..., preset="office",
+                     models={"qa-review": "vllm/llm"})
 
     ORCH M5.1 draft area (candidate isolated until checked):
     - ``draft=True``: write the candidate to
@@ -1890,6 +1907,14 @@ async def awf_add_role(
             not a discard call).
         list_drafts: List draft candidates instead of creating (default:
             False).
+        preset: Seed the built-in role catalog instead of creating one
+            role (default: "" — not a preset call). Currently:
+            "office". Mutually exclusive with the single-role
+            parameters (name/description/model/from_skill/force and the
+            draft-area modes).
+        models: For preset mode only — {role: model} mapping written
+            into ``.agentic/config.yaml`` as ``models.<role>.model``
+            (default: None). Keys must be preset roles.
 
     Returns:
         Create: role_name, role_file (path), model, model_config (where
@@ -1898,7 +1923,42 @@ async def awf_add_role(
         drafts (list of {name, source, created, file}). Adopt:
         role_name, role_file, normalization ({overlaps, addenda, failed}
         or {error}). Discard: role_name, draft_file, trace_file.
+        Preset: preset, created (list of {role, role_file, skill,
+        model}), skipped (list of {role, reason}), models (list of
+        {role, model, locus, action}).
     """
+    if preset:
+        clashing = [
+            label
+            for label, value in (
+                ("name", name),
+                ("description", description),
+                ("model", model),
+                ("from_skill", from_skill),
+                ("force", force),
+                ("draft", draft),
+                ("adopt", adopt),
+                ("discard", discard),
+                ("list_drafts", list_drafts),
+            )
+            if value
+        ]
+        if clashing:
+            return {
+                "status": "error",
+                "error": (
+                    "preset mode seeds the whole catalog at once and is "
+                    "mutually exclusive with: "
+                    + ", ".join(clashing)
+                    + ". Use models={role: model} for per-role models."
+                ),
+            }
+        return await _exec(
+            api.seed_roles,
+            project_dir=_resolve_project_dir(project_dir),
+            preset=preset,
+            models=models,
+        )
     modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
     if modes > 1:
         return {

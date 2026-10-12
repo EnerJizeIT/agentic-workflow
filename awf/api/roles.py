@@ -28,6 +28,7 @@ from ._results import (
     AnalyzeRolesResult,
     DiscardRoleDraftResult,
     RoleDraftsResult,
+    SeedRolesResult,
 )
 from ._templates import _ROLE_TEMPLATE
 
@@ -664,6 +665,183 @@ def add_role(
         role_file=str(role_file),
         model=resolved_model,
         model_config=model_config,
+    )
+
+
+# ─── Role preset seeding (REPORTS32, TODO-0203) ─────────────────────────
+#
+# The "typical office" is assembled by hand in every project: each role
+# copied from its agent-* skill one by one, then models.<role>.model
+# written into config.yaml manually. A preset catalog makes it one call.
+# The catalog is embedded (it is awf's own office, not user data); skill
+# search mirrors from_skill: project .opencode/skills/ first, then
+# $XDG_CONFIG_HOME/opencode/skills/. A missing skill is a NOTE (a row in
+# the result), not an error — the machine decides which part of the
+# office it can afford. Existing role files are user data: never touched,
+# never overwritten (the hard rule — there is no force on this path).
+
+
+#: role slug → source skill. "product" lands in the office only when its
+#: skill exists on the machine (the skip row says so).
+OFFICE_PRESET: tuple[tuple[str, str], ...] = (
+    ("system-analyst", "agent-system-analyst"),
+    ("spec-writer", "agent-spec-writer"),
+    ("architector", "agent-architector"),
+    ("project-auditor", "agent-project-auditor"),
+    ("qa-review", "agent-qa-review"),
+    ("qa-table", "agent-qa-table"),
+    ("auditor-table", "agent-auditor-table"),
+    ("product", "agent-product"),
+)
+
+#: preset name → catalog. New presets are added here, not in callers.
+PRESETS: dict[str, tuple[tuple[str, str], ...]] = {
+    "office": OFFICE_PRESET,
+}
+
+
+def seed_roles(
+    project_dir: Path,
+    *,
+    preset: str = "office",
+    models: dict[str, str] | None = None,
+) -> SeedRolesResult:
+    """Seed the built-in role catalog into an existing project.
+
+    Example (MCP): ``awf_add_role(project_dir=..., preset="office",
+    models={"qa-review": "vllm/llm"})``.
+
+    For every ``(role, skill)`` pair of the preset catalog:
+    - the role file ``.agentic/roles/<role>.md`` exists → skipped
+      (``"already exists"``) — an existing role is user data and is never
+      touched or overwritten (no force on this path);
+    - the skill is not found (project ``.opencode/skills/<skill>/``
+      first, then ``$XDG_CONFIG_HOME/opencode/skills/<skill>/`` — the
+      same search as ``from_skill``) → skipped
+      (``"skill not found: <skill>"``) — a note, not an error;
+    - otherwise the role is created through :func:`add_role`
+      (``from_skill`` content: provenance comment + body, front-matter
+      stripped; the uniform model line per the resolved model).
+
+    ``models={role: model}`` writes the role→model mapping into
+    ``.agentic/config.yaml`` as ``models.<role>.model`` — the same
+    surgical, comment-preserving, idempotent merge as the explicit
+    ``model=`` of :func:`add_role` (the config is the source of truth the
+    engine reads). Keys are validated against the preset catalog (an
+    unknown key is a typed refusal). Models are applied to every catalog
+    role they name — created in this run (via the add_role path, so the
+    role file's model line stays in sync) or already present (config
+    only, the role file is not touched).
+
+    The answer is the table the owner reads to check the office:
+    ``created`` (role / role_file / skill / model), ``skipped``
+    (role / reason), ``models`` (role / model / locus / action —
+    ``written`` or ``unchanged`` on an idempotent repeat). A second call
+    on the same project is a no-op: created empty, everything skipped,
+    config and role files byte-for-byte untouched.
+
+    Raises :class:`AwfApiError` on an unknown preset or a ``models=`` key
+    outside the preset catalog (nothing is written in that case).
+    """
+    preset = (preset or "").strip().lower()
+    if preset not in PRESETS:
+        raise AwfApiError(
+            f"Unknown preset {preset!r}. Available presets: "
+            + ", ".join(sorted(PRESETS))
+            + "."
+        )
+    catalog = PRESETS[preset]
+    catalog_roles = [role for role, _ in catalog]
+
+    normalized_models: dict[str, str] = {}
+    for key, value in (models or {}).items():
+        slug = str(key).strip().lower()
+        if slug not in catalog_roles:
+            raise AwfApiError(
+                f"models= key {key!r} is not a role of the {preset!r} "
+                f"preset. Preset roles: {', '.join(catalog_roles)}."
+            )
+        model = str(value or "").strip()
+        if model:
+            normalized_models[slug] = model
+
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    roles_dir = project_dir / ".agentic" / "roles"
+    # Pre-creation snapshot of the config: it labels the models= rows of
+    # the roles this run creates (written vs already there) — the file
+    # itself is re-read after the run for the remaining roles.
+    config_path = paths.config_file(project_dir)
+    pre_cfg = (
+        config_path.read_text(encoding="utf-8")
+        if config_path.is_file()
+        else ""
+    )
+    created: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for role, skill in catalog:
+        if (roles_dir / f"{role}.md").is_file():
+            skipped.append({"role": role, "reason": "already exists"})
+            continue
+        try:
+            _find_skill_file(skill, project_dir)
+        except AwfApiError:
+            skipped.append(
+                {"role": role, "reason": f"skill not found: {skill}"}
+            )
+            continue
+        model = normalized_models.get(role, "")
+        result = add_role(project_dir, role, from_skill=skill, model=model)
+        created.append(
+            {
+                "role": role,
+                "role_file": result.role_file,
+                "skill": skill,
+                "model": result.model,
+            }
+        )
+
+    # models → config.yaml (the TODO-0202 mechanism: surgical, validated,
+    # idempotent). Roles created above already carry their model in the
+    # config (add_role merged it with the file write); the pass below
+    # covers the rest and reports the truth for every models= entry.
+    models_rows: list[dict[str, str]] = []
+    raw_cfg = (
+        config_path.read_text(encoding="utf-8")
+        if config_path.is_file()
+        else ""
+    )
+    created_roles = {row["role"] for row in created}
+    for role in catalog_roles:
+        model = normalized_models.get(role)
+        if not model:
+            continue
+        if role in created_roles:
+            action = (
+                "unchanged"
+                if _compute_config_update(pre_cfg, role, model) is None
+                else "written"
+            )
+        else:
+            update = _compute_config_update(raw_cfg, role, model)
+            if update is None:
+                action = "unchanged"
+            else:
+                raw_cfg = update[0]
+                atomic_write_text(config_path, raw_cfg)
+                action = "written"
+        models_rows.append(
+            {
+                "role": role,
+                "model": model,
+                "locus": f"models.{role}.model",
+                "action": action,
+            }
+        )
+
+    return SeedRolesResult(
+        preset=preset, created=created, skipped=skipped, models=models_rows
     )
 
 
