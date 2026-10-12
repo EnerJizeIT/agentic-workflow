@@ -74,6 +74,12 @@ class StatusResult:
     # (.agentic/config.yaml, roles/, pipelines/, phases/, doctrine/ —
     # changed tracked + untracked non-gitignored). [] = nothing to commit.
     uncommitted_workflow_files: list[str] = field(default_factory=list)
+    # TODO-0197 (REPORTS32 п.4): active inbox units that are NOT part of
+    # the active run's queue — ready to start standalone or closing a
+    # previous cycle. Same entry shape as active_todos. [] when there is
+    # no active run (everything is "active" — unchanged behavior) or no
+    # such units.
+    standalone_todos: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -253,6 +259,11 @@ class StartResult:
     log_file: str | None
     exit_code: int | None
     message: str
+    # TODO-0197 (REPORTS32 п.3): the launch will open the BD-36 plan
+    # checkpoint form (checkpoint enabled, no no_checkpoints bypass) —
+    # the warning the supervisor needs to warn the user BEFORE the form
+    # pops up. "" when the checkpoint is off for this launch.
+    checkpoint_warning: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

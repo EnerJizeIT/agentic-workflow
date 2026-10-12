@@ -543,15 +543,37 @@ def get_status(project_dir: Path) -> StatusResult:
         inbox, outbox, paths.done_dir(project_dir)
     )
 
-    active_todos_list: list[dict[str, Any]] = []
-    for todo_id in active_ids:
+    # TODO-0197 (REPORTS32 п.4): the "active" list shows ONLY the units of
+    # the active run's queue; other active inbox units (ready to start
+    # standalone / closing a previous cycle) are reported separately so
+    # the run's queue is not mixed with foreign units.
+    from ..run_state import read_run
+
+    _run = read_run(project_dir)
+    run_queue_ids: set[str] = set()
+    if _run and _run.get("active"):
+        for item in _run.get("queue") or []:
+            tid = item.get("todo_id") if isinstance(item, dict) else str(item)
+            if tid:
+                run_queue_ids.add(tid)
+
+    def _todo_entry(todo_id: str) -> dict[str, Any]:
         entry: dict[str, Any] = {"todo_id": todo_id}
         ack = _read_ack(inbox, todo_id)
         if ack is not None:
             entry["ack"] = ack
         progress = _read_progress(outbox, todo_id)
         entry["progress"] = progress if progress else None
-        active_todos_list.append(entry)
+        return entry
+
+    active_todos_list: list[dict[str, Any]] = []
+    standalone_todos_list: list[dict[str, Any]] = []
+    for todo_id in active_ids:
+        entry = _todo_entry(todo_id)
+        if run_queue_ids and todo_id not in run_queue_ids:
+            standalone_todos_list.append(entry)
+        else:
+            active_todos_list.append(entry)
 
     conflict_warning: str | None = None
     if len(active_ids) > 1:
@@ -559,9 +581,6 @@ def get_status(project_dir: Path) -> StatusResult:
         # for their turn and each todo_id is pinned by awf_run_next. The old
         # "stale — rollback or reset" text was a false alarm on every run
         # status call. Outside a run the old warning stands.
-        from ..run_state import read_run
-
-        _run = read_run(project_dir)
         if _run and _run.get("active"):
             conflict_warning = (
                 f"Run queue: {len(active_ids)} items wait for a turn — "
@@ -720,6 +739,7 @@ def get_status(project_dir: Path) -> StatusResult:
         pipeline_count=pipeline_count,
         run_state=_run_brief(project_dir),
         uncommitted_workflow_files=uncommitted_wf,
+        standalone_todos=standalone_todos_list,
     )
 
 

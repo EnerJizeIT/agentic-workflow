@@ -125,6 +125,11 @@ class BriefResult:
     # dead engine + stage state on disk + no signal; the State section
     # names the resume (awf_continue).
     zombie_state: str = ""
+    # TODO-0197 (REPORTS32 п.4): active inbox units OUTSIDE the active
+    # run's queue (ready to start / closing a previous cycle) — rendered
+    # as their own "outside run" line, never mixed into the "active:"
+    # lines. [] when there is no active run or no such units.
+    standalone_todos: list[dict[str, Any]] = field(default_factory=list)
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -385,6 +390,13 @@ def _state_lines(r: BriefResult) -> list[str]:
             lines.append(f"- active: {t['todo_id']} ({prog['done']}/{prog['total']} tasks)")
         else:
             lines.append(f"- active: {t['todo_id']} (worker has not started)")
+    if r.standalone_todos:
+        # TODO-0197 (REPORTS32 п.4): foreign inbox units — their own line,
+        # not mixed into the run's "active:" list.
+        ids = ", ".join(t["todo_id"] for t in r.standalone_todos)
+        lines.append(
+            f"- outside run: {ids} (ready to start / closing previous cycles)"
+        )
     if r.blocked:
         lines.append(f"- blocked: {', '.join(r.blocked)}")
     if r.salvage_stage:
@@ -587,6 +599,7 @@ def build_brief(
             phase_summary = ""
 
     active_todos: list[dict[str, Any]] = []
+    standalone_todos: list[dict[str, Any]] = []
     blocked: list[str] = []
     salvage_stage: str | None = None
     last_signal: str | None = None
@@ -596,6 +609,10 @@ def build_brief(
     zombie_state = ""
     if status is not None:
         active_todos = [dict(t) for t in status.active_todos]
+        # TODO-0197: the outside-run units from the same status read.
+        standalone_todos = [
+            dict(t) for t in getattr(status, "standalone_todos", None) or []
+        ]
         blocked = list(status.blocked_ids)
         if status.salvage_needed:
             salvage_stage = status.salvage_stage
@@ -667,6 +684,7 @@ def build_brief(
         phase_clipped=phase_clipped,
         run=dict(run) if run else None,
         active_todos=active_todos,
+        standalone_todos=standalone_todos,
         blocked=blocked,
         salvage_stage=salvage_stage,
         last_signal=last_signal,

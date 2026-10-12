@@ -1304,3 +1304,17 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # unit-id references in test/docstring lines, not debt.
 # files_over_400 stays 74 (pipeline_engine.py / api/run.py were
 # already over the bar; the new test file is under it).
+# TODO-0197 (REPORTS32 events/status): baseline raised 5317 -> 5337
+# (+20) — the unit adds 8 TODO-bearing lines in the new
+# tests/negative/test_reports32_events_status.py (the T1/T2/T3 =
+# TODO-0001/0002/0003 constants, the "TODO.md" archive fixture line, the
+# module docstring's unit/incident reference lines and the
+# "называет TODO-0001" test docstring line) and 12 in the fix sites
+# (the TODO-0197 unit references in awf/api/wait_event.py docstrings and
+# the out-of-run comment (5), awf/api/pipeline.py's start_pipeline
+# comment (1), awf/api/_results.py's checkpoint_warning /
+# standalone_todos field comments (2), awf/api/lifecycle.py's get_status
+# comment (1) and awf/brief.py's BriefResult field + rendering/build
+# comments (3)). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 74 (the new test file is
+# under the bar; the touched modules were already over it).
