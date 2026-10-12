@@ -1323,7 +1323,13 @@ async def awf_prove_red(
             semantics, cwd = the tree) in the baseline worktree and in the
             current tree. Default: the contract's ``prove_red_cmd`` key,
             else pytest. Priority: this parameter > the contract key >
-            pytest.
+            pytest. With an empty test list the command mode gathers the
+            tree's test files changed since the baseline (a ``tests``
+            directory in the path, or the file name contains test/spec)
+            and copies them into the worktree; an empty set is named in
+            the message. A pipe/redirect in the command warns (shell rc
+            = the last command's rc) and a pipe runs under
+            ``bash -o pipefail`` when bash is available (REPORTS32).
 
     Returns:
         Dict with: todo_id, verdict, exit_code, baseline_sha, tests,

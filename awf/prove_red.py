@@ -35,6 +35,23 @@ run" is ``broken-runner``, never a red: a timeout, or shell rc 126/127
 (found-but-not-executable / command-not-found) — the command failed to
 start, so there is no red to prove.
 
+Command mode with an empty test list (REPORTS32): with no ``prove_red``
+block and no ``tests=`` argument the command mode gathers the tree's
+test files changed since the baseline — tracked changes (modified or
+deleted) plus untracked, filtered to paths that look like tests (a
+``tests`` directory in the path, or the file name contains test/spec) —
+and copies them into the worktree, so the command runs against the
+CURRENT tree's tests instead of the baseline's. When nothing matches,
+the verdict names it: the command ran against the baseline tests and no
+test files were copied — a silent not-red is how a false "the tests
+prove nothing" was read.
+
+Pipe guard (REPORTS32): a ``|`` or ``>`` in the command warns that the
+shell rc is the rc of the last command (a pipe masks the runner's
+failure); a command with a pipe runs under ``bash -o pipefail -c`` when
+bash is available, so the rc is honest (without bash, the warning is all
+that is possible).
+
 The worktree is removed in ``finally`` on every outcome
 (``git worktree remove --force`` + ``git worktree prune``).
 
@@ -54,12 +71,13 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import paths
@@ -148,7 +166,11 @@ def prove_red(
             (shell semantics, cwd = the tree), in the baseline worktree and
             in the current tree. Default: the contract's ``prove_red_cmd``
             key, else the pytest path. Priority: this parameter > the
-            contract key > pytest.
+            contract key > pytest. With an empty test list the command
+            mode gathers the tree's test files changed since the baseline
+            and copies them into the worktree (REPORTS32); a pipe in the
+            command warns (shell rc = the last command's rc) and runs
+            under ``bash -o pipefail`` when bash is available.
 
     Returns:
         ProveRedResult with verdict, exit code and both run outputs.
@@ -183,6 +205,16 @@ def prove_red(
 
     baseline_sha = _read_baseline_sha(project_dir, todo_id)
 
+    # REPORTS32: a command mode with an empty test list — the command is
+    # the check, so gather the tree's test files changed since the
+    # baseline and copy them into the worktree; otherwise the command
+    # runs against the baseline's own test files and a false not-red
+    # reads as "the tests prove nothing". An empty gathered set is named
+    # in the verdict (see auto_gathered below).
+    auto_gathered = command is not None and not tests
+    if auto_gathered:
+        tests = _diff_test_files(project_dir, baseline_sha)
+
     # A-19: refuse test paths that escape the project BEFORE the worktree is
     # created, so no file outside the project is read and no worktree is spun
     # up for a bad id.
@@ -208,8 +240,12 @@ def prove_red(
             )
 
     tests = list(tests or [])
-    worktree = _new_worktree(project_dir, baseline_sha, tmp_base)
     warnings: list[str] = []
+    # REPORTS32: the pipe guard — a pipe/redirect in the command masks
+    # the shell rc; warn, and run a pipe under `bash -o pipefail` when
+    # bash is available, so the rc is honest.
+    command = _guarded_command(command, warnings)
+    worktree = _new_worktree(project_dir, baseline_sha, tmp_base)
     current_output = ""
     try:
         copied = _copy_test_files(project_dir, worktree, tests)
@@ -326,6 +362,12 @@ def prove_red(
                     )
     finally:
         _remove_worktree(project_dir, worktree)
+
+    if auto_gathered and not tests:
+        message += (
+            " NOTE: the command ran against the baseline tests — no test "
+            "files were copied (no test files in the diff)."
+        )
 
     return ProveRedResult(
         todo_id=todo_id,
@@ -574,6 +616,46 @@ def _copy_test_files(project_dir: Path, worktree: Path, test_ids: list[str]) -> 
     return copied
 
 
+def _looks_like_test_file(rel: str) -> bool:
+    """A path that looks like a test (REPORTS32): a ``tests`` directory
+    in the path, or the file name contains ``test``/``spec``
+    (case-insensitive). A false positive only copies an extra file into
+    the worktree — the command runs its own checks — so the filter stays
+    deliberately loose."""
+    parts = [p.lower() for p in PurePosixPath(rel).parts]
+    return "tests" in parts or "test" in parts[-1] or "spec" in parts[-1]
+
+
+def _diff_test_files(project_dir: Path, baseline_sha: str) -> list[str]:
+    """The tree's test files changed since the baseline (REPORTS32).
+
+    Command mode with an empty test list: the command is the check, so
+    the files it runs on must come from the current tree, not the
+    baseline checkout. The set is every file that differs from the
+    baseline — tracked changes (modified or deleted) plus untracked —
+    filtered to paths that look like tests. Deleted files are skipped:
+    they cannot be copied, and the baseline checkout already holds its
+    own copy.
+    """
+    changed: set[str] = set()
+    for args in (
+        ["git", "diff", "--name-only", "-z", baseline_sha],
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        r = run_tree(
+            args, cwd=project_dir, capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            raise AwfApiError(
+                f"{' '.join(args)} failed: {(r.stderr or r.stdout).strip()[:300]}"
+            )
+        changed.update(p for p in r.stdout.split("\0") if p)
+    return [
+        rel for rel in sorted(changed)
+        if _looks_like_test_file(rel) and (project_dir / rel).is_file()
+    ]
+
+
 # ─── Worktree lifecycle ─────────────────────────────────────────────────
 
 
@@ -728,6 +810,28 @@ def _run_pytest(cwd: Path, test_ids: list[str], *, hermetic: bool = False) -> tu
     out = proc.stdout or ""
     err = proc.stderr or ""
     return proc.returncode, (out + ("\n" + err if err else ""))[-8000:]
+
+
+def _guarded_command(command: str | None, warnings: list[str]) -> str | None:
+    """Pipe guard (REPORTS32): a pipe or redirect in the check command
+    masks the shell rc — the rc of the last command — so a failing
+    runner followed by ``| tail`` reads as a pass. Warn on ``|`` or
+    ``>``, and when the command has a pipe and bash is available wrap it
+    in ``bash -o pipefail -c`` so the rc is honest (without bash the
+    warning is all that is possible).
+    """
+    if command is None:
+        return None
+    if "|" in command or ">" in command:
+        warnings.append(
+            "the return code is masked by the pipe (shell rc = the rc of "
+            "the last command)"
+        )
+    if "|" in command:
+        if shutil.which("bash") is not None:
+            return "bash -o pipefail -c " + shlex.quote(command)
+        warnings.append("bash not found — the pipefail wrap was skipped")
+    return command
 
 
 def _run_command(cwd: Path, command: str) -> tuple[int, str, bool]:

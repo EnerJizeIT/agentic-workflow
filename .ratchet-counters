@@ -1332,3 +1332,12 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # docstring). Same class as above: unit-id references and test
 # identifiers, not debt. files_over_400 stays 74 (the new test file is
 # 398 lines — under the bar; the touched modules were already over it).
+# REPORTS32 (TODO-0200, prove-red command mode: diffed test files +
+# the pipe guard): baseline raised 5370 -> 5382 — the new
+# tests/negative/test_reports32_prove_red_command.py adds 12
+# TODO-bearing lines (the module docstring's TODO-0100 report
+# reference, the TODO_ID = "TODO-0001" constant and its fixture/assert
+# use-sites in the nine tests). Same class as above: test identifiers
+# and unit references, not debt. files_over_400 stays 74 (the new test
+# file is 300 lines — under the bar; the touched production modules
+# were already over it).
