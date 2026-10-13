@@ -1574,3 +1574,9 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # (no .py crossed the bar: test_reports33_bd30_replan.py 461 -> 652 and
 # the touched production modules were already over it;
 # test_orch_composition_scenarios.py 466 -> 467 was already counted).
+# TODO-0214 (CI-fix: the coverage ratchet on awf/run_plan_read.py, 92.00
+# -> 91.57 in PR #46 — the missing branches get tests, not a lowered
+# baseline): baseline raised 5838 -> 5840 (+2) — the new
+# tests/negative/test_run_plan_read_coverage.py adds 2 TODO-bearing lines
+# (the T/T2 fixture todo ids). Same class as above: test identifiers,
+# not debt.
