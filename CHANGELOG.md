@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-10-13
+
+A hard, honest day on the commit gate: unit commits now carry only the
+unit's own edit, a property-test steward guards the mechanism, a live
+pipeline can no longer be hijacked by an unrelated dispatch, and the
+dashboard grew run tabs.
+
+### Added
+
+- **Unit commits carry the unit's edit only.** Tracked files that were dirty
+  at dispatch enter the commit solely through the unit's own delta: a
+  `.worktree` snapshot is taken once, and the snapshot→worktree diff is
+  merged into HEAD coordinates. An unplaceable hunk degrades to the legacy
+  whole-file commit with a loud warning — never a silent hybrid. The
+  dispatch-time dirty warning now tells the truth about what stays outside.
+- **The delta guard (property test).** A seeded steward (~75 tests: 64
+  generated scenarios plus named regressions for the whole defect family —
+  duplicate-context anchors, exec bits, emptied files, append geometries,
+  stale snapshots, CRLF) runs the invariant "commit == HEAD + unit delta or
+  loud degradation" and provably catches four injected mutations.
+- **`replan_for` marker.** A replan answer is only the unit that carries
+  the marker: an unmarked dispatch no longer hijacks a live pipeline
+  (the BD-30 incident), and a replan unit restarts from the first stage.
+- **Role files materialized from skills carry the awf overrides** — the
+  engine commits after verify, no `git add`/`commit`/`push`, no nested
+  opencode — as an idempotent block, so standalone instructions cannot
+  bypass the cycle.
+- **`awf_brief` recognizes a project continuation**: an existing project
+  with history gets working next-steps instead of the new-project chain.
+- **Setup form: stage composition + preview.** Choose one working role per
+  unit (default) or a linear chain; the form previews the resulting
+  `pipeline.yaml` before saving.
+- **Dashboard: one window, run tabs.** The dashboard opens once (dedupe
+  marker, `already_open: true` on repeats) and a tab bar switches between
+  the live run and completed runs (report viewer with traversal-safe
+  endpoints).
+
+### Fixed
+
+- **`awf_run_revise` / `awf_run_status` bookkeeping**: a completed unit is
+  never reported as "current"; no unit sits in two states at once.
+- **`awf_brief` "What's new"** cuts the changelog at paragraph (or
+  sentence) boundaries, never mid-phrase.
+- **`awf_init`** reads the vision excerpt from the actual anchor file
+  (README when VISION is absent) with an honest fallback line.
+- **Dashboard live panels survive a report view** — the tab bar is
+  restored when switching back to the active run.
+- **Coverage ratchet**: the `run_plan_read` branches lost to the wave are
+  covered again (the only CI red after the wave).
+
+### Upgrade notes
+
+- Nothing breaking: the plugin requires `awf>=1.9.0`; the install flow is
+  unchanged (`pip install -U awf agent-workflow-ui`).
+- Dispatching while the tree is dirty is possible as before, but the
+  warning lists exactly which files stay outside the unit commit — claim
+  them with `include_untracked` when they are intended for the unit.
+
 ## [1.8.0] — 2026-10-12
 
 Two fix waves born from a full day of running awf on a real JS project:

@@ -4,6 +4,39 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [1.9.0] — 2026-10-13
+
+Commits keep their word, and now they prove it. A demanding day of
+real-project runs turned the commit gate inside out: the unit commit
+carries only the unit's edit, a property-test steward guards it, a live
+pipeline cannot be hijacked by an unrelated dispatch, and the dashboard
+remembers your runs.
+
+### Highlights
+
+- **The commit gate tells the truth.** Files that were dirty before the
+  unit contribute exactly the unit's own edits — a snapshot and a
+  three-way merge make the old warning text honest. Anything the merge
+  cannot place degrades to the legacy whole-file commit loudly; a silent
+  hybrid is now a test failure.
+- **A steward, not a ritual.** After seven review rounds found seven
+  silent-corruption edge cases (duplicates, exec bits, CRLF, emptied
+  files, append geometry), the wave added a seeded property test that
+  fuzzes the mechanism — and it found an eighth defect on its first run.
+- **No more hijack.** A replan answer is only a unit that carries
+  `replan_for`; a normal dispatch no longer redirects a live pipeline,
+  and replans restart from the first stage.
+- **Less ceremony.** Roles seeded from skills cannot bypass the engine
+  commit; brief knows a continuation when it sees one; the setup form
+  lets you pick one role per task (or a chain) and previews the pipeline.
+- **One window, many runs.** The dashboard opens once and gives you tabs:
+  the live run plus the history of completed runs.
+
+### Upgrade notes
+
+- Nothing breaking: `pip install -U awf agent-workflow-ui`; the plugin
+  requires `awf>=1.9.0`.
+
 ## [1.8.0] — 2026-10-12
 
 Trust the commits, trust the loop. A day of running awf on a real project
