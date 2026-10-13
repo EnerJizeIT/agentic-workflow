@@ -52,15 +52,67 @@ class TestReplanWait:
             )
 
     def test_fresh_todo_satisfies_wait(self, tmp_path, monkeypatch):
-        """A TODO created AFTER the escalation is the supervisor's answer."""
+        """A MARKED TODO created AFTER the escalation is the supervisor's
+        answer (BD-30, TODO-0213: the front-matter marker
+        ``replan_for: <unit>`` naming the escalated unit is the only
+        pickup trigger)."""
         proj = _project(tmp_path)
-        _todo(proj, mtime=_time.time() + 0.5)  # created after wait start
+        _todo(proj, todo_id="TODO-0010", mtime=_time.time() + 0.5)
+        (proj / ".agentic" / "inbox" / "TODO-0010.md").write_text(
+            "---\nreplan_for: TODO-0009\n---\n# Refined task\n", encoding="utf-8",
+        )
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         sig = wait_for_supervisor_signal(
             "replan", "TODO-0009", proj, proj / ".agentic" / "logs", timeout=5,
         )
-        assert sig == "TODO-0009"
+        assert sig == "TODO-0010"
+
+    def test_fresh_unmarked_todo_does_not_satisfy_wait(self, tmp_path, monkeypatch):
+        """TODO-0213 (the incident): an ordinary mid-run dispatch — fresh
+        but UNMARKED — must not complete the replan wait; the escalation
+        keeps waiting for its own answer."""
+        proj = _project(tmp_path)
+        _todo(proj, todo_id="TODO-0010", mtime=_time.time() + 0.5)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        with pytest.raises(TimeoutError):
+            wait_for_supervisor_signal(
+                "replan", "TODO-0009", proj, proj / ".agentic" / "logs", timeout=1,
+            )
+
+    def test_stale_marked_todo_does_not_satisfy_wait(self, tmp_path, monkeypatch):
+        """TODO-0213: the marker must be FRESH for this wait — a marked
+        TODO whose .ready pre-dates the escalation (a previous cycle's
+        answer) is not picked up again."""
+        proj = _project(tmp_path)
+        _todo(proj, todo_id="TODO-0010", mtime=_time.time() - 1000)
+        (proj / ".agentic" / "inbox" / "TODO-0010.md").write_text(
+            "---\nreplan_for: TODO-0009\n---\n# Refined task\n", encoding="utf-8",
+        )
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        with pytest.raises(TimeoutError):
+            wait_for_supervisor_signal(
+                "replan", "TODO-0009", proj, proj / ".agentic" / "logs", timeout=1,
+            )
+
+    def test_marked_todo_for_foreign_unit_does_not_satisfy_wait(
+        self, tmp_path, monkeypatch,
+    ):
+        """TODO-0213: the marker must name the ESCALATED unit — a replan
+        answer for someone else is not this wait's answer."""
+        proj = _project(tmp_path)
+        _todo(proj, todo_id="TODO-0010", mtime=_time.time() + 0.5)
+        (proj / ".agentic" / "inbox" / "TODO-0010.md").write_text(
+            "---\nreplan_for: TODO-9999\n---\n# Refined task\n", encoding="utf-8",
+        )
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        with pytest.raises(TimeoutError):
+            wait_for_supervisor_signal(
+                "replan", "TODO-0009", proj, proj / ".agentic" / "logs", timeout=1,
+            )
 
     def test_ack_satisfies_wait(self, tmp_path, monkeypatch):
         """ACK for the current TODO = "accept and continue".

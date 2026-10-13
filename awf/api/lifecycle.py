@@ -56,6 +56,33 @@ def _clean_runtime(project_dir: Path) -> list[str]:
     return cleaned
 
 
+def _read_vision_excerpt(vision_path: Path | None) -> tuple[str, str | None]:
+    """REPORTS33 (TODO-0207): excerpt from the ACTUAL vision anchor.
+
+    Returns ``(excerpt, reason)``. ``reason`` is ``None`` when the excerpt
+    is real; otherwise the excerpt is ``""`` and ``reason`` is the honest
+    line the caller appends to ``warnings`` (no anchor, anchor gone between
+    lookup and read, unreadable file) — no more silent empty excerpt.
+    utf-8 with errors=replace; first 4000 chars with the same truncation
+    marker as :func:`read_file_text`, so a readable file yields byte-
+    identical output to the old fresh-init read.
+    """
+    if vision_path is None:
+        return "", "vision file not found — no excerpt available"
+    if not vision_path.is_file():
+        return "", (
+            f"vision file not found — {vision_path.name} used as anchor "
+            "without excerpt"
+        )
+    try:
+        text = vision_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return "", f"vision file unreadable — {vision_path.name}: {e}"
+    if len(text) > 4000:
+        text = text[:4000] + "\n...[truncated]"
+    return text, None
+
+
 def init_project(
     project_dir: Path,
     *,
@@ -101,17 +128,21 @@ def init_project(
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
             vision_path = paths.find_vision_file(project_dir)
+            warnings: list[str] = []
+            vision_excerpt, _reason = _read_vision_excerpt(vision_path)
+            if _reason:
+                warnings.append(_reason)
             return InitResult(
                 project_name=project_name_val,
                 project_dir=str(project_dir),
                 stack="(preserved)",
                 vision_path=str(vision_path) if vision_path else None,
-                vision_excerpt="",
+                vision_excerpt=vision_excerpt,
                 supervisor_md="",
                 plan_md="",
                 pipeline_configured=bool(config.get("default_pipeline")),
                 next_action="[dry-run] .agentic/ already exists — nothing written, runtime untouched.",
-                warnings=[],
+                warnings=warnings,
             )
         if force:
             # A-11 (audit 2026-09-25): force is the ONLY destructive path.
@@ -150,6 +181,10 @@ def init_project(
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
             vision_path = paths.find_vision_file(project_dir)
+            warnings: list[str] = []
+            vision_excerpt, _reason = _read_vision_excerpt(vision_path)
+            if _reason:
+                warnings.append(_reason)
             phases_file = cfg_mod.get(config, "phases.current", ".agentic/phases/plan.md")
             supervisor_md_path = project_dir / ".agentic" / "roles" / "supervisor.md"
             plan_md = ""
@@ -184,12 +219,12 @@ def init_project(
                 project_dir=str(project_dir),
                 stack="(preserved)",
                 vision_path=str(vision_path) if vision_path else None,
-                vision_excerpt="",
+                vision_excerpt=vision_excerpt,
                 supervisor_md=supervisor_md,
                 plan_md=plan_md,
                 pipeline_configured=bool(config.get("default_pipeline")),
                 next_action=next_action_r1,
-                warnings=[],
+                warnings=warnings,
                 created_files=created_dirs,
             )
 
@@ -213,12 +248,18 @@ def init_project(
         warnings.append("Vision/README not found in project root")
 
     if dry_run:
+        # REPORTS33 (TODO-0207): the preview reports the same excerpt the
+        # real init would return — one producer for every InitResult path.
+        # The None case is already covered by the warning above.
+        dry_excerpt, _reason = _read_vision_excerpt(vision_path)
+        if _reason and vision_path is not None:
+            warnings.append(_reason)
         return InitResult(
             project_name=project_name,
             project_dir=str(project_dir),
             stack=stack_info["stack"],
             vision_path=str(vision_path) if vision_path else None,
-            vision_excerpt="",
+            vision_excerpt=dry_excerpt,
             supervisor_md="",
             plan_md="",
             pipeline_configured=False,
@@ -293,7 +334,12 @@ def init_project(
 
     supervisor_md_full = read_file_text(supervisor_dest) if supervisor_dest.is_file() else ""
     plan_md = read_file_text(plan_path)
-    vision_excerpt = read_file_text(vision_path, max_chars=4000) if vision_path else ""
+    # REPORTS33 (TODO-0207): one producer for every branch — an unreadable
+    # anchor degrades to "" + the honest line, not a placeholder in the
+    # excerpt. The None case is already covered by the warning above.
+    vision_excerpt, _reason = _read_vision_excerpt(vision_path)
+    if _reason and vision_path is not None:
+        warnings.append(_reason)
 
     # SMO: return compact phase prompt instead of full 639-line supervisor.md.
     # Dogfood finding: supervisor reads full supervisor.md and ignores phase system.

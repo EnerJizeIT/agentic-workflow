@@ -1,6 +1,7 @@
 """MCP tool implementations — form lifecycle."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -140,6 +141,55 @@ def _populate_pipeline_compose(
                 result["initial_stages"] = [s for s in stages if isinstance(s, dict)]
         except (yaml.YAMLError, OSError) as e:
             log.warning("pipeline-compose: cannot read %s: %s", target.name, e)
+    return result
+
+
+def _populate_project_setup_preview(
+    data: dict[str, Any],
+    project_dir: Path | None,
+) -> dict[str, Any]:
+    """REPORTS33 (TODO-0209): render context for the project-setup preview.
+
+    When the render data carries a team (``team_config`` — a list or a JSON
+    string), pre-compute the pipeline.yaml text for both composition
+    choices so the form shows the result before saving. The texts come from
+    the same builder the write path uses (``awf.api.setup.
+    pipeline_yaml_text``), so what the user sees is exactly what will be
+    written. The pipeline name is the active one (config ``default_pipeline``
+    or "default").
+
+    Without a team the preview stays empty — the form's JS builds the text
+    live as the user assembles the team rows. A broken awf import or a
+    team with no usable role degrades to an empty preview (the form opens).
+    """
+    result: dict[str, Any] = {"name": "", "chain": "", "single": ""}
+    team = data.get("team_config")
+    if isinstance(team, str):
+        try:
+            team = json.loads(team)
+        except (json.JSONDecodeError, TypeError):
+            team = None
+    if not isinstance(team, list) or not team:
+        return result
+
+    name = "default"
+    if project_dir is not None:
+        try:
+            from awf.pipeline import active_pipeline_name
+
+            name = active_pipeline_name(project_dir)
+        except Exception as e:  # a broken config must not break opening the form
+            log.warning("project-setup preview: active pipeline name: %s", e)
+
+    try:
+        from awf.api.setup import pipeline_yaml_text
+
+        result["chain"] = pipeline_yaml_text(team, name=name, stage_mode="chain")
+        result["single"] = pipeline_yaml_text(team, name=name, stage_mode="single")
+        result["name"] = name
+    except (ImportError, ValueError) as e:
+        log.warning("project-setup preview unavailable: %s", e)
+        return result
     return result
 
 
@@ -291,6 +341,13 @@ async def open_form(
     if template == "pipeline-compose":
         pipeline_compose = _populate_pipeline_compose(data, project_dir_resolved)
 
+    # REPORTS33 (TODO-0209): project-setup preview — the pipeline.yaml
+    # text for both composition choices, pre-computed from a team carried
+    # in the render data (empty when the data has no team).
+    pipeline_preview: dict[str, Any] = {}
+    if template == "project-setup":
+        pipeline_preview = _populate_project_setup_preview(data, project_dir_resolved)
+
     try:
         rendered = render_template(env, template, {
             **data,
@@ -307,6 +364,8 @@ async def open_form(
             # M7.1: pipeline-compose population (wins over the empty
             # project_roles default for that template).
             **pipeline_compose,
+            # REPORTS33 (TODO-0209): the composition preview (project-setup).
+            "pipeline_preview": pipeline_preview,
         })
     except TemplateNotFound:
         return {

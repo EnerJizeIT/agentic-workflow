@@ -83,34 +83,38 @@ class TestLiveProjectGoal:
         _add_config_with_roles(project)
         assert phase.detect_phase(project) == "goal"
 
-    def test_done_without_config_stays_goal(self, tmp_path):
+    def test_done_without_config_is_run(self, tmp_path):
         """Archives in done/ but no config.yaml file and no pipeline →
-        'goal': work evidence without a configured team (pinned)."""
+        'run' (TODO-0208/REPORTS33): work history is a continuation —
+        the setup chain is not pushed (was: 'goal' per the RUN3-7 pin
+        "work evidence without a configured team")."""
         project = _setup_project(tmp_path)
         _add_done(project)
-        assert phase.detect_phase(project) == "goal"
+        assert phase.detect_phase(project) == "run"
 
-    def test_done_with_init_stub_config_stays_goal(self, tmp_path):
+    def test_done_with_init_stub_config_is_run(self, tmp_path):
         """The init stub (``models: {supervisor: {description: ...}}``)
         is written by awf_init into EVERY new project — it is not a
-        configured team. Archived work with no team and no pipeline
-        still goes through the setup chain (pinned)."""
+        configured team. But the archived work marks the project as a
+        continuation (TODO-0208/REPORTS33) → 'run' (was: 'goal')."""
         project = _setup_project(tmp_path)
         (project / ".agentic" / "config.yaml").write_text(
             "models:\n  supervisor:\n    description: Current session model\n",
             encoding="utf-8",
         )
         _add_done(project)
-        assert phase.detect_phase(project) == "goal"
+        assert phase.detect_phase(project) == "run"
 
-    def test_live_with_goal_follows_old_chain(self, tmp_path):
-        """Goal present → old chain untouched: pipeline set, not
-        normalized → normalize, regardless of done/."""
+    def test_done_history_skips_normalize(self, tmp_path):
+        """Goal present + pipeline set + done history, not normalized →
+        'run' (TODO-0208/REPORTS33): normalization is optional on a
+        project with work history and is not pushed (was: 'normalize'
+        per the RUN3-7 pinned chain)."""
         project = _setup_project(tmp_path)
         write_state(project, goal="test")
         _add_pipeline(project)
         _add_done(project)
-        assert phase.detect_phase(project) == "normalize"
+        assert phase.detect_phase(project) == "run"
 
     def test_live_stale_state_is_run(self, tmp_path):
         """Stale state (>2h) without goal + pipeline + done → run: the

@@ -47,6 +47,14 @@ SETUP_HINT = (
     "→ first TODO (`awf_dispatch_todo`)."
 )
 LIVE_LINE = "Live project: continue the working cycle."
+# TODO-0208 (REPORTS33): a project with work history (completed units in
+# done/ or a run record in state/) but without the RUN3-7 "configured"
+# signal is a continuation, not a new project — the header says so and
+# the setup chain (goal → form → normalize) is not pushed.
+CONTINUE_LINE = (
+    "Продолжение проекта: история работ есть — рабочий цикл, "
+    "setup-цепочка не нужна."
+)
 NEW_LINE = "New project (setup chain applies)."
 
 FEEDBACK_LINE = (
@@ -84,6 +92,10 @@ class BriefResult:
     project: str
     phase: str
     date: str
+    # True when the card treats the project as a continuation (working
+    # cycle, not the setup chain): configured + completed work
+    # (RUN3-7/TODO-0049), OR work history alone — completed units in
+    # done/ or a run record in state/ (TODO-0208/REPORTS33).
     is_live_project: bool
     live_line: str
     setup_hint: str
@@ -287,13 +299,82 @@ def _clip_by_words(text: str, max_words: int) -> tuple[str, bool]:
     return "\n".join(kept).rstrip(), True
 
 
+def _split_paragraphs(text: str) -> list[str]:
+    """Blocks of ``text`` separated by blank lines (order preserved)."""
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.strip():
+            current.append(line)
+        elif current:
+            blocks.append("\n".join(current))
+            current = []
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+# REPORTS33 (TODO-0206): a sentence ends at ". " / "! " / "? " — the
+# boundary needs the following space, so "v1.2" and "citizens." at the
+# paragraph end are not boundaries.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _clip_changelog_section(section: str, max_words: int) -> str:
+    """Clamp one changelog section to the word budget on clean cuts
+    (REPORTS33, TODO-0206).
+
+    A section within the budget is returned whole. Over the budget:
+    whole paragraphs are kept until the next one would exceed the
+    budget — the cut lands on the blank line and the "…" follows a
+    complete paragraph. When even the first paragraph alone exceeds the
+    budget, it is cut at a sentence boundary within the remaining
+    words; without a fitting sentence the cut falls back to the
+    paragraph boundary. The budget itself is unchanged — only the cut
+    point moved from mid-word to paragraph/sentence boundaries.
+    """
+    section = section.strip()
+    if len(section.split()) <= max_words:
+        return section
+    paragraphs = _split_paragraphs(section)
+    kept: list[str] = []
+    count = 0
+    for para in paragraphs:
+        if count + len(para.split()) <= max_words:
+            kept.append(para)
+            count += len(para.split())
+        else:
+            break
+    if len(kept) >= 2:
+        return "\n\n".join(kept) + " …"
+    # Only the heading was kept: the first paragraph alone exceeds the
+    # budget — cut it at a sentence boundary within the remaining words.
+    first = paragraphs[len(kept)]
+    s_kept: list[str] = []
+    for sentence in _SENTENCE_END.split(first):
+        if count + len(sentence.split()) <= max_words:
+            s_kept.append(sentence)
+            count += len(sentence.split())
+        else:
+            break
+    if s_kept:
+        prefix = "\n\n".join(kept) if kept else ""
+        return (prefix + "\n\n" if prefix else "") + " ".join(s_kept) + " …"
+    if kept:
+        return "\n\n".join(kept) + " …"
+    clipped, _ = _clip_by_words(section, max_words)
+    return clipped + " …"
+
+
 def latest_changelog(
     max_lines: int = _CHANGELOG_MAX_LINES, max_words: int = _CHANGELOG_MAX_WORDS
 ) -> str:
     """Latest section of the awf-repo CHANGELOG, '' if absent.
 
     Capped by lines (spec) AND words (the card has a 900-word budget —
-    a long Unreleased entry would otherwise eat half of it).
+    a long Unreleased entry would otherwise eat half of it). The word
+    cap is applied on clean boundaries — whole paragraphs, then a
+    sentence cut, never mid-word (REPORTS33, TODO-0206).
     Only the repo layout (CHANGELOG.md next to the package parent) — an
     installed wheel does not ship it, and the card degrades gracefully.
     """
@@ -314,9 +395,7 @@ def latest_changelog(
         out.append(ln)
         if len(out) >= max_lines:
             break
-    text = "\n".join(out).rstrip()
-    clipped, was = _clip_by_words(text, max_words)
-    return clipped + (" …" if was else "")
+    return _clip_changelog_section("\n".join(out).rstrip(), max_words)
 
 
 def doctrine_lines(project_dir: Path) -> list[str]:
@@ -435,7 +514,14 @@ def render_brief(r: BriefResult) -> str:
     if r.is_live_project:
         if r.next_action:
             L.append(f"- next: {r.next_action}")
-        if r.phase_summary:
+        if r.phase_summary and r.run is None:
+            # TODO-0208 (REPORTS33): a continued card (work history,
+            # e.g. an active run) now renders next_action + phase_summary
+            # where the setup hint used to be — the card pays that with
+            # the verbose block, not MAX_WORDS. When a run exists
+            # (active or finished), the State section and the run-aware
+            # next action already carry the working context — the static
+            # phase prompt would only duplicate it and blow the budget.
             L.append("")
             L.append(_demote_headings(r.phase_summary))
             if r.phase_clipped:
@@ -584,16 +670,26 @@ def build_brief(
         pass
 
     is_live = False
+    has_history = False
     if has_agentic:
         try:
             is_live = _phase._is_live_project(project_dir)
+            has_history = _phase._has_work_history(project_dir)
         except Exception:
             is_live = False
+            has_history = False
+    # TODO-0208 (REPORTS33): work history marks a CONTINUED project —
+    # the card names it and keeps the next action in the working cycle
+    # instead of pushing the setup chain (goal → form → normalize).
+    # is_live (RUN3-7: configured + done) implies history; history
+    # without the configured team is a continuation too. A brand-new
+    # project (no history) stays exactly as before.
+    continues = is_live or has_history
 
     next_action = ""
     phase_summary = ""
     phase_clipped = False
-    if is_live and status is not None:
+    if continues and status is not None:
         raw_action = str(status.expected_action or status.suggestion or "")
         next_action, clipped_action = _clip_by_words(raw_action, _NEXT_ACTION_MAX_WORDS)
         if clipped_action:
@@ -646,11 +742,12 @@ def build_brief(
 
     # RUN6 #5 (TODO-0060): every answer leads to the next step — a new
     # project's next action is the setup chain itself (before: empty); a
-    # live project without an explicit expected_action gets one derived
-    # from its state (next_action_from_status).
-    if not is_live and not next_action:
+    # live/continued project without an explicit expected_action gets one
+    # derived from its state (next_action_from_status — working steps,
+    # never the setup chain; TODO-0208).
+    if not continues and not next_action:
         next_action = "New project — run the setup chain (above); start with `awf_init`."
-    elif is_live and not next_action:
+    elif continues and not next_action:
         next_action = next_action_from_status(status) if status is not None else LIVE_LINE
 
     # ORCH M1.2: the card's compact view of the shared run record — the
@@ -685,9 +782,13 @@ def build_brief(
         project=project,
         phase=phase,
         date=date.today().isoformat(),
-        is_live_project=is_live,
-        live_line=LIVE_LINE if is_live else NEW_LINE,
-        setup_hint="" if is_live else SETUP_HINT,
+        is_live_project=continues,
+        live_line=(
+            LIVE_LINE
+            if is_live
+            else (CONTINUE_LINE if has_history else NEW_LINE)
+        ),
+        setup_hint="" if continues else SETUP_HINT,
         next_action=next_action,
         phase_summary=phase_summary,
         phase_clipped=phase_clipped,

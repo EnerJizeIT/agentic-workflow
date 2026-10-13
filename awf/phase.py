@@ -84,20 +84,27 @@ def detect_phase(project_dir: Path) -> str:
         # in the working cycle even when state/current.yaml was wiped or
         # never stored a goal — otherwise a configured project with 19
         # finished TODOs would be sent through goal → form → normalize
-        # on every awf_current_step call.
-        if _is_live_project(project_dir):
+        # on every awf_current_step call. TODO-0208 (REPORTS33): work
+        # history without the configured team is a continuation too —
+        # the same cycle, the same reason.
+        if _is_live_project(project_dir) or _has_work_history(project_dir):
             return "run"
         return "goal"
 
     # Check pipeline configuration
     has_pipeline = _pipeline_exists(project_dir)
     if not has_pipeline:
-        return "form"
+        # TODO-0208 (REPORTS33): a stored goal on a project that has
+        # been worked on is not a setup signal — the form phase (the
+        # team-setup ceremony) is not pushed on a continuation.
+        return "run" if _has_work_history(project_dir) else "form"
 
     # Check normalization
     normalized = state.get("normalized") if state else None
     if not normalized:
-        return "normalize"
+        # TODO-0208 (REPORTS33): same rule — normalization is optional
+        # on a project with work history and is not pushed.
+        return "run" if _has_work_history(project_dir) else "normalize"
 
     # Check for active TODO
     from .todos import newest_active
@@ -160,6 +167,33 @@ def _config_has_roles(project_dir: Path) -> bool:
     )
 
 
+def _has_work_history(project_dir: Path) -> bool:
+    """TODO-0208 (REPORTS33): evidence the project has been worked on.
+
+    Completed units: at least one entry in ``.agentic/done/``. Past (or
+    active) run: a parseable run record in ``state/`` (main or service
+    slot). Either one marks the project as a CONTINUATION — the setup
+    ceremony (goal → form → normalize) is not pushed on it, and the
+    brief card names it as such. A brand-new project (empty done/, no
+    run record) returns False — the first launch behaves exactly as
+    before.
+    """
+    done = paths.done_dir(project_dir)
+    if done.is_dir():
+        try:
+            if any(done.iterdir()):
+                return True
+        except OSError:
+            pass
+    for slot in ("main", "service"):
+        try:
+            if run_state.read_run(project_dir, slot=slot) is not None:
+                return True
+        except Exception:  # noqa: BLE001 — corrupt slot degrades to "no run"
+            continue
+    return False
+
+
 def get_phase_prompt(phase: str, project_dir: Path) -> str:
     """Assemble compact prompt for the given phase.
 
@@ -191,10 +225,14 @@ def get_phase_prompt(phase: str, project_dir: Path) -> str:
         goal = state.get("goal") if state else None
         if goal:
             parts.append(f"\n---\n## Goal for this session\n{goal}\n")
-        elif phase == "run" and _is_live_project(project_dir):
+        elif phase == "run" and (
+            _is_live_project(project_dir) or _has_work_history(project_dir)
+        ):
             # RUN3-7 (TODO-0049): one explanatory line for a live project
             # detected without a stored goal — the setup chain is not
-            # needed, continue the working cycle.
+            # needed, continue the working cycle. TODO-0208 (REPORTS33):
+            # the same note for a continuation detected by work history
+            # alone.
             parts.append(
                 "\n---\n## Note\nProject is configured and has completed "
                 "TODOs — the setup chain (goal → form → normalize → brief) "

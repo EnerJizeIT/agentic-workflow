@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
 from .. import paths
 
@@ -77,16 +81,163 @@ class _StateCoalescer:
         return flight.result
 
 
+# REPORTS33 (TODO-0210): the RUN-REPORT name the engine writes
+# (awf/api/run.py::_write_report — strftime %Y%m%d-%H%M%S). The strict
+# pattern is the traversal gate: anything else (../, foreign names,
+# URL-encoded dots) is refused before a path is even built.
+_RUN_REPORT_NAME_RE = re.compile(r"^RUN-REPORT-\d{8}-\d{6}\.md$")
+_RUN_REPORT_TS_RE = re.compile(r"^RUN-REPORT-(\d{8})-(\d{6})\.md$")
+_QUEUE_DONE_RE = re.compile(r"(\d+)/(\d+)\s+done")
+_REASON_RE = re.compile(r"^\*\*Reason:\*\*\s*(.+)$", flags=re.MULTILINE)
+
+
+def _run_report_summary(f: Path) -> dict[str, str] | None:
+    """One completed run for the /api/runs history: date + reason +
+    queue progress, parsed from the report head (the engine writes both
+    lines in the first 10 lines; a truncated report degrades to blanks)."""
+    m = _RUN_REPORT_TS_RE.match(f.name)
+    if not m:
+        return None
+    try:
+        dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    try:
+        head = f.open(encoding="utf-8", errors="replace").read(4096)
+    except OSError:
+        head = ""
+    reason = ""
+    rm = _REASON_RE.search(head)
+    if rm:
+        reason = rm.group(1).strip()
+    queue = ""
+    qm = _QUEUE_DONE_RE.search(head)
+    if qm:
+        queue = f"{qm.group(1)}/{qm.group(2)} done"
+    return {
+        "name": f.name,
+        "date": dt.strftime("%Y-%m-%d %H:%M"),
+        "reason": reason,
+        "queue": queue,
+    }
+
+
+def build_runs_dict(project_dir: Path) -> dict[str, Any]:
+    """REPORTS33 (TODO-0210): /api/runs payload — the active run + the
+    completed runs (RUN-REPORT-*.md in the outbox, newest first).
+
+    Read-only, best-effort: a missing/corrupt run state degrades to
+    active=None, an unreadable report drops out of the history — the
+    dashboard never 500s on report files.
+    """
+    active: dict[str, Any] | None = None
+    try:
+        from .run import run_brief
+
+        brief = run_brief(project_dir)
+    except Exception:
+        brief = None
+    if brief and brief.get("active"):
+        active = {
+            "position": str(brief.get("position") or ""),
+            "current": str(brief.get("current") or ""),
+            "note": str(brief.get("note") or ""),
+        }
+    history: list[dict[str, str]] = []
+    outbox = paths.outbox(project_dir)
+    if outbox.is_dir():
+        try:
+            files = sorted(outbox.glob("RUN-REPORT-*.md"), reverse=True)
+        except OSError:
+            files = []
+        for f in files:
+            if not f.is_file():
+                continue
+            entry = _run_report_summary(f)
+            if entry is not None:
+                history.append(entry)
+    return {"active": active, "history": history}
+
+
+def _render_report_html(content: str) -> str:
+    """REPORTS33 (TODO-0210): report markdown → dashboard-safe HTML.
+
+    The same chain as the handoffs (awf/api/dashboard.py): the goal/
+    criteria lines are USER text, so escape first, then markdown, then
+    neutralize executable hrefs. A rendering failure degrades to ""
+    (the page shows the raw text in a pre block).
+    """
+    import html as _html
+
+    try:
+        import markdown as _md
+
+        from .dashboard import _neutralize_unsafe_links
+
+        return _neutralize_unsafe_links(
+            _md.markdown(_html.escape(content), extensions=["fenced_code"])
+        )
+    except Exception:
+        return ""
+
+
 class _DashboardHandler(BaseHTTPRequestHandler):
     """Serves dashboard HTML at / and JSON state at /api/state."""
 
     def do_GET(self) -> None:
-        if self.path.startswith("/api/state"):
+        # urlsplit: the query string never reaches the route checks
+        path = urlsplit(self.path).path
+        if path.startswith("/api/state"):
             self._serve_state()
-        elif self.path == "/" or self.path == "/index.html":
+        elif path == "/api/runs":
+            self._serve_runs()
+        elif path.startswith("/api/run-report/"):
+            self._serve_run_report(path[len("/api/run-report/"):])
+        elif path == "/" or path == "/index.html":
             self._serve_html()
         else:
             self.send_error(404)
+
+    def _send_json(self, status: int, obj: dict[str, Any]) -> None:
+        data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_runs(self) -> None:
+        self._send_json(200, build_runs_dict(self.server.project_dir))
+
+    def _serve_run_report(self, raw_name: str) -> None:
+        """REPORTS33 (TODO-0210): one RUN-REPORT from the outbox —
+        read-only, the name is regex-gated and the resolved path must
+        stay inside .agentic/outbox (no ../, no foreign files)."""
+        name = raw_name.strip()
+        if not _RUN_REPORT_NAME_RE.match(name):
+            self._send_json(404, {"error": "invalid run report name"})
+            return
+        outbox = paths.outbox(self.server.project_dir)
+        try:
+            resolved = (outbox / name).resolve()
+            if outbox.resolve() not in resolved.parents:
+                self._send_json(404, {"error": "invalid run report name"})
+                return
+        except OSError:
+            self._send_json(404, {"error": "invalid run report name"})
+            return
+        if not resolved.is_file():
+            self._send_json(404, {"error": "run report not found"})
+            return
+        try:
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            self._send_json(404, {"error": "run report not found"})
+            return
+        self._send_json(
+            200,
+            {"name": name, "content": content, "html": _render_report_html(content)},
+        )
 
     def _serve_html(self) -> None:
         html_path = self.server.project_dir / ".agentic" / "dashboards" / "current.html"

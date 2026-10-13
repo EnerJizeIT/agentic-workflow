@@ -134,44 +134,108 @@ def _missing_verify_paths(project_dir: Path, tokens: list[str]) -> list[str]:
     return [t for t in tokens if not (project_dir / t).exists()]
 
 
-def _dirty_tree_files(project_dir: Path) -> list[str]:
-    """TODO-0195: the paths that are NOT clean at dispatch time.
+def _dirty_tree_classes(project_dir: Path) -> dict[str, str]:
+    """TODO-0195 / TODO-0204: the paths that are NOT clean at dispatch
+    time, with their class: ``staged`` (a non-clean index column),
+    ``tracked-dirty`` (a clean index column, a dirty worktree column —
+    the pre-dispatch WIP the delta mechanism covers), ``untracked``.
 
-    One ``git status --short`` pass: any entry with a non-clean index
-    column (staged) or worktree column (tracked-dirty, deleted) plus every
-    untracked non-ignored file. First-seen order, duplicates dropped.
-    ``[]`` on a clean tree, and on git failure too (best effort — this is
-    a warning, it must never refuse a dispatch).
+    One ``git status --short`` pass. First-seen order, duplicates
+    dropped. ``{}`` on a clean tree, and on git failure too (best effort
+    — this feeds a warning, it must never refuse a dispatch).
     """
     text = git_utils.status_porcelain(project_dir)
-    files: list[str] = []
+    classes: dict[str, str] = {}
     for line in text.splitlines():
         if len(line) < 4:
             continue
-        if line[0] == " " and line[1] == " ":
+        x, y = line[0], line[1]
+        if x == " " and y == " ":
             continue  # clean
         path = line[3:].strip()
         if " -> " in path:  # staged rename/copy: the diff shows the dest
             path = path.rsplit(" -> ", 1)[1].strip()
-        if path and path not in files:
-            files.append(path)
-    return files
+        if not path or path in classes:
+            continue
+        if x == "?":
+            classes[path] = "untracked"
+        elif x != " ":
+            classes[path] = "staged"
+        else:
+            classes[path] = "tracked-dirty"
+    return classes
 
 
-def _format_dirty_warning(todo_id: str, files: list[str]) -> str:
-    """TODO-0195: one-line dispatch warning for a dirty tree. ``""`` when
-    the tree is clean (nothing to say)."""
+def _dirty_tree_files(project_dir: Path) -> list[str]:
+    """TODO-0195: the paths that are NOT clean at dispatch time.
+
+    The keys of :func:`_dirty_tree_classes` — first-seen order. ``[]`` on
+    a clean tree, and on git failure too (best effort — this is a
+    warning, it must never refuse a dispatch).
+    """
+    return list(_dirty_tree_classes(project_dir))
+
+
+def _group_list(paths_list: list[str], cap: int = 5) -> str:
+    """The first ``cap`` paths for a warning group (…N more when cut)."""
+    shown = paths_list[:cap]
+    more = len(paths_list) - len(shown)
+    return ", ".join(shown) + (f" …({more} more)" if more else "")
+
+
+def _format_dirty_warning(
+    todo_id: str,
+    files: list[str],
+    classes: dict[str, str],
+    snapshot_available: bool,
+    snapshot_reason: str = "",
+) -> str:
+    """TODO-0195 / TODO-0204: the dispatch warning for a dirty tree —
+    honest about what the commit gate will actually do. ``""`` when the
+    tree is clean (nothing to say).
+
+    Tracked-dirty files (the pre-dispatch WIP): with the dispatch-time
+    worktree snapshot (``BASELINE-{todo}.worktree``) the gate commits
+    only the unit's own edit — the pre-dispatch change STAYS OUTSIDE the
+    unit commit. Without the snapshot (not a git repo, a failed or absent
+    snapshot) the gate cannot split the two — the pre-dispatch change
+    WILL ENTER the commit as-is, and the warning says so. Staged-at-
+    baseline and untracked files never enter the commit (claim them via
+    include_untracked / carry_over_from) — in every case.
+    """
     if not files:
         return ""
     shown = files[:_DIRTY_WARNING_CAP]
     more = len(files) - len(shown)
     tail = f" (…{more} more)" if more else ""
+    claim = (
+        "staged-at-dispatch and untracked files do not enter the commit "
+        "(to claim them: include_untracked / carry_over_from)."
+    )
+    tracked = [f for f in files if classes.get(f) == "tracked-dirty"]
+    if not tracked:
+        # Untracked/staged only — the legacy promise holds as-is.
+        return (
+            f"⚠️ the tree is dirty at dispatch: {len(files)} file(s) "
+            f"({', '.join(shown)}{tail}) will NOT enter the {todo_id} commit — "
+            "these changes pre-date the unit. To claim them into the unit: "
+            "include_untracked (untracked files) / carry_over_from (a rejected "
+            "retry); otherwise they stay WIP for whoever commits them."
+        )
+    td = _group_list(tracked)
+    if snapshot_available:
+        return (
+            f"⚠️ the tree is dirty at dispatch: {len(files)} file(s) "
+            f"({', '.join(shown)}{tail}). pre-dispatch changes to "
+            f"tracked-dirty files ({td}) stay OUTSIDE the unit commit — "
+            "only the unit's own edits to them will land; " + claim
+        )
+    reason = snapshot_reason or "no worktree snapshot available"
     return (
         f"⚠️ the tree is dirty at dispatch: {len(files)} file(s) "
-        f"({', '.join(shown)}{tail}) will NOT enter the {todo_id} commit — "
-        "these changes pre-date the unit. To claim them into the unit: "
-        "include_untracked (untracked files) / carry_over_from (a rejected "
-        "retry); otherwise they stay WIP for whoever commits them."
+        f"({', '.join(shown)}{tail}). pre-dispatch changes to "
+        f"tracked-dirty files ({td}) WILL ENTER the unit commit as-is — "
+        f"{reason}, so the commit gate cannot exclude them; " + claim
     )
 
 
@@ -218,6 +282,7 @@ def dispatch_todo(
     carry_over_from: str | None = None,
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
+    replan_for: str | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -259,14 +324,32 @@ def dispatch_todo(
             first line of the content is a heading carrying a ``TODO-NNNN``
             number:
 
-            - auto number (``todo_id`` is None) and the number differs from
-              the issued one → the heading is renumbered to the issued id,
-              the result carries ``renumbered=True`` (rest of the text
-              untouched);
-            - explicit ``todo_id`` and the number differs → the dispatch is
-              refused BEFORE any side effect (the message names both
-              numbers); ``allow_mismatch=True`` accepts the mismatch and
-              writes the content as-is (``renumbered=False``).
+             - auto number (``todo_id`` is None) and the number differs from
+               the issued one → the heading is renumbered to the issued id,
+               the result carries ``renumbered=True`` (rest of the text
+               untouched);
+             - explicit ``todo_id`` and the number differs → the dispatch is
+               refused BEFORE any side effect (the message names both
+               numbers); ``allow_mismatch=True`` accepts the mismatch and
+               writes the content as-is (``renumbered=False``).
+        replan_for: TODO-0213 (BD-30) — optional marker that this TODO is
+            the replan answer for the unit being replaced (its id). The
+            marker ``replan_for: <id>`` is written into the TODO's contract
+            block (created when absent; an explicit argument wins over a
+            copy-pasted block, like ``pipeline=``). Only a TODO carrying the
+            marker is picked up by the interactive replan wait — an
+            ordinary mid-run dispatch (no marker) does not switch a live
+            pipeline. The referenced unit must exist and be live: refused
+            (before any side effect) when it has no inbox TODO-NNNN.md, is
+            archived in done/, or is closed as done (DONE closure).
+
+            Example (mid-run replan of the blocked unit TODO-0204)::
+
+                dispatch_todo(project, "# TODO — refined task\\n...",
+                              replan_for="TODO-0204")
+
+            A hand-written ``replan_for: TODO-0204`` line in the content's
+            contract block works the same way (the parameter then wins).
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
@@ -286,9 +369,11 @@ def dispatch_todo(
         AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
             already archived in done/, a DONE closure for ``todo_id`` is
             still in the outbox, a ``carry_over_from`` origin cannot be
-            validated, an ``include_untracked`` path is invalid, or an
+            validated, an ``include_untracked`` path is invalid, an
             explicit ``todo_id`` disagrees with the first line's heading
-            number without ``allow_mismatch`` (REPORTS26 F5).
+            number without ``allow_mismatch`` (REPORTS26 F5), or
+            ``replan_for`` is not a TODO id / references a unit that does
+            not exist or is closed as done (TODO-0213).
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -303,6 +388,18 @@ def dispatch_todo(
         except ValueError as e:
             raise AwfApiError(f"pipeline: {e}") from None
 
+    # TODO-0213 (BD-30): same pattern — the explicit replan_for= writes the
+    # marker into the contract block (created when absent) before the parse
+    # below validates the FINAL content. check_replan_for inside
+    # inject_replan_for refuses a value that is not a TODO-NNNN id.
+    if replan_for is not None and str(replan_for).strip():
+        from ..unit_contract import inject_replan_for
+
+        try:
+            content = inject_replan_for(content, str(replan_for))
+        except ValueError as e:
+            raise AwfApiError(f"replan_for: {e}") from None
+
     # U3: optional unit-contract block at the top of the TODO (--- yaml ---)
     # is validated here, before anything is written. No block = no-op.
     from ..unit_contract import parse_todo_contract
@@ -315,6 +412,33 @@ def dispatch_todo(
     # config.yaml (stale directory) is refused before any side effect.
     # The resolved path lands in the result (resolved_project_dir).
     project_dir = require_awf_project(project_dir)
+
+    # TODO-0213 (BD-30): the marker must reference a real, live unit — the
+    # escalated (blocked) TODO the replan replaces. A unit that does not
+    # exist, is archived, or is closed as done could never be picked up
+    # (there is no escalation waiting for it) — refuse BEFORE any side
+    # effect (no TODO, no baseline).
+    if replan_for is not None and str(replan_for).strip():
+        target = str(replan_for).strip()
+        if (paths.done_dir(project_dir) / target).is_dir():
+            raise AwfApiError(
+                f"replan_for {target}: the unit is already archived in "
+                f"done/{target}/ — a replan replaces a unit that is still "
+                "waiting (blocked), not a finished one"
+            )
+        if not (paths.inbox(project_dir) / f"{target}.md").is_file():
+            raise AwfApiError(
+                f"replan_for {target}: no such TODO — the marker must "
+                "reference the unit being replaced (its inbox TODO-NNNN.md)"
+            )
+        from .hygiene import has_done_closure
+
+        if has_done_closure(project_dir, target):
+            raise AwfApiError(
+                f"replan_for {target}: the unit is closed as done (DONE "
+                "closure in outbox) — a replan replaces a blocked unit, "
+                "not a finished one"
+            )
 
     # TODO-0186: verify-path validation at dispatch. A verify: command may
     # reference a file that does not exist (a typo, a renamed test) — that
@@ -598,13 +722,29 @@ def dispatch_todo(
     pre_existing = pre_existing_untracked(project_dir, todo_id)
     untracked_warning = format_untracked_warning(todo_id, pre_existing)
 
-    # TODO-0195 (рана C): a dirty tree at dispatch (tracked-dirty / staged /
-    # untracked, gitignored excluded) is LOUD, not a refusal — these changes
-    # pre-date the unit and will not enter its commit. Same moment as the
-    # baseline's own .status snapshot, so the warning describes the tree the
-    # baseline actually saw.
+    # TODO-0195 (рана C) / TODO-0204 (REPORTS33): a dirty tree at dispatch
+    # (tracked-dirty / staged / untracked, gitignored excluded) is LOUD, not
+    # a refusal. Same moment as the baseline's own .status snapshot, so the
+    # warning describes the tree the baseline actually saw — and it must
+    # promise what the commit gate WILL do: with the dispatch-time worktree
+    # snapshot the pre-dispatch change of a tracked-dirty file stays OUTSIDE
+    # the unit commit (only the unit's own edit lands); without it the
+    # warning says the change will enter the commit as-is.
     dirty_files = _dirty_tree_files(project_dir)
-    dirty_warning = _format_dirty_warning(todo_id, dirty_files)
+    dirty_classes = _dirty_tree_classes(project_dir)
+    snapshot_available = (
+        paths.context_dir(project_dir) / f"BASELINE-{todo_id}.worktree"
+    ).is_file()
+    snapshot_reason = ""
+    if not snapshot_available and dirty_classes:
+        snapshot_reason = (
+            "not a git repo"
+            if not baseline.is_git_repo
+            else "the worktree snapshot was not taken"
+        )
+    dirty_warning = _format_dirty_warning(
+        todo_id, dirty_files, dirty_classes, snapshot_available, snapshot_reason
+    )
 
     return DispatchTodoResult(
         todo_id=todo_id,

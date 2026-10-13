@@ -326,6 +326,43 @@ optional_data_keys: []
     .team-actions { margin-top: 8px; }
     .hint { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
 
+    /* === Composition choice (REPORTS33) === */
+
+    .radio-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      margin-bottom: 6px;
+      cursor: pointer;
+    }
+    .radio-line:last-child { margin-bottom: 0; }
+
+    .check-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .pipeline-preview {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text-muted);
+      white-space: pre;
+      overflow-x: auto;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    .pipeline-preview.empty { font-style: italic; }
+
     @media (max-width: 520px) {
       body { padding: 20px 12px 40px; }
       .section { padding: 12px 14px; }
@@ -423,6 +460,44 @@ optional_data_keys: []
       </div>
     </div>
 
+    <!-- === Section 4: Состав пайплайна (REPORTS33) === -->
+    <div class="section">
+      <div class="section-title">Состав пайплайна</div>
+
+      <div class="field">
+        <label class="radio-line">
+          <input type="radio" name="stage_mode" value="single" checked>
+          Одна рабочая роль на юнит (+ verify)
+        </label>
+        <label class="radio-line">
+          <input type="radio" name="stage_mode" value="chain">
+          Линейная цепочка: все роли на каждый юнит
+        </label>
+      </div>
+      <p class="hint">Типовой случай — одна роль выполняет TODO, supervisor проверяет. Цепочка — каждый юнит проходит все роли команды по порядку.</p>
+
+      <div id="single-mode-opts">
+        <div class="field">
+          <label class="field-label" for="primary-role">Основная роль</label>
+          <select id="primary-role" name="primary_role"></select>
+        </div>
+        <div class="field">
+          <label class="check-line">
+            <input type="checkbox" id="include-qa" name="include_qa" value="on">
+            Включить QA-стадию (роль QA из команды)
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- === Section 5: Превью pipeline.yaml (REPORTS33) === -->
+    <div class="section">
+      <div class="section-title">Превью pipeline.yaml</div>
+      {% set _pp = pipeline_preview or {} %}
+      <pre id="pipeline-preview" class="pipeline-preview{% if not (_pp.single or _pp.chain) %} empty{% endif %}">{% if _pp.single %}{{ _pp.single }}{% elif _pp.chain %}{{ _pp.chain }}{% else %}(составьте команду — превью появится здесь){% endif %}</pre>
+      <p class="hint">Что будет записано в .agentic/pipelines/ (имя пайплайна — из конфига проекта). Обновляется при выборе состава и изменении команды.</p>
+    </div>
+
     <button type="submit" class="btn-submit" id="submit-btn" disabled>Создать конфигурацию</button>
   </form>
 
@@ -451,6 +526,12 @@ optional_data_keys: []
       var existingSupervisorSlugs = {{ (existing_supervisor_slugs or []) | tojson }};
 
       var existingAgentSlugs = {{ (existing_agent_slugs or []) | tojson }};
+
+      // REPORTS33 (TODO-0209): server-side preview name (the active
+      // pipeline from the project config). The live text is built by the
+      // form itself — the DOM team rows are the source of truth.
+      var pipelinePreview = {{ (pipeline_preview or {}) | tojson }};
+      var previewName = (pipelinePreview && pipelinePreview.name) || 'default';
 
       function slugify(name) {
         var m = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};
@@ -597,6 +678,155 @@ optional_data_keys: []
         empty.style.display = rows.length > 0 ? 'none' : '';
       }
 
+      // === Composition + pipeline preview (REPORTS33) ===
+
+      // The team as the submit handler would send it — the single source
+      // for both team_config and the live preview.
+      function collectTeam() {
+        var team = [];
+        document.querySelectorAll('#team-rows .team-row').forEach(function (row) {
+          var sel = row.querySelector('.agent-select');
+          var nameInput = row.querySelector('.agent-name');
+          var skillContent = row.querySelector('.skill-hidden');
+          var skillInput = row.querySelector('input[type="file"]');
+          var saveCb = row.querySelector('.save-agent-cb');
+
+          if (sel && sel.value !== '__custom__') {
+            team.push({ type: 'default', agent: sel.value, model: row.querySelector('.model-select').value });
+          } else if (nameInput) {
+            team.push({
+              type: 'custom',
+              agent: nameInput.value,
+              skill_content: skillContent ? skillContent.value : '',
+              skill_filename: skillInput && skillInput.files[0] ? skillInput.files[0].name : '',
+              model: row.querySelector('.model-select').value,
+              save: saveCb ? saveCb.checked : false,
+            });
+          }
+        });
+        return team;
+      }
+
+      function safeSlug(name) {
+        try { return slugify(name); } catch (e) { return ''; }
+      }
+
+      // Deduped team role slugs, in row order (mirrors build_pipeline_stages).
+      function teamRoleSlugs(team) {
+        var roles = [];
+        var seen = {};
+        team.forEach(function (m) {
+          var s = safeSlug(m.agent);
+          if (s && !seen[s]) { seen[s] = true; roles.push(s); }
+        });
+        return roles;
+      }
+
+      function composition() {
+        var mode = document.querySelector('input[name="stage_mode"]:checked');
+        var primarySel = document.getElementById('primary-role');
+        var qaCb = document.getElementById('include-qa');
+        return {
+          mode: mode ? mode.value : 'single',
+          primary: primarySel ? primarySel.value : '',
+          includeQa: qaCb ? qaCb.checked : false,
+        };
+      }
+
+      function syncModeOptions() {
+        var opts = document.getElementById('single-mode-opts');
+        if (opts) {
+          opts.style.display = composition().mode === 'single' ? '' : 'none';
+        }
+      }
+
+      // Rebuild the primary-role select from the team rows, keeping the
+      // current selection when it is still in the team.
+      function updatePrimarySelect() {
+        var sel = document.getElementById('primary-role');
+        if (!sel) return;
+        var roles = teamRoleSlugs(collectTeam());
+        var prev = sel.value;
+        clearNode(sel);
+        if (roles.length === 0) {
+          var empty = document.createElement('option');
+          empty.value = '';
+          empty.textContent = '(сначала добавьте агентов)';
+          sel.appendChild(empty);
+          return;
+        }
+        roles.forEach(function (r) {
+          var o = document.createElement('option');
+          o.value = r;
+          o.textContent = r;
+          sel.appendChild(o);
+        });
+        sel.value = roles.indexOf(prev) !== -1 ? prev : roles[0];
+      }
+
+      // Mirrors awf.api.setup.build_pipeline_stages: plan(supervisor) →
+      // working stages → verify(supervisor). "single" keeps the primary
+      // role (+ the team QA role when requested); "chain" — all roles.
+      // The text format matches the yaml.safe_dump of the written file.
+      function buildPreviewText(mode, team, primary, includeQa) {
+        var roles = teamRoleSlugs(team);
+        if (roles.length === 0) return '';
+        var work;
+        if (mode === 'single') {
+          work = [];
+          var p = safeSlug(primary) || '';
+          if (p && roles.indexOf(p) === -1) p = '';
+          if (!p) p = roles[0];
+          work.push(p);
+          if (includeQa) {
+            var qa = null;
+            for (var i = 0; i < roles.length; i++) {
+              if (roles[i] === 'agent-qa-review') { qa = roles[i]; break; }
+            }
+            if (qa && qa !== p) work.push(qa);
+          }
+        } else {
+          work = roles;
+        }
+        var lines = [
+          'name: ' + previewName,
+          'description: Generated by awf.api from project-setup form',
+          'stages:',
+          '- name: plan',
+          '  role: supervisor',
+          '  description: Supervisor studies the plan and creates a TODO'
+        ];
+        work.forEach(function (r) {
+          lines.push('- name: ' + r);
+          lines.push('  role: ' + r);
+          lines.push('  description: ' + r + ' executes the TODO');
+          lines.push('  on_blocked: escalate');
+          lines.push('  on_rejected: escalate');
+          lines.push('  on_failed: escalate');
+          lines.push('  max_retries: 3');
+        });
+        lines.push('- name: verify');
+        lines.push('  role: supervisor');
+        lines.push('  description: Supervisor verifies the result');
+        lines.push('  on_approved: commit_and_next');
+        lines.push('  on_rejected: replan');
+        return lines.join('\n') + '\n';
+      }
+
+      function updatePipelinePreview() {
+        var pre = document.getElementById('pipeline-preview');
+        if (!pre) return;
+        var c = composition();
+        var text = buildPreviewText(c.mode, collectTeam(), c.primary, c.includeQa);
+        if (text) {
+          pre.textContent = text;
+          pre.classList.remove('empty');
+        } else {
+          pre.textContent = '(составьте команду — превью появится здесь)';
+          pre.classList.add('empty');
+        }
+      }
+
       function validate() {
         var rows = document.querySelectorAll('#team-rows .team-row');
         var hasTeam = rows.length > 0;
@@ -617,6 +847,12 @@ optional_data_keys: []
 
         var addBtn = document.getElementById('add-agent-btn');
         addBtn.disabled = hasIncomplete;
+
+        // REPORTS33 (TODO-0209): keep the composition controls + preview
+        // in sync with the team rows (validate runs on every input/change).
+        syncModeOptions();
+        updatePrimarySelect();
+        updatePipelinePreview();
       }
 
       // === Team rows ===
@@ -901,29 +1137,8 @@ optional_data_keys: []
           }
         }
 
-        // Build team_config JSON
-        var team = [];
-        document.querySelectorAll('#team-rows .team-row').forEach(function (row) {
-          var sel = row.querySelector('.agent-select');
-          var nameInput = row.querySelector('.agent-name');
-          var skillContent = row.querySelector('.skill-hidden');
-          var skillInput = row.querySelector('input[type="file"]');
-          var saveCb = row.querySelector('.save-agent-cb');
-
-          if (sel && sel.value !== '__custom__') {
-            team.push({ type: 'default', agent: sel.value, model: row.querySelector('.model-select').value });
-          } else if (nameInput) {
-            team.push({
-              type: 'custom',
-              agent: nameInput.value,
-              skill_content: skillContent ? skillContent.value : '',
-              skill_filename: skillInput && skillInput.files[0] ? skillInput.files[0].name : '',
-              model: row.querySelector('.model-select').value,
-              save: saveCb ? saveCb.checked : false,
-            });
-          }
-        });
-        document.getElementById('team-config').value = JSON.stringify(team);
+        // Build team_config JSON (the same collection the preview uses)
+        document.getElementById('team-config').value = JSON.stringify(collectTeam());
       });
 
       // === Listeners ===

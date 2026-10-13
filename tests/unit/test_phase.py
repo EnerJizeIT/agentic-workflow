@@ -151,14 +151,16 @@ class TestDetectPhaseRunActive:
         self._active_run(project)
         assert phase.detect_phase(project) == "run"
 
-    def test_inactive_run_does_not_force_run(self, tmp_path):
-        """A FINISHED run (active: false) must not pin the phase to
-        'run' — the previous detection applies."""
+    def test_inactive_run_is_history_continuation(self, tmp_path):
+        """A FINISHED run record (active: false) is work history
+        (TODO-0208/REPORTS33) — the project is a continuation → 'run'
+        (was: 'goal'). An explicit state phase still wins over the
+        setup flow (see test_no_run_behavior_unchanged)."""
         from awf import run_state
 
         project = _setup_project(tmp_path)
         run_state.write_run(project, queue=["TODO-0001"], index=1, active=False)
-        assert phase.detect_phase(project) == "goal"
+        assert phase.detect_phase(project) == "run"
 
     def test_no_run_behavior_unchanged(self, tmp_path):
         """No run state: the explicit phase still wins (pre-RUN10 case)."""

@@ -1067,6 +1067,21 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # inbox-check bullet). Same class as above: doc examples of file names,
 # not debt.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
+# REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
+# baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
+# new tests/negative/test_reports33_setup_form.py (the module docstring's
+# unit reference + the incident wording), 4 in awf/api/setup.py (the
+# REPORTS33 (TODO-0209) unit references in build_pipeline_stages /
+# write_pipeline / pipeline_yaml_text / apply_project_setup docstrings),
+# 1 in agent_workflow_ui roles_processor.py (the stage_mode wiring
+# comment), 3 in agent_workflow_ui tools/forms.py (the
+# _populate_project_setup_preview docstring + the open_form comment and
+# context-key comment) and 5 in the project-setup.html.j2 template (the
+# "выполняет TODO" hint, the two REPORTS33 (TODO-0209) JS comments and the
+# two preview description strings "creates a TODO" / "executes the TODO").
+# Same class as above: unit-id references and test identifiers, not debt.
+# files_over_400 stays 76 (the new test file is under the 400-line bar;
+# the touched production modules were already over it).
 # REPORTS29 QA (agent-qa-review red test): baseline raised 4970 -> 4971 —
 # the new out-of-range port-file test adds 1 TODO-bearing line (its
 # fixture todo id). The test is RED on the current tree: _read_reuse_port
@@ -1379,3 +1394,189 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # merge). Same class as above: unit-id references, not debt.
 # files_over_400 stays 74 (the new test file is 322 lines — under the
 # bar; the touched production modules were already over it).
+# REPORTS33 (TODO-0204, dirty-warning says what the commit will do):
+# baseline raised 5410 -> 5441 (+31) — the unit adds 37 TODO-bearing
+# lines and drops 6: 18 in the new
+# tests/negative/test_reports33_dirty_delta.py (the module docstring's
+# unit/report references, the TODO = "TODO-0001" constant and its
+# fixture/assert use-sites of the four invariant tests), the
+# TODO-0204 unit references in awf/commit_plan.py (5 — the
+# worktree_dirty_at_baseline / read_worktree_snapshot docstrings, the
+# PlanSplit / CommitPlan delta_files field comments, the _plan_split
+# mechanism comment), awf/commit_gate.py (7 added / 2 dropped — the
+# section header, the _commit_delta_file docstring and the
+# no-snapshot / delta-file comments, the _todo_title docstring's
+# REPORTS33 line), awf/api/pipeline.py (2 — the create_baseline
+# docstring + mechanism comment), awf/api/dispatch.py (4 added /
+# 3 dropped — the _dirty_tree_classes / _format_dirty_warning
+# docstrings and the dispatch call-site comment) and 1 in
+# tests/negative/test_reports32_commit_integrity.py (the updated
+# test_c comment naming the unit; the dropped "will NOT enter" assert
+# line leaves). Same class as above: test identifiers and unit
+# references, not debt. files_over_400 stays 74 (the new test file is
+# 233 lines — under the bar; the touched production modules were
+# already over it).
+# +5 (todos 5441 -> 5446) — QA REVIEW pass 2026-10-12: two red tests
+# (F1 delta misplacement, F2 executable mode) appended to
+# tests/negative/test_reports33_dirty_delta.py; test identifiers and
+# unit references, not debt.
+# REVIEW iter 3 QA (2026-10-12, TODO-0204): baseline raised 5446 -> 5452 —
+# the two new QA red tests (test_qa_f3_*, test_qa_f4_* in
+# tests/negative/test_reports33_dirty_delta.py) add 6 TODO-bearing lines
+# (3 per test: the {TODO} f-string and the build_commit_plan/maybe_commit
+# calls). Same class as the already-counted test identifiers in tests/ —
+# not debt.
+# REVIEW iter 4 QA (2026-10-12, TODO-0204): baseline raised 5452 -> 5455
+# (+3) and files_over_400 74 -> 75 (+1) — the red test
+# test_qa_f5_unit_append_misplaced_when_context_edited_pre_dispatch
+# appended to tests/negative/test_reports33_dirty_delta.py (REVIEW-фикс 3,
+# added before the fix pass) adds 3 TODO-bearing lines (the same 3-per-test
+# shape: the {TODO} f-string in the BASELINE assert, the
+# build_commit_plan/maybe_commit calls) and pushes the file past the
+# 400-line bar (399 -> 445 lines). Same class as the already-counted test
+# identifiers in tests/ — not debt. The fix pass itself only REMOVED lines
+# from awf/commit_gate.py (the window scan + _find_seq + _DELTA_ANCHOR_WINDOW
+# are dead after F1/F3/iter 4 and are gone).
+# REVIEW iter 5 QA (2026-10-12, TODO-0204): baseline raised 5455 -> 5460
+# (+5) — the red test test_qa_f6_stale_worktree_snapshot_on_redispatch
+# appended to tests/negative/test_reports33_dirty_delta.py (stale
+# BASELINE-{id}.worktree on same-id re-dispatch after a stash-create
+# failure — the user's WIP change between attempts enters the commit
+# silently). Same class as the already-counted test identifiers in
+# tests/ — not debt. files_over_400 stays 75 (the file was already over
+# the bar and counted once).
+# REVIEW iter 6 QA (2026-10-12, TODO-0204): baseline raised 5460 -> 5463
+# (+3) — the red test test_qa_f7_crlf_file_degrades_loudly_not_lf_normalized
+# appended to tests/negative/test_reports33_dirty_delta.py (a CRLF file in
+# the delta path must degrade loudly to the legacy worktree commit — the
+# merge would otherwise normalize the whole file's line endings to LF
+# silently) adds the same 3-per-test TODO-bearing lines: the {TODO}
+# f-string in the BASELINE assert, the build_commit_plan call, the
+# maybe_commit "worker", TODO line. Same class as the already-counted test
+# identifiers in tests/ — not debt. files_over_400 stays 75 (the file was
+# already over the bar and counted once). The production fix (awf/
+# commit_gate.py — the CRLF guard in _apply_unit_delta + the loud degrade
+# in _commit_delta_file) carries no TODO id.
+# REPORTS33 (TODO-0205, run_revise/run_status: a done unit is not
+# "current", no id in two states): baseline raised 5463 -> 5478 (+15)
+# and files_over_400 raised 75 -> 76 — the new
+# tests/negative/test_reports33_revise_current.py adds 6 TODO-bearing
+# lines (the "Invariants (TODO-0205)" header, the T1/T2/T3 =
+# TODO-0001/0002/0003 constants, the TODO-0001/0002 fixture ids in the
+# two red-test docstrings) and the updated tests add 3 (the REPORTS33
+# docstring lines in test_reports26_b3_done_after_approve.py and the
+# position-comment line in test_run_plan_recovery.py); the fix sites
+# add 6 (the REPORTS33 (TODO-0205) comments in awf/api/run.py — the
+# run_status/run_brief display comments and the _revision_items
+# docstring + completed-view comment, 4 — and awf/run_plan_read.py —
+# the _current_finished docstring + the record correction comment, 2).
+# Same class as above: test identifiers and unit references, not debt.
+# The +1 file over 400 is tests/negative/test_run_plan_recovery.py
+# (399 -> 403 — the comment in the updated position assert), same class
+# as the test-suite raises above.
+# REPORTS33 (TODO-0206, brief what's-new cut on paragraph/sentence
+# boundaries): baseline raised 5478 -> 5483 (+5) — the 5 unit-id
+# references: 2 in the new
+# tests/negative/test_reports33_brief_whatsnew.py (the module
+# docstring's unit line + the invariants header) and 3 in awf/brief.py
+# (the _SENTENCE_END comment, the _clip_changelog_section docstring, the
+# latest_changelog docstring line). Same class as above: unit-id
+# references, not debt. files_over_400 stays 76 (the new test file is
+# 118 lines — under the bar; the touched awf/brief.py was already over
+# it).
+# REPORTS33 (TODO-0207, awf_init: vision_excerpt from the actual anchor):
+# baseline raised 5483 -> 5486 (+3) — the 3 unit-id references, all in
+# awf/api/lifecycle.py (the _read_vision_excerpt docstring header, the
+# fresh-init call-site comment and the fresh dry-run call-site comment
+# naming the unit). The new test file
+# tests/negative/test_reports33_vision_excerpt.py carries no TODO line
+# (init tests need no TODO fixture). Same class as above: unit-id
+# references, not debt. files_over_400 stays 76 (the new test file is
+# 137 lines — under the bar; the touched awf/api/lifecycle.py was
+# already over it).
+# REPORTS33 (TODO-0208, меньше церемонии: awf-блок в ролях из скиллов +
+# brief-детект продолжения): baseline raised 5486 -> 5517 (+31) — the 31
+# TODO-bearing lines: 15 in the new
+# tests/negative/test_reports33_less_ceremony.py (the module docstring's
+# source/unit references, the TODO-0001 done-history fixture use-sites of
+# the brief-continuation tests, the "называет TODO-0001" wording), 6 in
+# awf/phase.py (the _has_work_history docstring + the detect_phase /
+# get_phase_prompt fix-site comments), 5 in awf/brief.py (the
+# CONTINUE_LINE comment, the build_brief continuation comment + the
+# render-gate comment), 3 in awf/api/roles.py (the AWF-OVERRIDES section
+# header comment, the apply_awf_overrides docstring, the add_role
+# docstring line) and 2 in tests/unit/test_phase.py +
+# tests/unit/test_phase_live.py (the updated pins' docstring unit
+# references). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 76 (the new test file is
+# 318 lines — under the bar; the touched modules were already over it).
+# REPORTS33 (TODO-0210, dashboard one-window dedup + run tabs): baseline
+# raised 5532 -> 5558 (+26) — 11 in the new
+# tests/negative/test_reports33_dashboard_tabs.py (the module docstring's
+# unit/owner-request references and the TODO-0001/TODO-0002/TODO-0003
+# run-state + DONE-TODO-0001 fixture use-sites), 4 in awf/api/
+# dashboard_server.py (the REPORTS33 (TODO-0210) comments in the
+# _run_report_summary / build_runs_dict / _render_report_html /
+# _serve_run_report docstrings), 5 in agent_workflow_ui tools/awf.py
+# (the dedup constant comment, the _open_marker_file / _open_marker_fresh
+# docstrings and the awf_open_pipeline_dashboard docstring/Returns lines)
+# and 6 in awf/templates/dashboard.html.j2 (the runbar HTML comment, the
+# JS section header + the two switchTab/init comments). Same class as
+# above: unit-id references and test identifiers, not debt.
+# files_over_400 stays 76 (the new test file is 339 lines — under the
+# bar; awf/api/dashboard_server.py lands at 397 — under the bar too).
+# TODO-0212 (delta-watchdog property test): baseline raised 76 -> 77
+# (files_over_400) — tests/negative/test_reports33_delta_property.py
+# is the new 828-line watchdog (scenario generators + harness + named
+# F1-F8 regressions); the length is the scenario catalogue, not
+# production debt. todos raised 5558 -> 5560 — the watchdog docstring
+# references TODO-0212 and TODO-0204 (unit-id references, the same
+# class as the already-counted test identifiers).
+# TODO-0213 (BD-30, replan marker): files_over_400 raised 77 -> 78 —
+# the new tests/negative/test_reports33_bd30_replan.py is 461 lines
+# (22 marker-gate/dispatch/handler tests: unmarked-ignores-wait,
+# marked-pickup, dispatch refusals, parsing corners); the length is
+# the negative-test catalogue, same class as the
+# test_reports33_delta_property.py / test_orch_composition_scenarios.py
+# raises above. todos raised 5560 -> 5759 — the new test file carries
+# 104 TODO-bearing lines (the TODO-0001/TODO-0002/TODO-0003
+# fixture/constants of the wait, dispatch and handler tests + the
+# TODO-0213 unit reference in the module docstring), the tracked diff
+# adds 94 (marker wording in awf/supervisor.py /
+# awf/api/dispatch.py / awf/unit_contract.py / awf/pipeline_engine.py
+# docstrings and comments, TODO-0001/TODO-0010 fixture ids in the
+# adapted tests/negative/test_escalation_recovery.py and
+# tests/unit/test_orchestrator_handlers.py, the replan paragraph in
+# USAGE.md, the replan_for key row in docs/unit-contract.md and the
+# role templates) and the mirrored USAGE.ru.md paragraph adds 5,
+# minus 4 TODO-bearing lines replaced in the adapted tests. Same class
+# as above: test identifiers and unit-id references, not debt.
+# TODO-0213 (REVIEW fix, auto-surface marker): baseline raised
+# 5759 -> 5838 (+79) — the REVIEW-iter unit (marker enforced on the
+# auto-subprocess surface: watcher filter + fallback detection + the
+# engine's no-third-unit rule) adds ~79 TODO-bearing lines: ~25 in the
+# new TestAutoSurfaceReplanMarker / TestEngineNoUnmarkedFallback classes
+# of tests/negative/test_reports33_bd30_replan.py (the
+# TODO-0001/TODO-0002/TODO-0003 fixture ids of the fallback/watcher/
+# handler tests, the replan_for: TODO-0001 contract fixtures, the
+# class docstring unit references), ~35 in the fix sites (the
+# TODO-0213 (REVIEW fix) comments in awf/supervisor.py — _replan_marker_of
+# / make_replan_glob_accept / _log_replan_pickup / the watcher wiring /
+# the _detect_supervisor_signal gate, awf/pipeline_engine.py — the
+# _replan_answer helper docstring + the three replan sites + the
+# _handle_escalate docstring, awf/signal_watch.py — the new_glob_accept
+# parameter docs), 1 in tests/infra/opencode_shim/opencode (the replan
+# marker comment) and 1 in tests/e2e/test_orch_composition_scenarios.py
+# (the updated scenario docstring), plus the unit's own dogfood artifacts
+# in flight (the TODO-0213.md REVIEW-фикс section, the DONE-TODO-0213
+# report of this iteration in the outbox). Same class as above: test
+# identifiers and unit-id references, not debt. files_over_400 stays 78
+# (no .py crossed the bar: test_reports33_bd30_replan.py 461 -> 652 and
+# the touched production modules were already over it;
+# test_orch_composition_scenarios.py 466 -> 467 was already counted).
+# TODO-0214 (CI-fix: the coverage ratchet on awf/run_plan_read.py, 92.00
+# -> 91.57 in PR #46 — the missing branches get tests, not a lowered
+# baseline): baseline raised 5838 -> 5840 (+2) — the new
+# tests/negative/test_run_plan_read_coverage.py adds 2 TODO-bearing lines
+# (the T/T2 fixture todo ids). Same class as above: test identifiers,
+# not debt.

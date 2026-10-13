@@ -725,10 +725,20 @@ def create_baseline(
     carry_over: set[str] | None = None,
     include: set[str] | None = None,
 ) -> BaselineResult:
-    """Create BASELINE-{todo_id}.{sha,status,tests.log,env.log} snapshot.
+    """Create BASELINE-{todo_id}.{sha,status,worktree,tests.log,env.log}
+    snapshot.
 
     Captures git HEAD SHA, working tree status, test output, and Python
     environment. Used for A1 commit isolation and rollback targets.
+
+    REPORTS33 (TODO-0204): when the tree is dirty, the worktree state is
+    additionally snapshotted with ``git stash create`` (a commit object —
+    the tree and the index are never touched) and its sha is written to
+    ``BASELINE-{todo_id}.worktree``. The commit gate uses it to commit
+    only the unit's own edit of a tracked-dirty file (the pre-dispatch
+    change stays in the worktree). Empty ``stash create`` (no tracked
+    changes) or a failure → no ``.worktree`` file, the dispatch warning
+    degrades to the honest legacy text.
 
     ``carry_over`` (RUN5 #1, leak-gate): paths to EXCLUDE from the
     ``BASELINE-{todo_id}.untracked`` snapshot — files of a rejected attempt
@@ -779,6 +789,28 @@ def create_baseline(
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
             status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", status)
+            # REPORTS33 (TODO-0204): snapshot of the dirty worktree — the
+            # commit gate's delta mechanism: a tracked-dirty file enters
+            # the unit commit only as the unit's own edit (worktree vs
+            # THIS snapshot); the pre-dispatch part stays in the worktree.
+            # `git stash create` builds the commit object from the
+            # worktree without touching tree or index (untracked files
+            # are not part of it — they have their own QA-1 snapshot).
+            # Written UNCONDITIONALLY (every other baseline file is): a
+            # fresh sha on a dirty tree, the file REMOVED on empty output
+            # (a clean tree, or a swallowed `stash create` failure — both
+            # read as "") — a re-dispatch of the same id must never read
+            # an earlier dispatch's snapshot (QA F6, REVIEW iter 5). Best
+            # effort either way: a failure never fails the baseline (the
+            # dispatch warning degrades to the honest legacy text).
+            worktree_snap = git_utils.git_stdout(
+                project_dir, "stash", "create", check=False,
+            ).strip()
+            snap_path = context_dir / f"BASELINE-{todo_id}.worktree"
+            if worktree_snap:
+                _write_baseline_file(snap_path, worktree_snap + "\n")
+            else:
+                snap_path.unlink(missing_ok=True)
             # QA-1: snapshot untracked files at baseline time so commit_gate
             # can distinguish worker-created files from pre-existing untracked.
             untracked = git_utils.git_stdout(

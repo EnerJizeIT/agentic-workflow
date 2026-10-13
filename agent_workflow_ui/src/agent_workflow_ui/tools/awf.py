@@ -2498,6 +2498,51 @@ def _boot_marker_fresh(pd: Path, launched_at: float) -> bool:
     return ts >= launched_at - _BOOT_MARKER_SLOP_SECONDS
 
 
+# REPORTS33 (TODO-0210): the open-dedup window. The owner's repro: every
+# launch (and every explicit open) opened a NEW browser window. A recent
+# open on the SAME url reuses the existing window — already_open + the
+# URL, no second webbrowser call. 10 minutes covers a launch cycle;
+# after that (or on a server/port change) a new window is the only way
+# to see the run.
+_DASHBOARD_OPEN_DEDUP_SECONDS = 600.0
+
+
+def _open_marker_file(pd: Path) -> Path:
+    """The dedup marker lives in context/ — the runtime directory: it is
+    never committed (the workflow commit carries only definitions)."""
+    return pd / ".agentic" / "context" / "dashboard_opened"
+
+
+def _open_marker_fresh(pd: Path, url: str) -> bool:
+    """REPORTS33 (TODO-0210): was the dashboard opened recently AT THIS
+    url? Absent/corrupt marker → False (open conservatively — same
+    policy as the boot marker: a broken file must not keep refusing
+    the dashboard). A different url → False: a port change leaves the
+    old tab dead/foreign, a new window is required."""
+    f = _open_marker_file(pd)
+    if not f.is_file():
+        return False
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        ts = float(data["ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if str(data.get("url", "")) != url:
+        return False
+    return time.time() - ts <= _DASHBOARD_OPEN_DEDUP_SECONDS
+
+
+def _write_open_marker(pd: Path, url: str) -> None:
+    f = _open_marker_file(pd)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(
+            json.dumps({"ts": time.time(), "url": url}), encoding="utf-8"
+        )
+    except OSError:
+        pass  # a marker write failure must never break the open itself
+
+
 def _open_dashboard_sync(
     pd: Path, wait: bool = False, launched_at: float | None = None,
 ) -> dict[str, Any]:
@@ -2529,6 +2574,19 @@ def _open_dashboard_sync(
                 port = 0
             if port and _port_alive(port):
                 url = f"http://127.0.0.1:{port}"
+                # REPORTS33 (TODO-0210): one window per project — a
+                # recent open on this url reuses the existing tab.
+                # Applies to BOTH surfaces: the explicit tool (wait=False)
+                # and the launch auto-open (wait=True).
+                if _open_marker_fresh(pd, url):
+                    return {
+                        "opened": False,
+                        "already_open": True,
+                        "url": url,
+                        "method": "http",
+                        "reused": True,
+                        "next_action": f"Dashboard already open at {url}",
+                    }
                 if (
                     wait
                     and launched_at is not None
@@ -2542,6 +2600,7 @@ def _open_dashboard_sync(
                         "next_action": f"Dashboard already running at {url}",
                     }
                 webbrowser.open(url)
+                _write_open_marker(pd, url)
                 return {"opened": True, "url": url, "method": "http"}
         if wait and attempt < attempts - 1:
             time.sleep(0.5)
@@ -2571,11 +2630,17 @@ async def awf_open_pipeline_dashboard(
     Prefers HTTP server (live updates via /api/state polling).
     Falls back to file:// if server unavailable.
 
+    REPORTS33 (TODO-0210): one window per project — when the dashboard
+    was opened recently (<= 10 min, same URL, server alive) no new
+    window is created: the response carries already_open=True + the
+    URL.
+
     Args:
         project_dir: **Required.** Absolute path to awf project root.
 
     Returns:
-        Dict with: status, opened (bool), url, method.
+        Dict with: status, opened (bool), url, method; already_open
+        (bool) on a dedup hit.
     """
     p = _resolve_project_dir(project_dir)
     result = await _open_dashboard_browser(p)
@@ -2588,6 +2653,17 @@ async def awf_open_pipeline_dashboard(
             "opened": True,
             "url": result["url"],
             "method": result["method"],
+        }
+    # REPORTS33 (TODO-0210): the dedup hit is not an error — the
+    # dashboard IS available at the URL, a window was simply not
+    # re-opened (the recent tab already shows it).
+    if result.get("already_open"):
+        return {
+            "status": "ok",
+            "opened": False,
+            "already_open": True,
+            "url": result["url"],
+            "method": result.get("method", "http"),
         }
     return {
         "status": "error",

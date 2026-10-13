@@ -22,6 +22,9 @@ vsegda-payplayn.md): в забеге юнит без диффа (verify-комм
    commit+archive/commit/archive).
 3. run_brief/run_status при ЧТЕНИИ кредитуют завершённый current в
    completed — не двигая index/current (их двигает run_next).
+   REPORTS33 (TODO-0205): зачтённый current при этом не показывают как
+   current (один id в двух состояниях) — display указывает следующий
+   незапущенный элемент или пуст (хвост закрыт); state-файл не трогается.
 """
 from __future__ import annotations
 
@@ -105,20 +108,28 @@ class TestDoneAfterNoCommitCycle:
     def test_run_surfaces_credit_finished_current_on_read(self, tmp_git_repo):
         """(b) run_brief/run_status: completed содержит завершённый
         current (read-time кредит). Красный на baseline: completed =
-        [TODO-0001] без TODO-0002. index/current при этом НЕ двигаются —
-        это работа run_next; run.yaml чтение не трогает."""
+        [TODO-0001] без TODO-0002. index/current в run.yaml при этом НЕ
+        двигаются — это работа run_next; чтение не трогает файл.
+        REPORTS33 (TODO-0205): зачтённый current display НЕ показывает
+        как current (хвост закрыт — current пуст, position 2/2)."""
         proj = _project(tmp_git_repo)
         _no_commit_cycle(proj)
 
         status = api.run_status(proj)
         assert T2 in status.completed
         assert T1 in status.completed
-        assert status.current == T2
+        assert status.current == "", (
+            "the finished current is credited to completed — it must not "
+            "show as current at the same time (REPORTS33)"
+        )
+        assert status.position == "2/2"
         assert status.index == 2
 
         brief = api.run_brief(proj)
         assert T2 in brief["completed"]
         assert T1 in brief["completed"]
+        assert brief["current"] == ""
+        assert brief["position"] == "2/2"
 
         state = run_state.read_run(proj)
         assert state["completed"] == [T1]

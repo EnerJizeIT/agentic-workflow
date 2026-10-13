@@ -680,6 +680,25 @@ commit by design. That protection used to be silent; now it is visible:
   (no TODO, no baseline). The re-claimed paths are traced in
   `.agentic/context/BASELINE-<id>.include` and join the unit commit.
 
+**Replans are marked (BD-30, TODO-0213).** When a unit blocks and the
+pipeline escalates to the supervisor, the live pipeline waits for the
+supervisor's answer. Only a TODO whose front-matter carries the marker
+`replan_for: <blocked unit id>` is picked up as that answer — an ordinary
+mid-run dispatch (no marker) does NOT switch the running pipeline; the
+escalation keeps waiting. `awf_dispatch_todo(..., replan_for="TODO-0204")`
+writes the marker into the TODO's contract block (a hand-written
+`replan_for:` line works the same way, the parameter wins over a
+copy-pasted one). The referenced unit must exist and be live: a missing
+TODO, an archived one, or one closed as done refuses the dispatch before
+any side effect. The replanned unit restarts the pipeline from the first
+stage (the full pipeline, not the blocked stage); the pickup line in the
+orchestrator log names the marker and the replaced unit. The marker is
+enforced on BOTH wait surfaces (the interactive wait and the auto
+supervisor subprocess — watcher and fallback detection). When no marked
+answer arrives (wait timeout, or the auto supervisor exits without one),
+the pipeline stops cleanly on the blocked unit — the BLOCKED closure
+stays; dispatch a marked TODO and `awf continue`.
+
 ### Verify
 | Tool | What it does |
 |---|---|

@@ -102,11 +102,17 @@ def _detect_new_signal(
     pre_existing: set[str],
     watch_new_glob: tuple[Path, str] | None,
     snapshot: set[str],
+    new_glob_accept: Callable[[Path, str], bool] | None = None,
 ) -> str | None:
     """Check if a new signal file appeared since subprocess start.
 
     Returns the signal filename if detected, None otherwise.
     Checks concrete watch_paths first, then glob pattern.
+
+    TODO-0213 (REVIEW fix): ``new_glob_accept`` (optional) is a
+    content filter for the glob — a new file counts as a signal only when
+    the filter accepts it (the replan watcher: only a replan_for-marked
+    TODO ends the wait; an unmarked mid-run dispatch must not).
     """
     # BD-22: a path counts as signal only if it was NOT in pre_existing
     # snapshot (i.e., appeared DURING subprocess execution).
@@ -119,8 +125,9 @@ def _detect_new_signal(
         if watch_dir.is_dir():
             current = {p.name for p in watch_dir.glob(pattern)}
             new_files = current - snapshot
-            if new_files:
-                return sorted(new_files, key=_sort_key_by_numeric_id)[0]
+            for name in sorted(new_files, key=_sort_key_by_numeric_id):
+                if new_glob_accept is None or new_glob_accept(watch_dir, name):
+                    return name
 
     return None
 
@@ -130,6 +137,7 @@ def run_subprocess_until_signal(
     cwd: str | Path,
     watch_paths: list[Path] | None = None,
     watch_new_glob: tuple[Path, str] | None = None,
+    new_glob_accept: Callable[[Path, str], bool] | None = None,
     logs_dir: Path | None = None,
     hard_timeout: int = BD20_HARD_TIMEOUT,
     env: dict[str, str] | None = None,
@@ -163,6 +171,10 @@ def run_subprocess_until_signal(
         watch_paths: concrete paths whose NEW existence means "work is done".
         watch_new_glob: (directory, glob_pattern) — detect NEW files matching
             the pattern that didn't exist at subprocess start.
+        new_glob_accept: TODO-0213 (REVIEW fix) — optional content filter
+            ``(watch_dir, name) -> bool`` for the glob: a new file counts
+            as a signal only when accepted (the replan watcher accepts
+            only replan_for-marked TODOs; None — every new file fires).
         logs_dir: optional, for logging.
         hard_timeout: absolute cap before SIGKILL (default 3600s).
         env: subprocess environment (defaults to os.environ).
@@ -306,6 +318,7 @@ def run_subprocess_until_signal(
             if signal_seen_at is None:
                 fired_name = _detect_new_signal(
                     watch_paths, pre_existing, watch_new_glob, snapshot,
+                    new_glob_accept,
                 )
                 if fired_name:
                     signal_seen_at = now

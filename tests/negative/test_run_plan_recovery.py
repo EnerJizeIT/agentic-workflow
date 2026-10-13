@@ -259,7 +259,10 @@ class TestAfterDoneNextStep:
         c = api.load_supervisor_context(proj)
         st = api.run_status(proj)
         assert c.run_goal == "Ship the increment"
-        assert c.run_position == st.position == "1/2"  # item 1 of 2 was the run slot
+        # REPORTS33 (TODO-0205): after the done the finished unit is
+        # credited to completed — the slot points at the next not-started
+        # item (2/2), not at the done one, on every surface.
+        assert c.run_position == st.position == "2/2"
         assert "awf_run_next" in c.next_action
         assert T2 in c.next_action
 

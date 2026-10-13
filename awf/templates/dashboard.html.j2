@@ -168,6 +168,16 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 
 /* Empty */
 .empty { text-align: center; padding: 48px; color: var(--text-dim); font-size: 13px; }
+
+/* ─── Run tabs (REPORTS33 TODO-0210) ─── */
+.runbar { display: flex; align-items: center; gap: 6px; padding: 6px 16px; background: var(--bg-card); border-bottom: 1px solid var(--border-subtle); overflow-x: auto; scrollbar-width: thin; }
+.runbar::-webkit-scrollbar { height: 3px; }
+.runbar-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); font-weight: 600; margin-right: 2px; white-space: nowrap; }
+.runtab { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-family: var(--mono); color: var(--text-muted); background: none; border: 1px solid var(--border-subtle); cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+.runtab:hover { color: var(--text); border-color: var(--border); }
+.runtab.active { color: var(--accent); border-color: var(--accent); background: rgba(88,166,255,0.08); }
+.runtab.live { color: var(--green); }
+.runtab.live.active { color: var(--green); border-color: var(--green); background: rgba(63,185,80,0.08); }
 </style>
 </head>
 <body>
@@ -186,6 +196,10 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
 <div class="verify-banner" id="verify-banner">
   <span>⏸</span> VERIFY — пайплайн ждёт решения супервизора по <span id="verify-banner-todo"></span>
 </div>
+
+<!-- REPORTS33 (TODO-0210): run tab bar — hidden until there is a
+     completed run (with zero finished runs the live view stands alone) -->
+<div class="runbar" id="runbar" style="display:none"></div>
 
 <div class="main">
   <div class="sidebar">
@@ -222,6 +236,8 @@ body { background: var(--bg-deep); color: var(--text); font-family: system-ui,-a
     <div class="tab-pane" id="pane-chat"></div>
     <div class="tab-pane" id="pane-todo" style="display:none"></div>
     <div class="tab-pane" id="pane-events" style="display:none"></div>
+    <!-- REPORTS33 (TODO-0210): the completed run's report pane -->
+    <div class="tab-pane" id="pane-run-report" style="display:none"></div>
   </div>
 </div>
 
@@ -573,6 +589,80 @@ function switchTab(name) {
   document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
   const pane = document.getElementById('pane-' + name);
   if (pane) pane.style.display = 'block';
+  // REPORTS33 (TODO-0210): picking a content tab returns to the live view
+  _selectRunTabVisual('live');
+}
+
+// ─── Run tabs (REPORTS33 TODO-0210) ─────────────────────────────────
+// One bar: the live run + completed runs (RUN-REPORT-*.md in the outbox,
+// fetched from /api/runs every 20 s — the run list rarely changes, the
+// 3 s /api/state poll is left untouched). Hidden while there are no
+// completed runs, so a single active run sees no extra chrome.
+let _currentRunTab = 'live';
+
+function _selectRunTabVisual(id) {
+  _currentRunTab = id;
+  const bar = document.getElementById('runbar');
+  if (bar) bar.querySelectorAll('.runtab').forEach(b => b.classList.toggle('active', b.dataset.run === id));
+}
+
+function renderRunbar(runs) {
+  const bar = document.getElementById('runbar');
+  if (!bar) return;
+  const hist = (runs && runs.history) || [];
+  if (hist.length === 0) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  bar.style.display = '';
+  let html = '<span class="runbar-label">Забег</span>';
+  html += '<button class="runtab live' + (_currentRunTab === 'live' ? ' active' : '') + '" data-run="live" onclick="selectRunTab(\'live\')">&#9679; Активный</button>';
+  hist.forEach(r => {
+    const label = (r.date || r.name) + (r.queue ? ' · ' + r.queue : '');
+    html += '<button class="runtab' + (_currentRunTab === r.name ? ' active' : '') + '" data-run="' + escapeHtml(r.name) + '" title="' + escapeHtml(r.reason || '') + '" onclick="selectRunTab(\'' + r.name + '\')">' + escapeHtml(label) + '</button>';
+  });
+  bar.innerHTML = html;
+}
+
+function loadRuns() {
+  fetch('/api/runs', { cache: 'no-store' })
+    .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+    .then(runs => renderRunbar(runs))
+    .catch(() => {});  // server restarting — keep the bar as is
+}
+
+function selectRunTab(id) {
+  if (id === 'live') {
+    _selectRunTabVisual('live');
+    const ctabs = document.querySelector('.content > .tabs');
+    if (ctabs) ctabs.style.display = '';
+    const active = document.querySelector('.tab-btn.active');
+    switchTab(active ? active.dataset.tab : 'chat');
+    return;
+  }
+  _selectRunTabVisual(id);
+  const tabs = document.querySelector('.content > .tabs');
+  if (tabs) tabs.style.display = 'none';
+  ['pane-chat', 'pane-todo', 'pane-events'].forEach(pid => {
+    const p = document.getElementById(pid);
+    if (p) p.style.display = 'none';
+  });
+  const pane = document.getElementById('pane-run-report');
+  pane.style.display = 'block';
+  pane.innerHTML = '<div class="empty">Загрузка отчёта…</div>';
+  fetch('/api/run-report/' + encodeURIComponent(id), { cache: 'no-store' })
+    .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+    .then(rep => {
+      // rep.html is server-rendered (escaped before markdown); the raw
+      // pre fallback keeps the page useful if rendering degraded.
+      pane.innerHTML = rep.html
+        ? '<div class="todo-content">' + rep.html + '</div>'
+        : '<pre>' + escapeHtml(rep.content || '') + '</pre>';
+    })
+    .catch(e => {
+      pane.innerHTML = '<div class="empty">Не удалось загрузить отчёт: ' + escapeHtml(String(e.message || e)) + '</div>';
+    });
 }
 
 // ─── Notifications ──────────────────────────────────────────────────
@@ -613,6 +703,10 @@ function escapeHtml(s) {
 const INITIAL_STATE = {{ initial_state_json | safe }};
 updateAll(INITIAL_STATE);
 _pollLoop();  // Day-3: refresh immediately — the embedded snapshot can be a stage old
+// REPORTS33 (TODO-0210): run tab bar — first load + a slow refresh
+// (a new completed run appears when the run closes).
+loadRuns();
+setInterval(loadRuns, 20000);
 </script>
 </body>
 </html>

@@ -105,6 +105,19 @@ def _sources(project_dir: Path, record: RunRecord) -> list[str]:
     return sources
 
 
+def _current_finished(project_dir: Path, todo_id: str) -> bool:
+    """REPORTS33 (TODO-0205): the B3 finished rule for the run's
+    ``current`` — archived and not active again (the same definition
+    ``awf.api.run._todo_finished`` applies to the gates: a restored
+    ``done/{id}/`` alone is not finished)."""
+    from . import todos
+
+    active = todos.list_active_todos(
+        paths.inbox(project_dir), paths.outbox(project_dir)
+    )
+    return todos.is_archived(project_dir, todo_id) and todo_id not in active
+
+
 def _evidence_plan_for(state: dict) -> dict | None:
     """ORCH M2.3: which evidence plan a surface shows — the CURRENT
     element's snapshot when one was recorded for it, else the LAST
@@ -153,6 +166,31 @@ def read_run_record(project_dir: Path) -> RunRecord:
     record.criteria = [str(c) for c in (state.get("criteria") or [])]
     record.position = run_state.position(state)
     record.current = str(state.get("current") or "")
+    # REPORTS33 (TODO-0205): a finished current is credited to completed
+    # at read time (REPORTS26 B3) — until run_next's next launch the raw
+    # fields would show the same id in completed AND current at once.
+    # The record is the single source for every surface (M1.2), so the
+    # display is corrected HERE: current points at the next not-started
+    # element (queue[index]) — or empty when the queue is exhausted —
+    # and the position counts it the "between items" way (index + 1).
+    # An unfinished current (in flight / rejected / stopped) passes
+    # through untouched. Nothing is written: index/current in the state
+    # file stay where run_next owns them.
+    if record.current and _current_finished(project_dir, record.current):
+        queue = list(state.get("queue") or [])
+        try:
+            index = int(state.get("index", 0) or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if index < len(queue):
+            nxt = queue[index]
+            record.current = (
+                str(nxt.get("todo_id", "")) if isinstance(nxt, dict) else str(nxt)
+            )
+        else:
+            record.current = ""
+        if queue:
+            record.position = f"{max(1, min(index + 1, len(queue)))}/{len(queue)}"
     record.note = str(state.get("note") or "")
     record.decisions = [dict(d) for d in (state.get("decisions") or [])]
     if record.decisions:

@@ -200,8 +200,15 @@ case "$KIND" in
                 ;;
             plan-todo)
                 PLAN_ID="${AWF_SHIM_PLAN_TODO_ID:-TODO-0001}"
+                # TODO-0213: a replan answer is MARKED (replan_for: the
+                # escalated unit, which is the TODO_ID of this replan call).
+                # The plan kind replaces no unit — no marker there.
+                if [[ "$SUP_KIND" == "replan" && -n "$TODO_ID" ]]; then
+                    printf -- '---\nreplan_for: %s\n---\n' "$TODO_ID" \
+                        > "$INBOX/${PLAN_ID}.md"
+                fi
                 printf '# %s (shim plan)\nSimulated plan TODO.\n' "$PLAN_ID" \
-                    > "$INBOX/${PLAN_ID}.md"
+                    >> "$INBOX/${PLAN_ID}.md"
                 touch "$INBOX/${PLAN_ID}.ready"
                 ;;
             noop)

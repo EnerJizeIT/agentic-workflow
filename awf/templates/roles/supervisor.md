@@ -485,6 +485,15 @@ If **BLOCKED**:
       `BLOCKED-{todo}.ready` — a file nobody reads is a lost question.
     - **Rollback:** revert to baseline → prepare new TODO.
 
+**Replan marker (BD-30, TODO-0213):** when you create the refined
+TODO-NNNN.md that REPLACES the blocked unit, put `replan_for: TODO-<blocked
+id>` into its front-matter contract block (or dispatch with
+`awf_dispatch_todo(..., replan_for="TODO-<blocked id>")`). The engine
+picks up the replan by this marker only — an unmarked TODO (a normal
+mid-run dispatch) does not switch the live pipeline, and the escalation
+keeps waiting for its own answer. The replanned unit restarts the
+pipeline from the first stage, not the blocked one.
+
 **Note:** The worker uses the 3-Strike Error Protocol. If it reached attempt 3, the problem is likely not a simple fix — reconsider the approach or escalate to Mode C.
 
 ### Step 7 · Commit & push (MANDATORY after an approved increment)
