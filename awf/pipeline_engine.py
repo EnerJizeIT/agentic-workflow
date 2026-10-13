@@ -58,6 +58,37 @@ def _find_active_todo(project_dir: Path) -> str:
     return todos.newest_active(project_dir)
 
 
+def _replan_answer(sup_signal: object, current_todo: str, project_dir: Path) -> str:
+    """TODO-0213 (REVIEW fix): resolve the unit a replan runs, or "".
+
+    The answer is exactly one of two — never a THIRD unit (a fresh unmarked
+    mid-run dispatch is newest active by construction; accepting it was the
+    12.10 hijack the marker removed from the waits):
+
+    1. a TODO id in the signal naming a unit OTHER than the current one —
+       the supervisor's replan answer. Both wait surfaces (interactive and
+       auto subprocess) accept only a replan_for-marked TODO, so the signal
+       is already marker-checked;
+    2. the current unit itself, when it is still active — a rollback
+       re-runs the same unit at the target stage, a rejection fallback
+       retries it. The blocked unit is closed and therefore never "still
+       active" — an escalation without a marked answer stops.
+
+    Returns "" when nothing is runnable (caller stops the pipeline).
+    """
+    if (
+        isinstance(sup_signal, str)
+        and sup_signal.startswith("TODO-")
+        and sup_signal != current_todo
+    ):
+        return sup_signal
+    if current_todo and current_todo in todos.list_active_todos(
+        paths.inbox(project_dir), paths.outbox(project_dir)
+    ):
+        return current_todo
+    return ""
+
+
 def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
     """Day-2 B2: clear the BLOCKED closure so the TODO counts as active again.
 
@@ -344,11 +375,25 @@ def _handle_escalate(
     stage_idx: int,
     pipeline_name: str | None = None,
 ) -> tuple[int, str, int]:
-    """Transition: BLOCKED → supervisor replan + retry same stage.
+    """Transition: BLOCKED → supervisor replan.
 
     The ``max_retries`` budget slot is per stage INSTANCE (its position in
     the pipeline — the stage id when declared), not per role: two stages
     of the same role never share a counter (ORCH M3.2 invariant 3).
+
+    Two answers: ACK/APPROVE = "accept the current state" — the SAME unit
+    retries the SAME stage. A replan-marked TODO = a NEW unit — it starts
+    the full pipeline from stage 0 (TODO-0213, BD-30: the old behavior
+    resumed it at the blocked stage, so the implementer stage was skipped
+    and the unit ran with the previous unit's unreviewed work as its own).
+    The new unit is the one the replan wait picked up (its TODO id in the
+    signal — a replan_for-marked TODO, TODO-0213) or the current unit when
+    it is still active (a rejection fallback routed here). Any other signal
+    is no answer and the pipeline stops on the blocked unit (REVIEW fix —
+    the pre-0213 ``_find_active_todo`` fallback for an empty signal was the
+    same false positive on the auto surface: an unmarked mid-run dispatch,
+    newest by construction, hijacked the pipeline; a third unit is never
+    the answer, see ``_replan_answer``).
 
     Returns (new_stage_idx, new_current_todo, exit_code).
     exit_code != 0 means pipeline should stop.
@@ -385,12 +430,36 @@ def _handle_escalate(
         print(f"Supervisor accepted the blocked state — retrying stage '{s_name}'")
         return stage_idx, current_todo, 0
 
-    new_todo = _find_active_todo(project_dir)
+    # TODO-0213 (BD-30): the replan wait picked up a SPECIFIC unit (the
+    # marked TODO's id is the signal) — run exactly that one. The signal
+    # is the blocked unit itself when the auto fallback detection returns
+    # the stale TODO-*.ready of the blocked unit — a replan REPLACES the
+    # unit, it never is it, so that is not an answer (the interactive wait
+    # already filters it out at the marker gate).
+    #
+    # TODO-0213 (REVIEW fix): the pre-fix "_find_active_todo" fallback for
+    # an empty signal was the same false positive on the auto surface — a
+    # fresh unmarked mid-run dispatch (newest active by construction)
+    # hijacked the pipeline. The answer is the marked signal or the
+    # current unit when still active (a rejection fallback); a blocked
+    # unit is closed, so an escalation without a marked answer stops
+    # cleanly (the BLOCKED closure stays intact; the owner dispatches a
+    # replan_for-marked TODO and continues).
+    new_todo = _replan_answer(sup_signal, current_todo, project_dir)
     if not new_todo:
-        print("Supervisor did not create a new TODO and left no ACK. Stopping.")
+        print(
+            "Supervisor did not answer the escalation (no replan_for-marked "
+            "TODO). Stopping.",
+        )
+        _log(logs_dir, "Escalate: no replan answer — stopping on the blocked unit")
         return stage_idx, current_todo, 1
-    print(f"New TODO: {new_todo} — retrying stage '{s_name}'")
-    return stage_idx, new_todo, 0  # stay on same stage_idx
+    print(f"New TODO: {new_todo} — restarting the pipeline from the first stage")
+    _log(
+        logs_dir,
+        f"BD-30: replanned unit {new_todo} starts at stage 0 "
+        f"(the full pipeline, not the blocked stage {s_name})",
+    )
+    return 0, new_todo, 0  # TODO-0213: the replan unit runs the full pipeline
 
 
 def _handle_rollback(
@@ -451,7 +520,7 @@ def _handle_rollback(
     # AUD04-05: same clean stop as the main supervisor stage — a replan
     # timeout/crash must not escape as a raw traceback.
     try:
-        _run_supervisor_stage(
+        sup_signal = _run_supervisor_stage(
             replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
         )
     except (RuntimeError, TimeoutError) as e:
@@ -460,9 +529,16 @@ def _handle_rollback(
         _log(logs_dir, f"Pipeline stopped at stage {source or target}: rollback replan crashed: {e}")
         return -1, current_todo, 1
 
-    new_todo = _find_active_todo(project_dir)
+    # TODO-0213 (REVIEW fix): the replan answer is the marked TODO's id in
+    # the signal (a TODO id naming a unit OTHER than the current one) or
+    # the SAME unit, still active — the pre-fix "_find_active_todo"
+    # fallback could return a fresh unmarked mid-run dispatch instead
+    # (newest active by construction): the same hijack the marker removed
+    # from the waits. A third unit is never the rollback's answer; nothing
+    # runnable (M1) stops the pipeline, never an empty todo.
+    new_todo = _replan_answer(sup_signal, current_todo, project_dir)
     if not new_todo:
-        print("Rollback: supervisor did not create a new TODO. Stopping.", file=sys.stderr)
+        print("Rollback: no runnable unit after replan. Stopping.", file=sys.stderr)
         _log(logs_dir, "Rollback: no new TODO after replan — stopping")
         return -1, current_todo, 1
     return target_idx, new_todo, 0
@@ -821,14 +897,19 @@ def execute_supervisor_stage(
             snapshot_rejected_files(project_dir, rejected_todo, logs_dir)
             replan_stage = Stage(name="replan", role="supervisor", kind="replan")
             try:
-                _run_supervisor_stage(
+                replan_signal = _run_supervisor_stage(
                     replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
                 )
             except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
                 _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
                 return current_todo, 0, 1
-            new_todo = _find_active_todo(project_dir)
+            # TODO-0213 (REVIEW fix): the replan answer is the marked TODO's
+            # id in the signal — the pre-fix "_find_active_todo" could
+            # return a fresh unmarked mid-run dispatch (newest active by
+            # construction) instead of the unit the wait picked up. No
+            # answer → the rejected unit stays (the pipeline stops anyway).
+            new_todo = _replan_answer(replan_signal, current_todo, project_dir)
             if new_todo and new_todo != current_todo:
                 current_todo = new_todo
                 # Persist replanned TODO so continue resumes the right task.

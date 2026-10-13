@@ -1532,3 +1532,45 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # production debt. todos raised 5558 -> 5560 — the watchdog docstring
 # references TODO-0212 and TODO-0204 (unit-id references, the same
 # class as the already-counted test identifiers).
+# TODO-0213 (BD-30, replan marker): files_over_400 raised 77 -> 78 —
+# the new tests/negative/test_reports33_bd30_replan.py is 461 lines
+# (22 marker-gate/dispatch/handler tests: unmarked-ignores-wait,
+# marked-pickup, dispatch refusals, parsing corners); the length is
+# the negative-test catalogue, same class as the
+# test_reports33_delta_property.py / test_orch_composition_scenarios.py
+# raises above. todos raised 5560 -> 5759 — the new test file carries
+# 104 TODO-bearing lines (the TODO-0001/TODO-0002/TODO-0003
+# fixture/constants of the wait, dispatch and handler tests + the
+# TODO-0213 unit reference in the module docstring), the tracked diff
+# adds 94 (marker wording in awf/supervisor.py /
+# awf/api/dispatch.py / awf/unit_contract.py / awf/pipeline_engine.py
+# docstrings and comments, TODO-0001/TODO-0010 fixture ids in the
+# adapted tests/negative/test_escalation_recovery.py and
+# tests/unit/test_orchestrator_handlers.py, the replan paragraph in
+# USAGE.md, the replan_for key row in docs/unit-contract.md and the
+# role templates) and the mirrored USAGE.ru.md paragraph adds 5,
+# minus 4 TODO-bearing lines replaced in the adapted tests. Same class
+# as above: test identifiers and unit-id references, not debt.
+# TODO-0213 (REVIEW fix, auto-surface marker): baseline raised
+# 5759 -> 5838 (+79) — the REVIEW-iter unit (marker enforced on the
+# auto-subprocess surface: watcher filter + fallback detection + the
+# engine's no-third-unit rule) adds ~79 TODO-bearing lines: ~25 in the
+# new TestAutoSurfaceReplanMarker / TestEngineNoUnmarkedFallback classes
+# of tests/negative/test_reports33_bd30_replan.py (the
+# TODO-0001/TODO-0002/TODO-0003 fixture ids of the fallback/watcher/
+# handler tests, the replan_for: TODO-0001 contract fixtures, the
+# class docstring unit references), ~35 in the fix sites (the
+# TODO-0213 (REVIEW fix) comments in awf/supervisor.py — _replan_marker_of
+# / make_replan_glob_accept / _log_replan_pickup / the watcher wiring /
+# the _detect_supervisor_signal gate, awf/pipeline_engine.py — the
+# _replan_answer helper docstring + the three replan sites + the
+# _handle_escalate docstring, awf/signal_watch.py — the new_glob_accept
+# parameter docs), 1 in tests/infra/opencode_shim/opencode (the replan
+# marker comment) and 1 in tests/e2e/test_orch_composition_scenarios.py
+# (the updated scenario docstring), plus the unit's own dogfood artifacts
+# in flight (the TODO-0213.md REVIEW-фикс section, the DONE-TODO-0213
+# report of this iteration in the outbox). Same class as above: test
+# identifiers and unit-id references, not debt. files_over_400 stays 78
+# (no .py crossed the bar: test_reports33_bd30_replan.py 461 -> 652 and
+# the touched production modules were already over it;
+# test_orch_composition_scenarios.py 466 -> 467 was already counted).

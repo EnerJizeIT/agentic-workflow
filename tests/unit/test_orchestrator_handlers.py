@@ -82,9 +82,13 @@ class TestHandleEscalate:
         assert exit_code == 1
 
     def test_increments_retry_count(self, tmp_path, monkeypatch):
-        """Successful escalate increments retry_counts[stage_idx]."""
-        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "TODO-0002")
+        """Successful escalate increments retry_counts[stage_idx]. The
+        supervisor's answer is the marked TODO's id in the signal
+        (TODO-0213 REVIEW fix: an empty signal no longer falls back to
+        the newest active unit)."""
+        monkeypatch.setattr(
+            "awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: "TODO-0002"
+        )
         stage = _make_stage(max_retries=3)
         retry_counts = [0, 0, 0]
         idx, todo, exit_code = _handle_escalate(
@@ -95,10 +99,31 @@ class TestHandleEscalate:
         )
         assert exit_code == 0
         assert retry_counts[1] == 1
-        # Stage idx unchanged (retry same stage)
-        assert idx == 1
+        # TODO-0213: a NEW replan unit restarts the full pipeline at stage 0
+        # (the old behavior resumed it at the blocked stage, skipping the
+        # first stages — the implementer in the incident ran never).
+        assert idx == 0
         # New TODO from supervisor
         assert todo == "TODO-0002"
+
+    def test_signal_todo_wins_over_newest_active(self, tmp_path, monkeypatch):
+        """TODO-0213: the replan wait picked up a SPECIFIC unit — the
+        handler runs that one, not merely the newest active TODO (a
+        mid-run dispatch could outrank the replanned unit)."""
+        monkeypatch.setattr(
+            "awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: "TODO-0003"
+        )
+        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "TODO-0009")
+        stage = _make_stage(max_retries=3)
+        idx, todo, exit_code = _handle_escalate(
+            project_dir=tmp_path, logs_dir=tmp_path,
+            s_name="implement", current_todo="TODO-0001",
+            auto=False, stage=stage,
+            retry_counts=[0, 0, 0], stage_idx=2,
+        )
+        assert exit_code == 0
+        assert idx == 0, "replan unit starts the full pipeline"
+        assert todo == "TODO-0003", "the unit the wait picked up, not the newest"
 
     def test_exit_1_when_no_new_todo(self, tmp_path, monkeypatch):
         """If supervisor didn't create new TODO, exit 1."""
@@ -136,9 +161,12 @@ class TestHandleEscalate:
 class TestHandleRollback:
 
     def test_returns_target_idx(self, tmp_path, monkeypatch):
-        """_handle_rollback returns target_idx."""
-        monkeypatch.setattr("awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: None)
-        monkeypatch.setattr("awf.pipeline_engine._find_active_todo", lambda *a: "TODO-0003")
+        """_handle_rollback returns target_idx. The replan answer is the
+        marked TODO's id in the signal (TODO-0213 REVIEW fix: an empty
+        signal re-runs the SAME unit, never the newest active one)."""
+        monkeypatch.setattr(
+            "awf.pipeline_engine._run_supervisor_stage", lambda *a, **kw: "TODO-0003"
+        )
         stages = [
             Stage(name="plan", role="supervisor", kind="plan"),
             Stage(name="implement", role="worker", kind="execute"),

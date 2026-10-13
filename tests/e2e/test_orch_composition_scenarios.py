@@ -312,8 +312,9 @@ def test_repeated_role_retries_not_shared(tmp_path, awf_bin, awf_env):
     бюджета и прогон остановился (rc=1).
 
     Escalate пере-планирует НОВЫЙ TODO (ре-план в plan-todo создаёт
-    TODO-0002), поэтому current_todo смещается на TODO-0002 — архив идёт в
-    done/TODO-0002/. Это штатный путь (см. _handle_escalate), а не баг."""
+    TODO-0002, помеченный маркером replan_for — TODO-0213), поэтому
+    current_todo смещается на TODO-0002 — архив идёт в done/TODO-0002/.
+    Это штатный путь (см. _handle_escalate), а не баг."""
     proj = _make_project(tmp_path, RETRY_PIPELINE)
     # The replan creates TODO-0002; the verify approves it (BD-8 commit gate).
     (proj / ".agentic" / "inbox" / "APPROVE-TODO-0002.ready").write_text(

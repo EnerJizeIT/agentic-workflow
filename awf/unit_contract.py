@@ -13,10 +13,19 @@ skipped when locating the block)::
     prove_red_note: "tests cover behavior implemented in an earlier unit"
     files: ["awf/x.py", "tests/unit/test_x.py"]
     pipeline: audit-llm
+    replan_for: TODO-0204
 
 ``dispatch_todo`` validates the block; a TODO without a block works exactly
 as before. Broken YAML / wrong types / empty lists / unknown gate names are
 hard errors (AwfApiError at the API level); unknown keys are warnings only.
+
+``replan_for`` (TODO-0213, BD-30): the declared marker that a new TODO is
+the replan answer for the unit being replaced (its id). The interactive
+replan wait (``awf/supervisor.py::wait_for_supervisor_signal``,
+kind="replan") picks up a fresh TODO ONLY when its front-matter carries
+``replan_for: <escalated unit>`` — an ordinary mid-run dispatch (no marker)
+must not switch a live pipeline. ``dispatch_todo(replan_for=...)`` writes
+the marker into the block; a hand-written line works the same way.
 
 ``pipeline`` (RUN3 #2): the pipeline name for run (забег) launches — when
 ``awf_run_next`` starts this TODO without a queue-level pipeline, it reads
@@ -99,10 +108,13 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: coverage kind (only ``coverage``) + its one-line justification — a pair:
 #: either both or neither; the kind requires a ``prove_red`` list and is
 #: mutually exclusive with ``prove_red_pin``.
+#: ``replan_for`` (TODO-0213): the replan marker — the id of the unit this
+#: TODO replaces (a string, not a list); the interactive replan wait picks
+#: the TODO up only when the marker names the escalated unit.
 _CONTRACT_KEYS: tuple[str, ...] = (
     "verify", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
     "prove_red_kind", "prove_red_note",
-    "files", "pipeline",
+    "files", "pipeline", "replan_for",
 )
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
@@ -129,6 +141,87 @@ def check_pipeline_name(value: object) -> str:
             "'-' (no path separators), e.g. 'default' or 'audit-llm'"
         )
     return name
+
+
+def check_replan_for(value: object) -> str:
+    """TODO-0213: validate the contract's ``replan_for`` value.
+
+    It is the id of the unit being replaced (the escalated TODO) — a
+    single ``TODO-NNNN`` id (4+ digits), so a typo fails at dispatch time
+    instead of silently marking a TODO the replan wait never matches.
+    """
+    from .todo_ids import is_valid_todo_id
+
+    if not isinstance(value, str) or not is_valid_todo_id(value.strip()):
+        raise ValueError(
+            f"'replan_for' must be a TODO id of the unit being replaced, "
+            f"e.g. replan_for: TODO-0204 — got {value!r}"
+        )
+    return value.strip()
+
+
+def inject_replan_for(content: str, target: str) -> str:
+    """TODO-0213: write ``replan_for: <id>`` into the TODO's contract block.
+
+    Mirrors :func:`inject_pipeline_key`: creates the block when absent
+    (inserted after the leading comment/blank lines), replaces an existing
+    ``replan_for:`` line when present (the explicit argument wins over a
+    copy-pasted block). Returns the new content — the trailing newline is
+    preserved as found.
+    """
+    line = f"replan_for: {check_replan_for(target)}"
+    lines = content.splitlines()
+    open_i, close_j, error = _find_contract_block(content)
+    if error:
+        raise ValueError(error)
+    if open_i is None or close_j is None:
+        i = 0
+        while i < len(lines):
+            s = lines[i].strip()
+            if not s or s.startswith("<!--"):
+                i += 1
+                continue
+            break
+        lines = lines[:i] + ["---", line, "---"] + lines[i:]
+    else:
+        body = lines[open_i + 1 : close_j]
+        replaced = False
+        for k, existing in enumerate(body):
+            if existing.strip().startswith("replan_for:"):
+                body[k] = line
+                replaced = True
+                break
+        if not replaced:
+            body.insert(0, line)
+        lines = lines[: open_i + 1] + body + lines[close_j:]
+    return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+
+
+def replan_for_of(content: str | None) -> str | None:
+    """TODO-0213: the replan marker declared by a TODO, or ``None``.
+
+    Reads the ``replan_for:`` key of the front-matter block ONLY (body text
+    is documentation and never marks a unit — a TODO about the replan
+    feature itself may quote the marker without being one). No block, no
+    key, an unreadable block or an invalid value → ``None`` (never raises:
+    the caller decides what an unmarked TODO means). Other keys are not
+    validated — a broken ``verify:`` list must not mask a valid marker.
+    """
+    if not content:
+        return None
+    yaml_lines, error = _find_contract_lines(content)
+    if error or yaml_lines is None:
+        return None
+    try:
+        data = yaml.safe_load("\n".join(yaml_lines))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict) or "replan_for" not in data:
+        return None
+    try:
+        return check_replan_for(data["replan_for"])
+    except ValueError:
+        return None
 
 
 def _find_contract_block(content: str) -> tuple[int | None, int | None, str | None]:
@@ -325,6 +418,8 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         _check_str_list(data["files"], "files")
     if "pipeline" in data:
         check_pipeline_name(data["pipeline"])
+    if "replan_for" in data:
+        check_replan_for(data["replan_for"])
     return data, unknown
 
 
@@ -491,7 +586,10 @@ __all__ = [
     "KNOWN_GATES",
     "parse_todo_contract",
     "check_pipeline_name",
+    "check_replan_for",
     "inject_pipeline_key",
+    "inject_replan_for",
+    "replan_for_of",
     "parse_done_json",
     "render_done_json",
     "render_stage_facts",

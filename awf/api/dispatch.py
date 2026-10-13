@@ -282,6 +282,7 @@ def dispatch_todo(
     carry_over_from: str | None = None,
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
+    replan_for: str | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -323,14 +324,32 @@ def dispatch_todo(
             first line of the content is a heading carrying a ``TODO-NNNN``
             number:
 
-            - auto number (``todo_id`` is None) and the number differs from
-              the issued one → the heading is renumbered to the issued id,
-              the result carries ``renumbered=True`` (rest of the text
-              untouched);
-            - explicit ``todo_id`` and the number differs → the dispatch is
-              refused BEFORE any side effect (the message names both
-              numbers); ``allow_mismatch=True`` accepts the mismatch and
-              writes the content as-is (``renumbered=False``).
+             - auto number (``todo_id`` is None) and the number differs from
+               the issued one → the heading is renumbered to the issued id,
+               the result carries ``renumbered=True`` (rest of the text
+               untouched);
+             - explicit ``todo_id`` and the number differs → the dispatch is
+               refused BEFORE any side effect (the message names both
+               numbers); ``allow_mismatch=True`` accepts the mismatch and
+               writes the content as-is (``renumbered=False``).
+        replan_for: TODO-0213 (BD-30) — optional marker that this TODO is
+            the replan answer for the unit being replaced (its id). The
+            marker ``replan_for: <id>`` is written into the TODO's contract
+            block (created when absent; an explicit argument wins over a
+            copy-pasted block, like ``pipeline=``). Only a TODO carrying the
+            marker is picked up by the interactive replan wait — an
+            ordinary mid-run dispatch (no marker) does not switch a live
+            pipeline. The referenced unit must exist and be live: refused
+            (before any side effect) when it has no inbox TODO-NNNN.md, is
+            archived in done/, or is closed as done (DONE closure).
+
+            Example (mid-run replan of the blocked unit TODO-0204)::
+
+                dispatch_todo(project, "# TODO — refined task\\n...",
+                              replan_for="TODO-0204")
+
+            A hand-written ``replan_for: TODO-0204`` line in the content's
+            contract block works the same way (the parameter then wins).
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
@@ -350,9 +369,11 @@ def dispatch_todo(
         AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
             already archived in done/, a DONE closure for ``todo_id`` is
             still in the outbox, a ``carry_over_from`` origin cannot be
-            validated, an ``include_untracked`` path is invalid, or an
+            validated, an ``include_untracked`` path is invalid, an
             explicit ``todo_id`` disagrees with the first line's heading
-            number without ``allow_mismatch`` (REPORTS26 F5).
+            number without ``allow_mismatch`` (REPORTS26 F5), or
+            ``replan_for`` is not a TODO id / references a unit that does
+            not exist or is closed as done (TODO-0213).
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -367,6 +388,18 @@ def dispatch_todo(
         except ValueError as e:
             raise AwfApiError(f"pipeline: {e}") from None
 
+    # TODO-0213 (BD-30): same pattern — the explicit replan_for= writes the
+    # marker into the contract block (created when absent) before the parse
+    # below validates the FINAL content. check_replan_for inside
+    # inject_replan_for refuses a value that is not a TODO-NNNN id.
+    if replan_for is not None and str(replan_for).strip():
+        from ..unit_contract import inject_replan_for
+
+        try:
+            content = inject_replan_for(content, str(replan_for))
+        except ValueError as e:
+            raise AwfApiError(f"replan_for: {e}") from None
+
     # U3: optional unit-contract block at the top of the TODO (--- yaml ---)
     # is validated here, before anything is written. No block = no-op.
     from ..unit_contract import parse_todo_contract
@@ -379,6 +412,33 @@ def dispatch_todo(
     # config.yaml (stale directory) is refused before any side effect.
     # The resolved path lands in the result (resolved_project_dir).
     project_dir = require_awf_project(project_dir)
+
+    # TODO-0213 (BD-30): the marker must reference a real, live unit — the
+    # escalated (blocked) TODO the replan replaces. A unit that does not
+    # exist, is archived, or is closed as done could never be picked up
+    # (there is no escalation waiting for it) — refuse BEFORE any side
+    # effect (no TODO, no baseline).
+    if replan_for is not None and str(replan_for).strip():
+        target = str(replan_for).strip()
+        if (paths.done_dir(project_dir) / target).is_dir():
+            raise AwfApiError(
+                f"replan_for {target}: the unit is already archived in "
+                f"done/{target}/ — a replan replaces a unit that is still "
+                "waiting (blocked), not a finished one"
+            )
+        if not (paths.inbox(project_dir) / f"{target}.md").is_file():
+            raise AwfApiError(
+                f"replan_for {target}: no such TODO — the marker must "
+                "reference the unit being replaced (its inbox TODO-NNNN.md)"
+            )
+        from .hygiene import has_done_closure
+
+        if has_done_closure(project_dir, target):
+            raise AwfApiError(
+                f"replan_for {target}: the unit is closed as done (DONE "
+                "closure in outbox) — a replan replaces a blocked unit, "
+                "not a finished one"
+            )
 
     # TODO-0186: verify-path validation at dispatch. A verify: command may
     # reference a file that does not exist (a typo, a renamed test) — that

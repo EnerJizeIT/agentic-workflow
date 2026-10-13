@@ -10,6 +10,7 @@ Extracted from orchestrator.py (A6 refactor). Two execution paths:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from . import config as cfg_mod
@@ -683,23 +684,50 @@ def wait_for_supervisor_signal(
                 _log(logs_dir, f"BD-30: interactive supervisor signal detected: REVIEW-{todo_id}.md")
                 return f"REVIEW-{todo_id}"
 
-        if kind == "replan" and inbox.is_dir():
+        if kind == "replan" and inbox.is_dir() and todo_id:
             # Day-2 B2: the replan supervisor answers AFTER the escalation —
             # accept only TODO signals created since the wait started. The old
             # orphan-pickup instantly "completed" the wait with the very TODO
             # being retried (its .ready pre-dated the escalation), and the
             # pipeline stopped as if the supervisor had answered nothing.
+            #
+            # TODO-0213 (BD-30): freshness alone was still a false positive —
+            # it caught ANY new TODO, and a mid-run dispatch (run_revise
+            # append) is a normal scenario, so an unrelated unit hijacked the
+            # live pipeline. A new TODO is the replan answer ONLY when its
+            # front-matter carries the declared marker
+            # ``replan_for: <todo_id>`` naming the unit being replaced.
+            # Unmarked TODOs do not touch the live pipeline — the escalation
+            # keeps waiting for its own answer (or times out).
+            from .unit_contract import replan_for_of
+
             for todo_sig in sorted(inbox.glob("TODO-*.ready")):
                 try:
-                    if todo_sig.stat().st_mtime > wall_start:
-                        sig = todo_sig.stem
-                        _log(
-                            logs_dir,
-                            f"BD-30: replan signal detected: {sig} (created after escalation)",
-                        )
-                        return sig
+                    if todo_sig.stat().st_mtime <= wall_start:
+                        continue
                 except OSError:
                     continue
+                sig = todo_sig.stem
+                if sig == todo_id:
+                    continue  # the unit being retried is not its own replan
+                md_path = inbox / f"{sig}.md"
+                try:
+                    md_text = (
+                        md_path.read_text(encoding="utf-8", errors="replace")
+                        if md_path.is_file()
+                        else None
+                    )
+                except OSError:
+                    md_text = None
+                target = replan_for_of(md_text)
+                if target != todo_id:
+                    continue
+                _log(
+                    logs_dir,
+                    f"BD-30: replan signal detected: {sig} "
+                    f"(replan_for={target}, replacing {todo_id})",
+                )
+                return sig
 
         now = time.monotonic()
         if now - last_log >= deadline_log_interval:
@@ -814,7 +842,12 @@ def print_interactive_supervisor_instructions(
         print()
         print("This is an internal supervisor path (replan/salvage).")
         print("Read supervisor.md for guidance, then decide:")
-        print("  - replan: create a new refined TODO-NNNN.md + .ready signal")
+        if kind == "replan":
+            print("  - replan: create a new refined TODO-NNNN.md + .ready signal,")
+            print(f"    marked with `replan_for: {todo_id}` in its front-matter contract")
+            print("    block — that marker names the unit being replaced; only a")
+            print("    marked TODO is picked up (an unmarked mid-run dispatch is")
+            print("    not your answer and does not switch the pipeline)")
         print("  - salvage: review the current state and either ACK or REVIEW")
         print()
         if kind == "salvage":
@@ -973,7 +1006,10 @@ def _prepare_supervisor_stage(
         prompt = (
             f"Worker reported BLOCKED on {todo_id}. Read the BLOCKED note, analyze the problem, "
             "create a refined TODO at .agentic/inbox/TODO-NNNN.md (next sequential ID), "
-            "baseline it, and create the .ready signal."
+            "baseline it, and create the .ready signal. "
+            f"Mark the refined TODO as the replan answer for this unit: put "
+            f"``replan_for: {todo_id}`` into its front-matter contract block "
+            "(the engine picks the replan up by this marker — TODO-0213)."
         )
 
     elif kind == "salvage":
@@ -987,6 +1023,63 @@ def _prepare_supervisor_stage(
         return None
 
     return extra_files, prompt
+
+
+def _replan_marker_of(inbox: Path, todo_sig: str) -> str | None:
+    """TODO-0213 (REVIEW fix): the ``replan_for`` marker of an inbox TODO.
+
+    Reads the TODO's .md (no file / unreadable → None, never raises).
+    Shared by the auto-subprocess watcher filter and the fallback signal
+    detection — one marker read, one semantics (unit_contract.replan_for_of).
+    """
+    from .unit_contract import replan_for_of
+
+    md_path = inbox / f"{todo_sig}.md"
+    try:
+        md_text = (
+            md_path.read_text(encoding="utf-8", errors="replace")
+            if md_path.is_file()
+            else None
+        )
+    except OSError:
+        md_text = None
+    return replan_for_of(md_text)
+
+
+def make_replan_glob_accept(inbox: Path, todo_id: str):
+    """TODO-0213 (REVIEW fix): the replan watcher's accept filter.
+
+    A new TODO-*.ready counts as the replan answer only when its
+    front-matter carries ``replan_for: <todo_id>`` — an unmarked mid-run
+    dispatch (the 12.10 incident) must not end the wait. Returns a
+    ``new_glob_accept`` predicate for ``run_subprocess_until_signal``.
+    """
+
+    def _accept(watch_dir: Path, name: str) -> bool:
+        stem = name[: -len(".ready")] if name.endswith(".ready") else name
+        return _replan_marker_of(watch_dir, stem) == todo_id
+
+    return _accept
+
+
+def _log_replan_pickup(
+    logs_dir: Path,
+    kind: str,
+    signal_name: str,
+    todo_id: str,
+    inbox: Path,
+) -> None:
+    """TODO-0213 (REVIEW fix): the auto-subprocess pickup log names the
+    marker and the replaced unit — requirement 4, extended to this path
+    (the interactive wait already logs the same line)."""
+    if kind != "replan" or not signal_name or signal_name == todo_id:
+        return
+    target = _replan_marker_of(inbox, signal_name) or ""
+    _log(
+        logs_dir,
+        f"BD-30: replan signal detected: {signal_name} "
+        f"(replan_for={target}, replacing {todo_id})",
+    )
 
 
 def run_supervisor_via_subprocess(
@@ -1056,8 +1149,15 @@ def run_supervisor_via_subprocess(
 
     watch_paths: list[Path] = []
     watch_new_glob: tuple[Path, str] | None = None
+    new_glob_accept: Callable[[Path, str], bool] | None = None
     if kind in ("plan", "replan"):
         watch_new_glob = (inbox, "TODO-*.ready")
+        # TODO-0213 (REVIEW fix): the replan watcher fires only on the
+        # marked answer — an unmarked mid-run dispatch (the incident)
+        # must not end the wait; the wait keeps running until the
+        # supervisor writes a replan_for-marked TODO (or times out).
+        if kind == "replan" and todo_id:
+            new_glob_accept = make_replan_glob_accept(inbox, todo_id)
     elif kind == "verify" and todo_id:
         watch_paths = [
             inbox / f"ACK-{todo_id}.ready",
@@ -1088,6 +1188,7 @@ def run_supervisor_via_subprocess(
         cwd=str(project_dir),
         watch_paths=watch_paths,
         watch_new_glob=watch_new_glob,
+        new_glob_accept=new_glob_accept,
         logs_dir=logs_dir,
         # W7: role-aware env (the supervisor can also be listed in
         # automation.readonly_roles — same mechanism as worker roles).
@@ -1112,6 +1213,7 @@ def run_supervisor_via_subprocess(
     if fired:
         signal_name = fired.rsplit(".", 1)[0] if "." in fired else fired
         _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
+        _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
         return signal_name
 
     # U6b: pass the previous cycle's accepted decision (pipeline state) so
@@ -1129,6 +1231,7 @@ def run_supervisor_via_subprocess(
         run_evidence_ok=_run_evidence_ok(project_dir, todo_id),
     )
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
+    _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
     return signal_name
 
 
@@ -1187,7 +1290,20 @@ def _detect_supervisor_signal(
         # exist, this could return an outdated TODO; safe today because
         # this function is only called from run_supervisor_stage which is
         # always wrapped by run_subprocess_until_signal.
+        #
+        # TODO-0213 (REVIEW fix): for replan, newest-by-mtime was the same
+        # false positive the marker removed from the interactive wait — a
+        # fresh UNMARKED TODO (a normal mid-run dispatch) outranked the
+        # blocked unit's stale .ready and hijacked the pipeline. A replan
+        # REPLACES the blocked unit: only a TODO whose front-matter names
+        # it (replan_for: <todo_id>) is the answer; the unit's own .ready
+        # never is (a replan is never its own answer).
         todos = sorted(inbox.glob("TODO-*.ready"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if todos:
-            return todos[0].stem  # "TODO-NNNN.ready" → "TODO-NNNN"
+        for todo_path in todos:
+            sig = todo_path.stem  # "TODO-NNNN.ready" → "TODO-NNNN"
+            if kind == "replan" and (
+                sig == todo_id or _replan_marker_of(inbox, sig) != todo_id
+            ):
+                continue  # TODO-0213: not the replan answer
+            return sig
     return ""
