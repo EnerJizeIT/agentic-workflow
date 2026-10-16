@@ -5,6 +5,7 @@ or raise :class:`awf.api.AwfApiError` with a human-readable message.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -14,10 +15,12 @@ from typing import Any
 from .. import config as cfg_mod
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
+from ..infra import managed_fs
 from . import _liveness
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import read_file_text, require_agentic, require_git_repo
+from ._lease import LEASE_NAME
 from ._results import (
     InitResult,
     ReportResult,
@@ -942,29 +945,79 @@ def reset_runtime(
         mode = "tasks_only"
 
     cleaned: list[str] = []
+    partial_failure = False
+    notes = ""
+
+    # R1.1/S9-01: preflight the WHOLE plan before the first unlink. A
+    # symlinked ``.agentic``, runtime directory, state directory or
+    # fallback log aborts with zero side effects — the failure of the
+    # LAST directory must not leave the FIRST already deleted.
+    try:
+        managed_fs.assert_managed_dir(agentic, root=project_dir)
+        for d in dirs_to_clean:
+            managed_fs.assert_managed_dir(agentic / d, root=project_dir)
+        managed_fs.assert_managed_dir(agentic / "state", root=project_dir)
+        # S9-03 fallback leaf — a symlinked worker-output.out is refused
+        # here too, so a reset never resolves it through the link.
+        managed_fs.assert_no_symlink_escape(
+            agentic / "logs" / paths.WORKER_FALLBACK_LOG, root=project_dir
+        )
+        # State files are unlinked, not followed — a symlinked leaf aborts
+        # the plan before any directory is cleaned.
+        managed_fs.assert_no_symlink_escape(
+            agentic / "state" / "current.yaml", root=project_dir
+        )
+        managed_fs.assert_no_symlink_escape(
+            agentic / "state" / "run.yaml", root=project_dir
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(f"reset refused — unsafe runtime path: {exc}") from exc
+
     for d in dirs_to_clean:
         dirpath = agentic / d
-        if dirpath.is_dir():
+        if not dirpath.is_dir():
+            continue
+        try:
             for f in dirpath.iterdir():
-                if f.is_file():
+                # The launch lease is not runtime data — it is the current
+                # owner's claim (R1.1: reset must not touch lock/lease).
+                if d == "logs" and f.name == LEASE_NAME:
+                    continue
+                # is_symlink() first: a symlinked entry is unlinked itself,
+                # never followed (no rmtree through the link).
+                if f.is_symlink() or f.is_file():
                     f.unlink()
                 elif f.is_dir():
                     shutil.rmtree(f)
             cleaned.append(d)
+        except OSError as exc:
+            # Post-preflight I/O error: journal the applied subset and stop.
+            # No rollback of what is already gone is promised; a repeat
+            # finishes the leftover plan.
+            partial_failure = True
+            notes = f"partial: {d} ({type(exc).__name__}: {exc})"
+            break
 
     # Clear pipeline state file so stale "running" doesn't persist
-    state_file = agentic / "state" / "current.yaml"
-    state_cleared = False
-    if state_file.is_file():
-        state_file.unlink()
-        state_cleared = True
-    # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks the
-    # next run_start with "Run already active". Clear it alongside.
-    if run_state.read_run(project_dir) is not None:
-        run_state.clear_run(project_dir)
-        state_cleared = True
-    if state_cleared:
-        cleaned.append("state")
+    if not partial_failure:
+        state_file = agentic / "state" / "current.yaml"
+        state_cleared = False
+        try:
+            if state_file.is_file():
+                state_file.unlink()
+                state_cleared = True
+            # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks
+            # the next run_start with "Run already active". Clear it too.
+            if run_state.read_run(project_dir) is not None:
+                run_state.clear_run(project_dir)
+                state_cleared = True
+        except OSError as exc:
+            partial_failure = True
+            notes = (
+                f"partial: state ({type(exc).__name__}: {exc})"
+            )
+        if state_cleared:
+            cleaned.append("state")
 
     # Regenerate dashboard so user sees clean state
     try:
@@ -973,7 +1026,10 @@ def reset_runtime(
     except Exception:
         pass
 
-    return ResetResult(cleaned_dirs=cleaned, orphan_ids=[], mode=mode)
+    return ResetResult(
+        cleaned_dirs=cleaned, orphan_ids=[], mode=mode,
+        partial_failure=partial_failure, notes=notes,
+    )
 
 
 # ─── list_orphans / remove_orphans (two-step protocol) ──────────────────
@@ -1003,6 +1059,12 @@ def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
             api.remove_orphans(project_dir, ids)
     """
     project_dir = Path(project_dir).resolve()
+    # R1.1/S9-04: build the inbox via the canonical ``paths.inbox()``. The
+    # root is already canonical and ``paths.agentic_dir`` appends ``.agentic``
+    # WITHOUT resolving it, so a symlinked ``.agentic`` stays a visible
+    # component and the lstat-based preflight below refuses it. The earlier
+    # inline copy (and its claim that ``paths.inbox`` resolves the link) was
+    # wrong on both counts — it just drifted from the path layout.
     inbox = paths.inbox(project_dir)
     # AUD05-06: a fresh worker may not have written PROGRESS yet, so its
     # TODO looks like an orphan. Refuse to delete while the pipeline is
@@ -1012,15 +1074,31 @@ def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
         raise AwfApiError(
             "pipeline is running — wait for verify/salvage, or awf kill first"
         )
+
+    # R1.1/S9-04: validate EVERY id and build EVERY path BEFORE the first
+    # unlink. A traversal like ``../../../disposable`` (which previously
+    # deleted an external .md) rejects the whole list, so a valid TODO
+    # listed before an invalid one is NOT removed either.
+    plan: list[tuple[str, Path, Path]] = []
+    try:
+        if os.path.lexists(inbox):
+            managed_fs.assert_managed_dir(inbox, root=project_dir)
+        for tid in orphan_ids:
+            managed_fs.validate_todo_id(tid)
+            ready = inbox / f"{tid}.ready"
+            md = inbox / f"{tid}.md"
+            plan.append((tid, ready, md))
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(f"remove_orphans refused — {exc}") from exc
+
     removed: list[str] = []
-    for tid in orphan_ids:
-        ready = inbox / f"{tid}.ready"
-        md = inbox / f"{tid}.md"
+    for tid, ready, md in plan:
         deleted_any = False
-        if ready.exists():
+        # unlink never follows the final symlink — safe for a symlinked leaf.
+        if ready.exists() or ready.is_symlink():
             ready.unlink()
             deleted_any = True
-        if md.exists():
+        if md.exists() or md.is_symlink():
             md.unlink()
             deleted_any = True
         if deleted_any:

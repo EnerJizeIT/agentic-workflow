@@ -64,6 +64,7 @@ from . import paths
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._proc import run_tree
+from .infra.managed_fs import ManagedPathError, managed_write_text
 from .prove_red import (
     VERDICT_BROKEN,
     VERDICT_GREEN_AFTER,
@@ -889,8 +890,22 @@ def verify_pack(
     )
     report_str = _render_report(project, todo_id, sections, verdict, exit_code, measured)
     if write_report:
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(report_str, encoding="utf-8")
+        # R1.1/F-A: the default report sits under ``.agentic/context`` — a
+        # symlinked ``.agentic``/``context`` must not send it outside the
+        # project. An explicit out-of-tree ``report_path`` is the caller's
+        # own choice and keeps the plain write.
+        try:
+            report_path.relative_to(project)
+        except ValueError:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(report_str, encoding="utf-8")
+        else:
+            try:
+                managed_write_text(report_path, report_str, root=project)
+            except (ManagedPathError, OSError):
+                # Reporting is best-effort: an unsafe runtime path must not
+                # crash the verify pack (the verdict is already computed).
+                pass
 
     return VerifyPackResult(
         todo_id=todo_id,

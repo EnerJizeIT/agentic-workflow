@@ -14,22 +14,24 @@ fcntl.flock on POSIX; msvcrt.locking on Windows (kept for Windows support).
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 from pathlib import Path
 
 from . import paths
+from .infra import managed_fs
 
 
 @contextlib.contextmanager
 def locked(project_dir: Path):
     """Hold an exclusive advisory lock for one state RMW section."""
     state_dir = paths.agentic_dir(project_dir) / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
     lock_file = state_dir / ".lock"
 
     if sys.platform == "win32":
         import msvcrt
 
+        state_dir.mkdir(parents=True, exist_ok=True)
         f = open(lock_file, "a+b")
         try:
             f.seek(0)
@@ -42,14 +44,22 @@ def locked(project_dir: Path):
     else:
         import fcntl
 
-        f = open(lock_file, "a+b")
+        # R1.1/F-A: the lock writer lives under ``.agentic/state`` — a
+        # symlinked ``.agentic``/``state`` used to send the lock file (and
+        # its ``mkdir``) outside the project. Open through the managed
+        # no-follow helper (symlink → refusal). Reset still must not delete
+        # the lock — that stays reset's responsibility, not the writer's.
+        root = Path(project_dir).resolve()
+        fd = managed_fs.open_managed(
+            lock_file, flags=os.O_RDWR | os.O_CREAT, root=root
+        )
         try:
-            fcntl.flock(f, fcntl.LOCK_EX)
+            fcntl.flock(fd, fcntl.LOCK_EX)
             yield
         finally:
             with contextlib.suppress(OSError):
-                fcntl.flock(f, fcntl.LOCK_UN)
-            f.close()
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 
 __all__ = ["locked"]

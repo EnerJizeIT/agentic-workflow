@@ -10,6 +10,26 @@ from pathlib import Path
 from . import _proc, git_utils
 from . import config as cfg_mod
 from ._atomic import atomic_write_text
+from .infra.managed_fs import ManagedPathError, managed_write_text
+
+
+def _write_test_results(
+    log_path: Path | None, log_root: Path | None, chunks: list[str]
+) -> None:
+    """Persist captured verify output — best-effort, boundary-safe.
+
+    R1.1/F-A: ``TEST-RESULTS-<id>.log`` lives under ``.agentic/outbox``. A
+    plain ``atomic_write_text`` followed a symlinked ``.agentic``/``outbox``
+    out of the project (S9-03 class). ``managed_write_text`` refuses the
+    escape before writing. Verification logging is diagnostic, so a refusal
+    (or any I/O error) is swallowed — the verify verdict is unaffected.
+    """
+    if log_path is None or log_root is None:
+        return
+    try:
+        managed_write_text(log_path, "".join(chunks), root=log_root)
+    except (ManagedPathError, OSError):
+        pass
 
 # Per-command timeout for verify commands (test/lint/typecheck/build).
 # A hung watcher (`pytest --watch`) or stdin-prompt would otherwise block
@@ -178,9 +198,10 @@ def run_verify_commands(
 
     cwd = Path(project_dir) if project_dir is not None else None
     log_path: Path | None = None
+    log_root: Path | None = None
     if todo_id and cwd is not None:
         log_path = cwd / ".agentic" / "outbox" / f"TEST-RESULTS-{todo_id}.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_root = cwd
 
     log_chunks: list[str] = []
     cmd_timeout = _verify_cmd_timeout()
@@ -191,7 +212,7 @@ def run_verify_commands(
             # AUD14-02: bad quoting in test_cmd must not traceback the pipeline
             if log_path is not None:
                 log_chunks.append(f"$ {cmd}\nABORTED: bad quoting: {e}\n")
-                atomic_write_text(log_path, "".join(log_chunks))
+                _write_test_results(log_path, log_root, log_chunks)
             return False
         if not parts:
             return False
@@ -210,23 +231,23 @@ def run_verify_commands(
                 log_chunks.append(
                     f"$ {cmd}\nTIMEOUT after {cmd_timeout}s — command did not exit\n"
                 )
-                atomic_write_text(log_path, "".join(log_chunks))
+                _write_test_results(log_path, log_root, log_chunks)
             return False
         except (FileNotFoundError, OSError) as e:
             if log_path is not None:
                 log_chunks.append(f"$ {cmd}\nABORTED: {e}\n")
-                atomic_write_text(log_path, "".join(log_chunks))
+                _write_test_results(log_path, log_root, log_chunks)
             return False
         if log_path is not None:
             chunk = f"$ {cmd}\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}\n"
             log_chunks.append(chunk)
         if result.returncode != 0:
             if log_path is not None:
-                atomic_write_text(log_path, "".join(log_chunks))
+                _write_test_results(log_path, log_root, log_chunks)
             return False
 
     if log_path is not None:
-        atomic_write_text(log_path, "".join(log_chunks))
+        _write_test_results(log_path, log_root, log_chunks)
     return True
 
 

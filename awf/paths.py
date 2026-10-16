@@ -49,6 +49,13 @@ def logs_dir(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "logs"
 
 
+# R1.1/S9-03: the worker log name used when the caller gives no explicit
+# ``log_name``. Kept here so the writer (signal_watch) and the reset
+# preflight (lifecycle) share one literal — the preflight must guard the
+# same leaf the writer opens.
+WORKER_FALLBACK_LOG = "worker-output.out"
+
+
 def state_dir(project_dir: str | Path = ".") -> Path:
     """Return .agentic/state/."""
     return agentic_dir(project_dir) / "state"

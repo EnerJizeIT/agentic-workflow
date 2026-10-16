@@ -9,6 +9,8 @@ import os
 import threading
 from pathlib import Path
 
+from .infra import managed_fs
+
 # AUD15-04: default rotation threshold for orchestrator.log.
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 
@@ -143,19 +145,27 @@ def _maybe_rotate(log_file: Path) -> None:
 
 def log(logs_dir: Path, message: str) -> None:
     """Append a timestamped message to ``logs_dir/orchestrator.log``."""
-    if not logs_dir.exists():
-        try:
-            logs_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return
     log_file = logs_dir / "orchestrator.log"
-    _maybe_rotate(log_file)
+    # R1.1/S9-03: the no-follow walk anchors at the project root (for the
+    # ``<root>/.agentic/logs`` layout; else the dir's own parent) — a
+    # symlinked ``.agentic`` or ``logs`` is refused. One shared derivation
+    # with the other managed writers (``managed_fs.agentic_root_for``).
+    root = managed_fs.agentic_root_for(logs_dir)
     ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        # AUD14-06d: O_CREAT mode 0o600 — the log is born user-only
-        # instead of the old 0644 window (open("a") + later chmod).
-        fd = os.open(log_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        # R1.1/S9-03 (REVIEW fix): the plain os.open followed a symlinked
+        # ``.agentic``/``logs`` — orchestrator.log landed outside the
+        # project. The guard runs BEFORE the ``mkdir`` too: a symlinked
+        # ``.agentic``/``logs`` used to let the path ``mkdir`` create the
+        # log directory OUTSIDE the project before any check. Then the
+        # walk opens no-follow (born 0600, fstat type check). Refusal is
+        # silent: the logger must never break a run.
+        managed_fs.assert_no_symlink_escape(log_file, root=root)
+        if not logs_dir.exists():
+            logs_dir.mkdir(parents=True, exist_ok=True)
+        _maybe_rotate(log_file)
+        fd, _ = managed_fs.open_append_log(log_file, root=root)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
-    except OSError:
+    except (OSError, managed_fs.ManagedPathError):
         pass

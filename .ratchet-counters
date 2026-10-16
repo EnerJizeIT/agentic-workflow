@@ -1580,3 +1580,23 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # tests/negative/test_run_plan_read_coverage.py adds 2 TODO-bearing lines
 # (the T/T2 fixture todo ids). Same class as above: test identifiers,
 # not debt.
+
+# R1.1 QA (agent-qa-review, 16.10, TODO-0215): baseline todos raised
+# 5856 -> 5861 (+5) — the new tests/negative/test_roadmap_r1_safety_qa.py
+# adds 5 TODO-bearing lines (the TODO-0001 fixture use-sites of the
+# remove_orphans symlink-leaf test — 4 — and the "Требование TODO B"
+# docstring line). Same class as above: test identifiers and a
+# requirement reference, not debt. files_over_400 stays 78 (the new QA
+# file is 149 lines — under the bar; the reviewed
+# test_roadmap_r1_safety.py was left untouched at 345 lines).
+
+# R1.1 (agent-implementer, TODO-0215, iter-5 F-A/F-B closure): files_over_400
+# raised 78 -> 79 and todos 5861 -> 5863. The +1 file crossing the bar is
+# tests/negative/test_roadmap_r1_safety.py (345 -> 407): two red-control
+# tests were appended (managed_write_text / state-lock refuse a symlinked
+# .agentic). The +2 TODO-bearing lines are the iter-5 red tests in
+# tests/negative/test_roadmap_r1_safety_qa.py (the ``TODO-0001`` fixture id in
+# test_verify_test_results_log_agentic_symlink_no_external_write and the
+# "раздела B TODO" requirement reference in
+# test_intermediate_component_swap_refused) — test identifiers and a
+# requirement reference, not debt. No production module crossed the bar.
