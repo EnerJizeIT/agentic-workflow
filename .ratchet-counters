@@ -1679,3 +1679,12 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # recovery_required, not the first unit's refusal). No production module
 # gained a TODO line; files_over_400 stays 80 (that test file was already
 # over the bar).
+
+# TODO-0217 (R1.3 StateStore): baseline raised todos 5937 -> 5939 and
+# files_over_400 80 -> 81 — the new
+# tests/negative/test_roadmap_r1_state_store.py adds 2 TODO-bearing lines
+# (the "TODO-0217:" / "TODO-0217, inverse" docstring references of the
+# args-guard tests) and crosses 400 lines (507 — its test suite), same
+# class as the test_audit25_* / test_neg3_* negative-layer raises above.
+# The new awf/infra/state_store/ package carries no TODO line; no other
+# production module crossed the bar.
