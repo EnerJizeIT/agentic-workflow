@@ -1600,3 +1600,82 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # "раздела B TODO" requirement reference in
 # test_intermediate_component_swap_refused) — test identifiers and a
 # requirement reference, not debt. No production module crossed the bar.
+
+# R1.2 (TODO-0216, operation_id + cancel-safety): todos 5863 -> 5884 (+21).
+# The +21 TODO-bearing lines are: 6 in awf/api/hygiene.py (the R1.2 section
+# header, the OperationId/operation-journal comments and the operation_id
+# docstrings), 1 in awf/_errors.py (the OperationRecoveryRequired
+# docstring's unit reference), 4 in agent_workflow_ui tools/awf.py (the
+# _INFLIGHT_MUTATIONS/_mutating/awf_todo_update R1.2 docstring lines) and
+# 10 in the new tests/negative/test_roadmap_r1_cancel.py (the module
+# docstring's invariant references and the TODO-0001 fixture/assert
+# use-sites). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 79 (the new test file is
+# 241 lines — under the bar; the touched production modules were already
+# over it). The architect-review pass reconciled the +1 the implementer's
+# own count missed (5883 -> 5884): its new docstrings carry no TODO line.
+
+# QA (TODO-0216, stage agent-qa-review): todos 5884 -> 5889 (+5).
+# The +5 are TEST identifiers only — the "TODO-0001" argument of the four
+# new regression tests added to tests/negative/test_roadmap_r1_cancel.py
+# (corrupt-journal -> recovery_required, refused replay, invalid op id,
+# MCP outcome wire; the refused test names TODO-0001 twice). No production
+# module gained a TODO line and no new debt crossed the bar:
+# files_over_400 stays 79.
+
+# REVIEW-фикс (TODO-0216, iter 2, решение супервизора): todos 5889 -> 5903
+# (+14) and files_over_400 79 -> 80 (+1). The +14 TODO lines are TEST
+# identifiers only — the "TODO-0001" argument threaded through the eight
+# new R1.2 regression tests (finish-journal start/finish failure, same-id
+# concurrency, the three hygiene lock-guarded ops, the two CLI
+# operation_id tests) added to tests/negative/test_roadmap_r1_cancel.py.
+# The +1 file is that same test file crossing 400 lines (525): the unit
+# contract's verify command runs exactly this file, so the review tests
+# cannot move out without leaving the gate. No production module gained a
+# TODO line; the touched production modules (hygiene.py, cli.py,
+# cmd_todo_update.py) were already over the bar and add none.
+
+# QA (TODO-0216, stage agent-qa-review, iter 2): todos 5903 -> 5905 (+2).
+# The +2 TODO lines are TEST arguments only — the two "TODO-0001" call
+# sites of the new cross-path regression test (operation writer vs plain
+# writer: the operation holds the project lock across the whole RMW, the
+# plain writer is ordered after it and version-refused). No production
+# module gained a TODO line; files_over_400 stays 80 (the test file was
+# already over the bar).
+
+# REVIEW-фикс 2 (TODO-0216, iter 3, решение супервизора): todos 5905 ->
+# 5913 (+8). The +8 TODO lines are TEST arguments only — the "TODO-0001"
+# call sites of the deterministic stale-write rewrite (F2), the two
+# case-different / reserved-name replay tests (F4) and the CLI
+# recovery_required test (F3), all in tests/negative/test_roadmap_r1_cancel.py.
+# No production module gained a TODO line; the touched production modules
+# (hygiene.py, cmd_todo_update.py) were already over the bar. files_over_400
+# stays 80 (that test file was already over it).
+
+# Architect-review (TODO-0216, stage 3, design drift): todos 5913 -> 5916
+# (+3). The +3 TODO lines are TEST arguments only — the two "TODO-0001"
+# call sites and the echoed "result"."todo_id" of the two guards added to
+# tests/negative/test_roadmap_r1_cancel.py (AR-A: an "applied" journal
+# without a complete result is unknown, not a hollow ok; AR-B: a journal
+# body naming a different operation_id is not trusted). No production
+# module gained a TODO line; files_over_400 stays 80.
+
+# PROJECT-AUDIT (TODO-0216, stage 5, AUD-1/AUD-2): baseline todos 5918 ->
+# 5931 (+13) — the audit pass and the REVIEW-фикс 3 implementer add 13
+# TODO-bearing lines: 10 test identifiers in the two new regression
+# classes of tests/negative/test_roadmap_r1_cancel.py (the TODO-0001/
+# TODO-0002 fixture/assert use-sites of the replay-target binding test
+# and the four-op lock-guard test, plus one assert message naming "TODO")
+# and 3 unit-reference comments in awf/api/hygiene.py (the AUD-1 binding
+# check and the two AUD-2 guard comments). Same class as above: test
+# identifiers and unit references, not debt. No production module crossed
+# the bar; files_over_400 stays 80.
+
+# QA (TODO-0216, stage agent-qa-review, iter-5): todos 5931 -> 5937 (+6).
+# The +6 TODO lines are TEST identifiers only — the "TODO-0001"/"TODO-0002"
+# call sites of the two boundary/refusal-path regression tests added to
+# tests/negative/test_roadmap_r1_cancel.py (a 64-char id is accepted and a
+# 65-char one refused; a REFUSED operation_id reused for another unit is
+# recovery_required, not the first unit's refusal). No production module
+# gained a TODO line; files_over_400 stays 80 (that test file was already
+# over the bar).

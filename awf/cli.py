@@ -226,6 +226,17 @@ def _build_parser():
         default="",
         help="Why the content is reworded (written to the log)",
     )
+    # R1.2 (TODO-0216): durable-operation id — a retry with the same id
+    # returns the recorded outcome instead of re-applying.
+    p_todo_update.add_argument(
+        "--operation-id",
+        dest="operation_id",
+        default="",
+        help=(
+            "Durable operation id: a retry with the same id replays the "
+            "recorded outcome (unknown outcome → recovery_required)"
+        ),
+    )
     p_todo_update.add_argument(
         "--project-dir",
         dest="project_dir",

@@ -28,9 +28,21 @@ def run(args: Any) -> int:
             return 1
 
     print("=== Agentic Workflow: Update TODO ===")
+    operation_id = str(getattr(args, "operation_id", "") or "") or None
     try:
-        result = api.update_todo(project_dir, todo_id, content, reason=reason)
+        result = api.update_todo(
+            project_dir, todo_id, content, reason=reason,
+            operation_id=operation_id,
+        )
     except api.AwfApiError as e:
+        # R1.2 (TODO-0216, F3): a durable-operation outcome the caller must
+        # act on differently — an unknown outcome (recovery_required) is
+        # NOT a plain refusal to retry. Print the machine token and return
+        # a distinct exit code so a script can tell them apart.
+        outcome = getattr(e, "outcome", "")
+        if outcome:
+            print(f"outcome={outcome}: {e}")
+            return 2
         print(f"ERROR: {e}")
         return 1
     print(result.message)
