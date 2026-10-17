@@ -40,6 +40,12 @@ from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
 from ..run_state import run_is_active
 from ..verify_pack import VerifyPackResult, verify_pack
+from ._destructive import (
+    DestructivePreview,
+    execute_destruction,
+    format_preview,
+    preview_destruction,
+)
 
 # Public types
 from ._errors import AwfApiError
@@ -213,6 +219,11 @@ __all__ = [
     "reject_commit",
     "retry_stage",
     "restore_todo",
+    # Destructive preview / confirm (R1.4 F-R2)
+    "DestructivePreview",
+    "preview_destruction",
+    "execute_destruction",
+    "format_preview",
     # TODO state hygiene (RUN3 #4/#5 — stale closures, never-started removal;
     # RUN5 #2 — rejected/abandoned TODO archive)
     "unblock_todo",

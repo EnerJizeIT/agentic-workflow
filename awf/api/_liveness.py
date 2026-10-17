@@ -19,6 +19,15 @@
 (TODO-0153: переиспользованный PID мог держать живой пайплайн ДРУГОГО
 проекта). Без /proc (не-Linux) — деградация до проверки живости (как
 раньше).
+
+R1.4: рядом с резолвером живёт ОБЩИЙ destructive-preflight
+(:func:`destructive_blockers` / :func:`refuse_if_in_use`) — «почему
+разрушительную операцию нужно отклонить прямо сейчас». Не случайно в этом
+же модуле: проверка «проект занят?» обязана читать те же факты, что
+публикует запуск (живой пайплайн, живой launch lease, резервации
+Store), иначе второй, более узкий guard со временем разойдётся с первым
+(именно так появился класс F3). Отказ формулируется один раз здесь, а не
+пересобирается возле каждой точки удаления.
 """
 from __future__ import annotations
 
@@ -28,6 +37,7 @@ from pathlib import Path
 
 from .. import paths
 from ..pipeline_state import read_state
+from ._errors import AwfApiError
 
 _OUR_SUBCOMMANDS = ("start", "continue")
 PID_FILE_NAME = "awf-start.pid"
@@ -197,6 +207,84 @@ def resolve(project_dir: Path) -> tuple[bool, int | None, str | None]:
     return False, None, None
 
 
+def destructive_blockers(project_dir: Path, *, action: str = "reset") -> list[str]:
+    """Why a destructive op (reset/rollback) must be refused right now.
+
+    R1.4 (S9-02): destructive ops consult the SAME facts the launch path
+    publishes — a live pipeline, a live launch lease (an in-flight start),
+    and the StateStore reservations matrix (a long action in flight). An
+    empty list means the project is provably free.
+
+    A dead owner (stale PID file, dead lease, stale run) yields NO blocker:
+    the caller then reconciles (cleans the stale state) without losing the
+    original facts. An UNKNOWN owner (a lease file whose pid cannot be
+    read) DOES block — "unreadable" is not "dead". ``action`` selects the
+    reservations action — ``reset`` for :func:`reset_runtime`, ``write``
+    for a destructive rollback.
+
+    A-3: the reservation component below (``state_store.check_action``) has
+    no production producer yet — an in-flight start reserves through the run
+    projection, not a Store transaction, so the reservations check adds no
+    blocker on the production path today. The guarantee becomes live when
+    R1.5 wires the Store writers (tracked there, not in this unit).
+    """
+    blockers: list[str] = []
+    running, pid, source = resolve(project_dir)
+    if running:
+        blockers.append(f"pipeline is running (PID {pid}, {source})")
+    # Lazy import: _lease imports probe_alive from this module.
+    from . import _lease
+
+    claim, owner = _lease.claim_status(project_dir)
+    if claim == _lease.CLAIM_ALIVE:
+        blockers.append(f"a launch is in progress (lease held by PID {owner})")
+    elif claim == _lease.CLAIM_UNKNOWN:
+        # QA F-A: an existing but unreadable claim is NOT provably dead —
+        # requirement 3 says "alive OR unknown refuses". Only no file
+        # (MISSING) and a readable dead pid (DEAD) leave the project free.
+        # F-P3: this branch is NOT cleared by awf_kill — the file must be
+        # inspected/fixed by hand, so name it instead of advising a kill.
+        blockers.append(
+            "a launch claim exists but its owner cannot be read "
+            f"(unknown is not free) — inspect .agentic/logs/{_lease.LEASE_NAME}"
+        )
+    try:
+        from ..infra import state_store
+
+        state_store.check_action(str(project_dir), action)
+    except state_store.StateStoreError as exc:  # reservation / corrupt / unknown
+        blockers.append(f"state store refuses {action}: {exc}")
+    return blockers
+
+
+def refuse_if_in_use(project_dir: Path, *, label: str, action: str = "reset") -> None:
+    """Raise the SHARED destructive refusal when any blocker is live.
+
+    One form of the "preflight refused" text for every destructive entry —
+    ``reset_runtime``, ``remove_orphans``, ``rollback`` and
+    ``init_project(force=True)``. Each used to rebuild the guard block next
+    to its own deletion; that divergence is exactly how a second, narrower
+    guard appeared (QA F3). Call it INSIDE the ``destructive_section`` hold,
+    so the blockers are read under the same critical section as the deletion
+    that follows.
+
+    ``label`` names the operation in the refusal (``"reset"``,
+    ``"rollback(hard)"`` …); ``action`` selects the reservations action.
+    Confirmed facts are named verbatim — ``": ".join`` of the blockers — so
+    the caller sees WHY the project is in use, not a generic "busy".
+    """
+    blockers = destructive_blockers(project_dir, action=action)
+    if blockers:
+        # F-P3: no blanket "awf_kill" hint here — an UNKNOWN lease claim is
+        # not cleared by a kill, and the blocker above already names the exact
+        # file to inspect. Advise resolving the named fact, nothing narrower.
+        raise AwfApiError(
+            f"{label} refused — the project is in use: "
+            + "; ".join(blockers)
+            + ". Resolve the named blocker, then retry."
+        )
+
+
 __all__ = [
     "read_cmdline",
     "is_our_argv",
@@ -206,4 +294,6 @@ __all__ = [
     "probe_alive",
     "pid_is_ours",
     "resolve",
+    "destructive_blockers",
+    "refuse_if_in_use",
 ]

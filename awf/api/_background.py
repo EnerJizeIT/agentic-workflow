@@ -156,6 +156,16 @@ def start_in_background(
     child_env.pop("AWF_NO_CHECKPOINTS", None)
     if no_checkpoints:
         child_env["AWF_NO_CHECKPOINTS"] = "1"
+    # R1.4 (F-R1): hand the child the ExecutionId of the launch that owns
+    # the project right now. The launcher published it (lease acquire)
+    # before spawning; the child verifies it at start (pipeline.py) and
+    # exits without work if a newer launch has since overwritten the
+    # marker (a crash-orphan of an earlier launch must not run).
+    from . import _lease
+
+    exec_id = _lease.read_execution_id(project_dir)
+    if exec_id:
+        child_env[_lease.EXECUTION_ENV] = exec_id
 
     # AUD14-06c: awf-start.out carries stage crash tracebacks (which embed
     # the worker prompt) — born 0600, not 0644 via open("ab").

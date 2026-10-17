@@ -945,12 +945,47 @@ def rollback(
     todo_id: str,
     *,
     mode: str = "hard",
+    confirm_digest: str | None = None,
 ) -> RollbackResult:
     """Rollback project to BASELINE-{todo_id}.sha.
+
+    R1.4 (требование 4): разрушительные режимы (hard/soft) держат ту же
+    критическую секцию, что и запуск, — start не может опубликовать
+    заявку и стартовать между preflight и ``git reset``. Занятая секция
+    — отказ, не ожидание. ``dry-run`` только читает и секцию не берёт.
+
+    R1.4 (F-R2): ``confirm_digest`` — digest плана из
+    :func:`awf.api.preview_destruction` (kind ``rollback``); при
+    несовпадении (в т.ч. устаревшем плане) rollback отвергается до
+    ``git reset``. ``None`` — legacy-путь. ``dry-run`` секцию не берёт, но
+    ``confirm_digest`` для него не требуется (он ничего не меняет).
 
     Modes: ``hard`` (default, ``git reset --hard``), ``soft`` (``git reset``,
     keeps working tree), ``dry-run`` (returns diff without modifying).
     """
+    resolved = Path(project_dir).resolve()
+    # dry-run only reads — it never takes the section.
+    if mode not in ("hard", "soft"):
+        return _rollback_impl(
+            resolved, todo_id, mode=mode, confirm_digest=confirm_digest
+        )
+    from ._interlock import destructive_section
+
+    # A project without ``.agentic`` yields free (see ``destructive_section``);
+    # ``_rollback_impl`` raises ``require_agentic`` exactly as it did before.
+    with destructive_section(resolved, label=f"rollback({mode})"):
+        return _rollback_impl(
+            resolved, todo_id, mode=mode, confirm_digest=confirm_digest
+        )
+
+
+def _rollback_impl(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    mode: str = "hard",
+    confirm_digest: str | None = None,
+) -> RollbackResult:
     if not todo_id:
         raise AwfApiError("todo_id is required")
     if not re.match(r"^TODO-\d{4,}$", todo_id):
@@ -961,6 +996,16 @@ def rollback(
         raise AwfApiError(f"invalid mode '{mode}', expected hard/soft/dry-run")
 
     project_dir = Path(project_dir).resolve()
+
+    # R1.4 (S9-02): a destructive rollback (hard/soft moves HEAD) must not
+    # race a live launch — same preflight facts as reset, one refusal form.
+    # dry-run is read-only and skips it.
+    if mode in ("hard", "soft"):
+        from ._liveness import refuse_if_in_use
+
+        refuse_if_in_use(
+            project_dir, label=f"rollback({mode})", action="write"
+        )
 
     # SPEC A-run.4 (stop-list): destructive rollback is an owner decision.
     # While a run is active, `hard` is refused — stop the run first.
@@ -995,6 +1040,19 @@ def rollback(
             f"baseline SHA {baseline_sha!r} is not a valid git revision — "
             f"{baseline_sha_file} is corrupt. Recreate the baseline "
             f"(awf_baseline {todo_id}) and retry."
+        )
+
+    # F-R2: confirm the plan (under the section) before the git reset.
+    if mode in ("hard", "soft"):
+        from . import _destructive
+
+        _destructive.verify_confirm(
+            project_dir,
+            "rollback",
+            confirm_digest,
+            mode=mode,
+            baseline_sha=baseline_sha,
+            todo_id=todo_id,
         )
 
     try:
@@ -1145,10 +1203,32 @@ def start_pipeline(
     # background child (the pipeline itself, spawned by the launch that
     # owned the lease) must not be refused by its own launch.
     is_bg_child = _is_background_child()
+    # R1.4 (F-R1, требование 2): the launched child carries the ExecutionId
+    # of its launch. Before doing ANY work it confirms the current launch
+    # reservation still names it — a crash-orphan child (its launch is gone,
+    # a newer launch owns the project) exits without work instead of running
+    # a second pipeline over the live project.
+    if is_bg_child and not _lease.execution_confirmed(
+        project_dir, os.environ.get(_lease.EXECUTION_ENV, "")
+    ):
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=0,
+            message=(
+                "launch aborted — this child's ExecutionId is not the current "
+                "launch reservation (a stale / crash-orphan child of an "
+                "earlier launch); no work performed."
+            ),
+        )
     lease = None
     if not is_bg_child:
         try:
-            lease = _lease.acquire(project_dir)
+            # F-ID: publish_identity=False — the marker is written only
+            # after the liveness gate below proves this launch proceeds, so
+            # a refused start never rewrites a live child's ExecutionId.
+            lease = _lease.acquire(project_dir, publish_identity=False)
         except _lease.LeaseHeldError as e:
             return StartResult(
                 run_mode="noop",
@@ -1184,6 +1264,12 @@ def start_pipeline(
                     f"Use awf_status to check progress, or kill PID {live_pid} to force restart."
                 ),
             )
+
+        # F-ID (REVIEW-фикс 12): this launch passed the liveness gate and
+        # WILL proceed — only now rotate the identity marker. It must
+        # happen before start_in_background reads it for the child's env.
+        if lease is not None:
+            lease.publish_identity()
 
         # Dogfood-8: detect BD-36 checkpoint state + build appropriate warning
         from ..plan_checkpoint import is_checkpoint_enabled
@@ -1433,7 +1519,10 @@ def continue_pipeline(
     # so no child exception is needed here.
     lease = None
     try:
-        lease = _lease.acquire(project_dir)
+        # F-ID: publish_identity=False — see start_pipeline: the marker is
+        # written after the liveness gate so a refused continue does not
+        # rewrite a live child's ExecutionId.
+        lease = _lease.acquire(project_dir, publish_identity=False)
     except _lease.LeaseHeldError as e:
         return StartResult(
             run_mode="noop",
@@ -1465,6 +1554,11 @@ def continue_pipeline(
                     f"Use awf_status to check progress. If stuck, kill PID {live_pid} first."
                 ),
             )
+
+        # F-ID (REVIEW-фикс 12): passed the liveness gate — publish the
+        # identity marker now, before start_in_background reads it.
+        if lease is not None:
+            lease.publish_identity()
 
         # KAUD-8: Prefer todo_id from state file (accurate crash recovery)
         # over newest_active() heuristic (might pick wrong TODO if multiple active).

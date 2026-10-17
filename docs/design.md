@@ -86,8 +86,10 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 |---|---|
 | `api/pipeline.py` | `start_pipeline`, `continue_pipeline`, `kill`, `retry_stage`, `approve`, `reject` |
 | `api/run.py` | Забег: `run_start` / `run_status` / `run_next` / `run_finish` / `run_note` |
-| `api/_lease.py` | Launch lease `.agentic/logs/awf-launch.lease` (O_EXCL, stale по живости) |
+| `api/_lease.py` | Launch lease `.agentic/logs/awf-launch.lease` (атомарная публикация, stale по живости) |
 | `api/_liveness.py` | Резолвер живости: PID + проверка argv (защита от PID-реюза) |
+| `api/_interlock.py` | Одна критическая секция запуска и разрушения (flock `.interlock`) |
+| `api/_destructive.py` | Preview разрушения (scope + revision + digest) и подтверждение плана перед reset/rollback/force-init |
 | `api/_background.py` | Background-спавн: lease, двойной маркер ребёнка, `automation.runner_dir` |
 | `api/dispatch.py` | `dispatch_todo` (atomic: TODO + baseline + signal + pre-check grep) |
 | `api/lifecycle.py` | `init_project`, `get_status`, `get_report` |
@@ -189,9 +191,10 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 
 Одновременные вызовы запуска (`awf_start` / `awf_run_next`, CLI `awf start` / `awf continue`) дают ровно один выполняющийся пайплайн.
 
-- **Lease:** `.agentic/logs/awf-launch.lease` — O_EXCL, stale определяется по живости процесса, не по возрасту файла (`api/_lease.py`). Прочие вызовы получают `run_mode="noop"` с текстом — не исключение.
+- **Lease:** `.agentic/logs/awf-launch.lease` — заявка публикуется атомарно через `os.link` (владелец сначала пишется в скрытый временный файл, где и стоит `O_EXCL`), поэтому читатель никогда не видит пустой заявки; stale определяется по живости процесса, не по возрасту файла (`api/_lease.py`). Публикация идёт через `dir_fd` (обе стороны ссылки — внутри уже проверенного каталога, симлинк `.agentic`/`logs` не прослеживается). Прочие вызовы получают `run_mode="noop"` с текстом — не исключение. На ФС без жёстких ссылок `awf start` отказывает (fail-closed). Рядом лежит метка идентичности запуска `.agentic/logs/awf-launch.execution` (ExecutionId): ребёнок старого запуска, чью метку переписал новый запуск, работу не выполняет. Метка — не runtime-данные: `reset`/`force-init` её не удаляют, а ПЕРЕЗАПИСЫВАЮТ свежим id (иначе orphan последнего запуска прошёл бы handshake по совпадению или по правилу «метки нет = работай»).
 - **Резолвер живости:** PID из state проверяется по argv — совпадение «это наш orchestrator» (защита от PID-реюза), одинаково для foreground и background (`api/_liveness.py`).
 - **Background-ребёнок — двойной маркер:** env `AWF_BACKGROUND_CHILD=1` + свой argv (`python -m awf start/continue ...`), чтобы резолвер живости и kill находили именно ребёнка (`api/_background.py`).
+- **Платформа:** запуск и разрушение (reset/rollback/force-init) требуют POSIX-семантики файлов — `flock` плюс no-follow-пути, без которых живой запуск не защищён. На не-POSIX эти операции ОТКАЗЫВАЮТ с человеческим текстом (fail-closed), а не запускают ослабленную реализацию. Это осознанное расхождение с `_lock.py`, где Windows-ветка (`msvcrt`) сохранена для счётчика read→merge→write: гарантия интерлока и безобидный file-lock — разные требования (интерлок без `flock` не интерлок).
 
 ## Verify-гейты
 

@@ -21,12 +21,17 @@ from pathlib import Path
 from . import paths
 from .infra import managed_fs
 
+#: Name of the RMW lock file inside ``.agentic/state/``. Owned here so the
+#: force-init cleanup (``lifecycle._clean_state_dir``) preserves the exact
+#: file this module locks instead of re-spelling the name next to it.
+LOCK_NAME = ".lock"
+
 
 @contextlib.contextmanager
 def locked(project_dir: Path):
     """Hold an exclusive advisory lock for one state RMW section."""
     state_dir = paths.agentic_dir(project_dir) / "state"
-    lock_file = state_dir / ".lock"
+    lock_file = state_dir / LOCK_NAME
 
     if sys.platform == "win32":
         import msvcrt
@@ -62,4 +67,4 @@ def locked(project_dir: Path):
             os.close(fd)
 
 
-__all__ = ["locked"]
+__all__ = ["LOCK_NAME", "locked"]

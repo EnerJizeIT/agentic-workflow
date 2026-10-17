@@ -1,9 +1,18 @@
-"""R1.3: the durable operation journal (shared layout with R1.2 hygiene).
+"""R1.3: the durable operation journal.
 
-One json per operation id, keyed on a digest of the id (a user-supplied
-token is never a path component), carrying status reserved/running/applied/
-refused/failed/recovery_required. A retry reads the recorded outcome instead
-of guessing; an unreadable record is unknown, never "never started".
+The PATH and KEY are shared with R1.2 ``hygiene`` (``api/hygiene.py``):
+one ``state/operations/<sha256(id)>.json`` per operation id — a
+user-supplied token is never a path component. The RECORD SCHEMA, however,
+is Store-owned and DIFFERS from hygiene's: here the status vocabulary is
+reserved/running/applied/refused/failed/recovery_required with an arguments
+digest, while hygiene records started/refused/applied with a todo id. A
+reader must key on the vocabulary it expects — reading hygiene's
+``started`` as this module's ``reserved`` would be wrong. Unifying the two
+vocabularies is deferred (R1.5); until then only the path and key are
+common ground.
+
+A retry reads the recorded outcome instead of guessing; an unreadable
+record is unknown, never "never started".
 """
 from __future__ import annotations
 

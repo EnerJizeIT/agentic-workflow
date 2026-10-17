@@ -403,9 +403,11 @@ def _ensure_lock_file(project_dir: Path) -> None:
     when the file is absent — makes the Windows path stable. The Linux path
     is unchanged: flock does not depend on file contents.
     """
+    from ._lock import LOCK_NAME
+
     state_dir = paths.agentic_dir(project_dir) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = state_dir / ".lock"
+    lock_file = state_dir / LOCK_NAME
     if lock_file.is_file():
         return
     try:

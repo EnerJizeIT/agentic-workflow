@@ -181,7 +181,13 @@ def _open_dir_chain(
         except FileNotFoundError:
             if not create:
                 raise
-            os.mkdir(part, 0o700, dir_fd=fd)
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                # R1.4: два процесса могли пройти create-ветку одновременно
+                # (launch lease + interlock) — каталог уже создан соседом,
+                # это не ошибка, следующий open его откроет.
+                pass
             nfd = os.open(
                 part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
             )

@@ -13,12 +13,19 @@ was indistinguishable from an empty project. This package is the one writer:
 * ``state/records/<kind>/<digest>.json`` — immutable, digest-addressed
   payloads. Publishing the snapshot is the commit point; a record written
   before the crash is simply unreachable, not "success".
-* ``state/operations/<sha>.json`` — the durable operation journal (shared
-  layout with R1.2 ``hygiene``): reserved/running/applied/refused/failed/
-  recovery_required, keyed by operation id + an arguments digest.
+* ``state/operations/<sha>.json`` — the durable operation journal. The path
+  and key (a digest of the operation id) are shared with R1.2 ``hygiene``,
+  but the RECORD SCHEMA is Store-owned and differs from hygiene's
+  (reserved/running/applied/refused/failed/recovery_required + an arguments
+  digest, versus hygiene's started/refused/applied + a todo id) — see
+  :mod:`._ops`. Only the path and key are common ground today; unifying the
+  vocabularies is deferred to R1.5.
 * ``state/migration-manifest.json`` — the migration manifest naming the
-  legacy files; ``run.yaml`` / ``current.yaml`` stay as read-only
-  projections.
+  legacy files. ``run.yaml`` / ``current.yaml`` are still WRITTEN by the
+  run path in R1.4 — the Store owns the durable generation counter and the
+  active-run witness, while the projections stay authoritative for the
+  legacy readers. Converting them into read-only projections is the
+  deferred end-state of R1.5 (same note as ``api/run.py::run_start``).
 
 ``transact`` takes the interprocess project lock, re-reads the snapshot,
 checks the CAS precondition, publishes records, then atomically replaces the
@@ -39,6 +46,14 @@ from ._errors import (
     StateCorrupt,
     StateStoreError,
     StateUnsupported,
+)
+from ._generation import (
+    active_run_generation,
+    clear_active_run,
+    current_run_generation,
+    next_run_generation,
+    publish_active_run,
+    seed_run_generation,
 )
 from ._io import (
     CONTROL_FILE_NAME,
@@ -108,6 +123,12 @@ __all__ = [
     "release_reservation",
     "takeover_reservation",
     "read_projection",
+    "active_run_generation",
+    "current_run_generation",
+    "next_run_generation",
+    "publish_active_run",
+    "seed_run_generation",
+    "clear_active_run",
     "migration_preview",
     "migrate",
     "main",

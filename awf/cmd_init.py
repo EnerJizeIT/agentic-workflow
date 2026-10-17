@@ -26,6 +26,8 @@ def run(args: Any) -> int:
     force = getattr(args, "force", False)
     dry_run = getattr(args, "dry_run", False)
     non_interactive = getattr(args, "non_interactive", False)
+    preview = getattr(args, "preview", False)
+    confirm_digest = getattr(args, "confirm_digest", None) or None
     project_dir_arg = getattr(args, "project_dir", ".")
 
     project_dir_path = Path(project_dir_arg).resolve()
@@ -39,10 +41,42 @@ def run(args: Any) -> int:
         print("ERROR: Not a git repository. Run 'git init' first.")
         return 1
 
+    # F-R2/F-A: preview of the force-wipe plan (scope + revision + digest).
+    # Terminal UNCONDITIONALLY: on a fresh project there is nothing to
+    # destroy, but --preview must never fall through to a real init (the
+    # old guard here required an existing .agentic/, so
+    # ``init --force --preview`` on a fresh project silently wrote the
+    # skeleton). --preview without --force is a usage error: init is
+    # non-destructive without force, so there is no destruction plan.
+    if preview:
+        if not force:
+            print("ERROR: --preview is only meaningful with --force for "
+                  "'awf init' (without --force init is non-destructive).")
+            return 1
+        if (project_dir_path / ".agentic").is_dir():
+            plan = api.preview_destruction(project_dir_path, "init")
+            print(api.format_preview(plan))
+        else:
+            print("[PREVIEW] Nothing to destroy — no .agentic/ present. "
+                  "A force-init would write a fresh skeleton; nothing is "
+                  "removed. No files written.")
+        return 0
+
     # MCP-6: --non-interactive skips all prompts, delegates fully to api.
     if non_interactive:
         try:
-            result = api.init_project(project_dir_path, force=force, dry_run=dry_run)
+            # F-DS (требование 6): force is destructive — route it through
+            # execute_destruction so the CLI adapter records the decision
+            # source. force+dry-run is a pure read and stays direct.
+            if force and not dry_run and (project_dir_path / ".agentic").is_dir():
+                result = _execute_force_init(project_dir_path, confirm_digest)
+            else:
+                result = api.init_project(
+                    project_dir_path,
+                    force=force,
+                    dry_run=dry_run,
+                    confirm_digest=confirm_digest,
+                )
         except api.AwfApiError as e:
             print(f"ERROR: {e}")
             return 1
@@ -94,19 +128,31 @@ def run(args: Any) -> int:
     # models now (BD-32). AUD16-10: the leftover "" variable went with it —
     # propose/apply are called with an empty model.
 
-    # Delegate skeleton creation to api.init_project
+    # Delegate skeleton creation to api.init_project. F-DS (требование 6):
+    # a destructive force-init goes through execute_destruction so the CLI
+    # adapter records the decision source; the collected answers are handed
+    # over so the rewrite keeps them.
+    _init_kwargs = dict(
+        # AUD07-07: blank answer → None → api derives name from dir name
+        # (an empty string used to land in config.yaml as `name: ''`).
+        project_name=project_name or None,
+        test_cmd=test_cmd,
+        lint_cmd=lint_cmd,
+        typecheck_cmd=typecheck_cmd,
+        build_cmd=build_cmd,
+    )
     try:
-        result = api.init_project(
-            project_dir=project_dir_path,
-            force=force,
-            # AUD07-07: blank answer → None → api derives name from dir name
-            # (an empty string used to land in config.yaml as `name: ''`).
-            project_name=project_name or None,
-            test_cmd=test_cmd,
-            lint_cmd=lint_cmd,
-            typecheck_cmd=typecheck_cmd,
-            build_cmd=build_cmd,
-        )
+        if force and (project_dir_path / ".agentic").is_dir():
+            result = _execute_force_init(
+                project_dir_path, confirm_digest, **_init_kwargs
+            )
+        else:
+            result = api.init_project(
+                project_dir=project_dir_path,
+                force=force,
+                confirm_digest=confirm_digest,
+                **_init_kwargs,
+            )
     except api.AwfApiError as e:
         print(f"ERROR: {e}")
         return 1
@@ -129,6 +175,28 @@ def run(args: Any) -> int:
     print("  2. Open project-setup form (via opencode agent) to pick skills + roles")
     print("  3. Run: awf start --auto --background   (or: awf start for interactive)")
     return 0
+
+
+def _execute_force_init(project_dir: Path, confirm_digest, **init_kwargs):
+    """F-DS (требование 6): force-init — разрушение, идёт по плану.
+
+    Строит preview, затем исполняет через :func:`api.execute_destruction`,
+    который фиксирует источник решения (этот CLI-адаптер). ``init_kwargs``
+    (имя проекта, verify-команды) пробрасываются самому ``init_project``,
+    чтобы интерактивные ответы не потерялись. Отсутствие ``--confirm-digest``
+    не мешает исполнению (сам вызов CLI — решение человека): берём digest
+    свежего плана; устаревший явный digest отвергается внутри.
+    """
+    plan = api.preview_destruction(project_dir, "init")
+    confirm = confirm_digest or plan.digest
+    decided_by = "cli:init" + (":--confirm-digest" if confirm_digest else "")
+    return api.execute_destruction(
+        project_dir,
+        plan,
+        confirm=confirm,
+        decided_by=decided_by,
+        apply_kwargs=init_kwargs,
+    )
 
 
 def _offer_opencode_agent_setup() -> None:
