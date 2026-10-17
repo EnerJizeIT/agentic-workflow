@@ -306,11 +306,14 @@ def _rollback_projection(run_path: Path, prev_text: str | None) -> str:
     """
     try:
         if prev_text is None:
-            run_path.unlink(missing_ok=True)
+            # R1.5: the run.yaml projection is removed/restored through the
+            # Store's state-file writers (single writer) — the api layer no
+            # longer touches the bytes itself.
+            state_store.remove_state_file(run_path)
             if run_path.exists():
                 return "run.yaml still present after unlink"
         else:
-            atomic_write_text(run_path, prev_text)
+            state_store.write_state_file(run_path, prev_text)
             if run_path.read_text(encoding="utf-8") != prev_text:
                 return "run.yaml content differs after restore"
     except Exception as exc:  # noqa: BLE001 — report the fault, never mask it
@@ -1639,9 +1642,16 @@ def _finish_facts(project_dir: Path, current: str) -> dict:
     ):
         stale_stage = str(pstate.get("stage_name") or "")
         stale_todo = str(pstate.get("todo_id") or current)
-        pipeline_state.clear_state(project_dir)
-        pstate = None
-        stale_cleared = True
+        try:
+            pipeline_state.clear_state(project_dir)
+        except OSError:
+            # R1.5 (REVIEW A1): a failed removal leaves the file in place —
+            # do NOT pretend the stage is cleared (stage_cleared stays False
+            # and the gate refuses), unlike the pre-fix unconditional reset.
+            pass
+        else:
+            pstate = None
+            stale_cleared = True
     stage_cleared = pstate is None
     return {
         "archived": archived,
@@ -2683,6 +2693,19 @@ def run_service_start(
     pipe_name = _service_pipeline_name(slug_clean)
     cand_path = _draft_candidate_rel_path(slug_clean)
 
+    # A3 (REVIEW-фикс 0219): the service slot's generation comes from the SAME
+    # durable Store allocator as the main run — no local ``generation_of+1``
+    # (which reset could restart and a stale close could then CAS-match).
+    # A losing race only wastes a number (the counter is monotonic), exactly
+    # as run_start documents. Allocated BEFORE the side effects below, exactly
+    # like run_start: the allocator is FALLIBLE (a StateStoreError under
+    # contention), and a failure here must not strand an already-dispatched
+    # unit and pipeline outside the rollback window.
+    _svc_projection = run_state.read_run(project_dir, slot="service")
+    _service_generation = state_store.next_run_generation(
+        project_dir, floor=run_state.generation_of(_svc_projection or {})
+    )
+
     # Side effects — rolled back as a set on launch failure (V-01/V-02).
     _write_service_pipeline(project_dir, slug_clean)
     from .dispatch import dispatch_todo
@@ -2715,7 +2738,7 @@ def run_service_start(
             budget_minutes=0,
             downtime_seconds=0,
             started_at=run_state.now_iso(),
-            generation=run_state.generation_of(st) + 1,
+            generation=_service_generation,
             stop_reason="",
             report_file="",
             note=f"service run: role candidate {slug_clean}",
@@ -2974,7 +2997,30 @@ def run_service_finish(
         st["report_file"] = str(report) if report else ""
         return st
 
-    run_state.update_run(project_dir, _close_mutator, slot="service")
+    # A3 (REVIEW-фикс 0219): close by CAS on the slot's generation — a stale
+    # close (the slot moved to a newer generation, e.g. a fresh service
+    # allocation landed between our read and this write) must not clobber the
+    # new owner's state. The read of ``svc`` above carries the generation.
+    _svc_generation = run_state.generation_of(svc)
+    _closed, _cas_ok = run_state.update_run_cas(
+        project_dir, _close_mutator, slot="service", generation=_svc_generation
+    )
+    if not _cas_ok:
+        return ServiceRunResult(
+            action="refused",
+            slug=slug,
+            pipeline=pipe_name,
+            candidate_path=cand_path,
+            message=(
+                "stale_operation — the service slot moved to a newer "
+                "generation (a newer service allocation replaced it); its "
+                "state was left untouched."
+            ),
+            next_action=(
+                "Check awf_run_service_status for the current service slot, "
+                "then retry awf_run_service_finish against it."
+            ),
+        )
 
     main_state = run_state.read_run(project_dir)
     main_pos = run_state.position(main_state) if main_state else "—"
@@ -3092,7 +3138,7 @@ def run_service_approve(
     is required (a service unit is a run unit).
     """
     project_dir = _require_run_project(project_dir)
-    if not re.match(r"^TODO-\d{4,}$", str(todo_id or "")):
+    if not is_valid_todo_id(str(todo_id or "")):
         raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     evidence_clean = str(evidence or "").strip()
     if not evidence_clean:

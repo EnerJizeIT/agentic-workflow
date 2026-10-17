@@ -15,19 +15,19 @@ CONTROL_FILE_NAME = "control.json"
 
 
 def control_path(project_dir: str | Path) -> Path:
-    return paths.state_dir(project_dir) / CONTROL_FILE_NAME
+    return paths.state_control_file(project_dir)
 
 
 def records_dir(project_dir: str | Path) -> Path:
-    return paths.state_dir(project_dir) / "records"
+    return paths.state_records_dir(project_dir)
 
 
 def operations_dir(project_dir: str | Path) -> Path:
-    return paths.state_dir(project_dir) / "operations"
+    return paths.state_operations_dir(project_dir)
 
 
 def manifest_path(project_dir: str | Path) -> Path:
-    return paths.state_dir(project_dir) / "migration-manifest.json"
+    return paths.state_migration_manifest(project_dir)
 
 
 def timestamp() -> str:

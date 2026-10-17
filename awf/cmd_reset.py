@@ -28,6 +28,17 @@ def run(args: Any) -> int:
     # F-R2: preview mode prints the plan (scope + revision + digest) and
     # exits without touching anything.
     if preview and not orphans:
+        # F-2 (аудит 0218): на проекте БЕЗ .agentic сброс — no-op
+        # (``_reset_runtime_impl`` возвращает mode="noop"), поэтому превью
+        # «полный план удаления» вводит в заблуждение. Как у ``init`` —
+        # явное «нечего разрушать», exit 0.
+        if not (project_dir / ".agentic").is_dir():
+            print(
+                "[PREVIEW] Nothing to destroy — no .agentic/ present. "
+                "A reset would be a no-op; nothing is removed. "
+                "No files written."
+            )
+            return 0
         plan = api.preview_destruction(
             project_dir, "reset", tasks_only=tasks_only, full=full
         )

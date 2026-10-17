@@ -312,6 +312,52 @@ def test_service_failure_close_keeps_main_intact(tmp_git_repo: Path, monkeypatch
 # ─── отказы: границы служебного запуска ─────────────────────────────────
 
 
+def test_service_close_is_cas_stale_after_new_allocation(
+    tmp_git_repo: Path, monkeypatch
+) -> None:
+    """A3 (REVIEW-фикс 0219): закрытие служебного слота — CAS по поколению.
+    Если между чтением слота (в начале ``run_service_finish``) и записью
+    закрытия выделено НОВОЕ поколение (следующий служебный забег), устаревшее
+    закрытие обязано отказать ``stale_operation`` и НЕ трогать состояние
+    нового владельца. Окно детерминировано швом: подменяем
+    ``_write_service_report`` — он выполняется уже ПОСЛЕ чтения слота и ДО
+    CAS; в нём поднимаем поколение слота, как сделала бы новая аллокация."""
+    from awf.api import run as api_run_module
+
+    proj = _project(tmp_git_repo)
+    _write_todo(proj, T1)
+    _launch_first(proj, monkeypatch, [T1])
+
+    res = api.run_service_start(proj, slug=SLUG, description="Описание.")
+    assert res.action == "started", res.message
+
+    real_report = api_run_module._write_service_report
+
+    def bump_then_report(project_dir, slot_state, reason):
+        # Новая аллокация слота: поколение уходит вперёд, слот снова active.
+        run_state.update_run(
+            project_dir,
+            lambda st: {
+                **st,
+                "generation": run_state.generation_of(st) + 5,
+                "active": True,
+            },
+            slot="service",
+        )
+        return real_report(project_dir, slot_state, reason)
+
+    monkeypatch.setattr(api_run_module, "_write_service_report", bump_then_report)
+
+    fin = api.run_service_finish(proj, reason="устаревшее закрытие")
+
+    assert fin.action == "refused", fin.message
+    assert "stale_operation" in fin.message
+    after = run_state.read_run(proj, slot="service")
+    assert after is not None and after.get("active") is True, (
+        "the stale close must not clobber the new owner's active state"
+    )
+
+
 def test_service_start_refused_without_active_main_run(tmp_git_repo: Path) -> None:
     """Служебный забег существует, ЧТОБЫ не трогать активный основной;
     без основного — отказ (роль создаётся напрямую: awf_add_role draft).

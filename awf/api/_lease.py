@@ -264,6 +264,12 @@ def _publish_claim(path: Path, pid: int) -> bool:
         # sides to the directory we opened; ``O_NOFOLLOW`` keeps that open on
         # the validated directory itself (a swap to a symlink fails closed
         # instead of redirecting the link outside the project).
+        # Honest scope (аудит 0218, F-4): ``O_NOFOLLOW`` on ``tmp.parent``
+        # guards only the LEAF (``logs``); the intermediate ``.agentic`` was
+        # already walked no-follow by ``open_managed`` when the temp was
+        # created. And ``_unlink_quietly(tmp)`` in the ``finally`` re-resolves
+        # that temp path by name — best-effort cleanup, never a security
+        # boundary (the temp leaf was opened no-follow).
         try:
             dir_fd = os.open(
                 tmp.parent,

@@ -39,11 +39,14 @@ def current_run_generation(project_dir: str | Path) -> int:
     """The durable ``run_generation`` counter — the last allocated value.
 
     R1.4 (S3-03): this is the SINGLE source of run identity. Every
-    allocation (``run_start``, ``run_revise``) goes through
-    :func:`next_run_generation`, so the counter always names the current
-    run's generation and survives ``reset_runtime`` (which erases the
-    ``run.yaml`` projection but not this counter). A close whose generation
-    is below the counter belongs to a superseded run.
+    allocation (``run_start``, ``run_revise``, and — R1.5/A3 —
+    ``run_service_start``) goes through :func:`next_run_generation`, so the
+    counter always names the last value handed out and survives
+    ``reset_runtime`` (which erases the ``run.yaml`` projection but not this
+    counter). R1.5/A3: the counter is a GLOBAL watermark shared by the main
+    and service slots — a generation ABOVE it cannot exist; the per-slot
+    ``run.yaml``/``service-run.yaml`` CAS (not this counter) decides which
+    generation is current for a slot.
 
     A missing or unreadable snapshot returns 0 — "no durable witness", so
     the caller falls back to the projection CAS (a legacy project that

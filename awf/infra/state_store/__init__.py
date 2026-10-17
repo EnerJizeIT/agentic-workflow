@@ -71,6 +71,7 @@ from ._io import (
 from ._lock import project_lock
 from ._migration import main, migrate, migration_preview, read_projection
 from ._ops import op_path, read_operation, validate_operation_id, write_operation
+from ._projection import remove_state_file, write_state_file
 from ._records import gc_records, get_record, put_record
 from ._reservations import (
     action_permitted,
@@ -81,6 +82,7 @@ from ._reservations import (
 )
 from ._snapshot import Snapshot, empty_snapshot, read_snapshot, require_usable
 from ._transact import transact
+from ._wipe import delete_state_tree
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -114,6 +116,9 @@ __all__ = [
     "validate_operation_id",
     "read_operation",
     "write_operation",
+    "write_state_file",
+    "remove_state_file",
+    "delete_state_tree",
     "put_record",
     "get_record",
     "gc_records",

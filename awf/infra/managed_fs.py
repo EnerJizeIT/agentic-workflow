@@ -216,7 +216,9 @@ def _open_no_follow(
         raise
 
 
-def open_append_log(path: Path, *, root: Path | None = None) -> tuple[int, Path]:
+def open_append_log(
+    path: Path, *, root: Path | None = None, create: bool = False
+) -> tuple[int, Path]:
     """Open a managed log for append: created 0600, no-follow, own inode.
 
     Returns ``(fd, actual_path)``. The caller owns the fd (``os.close``).
@@ -230,6 +232,11 @@ def open_append_log(path: Path, *, root: Path | None = None) -> tuple[int, Path]
       after the preflight (F-B);
     - the leaf is opened with ``O_NOFOLLOW`` — a symlink (S9-03) aborts
       before any write;
+    - ``create=True`` creates a missing log directory through ``mkdirat``
+      on the already-verified parent (``_open_dir_chain``) — callers stop
+      reaching for a symlink-following ``Path.mkdir`` after the preflight
+      (audit 0215 F2), so a ``.agentic`` swapped to a symlink between the
+      preflight and the directory creation is refused at the walk (F-B);
     - ``fstat`` on the opened fd verifies a regular file (TOCTOU between a
       resolve check and a plain ``open`` is not enough);
     - a hardlinked legacy log (``st_nlink > 1``) is never appended to or
@@ -249,7 +256,7 @@ def open_append_log(path: Path, *, root: Path | None = None) -> tuple[int, Path]
     # ``os.open(path.parent, O_NOFOLLOW)`` only guarded the leaf component
     # (``logs``); a ``.agentic`` swapped to a symlink between the preflight
     # and here still escaped.
-    dir_fd, dir_fds = _open_dir_chain(root, path)
+    dir_fd, dir_fds = _open_dir_chain(root, path, create=create)
     try:
         fd = _open_no_follow(
             dir_fd,

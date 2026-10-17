@@ -544,21 +544,26 @@ class TestOperationJournalFilename:
 
 def _fail_journal_writes(monkeypatch, *, fail_start=True, fail_finish=False):
     """Inject OSError into the operation-journal writes only (the
-    ``state/operations/`` path), leaving the TODO write untouched."""
-    import awf.api.hygiene as hygiene
+    ``state/operations/`` path), leaving the TODO write untouched.
 
-    real = hygiene.atomic_write_text
+    R1.5: the journal writer moved into the StateStore
+    (``state_store.write_operation``) — hygiene no longer touches the file
+    bytes itself. The injection point follows the owner: patch the Store
+    writer, not ``hygiene.atomic_write_text``.
+    """
+    from awf.infra import state_store
+
+    real = state_store.write_operation
     calls = {"n": 0}
 
-    def fake(path, content, *a, **k):
-        if "operations" in str(path):
-            calls["n"] += 1
-            n = calls["n"]
-            if (n == 1 and fail_start) or (n == 2 and fail_finish):
-                raise OSError(28, "No space left on device (injected)")
-        return real(path, content, *a, **k)
+    def fake(project_dir, operation_id, **fields):
+        calls["n"] += 1
+        n = calls["n"]
+        if (n == 1 and fail_start) or (n == 2 and fail_finish):
+            raise OSError(28, "No space left on device (injected)")
+        return real(project_dir, operation_id, **fields)
 
-    monkeypatch.setattr(hygiene, "atomic_write_text", fake)
+    monkeypatch.setattr(state_store, "write_operation", fake)
     return calls
 
 

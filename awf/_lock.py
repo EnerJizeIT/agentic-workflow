@@ -33,6 +33,12 @@ def locked(project_dir: Path):
     state_dir = paths.agentic_dir(project_dir) / "state"
     lock_file = state_dir / LOCK_NAME
 
+    # F-4 (audit 0218): ``sys.platform == "win32"`` is the ONE predicate for
+    # "the msvcrt platform". The previous ``not managed_fs.is_posix() and
+    # sys.platform == "win32"`` was logically identical (``is_posix()`` is
+    # ``os.name == "posix"``) — the extra conjunct changed no branch, only
+    # the reader's idea of it. The real fix for the exotic-platform leak is
+    # the ``try/except ImportError`` around ``import fcntl`` below.
     if sys.platform == "win32":
         import msvcrt
 
@@ -47,7 +53,14 @@ def locked(project_dir: Path):
                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
             f.close()
     else:
-        import fcntl
+        try:
+            import fcntl
+        except ImportError as exc:  # pragma: no cover — exotic platform
+            raise RuntimeError(
+                "advisory state locking needs fcntl (POSIX) or msvcrt "
+                f"(Windows); platform {sys.platform!r} is unsupported — "
+                "refusing instead of running without a lock"
+            ) from exc
 
         # R1.1/F-A: the lock writer lives under ``.agentic/state`` — a
         # symlinked ``.agentic``/``state`` used to send the lock file (and

@@ -314,3 +314,119 @@ class TestR1SafetyQAFindings:
             os.close(fd)
 
         _assert_canary_untouched(external, mode=0o644)
+
+
+# ── КРАСНЫЙ (F2, dobor 0219): plain mkdir после lstat-preflight ───────────
+#
+# Аудит 0215 F2: «``open_append_log`` lacks create → callers use plain
+# mkdir». Добор 0219 просил закрыть F2 здесь. Хелпер по-прежнему без
+# ``create`` (``_open_dir_chain(root, path)`` — ``create=False``), а оба
+# вызывающих создают каталог логов обычным ``Path.mkdir(parents=True)``
+# ПОСЛЕ lstat-preflight: ``awf/_log.py:165`` и ``awf/api/_background.py:117``.
+# Это тот же класс TOCTOU, что закрытый F-B (подмена ``.agentic`` между
+# проверкой и записью) — но для СОЗДАНИЯ КАТАЛОГА, не открытия файла.
+
+
+class TestR1F2DirectoryCreateResidual:
+    def test_log_mkdir_intermediate_swap_no_external_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """RED (F2): ``_log.log`` создаёт каталог логов обычным mkdir после
+        lstat-preflight. Подмена ``.agentic`` на симлинк наружу между
+        проверкой и ``mkdir`` уводит создание каталога за границу проекта
+        (F-B-класс), вопреки требованию «no-follow по промежуточным» и
+        пункту F2 добора 0219. Исправление — создание каталога через
+        ``mkdirat`` на уже проверенном fd (``_open_dir_chain(create=True)``),
+        то есть ``create`` в ``open_append_log``; тогда ``ELOOP`` на
+        ``.agentic`` отказывает до создания. Достижимо штатным логированием.
+        """
+        import shutil
+
+        from awf import _log
+        from awf.infra import managed_fs
+
+        project = tmp_path / "project"
+        (project / ".agentic" / "logs").mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+
+        real_check = managed_fs.assert_no_symlink_escape
+        state = {"n": 0}
+
+        def racing_check(path, *, root):
+            real_check(path, root=root)  # passes: the tree is clean right now
+            state["n"] += 1
+            if state["n"] == 1:
+                # swap AFTER the preflight, BEFORE the caller's mkdir
+                shutil.rmtree(project / ".agentic")
+                (project / ".agentic").symlink_to(
+                    outside, target_is_directory=True
+                )
+
+        monkeypatch.setattr(
+            managed_fs, "assert_no_symlink_escape", racing_check
+        )
+
+        _log.log(project / ".agentic" / "logs", "orchestrator line")
+
+        leaked = sorted(p.name for p in outside.iterdir())
+        assert leaked == [], (
+            "logs directory created OUTSIDE the project via a swapped "
+            f".agentic symlink: {leaked}"
+        )
+
+
+# ── QA-0219-finding: dispatch inbox — plain mkdir после preflight (F2 class) ─
+#
+# Тот же класс, что закрытый F-0219-1 (_log.py/_background.py): создание
+# каталога обычным ``Path.mkdir(parents=True)`` ПОСЛЕ lstat-preflight.
+# Здесь точка — ``awf/api/dispatch.py``: ``inbox.mkdir(parents=True,
+# exist_ok=True)`` сразу за ``assert_no_symlink_escape(inbox, ...)``: подмена
+# ``.agentic`` на симлинк наружу между проверкой и mkdir создаёт ``inbox``
+# ВНЕ проекта (пустой каталог), хотя последующая запись файла отказывает.
+# Каталог здесь избыточен: ``open_managed(create=True)`` уже создаёт цепочку
+# через ``mkdirat`` на проверенном fd.
+
+
+class TestR1F2DispatchInboxMkdirResidual:
+    def test_dispatch_inbox_mkdir_intermediate_swap_no_external_dir(
+        self, tmp_git_repo, monkeypatch
+    ):
+        """RED: ``dispatch_todo`` создаёт ``.agentic/inbox`` обычным mkdir
+        после preflight — подмена ``.agentic`` на симлинк наружу между
+        проверкой и mkdir оставляет каталог за границей проекта."""
+        import shutil
+
+        from awf import api
+        from awf.infra import managed_fs
+
+        proj = tmp_git_repo
+        api.init_project(proj, project_name="DispatchInboxMkdir")
+        agentic = proj / ".agentic"
+        shutil.rmtree(agentic / "inbox", ignore_errors=True)
+
+        outside = tmp_git_repo.parent / "outside"
+        outside.mkdir()
+
+        real_check = managed_fs.assert_no_symlink_escape
+        state = {"swapped": False}
+
+        def racing_check(path, *, root):
+            real_check(path, root=root)
+            if not state["swapped"] and Path(path).name == "inbox":
+                state["swapped"] = True
+                shutil.rmtree(agentic)
+                agentic.symlink_to(outside, target_is_directory=True)
+
+        monkeypatch.setattr(managed_fs, "assert_no_symlink_escape", racing_check)
+
+        with pytest.raises(Exception):
+            api.dispatch_todo(
+                proj, content="# TODO-0001 — x\n", todo_id="TODO-0001"
+            )
+
+        leaked = sorted(p.name for p in outside.iterdir())
+        assert leaked == [], (
+            "dispatch created a directory OUTSIDE the project via a swapped "
+            f".agentic symlink: {leaked}"
+        )

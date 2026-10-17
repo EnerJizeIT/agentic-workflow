@@ -61,6 +61,30 @@ def state_dir(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "state"
 
 
+# R1.5 (roadmap R1, iter-3): the ``state/``-child paths get ONE owner here,
+# so the StateStore package stops being the only place that spells them out
+# (the divergent-convention risk: two sources of a path drift apart). The
+# Store's ``_io`` now reads these; the guard test knows the same owners.
+def state_control_file(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/state/control.json — the control snapshot."""
+    return state_dir(project_dir) / "control.json"
+
+
+def state_records_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/state/records/ — immutable digest-addressed records."""
+    return state_dir(project_dir) / "records"
+
+
+def state_operations_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/state/operations/ — the durable operation journal."""
+    return state_dir(project_dir) / "operations"
+
+
+def state_migration_manifest(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/state/migration-manifest.json."""
+    return state_dir(project_dir) / "migration-manifest.json"
+
+
 def pipelines_dir(project_dir: str | Path = ".") -> Path:
     """Return .agentic/pipelines/."""
     return agentic_dir(project_dir) / "pipelines"

@@ -24,7 +24,6 @@ operations that leave a trace:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import shutil
@@ -139,8 +138,12 @@ def _operation_record(project_dir: Path, operation_id: str) -> Path:
     replaying another's outcome). Hashing sidesteps both; the real id
     lives inside the record body, so replay still keys on it.
     """
-    digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()
-    return paths.state_dir(project_dir) / "operations" / f"{digest}.json"
+    # R1.5 (iter-5): one owner of the journal path — the Store's ``op_path``
+    # (same ``state/operations/<sha256(id)>.json`` key). hygiene no longer
+    # re-derives the digest next to it.
+    from ..infra import state_store
+
+    return state_store.op_path(project_dir, operation_id)
 
 
 def _read_operation(project_dir: Path, operation_id: str) -> dict | None:
@@ -195,12 +198,17 @@ def _write_operation(project_dir: Path, operation_id: str, **fields) -> None:
     BEFORE any effect, a FINISH write failure surfaces
     ``recovery_required``.
     """
-    fields.setdefault("operation_id", operation_id)
+    # ``operation_id`` is filled by the Store writer (one owner of the key).
+    # ``ts`` keeps hygiene's format; the Store only defaults it when absent.
     fields.setdefault("ts", _timestamp())
-    atomic_write_text(
-        _operation_record(project_dir, operation_id),
-        json.dumps(fields, ensure_ascii=False, sort_keys=True) + "\n",
-    )
+    # R1.5 (iter-5): the journal path/key are shared with the StateStore and
+    # now so is the WRITER and its durability bar (fsync file + dir). The
+    # record schema stays hygiene's (started/refused/applied); only the path,
+    # key and the write primitive are unified. Store op ids never collide
+    # with hygiene ids, so the two vocabularies do not meet on disk yet.
+    from ..infra import state_store
+
+    state_store.write_operation(project_dir, operation_id, **fields)
 
 
 def closure_files(project_dir: Path, todo_id: str) -> list[Path]:

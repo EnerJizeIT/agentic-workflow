@@ -161,10 +161,19 @@ def log(logs_dir: Path, message: str) -> None:
         # walk opens no-follow (born 0600, fstat type check). Refusal is
         # silent: the logger must never break a run.
         managed_fs.assert_no_symlink_escape(log_file, root=root)
-        if not logs_dir.exists():
-            logs_dir.mkdir(parents=True, exist_ok=True)
         _maybe_rotate(log_file)
-        fd, _ = managed_fs.open_append_log(log_file, root=root)
+        # R1.5/F2: a missing ``logs`` directory is created INSIDE the
+        # no-follow walk (``mkdirat`` on the verified parent) — a plain
+        # ``logs_dir.mkdir`` after the preflight let a ``.agentic`` swapped
+        # to a symlink between the check and the mkdir create the directory
+        # OUTSIDE the project (the F-B class, for directory creation).
+        # The walk starts at the anchor, so it must exist first: for the
+        # canonical ``<project>/.agentic/logs`` layout the anchor is the
+        # project root (always present); an arbitrary shape has no project
+        # boundary to protect and keeps the old create-parents behavior.
+        if not root.exists():
+            root.mkdir(parents=True, exist_ok=True)
+        fd, _ = managed_fs.open_append_log(log_file, root=root, create=True)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
     except (OSError, managed_fs.ManagedPathError):

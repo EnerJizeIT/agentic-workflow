@@ -7,9 +7,12 @@ is Store-owned and DIFFERS from hygiene's: here the status vocabulary is
 reserved/running/applied/refused/failed/recovery_required with an arguments
 digest, while hygiene records started/refused/applied with a todo id. A
 reader must key on the vocabulary it expects — reading hygiene's
-``started`` as this module's ``reserved`` would be wrong. Unifying the two
-vocabularies is deferred (R1.5); until then only the path and key are
-common ground.
+``started`` as this module's ``reserved`` would be wrong. R1.5 unified the
+path, key, WRITER and its durability bar (hygiene now calls
+:func:`write_operation`), but NOT the schema: hygiene's
+started/refused/applied and this module's reserved/running/applied remain
+two vocabularies on one file. Schema unification is backlogged (REVIEW A6)
+— never read one as the other.
 
 A retry reads the recorded outcome instead of guessing; an unreadable
 record is unknown, never "never started".

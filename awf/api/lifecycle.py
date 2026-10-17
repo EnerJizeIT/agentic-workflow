@@ -87,16 +87,15 @@ _PRESERVED_STATE_FILES = frozenset({INTERLOCK_NAME, LOCK_NAME})
 def _clean_state_dir(state_dir: Path) -> None:
     """Снести содержимое ``state``, сохранив ``.interlock`` и ``.lock``.
 
-    Запись симлинка/файла удаляется сама, каталог — рекурсивно; за
-    сохранённые файлы синхронизации не спускаемся.
+    R1.5 (REVIEW A5): the wipe goes through the Store's facade
+    (``delete_state_tree``) — the api layer no longer touches state bytes
+    (or their inodes) itself. Symlink/file removed in place, directory
+    recursively; the preserved synchronisation files are never descended
+    into.
     """
-    for entry in state_dir.iterdir():
-        if entry.name in _PRESERVED_STATE_FILES:
-            continue
-        if entry.is_symlink() or entry.is_file():
-            entry.unlink()
-        elif entry.is_dir():
-            shutil.rmtree(entry)
+    from ..infra import state_store
+
+    state_store.delete_state_tree(state_dir, preserve=_PRESERVED_STATE_FILES)
 
 
 def _rotate_launch_identity(project_dir: Path) -> str:
@@ -1129,11 +1128,19 @@ def _reset_runtime_impl(
 
     # Clear pipeline state file so stale "running" doesn't persist
     if not partial_failure:
-        state_file = agentic / "state" / "current.yaml"
+        from .. import pipeline_state
+
         state_cleared = False
+        # R1.5 (arch-review): the path is spelled by its owner
+        # (``paths.state_dir`` + ``pipeline_state.STATE_FILE_NAME``), not
+        # re-written next to the owner — the class the iter-3 accessors
+        # closed. Same string, one source.
+        state_file = paths.state_dir(project_dir) / pipeline_state.STATE_FILE_NAME
         try:
+            # R1.5: state files are removed through their owners (the Store
+            # is the single writer), never by a raw unlink from the api layer.
             if state_file.is_file():
-                state_file.unlink()
+                pipeline_state.clear_state(project_dir)
                 state_cleared = True
             # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks
             # the next run_start with "Run already active". Clear it too.

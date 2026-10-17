@@ -350,7 +350,13 @@ def run_pipeline(args: Any) -> int:
         # completed SMO project degrades to 'normalize' (or 'goal' without a
         # goal) >2h later, when detect_phase falls back to file detection.
         prev_state = read_state(project_dir) or {}
-        clear_state(project_dir, logs_dir=logs_dir)
+        try:
+            clear_state(project_dir, logs_dir=logs_dir)
+        except OSError:
+            # R1.5 (REVIEW A1): clear_state now propagates a real failure;
+            # the clean-exit path stays best-effort (the failure is logged
+            # to logs_dir above), so the exit still writes phase=done.
+            pass
         write_state(
             project_dir,
             phase="done",

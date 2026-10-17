@@ -1830,3 +1830,41 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # `reset --preview`/`rollback --preview` honour it. Fix: --preview is
 # terminal unconditionally (fresh project -> "nothing to destroy" + exit 0);
 # --preview without --force is an explicit usage error.
+
+# TODO-0219 (R1.5: state-файлы пишет только Store + архитектурный страж):
+# baseline todos raised 5992 -> 5996 (+4) — the TODO-bearing lines of the new
+# tests/negative/test_roadmap_r1_no_bypass.py (the TODO-0001 fixture ids of
+# the reads-don't-mutate / heartbeat tests and the unit references in the
+# module docstring). Same class as the earlier negative-test raises: test
+# identifiers and unit references, not debt. No production module gained a
+# TODO line (the new awf/infra/state_store/_projection.py carries none).
+
+# TODO-0219 architect-review (stage agent-architect-review, 17.10): baseline
+# files_over_400 raised 83 -> 84 (+1) — that same guard file crossed the bar
+# (400 -> 458) when the review closed two false-green blind spots: it now
+# resolves IMPORT aliases of write primitives (``from awf._atomic import
+# atomic_write_text as _atomic``) and carries the anti-vacuum case for it.
+# A negative-test catalogue, same class as the test_reports33_* /
+# test_roadmap_r1_interlock.py raises above. todos unchanged (the added
+# comments and synthetic cases carry no standalone "TODO" token).
+
+# TODO-0219 REVIEW-фикс A1/A3 (stage agent-implementer, 17.10): baseline
+# todos raised 5996 -> 5999 (+3) — TEST identifiers only, the three
+# "TODO-0001" use-sites of the new reset-ghost regression test
+# (TestResetStateWipeFailure in tests/negative/test_audit12_incidents.py:
+# the fixture activation, the run_start queue and the write_state todo_id).
+# The A3 service-close CAS test uses the module's T1 constant and adds no
+# TODO literal. files_over_400 stays 84 (that file was already over the bar;
+# the touched production modules were already over it and carry only unit-id
+# references, not debt).
+
+# TODO-0219 REVIEW-фикс 3 / F-0219-2 (stage agent-implementer, 18.10):
+# files_over_400 raised 84 -> 85 (+1), todos raised 5999 -> 6000 (+1) —
+# both from the QA round's red test for F-0219-2
+# (TestR1F2DispatchInboxMkdirResidual in
+# tests/negative/test_roadmap_r1_safety_qa.py): the added class + its
+# "# TODO-0001" dispatch fixture line pushed that file over the 400-line
+# bar (316 -> 432, +1 file over) and added one "TODO"-bearing line. The
+# production fix (removing the redundant inbox.mkdir in awf/api/dispatch.py)
+# carries no TODO token. Negative-test catalogue, same class as the
+# test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.

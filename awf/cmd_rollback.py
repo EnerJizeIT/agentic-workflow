@@ -23,9 +23,15 @@ def run(args: Any) -> int:
     # (the old branch required mode in ("hard","soft"), so ``--preview
     # --dry-run`` silently fell through to a plain dry-run / ERROR).
     if preview:
+        # F-3 (аудит 0218): план обязан отражать ФАКТИЧЕСКИЙ режим — тот же,
+        # что исполнил бы запуск без --preview. ``--dry-run`` переводит
+        # выполнение в mode="dry-run"; раньше preview всё равно печатал
+        # ``rollback(hard)``.
+        plan_mode = "dry-run" if getattr(args, "dry_run", False) else (
+            "soft" if soft else "hard"
+        )
         plan = api.preview_destruction(
-            project_dir, "rollback",
-            mode="soft" if soft else "hard", todo_id=todo_id,
+            project_dir, "rollback", mode=plan_mode, todo_id=todo_id,
         )
         print(api.format_preview(plan))
         return 0

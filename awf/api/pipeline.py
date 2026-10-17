@@ -135,7 +135,7 @@ def _reconcile(project_dir: Path) -> None:
 
     from .. import paths
     from .._log import log as _log
-    from ..pipeline_state import read_state
+    from ..pipeline_state import drop_fields, read_state
 
     inbox = paths.inbox(project_dir)
     logs_dir = project_dir / ".agentic" / "logs"
@@ -151,16 +151,10 @@ def _reconcile(project_dir: Path) -> None:
             os.kill(pid_int, 0)
         except (ProcessLookupError, PermissionError, ValueError, TypeError, OSError):
             # Remove just the PID, keep stage info for continue_pipeline.
-            # Write YAML directly — write_state merges, can't remove keys.
-            state.pop("pipeline_pid", None)
-            import yaml as _yaml
-
-            from ..paths import agentic_dir
-            state_file = agentic_dir(project_dir) / "state" / "current.yaml"
-            state_file.parent.mkdir(parents=True, exist_ok=True)
-            # KAUD-6: Write atomically — crash mid-write corrupts state.
-            from .._atomic import atomic_write_text as _atomic
-            _atomic(state_file, _yaml.dump(state, default_flow_style=False, allow_unicode=True))
+            # R1.5: the removal goes through the current.yaml OWNER (a merge
+            # cannot delete a key) — the state-file bytes still leave only
+            # via the Store, never a raw yaml dump from the api layer.
+            drop_fields(project_dir, "pipeline_pid", logs_dir=logs_dir)
             cleaned.append(f"cleared stale PID {pid_str}")
 
     # 2. Deduplicate ACK+APPROVE (keep APPROVE, remove ACK)
@@ -1757,7 +1751,12 @@ def _clear_state_keep_salvage(project_dir: Path) -> None:
         count = int(state.get("salvage_count", 0) or 0)
     except (TypeError, ValueError):
         count = 0
-    clear_state(project_dir)
+    try:
+        clear_state(project_dir)
+    except OSError:
+        # R1.5 (REVIEW A1): clear_state propagates a real failure; salvage
+        # bookkeeping stays best-effort (AUD04-08 path).
+        pass
     if count > 0:
         write_state(
             project_dir,

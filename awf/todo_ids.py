@@ -18,10 +18,11 @@ import re
 # 4+ цифры с явной правой границей (A-10): group(1) — цифры, group(0) — ID.
 TODO_ID_RE = re.compile(r"TODO-(\d{4,})(?!\w)")
 
-# Публичная валидация: вся строка — ID. Якоря ``^...$`` + ``match`` —
-# дословная семантика прежних локальных регулярных выражений
-# (``run.py``/``dispatch.py``), публичный контракт не меняется.
-_VALID_TODO_ID_RE = re.compile(r"^TODO-\d{4,}$")
+# Публичная валидация: вся строка — ID. Аудит 0215 (F4): ``$`` совпадает и
+# перед хвостовым переводом строки, поэтому ``"TODO-0001\n"`` проходил
+# валидацию. ``fullmatch`` ниже требует совпадения ВСЕЙ строки — якорь ``$``
+# в шаблоне не нужен и не стоит: без него дыра с ``\n`` закрыта явно.
+_VALID_TODO_ID_RE = re.compile(r"TODO-\d{4,}")
 
 
 def extract_todo_id(text: str | None) -> str | None:
@@ -37,4 +38,4 @@ def extract_todo_id(text: str | None) -> str | None:
 
 def is_valid_todo_id(todo_id: str | None) -> bool:
     """Вся строка — TODO ID (публичный вход: run/dispatch)."""
-    return _VALID_TODO_ID_RE.match(todo_id or "") is not None
+    return _VALID_TODO_ID_RE.fullmatch(todo_id or "") is not None

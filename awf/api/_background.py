@@ -111,17 +111,18 @@ def start_in_background(
     root = managed_fs.agentic_root_for(logs_dir)
     log_file = logs_dir / "awf-start.out"
     pid_file = logs_dir / "awf-start.pid"
+    # R1.5/F2: the logs directory is created INSIDE the no-follow walk —
+    # ``open_append_log(create=True)`` below (``mkdirat`` on the verified
+    # parent). A plain ``Path.mkdir`` after this preflight let a
+    # ``.agentic`` swapped to a symlink between the check and the mkdir
+    # create the directory OUTSIDE the project (F-B class). The preflight
+    # stays as a fail-fast with a clear message before the process spawn.
     try:
         managed_fs.assert_no_symlink_escape(log_file, root=root)
         managed_fs.assert_no_symlink_escape(pid_file, root=root)
-        logs_dir.mkdir(parents=True, exist_ok=True)
     except managed_fs.ManagedPathError as exc:
         raise AwfApiError(
             f"background launch refused — unsafe runtime path: {exc}"
-        ) from exc
-    except OSError as exc:
-        raise AwfApiError(
-            f"cannot create logs directory {logs_dir}: {exc}"
         ) from exc
 
     child_argv: list[str] = [
@@ -172,10 +173,16 @@ def start_in_background(
     # R1.1/F2: managed no-follow open (O_NOFOLLOW on the leaf, fstat type
     # check, symlinked intermediate refused) instead of a plain os.open.
     try:
-        log_fd, log_file = managed_fs.open_append_log(log_file, root=root)
+        log_fd, log_file = managed_fs.open_append_log(
+            log_file, root=root, create=True
+        )
     except managed_fs.ManagedPathError as exc:
         raise AwfApiError(
             f"background launch refused — unsafe log path: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise AwfApiError(
+            f"cannot create logs directory {logs_dir}: {exc}"
         ) from exc
     with os.fdopen(log_fd, "ab") as out:
         proc = subprocess.Popen(
