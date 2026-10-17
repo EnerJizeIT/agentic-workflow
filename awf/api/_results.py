@@ -184,6 +184,12 @@ class ResetResult:
     cleaned_dirs: list[str]
     orphan_ids: list[str]
     mode: str
+    # R1.1: a destructive reset may fail mid-way after the preflight
+    # succeeded. The applied subset is journaled in ``cleaned_dirs`` +
+    # ``notes``; ``partial_failure`` marks it. No rollback of what was
+    # already deleted is promised — a repeat finishes the leftover plan.
+    partial_failure: bool = False
+    notes: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

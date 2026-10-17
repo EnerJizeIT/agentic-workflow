@@ -20,6 +20,7 @@ State is written at these points:
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,16 +28,18 @@ from typing import Any
 import yaml
 
 from . import paths
-from ._atomic import atomic_write_text
 from ._log import log as _log
 
-STATE_DIR_NAME = "state"
 STATE_FILE_NAME = "current.yaml"
 
 
 def _state_file(project_dir: Path) -> Path:
     """Return path to .agentic/state/current.yaml."""
-    return paths.agentic_dir(project_dir) / STATE_DIR_NAME / STATE_FILE_NAME
+    # R1.5 (arch-review): the ``state/`` component has ONE owner
+    # (``paths.state_dir``) — this facade must not re-spell it (the
+    # divergent-convention class the iter-3 accessors closed). ``STATE_FILE_NAME``
+    # stays the leaf's owner here.
+    return paths.state_dir(project_dir) / STATE_FILE_NAME
 
 
 def write_state(
@@ -67,30 +70,88 @@ def write_state(
         write_state(project_dir, stage_name="agent-developer",
                     stage_kind="execute", stage_idx=2)
     """
+
+    def _merge(current: dict[str, Any] | None) -> dict[str, Any]:
+        merged = dict(current or {})
+        merged.update(fields)
+        # Always update `updated_at` for staleness detection
+        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return merged
+
+    _mutate_state_locked(
+        project_dir, _merge, logs_dir=logs_dir, failure_label="state write"
+    )
+
+
+def drop_fields(
+    project_dir: Path,
+    *keys: str,
+    logs_dir: Path | None = None,
+) -> None:
+    """Remove ``keys`` from the state file (a merge cannot delete a key).
+
+    R1.5: the stale-PID cleanup in ``api/pipeline._reconcile`` used to dump
+    ``current.yaml`` from the api layer because :func:`write_state` only
+    merges. The removal now goes through the file's OWNER, so the state-file
+    bytes still leave only via the Store (single writer).
+
+    ``updated_at`` is deliberately NOT refreshed: a key removal is house-
+    keeping, not a stage transition, and bumping the timestamp would mask
+    staleness for the very cleanup that needs it. A missing file or key is a
+    no-op.
+    """
+
+    def _drop(current: dict[str, Any] | None) -> dict[str, Any] | None:
+        if current is None:
+            return None
+        for key in keys:
+            current.pop(key, None)
+        return current
+
+    _mutate_state_locked(
+        project_dir, _drop, logs_dir=logs_dir, failure_label="state key removal"
+    )
+
+
+def _mutate_state_locked(
+    project_dir: Path,
+    mutator: Callable[[dict[str, Any] | None], dict[str, Any] | None],
+    *,
+    logs_dir: Path | None,
+    failure_label: str,
+) -> None:
+    """Read-modify-write ``current.yaml`` under the advisory lock (single writer).
+
+    ``mutator`` receives the current state (``None`` when the file is absent
+    or corrupt) and returns the mapping to publish, or ``None`` to leave the
+    file untouched (no write — the "nothing to do" case of
+    :func:`drop_fields`). The Store publishes the bytes; an ``OSError`` is
+    logged via ``logs_dir`` (when given) and swallowed — a state write is
+    non-fatal for the pipeline, which degrades to "no state".
+
+    AUD05-05: the merge is read-modify-write, so it serializes with the same
+    advisory lock as ``run_state.write_run`` to keep concurrent stage
+    transitions from losing each other's fields.
+    """
     state_path = _state_file(project_dir)
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # AUD05-05: merge is read-modify-write — serialize with the same
-    # advisory lock as run_state.write_run so concurrent stage
-    # transitions don't lose each other's fields.
     from ._lock import locked
+    from .infra import state_store
 
     try:
         with locked(project_dir):
-            # Merge with existing state
-            current = read_state(project_dir) or {}
-            current.update(fields)
-            # Always update `updated_at` for staleness detection
-            current["updated_at"] = datetime.now(timezone.utc).isoformat()
-
+            new_state = mutator(read_state(project_dir))
+            if new_state is None:
+                return
             content = yaml.safe_dump(
-                current, default_flow_style=False, allow_unicode=True, sort_keys=True
+                new_state, default_flow_style=False, allow_unicode=True, sort_keys=True
             )
-            atomic_write_text(state_path, content)
+            # R1.5: single writer — the Store publishes the projection bytes.
+            state_store.write_state_file(state_path, content)
     except OSError as e:
         if logs_dir is not None:
-            _log(logs_dir, f"T4.1: state write failed: {e}")
-        # Non-fatal — pipeline continues, readers degrade to "no state"
+            _log(logs_dir, f"T4.1: {failure_label} failed: {e}")
 
 
 def read_state(project_dir: Path) -> dict[str, Any] | None:
@@ -113,14 +174,25 @@ def clear_state(project_dir: Path, *, logs_dir: Path | None = None) -> None:
     """Remove state file (called on pipeline exit / abort).
 
     Leaves the file absent so readers know pipeline is not running.
+
+    R1.5 (REVIEW A1): a real failure to remove the file is NOT swallowed —
+    it propagates like :func:`run_state.clear_run`. ``reset`` needs the
+    signal to report ``partial_failure`` (a swallowed error used to leave
+    ``state_cleared=True`` next to a ghost ``current.yaml`` that blocked the
+    next run). A caller that wants best-effort logs it via ``logs_dir`` and
+    catches the error itself. A missing file is a no-op.
     """
     state_path = _state_file(project_dir)
     try:
         if state_path.is_file():
-            state_path.unlink()
+            from .infra import state_store
+
+            # R1.5: the removal is a state-file write too — the Store owns it.
+            state_store.remove_state_file(state_path)
     except OSError as e:
         if logs_dir is not None:
             _log(logs_dir, f"T4.1: state clear failed: {e}")
+        raise
 
 
 def is_state_stale(state: dict[str, Any], max_age_seconds: int = 7200) -> bool:
@@ -170,4 +242,11 @@ def state_trusted(project_dir: Path, state: dict[str, Any] | None) -> bool:
         return False
 
 
-__all__ = ["write_state", "read_state", "clear_state", "is_state_stale", "state_trusted"]
+__all__ = [
+    "write_state",
+    "drop_fields",
+    "read_state",
+    "clear_state",
+    "is_state_stale",
+    "state_trusted",
+]

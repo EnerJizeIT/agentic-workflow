@@ -22,6 +22,7 @@ from pathlib import Path
 
 from .. import git_utils, paths, pipeline_state, run_state, todos
 from .._atomic import atomic_write_text
+from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
 from . import _liveness
 from ._errors import AwfApiError
@@ -292,6 +293,48 @@ def _normalize_plan(goal: str, criteria: list[str] | None) -> tuple[str, list[st
     return g, [str(c).strip() for c in items if str(c).strip()]
 
 
+def _rollback_projection(run_path: Path, prev_text: str | None) -> str:
+    """QA-3 (REVIEW-фикс 3): restore ``run.yaml`` to its pre-start bytes.
+
+    Used only on the error path of :func:`run_start`: the projection landed
+    but the Store mirror (:func:`state_store.publish_active_run`) failed, so
+    the start must refuse WITHOUT leaving an active run on disk. ``prev_text
+    is None`` means the file did not exist before the start — the rollback
+    removes it. Returns ``""`` when the restore is verified by a read-back,
+    else a short reason describing the fault (so the caller can name the
+    partial state loudly instead of hiding it).
+    """
+    try:
+        if prev_text is None:
+            # R1.5: the run.yaml projection is removed/restored through the
+            # Store's state-file writers (single writer) — the api layer no
+            # longer touches the bytes itself.
+            state_store.remove_state_file(run_path)
+            if run_path.exists():
+                return "run.yaml still present after unlink"
+        else:
+            state_store.write_state_file(run_path, prev_text)
+            if run_path.read_text(encoding="utf-8") != prev_text:
+                return "run.yaml content differs after restore"
+    except Exception as exc:  # noqa: BLE001 — report the fault, never mask it
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
+def _active_run_error(state: dict) -> AwfApiError:
+    """One source for the "run already active" refusal (F-6).
+
+    Used both by the pre-allocation guard and the under-lock mutator check
+    so the two texts cannot drift.
+    """
+    age = int(run_state.elapsed_minutes(state))
+    return AwfApiError(
+        f"Run already active ({run_state.position(state)}, current "
+        f"{state.get('current') or '—'}, started {age} min ago). "
+        f"Finish it with awf_run_finish, or pass force=true to replace it."
+    )
+
+
 def run_start(
     project_dir: Path,
     *,
@@ -334,6 +377,31 @@ def run_start(
     flags = {str(k): list(v) for k, v in (stop_flags or {}).items() if k}
     outcome: dict = {}
 
+    # R1.4 (S3-03, QA F2): поколение берётся из durable-счётчика Store, а
+    # не из сносимой проекции run.yaml. Иначе после reset_runtime счёт
+    # начинался заново (0 → 1), и устаревший stop/finish CAS-совпадал с
+    # НОВЫМ run. Store-счётчик reset не трогает.
+    _projection = run_state.read_run(project_dir)
+    # F-6 (REVIEW-фикс 9): refuse an already-active run BEFORE allocating a
+    # generation. The pre-fix order bumped the durable watermark on every
+    # deterministic refusal (the active check happened later, inside the
+    # mutator), so generations "jumped" without a run. The mutator still
+    # re-checks under the lock (a lost race only wastes a number — the
+    # counter is monotonic and two starts never collide on one value).
+    if _projection and _projection.get("active") and not force:
+        raise _active_run_error(_projection)
+    _assigned_generation = state_store.next_run_generation(
+        project_dir, floor=run_state.generation_of(_projection or {})
+    )
+    # QA-3 (REVIEW-фикс 3): snapshot the projection BEFORE the start writes,
+    # so a Store mirror fault can be rolled back to the exact prior file
+    # (or removed when there was none).
+    _run_path = run_state.run_file(project_dir)
+    try:
+        _prev_projection = _run_path.read_text(encoding="utf-8")
+    except OSError:
+        _prev_projection = None
+
     def _start_mutator(st: dict) -> dict:
         # A-13: the inactive → active transition is checked AND written in
         # ONE lock hold. Before: the active check read the state BEFORE
@@ -372,9 +440,12 @@ def run_start(
             last_supervisor_beat=run_state.now_iso(),
             downtime_seconds_at_last_beat=0,
             # A-13: the run generation — identity of the run for the
-            # conditional run_next transitions. A fresh run is always one
-            # older than whatever existed (absent = 0).
-            generation=run_state.generation_of(st) + 1,
+            # conditional run_next transitions. R1.4: the ONLY allocator is
+            # the durable Store counter (`_assigned_generation`); the
+            # projection is never advanced here and no local compensation
+            # runs — two concurrent starts each take a distinct counter
+            # value, so force-vs-force cannot collide on one generation.
+            generation=_assigned_generation,
             stop_reason="",
             report_file="",
             note=note.strip(),
@@ -396,14 +467,53 @@ def run_start(
     state = run_state.update_run(project_dir, _start_mutator)
 
     if "conflict" in outcome:
-        existing = outcome["conflict"]
-        age = int(run_state.elapsed_minutes(existing))
-        raise AwfApiError(
-            f"Run already active ({run_state.position(existing)}, current "
-            f"{existing.get('current') or '—'}, started {age} min ago). "
-            f"Finish it with awf_run_finish, or pass force=true to replace it."
-        )
+        raise _active_run_error(outcome["conflict"])
     replaced = bool(outcome.get("replaced"))
+
+    # R1.4 (addendum 0217): the Store holds the active run next to the
+    # generation it just allocated — run.yaml stays the authoritative
+    # projection the legacy readers use (the run_state writers still write
+    # it; the "read-only projection" end-state is deferred to R1.5), while
+    # the Store is the interlock source of truth for the generation and the
+    # active-run witness.
+    #
+    # QA-3 (REVIEW-фикс 3): strict invariant — either the start succeeds
+    # with the run active AND mirrored, or it refuses with NO active run on
+    # disk. The mirror is NOT "best effort" here (unlike the close/revise
+    # paths, where the authoritative projection must not be undone): a
+    # fault leaves the interlock source of truth without this run while
+    # run.yaml claims it is active — a half-start. So roll the projection
+    # back before refusing.
+    try:
+        state_store.publish_active_run(project_dir, state)
+    except Exception as exc:  # noqa: BLE001 — reframed as a clean refusal
+        rollback_fault = _rollback_projection(_run_path, _prev_projection)
+        if rollback_fault:
+            raise AwfApiError(
+                "Run start aborted: the Store mirror failed "
+                f"({type(exc).__name__}: {exc}) AND the run.yaml rollback "
+                f"failed too ({rollback_fault}) — run.yaml may still be "
+                "active; reconcile the run state before retrying."
+            ) from exc
+        # REVIEW-фикс 4 (F-M3): the refusal text must MATCH the disk. A
+        # force-replace rolled back to the PREVIOUS projection — a run that
+        # is still active. Saying "no active run remains" there contradicts
+        # the on-disk fact and would make the supervisor believe the project
+        # is free. Read the restored projection back and name what is there.
+        restored = run_state.read_run(project_dir)
+        if restored is not None and restored.get("active"):
+            raise AwfApiError(
+                "Run start aborted: the Store mirror failed "
+                f"({type(exc).__name__}: {exc}); the previous run "
+                f"(generation {run_state.generation_of(restored)}) was "
+                "restored and remains active — reconcile the run state "
+                "before retrying."
+            ) from exc
+        raise AwfApiError(
+            "Run start aborted: the Store mirror failed "
+            f"({type(exc).__name__}: {exc}); the run.yaml projection was "
+            "rolled back — no active run remains."
+        ) from exc
 
     budget_note = f", budget {int(budget_minutes)} min" if budget_minutes else ""
     replace_note = " (previous run replaced)" if replaced else ""
@@ -835,18 +945,139 @@ def _write_report(
     return report
 
 
+def _close_run_cas(
+    project_dir: Path, generation: int, *, reason: str, report_file: str
+) -> bool:
+    """A-13/R1.4 (S3-03): close the run ONLY if it is still the same generation.
+
+    A stale finish/stop (its state read before a newer ``run_start(force=True)``
+    or a ``run_revise`` cycle bump) must not close the NEW run and stamp it
+    with a foreign reason/report. R1.4 makes the DURABLE Store state the
+    identity witness (it survives ``reset_runtime``, which erases the
+    ``run.yaml`` projection). Two checks must agree before the write lands:
+
+    * the Store's active-run snapshot — a generation that is not the active
+      run's is stale (the revised-run hole: after ``reset`` the projection
+      restarts the count, the snapshot does not); a ``None`` snapshot (never
+      started / cleared by reset) is not a witness, the projection CAS
+      decides;
+    * the projection CAS — the on-disk run is still the one the caller read.
+
+    The durable counter is the allocation watermark: a generation ABOVE it
+    cannot exist. A counter ahead of the active run (an aborted revision
+    allocated a number that never landed) is not staleness — only a
+    generation *not equal to the active run* is.
+
+    REVIEW-фикс 4 (F-M2): the snapshot may merely LAG the projection — a
+    ``run_revise`` that landed the new generation in ``run.yaml`` but whose
+    ``publish_active_run`` faulted leaves projection gen N and snapshot
+    gen N-1. Treating that lag as staleness would refuse a legitimate close
+    ("a newer run replaced it" — false: the mirror lagged), an eternal ban
+    on the run's own stop/recovery (doctrine 03, T3b). So the snapshot
+    disagrees only as a DECISION when it is AHEAD of the caller (the caller
+    is genuinely older); when it is BEHIND (within the counter watermark)
+    the projection CAS decides — a match proves the generation is current,
+    and the snapshot is reconciled to it below.
+    """
+
+    generation = int(generation)
+    active_gen = state_store.active_run_generation(project_dir)
+    watermark = state_store.current_run_generation(project_dir)
+    if watermark and generation > watermark:
+        return False
+    if active_gen is not None and generation < active_gen:
+        return False
+
+    def _mutate(st: dict) -> dict:
+        st["active"] = False
+        st["stop_reason"] = reason
+        st["report_file"] = report_file
+        return st
+
+    closed, ok = run_state.update_run_cas(
+        project_dir, _mutate, generation=generation
+    )
+    if ok and closed is not None:
+        # R1.4 (addendum 0217): mirror the closed run into the Store so the
+        # interlock snapshot and the projection agree. A mirror fault must
+        # not undo a legitimate close: report nothing, the projection
+        # already landed.
+        try:
+            state_store.publish_active_run(project_dir, closed)
+        except Exception:  # noqa: BLE001 — mirror only, close is authoritative
+            pass
+    return ok
+
+
+#: Shared body of every stale-close refusal (stop_run / run_finish) — one
+#: wording, so both paths name the same cause.
+_STALE_CLOSE_DETAIL = (
+    "stale_operation — the run moved to a newer generation (a newer "
+    "run_start replaced it); its state was left untouched."
+)
+
+
+def _drop_stale_report(report: Path | None) -> None:
+    """Discard the report written just before a refused CAS close.
+
+    The close did not land, so the report describes nothing — leaving it
+    would strand an orphan report in the outbox."""
+    if report is None:
+        return
+    try:
+        report.unlink()
+    except OSError:
+        pass
+
+
+def _stale_close_result(report: Path | None, what: str) -> RunNextResult:
+    """Drop the just-written report and name the stale CAS refusal."""
+    _drop_stale_report(report)
+    return RunNextResult(
+        action="refused",
+        todo_id="",
+        message=f"{what} ignored: {_STALE_CLOSE_DETAIL}",
+        report_file="",
+        next_action=(
+            "A newer run owns this project. Re-read it (awf_run_status) and "
+            "act on the current generation."
+        ),
+    )
+
+
+def _stale_finish_result(report: Path | None, reason: str) -> RunFinishResult:
+    """The ``run_finish`` twin of :func:`_stale_close_result` — same cause,
+    ``RunFinishResult`` shape (the run stays active)."""
+    _drop_stale_report(report)
+    return RunFinishResult(
+        active=True,
+        reason=reason,
+        report_file="",
+        message=f"Run finish refused: {_STALE_CLOSE_DETAIL}",
+    )
+
+
 def stop_run(
     project_dir: Path,
     state: dict,
     reason: str,
     summary: str = "",
 ) -> RunNextResult:
-    """Stop the run: write the report, mark inactive, guide the supervisor."""
+    """Stop the run: write the report, mark inactive, guide the supervisor.
+
+    R1.4 (S3-03): the close is conditional on the run generation the caller
+    read (``state``). A stale stop — its state captured before a newer
+    ``run_start(force=True)`` — is refused as ``stale_operation`` and the new
+    run's state is left untouched (no foreign reason/report stamped on it).
+    """
+    state = state or {}
+    generation = run_state.generation_of(state)
     report = _write_report(project_dir, state, reason, summary)
     report_str = str(report) if report else ""
-    run_state.write_run(
-        project_dir, active=False, stop_reason=reason, report_file=report_str,
-    )
+    if not _close_run_cas(
+        project_dir, generation, reason=reason, report_file=report_str
+    ):
+        return _stale_close_result(report, "Run stop")
     return RunNextResult(
         action="stopped",
         todo_id="",
@@ -1411,9 +1642,16 @@ def _finish_facts(project_dir: Path, current: str) -> dict:
     ):
         stale_stage = str(pstate.get("stage_name") or "")
         stale_todo = str(pstate.get("todo_id") or current)
-        pipeline_state.clear_state(project_dir)
-        pstate = None
-        stale_cleared = True
+        try:
+            pipeline_state.clear_state(project_dir)
+        except OSError:
+            # R1.5 (REVIEW A1): a failed removal leaves the file in place —
+            # do NOT pretend the stage is cleared (stage_cleared stays False
+            # and the gate refuses), unlike the pre-fix unconditional reset.
+            pass
+        else:
+            pstate = None
+            stale_cleared = True
     stage_cleared = pstate is None
     return {
         "archived": archived,
@@ -1554,9 +1792,17 @@ def run_finish(
         stale_note=stale_note,
     )
     report_str = str(report) if report else ""
-    run_state.write_run(
-        project_dir, active=False, stop_reason=reason, report_file=report_str,
-    )
+    # R1.4 (S3-03): close ONLY the generation this call read. A concurrent
+    # run_start(force=True) bumped the generation between the read and the
+    # write — the stale finish must not close the new run (it would stamp a
+    # foreign reason/report on it). Mismatch → drop the report, leave state.
+    if not _close_run_cas(
+        project_dir,
+        run_state.generation_of(state),
+        reason=reason,
+        report_file=report_str,
+    ):
+        return _stale_finish_result(report, reason)
     return RunFinishResult(
         active=False,
         reason=reason,
@@ -1974,6 +2220,15 @@ def run_revise(
     # run_next reservation/commit. The idempotency check (find_revision)
     # runs under the same lock hold: two serialized writers cannot race
     # into a second revision.
+    #
+    # R1.4 (S3-03): the new CYCLE generation is allocated from the durable
+    # Store counter BEFORE the CAS, exactly like run_start. Advancing the
+    # projection generation on its own (the pre-R1.4 behaviour) created a
+    # second generation source: after reset_runtime the projection is gone,
+    # the new run restarts from the counter — and the revised run's old
+    # object, holding the same number, CAS-matched the new run. One source
+    # (the counter) makes the number monotone across reset.
+    revised_generation = state_store.next_run_generation(project_dir, floor=gen)
     outcome: dict = {}
 
     def _revise_mutator(st: dict) -> dict:
@@ -2012,8 +2267,10 @@ def run_revise(
         # documents the revised-run refusal, but nothing ever moved the
         # current generation. The bump and the queue change are one CAS
         # write; the revision record keeps `gen` — the generation the
-        # revision was applied AGAINST (the CAS identity).
-        st["generation"] = run_state.generation_of(st) + 1
+        # revision was applied AGAINST (the CAS identity). R1.4: the new
+        # value is the Store-allocated `revised_generation`, not a
+        # projection-local increment.
+        st["generation"] = revised_generation
         run_state.append_revision(
             st, key_clean, reason_clean, changes, gen, resume_from=resume_from
         )
@@ -2048,6 +2305,17 @@ def run_revise(
                 "current_queue/generation."
             ),
         )
+
+    # R1.4 (S3-03): the applied revision moved the run to a new cycle — mirror
+    # the new generation into the Store's active_run so the durable snapshot
+    # (the close-CAS witness) and the projection agree. A no-op repeat
+    # ("existing") changed nothing, so it must not republish. A mirror fault
+    # must not undo the applied revision: the projection already landed.
+    if "existing" not in outcome and _written is not None:
+        try:
+            state_store.publish_active_run(project_dir, _written)
+        except Exception:  # noqa: BLE001 — mirror only, revision is authoritative
+            pass
 
     if "existing" in outcome:
         stored = outcome["existing"]
@@ -2425,6 +2693,19 @@ def run_service_start(
     pipe_name = _service_pipeline_name(slug_clean)
     cand_path = _draft_candidate_rel_path(slug_clean)
 
+    # A3 (REVIEW-фикс 0219): the service slot's generation comes from the SAME
+    # durable Store allocator as the main run — no local ``generation_of+1``
+    # (which reset could restart and a stale close could then CAS-match).
+    # A losing race only wastes a number (the counter is monotonic), exactly
+    # as run_start documents. Allocated BEFORE the side effects below, exactly
+    # like run_start: the allocator is FALLIBLE (a StateStoreError under
+    # contention), and a failure here must not strand an already-dispatched
+    # unit and pipeline outside the rollback window.
+    _svc_projection = run_state.read_run(project_dir, slot="service")
+    _service_generation = state_store.next_run_generation(
+        project_dir, floor=run_state.generation_of(_svc_projection or {})
+    )
+
     # Side effects — rolled back as a set on launch failure (V-01/V-02).
     _write_service_pipeline(project_dir, slug_clean)
     from .dispatch import dispatch_todo
@@ -2457,7 +2738,7 @@ def run_service_start(
             budget_minutes=0,
             downtime_seconds=0,
             started_at=run_state.now_iso(),
-            generation=run_state.generation_of(st) + 1,
+            generation=_service_generation,
             stop_reason="",
             report_file="",
             note=f"service run: role candidate {slug_clean}",
@@ -2716,7 +2997,30 @@ def run_service_finish(
         st["report_file"] = str(report) if report else ""
         return st
 
-    run_state.update_run(project_dir, _close_mutator, slot="service")
+    # A3 (REVIEW-фикс 0219): close by CAS on the slot's generation — a stale
+    # close (the slot moved to a newer generation, e.g. a fresh service
+    # allocation landed between our read and this write) must not clobber the
+    # new owner's state. The read of ``svc`` above carries the generation.
+    _svc_generation = run_state.generation_of(svc)
+    _closed, _cas_ok = run_state.update_run_cas(
+        project_dir, _close_mutator, slot="service", generation=_svc_generation
+    )
+    if not _cas_ok:
+        return ServiceRunResult(
+            action="refused",
+            slug=slug,
+            pipeline=pipe_name,
+            candidate_path=cand_path,
+            message=(
+                "stale_operation — the service slot moved to a newer "
+                "generation (a newer service allocation replaced it); its "
+                "state was left untouched."
+            ),
+            next_action=(
+                "Check awf_run_service_status for the current service slot, "
+                "then retry awf_run_service_finish against it."
+            ),
+        )
 
     main_state = run_state.read_run(project_dir)
     main_pos = run_state.position(main_state) if main_state else "—"
@@ -2834,7 +3138,7 @@ def run_service_approve(
     is required (a service unit is a run unit).
     """
     project_dir = _require_run_project(project_dir)
-    if not re.match(r"^TODO-\d{4,}$", str(todo_id or "")):
+    if not is_valid_todo_id(str(todo_id or "")):
         raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     evidence_clean = str(evidence or "").strip()
     if not evidence_clean:

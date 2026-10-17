@@ -11,15 +11,17 @@ hung process.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import _net, _proc
+from . import _net, _proc, paths
 from ._env import awf_subprocess_env
 from ._log import log as _log
+from .infra import managed_fs
 
 BD20_POLL_INTERVAL = 3
 BD20_HARD_TIMEOUT = 3600
@@ -249,34 +251,39 @@ def run_subprocess_until_signal(
             safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(log_name).name)
             if not safe_name.endswith(".out"):
                 safe_name += ".out"
-            log_path = (logs_dir / safe_name).resolve()
+            target = logs_dir / safe_name
         else:
-            log_path = (logs_dir / "worker-output.out").resolve()
-        if not log_path.is_relative_to(logs_dir.resolve()):
-            log_path = (logs_dir / "worker-output.out").resolve()
+            target = logs_dir / paths.WORKER_FALLBACK_LOG
+        # R1.1/S9-03: open through the managed no-follow helper. A symlinked
+        # logs dir, a symlinked leaf (the audited fallback bypass — the
+        # final resolve() ran unchecked) AND a symlinked INTERMEDIATE
+        # (``.agentic``) are refused BEFORE any write; the file is born
+        # 0600; a hardlinked legacy log is never appended to or chmod-ed (a
+        # fresh safe sibling is used instead). Resolve-then-open is not
+        # enough — the type is re-checked on the opened fd (fstat).
+        # REVIEW fix (F1): pass the project root always. The old code
+        # nulled the anchor when ``logs_dir`` escaped the (resolved) cwd —
+        # but an escape IS the S9-03 signal, so nulling it disabled the
+        # intermediate-component check exactly when ``.agentic`` was a
+        # symlink out of the project. ``open_append_log`` refuses the
+        # escape instead of letting it through.
+        anchor = Path(cwd).resolve()
+        log_fd, log_path = managed_fs.open_append_log(target, root=anchor)
+        worker_log = os.fdopen(log_fd, "a", encoding="utf-8")
         # dogfood-11: APPEND instead of overwrite — a retried stage used to
         # erase the previous run's log, so post-mortems lost what the worker
         # actually wrote. Marker line delimits runs for forensics.
-        import os as _os
-        # AUD14-06e: O_CREAT 0o600 — the log is born user-only. The old
-        # open("a") created it 0644 and chmod'd after the first write,
-        # leaving a window where the prompt-bearing log was world-readable.
-        log_fd = _os.open(log_path, _os.O_WRONLY | _os.O_APPEND | _os.O_CREAT, 0o600)
-        worker_log = _os.fdopen(log_fd, "a", encoding="utf-8")
         worker_log.write(
             f"\n===== awf run {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
-            f"(pid {_os.getpid()}) =====\n"
+            f"(pid {os.getpid()}) =====\n"
         )
         worker_log.flush()
-        # P2: restrict worker log permissions (may contain sensitive output).
-        # Ratchet: also covers logs a previous version created 0644.
-        _os.chmod(log_path, 0o600)
         if log_holder is not None:
             log_holder["log_path"] = str(log_path)
             # U6b: byte offset of this run's first byte. The log is
             # append-mode, so classification of THIS run's death must start
             # here — an earlier run's network marker is not this run's failure.
-            log_holder["log_start_offset"] = _os.fstat(worker_log.fileno()).st_size
+            log_holder["log_start_offset"] = os.fstat(worker_log.fileno()).st_size
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=env or awf_subprocess_env(),

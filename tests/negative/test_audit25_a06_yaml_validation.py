@@ -101,7 +101,11 @@ def test_repo_default_pipeline_loads_unchanged(tmp_path):
     stages = load_stages(dst)
 
     assert [s.name for s in stages] == [
-        "plan", "agent-implementer", "agent-qa-review", "verify",
+        # The repo default intentionally carries the full per-unit flow
+        # (owner decision 2026-10-15: architect-review after implementer,
+        # project-auditor before verify) — not the minimal template.
+        "plan", "agent-implementer", "agent-architect-review",
+        "agent-qa-review", "agent-project-auditor", "verify",
     ]
     assert stages[-1].on_approved == "commit_and_next"
 

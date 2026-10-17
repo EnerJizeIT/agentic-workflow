@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
+from ..infra.managed_fs import ManagedPathError, managed_write_text
 from ..pipeline_state import read_state
 
 DASHBOARD_DIR = "dashboards"
@@ -524,22 +525,26 @@ def generate_dashboard(project_dir: Path) -> Path | None:
         _log(logs_dir, f"Dashboard generation failed: {e}")
         err_path = project_dir / ".agentic" / DASHBOARD_DIR / "error.txt"
         try:
-            err_path.parent.mkdir(parents=True, exist_ok=True)
-            err_path.write_text(
-                f"{type(e).__name__}: {e}\n\n{_tb.format_exc()}", encoding="utf-8"
+            # R1.1/F-A: managed write — a symlinked ``.agentic``/dashboards
+            # must not drop error.txt outside the project. Best-effort.
+            managed_write_text(
+                err_path,
+                f"{type(e).__name__}: {e}\n\n{_tb.format_exc()}",
+                root=project_dir,
             )
-        except OSError:
+        except (ManagedPathError, OSError):
             pass
         return None
 
     # Write to .agentic/dashboards/current.html (atomic — concurrent
     # browser meta-refresh reads must not see a half-written file).
-    from .._atomic import atomic_write_text
-
-    dashboards_dir = project_dir / ".agentic" / DASHBOARD_DIR
-    dashboards_dir.mkdir(parents=True, exist_ok=True)
-    output_path = dashboards_dir / DASHBOARD_FILE
-    atomic_write_text(output_path, html)
+    output_path = project_dir / ".agentic" / DASHBOARD_DIR / DASHBOARD_FILE
+    try:
+        managed_write_text(output_path, html, root=project_dir)
+    except (ManagedPathError, OSError):
+        # Dashboard generation is best-effort; an unsafe runtime path must
+        # not crash the status call.
+        return None
     return output_path
 
 

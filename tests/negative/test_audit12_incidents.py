@@ -325,6 +325,57 @@ class TestResetClearsRun:
         assert run_state.read_run(proj)["active"] is True
 
 
+# ── R1.5 (REVIEW A1): reset must NOT report success on a failed state wipe ──
+
+
+class TestResetStateWipeFailure:
+    def test_failed_current_yaml_unlink_is_partial_failure(
+        self, tmp_git_repo, monkeypatch
+    ):
+        """A failed removal of ``state/current.yaml`` must surface as
+        ``partial_failure`` — never a silent success that leaves a ghost
+        "running" file blocking the next run.
+
+        Simulates the unlink failure by making the Store's remover raise
+        ``PermissionError`` for ``current.yaml`` only. Before the fix the
+        error was swallowed inside ``pipeline_state.clear_state``: reset
+        returned ``partial_failure=False`` with ``state`` in
+        ``cleaned_dirs`` while the file stayed on disk.
+        """
+        from awf import pipeline_state
+        from awf.infra import state_store
+
+        proj = _project(tmp_git_repo)
+        _activate(proj, "TODO-0001")
+        api.run_start(proj, queue=["TODO-0001"])
+        # A stage state (ghost "running") on disk.
+        pipeline_state.write_state(proj, stage_name="plan", todo_id="TODO-0001")
+        current = proj / ".agentic" / "state" / "current.yaml"
+        assert current.is_file()
+
+        real_remove = state_store.remove_state_file
+
+        def fake_remove(path, *args, **kwargs):
+            if Path(path).name == "current.yaml":
+                raise PermissionError(f"simulated: cannot remove {path}")
+            return real_remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(state_store, "remove_state_file", fake_remove)
+
+        result = api.reset_runtime(proj)
+
+        assert result.partial_failure, (
+            "reset swallowed the failed current.yaml removal — ghost state"
+        )
+        assert "state" not in result.cleaned_dirs, (
+            "reset claimed state was cleared although the file is still there"
+        )
+        assert "current.yaml" in (result.notes or ""), (
+            f"partial_failure notes must name the file, got: {result.notes!r}"
+        )
+        assert current.is_file(), "the test must leave the file in place to be meaningful"
+
+
 # ── T4.3 · AUD05-06: orphans must not be removable while the pipeline is alive ──
 
 

@@ -24,6 +24,7 @@ operations that leave a trace:
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from pathlib import Path
 
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
+from .._errors import OperationRecoveryRequired
 from .._log import log as _log
 from .._names import unique_name
 from ..pipeline_state import read_state
@@ -41,6 +43,10 @@ from ._helpers import require_agentic
 from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult, UpdateTodoResult
 
 _ID_RE = re.compile(r"^TODO-\d{4,}$")
+#: R1.2 (TODO-0216): an OperationId is a portable, path-safe token naming one
+#: durable operation (retry/replay key). Deliberately narrow — it becomes a
+#: filename under state/operations/.
+_OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _validate_id(todo_id: str) -> None:
@@ -50,6 +56,159 @@ def _validate_id(todo_id: str) -> None:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+# ─── R1.2 (TODO-0216): operation identity + guarded read-modify-write ─────
+#
+# The MCP mutation lock (agent_workflow_ui awf.py) serializes MCP calls but
+# its lifetime is the coroutine's, not the writing thread's: a cancelled
+# call released the lock while its worker kept writing (audit S5-01), and
+# CLI/HTTP callers never held it at all. The integrity guarantee therefore
+# lives here, below the API layer:
+#
+# * `_write_todo_checked` writes the TODO under the project file lock and
+#   only if its content is still the exact text this call read
+#   (compare-and-swap on the text) — a stale write is refused, never
+#   written over a newer accepted one;
+# * a durable operation journal (one json per OperationId) lets a retry of
+#   a cancelled/hung call read the actual outcome instead of guessing:
+#   applied → replay the result, refused → same error, started-without-
+#   finish → recovery_required.
+
+
+def _write_todo_locked(md: Path, expected_text: str, new_text: str) -> None:
+    """R1.2: the version-guarded write; the caller MUST hold the project
+    lock (see :func:`_write_todo_checked`). Split out so an outer lock
+    holder (the durable-operation path) does not re-lock and deadlock."""
+    current = md.read_text(encoding="utf-8")
+    if current != expected_text:
+        raise AwfApiError(
+            f"{md.name} changed after it was read — write refused "
+            "(version conflict: a concurrent update landed first). "
+            "Re-read the TODO and retry; the accepted update is kept."
+        )
+    atomic_write_text(md, new_text)
+
+
+def _write_todo_checked(
+    project_dir: Path,
+    md: Path,
+    expected_text: str,
+    new_text: str,
+    *,
+    _lock_held: bool = False,
+) -> None:
+    """R1.2 (TODO-0216): the read-modify-write write step, guarded.
+
+    Holds the project file lock across re-read + compare + write, so the
+    decision "is my version still current" and the write itself cannot
+    interleave with a concurrent writer. If the on-disk text no longer
+    matches what this call read (``expected_text``), the write is refused
+    with a clear error — the newer accepted update is kept.
+
+    ``_lock_held``: set by the durable-operation path, which already holds
+    the project lock for the whole journal+apply section — re-locking here
+    would deadlock (flock is per open file description).
+    """
+    if _lock_held:
+        _write_todo_locked(md, expected_text, new_text)
+        return
+    from .._lock import locked
+
+    with locked(project_dir):
+        _write_todo_locked(md, expected_text, new_text)
+
+
+def _validate_operation_id(operation_id: str) -> None:
+    if not _OPERATION_ID_RE.match(operation_id or ""):
+        raise AwfApiError(
+            f"invalid operation_id {operation_id!r} — letters, digits, '.', "
+            "'_', '-' only (1..64 chars, must start alphanumeric)"
+        )
+
+
+def _operation_record(project_dir: Path, operation_id: str) -> Path:
+    """R1.2 (TODO-0216, F4): the journal path for ``operation_id``.
+
+    The leaf is a digest of the id, never the id itself. The id is a
+    user-supplied token: verbatim it could be a Windows reserved device
+    name (``con``, ``nul`` …) — unreadable as a file there, silently
+    degrading the journal guarantee — and on a case-insensitive
+    filesystem ``Op-1`` / ``op-1`` would share one journal (one operation
+    replaying another's outcome). Hashing sidesteps both; the real id
+    lives inside the record body, so replay still keys on it.
+    """
+    # R1.5 (iter-5): one owner of the journal path — the Store's ``op_path``
+    # (same ``state/operations/<sha256(id)>.json`` key). hygiene no longer
+    # re-derives the digest next to it.
+    from ..infra import state_store
+
+    return state_store.op_path(project_dir, operation_id)
+
+
+def _read_operation(project_dir: Path, operation_id: str) -> dict | None:
+    """R1.2: the recorded outcome for ``operation_id``, or
+    ``None`` when the operation was never started.
+
+    An unreadable or corrupt record is NOT "never started": the attempt
+    left a file whose content cannot be trusted, so the outcome is
+    unknown. Returning ``None`` there would let a retry re-apply the
+    effect — the duplicate requirement 4 forbids — so the unknown outcome
+    is surfaced as :class:`OperationRecoveryRequired` instead.
+    """
+    rec = _operation_record(project_dir, operation_id)
+    if not rec.is_file():
+        return None
+    try:
+        data = json.loads(rec.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise OperationRecoveryRequired(
+            operation_id,
+            f"operation {operation_id}: journal unreadable ({e}) — outcome "
+            "unknown, recovery_required, do not retry blindly",
+        ) from e
+    if not isinstance(data, dict):
+        raise OperationRecoveryRequired(
+            operation_id,
+            f"operation {operation_id}: journal is not an object — outcome "
+            "unknown, recovery_required, do not retry blindly",
+        )
+    # F4 rationale: the leaf is a digest, so the body is the only place the
+    # real id survives — verify it, never replay one operation's outcome
+    # under another id (a copied/colliding journal would otherwise be
+    # trusted blindly).
+    if data.get("operation_id") != operation_id:
+        raise OperationRecoveryRequired(
+            operation_id,
+            f"operation {operation_id}: journal body names a different id "
+            f"({data.get('operation_id')!r}) — outcome unknown, "
+            "recovery_required, do not retry blindly",
+        )
+    return data
+
+
+def _write_operation(project_dir: Path, operation_id: str, **fields) -> None:
+    """R1.2 (TODO-0216, F-HIGH): persist one journal transition.
+
+    Raises on failure — deliberately. The journal IS the durable
+    guarantee, not a log line: a swallowed OSError would leave either no
+    ``started`` record (a retry reads "never started" and re-applies the
+    effect) or an unfinishable ``started`` record while the effect landed.
+    The caller decides what a failure means: the START write refuses
+    BEFORE any effect, a FINISH write failure surfaces
+    ``recovery_required``.
+    """
+    # ``operation_id`` is filled by the Store writer (one owner of the key).
+    # ``ts`` keeps hygiene's format; the Store only defaults it when absent.
+    fields.setdefault("ts", _timestamp())
+    # R1.5 (iter-5): the journal path/key are shared with the StateStore and
+    # now so is the WRITER and its durability bar (fsync file + dir). The
+    # record schema stays hygiene's (started/refused/applied); only the path,
+    # key and the write primitive are unified. Store op ids never collide
+    # with hygiene ids, so the two vocabularies do not meet on disk yet.
+    from ..infra import state_store
+
+    state_store.write_operation(project_dir, operation_id, **fields)
 
 
 def closure_files(project_dir: Path, todo_id: str) -> list[Path]:
@@ -120,25 +279,33 @@ def unblock_todo(project_dir: Path, todo_id: str) -> UnblockResult:
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
-    running, _pid, _tail = check_pipeline_running(project_dir)
-    if running:
-        raise AwfApiError(
-            "pipeline is running — wait for verify/salvage, or awf kill first"
-        )
+    # F-MED-2: the signal read-and-move is a read-modify-write — hold the
+    # project lock so it cannot interleave with a concurrent writer.
+    from .._lock import locked
 
-    moved, trace = clear_stale_closures(project_dir, todo_id)
-    if not moved:
-        raise AwfApiError(
-            f"No closure signals (BLOCKED/ACK) for {todo_id} — nothing to unblock. "
-            "DONE closures are never lifted by unblock; use awf restore for an "
-            "archived TODO."
-        )
+    with locked(project_dir):
+        # AUD-2 (TODO-0216 iter-4): the "pipeline running" guard is checked
+        # UNDER the lock, like retire_todo and the durable update path —
+        # checked-before-lock left a window for awf start to slip in and
+        # then this op moves a live unit's signals out from under the engine.
+        running, _pid, _tail = check_pipeline_running(project_dir)
+        if running:
+            raise AwfApiError(
+                "pipeline is running — wait for verify/salvage, or awf kill first"
+            )
+        moved, trace = clear_stale_closures(project_dir, todo_id)
+        if not moved:
+            raise AwfApiError(
+                f"No closure signals (BLOCKED/ACK) for {todo_id} — nothing to unblock. "
+                "DONE closures are never lifted by unblock; use awf restore for an "
+                "archived TODO."
+            )
 
-    trace_rel = trace.relative_to(project_dir).as_posix() if trace else ""
-    _log(
-        paths.logs_dir(project_dir),
-        f"unblock: {todo_id} — cleared {', '.join(moved)} → {trace_rel}",
-    )
+        trace_rel = trace.relative_to(project_dir).as_posix() if trace else ""
+        _log(
+            paths.logs_dir(project_dir),
+            f"unblock: {todo_id} — cleared {', '.join(moved)} → {trace_rel}",
+        )
     return UnblockResult(
         todo_id=todo_id,
         moved=moved,
@@ -172,80 +339,89 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
-    running, _pid, _tail = check_pipeline_running(project_dir)
-    if running:
-        raise AwfApiError(
-            "pipeline is running — wait for verify/salvage, or awf kill first"
-        )
+    # F-MED-2: the signal read-and-move is a read-modify-write — hold the
+    # project lock across check + move so a concurrent writer cannot slip
+    # between them.
+    from .._lock import locked
 
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-    md = inbox / f"{todo_id}.md"
-    if not md.is_file():
-        raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to remove.")
+    with locked(project_dir):
+        # AUD-2 (TODO-0216 iter-4): the "pipeline running" guard is checked
+        # UNDER the lock, like retire_todo and the durable update path —
+        # checked-before-lock left a window for awf start to slip in and
+        # then this op moves a live unit's files out from under the engine.
+        running, _pid, _tail = check_pipeline_running(project_dir)
+        if running:
+            raise AwfApiError(
+                "pipeline is running — wait for verify/salvage, or awf kill first"
+            )
+        inbox = paths.inbox(project_dir)
+        outbox = paths.outbox(project_dir)
+        md = inbox / f"{todo_id}.md"
+        if not md.is_file():
+            raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to remove.")
 
-    short = short_id(todo_id)
-    ids = (todo_id, short) if short != todo_id else (todo_id,)
-    outbox_signals = [
-        p
-        for tid in ids
-        for p in sorted(outbox.glob(f"*-{tid}.*"))
-        if p.is_file()
-    ]
-    inbox_signals = [
-        p
-        for tid in ids
-        for prefix in ("ACK-", "APPROVE-")
-        if (p := inbox / f"{prefix}{tid}.ready").is_file()
-    ]
-    if outbox_signals or inbox_signals:
-        names = ", ".join(p.name for p in outbox_signals + inbox_signals)
-        if any(p.name.startswith("DONE-") for p in outbox_signals):
-            hint = "DONE — the TODO is closed as finished; use awf restore."
-        else:
-            hint = "stale BLOCKED/ACK — use awf unblock; orphans — awf reset --orphans."
-        raise AwfApiError(
-            f"{todo_id} has signals: {names} — it was started. {hint}"
-        )
-    if todos.has_progress(outbox, todo_id):
-        raise AwfApiError(
-            f"{todo_id} has PROGRESS — it was started. Use awf reset --orphans."
-        )
+        short = short_id(todo_id)
+        ids = (todo_id, short) if short != todo_id else (todo_id,)
+        outbox_signals = [
+            p
+            for tid in ids
+            for p in sorted(outbox.glob(f"*-{tid}.*"))
+            if p.is_file()
+        ]
+        inbox_signals = [
+            p
+            for tid in ids
+            for prefix in ("ACK-", "APPROVE-")
+            if (p := inbox / f"{prefix}{tid}.ready").is_file()
+        ]
+        if outbox_signals or inbox_signals:
+            names = ", ".join(p.name for p in outbox_signals + inbox_signals)
+            if any(p.name.startswith("DONE-") for p in outbox_signals):
+                hint = "DONE — the TODO is closed as finished; use awf restore."
+            else:
+                hint = "stale BLOCKED/ACK — use awf unblock; orphans — awf reset --orphans."
+            raise AwfApiError(
+                f"{todo_id} has signals: {names} — it was started. {hint}"
+            )
+        if todos.has_progress(outbox, todo_id):
+            raise AwfApiError(
+                f"{todo_id} has PROGRESS — it was started. Use awf reset --orphans."
+            )
 
-    done_dir = paths.done_dir(project_dir) / todo_id
-    done_dir.mkdir(parents=True, exist_ok=True)
-    trace = done_dir / f"removed-{_timestamp()}.md"
-    shutil.move(str(md), str(trace))
-    trace_rel = trace.relative_to(project_dir).as_posix()
+        done_dir = paths.done_dir(project_dir) / todo_id
+        done_dir.mkdir(parents=True, exist_ok=True)
+        trace = done_dir / f"removed-{_timestamp()}.md"
+        shutil.move(str(md), str(trace))
+        trace_rel = trace.relative_to(project_dir).as_posix()
 
-    # REPORTS26 B-f2: the dispatch .ready is an artifact — it follows the
-    # .md into the trace directory instead of blocking the removal.
-    ready = inbox / f"{todo_id}.ready"
-    ready_moved = False
-    if ready.is_file():
-        # unique name: a re-dispatched number keeps its earlier trace copy
-        ready_target = done_dir / _unique_name(done_dir, ready.name)
-        shutil.move(str(ready), str(ready_target))
-        ready_moved = True
+        # REPORTS26 B-f2: the dispatch .ready is an artifact — it follows the
+        # .md into the trace directory instead of blocking the removal.
+        ready = inbox / f"{todo_id}.ready"
+        ready_moved = False
+        if ready.is_file():
+            # unique name: a re-dispatched number keeps its earlier trace copy
+            ready_target = done_dir / _unique_name(done_dir, ready.name)
+            shutil.move(str(ready), str(ready_target))
+            ready_moved = True
 
-    # The unit no longer exists — its baseline snapshot is dead weight
-    # (commit gate / prove-red would read it for a TODO that is gone).
-    removed_files: list[str] = []
-    context_dir = paths.context_dir(project_dir)
-    for tid in ids:
-        for p in sorted(context_dir.glob(f"BASELINE-{tid}.*")):
-            if p.is_file():
-                removed_files.append(p.relative_to(project_dir).as_posix())
-    removed_files.sort()
-    for rel in removed_files:
-        (project_dir / rel).unlink()
+        # The unit no longer exists — its baseline snapshot is dead weight
+        # (commit gate / prove-red would read it for a TODO that is gone).
+        removed_files: list[str] = []
+        context_dir = paths.context_dir(project_dir)
+        for tid in ids:
+            for p in sorted(context_dir.glob(f"BASELINE-{tid}.*")):
+                if p.is_file():
+                    removed_files.append(p.relative_to(project_dir).as_posix())
+        removed_files.sort()
+        for rel in removed_files:
+            (project_dir / rel).unlink()
 
-    note = f"todo-remove: {todo_id} — {md.name} → {trace_rel}"
-    if ready_moved:
-        note += f", {ready.name} → {done_dir.name}/"
-    if removed_files:
-        note += f", deleted {len(removed_files)} baseline file(s)"
-    _log(paths.logs_dir(project_dir), note)
+        note = f"todo-remove: {todo_id} — {md.name} → {trace_rel}"
+        if ready_moved:
+            note += f", {ready.name} → {done_dir.name}/"
+        if removed_files:
+            note += f", deleted {len(removed_files)} baseline file(s)"
+        _log(paths.logs_dir(project_dir), note)
 
     message = f"{todo_id} removed (never started). Trace: {trace_rel}."
     if ready_moved:
@@ -311,91 +487,96 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
-    md = inbox / f"{todo_id}.md"
-    done_dir = paths.done_dir(project_dir) / todo_id
-    archived_md = done_dir / "TODO.md"
+    # F-MED-2: the archive check + move is a read-modify-write — hold the
+    # project lock across check + move.
+    from .._lock import locked
 
-    if archived_md.is_file():
-        extra = (
-            f" and a second copy sits in inbox/{md.name} — inspect manually"
-            if md.is_file()
-            else ""
-        )
-        raise AwfApiError(
-            f"{todo_id} is already archived (done/{todo_id}/TODO.md{extra}) — "
-            "use awf restore to bring an archived TODO back."
-        )
-    if not md.is_file():
-        raise AwfApiError(
-            f"{todo_id}.md not found in inbox and no done/{todo_id}/TODO.md — "
-            "nothing to retire."
-        )
+    with locked(project_dir):
+        inbox = paths.inbox(project_dir)
+        outbox = paths.outbox(project_dir)
+        md = inbox / f"{todo_id}.md"
+        done_dir = paths.done_dir(project_dir) / todo_id
+        archived_md = done_dir / "TODO.md"
 
-    # Live pipeline on THIS id: the engine owns the files right now.
-    # A pipeline on another id does not touch this TODO's files — allowed.
-    running, pid, _tail = check_pipeline_running(project_dir)
-    if running:
-        state = read_state(project_dir)
-        if isinstance(state, dict) and state.get("todo_id") == todo_id:
+        if archived_md.is_file():
+            extra = (
+                f" and a second copy sits in inbox/{md.name} — inspect manually"
+                if md.is_file()
+                else ""
+            )
             raise AwfApiError(
-                f"a live pipeline is running on {todo_id} (pid {pid}) — "
-                "wait for it to finish or awf kill first"
+                f"{todo_id} is already archived (done/{todo_id}/TODO.md{extra}) — "
+                "use awf restore to bring an archived TODO back."
+            )
+        if not md.is_file():
+            raise AwfApiError(
+                f"{todo_id}.md not found in inbox and no done/{todo_id}/TODO.md — "
+                "nothing to retire."
             )
 
-    short = short_id(todo_id)
-    ids = (todo_id, short) if short != todo_id else (todo_id,)
+        # Live pipeline on THIS id: the engine owns the files right now.
+        # A pipeline on another id does not touch this TODO's files — allowed.
+        running, pid, _tail = check_pipeline_running(project_dir)
+        if running:
+            state = read_state(project_dir)
+            if isinstance(state, dict) and state.get("todo_id") == todo_id:
+                raise AwfApiError(
+                    f"a live pipeline is running on {todo_id} (pid {pid}) — "
+                    "wait for it to finish or awf kill first"
+                )
 
-    # (source, archive name) pairs — inbox first, then outbox artifacts.
-    candidates: list[tuple[Path, str]] = [(md, "TODO.md")]
-    ready = inbox / f"{todo_id}.ready"
-    if ready.is_file():
-        candidates.append((ready, ready.name))
-    for tid in ids:
-        candidates.extend(
-            (p, p.name) for p in sorted(outbox.glob(f"PROGRESS-{tid}.*")) if p.is_file()
+        short = short_id(todo_id)
+        ids = (todo_id, short) if short != todo_id else (todo_id,)
+
+        # (source, archive name) pairs — inbox first, then outbox artifacts.
+        candidates: list[tuple[Path, str]] = [(md, "TODO.md")]
+        ready = inbox / f"{todo_id}.ready"
+        if ready.is_file():
+            candidates.append((ready, ready.name))
+        for tid in ids:
+            candidates.extend(
+                (p, p.name) for p in sorted(outbox.glob(f"PROGRESS-{tid}.*")) if p.is_file()
+            )
+            for ext in (".md", ".json"):
+                p = outbox / f"DONE-{tid}{ext}"
+                if p.is_file():
+                    candidates.append((p, p.name))
+            candidates.extend(
+                (p, p.name) for p in sorted(outbox.glob(f"REVIEW-{tid}.*")) if p.is_file()
+            )
+
+        done_dir.mkdir(parents=True, exist_ok=True)
+        moved: list[str] = []
+        pairs: list[tuple[str, str]] = []  # (from, to) — project-relative
+        for src, name in candidates:
+            target = done_dir / _unique_name(done_dir, name)
+            shutil.move(str(src), str(target))
+            to_rel = target.relative_to(project_dir).as_posix()
+            moved.append(to_rel)
+            pairs.append((src.relative_to(project_dir).as_posix(), to_rel))
+
+        ts = _timestamp()
+        note = done_dir / f"RETIRED-{ts}.md"
+        note_lines = [
+            f"# RETIRED: {todo_id}",
+            "",
+            f"- when: {ts}",
+            "- by: supervisor (awf todo-retire)",
+            f"- reason: {reason}",
+            "",
+            "## Moved to archive",
+            "",
+        ]
+        note_lines += [f"- {src} → {to}" for src, to in pairs]
+        note_lines.append("")
+        note.write_text("\n".join(note_lines), encoding="utf-8")
+        note_rel = note.relative_to(project_dir).as_posix()
+
+        _log(
+            paths.logs_dir(project_dir),
+            f"retire: {todo_id} — {len(moved)} file(s) → "
+            f"done/{todo_id}/ (note: RETIRED-{ts}.md, reason: {reason})",
         )
-        for ext in (".md", ".json"):
-            p = outbox / f"DONE-{tid}{ext}"
-            if p.is_file():
-                candidates.append((p, p.name))
-        candidates.extend(
-            (p, p.name) for p in sorted(outbox.glob(f"REVIEW-{tid}.*")) if p.is_file()
-        )
-
-    done_dir.mkdir(parents=True, exist_ok=True)
-    moved: list[str] = []
-    pairs: list[tuple[str, str]] = []  # (from, to) — project-relative
-    for src, name in candidates:
-        target = done_dir / _unique_name(done_dir, name)
-        shutil.move(str(src), str(target))
-        to_rel = target.relative_to(project_dir).as_posix()
-        moved.append(to_rel)
-        pairs.append((src.relative_to(project_dir).as_posix(), to_rel))
-
-    ts = _timestamp()
-    note = done_dir / f"RETIRED-{ts}.md"
-    note_lines = [
-        f"# RETIRED: {todo_id}",
-        "",
-        f"- when: {ts}",
-        "- by: supervisor (awf todo-retire)",
-        f"- reason: {reason}",
-        "",
-        "## Moved to archive",
-        "",
-    ]
-    note_lines += [f"- {src} → {to}" for src, to in pairs]
-    note_lines.append("")
-    note.write_text("\n".join(note_lines), encoding="utf-8")
-    note_rel = note.relative_to(project_dir).as_posix()
-
-    _log(
-        paths.logs_dir(project_dir),
-        f"retire: {todo_id} — {len(moved)} file(s) → "
-        f"done/{todo_id}/ (note: RETIRED-{ts}.md, reason: {reason})",
-    )
     return RetireTodoResult(
         todo_id=todo_id,
         moved=moved,
@@ -492,6 +673,146 @@ def update_todo(
     include_untracked: list[str] | None = None,
     append: str | None = None,
     section_updates: dict[str, str] | None = None,
+    operation_id: str | None = None,
+) -> UpdateTodoResult:
+    """R1.2 (TODO-0216): durable-operation entry point around the reword.
+
+    Without ``operation_id`` the call is the plain reword below. With one,
+    the operation is named and journalled under ``state/operations/`` so a
+    retry after a cancel/hang returns the ACTUAL outcome instead of
+    re-running blindly:
+
+    - a recorded ``applied`` replay returns the stored result (no second
+      backup, no second append);
+    - a recorded ``refused`` replay raises the stored error again;
+    - a ``started`` record with no finish means the outcome is unknown —
+      :class:`OperationRecoveryRequired` is raised (→ recovery_required),
+      never a duplicate effect.
+
+    A refusal (an expected AwfApiError, e.g. the CAS version conflict) is
+    recorded as ``refused``; any other exception leaves the record at
+    ``started`` on purpose — a crash mid-write is exactly the unknown
+    outcome the retry must detect.
+    """
+    if operation_id is None:
+        return _update_todo_impl(
+            project_dir, todo_id, content, reason, include_untracked,
+            append, section_updates,
+        )
+    _validate_id(todo_id)
+    _validate_operation_id(operation_id)
+    resolved = Path(project_dir).resolve()
+    require_agentic(resolved)
+    from .._lock import locked
+
+    # F-MED-1: the whole check→start→finish journal is under the project
+    # lock. Two callers with one operation_id can no longer both read "not
+    # started" and both apply — the second waits, then replays the recorded
+    # outcome. The apply itself runs with ``_lock_held`` so it does not
+    # re-lock (flock is per open file description: nesting deadlocks).
+    with locked(resolved):
+        prior = _read_operation(resolved, operation_id)
+        if prior is not None:
+            # AUD-1 (TODO-0216 iter-4): an operation_id names ONE operation.
+            # Reusing it for another unit must not hand back the first
+            # operation's result as if the second had applied — the journal
+            # records the target it actually effected; anything else means
+            # the id was reused, and the requested effect was never
+            # attempted. That is an unknown outcome, not a foreign ok.
+            recorded_target = (prior.get("todo_id"), prior.get("action"))
+            if recorded_target != (todo_id, "update_todo"):
+                raise OperationRecoveryRequired(
+                    operation_id,
+                    f"operation {operation_id}: replay requested for "
+                    f"({todo_id}, update_todo) but the journal records "
+                    f"{recorded_target} — the id names a different operation; "
+                    "outcome unknown, recovery_required, do not retry blindly",
+                )
+            status = prior.get("status")
+            if status == "applied":
+                stored = prior.get("result")
+                # A recorded "applied" without a complete result is not the
+                # factual outcome: replaying it as an empty ok would be the
+                # guess requirement 4 forbids. Treat it as unknown.
+                if not isinstance(stored, dict) or not {
+                    "todo_id", "backup", "message",
+                } <= stored.keys():
+                    raise OperationRecoveryRequired(
+                        operation_id,
+                        f"operation {operation_id}: journal records 'applied' "
+                        "but carries no complete result — outcome unknown, "
+                        "recovery_required, do not retry blindly",
+                    )
+                return UpdateTodoResult(
+                    todo_id=stored["todo_id"],
+                    backup=stored["backup"],
+                    message=stored["message"],
+                )
+            if status == "refused":
+                raise AwfApiError(
+                    prior.get("error") or f"operation {operation_id} refused"
+                )
+            raise OperationRecoveryRequired(operation_id)
+        # F-HIGH: the START record must land BEFORE any effect. If it
+        # cannot, refuse now — a retry with no record would re-apply.
+        try:
+            _write_operation(
+                resolved, operation_id, status="started", todo_id=todo_id,
+                action="update_todo",
+            )
+        except OSError as e:
+            raise AwfApiError(
+                f"operation {operation_id}: journal start write failed "
+                f"({e}) — refused before any effect; retry is safe"
+            ) from e
+        try:
+            result = _update_todo_impl(
+                resolved, todo_id, content, reason, include_untracked,
+                append, section_updates, _lock_held=True,
+            )
+        except AwfApiError as e:
+            try:
+                _write_operation(
+                    resolved, operation_id, status="refused", todo_id=todo_id,
+                    action="update_todo", error=str(e),
+                )
+            except OSError as je:
+                # Nothing applied — a lost refusal note cannot duplicate.
+                _log(
+                    paths.logs_dir(resolved),
+                    f"operation {operation_id}: refusal journal write "
+                    f"failed: {je}",
+                )
+            raise
+        # F-HIGH: the effect landed. If the finish record cannot be
+        # written, the outcome is not durably known — surface
+        # recovery_required (a retry would read the open ``started``
+        # record) instead of returning a result the journal cannot prove.
+        try:
+            _write_operation(
+                resolved, operation_id, status="applied", todo_id=todo_id,
+                action="update_todo", result=result.as_dict(),
+            )
+        except OSError as e:
+            raise OperationRecoveryRequired(
+                operation_id,
+                f"operation {operation_id}: applied but the finish record "
+                f"could not be written ({e}) — recovery_required, do not "
+                "retry blindly",
+            ) from e
+        return result
+
+
+def _update_todo_impl(
+    project_dir: Path,
+    todo_id: str,
+    content: str = "",
+    reason: str = "",
+    include_untracked: list[str] | None = None,
+    append: str | None = None,
+    section_updates: dict[str, str] | None = None,
+    *,
+    _lock_held: bool = False,
 ) -> UpdateTodoResult:
     """Reword a not-started TODO, keeping the number (RUN6 #4).
 
@@ -691,7 +1012,21 @@ def update_todo(
             parts.append("added: " + ", ".join(added))
         what = "section_updates — " + "; ".join(parts)
 
-    md.write_text(new_content, encoding="utf-8")
+    # T1(b): the backup must not outlive a failed write. The version
+    # check lives inside the write helper, so on a version conflict — or
+    # any other failure there (a lock-open race, a full disk) — the
+    # just-written orphan backup is removed. Catching only AwfApiError
+    # left the orphan behind on an OSError like FileExistsError.
+    try:
+        _write_todo_checked(
+            project_dir, md, old_content, new_content, _lock_held=_lock_held
+        )
+    except Exception:
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+        raise
 
     why = f", reason: {reason.strip()}" if reason.strip() else ""
     include_note = ""

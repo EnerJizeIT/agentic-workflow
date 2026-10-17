@@ -69,6 +69,12 @@ def _get_mutation_lock() -> asyncio.Lock:
     return _mutation_lock
 
 
+#: R1.2 (TODO-0216): strong refs to the in-flight mutation bodies so a
+#: cancelled wrapper cannot let its still-running task be garbage-collected
+#: before it releases the lock.
+_INFLIGHT_MUTATIONS: set[asyncio.Task] = set()
+
+
 def _mutating(fn):
     """Serialize a mutating awf tool under the shared lock (TODO-0193).
 
@@ -78,6 +84,15 @@ def _mutating(fn):
     ``MUTATION_LOCK_TIMEOUT``: on timeout the tool answers with a clean
     error dict (status: "error") — never an exception, so the stdio loop
     and the connection survive.
+
+    R1.2 (TODO-0216, audit S5-01): ownership lives until the operation
+    ACTUALLY finishes. The body runs as its own task and the lock is
+    released by that task's done-callback — never by this coroutine's
+    ``finally``. A client cancellation (or any cancellation of the waiting
+    coroutine) therefore cancels the WAIT, not the running operation: the
+    task and its worker thread keep going and only then hand the lock over.
+    The old ``finally: lock.release()`` freed the lock while the worker
+    thread was still writing the TODO (the lost-update race).
     """
 
     @functools.wraps(fn)
@@ -95,10 +110,19 @@ def _mutating(fn):
                     "awf_status, then retry."
                 ),
             }
-        try:
-            return await fn(*args, **kwargs)
-        finally:
+        task = asyncio.ensure_future(fn(*args, **kwargs))
+        _INFLIGHT_MUTATIONS.add(task)
+
+        def _release(t: asyncio.Task) -> None:
+            _INFLIGHT_MUTATIONS.discard(t)
+            if not t.cancelled():
+                t.exception()  # retrieve so it is not logged as never-read
             lock.release()
+
+        task.add_done_callback(_release)
+        # shield: a cancellation of THIS coroutine must not cancel the task
+        # that now owns the lock. The lock is handed over by _release.
+        return await asyncio.shield(task)
 
     return wrapper
 
@@ -109,8 +133,19 @@ def _ok(result: Any) -> dict[str, Any]:
 
 
 def _err(e: api.AwfApiError) -> dict[str, Any]:
-    """Wrap an AwfApiError as an error MCP response dict."""
-    return {"status": "error", "error": str(e)}
+    """Wrap an AwfApiError as an error MCP response dict.
+
+    R1.2: an error may declare a machine-readable ``outcome``
+    (:class:`~awf._errors.OperationRecoveryRequired` → "recovery_required").
+    Pass it through so a caller can tell "do not retry blindly" from an
+    ordinary refusal — the human prose alone cannot carry that. Errors
+    without a declared outcome keep the exact previous shape.
+    """
+    out = {"status": "error", "error": str(e)}
+    outcome = getattr(e, "outcome", None)
+    if outcome:
+        out["outcome"] = outcome
+    return out
 
 
 def _resolve_project_dir(project_dir: str | None) -> Path:
@@ -733,6 +768,7 @@ async def awf_todo_update(
     include_untracked: list[str] | None = None,
     append: str | None = None,
     section_updates: dict[str, str] | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     """Reword a not-started TODO, keeping the number (RUN6 #4).
 
@@ -771,6 +807,10 @@ async def awf_todo_update(
     ``include_untracked`` path; a started TODO (PROGRESS/signals/closure
     — fix the unit via REVIEW/replan, or retire + re-dispatch); a live
     pipeline on this id.
+
+    TODO-0216 (R1.2): ``operation_id`` names the call durably — a retry
+    with the same id returns the recorded outcome instead of re-applying
+    (an unknown outcome answers ``recovery_required``).
     """
     result = await _exec(
         api.update_todo,
@@ -781,6 +821,7 @@ async def awf_todo_update(
         include_untracked=include_untracked,
         append=append,
         section_updates=section_updates,
+        operation_id=operation_id,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         backup = result.get("backup") or ""

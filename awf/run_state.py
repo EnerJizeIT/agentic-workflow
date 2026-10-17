@@ -15,18 +15,18 @@ Crash-safe: the file survives process death; the supervisor re-reads it via
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
 
 from . import paths
-from ._atomic import atomic_write_text
 from ._log import log as _log
+from .todo_ids import is_valid_todo_id
 
-# Same id format the run API validates (awf/api/run.py::_TODO_RE).
-_TODO_ID_RE = re.compile(r"^TODO-\d{4,}$")
+# The queue-item id is the SAME id the run API validates; delegation to the
+# shared validator keeps one source (and one F4 fix: ``$`` used to accept a
+# trailing newline — see ``todo_ids``).
 
 
 #: ORCH M5.2: the run state slots — file per logical run. "main" is the
@@ -51,7 +51,10 @@ def run_file(project_dir: Path, slot: str = "main") -> Path:
         raise ValueError(
             f"unknown run slot {slot!r} — expected 'main' or 'service'"
         ) from None
-    return paths.agentic_dir(project_dir) / "state" / name
+    # R1.5 (arch-review): ``paths.state_dir`` is the ONE owner of the
+    # ``state/`` component — the reducer must not re-spell it (the same
+    # divergent-convention class ``run_state`` reads elsewhere).
+    return paths.state_dir(project_dir) / name
 
 
 def _queue_item_ok(q: object) -> bool:
@@ -59,9 +62,9 @@ def _queue_item_ok(q: object) -> bool:
     ``{"todo_id": "TODO-NNNN", "pipeline": "..."}`` (object = per-item
     pipeline). Anything else is a corrupt item."""
     if isinstance(q, str):
-        return bool(_TODO_ID_RE.match(q))
+        return is_valid_todo_id(q)
     if isinstance(q, dict):
-        return bool(_TODO_ID_RE.match(str(q.get("todo_id", ""))))
+        return is_valid_todo_id(str(q.get("todo_id", "")))
     return False
 
 
@@ -403,9 +406,11 @@ def _ensure_lock_file(project_dir: Path) -> None:
     when the file is absent — makes the Windows path stable. The Linux path
     is unchanged: flock does not depend on file contents.
     """
+    from ._lock import LOCK_NAME
+
     state_dir = paths.agentic_dir(project_dir) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = state_dir / ".lock"
+    lock_file = state_dir / LOCK_NAME
     if lock_file.is_file():
         return
     try:
@@ -427,12 +432,15 @@ def write_run(project_dir: Path, *, slot: str = "main", **fields) -> dict:
     one writer at a time), so the two runs cannot interleave mid-write.
     """
     from ._lock import locked
+    from .infra import state_store
 
     _ensure_lock_file(project_dir)
     with locked(project_dir):
         state = read_run(project_dir, slot=slot) or {}
         state.update(fields)
-        atomic_write_text(
+        # R1.5: the state-file BYTES leave the process only through the
+        # Store (single writer) — no direct write from this facade.
+        state_store.write_state_file(
             run_file(project_dir, slot=slot),
             yaml.safe_dump(state, allow_unicode=True, sort_keys=False),
         )
@@ -458,6 +466,7 @@ def update_run(project_dir: Path, mutator, *, slot: str = "main") -> dict:
     Returns the written state.
     """
     from ._lock import locked
+    from .infra import state_store
 
     _ensure_lock_file(project_dir)
     with locked(project_dir):
@@ -470,7 +479,8 @@ def update_run(project_dir: Path, mutator, *, slot: str = "main") -> dict:
                 "update_run mutator must return a dict (or None) — "
                 f"got {type(new_state).__name__}"
             )
-        atomic_write_text(
+        # R1.5: single writer — the Store publishes the projection bytes.
+        state_store.write_state_file(
             run_file(project_dir, slot=slot),
             yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
         )
@@ -552,6 +562,7 @@ def update_run_cas(
     run BEFORE the lock and the write clobbered a concurrent winner.
     """
     from ._lock import locked
+    from .infra import state_store
 
     _ensure_lock_file(project_dir)
     with locked(project_dir):
@@ -572,7 +583,8 @@ def update_run_cas(
                 "update_run_cas mutator must return a dict (or None) — "
                 f"got {type(new_state).__name__}"
             )
-        atomic_write_text(
+        # R1.5: single writer — the Store publishes the projection bytes.
+        state_store.write_state_file(
             run_file(project_dir, slot=slot),
             yaml.safe_dump(new_state, allow_unicode=True, sort_keys=False),
         )
@@ -766,10 +778,10 @@ def run_is_active(project_dir: Path, *, slot: str = "main") -> bool:
 def clear_run(project_dir: Path, *, slot: str = "main") -> None:
     """Remove the run state file (soft reset) — for the given slot
     (ORCH M5.2: the service slot clears service-run.yaml, never run.yaml)."""
-    try:
-        run_file(project_dir, slot=slot).unlink()
-    except FileNotFoundError:
-        pass
+    from .infra import state_store
+
+    # R1.5: the removal is a state-file write too — the Store owns it.
+    state_store.remove_state_file(run_file(project_dir, slot=slot))
 
 
 def now_iso() -> str:

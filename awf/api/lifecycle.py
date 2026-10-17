@@ -5,6 +5,7 @@ or raise :class:`awf.api.AwfApiError` with a human-readable message.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -14,10 +15,14 @@ from typing import Any
 from .. import config as cfg_mod
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
+from .._lock import LOCK_NAME
+from ..infra import managed_fs
 from . import _liveness
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import read_file_text, require_agentic, require_git_repo
+from ._interlock import INTERLOCK_NAME, destructive_section, ensure_interlock_file
+from ._lease import EXECUTION_NAME, LEASE_NAME, rotate_execution_id
 from ._results import (
     InitResult,
     ReportResult,
@@ -30,11 +35,6 @@ from ._templates import _CONFIG_TEMPLATE, update_gitignore
 
 # ─── init_project ───────────────────────────────────────────────────────
 
-_RUNTIME_DIRS = [
-    "inbox", "outbox", "handoff", "done", "state",
-    "logs", "context", "dashboards", "inputs",
-]
-
 # A-11: the full skeleton (fresh-init dirs + runtime dirs). A re-init
 # without force only re-creates the ones that are missing.
 _SKELETON_DIRS = [
@@ -45,15 +45,76 @@ _SKELETON_DIRS = [
 
 
 def _clean_runtime(project_dir: Path) -> list[str]:
-    """A-11: destructive path only. Remove runtime dirs, preserve config."""
+    """A-11: destructive path only. Remove runtime dirs, preserve config.
+
+    R1.4 (QA F-B): ``state/`` чистится ПО СОДЕРЖИМОМУ, файлы синхронизации
+    ``.interlock`` и ``.lock`` сохраняются. ``rmtree`` каталога удаляет
+    inode, на котором ``init_project(force=True)`` держит flock: конкурентный
+    запуск открывает новый файл, берёт flock и публикует lease в окне
+    сноса — секция перестаёт закрывать окно (требование 4). Та же логика
+    для ``.lock`` (RMW-блокировка Store/run_state): снос inode осиротил бы
+    flock живого писателя, новый открыл бы другой файл и прошёл мимо.
+    Оба — стабильные точки синхронизации, а не runtime-данные.
+    """
     agentic = project_dir / ".agentic"
     cleaned: list[str] = []
-    for name in _RUNTIME_DIRS:
+    # F-R2: one source with the destructive preview — ``INIT_RUNTIME_DIRS``
+    # lives in ``_destructive`` and the force-init preview reads it too, so
+    # "what will be removed" cannot drift from what is actually removed.
+    from ._destructive import INIT_RUNTIME_DIRS
+
+    for name in INIT_RUNTIME_DIRS:
         d = agentic / name
-        if d.exists():
+        if not d.exists():
+            continue
+        if name == "state":
+            _clean_state_dir(d)
+        else:
             shutil.rmtree(d)
-            cleaned.append(name)
+        cleaned.append(name)
     return cleaned
+
+
+#: Файлы ``.agentic/state/``, которые НЕ runtime-данные, а стабильные
+#: точки синхронизации: секция запуска/разрушения (``.interlock``) и
+#: RMW-блокировка Store/run_state (``.lock``). Их снос осиротил бы flock
+#: живого конкурента — новый писатель открыл бы НОВЫЙ inode и прошёл мимо
+#: (QA F-B для ``.interlock``, класс F-B для ``.lock``). Имена берём у
+#: владельцев файлов, не повторяем рядом.
+_PRESERVED_STATE_FILES = frozenset({INTERLOCK_NAME, LOCK_NAME})
+
+
+def _clean_state_dir(state_dir: Path) -> None:
+    """Снести содержимое ``state``, сохранив ``.interlock`` и ``.lock``.
+
+    R1.5 (REVIEW A5): the wipe goes through the Store's facade
+    (``delete_state_tree``) — the api layer no longer touches state bytes
+    (or their inodes) itself. Symlink/file removed in place, directory
+    recursively; the preserved synchronisation files are never descended
+    into.
+    """
+    from ..infra import state_store
+
+    state_store.delete_state_tree(state_dir, preserve=_PRESERVED_STATE_FILES)
+
+
+def _rotate_launch_identity(project_dir: Path) -> str:
+    """F-1/F-X: свежий ExecutionId — общий хвост ЛЮБОГО сноса runtime.
+
+    Метка ``logs/awf-launch.execution`` — не runtime-данные, а страховка
+    handshake: ребёнок сверяет свой id с ней, и «нет метки = работай» —
+    legacy-правило. После сноса проекту нужна ЖИВАЯ свежая метка, иначе
+    crash-orphan ребёнок прежнего запуска (его launch умер, поэтому
+    destructive-preflight его пропустил) проходит handshake и поднимает
+    второй пайплайн поверх заново инициализированного проекта.
+
+    Обе разрушительные двери сносят ``logs`` (reset — пофайлово,
+    ``init_project(force=True)`` — ``rmtree``) и обе обязаны закончить этим
+    шагом. Единый locus — третья дверь сноса не заведёт свою копию и не
+    забудет ротацию. Зовётся ПОД ``destructive_section``, чтобы новый
+    запуск не опубликовал заявку в окне между сносом и ротацией.
+    """
+    return rotate_execution_id(project_dir)
 
 
 def _read_vision_excerpt(vision_path: Path | None) -> tuple[str, str | None]:
@@ -93,6 +154,7 @@ def init_project(
     typecheck_cmd: str | None = None,
     build_cmd: str | None = None,
     dry_run: bool = False,
+    confirm_digest: str | None = None,
 ) -> InitResult:
     """Initialize ``.agentic/`` skeleton in project_dir.
 
@@ -146,18 +208,41 @@ def init_project(
             )
         if force:
             # A-11 (audit 2026-09-25): force is the ONLY destructive path.
-            # Refuse while a pipeline is live — the shared resolver, same
-            # as start_pipeline — BEFORE anything is deleted, so a refusal
-            # never leaves a partially cleaned project behind.
-            running, live_pid, _source = _liveness.resolve(project_dir)
-            if running:
-                raise AwfApiError(
-                    f"Pipeline already running (PID {live_pid}) — "
-                    "awf_init(force=True) would delete the live run's "
-                    "runtime data (inbox/outbox/done/state/logs). "
-                    "Kill it first (awf_kill), then retry."
+            # R1.4 (F-H1): it is a destructive op like reset — under the SAME
+            # critical section (destructive_section) and the SAME preflight
+            # (destructive_blockers). Without them a force-init could slip in
+            # while a launch publishes its claim (the project torn down under
+            # a live run), and _clean_runtime would wipe control.json,
+            # resetting the durable run generation (S3-03 via a third door).
+            from ..infra import state_store
+
+            with destructive_section(
+                project_dir, label="init_project(force=True)"
+            ):
+                _liveness.refuse_if_in_use(
+                    project_dir, label="init_project(force=True)"
                 )
-            _clean_runtime(project_dir)
+                # F-R2: the force wipe is a destruction — require the
+                # confirmed plan digest (recomputed here, under the section)
+                # before anything is deleted. None = legacy trusted call.
+                from . import _destructive
+
+                _destructive.verify_confirm(project_dir, "init", confirm_digest)
+                # The durable generation memory has to survive the wipe:
+                # _clean_runtime removes state/control.json, so read the
+                # counter BEFORE and seed it back AFTER, keeping it
+                # monotone across the re-init.
+                carried_generation = state_store.current_run_generation(
+                    project_dir
+                )
+                _clean_runtime(project_dir)
+                state_store.seed_run_generation(project_dir, carried_generation)
+                # F-X: the ExecutionId marker has to survive the wipe exactly
+                # like reset's does — _clean_runtime rmtree's logs, so without
+                # this a crash-orphan child of the pre-force-init launch passes
+                # the "no marker = work" handshake and raises a second
+                # pipeline. One shared step with reset (_rotate_launch_identity).
+                _rotate_launch_identity(project_dir)
             # fall through: rewrite the skeleton below (config.yaml,
             # supervisor.md, plan.md) — the explicit destructive path
         else:
@@ -171,6 +256,7 @@ def init_project(
                 if not dirpath.exists():
                     dirpath.mkdir(parents=True, exist_ok=True)
                     created_dirs.append(f".agentic/{d}/")
+            ensure_interlock_file(project_dir)
             # W7: re-init also seeds missing doctrine (non-destructive,
             # same rule as the skeleton dirs above — existing files are
             # user data and are never overwritten).
@@ -280,6 +366,7 @@ def init_project(
     ]:
         (agentic / d).mkdir(parents=True, exist_ok=True)
         created_files.append(f".agentic/{d}/")
+    ensure_interlock_file(project_dir)
 
     config_content = _CONFIG_TEMPLATE.format(
         project_name=project_name,
@@ -899,6 +986,39 @@ def reset_runtime(
     tasks_only: bool = False,
     full: bool = False,
     orphans: bool = False,
+    confirm_digest: str | None = None,
+) -> ResetResult:
+    """Clean runtime data, refusing while a launch or destructive peer runs.
+
+    R1.4 (требование 4): preflight и удаление — под ОДНОЙ критической
+    секцией с захватом lease. Неблокирующий вход: если секция занята,
+    запуск уже в полёте — это отказ, а не ожидание.
+
+    R1.4 (F-R2): ``confirm_digest`` — digest плана из
+    :func:`awf.api.preview_destruction`; при несовпадении (в т.ч. устаревшем
+    плане) reset отвергается ДО удаления. ``None`` — legacy-путь.
+    """
+    project_dir = Path(project_dir).resolve()
+    # ``destructive_section`` yields free for a project without ``.agentic``
+    # (no runtime to protect, no lock file to create); ``_reset_runtime_impl``
+    # then returns the no-op result — one decision, not two checks.
+    with destructive_section(project_dir, label="reset"):
+        return _reset_runtime_impl(
+            project_dir,
+            tasks_only=tasks_only,
+            full=full,
+            orphans=orphans,
+            confirm_digest=confirm_digest,
+        )
+
+
+def _reset_runtime_impl(
+    project_dir: Path,
+    *,
+    tasks_only: bool = False,
+    full: bool = False,
+    orphans: bool = False,
+    confirm_digest: str | None = None,
 ) -> ResetResult:
     """Clean runtime data.
 
@@ -920,6 +1040,13 @@ def reset_runtime(
     if not agentic.is_dir():
         return ResetResult(cleaned_dirs=[], orphan_ids=[], mode="noop")
 
+    # R1.4 (S9-02): destructive reset must not delete state a LIVE owner
+    # owns. The preflight asks the same facts the launch path publishes —
+    # live pipeline, live launch lease, reserved long action — and refuses
+    # BEFORE the first unlink. A dead/stale owner yields no blocker, so the
+    # ghost-run reconciliation below still happens (AUD05-02 preserved).
+    _liveness.refuse_if_in_use(project_dir, label="reset")
+
     if orphans:
         # T1.6: use two-step protocol (list + remove) instead of legacy
         # _reset_orphans one-shot. Single computation path, no duplication.
@@ -928,43 +1055,130 @@ def reset_runtime(
             return ResetResult(cleaned_dirs=[], orphan_ids=[], mode="orphans")
         return remove_orphans(project_dir, ids)
 
-    if full or not tasks_only:
-        dirs_to_clean = ["inbox", "outbox", "context", "logs"]
-        if full:
-            # AUD07-03: --full was functionally identical to default (only
-            # the mode label differed — a decoration flag). It now also
-            # cleans iteration artifacts. Default behavior is unchanged —
-            # the AUD05-02 ghost-run regression test locks it.
-            dirs_to_clean += ["handoff", "inputs", "dashboards"]
-        mode = "full" if full else "default"
-    else:
-        dirs_to_clean = ["inbox", "outbox"]
-        mode = "tasks_only"
+    from . import _destructive
+
+    # F-R2: confirm BEFORE the first unlink, under the section.
+    _destructive.verify_confirm(
+        project_dir,
+        "reset",
+        confirm_digest,
+        tasks_only=tasks_only,
+        full=full,
+    )
+
+    mode = _destructive.reset_mode(tasks_only=tasks_only, full=full)
+    dirs_to_clean = _destructive.reset_dirs(tasks_only=tasks_only, full=full)
 
     cleaned: list[str] = []
+    partial_failure = False
+    notes = ""
+
+    # R1.1/S9-01: preflight the WHOLE plan before the first unlink. A
+    # symlinked ``.agentic``, runtime directory, state directory or
+    # fallback log aborts with zero side effects — the failure of the
+    # LAST directory must not leave the FIRST already deleted.
+    try:
+        managed_fs.assert_managed_dir(agentic, root=project_dir)
+        for d in dirs_to_clean:
+            managed_fs.assert_managed_dir(agentic / d, root=project_dir)
+        managed_fs.assert_managed_dir(agentic / "state", root=project_dir)
+        # S9-03 fallback leaf — a symlinked worker-output.out is refused
+        # here too, so a reset never resolves it through the link.
+        managed_fs.assert_no_symlink_escape(
+            agentic / "logs" / paths.WORKER_FALLBACK_LOG, root=project_dir
+        )
+        # State files are unlinked, not followed — a symlinked leaf aborts
+        # the plan before any directory is cleaned. The pair comes from the
+        # destructive preview's list (one source), not a second copy of the
+        # same two names written next to it.
+        for rel in _destructive.RESET_STATE_FILES:
+            managed_fs.assert_no_symlink_escape(
+                agentic / rel, root=project_dir
+            )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(f"reset refused — unsafe runtime path: {exc}") from exc
+
     for d in dirs_to_clean:
         dirpath = agentic / d
-        if dirpath.is_dir():
+        if not dirpath.is_dir():
+            continue
+        try:
             for f in dirpath.iterdir():
-                if f.is_file():
+                # The launch lease and the ExecutionId marker are not
+                # runtime data — they are the current owner's claim and the
+                # identity the child handshake checks (R1.1 reset must not
+                # touch lock/lease; F-1 keeps the identity file in the same
+                # class — it is rotated below, never left absent).
+                if d == "logs" and f.name in (LEASE_NAME, EXECUTION_NAME):
+                    continue
+                # is_symlink() first: a symlinked entry is unlinked itself,
+                # never followed (no rmtree through the link).
+                if f.is_symlink() or f.is_file():
                     f.unlink()
                 elif f.is_dir():
                     shutil.rmtree(f)
             cleaned.append(d)
+        except OSError as exc:
+            # Post-preflight I/O error: journal the applied subset and stop.
+            # No rollback of what is already gone is promised; a repeat
+            # finishes the leftover plan.
+            partial_failure = True
+            notes = f"partial: {d} ({type(exc).__name__}: {exc})"
+            break
 
     # Clear pipeline state file so stale "running" doesn't persist
-    state_file = agentic / "state" / "current.yaml"
-    state_cleared = False
-    if state_file.is_file():
-        state_file.unlink()
-        state_cleared = True
-    # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks the
-    # next run_start with "Run already active". Clear it alongside.
-    if run_state.read_run(project_dir) is not None:
-        run_state.clear_run(project_dir)
-        state_cleared = True
-    if state_cleared:
-        cleaned.append("state")
+    if not partial_failure:
+        from .. import pipeline_state
+
+        state_cleared = False
+        # R1.5 (arch-review): the path is spelled by its owner
+        # (``paths.state_dir`` + ``pipeline_state.STATE_FILE_NAME``), not
+        # re-written next to the owner — the class the iter-3 accessors
+        # closed. Same string, one source.
+        state_file = paths.state_dir(project_dir) / pipeline_state.STATE_FILE_NAME
+        try:
+            # R1.5: state files are removed through their owners (the Store
+            # is the single writer), never by a raw unlink from the api layer.
+            if state_file.is_file():
+                pipeline_state.clear_state(project_dir)
+                state_cleared = True
+            # AUD05-02: a leftover state/run.yaml is a ghost run — it blocks
+            # the next run_start with "Run already active". Clear it too.
+            if run_state.read_run(project_dir) is not None:
+                run_state.clear_run(project_dir)
+                state_cleared = True
+        except OSError as exc:
+            partial_failure = True
+            notes = (
+                f"partial: state ({type(exc).__name__}: {exc})"
+            )
+        if state_cleared:
+            cleaned.append("state")
+        # R1.4 (S3-03): the Store mirror of the active run is cleared too,
+        # but its run_generation counter is NOT — that is the durable
+        # generation memory a stale close is compared against.
+        try:
+            from ..infra import state_store
+
+            state_store.clear_active_run(project_dir)
+        except Exception as exc:  # noqa: BLE001 — report, not crash a reset
+            partial_failure = True
+            notes = f"partial: state store ({type(exc).__name__}: {exc})"
+        # F-1 (REVIEW-фикс 9): ROTATE the ExecutionId marker. Deleting it
+        # (the pre-fix behavior — the wipe spared only LEASE_NAME) reopened
+        # the "no marker = work" legacy rule for a crash-orphan of the
+        # launch that wrote it; freezing the old value would not stop that
+        # same orphan either (its id would still match). A fresh id refuses
+        # every pre-reset orphan while the file stays present. Shared with
+        # force-init (F-X) through _rotate_launch_identity — one locus.
+        if not partial_failure:
+            try:
+                _rotate_launch_identity(project_dir)
+            except Exception as exc:  # noqa: BLE001 — report, not crash a reset
+                partial_failure = True
+                notes = (
+                    f"partial: execution marker ({type(exc).__name__}: {exc})"
+                )
 
     # Regenerate dashboard so user sees clean state
     try:
@@ -973,7 +1187,10 @@ def reset_runtime(
     except Exception:
         pass
 
-    return ResetResult(cleaned_dirs=cleaned, orphan_ids=[], mode=mode)
+    return ResetResult(
+        cleaned_dirs=cleaned, orphan_ids=[], mode=mode,
+        partial_failure=partial_failure, notes=notes,
+    )
 
 
 # ─── list_orphans / remove_orphans (two-step protocol) ──────────────────
@@ -992,7 +1209,9 @@ def list_orphans(project_dir: Path) -> list[str]:
     return [tid for tid in active_ids if not todos.has_progress(outbox, tid)]
 
 
-def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
+def remove_orphans(
+    project_dir: Path, orphan_ids: list[str], *, confirm_digest: str | None = None
+) -> ResetResult:
     """Remove specific orphan TODOs (pre-computed via :func:`list_orphans`).
 
     Use this two-step protocol when caller needs to confirm with user
@@ -1001,26 +1220,71 @@ def remove_orphans(project_dir: Path, orphan_ids: list[str]) -> ResetResult:
         ids = api.list_orphans(project_dir)
         if user_confirms(ids):
             api.remove_orphans(project_dir, ids)
+
+    R1.4 (QA F3): the guard is the SAME destructive preflight reset uses
+    (:func:`awf.api._liveness.destructive_blockers`) — a live pipeline, a
+    live launch lease or a held Store reservation refuses. A second,
+    narrower liveness guard would drift and leave one destructive call
+    unprotected exactly where the other refuses.
+
+    R1.4 (F-R2): ``confirm_digest`` — digest плана из
+    :func:`awf.api.preview_destruction` (kind ``remove-orphans``); при
+    несовпадении удаление отвергается. ``None`` — legacy-путь.
     """
     project_dir = Path(project_dir).resolve()
+    # A project without ``.agentic`` yields free without a lock (see
+    # ``destructive_section``); the impl below is safe on it.
+    with destructive_section(project_dir, label="remove_orphans"):
+        return _remove_orphans_impl(project_dir, orphan_ids, confirm_digest)
+
+
+def _remove_orphans_impl(
+    project_dir: Path, orphan_ids: list[str], confirm_digest: str | None = None
+) -> ResetResult:
+    # R1.1/S9-04: build the inbox via the canonical ``paths.inbox()``. The
+    # root is already canonical and ``paths.agentic_dir`` appends ``.agentic``
+    # WITHOUT resolving it, so a symlinked ``.agentic`` stays a visible
+    # component and the lstat-based preflight below refuses it. The earlier
+    # inline copy (and its claim that ``paths.inbox`` resolves the link) was
+    # wrong on both counts — it just drifted from the path layout.
     inbox = paths.inbox(project_dir)
     # AUD05-06: a fresh worker may not have written PROGRESS yet, so its
-    # TODO looks like an orphan. Refuse to delete while the pipeline is
-    # alive — wait for verify/salvage, or kill first (no force flag).
-    running, _pid, _tail = check_pipeline_running(project_dir)
-    if running:
-        raise AwfApiError(
-            "pipeline is running — wait for verify/salvage, or awf kill first"
-        )
+    # TODO looks like an orphan. Refuse to delete while the project is in
+    # use — wait for verify/salvage, or kill first (no force flag).
+    # R1.4 (QA F3): the same preflight reset uses, not a second narrower one.
+    _liveness.refuse_if_in_use(project_dir, label="remove_orphans")
+
+    from . import _destructive
+
+    # F-R2: confirm BEFORE the first unlink, under the section.
+    _destructive.verify_confirm(
+        project_dir, "remove-orphans", confirm_digest, orphan_ids=orphan_ids
+    )
+
+    # R1.1/S9-04: validate EVERY id and build EVERY path BEFORE the first
+    # unlink. A traversal like ``../../../disposable`` (which previously
+    # deleted an external .md) rejects the whole list, so a valid TODO
+    # listed before an invalid one is NOT removed either.
+    plan: list[tuple[str, Path, Path]] = []
+    try:
+        if os.path.lexists(inbox):
+            managed_fs.assert_managed_dir(inbox, root=project_dir)
+        for tid in orphan_ids:
+            managed_fs.validate_todo_id(tid)
+            ready = inbox / f"{tid}.ready"
+            md = inbox / f"{tid}.md"
+            plan.append((tid, ready, md))
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(f"remove_orphans refused — {exc}") from exc
+
     removed: list[str] = []
-    for tid in orphan_ids:
-        ready = inbox / f"{tid}.ready"
-        md = inbox / f"{tid}.md"
+    for tid, ready, md in plan:
         deleted_any = False
-        if ready.exists():
+        # unlink never follows the final symlink — safe for a symlinked leaf.
+        if ready.exists() or ready.is_symlink():
             ready.unlink()
             deleted_any = True
-        if md.exists():
+        if md.exists() or md.is_symlink():
             md.unlink()
             deleted_any = True
         if deleted_any:

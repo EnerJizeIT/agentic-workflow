@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .. import config as cfg_mod
 from .. import paths
-from .._atomic import atomic_write_text
+from ..infra import managed_fs
 from ._errors import AwfApiError
 from ._helpers import read_log_tail
 
@@ -99,9 +99,31 @@ def start_in_background(
         child_cwd = str(runner_path)
 
     logs_dir = paths.agentic_dir(project_dir) / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    # R1.1/S9-01,S9-03 (REVIEW fix F2): background launch writes both
+    # ``awf-start.out`` and ``awf-start.pid`` under ``.agentic/logs``. A
+    # symlinked ``.agentic`` (or ``logs``) used to send both OUTSIDE the
+    # project — the same class as the worker fallback log (S9-03) and
+    # ``reset`` (S9-01). Refuse the escape BEFORE creating the directory,
+    # opening the log or writing the PID file; the log goes through the
+    # managed no-follow helper (born 0600, fstat type check).
+    # One shared derivation with the other managed writers
+    # (``agentic_dir`` resolves the project, so the layout is canonical).
+    root = managed_fs.agentic_root_for(logs_dir)
     log_file = logs_dir / "awf-start.out"
     pid_file = logs_dir / "awf-start.pid"
+    # R1.5/F2: the logs directory is created INSIDE the no-follow walk —
+    # ``open_append_log(create=True)`` below (``mkdirat`` on the verified
+    # parent). A plain ``Path.mkdir`` after this preflight let a
+    # ``.agentic`` swapped to a symlink between the check and the mkdir
+    # create the directory OUTSIDE the project (F-B class). The preflight
+    # stays as a fail-fast with a clear message before the process spawn.
+    try:
+        managed_fs.assert_no_symlink_escape(log_file, root=root)
+        managed_fs.assert_no_symlink_escape(pid_file, root=root)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"background launch refused — unsafe runtime path: {exc}"
+        ) from exc
 
     child_argv: list[str] = [
         sys.executable,
@@ -135,10 +157,33 @@ def start_in_background(
     child_env.pop("AWF_NO_CHECKPOINTS", None)
     if no_checkpoints:
         child_env["AWF_NO_CHECKPOINTS"] = "1"
+    # R1.4 (F-R1): hand the child the ExecutionId of the launch that owns
+    # the project right now. The launcher published it (lease acquire)
+    # before spawning; the child verifies it at start (pipeline.py) and
+    # exits without work if a newer launch has since overwritten the
+    # marker (a crash-orphan of an earlier launch must not run).
+    from . import _lease
+
+    exec_id = _lease.read_execution_id(project_dir)
+    if exec_id:
+        child_env[_lease.EXECUTION_ENV] = exec_id
 
     # AUD14-06c: awf-start.out carries stage crash tracebacks (which embed
     # the worker prompt) — born 0600, not 0644 via open("ab").
-    log_fd = os.open(log_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    # R1.1/F2: managed no-follow open (O_NOFOLLOW on the leaf, fstat type
+    # check, symlinked intermediate refused) instead of a plain os.open.
+    try:
+        log_fd, log_file = managed_fs.open_append_log(
+            log_file, root=root, create=True
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"background launch refused — unsafe log path: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise AwfApiError(
+            f"cannot create logs directory {logs_dir}: {exc}"
+        ) from exc
     with os.fdopen(log_fd, "ab") as out:
         proc = subprocess.Popen(
             child_argv,
@@ -153,7 +198,17 @@ def start_in_background(
             env=child_env,
         )
 
-    atomic_write_text(pid_file, f"{proc.pid}\n")
+    # R1.1/F2: the PID file goes through the same managed no-follow writer
+    # as every other report/log (F-A class). A preflight re-check plus a
+    # plain ``atomic_write_text`` would still follow a symlinked parent
+    # swapped in after the check; ``managed_write_text`` refuses at write
+    # time, so nothing lands outside the project.
+    try:
+        managed_fs.managed_write_text(pid_file, f"{proc.pid}\n", root=root)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"background launch refused — unsafe PID path: {exc}"
+        ) from exc
     return proc.pid, log_file, pid_file
 
 

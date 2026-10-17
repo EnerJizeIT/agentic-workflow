@@ -1066,6 +1066,27 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # path) and 1 per supervisor template copy ("TODO-*.md, .ready" in the
 # inbox-check bullet). Same class as above: doc examples of file names,
 # not debt.
+# R1.4 (TODO-0218) QA findings (agent-qa-review): baseline todos
+# raised 5947 -> 5950 (+3) — the new
+# tests/negative/test_roadmap_r1_interlock_qa.py adds 3 TODO-bearing
+# lines (the single TODO-0001 fixture id used by the three finding
+# tests). Same class as above: a test identifier, not debt. The file
+# carries the three RED findings (start/reset window, generation
+# reuse after reset, remove_orphans ignoring the lease); files_over_400
+# stays 81 (the file is ~135 lines — under the bar).
+# TODO-0218 QA iter-16 (agent-qa-review): baseline todos raised
+# 5985 -> 5987 (+2) — the new tests/negative/
+# test_roadmap_r1_interlock_qa6.py adds 2 TODO-bearing lines (the
+# unit reference in the module docstring + the TODO-0001 fixture
+# id). Same class as the earlier QA5 entry: test identifiers, not
+# debt. files_over_400 stays 83 (the file is ~125 lines).
+# TODO-0218 QA iter-18 (agent-qa-review, stage agent-qa-review): baseline
+# todos raised 5991 -> 5992 (+1) — the new tests/negative/
+# test_roadmap_r1_interlock_qa9.py adds 1 TODO-bearing line (the unit
+# reference in the module docstring). Same class as the QA iter-16 entry:
+# a test identifier, not debt. The file closes the ExecutionId-env coverage
+# gap (the real start_in_background wiring); files_over_400 stays 83
+# (the file is ~90 lines).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
 # baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
@@ -1580,3 +1601,270 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # tests/negative/test_run_plan_read_coverage.py adds 2 TODO-bearing lines
 # (the T/T2 fixture todo ids). Same class as above: test identifiers,
 # not debt.
+
+# R1.1 QA (agent-qa-review, 16.10, TODO-0215): baseline todos raised
+# 5856 -> 5861 (+5) — the new tests/negative/test_roadmap_r1_safety_qa.py
+# adds 5 TODO-bearing lines (the TODO-0001 fixture use-sites of the
+# remove_orphans symlink-leaf test — 4 — and the "Требование TODO B"
+# docstring line). Same class as above: test identifiers and a
+# requirement reference, not debt. files_over_400 stays 78 (the new QA
+# file is 149 lines — under the bar; the reviewed
+# test_roadmap_r1_safety.py was left untouched at 345 lines).
+
+# R1.1 (agent-implementer, TODO-0215, iter-5 F-A/F-B closure): files_over_400
+# raised 78 -> 79 and todos 5861 -> 5863. The +1 file crossing the bar is
+# tests/negative/test_roadmap_r1_safety.py (345 -> 407): two red-control
+# tests were appended (managed_write_text / state-lock refuse a symlinked
+# .agentic). The +2 TODO-bearing lines are the iter-5 red tests in
+# tests/negative/test_roadmap_r1_safety_qa.py (the ``TODO-0001`` fixture id in
+# test_verify_test_results_log_agentic_symlink_no_external_write and the
+# "раздела B TODO" requirement reference in
+# test_intermediate_component_swap_refused) — test identifiers and a
+# requirement reference, not debt. No production module crossed the bar.
+
+# R1.2 (TODO-0216, operation_id + cancel-safety): todos 5863 -> 5884 (+21).
+# The +21 TODO-bearing lines are: 6 in awf/api/hygiene.py (the R1.2 section
+# header, the OperationId/operation-journal comments and the operation_id
+# docstrings), 1 in awf/_errors.py (the OperationRecoveryRequired
+# docstring's unit reference), 4 in agent_workflow_ui tools/awf.py (the
+# _INFLIGHT_MUTATIONS/_mutating/awf_todo_update R1.2 docstring lines) and
+# 10 in the new tests/negative/test_roadmap_r1_cancel.py (the module
+# docstring's invariant references and the TODO-0001 fixture/assert
+# use-sites). Same class as above: unit-id references and test
+# identifiers, not debt. files_over_400 stays 79 (the new test file is
+# 241 lines — under the bar; the touched production modules were already
+# over it). The architect-review pass reconciled the +1 the implementer's
+# own count missed (5883 -> 5884): its new docstrings carry no TODO line.
+
+# QA (TODO-0216, stage agent-qa-review): todos 5884 -> 5889 (+5).
+# The +5 are TEST identifiers only — the "TODO-0001" argument of the four
+# new regression tests added to tests/negative/test_roadmap_r1_cancel.py
+# (corrupt-journal -> recovery_required, refused replay, invalid op id,
+# MCP outcome wire; the refused test names TODO-0001 twice). No production
+# module gained a TODO line and no new debt crossed the bar:
+# files_over_400 stays 79.
+
+# REVIEW-фикс (TODO-0216, iter 2, решение супервизора): todos 5889 -> 5903
+# (+14) and files_over_400 79 -> 80 (+1). The +14 TODO lines are TEST
+# identifiers only — the "TODO-0001" argument threaded through the eight
+# new R1.2 regression tests (finish-journal start/finish failure, same-id
+# concurrency, the three hygiene lock-guarded ops, the two CLI
+# operation_id tests) added to tests/negative/test_roadmap_r1_cancel.py.
+# The +1 file is that same test file crossing 400 lines (525): the unit
+# contract's verify command runs exactly this file, so the review tests
+# cannot move out without leaving the gate. No production module gained a
+# TODO line; the touched production modules (hygiene.py, cli.py,
+# cmd_todo_update.py) were already over the bar and add none.
+
+# QA (TODO-0216, stage agent-qa-review, iter 2): todos 5903 -> 5905 (+2).
+# The +2 TODO lines are TEST arguments only — the two "TODO-0001" call
+# sites of the new cross-path regression test (operation writer vs plain
+# writer: the operation holds the project lock across the whole RMW, the
+# plain writer is ordered after it and version-refused). No production
+# module gained a TODO line; files_over_400 stays 80 (the test file was
+# already over the bar).
+
+# REVIEW-фикс 2 (TODO-0216, iter 3, решение супервизора): todos 5905 ->
+# 5913 (+8). The +8 TODO lines are TEST arguments only — the "TODO-0001"
+# call sites of the deterministic stale-write rewrite (F2), the two
+# case-different / reserved-name replay tests (F4) and the CLI
+# recovery_required test (F3), all in tests/negative/test_roadmap_r1_cancel.py.
+# No production module gained a TODO line; the touched production modules
+# (hygiene.py, cmd_todo_update.py) were already over the bar. files_over_400
+# stays 80 (that test file was already over it).
+
+# Architect-review (TODO-0216, stage 3, design drift): todos 5913 -> 5916
+# (+3). The +3 TODO lines are TEST arguments only — the two "TODO-0001"
+# call sites and the echoed "result"."todo_id" of the two guards added to
+# tests/negative/test_roadmap_r1_cancel.py (AR-A: an "applied" journal
+# without a complete result is unknown, not a hollow ok; AR-B: a journal
+# body naming a different operation_id is not trusted). No production
+# module gained a TODO line; files_over_400 stays 80.
+
+# PROJECT-AUDIT (TODO-0216, stage 5, AUD-1/AUD-2): baseline todos 5918 ->
+# 5931 (+13) — the audit pass and the REVIEW-фикс 3 implementer add 13
+# TODO-bearing lines: 10 test identifiers in the two new regression
+# classes of tests/negative/test_roadmap_r1_cancel.py (the TODO-0001/
+# TODO-0002 fixture/assert use-sites of the replay-target binding test
+# and the four-op lock-guard test, plus one assert message naming "TODO")
+# and 3 unit-reference comments in awf/api/hygiene.py (the AUD-1 binding
+# check and the two AUD-2 guard comments). Same class as above: test
+# identifiers and unit references, not debt. No production module crossed
+# the bar; files_over_400 stays 80.
+
+# QA (TODO-0216, stage agent-qa-review, iter-5): todos 5931 -> 5937 (+6).
+# The +6 TODO lines are TEST identifiers only — the "TODO-0001"/"TODO-0002"
+# call sites of the two boundary/refusal-path regression tests added to
+# tests/negative/test_roadmap_r1_cancel.py (a 64-char id is accepted and a
+# 65-char one refused; a REFUSED operation_id reused for another unit is
+# recovery_required, not the first unit's refusal). No production module
+# gained a TODO line; files_over_400 stays 80 (that test file was already
+# over the bar).
+
+# TODO-0217 (R1.3 StateStore): baseline raised todos 5937 -> 5939 and
+# files_over_400 80 -> 81 — the new
+# tests/negative/test_roadmap_r1_state_store.py adds 2 TODO-bearing lines
+# (the "TODO-0217:" / "TODO-0217, inverse" docstring references of the
+# args-guard tests) and crosses 400 lines (507 — its test suite), same
+# class as the test_audit25_* / test_neg3_* negative-layer raises above.
+# The new awf/infra/state_store/ package carries no TODO line; no other
+# production module crossed the bar.
+
+# R1.4 (TODO-0218, interlock запуска и разрушения): baseline todos raised
+# 5939 -> 5947 (+8) — the new
+# tests/negative/test_roadmap_r1_interlock.py adds 8 TODO-bearing lines
+# (the TODO-0001 fixture/assert use-sites of the lease-atomicity,
+# reset-interlock and CAS-close tests). Same class as above: test
+# identifiers, not debt. files_over_400 stays 81 (the new test file is
+# 293 lines — under the bar; the touched production modules
+# (_lease.py, _liveness.py, lifecycle.py, run.py, pipeline.py) were
+# already over the bar and add no TODO line).
+
+# R1.4 (TODO-0218, F2-root: единый источник поколения в Store): baseline
+# todos raised 5950 -> 5969 (+19) and files_over_400 81 -> 82 — the new
+# TestGenerationSingleSource class in
+# tests/negative/test_roadmap_r1_interlock.py adds 19 TODO-bearing lines
+# (the TODO-0001/TODO-0002/TODO-0003 fixture/assert use-sites of the
+# stop-after-revise, finish-after-revise, single-source-invariant and
+# idempotent-replay tests) and pushes that file past the 400-line bar
+# (428 lines — the lingering negative-test catalogue). Same class as the
+# raise above: test identifiers, not debt. No production module crossed
+# the bar or gained a TODO line (awf/api/run.py and the new
+# awf/infra/state_store/_generation.py carry only R1.4/S3-03 unit
+# references, no "TODO").
+
+# R1.4 (TODO-0218) QA findings, iter-6 (agent-qa-review): baseline todos
+# raised 5974 -> 5976 (+2) — the new TestFindingReviseMirrorDesync in
+# tests/negative/test_roadmap_r1_interlock_qa.py adds 2 TODO-bearing lines
+# (the two TODO-0002 fixture/queue use-sites; TestFindingForceStartFaultMessage
+# reuses the module's single TID fixture id). Same class as above: test
+# identifiers, not debt. files_over_400 stays 82 (the file is 399 lines —
+# under the bar). The two new findings are RED: a swallowed Store-mirror
+# fault on an APPLIED run_revise desyncs the close witness from the
+# projection and leaves an active run unclosable; a force-start mirror
+# fault reports "no active run remains" while the previous run is still
+# active on disk.
+
+# R1.4 (TODO-0218) REVIEW-фикс 5 (agent-implementer, iter-8 auditor findings):
+# baseline todos raised 5978 -> 5979 (+1) — the new TestForceInitInterlock
+# block in tests/negative/test_roadmap_r1_interlock.py adds one TODO-bearing
+# line (the TID_FORCE fixture id; every use-site references the constant).
+# Same class as above: test identifiers, not debt. files_over_400 stays 82
+# (the file was already over the bar). The three closed findings: force-init
+# took neither the interlock nor the shared destructive preflight and wiped
+# the durable run generation (S3-03 via a third door); _ensure_interlock_file
+# used a bare touch (a symlinked state dir leaked the file outward);
+# require_posix in _lease/_interlock escaped as a raw ManagedPathError.
+
+# R1.4 (TODO-0218) QA findings, iter-9 (agent-qa-review): baseline todos
+# raised 5979 -> 5981 (+2) — the new
+# tests/negative/test_roadmap_r1_interlock_qa2.py adds 2 TODO-bearing lines
+# (the TODO-0218 module docstring ref and the single TODO-0001 fixture id).
+# Same class as the raises above: test identifiers, not debt. files_over_400
+# stays 82 (the new file is 169 lines — under the bar). Five new RED
+# findings: an unreadable/unknown lease owner does not block reset /
+# rollback / force-init / remove_orphans (requirement 3 — unknown must
+# prohibit destruction; check_action refuses a corrupt store, the lease
+# does not), and force-init's _clean_runtime wipes state/.interlock
+# mid-section so a concurrent launch opens a fresh inode and acquires the
+# lease during the wipe window (requirement 4 / the F-H1 window).
+
+# R1.4 (TODO-0218) REVIEW-фикс 8 / QA-блокер iter-12 (agent-implementer):
+# baseline todos raised 5981 -> 5983 (+2) — the new
+# tests/negative/test_roadmap_r1_interlock_qa3.py adds 2 TODO-bearing lines
+# (the TODO-0218 module docstring unit reference + the single TODO-0001
+# fixture id). Same class as the raises above: test identifiers, not debt.
+# files_over_400 stays 82 (the new file is 131 lines — under the bar). The
+# two blocking findings closed here: the CLI destructive adapters
+# (cmd_reset/cmd_rollback/cmd_init) now execute through execute_destruction
+# so the decision source lands in the journal (requirement 6), and
+# force-init preserves state/.lock as well as state/.interlock (F-LK,
+# class F-B) so a concurrent RMW writer is not orphaned.
+
+# R1.4 (TODO-0218) QA findings, stage agent-qa-review (стадия 4 пайплайна):
+# baseline todos raised 5983 -> 5984 (+1) — the new
+# tests/negative/test_roadmap_r1_interlock_qa4.py adds 1 TODO-bearing line
+# (the TODO-0218 module docstring unit reference). Same class as the raises
+# above: a test identifier, not debt. files_over_400 stays 82 (the new file
+# is well under the bar). The RED finding: force-init (unlike reset) drops
+# the awf-launch.execution identity marker — _clean_runtime rmtree's the
+# whole logs/ dir and no rotate_execution_id runs on its path, so
+# execution_confirmed() reopens the "no marker = work" rule and a crash-orphan
+# child of a pre-force-init launch runs a second pipeline (the F-1 hole
+# through the force-init door; F-H1 already made force-init a destructive op).
+
+# R1.4 (TODO-0218) QA findings, стадия agent-qa-review, 17.10 (iter-15):
+# baseline todos raised 5984 -> 5985 (+1) — the new
+# tests/negative/test_roadmap_r1_interlock_qa5.py adds 1 TODO-bearing line
+# (the TODO-0218 module docstring unit reference). Same class as the raises
+# above: a test identifier, not debt. files_over_400 stays 82 (the new file
+# is well under the bar). The RED finding: a REFUSED concurrent start still
+# rotates the awf-launch.execution identity marker. _lease.acquire publishes
+# the marker unconditionally on a successful lease grab, and start_pipeline
+# calls acquire BEFORE its running-pipeline check (pipeline.py:1229 acquire,
+# :1253 resolve). A background child holds no lease (the parent releases it
+# right after spawn; the child skips acquire), so a second start a few ms
+# later grabs the free lease, overwrites the marker, then is refused with
+# "Pipeline already running" — meanwhile the first child reaches its
+# ExecutionId handshake, sees the overwritten marker and exits without work.
+# Matrix row 1 ("one worker; the second refused/pending") yields ZERO
+# workers: the refused start silently kills the running one.
+
+# R1.4 (TODO-0218) F-ID fix, стадия agent-implementer, 17.10 (iter-16):
+# files_over_400 raised 82 -> 83 (+1). The F-ID fix (identity marker
+# published only on the passing path) adds the publish_identity flag +
+# Lease.publish_identity + the reordered publish to awf/api/_lease.py,
+# which crosses 400 lines (395 -> 424). Documented growth of one file to
+# close the refused-start-kills-running-child hole; not debt. Candidate to
+# shrink: extract the execution-id block into its own module (journaled).
+
+# R1.4 (TODO-0218) F-A fix, стадия agent-implementer, 17.10 (iter-17):
+# baseline todos raised 5987 -> 5988 (+1) — the new
+# tests/negative/test_roadmap_r1_interlock_qa7.py adds 1 TODO-bearing line
+# (the TODO-0218 module docstring unit reference). Same class as the earlier
+# QA raises: a test identifier, not debt. files_over_400 stays 83 (the new
+# file is well under the bar). The RED finding (F-A): `awf init --force
+# --preview` on a fresh project (no .agentic/) silently ignored --preview —
+# the preview branch in awf/cmd_init.py:45 required an existing .agentic/,
+# so the flag fell through to a real init and wrote the skeleton, while
+# `reset --preview`/`rollback --preview` honour it. Fix: --preview is
+# terminal unconditionally (fresh project -> "nothing to destroy" + exit 0);
+# --preview without --force is an explicit usage error.
+
+# TODO-0219 (R1.5: state-файлы пишет только Store + архитектурный страж):
+# baseline todos raised 5992 -> 5996 (+4) — the TODO-bearing lines of the new
+# tests/negative/test_roadmap_r1_no_bypass.py (the TODO-0001 fixture ids of
+# the reads-don't-mutate / heartbeat tests and the unit references in the
+# module docstring). Same class as the earlier negative-test raises: test
+# identifiers and unit references, not debt. No production module gained a
+# TODO line (the new awf/infra/state_store/_projection.py carries none).
+
+# TODO-0219 architect-review (stage agent-architect-review, 17.10): baseline
+# files_over_400 raised 83 -> 84 (+1) — that same guard file crossed the bar
+# (400 -> 458) when the review closed two false-green blind spots: it now
+# resolves IMPORT aliases of write primitives (``from awf._atomic import
+# atomic_write_text as _atomic``) and carries the anti-vacuum case for it.
+# A negative-test catalogue, same class as the test_reports33_* /
+# test_roadmap_r1_interlock.py raises above. todos unchanged (the added
+# comments and synthetic cases carry no standalone "TODO" token).
+
+# TODO-0219 REVIEW-фикс A1/A3 (stage agent-implementer, 17.10): baseline
+# todos raised 5996 -> 5999 (+3) — TEST identifiers only, the three
+# "TODO-0001" use-sites of the new reset-ghost regression test
+# (TestResetStateWipeFailure in tests/negative/test_audit12_incidents.py:
+# the fixture activation, the run_start queue and the write_state todo_id).
+# The A3 service-close CAS test uses the module's T1 constant and adds no
+# TODO literal. files_over_400 stays 84 (that file was already over the bar;
+# the touched production modules were already over it and carry only unit-id
+# references, not debt).
+
+# TODO-0219 REVIEW-фикс 3 / F-0219-2 (stage agent-implementer, 18.10):
+# files_over_400 raised 84 -> 85 (+1), todos raised 5999 -> 6000 (+1) —
+# both from the QA round's red test for F-0219-2
+# (TestR1F2DispatchInboxMkdirResidual in
+# tests/negative/test_roadmap_r1_safety_qa.py): the added class + its
+# "# TODO-0001" dispatch fixture line pushed that file over the 400-line
+# bar (316 -> 432, +1 file over) and added one "TODO"-bearing line. The
+# production fix (removing the redundant inbox.mkdir in awf/api/dispatch.py)
+# carries no TODO token. Negative-test catalogue, same class as the
+# test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.

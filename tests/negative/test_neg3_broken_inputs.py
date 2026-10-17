@@ -162,7 +162,18 @@ def test_a_yaml_garbage_run_yaml_run_start_replaces_lost_run(tmp_git_repo: Path)
     status = api.run_status(project)
     assert status.active is True
     assert [q["todo_id"] for q in status.queue] == ["TODO-0003"]
-    _assert_untouched(project, before, changed_ok={str(run_file.relative_to(project))})
+    # R1.4: run_start now owns the durable control snapshot too — it
+    # allocates the run generation there and mirrors the active run (the
+    # projection run.yaml stays the CAS authority). Both files are the
+    # call's own state, not unrelated files damaged by corrupt input.
+    _assert_untouched(
+        project,
+        before,
+        changed_ok={
+            str(run_file.relative_to(project)),
+            ".agentic/state/control.json",
+        },
+    )
 
 
 # ── (b) semantically corrupt pipeline YAML ───────────────────────────────

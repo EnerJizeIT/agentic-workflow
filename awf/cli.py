@@ -226,6 +226,17 @@ def _build_parser():
         default="",
         help="Why the content is reworded (written to the log)",
     )
+    # R1.2 (TODO-0216): durable-operation id — a retry with the same id
+    # returns the recorded outcome instead of re-applying.
+    p_todo_update.add_argument(
+        "--operation-id",
+        dest="operation_id",
+        default="",
+        help=(
+            "Durable operation id: a retry with the same id replays the "
+            "recorded outcome (unknown outcome → recovery_required)"
+        ),
+    )
     p_todo_update.add_argument(
         "--project-dir",
         dest="project_dir",
@@ -248,6 +259,10 @@ def _build_parser():
     # MCP-6: --non-interactive — fully deterministic (stack-detect + name-from-dir).
     #        Interactive prompts remain default for human CLI use; agents use MCP tools.
     p_init.add_argument("--force", action="store_true")
+    p_init.add_argument("--preview", action="store_true",
+                         help="With --force: print the destruction plan and exit")
+    p_init.add_argument("--confirm-digest", dest="confirm_digest", default=None,
+                         help="With --force: execute only if this digest matches")
     p_init.add_argument("--dry-run", dest="dry_run", action="store_true")
     p_init.add_argument(
         "--non-interactive",
@@ -282,6 +297,10 @@ def _build_parser():
                          help="Remove orphan TODOs (asks for confirmation)")
     p_reset.add_argument("--force", action="store_true",
                          help="Skip the orphans confirmation prompt")
+    p_reset.add_argument("--preview", action="store_true",
+                         help="Print the destruction plan (scope + digest) and exit")
+    p_reset.add_argument("--confirm-digest", dest="confirm_digest", default=None,
+                         help="Execute only if this digest matches a fresh plan")
     p_reset.add_argument(
         "--project-dir",
         default=".",
@@ -398,6 +417,10 @@ def _build_parser():
     p_rollback.add_argument("--hard", action="store_true")
     p_rollback.add_argument("--soft", action="store_true")
     p_rollback.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p_rollback.add_argument("--preview", action="store_true",
+                            help="Print the destruction plan (scope + digest) and exit")
+    p_rollback.add_argument("--confirm-digest", dest="confirm_digest", default=None,
+                            help="Execute only if this digest matches a fresh plan")
     p_rollback.add_argument(
         "--project-dir",
         default=".",

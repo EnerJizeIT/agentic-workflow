@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .. import git_utils, paths
 from .._atomic import atomic_write_text
+from ..infra import managed_fs
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
 from ._helpers import require_awf_project
@@ -512,7 +513,21 @@ def dispatch_todo(
         )
 
     inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
+    # R1.5 (добор 0215): the inbox lives under ``.agentic`` — a symlinked
+    # ``.agentic``/``inbox`` used to send the unit file and its ``.ready``
+    # signal OUTSIDE the project (S9-01 class). Refuse before the first side
+    # effect; the writes below go through the no-follow managed helpers too.
+    try:
+        managed_fs.assert_no_symlink_escape(inbox, root=project_dir)
+    except managed_fs.ManagedPathError as e:
+        raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
+    # F-0219-2: no ``inbox.mkdir`` here. A plain ``Path.mkdir(parents=True)``
+    # after the preflight re-follows ``.agentic``: a swap to an outward
+    # symlink between the check and the mkdir created an empty ``inbox``
+    # OUTSIDE the project (F-B class, same as F-0219-1 for logs). The chain
+    # is created safely below by ``open_managed(create=True)`` — ``mkdirat``
+    # on the already-verified parent fd, which refuses a swapped component
+    # (ELOOP → ManagedPathError) before any directory appears.
 
     # AUD14-01: reserve the ID atomically before writing content. The old
     # exists() → write() window let two parallel dispatches pick the same
@@ -523,7 +538,14 @@ def dispatch_todo(
     for _attempt in range(16):
         candidate = inbox / f"{todo_id}.md"
         try:
-            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            # R1.5: no-follow all along — a swapped intermediate component
+            # fails closed (ManagedPathError), never a write outside.
+            fd = managed_fs.open_managed(
+                candidate,
+                flags=os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                mode=0o644,
+                root=project_dir,
+            )
         except FileExistsError:
             if explicit_id:
                 raise AwfApiError(
@@ -536,6 +558,8 @@ def dispatch_todo(
             import time as _time
             _time.sleep(_random.uniform(0, 0.02))
             continue
+        except managed_fs.ManagedPathError as e:
+            raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
         os.close(fd)
         md_path = candidate
         break
@@ -640,7 +664,8 @@ def dispatch_todo(
 
     # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the
     # placeholder — the id is already claimed, no one else can take it).
-    atomic_write_text(md_path, body)
+    # R1.5: no-follow write (same class as the reservation open above).
+    managed_fs.managed_write_text(md_path, body, root=project_dir, mode=0o644)
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status).
     # RUN10 #4: include files are excluded from the untracked snapshot by a
@@ -711,8 +736,12 @@ def dispatch_todo(
         )
 
     # Step 3: dispatch signal
+    # R1.5: the `.ready` touch is a write under `.agentic` too — no-follow.
     ready_path = inbox / f"{todo_id}.ready"
-    ready_path.touch()
+    try:
+        managed_fs.managed_write_text(ready_path, "", root=project_dir, mode=0o644)
+    except managed_fs.ManagedPathError as e:
+        raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
 
     # RUN10 #4 (TODO-0074): visibility — the files the commit gate will
     # exclude (still untracked, recorded in the fresh baseline snapshot,
