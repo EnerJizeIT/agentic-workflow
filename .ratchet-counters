@@ -1868,3 +1868,13 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # production fix (removing the redundant inbox.mkdir in awf/api/dispatch.py)
 # carries no TODO token. Negative-test catalogue, same class as the
 # test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.
+# R2.1 (TODO-0220, git-модель без печатных строк): files_over_400 raised
+# 85 -> 86 — the new awf/infra/git_model.py (1096 lines) is the one git
+# parser the R2 model is built on: the NUL-protocol reader (GitRepository,
+# ChangeRecord), the immutable/versioned BaselineManifest with its
+# stability-checked capture, and the rename-pair ownership attribution
+# live together as one cohesive model module, in the project's documented
+# style (cf. awf/commit_plan.py 959, awf/commit_gate.py). No new
+# TODO-bearing lines (the module and its test name the roadmap unit R2.1,
+# not a TODO-NNNN id), so the todos counter stays 6000. The new test file
+# is 364 lines — under the bar.
