@@ -1049,6 +1049,31 @@ class GitRepository:
             return _UntrackedResolution(reason=exc.reason)
         return _UntrackedResolution(mode=mode, blob=blob)
 
+    def worktree_mode_blob(
+        self, path: bytes, *, need_blob: bool = True
+    ) -> tuple[str | None, str | None]:
+        """Mode and blob Git will store for the WORKTREE path ``path`` — the
+        ONE worktree-content rule, the delegation target for consumers that
+        used to re-derive it by hand (R2.3 REVIEW-M3).
+
+        Same rule as an untracked path's stored facts (:meth:`_stat_blob`):
+        a symlink keeps ``120000`` and hashes its link TARGET STRING (never
+        the bytes behind the link), the executable bit is git's OWNER bit,
+        and a directory / nested repository is a REFUSAL
+        (:class:`UnsupportedChangeError`) — git cannot store it as a content
+        blob, so there is never a fabricated file entry. ``(None, None)``
+        when the path vanished (best effort).
+        """
+        try:
+            return self._stat_blob(path, need_blob=need_blob)
+        except _UntrackedVanished:
+            return None, None
+        except _UntrackedNotRepresentable as exc:
+            raise UnsupportedChangeError(
+                f"cannot store {display_path(path)!r} as a content blob: "
+                f"{exc.reason}"
+            ) from exc
+
     def _stat_blob(
         self, path: bytes, *, need_blob: bool = True
     ) -> tuple[str, str | None]:

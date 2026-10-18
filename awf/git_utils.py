@@ -5,12 +5,14 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+from .infra.git_model import GIT_TIMEOUT
+
 
 def _git(cwd: Path, *args: str, check: bool = True) -> str:
     """Run a git command and return stdout."""
     result = subprocess.run(
         ["git"] + list(args),
-        cwd=cwd, capture_output=True, text=True, check=False, timeout=30,
+        cwd=cwd, capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -43,7 +45,7 @@ def has_diff(project_dir: str | Path, baseline_sha: str) -> bool:
     try:
         result = subprocess.run(
             ["git", "diff", "--quiet", baseline_sha],
-            cwd=Path(project_dir), capture_output=True, check=False, timeout=30,
+            cwd=Path(project_dir), capture_output=True, check=False, timeout=GIT_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # AUD01-02: fail closed — no evidence of work, no traceback
@@ -64,7 +66,7 @@ def commit_all(project_dir: str | Path, message: str) -> bool:
         _git(cwd, "add", "-A", check=False)
         diff_check = subprocess.run(
             ["git", "diff", "--cached", "--quiet"],
-            cwd=cwd, capture_output=True, check=False, timeout=30,
+            cwd=cwd, capture_output=True, check=False, timeout=GIT_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # AUD01-02: fail closed — report commit failure, no traceback
@@ -74,7 +76,7 @@ def commit_all(project_dir: str | Path, message: str) -> bool:
     try:
         commit_result = subprocess.run(
             ["git", "commit", "-m", message],
-            cwd=cwd, capture_output=True, text=True, check=False, timeout=30,
+            cwd=cwd, capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         return False
@@ -136,7 +138,7 @@ def is_git_repo(project_dir: str | Path) -> bool:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
-            cwd=Path(project_dir), capture_output=True, check=False, timeout=30,
+            cwd=Path(project_dir), capture_output=True, check=False, timeout=GIT_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         # AUD01-02: fail closed — treat as not a repo, no traceback

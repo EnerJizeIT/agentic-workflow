@@ -119,6 +119,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `todo_ids.py` | Единственный парсер TODO-ID (4+ цифры, явная правая граница) |
 | `unit_contract.py` | Контракт юнита: блок `verify/gates/prove_red` в TODO + `DONE.json` |
 | `commit_plan.py` | Commit-план: файлы vs baseline, verdict, чтение `VERIFIED-{id}.sha` |
+| `commit_delta.py` | R2.3: единый сборщик кандидата (`DeltaAssembler` / `CandidatePlan`) — типизированные операции, rename-пара, отказы; здесь же алгоритм дельта-слияния (F1–F8) |
 | `commit_gate.py` | Auto-commit изолированным `GIT_INDEX_FILE` (индекс пользователя не трогаем) |
 | `verify.py` | Test/lint execution, auto-DONE synthesis |
 | `verify_pack.py` | Verify-отчёт `GATES-{todo}.md` (U5): гейты, diff-минимальность, facts |

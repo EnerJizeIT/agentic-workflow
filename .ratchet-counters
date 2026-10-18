@@ -1869,7 +1869,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # carries no TODO token. Negative-test catalogue, same class as the
 # test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.
 # R2.1 (TODO-0220, git-модель без печатных строк): files_over_400 raised
-# 85 -> 86 — the new awf/infra/git_model.py (1096 lines) is the one git
+# 85 -> 86 — the new awf/infra/git_model.py (1217 lines) is the one git
 # parser the R2 model is built on: the NUL-protocol reader (GitRepository,
 # ChangeRecord), the immutable/versioned BaselineManifest with its
 # stability-checked capture, and the rename-pair ownership attribution
@@ -1877,7 +1877,8 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # style (cf. awf/commit_plan.py 959, awf/commit_gate.py). No new
 # TODO-bearing lines (the module and its test name the roadmap unit R2.1,
 # not a TODO-NNNN id), so the todos counter stays 6000. The new test file
-# is 364 lines — under the bar.
+# grew to 14 files / 2176 lines across the R2.1 cycle; no single file
+# crossed the bar.
 # R2.2 (TODO-0221, явный dispatch и перенос кода): baseline todos raised
 # 6000 -> 6014 (+14) — the unit adds the code-transfer channel and the
 # dirty-source-tree policy. The +14 TODO-bearing lines: 4 test identifiers
@@ -2125,3 +2126,33 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # the gitignore block and the managed-runtime check). Both production fixes add
 # no TODO token (comments cite the F-A/F-B ids, not the TODO). files_over_400
 # unchanged (88): the new test file is 4 tests.
+# R2.3 (TODO-0222, CandidatePlan и полная дельта): files_over_400 raised
+# 88 -> 91 (+3) and todos 6074 -> 6076 (+2). The three new >400 files:
+# awf/commit_delta.py (1290 lines — the DeltaAssembler / CandidatePlan and
+# the moved REPORTS33 F1–F8 delta algorithm, plus the review-iter3 printed→raw
+# identity bridge ``_raw_identity`` and the single GIT_TIMEOUT import), the
+# acceptance matrix
+# tests/negative/test_roadmap_r2_delta.py (472 lines: the S2-01/B01/mixed-pair/
+# gitlink rows plus the property generator — 32 seeded cases × every
+# orthogonal include × pre-existing × carry-over × rename combination), and
+# the QA matrix tests/negative/test_roadmap_r2_delta_qa.py (428 lines: the
+# F1–F3/H1/M1/M2/F-arrow regressions).
+# The todos delta is +2 NET: +10 new TODO-bearing lines in the three new
+# files (commit_delta.py 4, test_roadmap_r2_delta.py 5,
+# test_roadmap_r2_delta_qa.py 1 — test-ids and roadmap-unit citations) minus
+# 8 removed from commit_plan.py (21 -> 15) and commit_gate.py (33 -> 31) when
+# the moved code left its old docstrings behind. Same class as every prior
+# raise: test identifiers / roadmap-unit citations, not debt. Review-fix: the
+# claim channel now reaches the DeltaAssembler in the prod call, an adopted
+# path is committed whole, a pre-existing untracked path is foreign, and the
+# typed operation reports the mode/blob Git will store (worktree facts, no
+# symlink follow). architect-review: one isolated-index git runner (the
+# commit_gate copy is gone) and the F1–F8 invariant rationale is back on the
+# moved algorithm.
+# R2.3 architect-review: todos 6076 -> 6075 (-1) — the stale section header
+# «REPORTS33 (TODO-0204): the unit delta of a pre-dirty file» left behind when
+# the delta functions moved to commit_delta was removed from commit_gate.py.
+# Same review: the raw file-set pass (_legacy_plan_split / _all_changed_files)
+# moved from commit_plan.py into commit_delta.py so the assembly module no
+# longer calls back into the plan module (no commit_plan <-> commit_delta
+# runtime cycle); PlanSplit regained the frozen=True the move had dropped.
