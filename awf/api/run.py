@@ -1398,40 +1398,24 @@ def run_next(
     try:
         import subprocess
 
+        # RUN5 #1 (leak-gate) / RUN10 #4 / R2.2 (TODO-0221 M2): this
+        # re-baseline would wipe the transfer exclusions dispatch set — the
+        # carry-over, the include list AND the CODE-channel claim — so they
+        # are re-applied from the unit's audit links (BASELINE-{id}
+        # .carry_over / .include / .claim). Link-read failure must not kill
+        # the re-baseline (best-effort); transfer_exclusions resolves all
+        # three channels the same way the dispatch wrote them.
+        from .hygiene import transfer_exclusions
         from .pipeline import create_baseline
 
-        # RUN5 #1 (leak-gate): this re-baseline would wipe the carry-over
-        # exclusion dispatch set for a retry — re-apply it from the
-        # BASELINE-{id}.carry_over link (the origin's recorded paths).
-        # Link-read failure must not kill the re-baseline (best-effort).
-        carry_over: set[str] | None = None
-        link = paths.context_dir(project_dir) / f"BASELINE-{next_id}.carry_over"
-        try:
-            if link.is_file():
-                origin = link.read_text(encoding="utf-8").strip()
-                if origin:
-                    from ..reject_files import read_reject_files
-
-                    recorded = read_reject_files(project_dir, origin)
-                    if recorded is not None:
-                        carry_over = set(recorded)
-        except OSError:
-            carry_over = None
-        # RUN10 #4 (TODO-0074): same for the inclusion list — re-apply the
-        # dispatch's re-claimed paths from the BASELINE-{id}.include link,
-        # or the re-baseline would silently drop them from the unit commit.
-        # D-01/R-07: read_include_list is the single .include parser — the
-        # helper's []-for-empty-file case is a no-op in create_baseline
-        # (set(include or ())), identical to the old None. Link-read failure
-        # must not kill the re-baseline (best-effort; the helper swallows
-        # OSError itself, the outer catch is the backstop).
-        from ..include_untracked import read_include_list
-
-        include: set[str] | None = None
-        recorded = read_include_list(project_dir, next_id)
-        if recorded:
-            include = set(recorded)
-        create_baseline(project_dir, next_id, carry_over=carry_over, include=include)
+        carry_over, include, claim = transfer_exclusions(project_dir, next_id)
+        create_baseline(
+            project_dir,
+            next_id,
+            carry_over=carry_over or None,
+            include=include or None,
+            claim=claim or None,
+        )
     except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 
@@ -2588,14 +2572,23 @@ def _rollback_service_side_effects(
         except OSError:
             pass
     ctx = paths.context_dir(project_dir)
+    # Every baseline artefact a dispatch leaves behind — the "undo EVERY side
+    # effect" contract above is only held when this list is COMPLETE.
+    # ``create_baseline`` writes the snapshot files (``.worktree`` is the
+    # TODO-0204 member); the three transfer links (``.include`` /
+    # ``.carry_over`` / ``.claim``, TODO-0221) are written by the dispatch
+    # next to it. Each was added on its own; a missing member here leaves a
+    # stale artefact behind a rolled-back service start.
     for name in (
         f"BASELINE-{todo_id}.sha",
         f"BASELINE-{todo_id}.status",
         f"BASELINE-{todo_id}.tests.log",
         f"BASELINE-{todo_id}.env.log",
         f"BASELINE-{todo_id}.untracked",
+        f"BASELINE-{todo_id}.worktree",
         f"BASELINE-{todo_id}.include",
         f"BASELINE-{todo_id}.carry_over",
+        f"BASELINE-{todo_id}.claim",
     ):
         try:
             (ctx / name).unlink()

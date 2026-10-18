@@ -35,6 +35,7 @@ try/except.
 from __future__ import annotations
 
 from ..brief import BriefResult
+from ..claim_changes import apply_claim_changes, plan_claim_changes, read_claim
 from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
@@ -261,6 +262,10 @@ __all__ = [
     # TODO dispatch + supervisor context (dogfood-2 automation)
     "dispatch_todo",
     "load_supervisor_context",
+    # R2.2 (roadmap R2): the CODE transfer of a rejected unit
+    "plan_claim_changes",
+    "apply_claim_changes",
+    "read_claim",
     # Increment planning (dogfood-7 — user picks decomposition variant)
     "apply_increment_plan",
     # Named pipelines (RUN3 #1 — create/list, run by name via start/continue)

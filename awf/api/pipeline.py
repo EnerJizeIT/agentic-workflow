@@ -588,6 +588,13 @@ def approve_commit(
     except Exception:
         orphaned = []  # best-effort failsafe — never blocks the approve
 
+    # R2.2 QA iter 4: the paths are RAW (byte-faithful); escape them for the
+    # result/JSON surface exactly like the dispatch transfer lists, so a name
+    # with a non-UTF-8 byte never breaks the strict UTF-8 sink.
+    from ..infra.git_model import escape_str_for_ui
+
+    orphaned = [escape_str_for_ui(p) for p in orphaned]
+
     return ApproveResult(
         todo_id=todo_id,
         signal_file=str(signal),
@@ -698,6 +705,8 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
                 report_file = stopped.report_file
                 message += " Run STOPPED: two rejections — the task needs the owner."
 
+    from ..infra.git_model import escape_str_for_ui
+
     return RejectResult(
         todo_id=todo_id,
         review_file=str(review_file),
@@ -705,11 +714,57 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         run_stopped=run_stopped,
         report_file=report_file,
         message=message,
-        reject_files=rejected_files,
+        # R2.2 QA iter 4: RAW paths (byte-faithful) — escape for the result/JSON
+        # surface, same as the dispatch transfer lists.
+        reject_files=[escape_str_for_ui(p) for p in rejected_files],
     )
 
 
 # ─── create_baseline ────────────────────────────────────────────────────
+
+
+def _untracked_snapshot(project_dir: Path, excluded: set[str]) -> str:
+    """The ``BASELINE-<todo>.untracked`` body: git's untracked listing minus
+    the adopted paths, matched by their RAW identity.
+
+    The snapshot predates the R2.1 model: its readers (commit gate, verify,
+    reject) compare against the PRINTED ``git ls-files`` lines, so the file
+    must keep that form (R2.3 migrates both sides together). The printed
+    listing C-quotes a non-ASCII name (``"\\321\\204..."``) while the adopted
+    paths are raw (``файл.txt``), so dropping them by the raw comparison
+    silently missed the exclusion (TODO-0221 architect: the writer surface of
+    the R2.2 invariant). The raw and printed listings come from the same git
+    scan in the same byte order, so they are paired positionally and the
+    printed line of an adopted path is dropped — the file keeps its format,
+    the exclusion finally bites. Any mismatch degrades to the legacy compare
+    (never worse than before the bridge).
+
+    The printed read carries the same triple guard as the raw read below and
+    ``reject_files._untracked_view`` (M3): a hung/missing git
+    (``SubprocessError``/``OSError``) or a non-UTF-8 name emitted raw under
+    ``core.quotepath=false`` (``UnicodeDecodeError``) must degrade the snapshot,
+    not crash the baseline write (``awf dispatch`` / ``awf run_next``).
+    """
+    try:
+        printed = git_utils.git_stdout(
+            project_dir, "ls-files", "--others", "--exclude-standard", check=False
+        )
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+        printed = ""
+    if not excluded:
+        return printed
+    from ..infra.git_model import GitModelError, GitRepository, display_path
+
+    try:
+        raw = GitRepository(project_dir).untracked_paths()
+    except (GitModelError, OSError):
+        raw = []
+    lines = printed.splitlines()
+    if raw and len(lines) == len(raw):
+        return "\n".join(
+            ln for ln, p in zip(lines, raw) if display_path(p) not in excluded
+        )
+    return "\n".join(ln for ln in lines if ln.strip() not in excluded)
 
 
 def create_baseline(
@@ -718,6 +773,7 @@ def create_baseline(
     *,
     carry_over: set[str] | None = None,
     include: set[str] | None = None,
+    claim: set[str] | None = None,
 ) -> BaselineResult:
     """Create BASELINE-{todo_id}.{sha,status,worktree,tests.log,env.log}
     snapshot.
@@ -744,6 +800,17 @@ def create_baseline(
     ``carry_over`` (excluded from the untracked snapshot) but a separate
     parameter — the two are independent mechanisms with different audit
     trails (BASELINE-{todo}.carry_over / BASELINE-{todo}.include).
+
+    ``claim`` (R2.2, TODO-0221): paths of a predecessor unit's change that
+    this unit deliberately owns via ``claim_changes`` — the CODE channel. The
+    paths are excluded from the untracked snapshot exactly like ``include`` /
+    ``carry_over`` (so the commit gate treats them as THIS unit's work). The
+    source plan is the ``CLAIM-<source>.json`` record written by
+    ``claim_changes.apply_claim_changes``; the re-baseline audit link is the
+    third sibling, ``BASELINE-<todo>.claim`` (TODO-0221 M2 — written by
+    ``claim_changes.write_claim_link`` at dispatch, re-applied by
+    ``hygiene.transfer_exclusions``), kept parallel to the ``carry_over`` /
+    ``include`` links above.
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
@@ -781,7 +848,16 @@ def create_baseline(
                     f"{str(e).splitlines()[0] if str(e) else 'rev-parse HEAD failed'})"
                 ) from e
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
-            status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
+            # M3: the printed read decodes strictly (``text=True``); a
+            # non-UTF-8 name under ``core.quotepath=false`` raises a
+            # ``UnicodeDecodeError`` and a hung/missing git raises
+            # ``SubprocessError``/``OSError``. Degrade the status snapshot to
+            # empty (the commit gate's documented legacy fallback) instead of
+            # crashing the dispatch / re-baseline.
+            try:
+                status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
+            except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+                status = ""
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", status)
             # REPORTS33 (TODO-0204): snapshot of the dirty worktree — the
             # commit gate's delta mechanism: a tracked-dirty file enters
@@ -796,10 +872,18 @@ def create_baseline(
             # read as "") — a re-dispatch of the same id must never read
             # an earlier dispatch's snapshot (QA F6, REVIEW iter 5). Best
             # effort either way: a failure never fails the baseline (the
-            # dispatch warning degrades to the honest legacy text).
-            worktree_snap = git_utils.git_stdout(
-                project_dir, "stash", "create", check=False,
-            ).strip()
+            # dispatch warning degrades to the honest legacy text). The
+            # ``check=False`` covers git's own NON-ZERO rc; a TRANSIENT failure
+            # (hung/missing git) raises out of ``_git`` — the same triple guard
+            # M3 gave the sibling status / untracked reads above, or the
+            # exception escapes the outer ``except Exception: ... raise`` and
+            # crashes ``awf dispatch`` / ``awf run_next``.
+            try:
+                worktree_snap = git_utils.git_stdout(
+                    project_dir, "stash", "create", check=False,
+                ).strip()
+            except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+                worktree_snap = ""
             snap_path = context_dir / f"BASELINE-{todo_id}.worktree"
             if worktree_snap:
                 _write_baseline_file(snap_path, worktree_snap + "\n")
@@ -807,19 +891,14 @@ def create_baseline(
                 snap_path.unlink(missing_ok=True)
             # QA-1: snapshot untracked files at baseline time so commit_gate
             # can distinguish worker-created files from pre-existing untracked.
-            untracked = git_utils.git_stdout(
-                project_dir, "ls-files", "--others", "--exclude-standard", check=False,
-            )
             # RUN5 #1 (leak-gate) + RUN10 #4 (TODO-0074): drop re-claimed
             # paths (carry-over and/or include) from the snapshot so the
             # commit gate treats them as THIS unit's work (it would
             # otherwise exclude them as "pre-existing" and silently lose
-            # them from the unit commit).
-            excluded = set(carry_over or ()) | set(include or ())
-            if excluded:
-                untracked = "\n".join(
-                    ln for ln in untracked.splitlines() if ln.strip() not in excluded
-                )
+            # them from the unit commit). The exclusion compares RAW path
+            # identities, so a non-ASCII adopted name is dropped too.
+            excluded = set(carry_over or ()) | set(include or ()) | set(claim or ())
+            untracked = _untracked_snapshot(project_dir, excluded)
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
         else:
             sha = "(not a git repo)"

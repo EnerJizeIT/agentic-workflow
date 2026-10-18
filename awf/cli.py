@@ -717,6 +717,29 @@ def _build_parser():
 
     # REPORTS26 F6: workflow definitions (config/roles/pipelines/phases/
     # doctrine) into git — for the units that commit nothing (read-only).
+    p_claim = sub.add_parser(
+        "claim-changes",
+        help="R2.2: preview/apply the code transfer of a rejected unit",
+    )
+    p_claim.add_argument("source_todo", help="Source unit id (TODO-NNNN)")
+    p_claim.add_argument(
+        "--paths",
+        action="append",
+        default=None,
+        help="Display path to claim (repeatable; each occurrence is one path). "
+             "Default: all changes.",
+    )
+    p_claim.add_argument(
+        "--apply",
+        default=None,
+        help="Apply the previewed plan after confirming this exact digest",
+    )
+    p_claim.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_workflow_commit = sub.add_parser(
         "commit-workflow",
         help="Commit .agentic/ workflow definitions "
@@ -820,6 +843,9 @@ def _run_command(args) -> int:
         if args.command == "commit-workflow":
             from . import cmd_workflow_commit
             return cmd_workflow_commit.run(args)
+        if args.command == "claim-changes":
+            from . import cmd_claim_changes
+            return cmd_claim_changes.run(args)
         return 1
     except AwfApiError as e:
         print(f"ERROR: {e}", file=sys.stderr)

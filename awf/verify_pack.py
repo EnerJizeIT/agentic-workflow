@@ -398,9 +398,13 @@ def _reject_leak_section(project: Path, todo_id: str) -> Section:
         f"WARNING: files of a rejected attempt would be SILENTLY EXCLUDED from "
         f"the {todo_id} commit (still untracked AND in BASELINE-{todo_id}.untracked):"
     ]
+    # R2.2 QA iter 4: the paths are RAW (byte-faithful) — escape them for the
+    # report sink, so a name with a non-UTF-8 byte does not break the write.
+    from .infra.git_model import escape_str_for_ui
+
     for origin, files in orphaned:
         for f in files:
-            lines.append(f"- {f}  (from {origin})")
+            lines.append(f"- {escape_str_for_ui(f)}  (from {origin})")
     lines.append(
         "Fix: re-issue with carry_over_from=<origin> so the retry commit "
         "includes them, or commit them consciously. Nothing is auto-committed."

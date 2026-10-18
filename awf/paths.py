@@ -9,6 +9,32 @@ def agentic_dir(project_dir: str | Path = ".") -> Path:
     return Path(project_dir).resolve() / ".agentic"
 
 
+#: The .agentic/ RUNTIME subdirectories awf writes itself (signals, baselines,
+#: logs, state, …). ONE source for three consumers that must not drift apart:
+#: the init/force-init runtime wipe (``api._destructive.INIT_RUNTIME_DIRS``),
+#: the .gitignore block (``api._templates.update_gitignore``) and the
+#: "managed artifacts are not the user's dirt" check
+#: (``dispatch_policy.MANAGED_RUNTIME_PREFIXES``). The workflow DEFINITIONS
+#: (roles/pipelines/phases, config.yaml) are deliberately NOT here — they are
+#: committed and belong to the user.
+RUNTIME_DIRS: tuple[str, ...] = (
+    "inbox",
+    "outbox",
+    "handoff",
+    "done",
+    "state",
+    "logs",
+    "context",
+    "dashboards",
+    "inputs",
+    # F-B (review-fix 10): role DRAFTS are awf-written runtime (``api/roles``
+    # add-role --draft, the service-run candidate). A live draft used to count
+    # as the USER's dirt under require_clean and leak into the dirty tables;
+    # one source keeps it out of all three consumers at once.
+    "roles/draft",
+)
+
+
 def inbox(project_dir: str | Path = ".") -> Path:
     """Return .agentic/inbox/."""
     return agentic_dir(project_dir) / "inbox"

@@ -16,6 +16,7 @@ from .. import config as cfg_mod
 from .. import paths, run_state, todos
 from .._atomic import atomic_write_text
 from .._lock import LOCK_NAME
+from ..dispatch_policy import CONFIG_VERSION
 from ..infra import managed_fs
 from . import _liveness
 from ._background import check_pipeline_running
@@ -370,6 +371,7 @@ def init_project(
 
     config_content = _CONFIG_TEMPLATE.format(
         project_name=project_name,
+        config_version=CONFIG_VERSION,
         test_cmd=test_cmd,
         lint_cmd=lint_cmd,
         typecheck_cmd=typecheck_cmd,

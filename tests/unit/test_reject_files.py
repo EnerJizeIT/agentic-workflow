@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from awf import api
+from awf import api, paths
 from awf.reject_files import (
     orphaned_reject_files,
     read_reject_files,
@@ -37,6 +37,64 @@ from awf.reject_files import (
 
 ORIGIN = "TODO-0001"
 RETRY = "TODO-0002"
+
+
+class TestByteFaithfulPaths:
+    """R2.2 QA iter 4: the leak-gate speaks RAW path identity.
+
+    The printed ``git ls-files`` C-quotes a non-ASCII name (``"\\321\\204..."``)
+    while every transfer channel (``include_untracked`` / ``claim_from``) and the
+    R2.1 model use raw bytes. The REJECT file and the carry-over/orphan readers
+    now stay raw; the ``BASELINE-<todo>.untracked`` comparison goes through the
+    same positional bridge ``pipeline._untracked_snapshot`` uses.
+    """
+
+    def test_snapshot_records_raw_non_ascii(self, leak_project: Path) -> None:
+        finding = "файлу.txt"
+        (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.untracked").write_text("")
+        (leak_project / finding).write_text("finding\n", encoding="utf-8")
+        recorded = snapshot_rejected_files(
+            leak_project, ORIGIN, paths.logs_dir(leak_project)
+        )
+        assert recorded == [finding], "the recorded path must be the RAW name"
+        assert reject_files_path(leak_project, ORIGIN).read_text(
+            encoding="utf-8"
+        ).split("\x00")[:-1] == [finding], (
+            "the file must hold the raw name (NUL-terminated), not a C-quote"
+        )
+
+    def test_carry_over_non_ascii_excluded_from_baseline(
+        self, leak_project: Path
+    ) -> None:
+        finding = "файлу.txt"
+        (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.untracked").write_text("")
+        (leak_project / finding).write_text("finding\n", encoding="utf-8")
+        api.reject_commit(leak_project, ORIGIN, "rejected")
+        api.dispatch_todo(
+            leak_project, f"# {RETRY}\nretry\n", todo_id=RETRY, carry_over_from=ORIGIN
+        )
+        snapshot = (
+            _ctx(leak_project) / f"BASELINE-{RETRY}.untracked"
+        ).read_text(encoding="utf-8")
+        assert snapshot.strip() == "", (
+            "the carried-over non-ASCII finding must be OWNED by the retry "
+            f"(dropped from the baseline snapshot); snapshot={snapshot!r}"
+        )
+
+    def test_orphan_detection_is_byte_faithful_for_non_ascii(
+        self, leak_project: Path
+    ) -> None:
+        finding = "файлу.txt"
+        (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.untracked").write_text("")
+        (leak_project / finding).write_text("finding\n", encoding="utf-8")
+        api.reject_commit(leak_project, ORIGIN, "rejected")
+        # a retry WITHOUT carry-over records the finding as pre-existing; the
+        # baseline file stores git's PRINTED (C-quoted) form
+        api.dispatch_todo(leak_project, f"# {RETRY}\nretry\n", todo_id=RETRY)
+        assert orphaned_reject_files(leak_project, RETRY) == [(ORIGIN, [finding])]
 
 
 @pytest.fixture
@@ -82,7 +140,10 @@ class TestSnapshotRejectedFiles:
         _make_rejected_attempt(leak_project)
         rf = reject_files_path(leak_project, ORIGIN)
         assert rf.is_file(), "reject must write REJECT-TODO-0001.files"
-        assert rf.read_text(encoding="utf-8").splitlines() == ["b.py", "src/a.py"]
+        assert rf.read_text(encoding="utf-8").split("\x00")[:-1] == [
+            "b.py",
+            "src/a.py",
+        ]
         # stale.txt pre-existed (in BASELINE-*.untracked) — not the attempt's
         assert "stale.txt" not in rf.read_text(encoding="utf-8")
 
@@ -102,7 +163,7 @@ class TestSnapshotRejectedFiles:
         api.reject_commit(leak_project, ORIGIN, "no baseline snapshot")
         assert reject_files_path(leak_project, ORIGIN).read_text(
             encoding="utf-8"
-        ).splitlines() == ["a.py", "b.py"]
+        ).split("\x00")[:-1] == ["a.py", "b.py"]
 
     def test_not_a_git_repo_is_best_effort(self, tmp_path: Path) -> None:
         proj = tmp_path / "nogit"

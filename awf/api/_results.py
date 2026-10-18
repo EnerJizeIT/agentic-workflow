@@ -371,10 +371,26 @@ class DispatchTodoResult:
     verify_path_warnings: list[str] = field(default_factory=list)
     # TODO-0195: the dirty tree at dispatch — tracked-dirty / staged /
     # untracked non-ignored paths that pre-date the unit and will NOT
-    # enter its commit (gitignored and a clean tree → []). The warning is
-    # the loud part; the dispatch itself never refuses on dirt.
+    # enter its commit (gitignored and a clean tree → []). R2.2: the ADOPTED
+    # paths (claim_from / carry_over_from / include_untracked) are owned, not
+    # dirt, and are excluded here. The warning is the loud part; the dispatch
+    # itself never refuses on dirt.
     dirty_files: list[str] = field(default_factory=list)
     dirty_warning: str = ""  # capped one-line warning; "" on a clean tree
+    # R2.2 (roadmap R2): the explicit dirty-source-tree policy that governed
+    # this dispatch — its value, the project's config_version and the
+    # migration warning for a legacy project ("" when versioned).
+    dirty_policy: str = ""
+    dirty_policy_warning: str = ""
+    # R2.2: the isolate artefacts — the excluded-operations table summary and
+    # the dependency warning (both "" unless dirty_policy=isolate on a dirty
+    # tree).
+    isolate_warning: str = ""
+    isolate_dependency_warning: str = ""
+    # R2.2: the code transfer applied to this unit — the source unit whose
+    # changes were claimed and the claimed display paths ([] when no claim).
+    claim_from: str | None = None
+    claimed_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

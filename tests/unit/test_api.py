@@ -1481,7 +1481,7 @@ class TestDispatchIncludeUntracked:
         assert "y.md" in lines, "the other pre-existing file stays listed"
         assert "x.md" not in lines, "the included file must not look pre-existing"
         link = proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.include"
-        assert link.read_text(encoding="utf-8").splitlines() == ["x.md"]
+        assert link.read_text(encoding="utf-8").split("\x00")[:-1] == ["x.md"]
         # the visibility warning now lists only what really stays excluded
         assert res.pre_existing_untracked == ["y.md"]
         assert "y.md" in res.untracked_warning and "x.md" not in res.untracked_warning
@@ -1559,7 +1559,7 @@ class TestDispatchIncludeUntracked:
         assert (proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.carry_over").read_text(
             encoding="utf-8").strip() == origin
         assert (proj / ".agentic" / "context" / f"BASELINE-{self.TODO}.include").read_text(
-            encoding="utf-8").splitlines() == ["x.md"]
+            encoding="utf-8").split("\x00")[:-1] == ["x.md"]
 
     def test_plain_redispatch_clears_stale_include_link(self, proj: Path) -> None:
         (proj / "x.md").write_text("re-claimed\n")

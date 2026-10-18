@@ -16,7 +16,16 @@ import shlex
 from pathlib import Path
 
 from .. import git_utils, paths
-from .._atomic import atomic_write_text
+from ..dispatch_policy import (
+    ISOLATE,
+    REQUIRE_CLEAN,
+    SourceTreeReport,
+    check_source_tree,
+    format_dirty_refusal,
+    format_isolate_report,
+    log_policy_decision,
+    resolve_dirty_policy,
+)
 from ..infra import managed_fs
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
@@ -136,50 +145,87 @@ def _missing_verify_paths(project_dir: Path, tokens: list[str]) -> list[str]:
 
 
 def _dirty_tree_classes(project_dir: Path) -> dict[str, str]:
-    """TODO-0195 / TODO-0204: the paths that are NOT clean at dispatch
-    time, with their class: ``staged`` (a non-clean index column),
-    ``tracked-dirty`` (a clean index column, a dirty worktree column —
+    """TODO-0195 / TODO-0204 / TODO-0221: the paths that are NOT clean at
+    dispatch time, with their class: ``staged`` (the index differs from
+    HEAD), ``tracked-dirty`` (a worktree-only change of a tracked path —
     the pre-dispatch WIP the delta mechanism covers), ``untracked``.
 
-    One ``git status --short`` pass. First-seen order, duplicates
-    dropped. ``{}`` on a clean tree, and on git failure too (best effort
-    — this feeds a warning, it must never refuse a dispatch).
+    Read through the R2.1 git model — ONE git parser, byte-faithful paths:
+    the printed ``git status --short`` C-quotes a non-ASCII name
+    (``"\\321\\204..."``), so an adopted path the model gives as raw bytes
+    (``файл.txt``) no longer compared equal and the exclusion missed
+    (TODO-0221 M1). First-seen order, duplicates dropped. ``{}`` on a clean
+    tree,     and on a tree the model refuses too (best effort — this feeds a
+    warning, it must never refuse a dispatch).
+
+    The untracked side comes from :meth:`GitRepository.untracked_paths`, the
+    SAME listing the policy check reads: ``changes()`` drops a secret-looking
+    untracked name (``.env``) from the ownership operations, so the warning
+    would omit a path the require_clean refusal / isolate table name — the
+    three surfaces must describe one tree.
     """
-    text = git_utils.status_porcelain(project_dir)
+    from ..dispatch_policy import is_managed_runtime_path
+    from ..infra.git_model import GitModelError, GitRepository, display_path
+
+    if not git_utils.is_git_repo(project_dir):
+        return {}
+    try:
+        repo = GitRepository(project_dir)
+        records = repo.changes()
+        untracked = repo.untracked_paths()
+    except GitModelError:
+        return {}  # best effort: the warning must never refuse a dispatch
     classes: dict[str, str] = {}
-    for line in text.splitlines():
-        if len(line) < 4:
+    for r in records:
+        # R2.2: managed AWF runtime artifacts are never the USER's dirt — the
+        # same documented exceptions the source-tree policy check applies.
+        if is_managed_runtime_path(r.path):
             continue
-        x, y = line[0], line[1]
-        if x == " " and y == " ":
-            continue  # clean
-        path = line[3:].strip()
-        if " -> " in path:  # staged rename/copy: the diff shows the dest
-            path = path.rsplit(" -> ", 1)[1].strip()
+        path = display_path(r.path)
         if not path or path in classes:
             continue
-        if x == "?":
+        if r.kind == "untracked":
             classes[path] = "untracked"
-        elif x != " ":
+        elif _change_is_staged(r):
             classes[path] = "staged"
         else:
             classes[path] = "tracked-dirty"
+    for raw in untracked:
+        if is_managed_runtime_path(raw):
+            continue
+        path = display_path(raw)
+        if path:
+            classes.setdefault(path, "untracked")
     return classes
 
 
-def _dirty_tree_files(project_dir: Path) -> list[str]:
-    """TODO-0195: the paths that are NOT clean at dispatch time.
+def _change_is_staged(record) -> bool:
+    """True when the R2.1 change sits in the INDEX (staged vs HEAD).
 
-    The keys of :func:`_dirty_tree_classes` — first-seen order. ``[]`` on
-    a clean tree, and on git failure too (best effort — this is a
-    warning, it must never refuse a dispatch).
+    The record's index facts moved from the base ones, or the path is NEW in
+    the index (added/renamed/copied — the base has no entry). Everything
+    else is a worktree-only change of a tracked path (``tracked-dirty``),
+    the class the dispatch-time worktree snapshot and the delta mechanism
+    cover.
     """
-    return list(_dirty_tree_classes(project_dir))
+    if record.kind in ("added", "renamed", "copied"):
+        return True
+    return (
+        record.index_blob != record.base_blob
+        or record.index_mode != record.base_mode
+    )
 
 
 def _group_list(paths_list: list[str], cap: int = 5) -> str:
-    """The first ``cap`` paths for a warning group (…N more when cut)."""
-    shown = paths_list[:cap]
+    """The first ``cap`` paths for a warning group (…N more when cut).
+
+    Names render through :func:`escape_str_for_ui` (F3) — a non-UTF-8 byte in
+    a path must not break the strict-UTF-8 sink the warning is emitted
+    through.
+    """
+    from ..infra.git_model import escape_str_for_ui
+
+    shown = [escape_str_for_ui(p) for p in paths_list[:cap]]
     more = len(paths_list) - len(shown)
     return ", ".join(shown) + (f" …({more} more)" if more else "")
 
@@ -206,7 +252,9 @@ def _format_dirty_warning(
     """
     if not files:
         return ""
-    shown = files[:_DIRTY_WARNING_CAP]
+    from ..infra.git_model import escape_str_for_ui
+
+    shown = [escape_str_for_ui(f) for f in files[:_DIRTY_WARNING_CAP]]
     more = len(files) - len(shown)
     tail = f" (…{more} more)" if more else ""
     claim = (
@@ -284,6 +332,7 @@ def dispatch_todo(
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
     replan_for: str | None = None,
+    claim_from: str | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -351,6 +400,25 @@ def dispatch_todo(
 
             A hand-written ``replan_for: TODO-0204`` line in the content's
             contract block works the same way (the parameter then wins).
+        claim_from: R2.2 (roadmap R2) — the id of a REJECTED/INTERRUPTED unit
+            whose CODE this retry deliberately owns. The applied claim record
+            (``.agentic/context/CLAIM-<source>.json``, written by
+            ``claim_changes``) is read; its paths are excluded from the new
+            baseline's untracked snapshot exactly like ``include_untracked``.
+            This is the code channel — the R5 finding channel stays
+            ``carry_over_from`` / ``include_untracked``. Refused (before any
+            side effect) when no claim record exists or a claimed change is no
+            longer in the tree.
+
+    The dirty-source-tree policy (R2.2) governs the dispatch: a project with
+    ``config_version`` and ``dirty_policy=require_clean`` (the version
+    default) refuses a dirty source tree BEFORE reserving the id — no TODO,
+    no baseline. ``dirty_policy=isolate`` proceeds and reports the excluded
+    operations plus a dependency warning. A legacy project (no
+    ``config_version``) keeps the pre-R2.2 ``warn`` behaviour and the result
+    carries the migration warning. A dirty path covered by an ADOPTED channel
+    — ``claim_from`` (code) or ``carry_over_from`` / ``include_untracked``
+    (finding) — is owned, not refused.
 
     Re-dispatch of a number with stale BLOCKED/ACK closures (RUN3 #4)
     clears them automatically; a DONE closure refuses the dispatch
@@ -364,7 +432,11 @@ def dispatch_todo(
         tokens missing from the project — a warning, never a refusal) and
         ``dirty_files``/``dirty_warning`` (TODO-0195: the tracked-dirty /
         staged / untracked paths present at dispatch — they will NOT enter
-        the unit's commit; a warning, never a refusal).
+        the unit's commit; a warning, never a refusal). R2.2 adds
+        ``dirty_policy`` (the effective policy), ``dirty_policy_warning``
+        (legacy migration), ``isolate_warning``/``isolate_dependency_warning``
+        (the isolate artefacts) and ``claim_from``/``claimed_files`` (the code
+        transfer applied).
 
     Raises:
         AwfApiError: if .agentic/ missing, content empty, ``todo_id`` is
@@ -372,9 +444,12 @@ def dispatch_todo(
             still in the outbox, a ``carry_over_from`` origin cannot be
             validated, an ``include_untracked`` path is invalid, an
             explicit ``todo_id`` disagrees with the first line's heading
-            number without ``allow_mismatch`` (REPORTS26 F5), or
+            number without ``allow_mismatch`` (REPORTS26 F5),
             ``replan_for`` is not a TODO id / references a unit that does
-            not exist or is closed as done (TODO-0213).
+            not exist or is closed as done (TODO-0213), the dirty-source-tree
+            policy is ``require_clean`` and the tree is dirty (R2.2), or
+            ``claim_from`` has no applied claim / its confirmed plan is
+            invalidated by a later tree change (R2.2).
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -413,6 +488,68 @@ def dispatch_todo(
     # config.yaml (stale directory) is refused before any side effect.
     # The resolved path lands in the result (resolved_project_dir).
     project_dir = require_awf_project(project_dir)
+
+    # R2.2 (roadmap R2): the explicit dirty-source-tree policy. Resolved from
+    # config.yaml; a legacy project (no config_version) keeps the pre-R2.2
+    # 'warn' behaviour and announces the migration. Read BEFORE any side
+    # effect: require_clean refuses a dirty tree before the id is reserved —
+    # nothing is written (no TODO, no baseline).
+    from .. import config as _cfg_mod
+
+    policy_decision = resolve_dirty_policy(_cfg_mod.load(project_dir))
+    source_report = check_source_tree(project_dir)
+
+    # R2.2 claim_changes: the applied CODE transfer this unit owns. Validated
+    # before any side effect — a missing record, or a claimed change whose blob
+    # moved since the plan (F3: consent is bound to the EXACT plan), refuses.
+    # The validation lives in ``claim_changes`` (its own channel), the parallel
+    # of ``resolve_carry_over`` / ``resolve_include_untracked`` below.
+    claimed: list[str] = []
+    if claim_from is not None and str(claim_from).strip():
+        from ..claim_changes import resolve_claim_changes
+
+        claimed = resolve_claim_changes(project_dir, str(claim_from))
+
+    # RUN5 #1 (leak-gate): validate the carry-over BEFORE the policy gate and
+    # the id reservation — a refused carry-over must leave no side effects, and
+    # its paths are the FINDING channel's adopted dirt (F2).
+    carry_over: set[str] = set()
+    carry_over_files: list[str] = []
+    if carry_over_from:
+        from ..reject_files import resolve_carry_over
+
+        carry_over_files = resolve_carry_over(project_dir, carry_over_from)
+        carry_over = set(carry_over_files)
+
+    # RUN10 #4 (TODO-0074): validate include_untracked BEFORE the policy gate
+    # and the id reservation — a refused path must leave no side effects, and
+    # its paths are the FINDING channel's adopted dirt (F1): a tree whose ONLY
+    # dirt is an explicitly adopted untracked file must not be refused.
+    include_files: list[str] = []
+    if include_untracked is not None:
+        from ..include_untracked import resolve_include_untracked
+
+        include_files = resolve_include_untracked(project_dir, include_untracked)
+
+    # R2.2: the adopted (owned) paths — the CODE transfer (claim_from) plus the
+    # R5 FINDING transfer (carry_over_from / include_untracked). They are the
+    # unit's own work, not un-owned dirt: excluded from the require_clean
+    # refusal, from the dirty warning below AND from the isolate table (the
+    # three surfaces describe one thing and must agree).
+    adopted: set[str] = set(claimed) | carry_over | set(include_files)
+
+    # The UN-OWNED part of the source tree — dirt no transfer channel adopted.
+    # The SAME report feeds the require_clean refusal and the isolate table:
+    # an adopted path is the unit's work, so it is neither refused nor listed
+    # as "stay OUTSIDE the unit".
+    unowned_report = SourceTreeReport(
+        paths=tuple(p for p in source_report.paths if p not in adopted),
+        managed=source_report.managed,
+        error=source_report.error,
+    )
+
+    if policy_decision.policy == REQUIRE_CLEAN and not unowned_report.clean:
+        raise AwfApiError(format_dirty_refusal(unowned_report))
 
     # TODO-0213 (BD-30): the marker must reference a real, live unit — the
     # escalated (blocked) TODO the replan replaces. A unit that does not
@@ -454,24 +591,10 @@ def dispatch_todo(
                 project_dir, _verify_path_tokens(verify_cmds)
             )
 
-    # RUN5 #1 (leak-gate): validate the carry-over BEFORE reserving the id —
-    # a refused carry-over must leave no side effects (no TODO, no baseline).
-    carry_over: set[str] = set()
-    carry_over_files: list[str] = []
-    if carry_over_from:
-        from ..reject_files import resolve_carry_over
-
-        carry_over_files = resolve_carry_over(project_dir, carry_over_from)
-        carry_over = set(carry_over_files)
-
-    # RUN10 #4 (TODO-0074): validate include_untracked BEFORE reserving the
-    # id — a refused path must leave no side effects (no TODO, no baseline),
-    # the same all-or-nothing contract as the leak-gate carry-over.
-    include_files: list[str] = []
-    if include_untracked is not None:
-        from ..include_untracked import resolve_include_untracked
-
-        include_files = resolve_include_untracked(project_dir, include_untracked)
+    # RUN5 #1 (leak-gate) / RUN10 #4 (TODO-0074): the carry-over and the
+    # include_untracked lists were validated ABOVE (before the policy gate),
+    # since their paths are the adopted dirt the gate must not refuse. They are
+    # re-used here to build the baseline exclusions.
 
     # Whether the CALLER fixed the id (explicit collisions must raise,
     # auto-picked ones may retry with the next free id).
@@ -674,6 +797,7 @@ def dispatch_todo(
         baseline = create_baseline(
             project_dir, todo_id, carry_over=carry_over,
             include=set(include_files) or None,
+            claim=set(claimed) or None,
         )
     except Exception:
         # Rollback: remove TODO .md if baseline fails (prevents orphan TODO)
@@ -682,33 +806,28 @@ def dispatch_todo(
 
     # RUN5 #1 (leak-gate): audit trail — which rejected origin this retry's
     # baseline carried over. Best-effort: a failed write must not undo the
-    # dispatch (the baseline already excluded the paths).
+    # dispatch (the baseline already excluded the paths). The link lifecycle is
+    # owned by ``reject_files`` (the leak-gate channel), the same as the
+    # include/claim links, instead of being re-spelled inline here.
     if carry_over:
+        from ..reject_files import write_carry_over_link
+
+        write_carry_over_link(project_dir, todo_id, str(carry_over_from))
         from .._log import log as _log
 
-        try:
-            atomic_write_text(
-                paths.context_dir(project_dir) / f"BASELINE-{todo_id}.carry_over",
-                f"{carry_over_from}\n",
-            )
-            _log(
-                paths.logs_dir(project_dir),
-                f"dispatch: {todo_id} — carried over {len(carry_over_files)} "
-                f"untracked file(s) from rejected {carry_over_from} (leak-gate)",
-            )
-        except OSError as e:
-            _log(
-                paths.logs_dir(project_dir),
-                f"dispatch: {todo_id} — carry-over audit link not written: {e}",
-            )
+        _log(
+            paths.logs_dir(project_dir),
+            f"dispatch: {todo_id} — carried over {len(carry_over_files)} "
+            f"untracked file(s) from rejected {carry_over_from} (leak-gate)",
+        )
     else:
         # RUN5 #1 (leak-gate): a non-carry-over (re-)dispatch rewrites the
         # baseline WITHOUT the exclusion — drop any stale link from an earlier
         # carry-over dispatch of the same id, so a later re-baseline (awf
         # run_next) does not re-apply an exclusion that no longer holds.
-        (
-            paths.context_dir(project_dir) / f"BASELINE-{todo_id}.carry_over"
-        ).unlink(missing_ok=True)
+        from ..reject_files import clear_carry_over_link
+
+        clear_carry_over_link(project_dir, todo_id)
 
     # RUN10 #4 (TODO-0074): audit trail — which pre-existing untracked files
     # this unit re-claims; a (re-)dispatch without include_untracked drops
@@ -719,6 +838,18 @@ def dispatch_todo(
         write_include_audit(project_dir, todo_id, include_files)
     else:
         clear_include_audit(project_dir, todo_id)
+
+    # R2.2 (TODO-0221 M2): CODE-channel audit link — the claim parallel to the
+    # carry_over/include links above. Without it a later re-baseline
+    # (awf run_next) drops the claimed paths' exclusion and the commit gate
+    # treats a claimed predecessor blob as pre-existing (silently out of the
+    # unit commit). A (re-)dispatch without claim_from drops a stale link.
+    from ..claim_changes import clear_claim_link, write_claim_link
+
+    if claimed and claim_from is not None and str(claim_from).strip():
+        write_claim_link(project_dir, todo_id, str(claim_from).strip())
+    else:
+        clear_claim_link(project_dir, todo_id)
 
     # RUN3 #4: re-dispatch of the same number must not stay hidden behind
     # stale BLOCKED/ACK closures — clear them via the shared helper.
@@ -759,8 +890,13 @@ def dispatch_todo(
     # snapshot the pre-dispatch change of a tracked-dirty file stays OUTSIDE
     # the unit commit (only the unit's own edit lands); without it the
     # warning says the change will enter the commit as-is.
-    dirty_files = _dirty_tree_files(project_dir)
-    dirty_classes = _dirty_tree_classes(project_dir)
+    # One R2.1 model read serves both the warning's file list and its class
+    # map (they describe the same tree): ``dirty_files`` is the keys of
+    # ``dirty_classes`` in the model's first-seen order.
+    dirty_classes = {
+        p: c for p, c in _dirty_tree_classes(project_dir).items() if p not in adopted
+    }
+    dirty_files = list(dirty_classes)
     snapshot_available = (
         paths.context_dir(project_dir) / f"BASELINE-{todo_id}.worktree"
     ).is_file()
@@ -775,6 +911,24 @@ def dispatch_todo(
         todo_id, dirty_files, dirty_classes, snapshot_available, snapshot_reason
     )
 
+    # R2.2 (roadmap R2): the isolate artefacts — what is excluded and what may
+    # depend on it. Only the explicit isolate policy reports them (legacy
+    # 'warn' keeps the plain dirty warning above).
+    isolate_warning = ""
+    isolate_dependency_warning = ""
+    if policy_decision.policy == ISOLATE:
+        isolate_warning, isolate_dependency_warning = format_isolate_report(
+            todo_id, unowned_report
+        )
+    log_policy_decision(project_dir, todo_id, policy_decision)
+
+    # F3: the path lists in the RESULT are a display surface too — the MCP
+    # answer serializes them (json.dumps ... ensure_ascii=False). Escape each
+    # name for the UI so a non-UTF-8 byte cannot break that sink. The internal
+    # lists (adopted-filtered ``dirty_files``, ``claimed``) stay on the raw
+    # display form the ownership decisions above used.
+    from ..infra.git_model import escape_str_for_ui
+
     return DispatchTodoResult(
         todo_id=todo_id,
         baseline_sha=baseline.sha,
@@ -787,13 +941,19 @@ def dispatch_todo(
         ],
         pre_check_warnings=pre_check_warnings,
         carry_over_from=carry_over_from,
-        carry_over_files=carry_over_files,
-        pre_existing_untracked=pre_existing,
+        carry_over_files=[escape_str_for_ui(p) for p in carry_over_files],
+        pre_existing_untracked=[escape_str_for_ui(p) for p in pre_existing],
         untracked_warning=untracked_warning,
         renumbered=renumbered,
         verify_path_warnings=verify_path_warnings,
-        dirty_files=dirty_files,
+        dirty_files=[escape_str_for_ui(p) for p in dirty_files],
         dirty_warning=dirty_warning,
+        dirty_policy=policy_decision.policy,
+        dirty_policy_warning=policy_decision.warning,
+        isolate_warning=isolate_warning,
+        isolate_dependency_warning=isolate_dependency_warning,
+        claim_from=(str(claim_from).strip() if claim_from else None),
+        claimed_files=[escape_str_for_ui(p) for p in claimed],
     )
 
 

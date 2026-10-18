@@ -157,6 +157,20 @@ def escape_for_ui(path: bytes) -> str:
     return "".join(out)
 
 
+def escape_str_for_ui(text: str) -> str:
+    """UI escaping of an already display-decoded path string (F3).
+
+    The ``str`` counterpart of :func:`escape_for_ui`: a display string carries
+    the original bytes through ``surrogateescape``, so it re-encodes
+    losslessly before escaping. Used at every render boundary that holds a
+    display string rather than the raw bytes (the R2.2 dirty / isolate /
+    claim surfaces), so a name with a non-UTF-8 byte never breaks the strict
+    UTF-8 sink the message is built for. Never feeds the digest or an
+    ownership decision — those stay on the raw bytes.
+    """
+    return escape_for_ui(text.encode("utf-8", "surrogateescape"))
+
+
 def _render_command(args: tuple[str, ...]) -> str:
     """Join argv for a REFUSAL message so the result is ALWAYS strict-UTF-8
     encodable — the same invariant ``escape_for_ui`` enforces on the unmerged
