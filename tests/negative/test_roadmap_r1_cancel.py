@@ -88,9 +88,9 @@ def _has_operation_id() -> bool:
 def _journal(project: Path, operation_id: str) -> Path:
     """The normalised journal path for ``operation_id`` (F4: the leaf is a
     digest, so tests must ask the code instead of hard-coding the id)."""
-    import awf.api.hygiene as hygiene
+    from awf.infra import state_store
 
-    rec = hygiene._operation_record(project, operation_id)
+    rec = state_store.op_path(project, operation_id)
     rec.parent.mkdir(parents=True, exist_ok=True)
     return rec
 

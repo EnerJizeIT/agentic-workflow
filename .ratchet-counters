@@ -2363,3 +2363,26 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # для F2-инварианта не имела своего теста; тест доказан мутацией (снял
 # перечитывание outbox в CPU-frozen ветке — красный, вернул — зелёный).
 # Ни одна строка не является TODO/FIXME-долгом. files_over_400 stays 95.
+
+# M3 (TODO-0227, стадия agent-implementer, 20.10): baseline todos raised
+# 6338 -> 6349 (+11). Все одиннадцать строк — unit-id ссылки и тестовые
+# идентификаторы, не долг: 2 в новом tests/negative/test_miniwave_m3_managedfs.py
+# (модульный docstring с TODO-0227 и fixture-ид TODO-0001) и 9 в
+# прод-комментариях/docstring'ах правок юнита (awf/run_state.py — lock-файл,
+# awf/todos.py — preflight архива, awf/api/hygiene.py — два места схемы
+# журнала, awf/infra/state_store/__init__.py — описание журнала,
+# awf/infra/state_store/_wipe.py — preflight wipe,
+# awf/infra/state_store/_ops.py — два места схемы, новый
+# awf/infra/state_store/_journal.py — заголовок модуля). Ни одного
+# TODO/FIXME-маркера долга не добавлено. files_over_400 stays 95
+# (новый тест — под 400 строк).
+
+# M3 виток 2 (TODO-0227 REVIEW, стадия agent-implementer, 20.10): baseline
+# todos 6349 -> 6355 (+6). Шесть строк — unit-id ссылки в docstring'ах
+# правок F1/F2/F3, не долг: awf/infra/state_store/_io.py (managed-барьер
+# JSON-писателя), awf/infra/managed_fs.py (durable у managed_write_text),
+# awf/infra/state_store/_ops.py (preflight чтения журнала),
+# awf/infra/state_store/_journal.py (владелец OperationStatus) и новый
+# tests/negative/test_miniwave_m3_managedfs_round2.py (модульный docstring).
+# Ни одного TODO/FIXME-маркера долга не добавлено. files_over_400 stays 95
+# (новый тест — 174 строки).

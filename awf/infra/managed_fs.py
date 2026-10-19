@@ -330,6 +330,7 @@ def managed_write_text(
     root: Path,
     mode: int = 0o600,
     encoding: str = "utf-8",
+    durable: bool = False,
 ) -> None:
     """Atomically write ``content`` to a managed path — no-follow all along.
 
@@ -341,6 +342,13 @@ def managed_write_text(
     before a single byte lands. Missing directories are created through
     ``mkdirat`` on the already-verified parent — never a path ``mkdir``
     that could follow a link outward.
+
+    ``durable`` (TODO-0227 REVIEW F1): fsync the file before the rename and
+    the already-verified directory fd after it, so the write survives a
+    HOST crash, not merely a process crash. Off by default — the historical
+    bar for log/report writers stays as it was; the state-store JSON
+    publisher opts in (it used to get this from
+    ``_atomic.atomic_write_text(durable=True)``).
     """
     require_posix("write managed file")
     assert_no_symlink_escape(path, root=root)
@@ -357,11 +365,18 @@ def managed_write_text(
             os.fchmod(fd, mode)
             with os.fdopen(fd, "w", encoding=encoding) as f:
                 f.write(content)
+                if durable:
+                    f.flush()
+                    os.fsync(f.fileno())
         except Exception:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name, dir_fd=dir_fd)
             raise
         os.replace(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        if durable:
+            # The rename is durable only once the directory entry is fsynced.
+            with contextlib.suppress(OSError):
+                os.fsync(dir_fd)
     finally:
         for f in dir_fds:
             os.close(f)

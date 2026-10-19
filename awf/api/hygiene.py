@@ -24,7 +24,6 @@ operations that leave a trace:
 """
 from __future__ import annotations
 
-import json
 import re
 import shutil
 from datetime import datetime, timezone
@@ -72,7 +71,7 @@ def _timestamp() -> str:
 #   written over a newer accepted one;
 # * a durable operation journal (one json per OperationId) lets a retry of
 #   a cancelled/hung call read the actual outcome instead of guessing:
-#   applied → replay the result, refused → same error, started-without-
+#   applied → replay the result, refused → same error, running-without-
 #   finish → recovery_required.
 
 
@@ -127,25 +126,6 @@ def _validate_operation_id(operation_id: str) -> None:
         )
 
 
-def _operation_record(project_dir: Path, operation_id: str) -> Path:
-    """R1.2 (TODO-0216, F4): the journal path for ``operation_id``.
-
-    The leaf is a digest of the id, never the id itself. The id is a
-    user-supplied token: verbatim it could be a Windows reserved device
-    name (``con``, ``nul`` …) — unreadable as a file there, silently
-    degrading the journal guarantee — and on a case-insensitive
-    filesystem ``Op-1`` / ``op-1`` would share one journal (one operation
-    replaying another's outcome). Hashing sidesteps both; the real id
-    lives inside the record body, so replay still keys on it.
-    """
-    # R1.5 (iter-5): one owner of the journal path — the Store's ``op_path``
-    # (same ``state/operations/<sha256(id)>.json`` key). hygiene no longer
-    # re-derives the digest next to it.
-    from ..infra import state_store
-
-    return state_store.op_path(project_dir, operation_id)
-
-
 def _read_operation(project_dir: Path, operation_id: str) -> dict | None:
     """R1.2: the recorded outcome for ``operation_id``, or
     ``None`` when the operation was never started.
@@ -155,36 +135,15 @@ def _read_operation(project_dir: Path, operation_id: str) -> dict | None:
     unknown. Returning ``None`` there would let a retry re-apply the
     effect — the duplicate requirement 4 forbids — so the unknown outcome
     is surfaced as :class:`OperationRecoveryRequired` instead.
+
+    TODO-0227 (M3): reading goes through the ONE journal schema owner
+    (``state_store.read_operation``): the legacy hygiene ``started`` line is
+    read as ``running`` (dual read), and a foreign format is
+    recovery_required — never a second parser next to the Store's.
     """
-    rec = _operation_record(project_dir, operation_id)
-    if not rec.is_file():
-        return None
-    try:
-        data = json.loads(rec.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        raise OperationRecoveryRequired(
-            operation_id,
-            f"operation {operation_id}: journal unreadable ({e}) — outcome "
-            "unknown, recovery_required, do not retry blindly",
-        ) from e
-    if not isinstance(data, dict):
-        raise OperationRecoveryRequired(
-            operation_id,
-            f"operation {operation_id}: journal is not an object — outcome "
-            "unknown, recovery_required, do not retry blindly",
-        )
-    # F4 rationale: the leaf is a digest, so the body is the only place the
-    # real id survives — verify it, never replay one operation's outcome
-    # under another id (a copied/colliding journal would otherwise be
-    # trusted blindly).
-    if data.get("operation_id") != operation_id:
-        raise OperationRecoveryRequired(
-            operation_id,
-            f"operation {operation_id}: journal body names a different id "
-            f"({data.get('operation_id')!r}) — outcome unknown, "
-            "recovery_required, do not retry blindly",
-        )
-    return data
+    from ..infra import state_store
+
+    return state_store.read_operation(project_dir, operation_id)
 
 
 def _write_operation(project_dir: Path, operation_id: str, **fields) -> None:
@@ -192,20 +151,16 @@ def _write_operation(project_dir: Path, operation_id: str, **fields) -> None:
 
     Raises on failure — deliberately. The journal IS the durable
     guarantee, not a log line: a swallowed OSError would leave either no
-    ``started`` record (a retry reads "never started" and re-applies the
-    effect) or an unfinishable ``started`` record while the effect landed.
+    ``running`` record (a retry reads "never started" and re-applies the
+    effect) or an unfinishable ``running`` record while the effect landed.
     The caller decides what a failure means: the START write refuses
     BEFORE any effect, a FINISH write failure surfaces
     ``recovery_required``.
+
+    TODO-0227 (M3): the record body (status vocabulary, ``ts`` format,
+    ``args_digest``, bytes) is built by the one schema module through the
+    Store writer — hygiene no longer spells its own timestamp or status.
     """
-    # ``operation_id`` is filled by the Store writer (one owner of the key).
-    # ``ts`` keeps hygiene's format; the Store only defaults it when absent.
-    fields.setdefault("ts", _timestamp())
-    # R1.5 (iter-5): the journal path/key are shared with the StateStore and
-    # now so is the WRITER and its durability bar (fsync file + dir). The
-    # record schema stays hygiene's (started/refused/applied); only the path,
-    # key and the write primitive are unified. Store op ids never collide
-    # with hygiene ids, so the two vocabularies do not meet on disk yet.
     from ..infra import state_store
 
     state_store.write_operation(project_dir, operation_id, **fields)
@@ -721,13 +676,13 @@ def update_todo(
     - a recorded ``applied`` replay returns the stored result (no second
       backup, no second append);
     - a recorded ``refused`` replay raises the stored error again;
-    - a ``started`` record with no finish means the outcome is unknown —
+    - a ``running`` record with no finish means the outcome is unknown —
       :class:`OperationRecoveryRequired` is raised (→ recovery_required),
       never a duplicate effect.
 
     A refusal (an expected AwfApiError, e.g. the CAS version conflict) is
     recorded as ``refused``; any other exception leaves the record at
-    ``started`` on purpose — a crash mid-write is exactly the unknown
+    ``running`` on purpose — a crash mid-write is exactly the unknown
     outcome the retry must detect.
     """
     if operation_id is None:
@@ -740,6 +695,7 @@ def update_todo(
     resolved = Path(project_dir).resolve()
     require_agentic(resolved)
     from .._lock import locked
+    from ..infra import state_store
 
     # F-MED-1: the whole check→start→finish journal is under the project
     # lock. Two callers with one operation_id can no longer both read "not
@@ -793,10 +749,15 @@ def update_todo(
         # cannot, refuse now — a retry with no record would re-apply.
         try:
             _write_operation(
-                resolved, operation_id, status="started", todo_id=todo_id,
+                resolved, operation_id, status="running", todo_id=todo_id,
                 action="update_todo",
             )
-        except OSError as e:
+        except state_store.STATE_WRITE_FAILURES as e:
+            # F-AR1 (architect-review): the writer now runs under the managed
+            # barrier, whose refusal is ``ManagedPathError`` — NOT an OSError.
+            # Catch the ONE state-write family, not a respelled subset: the
+            # documented "refused before any effect, retry is safe" contract
+            # must hold for a swapped/symlinked ``.agentic``/``state`` too.
             raise AwfApiError(
                 f"operation {operation_id}: journal start write failed "
                 f"({e}) — refused before any effect; retry is safe"
@@ -812,7 +773,7 @@ def update_todo(
                     resolved, operation_id, status="refused", todo_id=todo_id,
                     action="update_todo", error=str(e),
                 )
-            except OSError as je:
+            except state_store.STATE_WRITE_FAILURES as je:
                 # Nothing applied — a lost refusal note cannot duplicate.
                 _log(
                     paths.logs_dir(resolved),
@@ -822,14 +783,14 @@ def update_todo(
             raise
         # F-HIGH: the effect landed. If the finish record cannot be
         # written, the outcome is not durably known — surface
-        # recovery_required (a retry would read the open ``started``
+        # recovery_required (a retry would read the open ``running``
         # record) instead of returning a result the journal cannot prove.
         try:
             _write_operation(
                 resolved, operation_id, status="applied", todo_id=todo_id,
                 action="update_todo", result=result.as_dict(),
             )
-        except OSError as e:
+        except state_store.STATE_WRITE_FAILURES as e:
             raise OperationRecoveryRequired(
                 operation_id,
                 f"operation {operation_id}: applied but the finish record "

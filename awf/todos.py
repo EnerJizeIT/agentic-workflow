@@ -133,6 +133,29 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     outbox_p = paths.outbox(project_dir)
     dest = paths.done_dir(project_dir) / todo_id
 
+    # TODO-0227 (M3): the archive MOVE is a destructive managed operation.
+    # A symlinked ``.agentic`` / ``done`` used to send the versioning and
+    # ``shutil.move`` calls outside the project; the no-follow preflight
+    # refuses BEFORE the first move (or the consumed-signal unlink below),
+    # so a refused archive leaves both the project tree and any canary
+    # outside untouched. The refusal crosses as ``OSError`` — the family the
+    # archive callers (``publish.archive_after_receipt``) already guard.
+    #
+    # F-AR2 (architect-review): the SAME barrier now covers the SOURCES the
+    # move consumes, not only the destination. A symlinked ``inbox`` /
+    # ``outbox`` / ``handoff`` used to let ``unlink`` / ``shutil.move``
+    # delete or move files OUTSIDE the project (the S9-01 class the inbox
+    # cleaners already refuse). One preflight over all four surfaces, before
+    # any read or side effect.
+    from .infra import managed_fs
+
+    root = managed_fs.agentic_root_for(dest.parent)
+    for surface in (dest, inbox_p, outbox_p, handoff_dir(project_dir)):
+        try:
+            managed_fs.assert_no_symlink_escape(surface, root=root)
+        except managed_fs.ManagedPathError as e:
+            raise OSError(f"archive {todo_id} refused: {e}") from e
+
     # A-12 (audit 2026-09-25): collect every (src -> dst) move FIRST so
     # the versioning below sees the whole picture before anything is
     # moved or deleted — the original shutil.move loop overwrote done/<id>/

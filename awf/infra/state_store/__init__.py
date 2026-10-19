@@ -15,11 +15,10 @@ was indistinguishable from an empty project. This package is the one writer:
   before the crash is simply unreachable, not "success".
 * ``state/operations/<sha>.json`` — the durable operation journal. The path
   and key (a digest of the operation id) are shared with R1.2 ``hygiene``,
-  but the RECORD SCHEMA is Store-owned and differs from hygiene's
-  (reserved/running/applied/refused/failed/recovery_required + an arguments
-  digest, versus hygiene's started/refused/applied + a todo id) — see
-  :mod:`._ops`. Only the path and key are common ground today; unifying the
-  vocabularies is deferred to R1.5.
+  and since TODO-0227 (M3) so is the RECORD SCHEMA (see :mod:`._journal`):
+  one status vocabulary, one ``ts`` format, one arguments digest — both
+  writers build their line through the schema module, and a legacy hygiene
+  ``started`` line is still read (mapped to ``running``).
 * ``state/migration-manifest.json`` — the migration manifest naming the
   legacy files. ``run.yaml`` / ``current.yaml`` are still WRITTEN by the
   run path in R1.4 — the Store owns the durable generation counter and the
@@ -42,7 +41,6 @@ from .. import managed_fs
 from ._errors import (
     MigrationReconciliationRequired,
     OperationConflict,
-    OperationStatus,
     ReservationDenied,
     SnapshotStatus,
     StaleState,
@@ -71,6 +69,7 @@ from ._io import (
     sha256,
     timestamp,
 )
+from ._journal import OperationStatus
 from ._lock import project_lock
 from ._migration import main, migrate, migration_preview, read_projection
 from ._ops import op_path, read_operation, validate_operation_id, write_operation

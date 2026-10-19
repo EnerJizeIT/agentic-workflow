@@ -15,6 +15,7 @@ Crash-safe: the file survives process death; the supervisor re-reads it via
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -401,23 +402,39 @@ def _ensure_lock_file(project_dir: Path) -> None:
     """AUD05-05 (QA): the .lock must hold at least one byte before first use.
 
     ``locked()`` creates the lock file empty via ``open(..., "a+b")`` on
-    first use; msvcrt.locking (Windows) locks by byte offset, and locking
-    byte 0 of an empty file is unstable. Writing one byte up front — only
-    when the file is absent — makes the Windows path stable. The Linux path
-    is unchanged: flock does not depend on file contents.
+    first use. The one byte is written for stable on-disk content — POSIX
+    ``flock`` locks the whole file and does not depend on it. Historically
+    the reason was ``msvcrt.locking`` (byte-offset on Windows), but that
+    path cannot reach this code any more: :func:`managed_fs.open_managed`
+    refuses on a non-POSIX platform (fail-closed, see ``docs/design.md``),
+    so the byte is parity/legacy, not a Windows requirement.
+
+    TODO-0227 (M3): creation goes through the managed no-follow opener — a
+    symlinked ``.agentic`` / ``state`` / ``.lock`` is refused instead of
+    followed. The old ``is_file()`` shortcut accepted a symlinked leaf as a
+    ready lock (it follows the link) and returned without touching the
+    barrier; the opener now checks every component and the leaf before the
+    byte lands.
     """
     from ._lock import LOCK_NAME
+    from .infra import managed_fs
 
     state_dir = paths.agentic_dir(project_dir) / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
     lock_file = state_dir / LOCK_NAME
-    if lock_file.is_file():
-        return
     try:
-        with open(lock_file, "xb") as f:
-            f.write(b"\0")
+        fd = managed_fs.open_managed(
+            lock_file,
+            flags=os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            mode=0o600,
+            root=managed_fs.agentic_root_for(state_dir),
+            create=True,
+        )
     except FileExistsError:
-        pass  # a concurrent caller created it first
+        return  # a concurrent caller created it first
+    try:
+        os.write(fd, b"\0")
+    finally:
+        os.close(fd)
 
 
 def write_run(project_dir: Path, *, slot: str = "main", **fields) -> dict:
