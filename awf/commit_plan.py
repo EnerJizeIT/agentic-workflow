@@ -40,6 +40,12 @@ OUTCOME_SKIPPED = "skipped"
 OUTCOME_REFUSED = "refused"
 OUTCOME_ERROR = "error"
 
+#: The reason an empty plan (no diff vs baseline) produces. ONE literal,
+#: shared by the gate that emits it and the verify-stage archive gate that
+#: must refuse to archive an unexplained empty plan — the strict path keys
+#: on this constant, never on a copied prose prefix.
+NO_CHANGES_REASON = "no changes to commit"
+
 PROCEED_STATUSES = (OUTCOME_COMMITTED, OUTCOME_SKIPPED)
 
 

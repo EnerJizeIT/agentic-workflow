@@ -67,18 +67,26 @@ class DeltaConflictError(DeltaError):
 
 
 def _git_isolated(
-    project_dir: Path, args: list[str], env: dict[str, str]
+    project_dir: Path, args: list[str], env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
-    """Run one git command against a throwaway index (R-03).
+    """Run one git command — the ONE runner of the whole commit path (R-03).
 
-    ``GIT_INDEX_FILE`` keeps every index operation inside the temporary
-    file; the user's ``.git/index`` is never opened.
+    With ``env`` (``GIT_INDEX_FILE`` set) every index operation stays inside
+    the throwaway index, so the user's ``.git/index`` is never opened. With
+    ``env=None`` the command inherits the environment and reads the REAL
+    index — the named, content-verified lookups (``publish``) use that form
+    instead of growing a second runner.
     """
     return subprocess.run(
         ["git", *args],
         cwd=project_dir,
         capture_output=True,
         text=True,
+        # Hook output is arbitrary bytes (a non-UTF-8 file name echoed to
+        # stderr is legal). Strict UTF-8 decoding raised UnicodeDecodeError
+        # (a ValueError) past every typed publication boundary (R2.5 REVIEW,
+        # iter 10, F3); surrogateescape keeps the bytes losslessly.
+        errors="surrogateescape",
         check=False,
         timeout=GIT_TIMEOUT,
         env=env,

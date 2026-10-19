@@ -16,6 +16,22 @@ class AwfApiError(Exception):
     """
 
 
+class LockUnavailable(AwfApiError):
+    """The advisory lock cannot be taken on this platform (no ``fcntl`` /
+    ``msvcrt``).
+
+    R2.5 (R1 carry b): the typed refusal for "no flock" on the state RMW
+    lock. The launch interlock raises the shared base ``AwfApiError`` for
+    the same condition; a ``LockUnavailable`` IS one, so both stay under one
+    contract. It lives here, next to the base, so consumers can name the
+    condition precisely instead of catching every ``AwfApiError`` — which
+    would also swallow :class:`OperationRecoveryRequired`, a signal that
+    MUST NOT be degraded to "no state".
+    """
+
+    outcome = "lock_unavailable"
+
+
 class OperationRecoveryRequired(AwfApiError):
     """R1.2 (TODO-0216): a retried operation whose previous attempt left no
     recorded outcome — the write may or may not have landed. Re-running it

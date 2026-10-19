@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..._atomic import atomic_write_text
+from .. import managed_fs
 
 
 def write_state_file(path: Path, content: str) -> None:
@@ -26,16 +26,35 @@ def write_state_file(path: Path, content: str) -> None:
 
     ``path`` MUST be a control-state file (``run.yaml`` / ``current.yaml`` /
     ``service-run.yaml``) already resolved by its path owner
-    (``run_state.run_file`` / ``pipeline_state`` path). The write mechanics
-    (temp + rename) are the shared :func:`awf._atomic.atomic_write_text`;
-    this wrapper exists so the LOCUS of the write is the Store package, not
-    a caller of the facade.
+    (``run_state.run_file`` / ``pipeline_state`` path).
+
+    R1 carry (roadmap R2.5): the write goes through the shared managed
+    writer, so the barrier matches the log/dispatch writers — a symlinked
+    ``.agentic`` / ``state`` component is refused before a single byte
+    lands, instead of the old ``atomic_write_text`` following the link out
+    of the project. The temp-file + rename mechanics are unchanged. The
+    walk root is the ONE shared derivation
+    (``managed_fs.agentic_root_for``), not a second anchor next to it.
     """
-    atomic_write_text(path, content)
+    managed_fs.managed_write_text(
+        path, content, root=managed_fs.agentic_root_for(path.parent)
+    )
 
 
 def remove_state_file(path: Path) -> None:
-    """Remove a state-file projection if present (idempotent)."""
+    """Remove a state-file projection if present (idempotent).
+
+    R2.5 (architect-review): the destructive sibling of the write carries
+    the SAME no-follow barrier. Before this the write refused a symlinked
+    ``.agentic`` / ``state`` while ``remove`` still followed the link and
+    deleted a file OUTSIDE the project — the asymmetry the R1 carry
+    introduced. ``assert_no_symlink_escape`` is the shared preflight for
+    destructive ops (its own docstring), the same one the inbox/outbox
+    cleaners run before their first unlink.
+    """
+    managed_fs.assert_no_symlink_escape(
+        path, root=managed_fs.agentic_root_for(path.parent)
+    )
     try:
         path.unlink()
     except FileNotFoundError:

@@ -16,13 +16,16 @@ so the user's index is never opened — foreign staged entries can neither
 leak into the unit commit nor be unstaged by a failure rollback (A-01).
 
 R-03-F1 (TODO-0093): after a successful isolated commit the real index is
-synced for the plan's files (``_sync_real_index``) — otherwise it stays
-on the pre-commit base and the next unit's plan subtracts the unit's own
-committed files as "foreign" (A-17).
+synced for the plan's files — otherwise it stays on the pre-commit base
+and the next unit's plan subtracts the unit's own committed files as
+"foreign" (A-17). R2.5: that sync moved into the resumable
+publication protocol (``awf.publish._sync_owned_index``), which verifies
+each entry's captured content before re-pointing it, so a foreign or
+user-changed entry survives a reconciliation; this module keeps only the
+gate that delegates the commit to it.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -31,10 +34,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import commit_delta, commit_plan, git_utils, paths
-from ._atomic import atomic_write_text
+from . import commit_delta, commit_plan, git_utils, paths, publish
 from ._log import log as _log
-from .infra.git_model import GIT_TIMEOUT
+from .infra import managed_fs
 
 # R2.3: the delta-merge algorithm, the per-file delta staging and the
 # isolated-index git runner live in the DeltaAssembler module now (one home).
@@ -159,49 +161,6 @@ def build_commit_message(
     return subject + "\n\n" + "\n".join(body)
 
 
-def _sync_real_index(project_dir: Path, plan: commit_plan.CommitPlan) -> str:
-    """R-03-F1 (TODO-0093): re-point the user's index at the new HEAD for
-    the plan's files.
-
-    The commit ran on a throwaway ``GIT_INDEX_FILE`` — the user's index
-    still holds the pre-commit base for every plan file. Stale, it makes
-    the plan's files look "staged vs the new HEAD" (``git diff
-    --cached``): the next unit (baseline = the new HEAD) subtracts its own
-    committed files from the plan as "foreign" (incident A-17:
-    ``awf/metrics.py`` silently dropped from a unit commit), and
-    ``git status`` shows committed work as staged.
-
-    ``git reset -- <paths>`` is the pinpoint form: it re-points ONLY the
-    listed paths' index entries at the new HEAD — the working tree is not
-    touched and foreign staged entries outside the plan keep their state
-    (A-01).
-
-    Returns "" on success, the warning text on failure. The commit is
-    already made — a failed sync degrades to the old stale-index behavior
-    and must stay visible, not roll back a good commit.
-    """
-    if not plan.files:
-        return ""
-    try:
-        result = subprocess.run(
-            ["git", "reset", "-q", "HEAD", "--", *plan.files],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT,  # AUD04-11: a hung git must not hang the commit gate
-        )
-    except (subprocess.SubprocessError, OSError) as e:
-        return f"index sync after the unit commit failed: {e}"
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        return (
-            f"index sync after the unit commit failed "
-            f"(rc={result.returncode}): {detail}"
-        )
-    return ""
-
-
 def _short_paths(paths_list: list[str], cap: int = 10) -> str:
     """The first ``cap`` paths for a refusal/audit message (… when more)."""
     shown = paths_list[:cap]
@@ -230,13 +189,11 @@ def _unit_already_committed(
     if not baseline_sha or not todo_id:
         return False
     try:
-        result = subprocess.run(
-            ["git", "log", "--format=%s", f"{baseline_sha}..HEAD"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT,  # AUD04-11: hung git must not hang the commit gate
+        # R2.5 architect-review: through the ONE runner the commit path
+        # already owns (``commit_delta``) instead of a second raw launch —
+        # the same cwd/timeout/capture contract, one place (AUD04-11).
+        result = _git_isolated(
+            project_dir, ["log", "--format=%s", f"{baseline_sha}..HEAD"]
         )
     except (subprocess.SubprocessError, OSError):
         return False
@@ -256,16 +213,20 @@ def _commit_via_isolated_index(
     plan: commit_plan.CommitPlan,
     message: str,
     logs_dir: Path | None = None,
+    *,
+    crash_at: str = "",
 ) -> commit_plan.CommitOutcome:
     """R-03: commit EXACTLY ``plan.files`` through a throwaway index.
 
     The isolated index is built from HEAD (when commits exist) plus the
-    plan's files and deleted in ``finally``. On success the user's index
-    is synced for the plan's files (R-03-F1: their entries re-pointed at
-    the new HEAD, so the next unit's plan does not subtract its own
-    committed files as "foreign"); foreign staged entries outside the
-    plan are never touched. On refusal or error the index is
-    byte-identical (nothing was ever staged into it).
+    plan's files and deleted in ``finally``. R2.5: the commit object, the
+    CAS ref move, the owned-index sync and the receipt are the resumable
+    protocol in :mod:`awf.publish`. The sync re-points only the plan files
+    whose real-index entry still equals the captured one (R-03-F1 — the
+    next unit's plan then does not subtract its own committed files as
+    "foreign"); a foreign or user-changed entry is left untouched and the
+    receipt records ``committed_with_reconciliation_required``. On refusal
+    or error the index is byte-identical (nothing was ever staged into it).
     """
     fd, index_path = tempfile.mkstemp(
         prefix=f"awf-commit-index-{plan.todo_id}-", suffix=".idx"
@@ -326,34 +287,48 @@ def _commit_via_isolated_index(
                         "then re-verify (or re-dispatch when the work is "
                         "genuinely missing).",
                     )
-            result = _git_isolated(project_dir, ["commit", "-m", message], env)
-        except (subprocess.SubprocessError, OSError) as e:
-            return commit_plan.CommitOutcome(
-                commit_plan.OUTCOME_ERROR, f"git commit failed: {e}"
+            # R2.5: the commit object, the intent, the CAS ref move, the
+            # owned-index sync and the receipt are one resumable protocol
+            # (``awf.publish``). ``env`` carries the already-staged isolated
+            # index; the user's real index is only touched by the verified
+            # owned-sync inside it.
+            outcome = publish.publish_from_env(
+                project_dir, plan, env, message, logs_dir, crash_at=crash_at
             )
-        if result.returncode != 0:
+        except publish.PublishError as e:
+            # D3 (R2.5 REVIEW, iter 5) + architector-review: a publication fact
+            # (intent/receipt/...) could not be written — ``publish._write_json``
+            # is the ONE writer and types BOTH the managed no-follow barrier
+            # (``ManagedPathError``) and a generic I/O refusal as ``PublishError``.
+            # Surface it as a typed outcome instead of letting a bare exception
+            # crash the stage. The message lives in ``e`` (it names the actual
+            # cause); the ref may already carry the unit's commit — a later
+            # publish resumes.
             return commit_plan.CommitOutcome(
                 commit_plan.OUTCOME_ERROR,
-                f"git commit failed (rc={result.returncode}): "
-                f"{result.stderr.strip() or result.stdout.strip()}",
+                f"publication fact refused (the ref may already carry the "
+                f"unit's commit; a later publish resumes safely): {e}",
             )
-        sha = _git_isolated(project_dir, ["rev-parse", "--short", "HEAD"], env)
-        if sha.returncode != 0:
+        except subprocess.SubprocessError as e:
+            # L2 (R2.5 REVIEW, iter 4): a git LAUNCH failure (timeout / the
+            # binary is missing) — this is honestly "the git command failed".
+            return commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_ERROR, f"git command failed: {e}"
+            )
+        except OSError as e:
+            # L2: an OSError here is NOT "the git commit failed" — the git
+            # steps report their own return codes. After the architector-review
+            # the fact writes type their own refusals (``PublishError``), so
+            # this branch is the remaining publication I/O: a git LAUNCH failure
+            # (``FileNotFoundError``) or a tree read. The ref may already carry
+            # the unit's commit, so name that instead of a false git diagnosis:
+            # a later cycle resumes safely (the pending intent is on disk).
             return commit_plan.CommitOutcome(
                 commit_plan.OUTCOME_ERROR,
-                "the commit was created but its sha could not be read",
+                f"publication I/O failed (the ref may already carry the "
+                f"unit's commit; a later publish resumes safely): {e}",
             )
-        # R-03-F1: the throwaway index never touched the user's one — its
-        # plan-file entries still hold the pre-commit base. Re-point them
-        # at the new HEAD (pinpoint: only the plan's paths).
-        sync_warning = _sync_real_index(project_dir, plan)
-        if sync_warning:
-            print(f"WARNING: {sync_warning}", file=sys.stderr)
-            if logs_dir is not None:
-                _log(logs_dir, f"R-03-F1: {sync_warning}")
-        return commit_plan.CommitOutcome(
-            commit_plan.OUTCOME_COMMITTED, "", sha.stdout.strip()
-        )
+        return outcome
     finally:
         try:
             os.unlink(index_path)
@@ -380,21 +355,101 @@ def _write_commit_audit(
         outcome.status == commit_plan.OUTCOME_REFUSED
         and outcome.reason.startswith(_PLAN_SKIP_INCONSISTENT)
     )
+    _write_commit_audit_record(
+        project_dir,
+        plan.todo_id,
+        _audit_record(
+            plan.todo_id,
+            outcome,
+            excluded=plan.excluded,
+            worker_staged=plan.worker_staged,
+            skip_inconsistent=skip_inconsistent,
+        ),
+        logs_dir,
+    )
+
+
+def _write_resume_audit(
+    project_dir: Path,
+    todo_id: str,
+    outcome: commit_plan.CommitOutcome,
+    logs_dir: Path,
+) -> None:
+    """R2.5 REVIEW (M1): the resume path reaches a committed unit BEFORE the
+    plan is built, so it must still leave the per-unit audit fact — the
+    TODO-0195 invariant «any post-plan outcome leaves the audit» covers a
+    resumed publish too. The plan's excluded/worker-staged detail is not
+    re-derived here (the resume builds no plan): the record carries the
+    outcome status, the commit OID and a ``resumed`` mark, which the
+    RUN-REPORT renders as the unit's commit line.
+    """
+    if not todo_id:
+        return
+    _write_commit_audit_record(
+        project_dir,
+        todo_id,
+        _audit_record(todo_id, outcome, resumed=True),
+        logs_dir,
+    )
+
+
+def _audit_record(
+    todo_id: str,
+    outcome: commit_plan.CommitOutcome,
+    *,
+    excluded: list | tuple = (),
+    worker_staged: list | tuple = (),
+    skip_inconsistent: bool = False,
+    resumed: bool = False,
+) -> dict:
+    """The ONE shape of ``COMMIT-AUDIT-{todo}.json``.
+
+    Two callers fill it: the plan path (excluded/worker-staged detail from
+    the plan) and the resume path (no plan — the outcome alone). Before this
+    the same keys were spelled as two literals next to each other, so a new
+    field had to be added in both or the RUN-REPORT readers would drift
+    (R2.5 architect-review). ``resumed`` and ``commit`` appear only on the
+    resume record: the commit OID has ONE home in status / RUN-REPORT
+    (``publish.publication_facts``), and the plan path keeps its historical
+    shape. The resume path needs it in the audit because it runs before any
+    plan is built.
+    """
     record = {
-        "todo_id": plan.todo_id,
+        "todo_id": todo_id,
         "status": outcome.status,
-        "excluded": [[p, r] for p, r in plan.excluded],
-        "worker_staged": list(plan.worker_staged),
+        "excluded": [[p, r] for p, r in excluded],
+        "worker_staged": list(worker_staged),
         "skip_inconsistent": skip_inconsistent,
         "skip_reason": outcome.reason if skip_inconsistent else "",
     }
+    if resumed:
+        record["commit"] = outcome.sha
+        record["resumed"] = True
+    return record
+
+
+def _write_commit_audit_record(
+    project_dir: Path,
+    todo_id: str,
+    record: dict,
+    logs_dir: Path,
+) -> None:
+    """Best-effort write of the audit record (a trace, not a gate).
+
+    R2.5 architector-review: this fact lives in ``.agentic/context`` and is
+    publication state like the intent/receipt, so it leaves through the SAME
+    managed no-follow writer (R1 carry a) — a symlinked ``.agentic`` /
+    ``context`` is refused instead of the audit landing outside the project.
+    The write stays best-effort: a barrier refusal is logged, not raised."""
+    path = paths.context_dir(project_dir) / f"COMMIT-AUDIT-{todo_id}.json"
     try:
-        atomic_write_text(
-            paths.context_dir(project_dir) / f"COMMIT-AUDIT-{plan.todo_id}.json",
-            json.dumps(record, ensure_ascii=False, indent=1) + "\n",
+        managed_fs.managed_write_text(
+            path,
+            publish.dumps_fact(record),
+            root=managed_fs.agentic_root_for(path.parent),
         )
-    except OSError as e:
-        _log(logs_dir, f"TODO-0195: commit audit for {plan.todo_id} not written: {e}")
+    except (OSError, managed_fs.ManagedPathError) as e:
+        _log(logs_dir, f"TODO-0195: commit audit for {todo_id} not written: {e}")
 
 
 def maybe_commit(
@@ -431,6 +486,28 @@ def maybe_commit(
     file-set digest) and any mismatch refuses the commit
     (``commit_plan.binding_refusal``).
     """
+    # R2.5: a crash mid-publication is resumable. A pending intent is keyed
+    # on the TODO and the exact commit OID, so it is resumed BEFORE any
+    # policy/verdict/fingerprint check — the ref may already carry the unit's
+    # own commit (whose approval was consumed), and re-running the checks on
+    # a moved HEAD would wrongly refuse. Resume creates NO second commit.
+    # The resume itself is fully typed (``publish.resume_if_pending`` owns the
+    # git/IO boundary and returns a typed outcome, including ERROR) — the
+    # stage does not re-wrap it here: the boundary lives IN the protocol, and
+    # the per-unit audit below covers both success and failure.
+    pending = publish.resume_if_pending(project_dir, todo_id, logs_dir)
+    if pending is not None:
+        _log(
+            logs_dir,
+            f"R2.5: resumed pending publication for {todo_id}: "
+            f"{pending.status} {pending.reason}".strip(),
+        )
+        # R2.5 REVIEW (M1): a resumed publish is a post-plan outcome too —
+        # leave the per-unit audit fact so the RUN-REPORT shows the unit's
+        # commit instead of silently dropping the section (TODO-0195).
+        _write_resume_audit(project_dir, todo_id, pending, logs_dir)
+        return pending
+
     if policy not in ("commit_and_next", "commit_and_report"):
         return commit_plan.CommitOutcome(
             commit_plan.OUTCOME_SKIPPED, f"policy {policy!r} does not commit"
@@ -554,8 +631,18 @@ def maybe_commit(
     if not plan.files:
         print(f"No changes to commit — skip commit at '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
+        # R2.5: a unit that legitimately produced no code records a no-code
+        # receipt (with its own evidence) so the archive gate has a fact to
+        # stand on. An empty plan WITHOUT evidence is NOT laundered into a
+        # no-code outcome — no receipt is written and the archive refuses.
+        try:
+            publish.record_no_code_receipt(project_dir, todo_id)
+        except (publish.PublishError, OSError) as e:
+            _log(logs_dir, f"R2.5: no-code receipt not recorded for {todo_id}: {e}")
         return _finalize(
-            commit_plan.CommitOutcome(commit_plan.OUTCOME_SKIPPED, "no changes to commit")
+            commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_SKIPPED, commit_plan.NO_CHANGES_REASON
+            )
         )
 
     # TODO-0195: the worker staged files AFTER the baseline (a hard-rule

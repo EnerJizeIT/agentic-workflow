@@ -952,8 +952,35 @@ def execute_supervisor_stage(
             _log(logs_dir, f"Commit {outcome.status} at verify for {current_todo} — not archived")
             return current_todo, 0, 1
         _mark_plan_step_done(project_dir, current_todo, logs_dir)
-        from .todos import archive_todo
-        archived = archive_todo(project_dir, current_todo)
+        # R2.5: archiving stands on a UnitReceipt — committed, or an
+        # explicitly_verified_no_code outcome with its own evidence. A
+        # refused/errored publication leaves no receipt, and the mere
+        # presence of a DONE file does not authorize the archive. The strict
+        # path is the one the receipt exists to block: an EMPTY plan of
+        # unknown reason (skip reason ``no changes to commit``) with no
+        # no-code receipt. A committed outcome (work already in HEAD) and a
+        # policy that never commits (``on_approved: next``) are the legacy
+        # carve-out. A present receipt is always enforced by the callee.
+        # R2.5 architector-review: the strict path keys on the SHARED
+        # ``NO_CHANGES_REASON`` constant the gate emits, not on a copy of the
+        # prose — a wording change in the message can no longer silently flip
+        # the archive gate open.
+        from . import publish as _publish
+        allow_no_receipt = not (
+            outcome.status == _commit_plan.OUTCOME_SKIPPED
+            and outcome.reason == _commit_plan.NO_CHANGES_REASON
+        )
+        try:
+            archived = _publish.archive_after_receipt(
+                project_dir, current_todo, allow_no_receipt=allow_no_receipt
+            )
+        except _publish.PublishError as e:
+            print(
+                f"Archive refused for {current_todo}: {e} — TODO NOT archived.",
+                file=sys.stderr,
+            )
+            _log(logs_dir, f"R2.5: archive refused for {current_todo}: {e}")
+            return current_todo, 0, 1
         if archived:
             _log(logs_dir, f"DF6-1: archived {current_todo} → {archived}")
         return current_todo, 1, 0  # next stage

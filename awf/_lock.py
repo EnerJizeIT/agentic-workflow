@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from . import paths
+from ._errors import LockUnavailable
 from .infra import managed_fs
 
 #: Name of the RMW lock file inside ``.agentic/state/``. Owned here so the
@@ -56,7 +57,14 @@ def locked(project_dir: Path):
         try:
             import fcntl
         except ImportError as exc:  # pragma: no cover — exotic platform
-            raise RuntimeError(
+            # R2.5 (R1 carry): one refusal contract for "no flock". The
+            # launch interlock (``api/_interlock``) raises ``AwfApiError``
+            # for the same condition; this writer used to raise a bare
+            # ``RuntimeError``. Both are ``AwfApiError``; this one is the
+            # precise ``LockUnavailable`` so the state catch-list can name
+            # it without swallowing every API error (``OperationRecoveryRequired``
+            # included) — see ``state_store.STATE_WRITE_FAILURES``.
+            raise LockUnavailable(
                 "advisory state locking needs fcntl (POSIX) or msvcrt "
                 f"(Windows); platform {sys.platform!r} is unsupported — "
                 "refusing instead of running without a lock"

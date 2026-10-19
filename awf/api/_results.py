@@ -555,6 +555,13 @@ class RunStatusResult:
     # ORCH M4.2: the stalled-stage warning ("" when off / no stall) —
     # the same line the brief card shows (one shared detector).
     stall: str = ""
+    # R2.5 (REVIEW, iter 2): the current unit's publication facts —
+    # ``commit`` (short OID), ``receipt`` (disposition), ``archived``
+    # (path), ``index_sync``, ``pending_intent`` / ``superseded``. Empty
+    # dict when there is no current unit or no publication happened yet.
+    # Requirement 4: commit / receipt / archive are separate facts, not
+    # one inferred from another.
+    publication: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

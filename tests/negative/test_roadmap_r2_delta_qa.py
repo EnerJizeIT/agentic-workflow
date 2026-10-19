@@ -381,15 +381,18 @@ def test_git_timeout_is_one_constant() -> None:
 
     R2.3 architect-review: ``commit_plan`` больше не зовёт git (сырой
     file-set переехал в ``commit_delta``) — инвариант держат модули,
-    которые реально запускают git."""
-    from awf import commit_delta, commit_gate, git_utils
+    которые реально запускают git. R2.5 architect-review: ``commit_gate``
+    тоже перестал запускать git — его последний сырой вызов (``git log``)
+    ушёл в ``_git_isolated`` из ``commit_delta``, — поэтому константу он
+    больше не держит; таймаут применения остаётся тот же (один раннер)."""
+    from awf import commit_delta, git_utils
     from awf.infra import git_model
 
-    for mod in (commit_delta, commit_gate, git_utils):
+    for mod in (commit_delta, git_utils):
         assert mod.GIT_TIMEOUT is git_model.GIT_TIMEOUT, (
             f"{mod.__name__} must import GIT_TIMEOUT, not define a twin"
         )
-    for mod in (commit_delta, commit_gate, git_utils):
+    for mod in (commit_delta, git_utils):
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert "timeout=30" not in src, (
             f"{mod.__name__} still hardcodes the git timeout literal"

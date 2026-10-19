@@ -777,11 +777,24 @@ def run_is_active(project_dir: Path, *, slot: str = "main") -> bool:
 
 def clear_run(project_dir: Path, *, slot: str = "main") -> None:
     """Remove the run state file (soft reset) — for the given slot
-    (ORCH M5.2: the service slot clears service-run.yaml, never run.yaml)."""
+    (ORCH M5.2: the service slot clears service-run.yaml, never run.yaml).
+
+    R2.5 REVIEW (iter 6, E1): the removal propagates in the ``OSError``
+    family — the same contract :func:`pipeline_state.clear_state` documents
+    and its callers guard. A ``ManagedPathError`` (symlinked ``.agentic`` /
+    ``state``) or a ``LockUnavailable`` (no flock) is re-raised as ``OSError``
+    with its cause instead of escaping as a bare barrier.
+    """
     from .infra import state_store
 
     # R1.5: the removal is a state-file write too — the Store owns it.
-    state_store.remove_state_file(run_file(project_dir, slot=slot))
+    try:
+        state_store.remove_state_file(run_file(project_dir, slot=slot))
+    except state_store.STATE_WRITE_FAILURES as e:
+        # R2.5 architector-review: the same OSError-family boundary as
+        # ``pipeline_state.clear_state``, through the ONE shared translation
+        # (no second copy of the isinstance dance here).
+        state_store.raise_state_removal_failure(e, f"clear {slot} run state")
 
 
 def now_iso() -> str:

@@ -29,6 +29,7 @@ import yaml
 
 from . import paths
 from ._log import log as _log
+from .infra import state_store
 
 STATE_FILE_NAME = "current.yaml"
 
@@ -125,8 +126,10 @@ def _mutate_state_locked(
     ``mutator`` receives the current state (``None`` when the file is absent
     or corrupt) and returns the mapping to publish, or ``None`` to leave the
     file untouched (no write — the "nothing to do" case of
-    :func:`drop_fields`). The Store publishes the bytes; an ``OSError`` is
-    logged via ``logs_dir`` (when given) and swallowed — a state write is
+    :func:`drop_fields`). The Store publishes the bytes; an ``OSError`` —
+    and, since R1.5 moved the writer to the managed no-follow writer, a
+    ``ManagedPathError`` (a symlinked ``.agentic`` / ``state`` reports it) —
+    is logged via ``logs_dir`` (when given) and swallowed: a state write is
     non-fatal for the pipeline, which degrades to "no state".
 
     AUD05-05: the merge is read-modify-write, so it serializes with the same
@@ -137,7 +140,6 @@ def _mutate_state_locked(
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     from ._lock import locked
-    from .infra import state_store
 
     try:
         with locked(project_dir):
@@ -149,7 +151,15 @@ def _mutate_state_locked(
             )
             # R1.5: single writer — the Store publishes the projection bytes.
             state_store.write_state_file(state_path, content)
-    except OSError as e:
+    except state_store.STATE_WRITE_FAILURES as e:
+        # R2.5 REVIEW (iter 2 / L1): the whole failure family is non-fatal —
+        # see ``state_store.STATE_WRITE_FAILURES``. R1.5 moved this writer onto the
+        # managed no-follow writer, which refuses a symlinked ``.agentic`` /
+        # ``state`` with ``ManagedPathError`` (NOT an OSError); the lock adds
+        # ``LockUnavailable`` on a platform without flock. The barrier stays —
+        # nothing escapes the project — but the documented contract holds:
+        # log loudly and degrade to "no state" instead of crashing the stage
+        # transition.
         if logs_dir is not None:
             _log(logs_dir, f"T4.1: {failure_label} failed: {e}")
 
@@ -181,18 +191,32 @@ def clear_state(project_dir: Path, *, logs_dir: Path | None = None) -> None:
     ``state_cleared=True`` next to a ghost ``current.yaml`` that blocked the
     next run). A caller that wants best-effort logs it via ``logs_dir`` and
     catches the error itself. A missing file is a no-op.
+
+    R2.5 REVIEW (iter 6, E1): the propagated refusal is always the
+    ``OSError`` family — a ``ManagedPathError`` (symlinked ``.agentic`` /
+    ``state``) or a ``LockUnavailable`` (no flock) is re-raised as ``OSError``
+    with its cause, so the documented ``except OSError`` callers keep their
+    degradation path (the clean exit, the kill path, the close gate).
     """
     state_path = _state_file(project_dir)
     try:
         if state_path.is_file():
-            from .infra import state_store
-
             # R1.5: the removal is a state-file write too — the Store owns it.
             state_store.remove_state_file(state_path)
-    except OSError as e:
+    except state_store.STATE_WRITE_FAILURES as e:
+        # R2.5 REVIEW (iter 6, E1): the removal shares the SAME failure family
+        # as the writer (``state_store.STATE_WRITE_FAILURES``) — a symlinked
+        # ``.agentic`` / ``state`` makes ``remove_state_file`` raise
+        # ``ManagedPathError``, which a bare ``except OSError`` used to swallow
+        # without a trace. Unlike the writer this path still PROPAGATES
+        # (``reset`` needs the failure to report ``partial_failure``), so the
+        # non-OSError members cross the boundary AS ``OSError`` with their
+        # cause. The one translation lives next to the one list
+        # (``state_store.raise_state_removal_failure``) — R2.5
+        # architector-review, no copy here.
         if logs_dir is not None:
             _log(logs_dir, f"T4.1: state clear failed: {e}")
-        raise
+        state_store.raise_state_removal_failure(e, "clear state")
 
 
 def is_state_stale(state: dict[str, Any], max_age_seconds: int = 7200) -> bool:
