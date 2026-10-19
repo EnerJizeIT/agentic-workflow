@@ -157,6 +157,8 @@ groups:
       - mcp: awf_tree_sha
         cli: tree-sha
         when: "tree fingerprint (verified-sha)"
+      - cli: claim-changes
+        when: "claim code"
       - cli: mutations
         when: "mutation smoke"
       - cli: todo-draft

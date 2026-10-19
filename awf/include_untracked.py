@@ -22,21 +22,19 @@ Two parts:
    carry-over uses, kept as a separate parameter so the two mechanisms stay
    independent. The trace lives in ``BASELINE-<todo>.include``
    (:func:`write_include_audit` / :func:`read_include_list` /
-   :func:`clear_include_audit`); the run re-baseline re-applies it from that
-   file (awf/api/run.py).
+   :func:`clear_include_audit`); the run re-baseline re-applies it, together
+   with the carry-over and claim links, through
+   :func:`awf.api.hygiene.transfer_exclusions`.
 """
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 from . import paths
 from ._atomic import atomic_write_text
 from ._errors import AwfApiError
 from ._log import log as _log
-
-#: git call timeout — a hung git must not hang the dispatch/verify.
-_GIT_TIMEOUT = 30
+from ._path_link import decode_path_link, encode_path_link
 
 #: The dispatch warning lists at most this many files (the rest as "…N more").
 WARNING_CAP = 10
@@ -50,35 +48,20 @@ def include_file_path(project_dir: Path, todo_id: str) -> Path:
 
 def read_include_list(project_dir: Path, todo_id: str) -> list[str] | None:
     """Paths recorded in ``BASELINE-<todo>.include`` (sorted); None when the
-    file is missing (a dispatch without include_untracked)."""
+    file is missing (a dispatch without include_untracked) or not a readable
+    path list.
+
+    The link is read through the shared byte-faithful codec
+    (:mod:`awf._path_link`): a name with a newline / control byte / edge space
+    round-trips exactly, or the adopted exclusion is silently lost on a
+    re-baseline. Binary content degrades to None (NEG-3)."""
     f = include_file_path(project_dir, todo_id)
     if not f.is_file():
         return None
     try:
-        lines = f.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        # NEG-3: binary garbage in the include link is a missing link, not
-        # a crash — the same degrade as an unreadable file.
+        return decode_path_link(f.read_bytes())
+    except OSError:
         return None
-    return sorted(ln.strip() for ln in lines if ln.strip())
-
-
-def _git_lines(project_dir: Path, args: list[str]) -> list[str] | None:
-    """One ``git`` call → stripped stdout lines, or None when git cannot say."""
-    try:
-        cp = subprocess.run(
-            ["git", *args],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_GIT_TIMEOUT,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if cp.returncode != 0:
-        return None
-    return [ln.strip() for ln in cp.stdout.splitlines() if ln.strip()]
 
 
 def resolve_include_untracked(project_dir: Path, raw_paths: list[str]) -> list[str]:
@@ -126,14 +109,21 @@ def resolve_include_untracked(project_dir: Path, raw_paths: list[str]) -> list[s
             )
         rel.append(Path(entry).as_posix())
 
-    untracked = _git_lines(project_dir, ["ls-files", "--others", "--exclude-standard"])
-    if untracked is None:
+    # Read the tree through the R2.1 model (one git parser, byte-faithful
+    # paths): the printed ``git ls-files`` C-quotes a non-ASCII name, so a
+    # request for ``файл.txt`` would never match the quoted listing and the
+    # file would be refused as "gitignored" (TODO-0221 M1).
+    from .infra.git_model import GitModelError, GitRepository, display_path
+
+    try:
+        repo = GitRepository(project_dir)
+        untracked_set = {display_path(p) for p in repo.untracked_paths()}
+        tracked = {display_path(e.path) for e in repo.index_entries()}
+    except GitModelError as e:
         raise AwfApiError(
             "include_untracked: cannot list untracked files (not a git repo or "
-            "git failed) — cannot validate the paths"
-        )
-    untracked_set = set(untracked)
-    tracked = set(_git_lines(project_dir, ["ls-files"]) or [])
+            f"git failed): {e} — cannot validate the paths"
+        ) from e
     seen: set[str] = set()
     for rp in rel:
         if rp in seen:
@@ -191,9 +181,16 @@ def write_include_audit(project_dir: Path, todo_id: str, files: list[str]) -> No
     failed write logs but does not undo the dispatch — the exclusion is
     already in the baseline snapshot."""
     try:
+        # The paths are RAW (``display_path``: ``surrogateescape``); the shared
+        # codec writes each entry NUL-terminated so a newline / control byte /
+        # edge space in a name round-trips byte-faithfully. Strict UTF-8 would
+        # raise ``UnicodeEncodeError`` AFTER the TODO reservation and leave a
+        # half-dispatch (no ``.ready``/``.include``), so the write keeps
+        # ``surrogateescape`` too.
         atomic_write_text(
             include_file_path(project_dir, todo_id),
-            "".join(p + "\n" for p in sorted(files)),
+            encode_path_link(files),
+            errors="surrogateescape",
         )
         _log(
             paths.logs_dir(project_dir),

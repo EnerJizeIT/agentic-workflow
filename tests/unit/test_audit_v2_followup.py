@@ -346,7 +346,7 @@ class TestAtomicWrites:
 
         original_fdopen = _os.fdopen
 
-        def fake_fdopen(fd, mode, encoding=None):
+        def fake_fdopen(fd, mode, encoding=None, errors=None):
             class _RaisingFile:
                 def __enter__(self):
                     return self

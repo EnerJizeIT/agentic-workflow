@@ -619,6 +619,25 @@ def run_status(project_dir: Path) -> RunStatusResult:
             + (f" — {state.get('stop_reason')}" if state.get("stop_reason") else "")
         )
 
+    # R2.5 (REVIEW, iter 2): the publication facts of the unit the run is
+    # talking about — the commit OID, the receipt disposition and the
+    # archive path as SEPARATE facts (requirement 4: a missing receipt is
+    # not a missing archive and neither is inferred from the other). The
+    # finished current is credited to completed at read time (REPORTS26 B3),
+    # so fall back to the most recently completed unit — its facts (incl.
+    # the archive) must still surface. Never raises: a status read must not
+    # fall over on a malformed receipt.
+    completed_view = _completed_view(project_dir, state)
+    publication: dict = {}
+    pub_unit = current or (completed_view[-1] if completed_view else "")
+    if pub_unit:
+        from .. import publish as _publish
+
+        try:
+            publication = _publish.publication_facts(project_dir, pub_unit)
+        except Exception:  # noqa: BLE001 — status must never fall over
+            publication = {}
+
     return RunStatusResult(
         active=active,
         position=position,
@@ -627,7 +646,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
         current=current,
         # REPORTS26 B3 (TODO-0158): the finished current is credited at
         # read time (run_next owns the position itself).
-        completed=_completed_view(project_dir, state),
+        completed=completed_view,
         rejects=dict(state.get("rejects") or {}),
         stop_flags=dict(state.get("stop_flags") or {}),
         budget_minutes=budget,
@@ -646,6 +665,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
         criteria=list(record.criteria),
         decisions=[dict(d) for d in record.decisions],
         stall=stall,
+        publication=publication,
     )
 
 
@@ -755,6 +775,8 @@ def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
     per-unit commit audits: the paths left outside the commit with the
     reason, the worker-staged files (included in the commit, warned), and
     the refused silent skips. No facts → no section (nothing to say)."""
+    from ..infra.git_model import escape_str_for_ui
+
     lines: list[str] = []
     seen: set[str] = set()
     for raw in todo_ids:
@@ -766,7 +788,7 @@ def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
         if not audit:
             continue
         excluded = [
-            (str(e[0]), str(e[1]))
+            (escape_str_for_ui(str(e[0])), str(e[1]))
             for e in (audit.get("excluded") or [])
             if isinstance(e, (list, tuple)) and len(e) == 2
         ]
@@ -775,12 +797,24 @@ def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
                 f"- {todo} — outside the commit: "
                 + ", ".join(f"{p} ({r})" for p, r in excluded)
             )
-        worker_staged = [str(f) for f in (audit.get("worker_staged") or [])]
+        worker_staged = [
+            escape_str_for_ui(str(f)) for f in (audit.get("worker_staged") or [])
+        ]
         if worker_staged:
             lines.append(
                 f"- {todo} — worker staged {len(worker_staged)} file(s) after "
                 "the baseline (included in the unit commit): "
                 + ", ".join(worker_staged)
+            )
+        if audit.get("resumed"):
+            # R2.5 REVIEW (M1): a resumed publish leaves its own audit fact
+            # (the plan's excluded/worker-staged detail is not re-derived on
+            # the resume path) — render the unit's commit so the section is
+            # not silently missing for a unit that DID reach HEAD.
+            commit = str(audit.get("commit") or "")
+            lines.append(
+                f"- {todo} — publication resumed: commit {commit or '—'}"
+                + (f" ({audit.get('status')})" if audit.get("status") else "")
             )
         if audit.get("skip_inconsistent"):
             lines.append(
@@ -791,6 +825,66 @@ def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
     if not lines:
         return []
     return ["## Outside the commit", ""] + lines + [""]
+
+
+def _publication_lines(project_dir: Path, todo_ids) -> list[str]:
+    """R2.5 (REVIEW, iter 2): the RUN-REPORT section «Publication» — the
+    commit OID, the receipt disposition and the archive path of each unit
+    as SEPARATE facts (requirement 4). A pending intent and a superseded
+    intent are named too: they are the durable trace of a publication that
+    crashed or was abandoned. No fact at all → the unit is skipped; an
+    empty section is not emitted."""
+    from .. import publish as _publish
+
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in todo_ids:
+        todo = str(raw or "")
+        if not todo or todo in seen:
+            continue
+        seen.add(todo)
+        try:
+            facts = _publish.publication_facts(project_dir, todo)
+        except Exception:  # noqa: BLE001 — a report must never fall over
+            continue
+        if facts.get("commit"):
+            # A-3 (R2.5 REVIEW, iter 10): a RESUMED publish already renders
+            # its commit OID in the «Outside the commit» audit line (M1).
+            # Printing the same OID again from the receipt made the claim
+            # «the commit OID has ONE home in status / RUN-REPORT» false.
+            # The audit line is the home for a resumed unit; the receipt
+            # still contributes its own disposition / archive lines.
+            audit = _read_commit_audit(project_dir, todo) or {}
+            resumed_commit = str(audit.get("commit") or "")
+            if not (
+                audit.get("resumed")
+                and resumed_commit
+                and (
+                    resumed_commit.startswith(facts["commit"])
+                    or facts["commit"].startswith(resumed_commit)
+                )
+            ):
+                lines.append(f"- {todo}: commit {facts['commit']}")
+        if facts.get("receipt"):
+            extra = (
+                f" (index sync {facts['index_sync']})"
+                if facts.get("index_sync") and facts["index_sync"] != "synced"
+                else ""
+            )
+            lines.append(f"- {todo}: receipt {facts['receipt']}{extra}")
+        if facts.get("archived"):
+            lines.append(f"- {todo}: archived {facts['archived']}")
+        if facts.get("pending_intent"):
+            lines.append(f"- {todo}: pending publish intent (operation in flight)")
+        if facts.get("superseded"):
+            reason = str(facts.get("superseded_reason") or "")[:200]
+            lines.append(
+                f"- {todo}: publish intent superseded"
+                + (f" — {reason}" if reason else "")
+            )
+    if not lines:
+        return []
+    return ["## Publication", ""] + lines + [""]
 
 
 def _write_report(
@@ -916,6 +1010,11 @@ def _write_report(
     # reason) and the refused silent skips — the completed units, the
     # current one, and the rejected attempts (all deduped in the helper).
     lines += _outside_commit_lines(
+        project_dir, [current_unit, *completed, *rejects.keys()]
+    )
+    # R2.5 (REVIEW, iter 2): the publication facts (commit / receipt /
+    # archive) as separate lines — requirement 4.
+    lines += _publication_lines(
         project_dir, [current_unit, *completed, *rejects.keys()]
     )
     # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,
@@ -1398,40 +1497,24 @@ def run_next(
     try:
         import subprocess
 
+        # RUN5 #1 (leak-gate) / RUN10 #4 / R2.2 (TODO-0221 M2): this
+        # re-baseline would wipe the transfer exclusions dispatch set — the
+        # carry-over, the include list AND the CODE-channel claim — so they
+        # are re-applied from the unit's audit links (BASELINE-{id}
+        # .carry_over / .include / .claim). Link-read failure must not kill
+        # the re-baseline (best-effort); transfer_exclusions resolves all
+        # three channels the same way the dispatch wrote them.
+        from .hygiene import transfer_exclusions
         from .pipeline import create_baseline
 
-        # RUN5 #1 (leak-gate): this re-baseline would wipe the carry-over
-        # exclusion dispatch set for a retry — re-apply it from the
-        # BASELINE-{id}.carry_over link (the origin's recorded paths).
-        # Link-read failure must not kill the re-baseline (best-effort).
-        carry_over: set[str] | None = None
-        link = paths.context_dir(project_dir) / f"BASELINE-{next_id}.carry_over"
-        try:
-            if link.is_file():
-                origin = link.read_text(encoding="utf-8").strip()
-                if origin:
-                    from ..reject_files import read_reject_files
-
-                    recorded = read_reject_files(project_dir, origin)
-                    if recorded is not None:
-                        carry_over = set(recorded)
-        except OSError:
-            carry_over = None
-        # RUN10 #4 (TODO-0074): same for the inclusion list — re-apply the
-        # dispatch's re-claimed paths from the BASELINE-{id}.include link,
-        # or the re-baseline would silently drop them from the unit commit.
-        # D-01/R-07: read_include_list is the single .include parser — the
-        # helper's []-for-empty-file case is a no-op in create_baseline
-        # (set(include or ())), identical to the old None. Link-read failure
-        # must not kill the re-baseline (best-effort; the helper swallows
-        # OSError itself, the outer catch is the backstop).
-        from ..include_untracked import read_include_list
-
-        include: set[str] | None = None
-        recorded = read_include_list(project_dir, next_id)
-        if recorded:
-            include = set(recorded)
-        create_baseline(project_dir, next_id, carry_over=carry_over, include=include)
+        carry_over, include, claim = transfer_exclusions(project_dir, next_id)
+        create_baseline(
+            project_dir,
+            next_id,
+            carry_over=carry_over or None,
+            include=include or None,
+            claim=claim or None,
+        )
     except (AwfApiError, RuntimeError, OSError, subprocess.SubprocessError):
         pass  # best-effort — the orchestrator ensures a baseline at stage start
 
@@ -2580,7 +2663,15 @@ def _rollback_service_side_effects(
     path (just raise; the winner's state stands), so the conflict call
     passes clear_slot=False and undoes only its own files."""
     if clear_slot:
-        run_state.clear_run(project_dir, slot="service")
+        try:
+            run_state.clear_run(project_dir, slot="service")
+        except OSError:
+            # Best-effort: a state removal that cannot proceed does not
+            # raise out of the rollback — the refusal still stands
+            # (R2.5 REVIEW, iter 6, E1: clear_run propagates in the
+            # OSError family; the barrier on a symlinked ``state`` used
+            # to escape here).
+            pass
     inbox = paths.inbox(project_dir)
     for suffix in (".md", ".ready"):
         try:
@@ -2588,14 +2679,23 @@ def _rollback_service_side_effects(
         except OSError:
             pass
     ctx = paths.context_dir(project_dir)
+    # Every baseline artefact a dispatch leaves behind — the "undo EVERY side
+    # effect" contract above is only held when this list is COMPLETE.
+    # ``create_baseline`` writes the snapshot files (``.worktree`` is the
+    # TODO-0204 member); the three transfer links (``.include`` /
+    # ``.carry_over`` / ``.claim``, TODO-0221) are written by the dispatch
+    # next to it. Each was added on its own; a missing member here leaves a
+    # stale artefact behind a rolled-back service start.
     for name in (
         f"BASELINE-{todo_id}.sha",
         f"BASELINE-{todo_id}.status",
         f"BASELINE-{todo_id}.tests.log",
         f"BASELINE-{todo_id}.env.log",
         f"BASELINE-{todo_id}.untracked",
+        f"BASELINE-{todo_id}.worktree",
         f"BASELINE-{todo_id}.include",
         f"BASELINE-{todo_id}.carry_over",
+        f"BASELINE-{todo_id}.claim",
     ):
         try:
             (ctx / name).unlink()

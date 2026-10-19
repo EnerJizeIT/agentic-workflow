@@ -375,6 +375,11 @@ def test_g_binary_include_read_list_degrades_and_recovers(tmp_git_repo: Path):
     inc.write_bytes(b"\xff\xfe\x00binary garbage")
     assert read_include_list(project, "TODO-0001") is None
 
+    # Блоб БЕЗ NUL бьёт по ЛЕГАСИ-ветке кодека: невалидный UTF-8 → None
+    # (до юнита strict-ридер возвращал None; surrogateescape вернул бы мусор).
+    inc.write_bytes(b"\xff\xfe garbage")
+    assert read_include_list(project, "TODO-0001") is None
+
     # Повтор после починки.
     inc.write_text("docs/notes.md\n", encoding="utf-8")
     assert read_include_list(project, "TODO-0001") == ["docs/notes.md"]

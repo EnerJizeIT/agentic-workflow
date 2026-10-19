@@ -357,6 +357,7 @@ def approve_commit(
     *,
     evidence: str = "",
     verified_sha: str = "",
+    confirm_degraded: bool = False,
 ) -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
 
@@ -408,6 +409,34 @@ def approve_commit(
     run_active = bool(run and run.get("active"))
     evidence_file = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
     verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
+
+    # R2.4 (roadmap R2): in an active run the approval is bound to a
+    # MATERIALISED CANDIDATE, not to the dirty worktree. The candidate tree
+    # is built through the R2.3 assembler (isolated index, the user's index
+    # is never opened) and the mandatory candidate check runs in a throwaway
+    # worktree — a green run in the original dirty worktree does NOT replace
+    # it. The evidence (candidate tree OID, contract digest, environment
+    # digest, generation, unit revision, degraded paths) is stored and its
+    # digest rides in the APPROVE binding; the gate re-derives it and refuses
+    # on any change.
+    from .. import candidate_verify as _candidate_verify
+    from .. import commit_plan as _commit_plan
+
+    def _discard_candidate_evidence() -> None:
+        # A-04 (audit M1 / PA-1): a refused approve must leave NO evidence
+        # artefact. The evidence is written only on a successful verdict
+        # (below), but a stale CANDIDATE-<todo>.json from an EARLIER
+        # successful approve would survive a refusal — verify_pack reads it
+        # as a valid candidate and misreports a refused unit as approved.
+        # One home for the invariant: clean on ENTRY, before any precheck
+        # (missing evidence= / missing verified_sha=) or verdict can refuse,
+        # so no refusal branch can be forgotten (the M1 → PA-1 recurrence).
+        try:
+            _candidate_verify.evidence_path(project_dir, todo_id).unlink()
+        except OSError:
+            pass
+
+    _discard_candidate_evidence()
 
     verified_fp = ""
     if verified_sha.strip():
@@ -463,6 +492,12 @@ def approve_commit(
             "commit gate would commit a tree you did not verify."
         )
 
+    baseline_sha = _commit_plan.read_baseline_sha(project_dir, todo_id)
+    # The candidate itself is NOT built yet (M2): a reject/conflict verdict
+    # is resolved first (below), so a refused unit does not pay for the
+    # mandatory check (a full test run in a throwaway worktree) only to
+    # discard it.
+
     # SPEC A-run (second tier): record the verdict in the run diary.
     # AUD05-05 (rest): computed from the FRESH state inside the lock
     # (update_run), not from the snapshot read above. If a reject landed
@@ -517,7 +552,10 @@ def approve_commit(
 
     if conflict:
         # Refused: no APPROVE signal, no VERIFIED fingerprint. The
-        # reject's REVIEW file and diary entries are untouched.
+        # reject's REVIEW file and diary entries are untouched. The stale
+        # candidate evidence was already cleared on entry (A-04), so the
+        # refusal cannot leave a file verify_pack would read as a valid
+        # candidate for the rejected unit.
         return ApproveResult(
             todo_id=todo_id,
             signal_file="",
@@ -530,6 +568,40 @@ def approve_commit(
                 "— the commit gate stays closed. Resolve the reject first."
             ),
         )
+
+    # R2.4 (roadmap R2): the candidate is materialised and its mandatory
+    # check runs HERE, past the reject/conflict verdict (M2) — a unit
+    # already counted as rejected never pays for the check. A run-mode
+    # approve with no baseline cannot define a candidate — the candidate
+    # binding is skipped (the pre-R2.4 path); the M2.1 binding still
+    # applies. With a baseline the candidate is mandatory.
+    built = _candidate_verify.build_evidence(
+        project_dir,
+        todo_id,
+        baseline_sha,
+        confirm_degraded=confirm_degraded,
+    ) if (run_active and baseline_sha) else None
+    if built is not None and built.refusal:
+        # A-04: the stale evidence was already cleared on entry; this
+        # refusal writes nothing new.
+        raise AwfApiError(
+            f"candidate verification refused the approval for {todo_id}: "
+            f"{built.refusal} No APPROVE signal, no verdict — fix the "
+            "candidate (or confirm a legitimate degradation) and re-approve."
+        )
+    candidate_evidence = built.evidence if built is not None else None
+
+    # R2.4 (F-QA-1): write the candidate evidence ONLY after the verdict
+    # succeeded — a conflict-refused approve must leave no artefact behind
+    # (A-04). The evidence is built above (it also feeds the APPROVE binding
+    # below); the write is the side effect, and it belongs past the verdict.
+    if candidate_evidence is not None:
+        try:
+            _candidate_verify.write_evidence(project_dir, candidate_evidence)
+        except OSError as e:
+            raise AwfApiError(
+                f"candidate evidence could not be written for {todo_id}: {e}"
+            ) from e
 
     # A-15: the fingerprint is written BEFORE the APPROVE signal becomes
     # visible. The commit gate enforces the file only while it exists, so
@@ -552,7 +624,6 @@ def approve_commit(
         # force-restarted run refuses the stale approval instead of
         # committing on it. Outside a run the signal stays an empty
         # marker (legacy behavior).
-        from .. import commit_plan as _commit_plan
         from .. import run_state as _run_state
 
         gen = approved_generation[0]
@@ -562,13 +633,27 @@ def approve_commit(
             # binding only against an ACTIVE run, and a newer run that
             # starts before the commit fails closed on the mismatch.
             gen = _run_state.generation_of(run or {})
-        baseline_sha = _commit_plan.read_baseline_sha(project_dir, todo_id)
-        files = _commit_plan.plan_files(project_dir, baseline_sha, todo_id)
+        if candidate_evidence is not None:
+            # R2.4: the candidate evidence ALREADY carries the file-set
+            # digest of the plan the supervisor checked — reuse it (one
+            # assembly, not a second one next to the candidate).
+            files_digest = candidate_evidence.files_digest
+        else:
+            files = _commit_plan.plan_files(project_dir, baseline_sha, todo_id)
+            files_digest = _commit_plan.files_digest(files)
         binding = {
             "generation": gen,
             "verified_sha": verified_fp,
-            "files_digest": _commit_plan.files_digest(files),
+            "files_digest": files_digest,
         }
+        if candidate_evidence is not None:
+            # R2.4: the candidate binding — the gate re-derives these from
+            # the current tree (candidate_refusal) and refuses on a change.
+            # ONE schema (binding_projection), not a hand-copied list: a
+            # field added to the evidence cannot desync the signal from its
+            # evidence_digest.
+            binding.update(candidate_evidence.binding_projection())
+            binding["evidence_digest"] = candidate_evidence.evidence_digest()
         atomic_write_text(signal, json.dumps(binding, sort_keys=True) + "\n")
     else:
         signal.touch()
@@ -587,6 +672,13 @@ def approve_commit(
         )
     except Exception:
         orphaned = []  # best-effort failsafe — never blocks the approve
+
+    # R2.2 QA iter 4: the paths are RAW (byte-faithful); escape them for the
+    # result/JSON surface exactly like the dispatch transfer lists, so a name
+    # with a non-UTF-8 byte never breaks the strict UTF-8 sink.
+    from ..infra.git_model import escape_str_for_ui
+
+    orphaned = [escape_str_for_ui(p) for p in orphaned]
 
     return ApproveResult(
         todo_id=todo_id,
@@ -698,6 +790,8 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
                 report_file = stopped.report_file
                 message += " Run STOPPED: two rejections — the task needs the owner."
 
+    from ..infra.git_model import escape_str_for_ui
+
     return RejectResult(
         todo_id=todo_id,
         review_file=str(review_file),
@@ -705,11 +799,57 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         run_stopped=run_stopped,
         report_file=report_file,
         message=message,
-        reject_files=rejected_files,
+        # R2.2 QA iter 4: RAW paths (byte-faithful) — escape for the result/JSON
+        # surface, same as the dispatch transfer lists.
+        reject_files=[escape_str_for_ui(p) for p in rejected_files],
     )
 
 
 # ─── create_baseline ────────────────────────────────────────────────────
+
+
+def _untracked_snapshot(project_dir: Path, excluded: set[str]) -> str:
+    """The ``BASELINE-<todo>.untracked`` body: git's untracked listing minus
+    the adopted paths, matched by their RAW identity.
+
+    The snapshot predates the R2.1 model: its readers (commit gate, verify,
+    reject) compare against the PRINTED ``git ls-files`` lines, so the file
+    must keep that form (R2.3 migrates both sides together). The printed
+    listing C-quotes a non-ASCII name (``"\\321\\204..."``) while the adopted
+    paths are raw (``файл.txt``), so dropping them by the raw comparison
+    silently missed the exclusion (TODO-0221 architect: the writer surface of
+    the R2.2 invariant). The raw and printed listings come from the same git
+    scan in the same byte order, so they are paired positionally and the
+    printed line of an adopted path is dropped — the file keeps its format,
+    the exclusion finally bites. Any mismatch degrades to the legacy compare
+    (never worse than before the bridge).
+
+    The printed read carries the same triple guard as the raw read below and
+    ``reject_files._untracked_view`` (M3): a hung/missing git
+    (``SubprocessError``/``OSError``) or a non-UTF-8 name emitted raw under
+    ``core.quotepath=false`` (``UnicodeDecodeError``) must degrade the snapshot,
+    not crash the baseline write (``awf dispatch`` / ``awf run_next``).
+    """
+    try:
+        printed = git_utils.git_stdout(
+            project_dir, "ls-files", "--others", "--exclude-standard", check=False
+        )
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+        printed = ""
+    if not excluded:
+        return printed
+    from ..infra.git_model import GitModelError, GitRepository, display_path
+
+    try:
+        raw = GitRepository(project_dir).untracked_paths()
+    except (GitModelError, OSError):
+        raw = []
+    lines = printed.splitlines()
+    if raw and len(lines) == len(raw):
+        return "\n".join(
+            ln for ln, p in zip(lines, raw) if display_path(p) not in excluded
+        )
+    return "\n".join(ln for ln in lines if ln.strip() not in excluded)
 
 
 def create_baseline(
@@ -718,6 +858,7 @@ def create_baseline(
     *,
     carry_over: set[str] | None = None,
     include: set[str] | None = None,
+    claim: set[str] | None = None,
 ) -> BaselineResult:
     """Create BASELINE-{todo_id}.{sha,status,worktree,tests.log,env.log}
     snapshot.
@@ -744,6 +885,17 @@ def create_baseline(
     ``carry_over`` (excluded from the untracked snapshot) but a separate
     parameter — the two are independent mechanisms with different audit
     trails (BASELINE-{todo}.carry_over / BASELINE-{todo}.include).
+
+    ``claim`` (R2.2, TODO-0221): paths of a predecessor unit's change that
+    this unit deliberately owns via ``claim_changes`` — the CODE channel. The
+    paths are excluded from the untracked snapshot exactly like ``include`` /
+    ``carry_over`` (so the commit gate treats them as THIS unit's work). The
+    source plan is the ``CLAIM-<source>.json`` record written by
+    ``claim_changes.apply_claim_changes``; the re-baseline audit link is the
+    third sibling, ``BASELINE-<todo>.claim`` (TODO-0221 M2 — written by
+    ``claim_changes.write_claim_link`` at dispatch, re-applied by
+    ``hygiene.transfer_exclusions``), kept parallel to the ``carry_over`` /
+    ``include`` links above.
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
@@ -781,7 +933,16 @@ def create_baseline(
                     f"{str(e).splitlines()[0] if str(e) else 'rev-parse HEAD failed'})"
                 ) from e
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.sha", sha + "\n")
-            status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
+            # M3: the printed read decodes strictly (``text=True``); a
+            # non-UTF-8 name under ``core.quotepath=false`` raises a
+            # ``UnicodeDecodeError`` and a hung/missing git raises
+            # ``SubprocessError``/``OSError``. Degrade the status snapshot to
+            # empty (the commit gate's documented legacy fallback) instead of
+            # crashing the dispatch / re-baseline.
+            try:
+                status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
+            except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+                status = ""
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", status)
             # REPORTS33 (TODO-0204): snapshot of the dirty worktree — the
             # commit gate's delta mechanism: a tracked-dirty file enters
@@ -796,10 +957,18 @@ def create_baseline(
             # read as "") — a re-dispatch of the same id must never read
             # an earlier dispatch's snapshot (QA F6, REVIEW iter 5). Best
             # effort either way: a failure never fails the baseline (the
-            # dispatch warning degrades to the honest legacy text).
-            worktree_snap = git_utils.git_stdout(
-                project_dir, "stash", "create", check=False,
-            ).strip()
+            # dispatch warning degrades to the honest legacy text). The
+            # ``check=False`` covers git's own NON-ZERO rc; a TRANSIENT failure
+            # (hung/missing git) raises out of ``_git`` — the same triple guard
+            # M3 gave the sibling status / untracked reads above, or the
+            # exception escapes the outer ``except Exception: ... raise`` and
+            # crashes ``awf dispatch`` / ``awf run_next``.
+            try:
+                worktree_snap = git_utils.git_stdout(
+                    project_dir, "stash", "create", check=False,
+                ).strip()
+            except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+                worktree_snap = ""
             snap_path = context_dir / f"BASELINE-{todo_id}.worktree"
             if worktree_snap:
                 _write_baseline_file(snap_path, worktree_snap + "\n")
@@ -807,19 +976,14 @@ def create_baseline(
                 snap_path.unlink(missing_ok=True)
             # QA-1: snapshot untracked files at baseline time so commit_gate
             # can distinguish worker-created files from pre-existing untracked.
-            untracked = git_utils.git_stdout(
-                project_dir, "ls-files", "--others", "--exclude-standard", check=False,
-            )
             # RUN5 #1 (leak-gate) + RUN10 #4 (TODO-0074): drop re-claimed
             # paths (carry-over and/or include) from the snapshot so the
             # commit gate treats them as THIS unit's work (it would
             # otherwise exclude them as "pre-existing" and silently lose
-            # them from the unit commit).
-            excluded = set(carry_over or ()) | set(include or ())
-            if excluded:
-                untracked = "\n".join(
-                    ln for ln in untracked.splitlines() if ln.strip() not in excluded
-                )
+            # them from the unit commit). The exclusion compares RAW path
+            # identities, so a non-ASCII adopted name is dropped too.
+            excluded = set(carry_over or ()) | set(include or ()) | set(claim or ())
+            untracked = _untracked_snapshot(project_dir, excluded)
             _write_baseline_file(context_dir / f"BASELINE-{todo_id}.untracked", untracked)
         else:
             sha = "(not a git repo)"

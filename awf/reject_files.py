@@ -35,14 +35,13 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import paths
+from . import git_utils, paths
+from ._atomic import atomic_write_text
 from ._errors import AwfApiError
 from ._log import log as _log
+from ._path_link import decode_path_link, encode_path_link
 
 _TODO_ID_RE = re.compile(r"TODO-\d{4,}")
-
-#: git call timeout — a hung git must not hang the reject/dispatch/verify.
-_GIT_TIMEOUT = 30
 
 
 def reject_files_path(project_dir: Path, todo_id: str) -> Path:
@@ -50,22 +49,108 @@ def reject_files_path(project_dir: Path, todo_id: str) -> Path:
     return paths.context_dir(Path(project_dir)) / f"REJECT-{todo_id}.files"
 
 
-def _untracked_set(project_dir: Path) -> set[str] | None:
-    """Current untracked (non-ignored) files, or None when git cannot say."""
+def carry_over_link_path(project_dir: Path, todo_id: str) -> Path:
+    """``.agentic/context/BASELINE-<todo>.carry_over`` — the leak-gate audit
+    link (which REJECT origin this unit carried over), the sibling of the
+    ``.include`` / ``.claim`` links."""
+    return paths.context_dir(Path(project_dir)) / f"BASELINE-{todo_id}.carry_over"
+
+
+def write_carry_over_link(project_dir: Path, todo_id: str, origin: str) -> None:
+    """Record the carry-over origin for a re-baseline. Best-effort, the same
+    contract as the include/claim links: a failed write logs but must not undo
+    the dispatch (the baseline snapshot already excluded the paths)."""
     try:
-        cp = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_GIT_TIMEOUT,
+        atomic_write_text(carry_over_link_path(project_dir, todo_id), f"{origin}\n")
+        _log(
+            paths.logs_dir(project_dir),
+            f"dispatch: {todo_id} — carry-over link written (origin {origin})",
         )
-    except (subprocess.SubprocessError, OSError):
+    except OSError as e:
+        _log(
+            paths.logs_dir(project_dir),
+            f"dispatch: {todo_id} — carry-over audit link not written: {e}",
+        )
+
+
+def read_carry_over_link(project_dir: Path, todo_id: str) -> str | None:
+    """The carry-over origin recorded for a unit, or None (no carry-over /
+    unreadable).
+
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``: a link
+    whose bytes are not valid UTF-8 (a tampered/corrupt file) must degrade to
+    None like an unreadable one — otherwise the exception escapes
+    ``hygiene.transfer_exclusions`` and kills the ``awf run_next`` re-baseline
+    its callers document as best-effort."""
+    f = carry_over_link_path(Path(project_dir), todo_id)
+    if not f.is_file():
         return None
-    if cp.returncode != 0:
+    try:
+        origin = f.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
         return None
-    return {ln.strip() for ln in cp.stdout.splitlines() if ln.strip()}
+    return origin or None
+
+
+def clear_carry_over_link(project_dir: Path, todo_id: str) -> None:
+    """Drop a stale carry-over link: a (re-)dispatch without ``carry_over_from``
+    rewrites the baseline WITHOUT the exclusion, so a later re-baseline must
+    not re-apply a carry-over that no longer holds — the same lifecycle as the
+    include and claim links."""
+    carry_over_link_path(Path(project_dir), todo_id).unlink(missing_ok=True)
+
+
+def _raw_untracked(project_dir: Path) -> list[str] | None:
+    """Current untracked (non-ignored) paths as RAW display strings, or None.
+
+    Read through the R2.1 model (``ls-files --others --exclude-standard -z``,
+    byte protocol): the printed listing C-quotes a non-ASCII name, so the
+    leak-gate used to store a form the R2.2 ownership model (raw bytes) never
+    matched — a non-ASCII finding stayed in ``BASELINE-*.untracked`` (the
+    commit gate then dropped it) and was refused under ``require_clean``
+    (qa iter 4). ``None`` when git cannot say.
+    """
+    from .infra.git_model import GitModelError, GitRepository, display_path
+
+    try:
+        return [display_path(p) for p in GitRepository(project_dir).untracked_paths()]
+    except (GitModelError, OSError):
+        return None
+
+
+def _untracked_view(project_dir: Path) -> tuple[list[str], dict[str, str]] | None:
+    """The current untracked listing as ``(raw_paths, raw -> printed)``, None
+    when git cannot say.
+
+    The leak-gate speaks the same RAW identity as every other transfer channel
+    (``include_untracked`` / ``claim_from``), while
+    ``BASELINE-<todo>.untracked`` keeps git's PRINTED lines
+    (``pipeline._untracked_snapshot`` bridges them positionally — R2.3 migrates
+    both sides together). Both listings come from the SAME deterministic
+    ``git ls-files`` scan in the SAME byte order, so index i is one file; the
+    printed form of a raw path is known without re-parsing git's C-quoting (the
+    one-parser principle). When the two listings do not pair (a newline in a
+    name splits the printed one) the map degrades to identity — the legacy
+    behaviour, never worse.
+    """
+    raw = _raw_untracked(project_dir)
+    if raw is None:
+        return None
+    try:
+        # Second git read (the PRINTED listing). It must carry the SAME
+        # best-effort guard as the raw read: ``git_utils._git(text=True)``
+        # lets ``subprocess.TimeoutExpired`` / ``OSError`` (hung or missing
+        # git) and ``UnicodeDecodeError`` (non-UTF-8 name under
+        # ``core.quotepath=false``) escape. Without it a transient git
+        # failure would raise out of ``snapshot_rejected_files`` (contract:
+        # never raises) and ``orphaned_reject_files`` (contract: ``[]`` when
+        # git cannot measure) — the failsafe surfaces of verify-pack/approve.
+        printed = git_utils.untracked_files(project_dir)
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
+        return None
+    if len(printed) != len(raw):
+        return raw, {p: p for p in raw}
+    return raw, dict(zip(raw, printed))
 
 
 def _baseline_untracked_set(project_dir: Path, todo_id: str) -> set[str]:
@@ -89,15 +174,27 @@ def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> 
     it (RUN5 #1 Part A.1: best-effort + log).
     """
     project_dir = Path(project_dir)
-    untracked = _untracked_set(project_dir)
-    if untracked is None:
+    view = _untracked_view(project_dir)
+    if view is None:
         _log(logs_dir, f"leak-gate: cannot list untracked files for {todo_id} "
                        f"(not a git repo or git failed) — REJECT files not recorded")
         return []
-    new = sorted(untracked - _baseline_untracked_set(project_dir, todo_id))
+    raw_paths, raw_to_printed = view
+    baseline = _baseline_untracked_set(project_dir, todo_id)
+    new = sorted(
+        p for p in raw_paths if raw_to_printed.get(p, p) not in baseline
+    )
     try:
+        # The paths are RAW (``display_path``: ``surrogateescape``); the shared
+        # codec writes each entry NUL-terminated, so a name with a newline /
+        # control byte / edge space (and a non-UTF-8 surrogate) round-trips
+        # byte-faithfully. Strict UTF-8 would raise ``UnicodeEncodeError`` — a
+        # ``ValueError``, NOT the ``OSError`` this guard swallows — and break
+        # the "never raises" contract by failing the reject itself.
         reject_files_path(project_dir, todo_id).write_text(
-            "".join(p + "\n" for p in new), encoding="utf-8"
+            encode_path_link(new),
+            encoding="utf-8",
+            errors="surrogateescape",
         )
     except OSError as e:
         _log(logs_dir, f"leak-gate: could not write REJECT-{todo_id}.files: {e}")
@@ -116,10 +213,12 @@ def read_reject_files(project_dir: Path, todo_id: str) -> list[str] | None:
     if not f.is_file():
         return None
     try:
-        lines = f.read_text(encoding="utf-8").splitlines()
+        # Same codec as the writer (:mod:`awf._path_link`): the NUL form keeps
+        # the raw identity of a name with a newline / control byte / edge space
+        # / non-UTF-8 surrogate; binary content degrades to a missing link.
+        return decode_path_link(f.read_bytes())
     except OSError:
         return None
-    return sorted(ln.strip() for ln in lines if ln.strip())
 
 
 def _origin_todo_exists(project_dir: Path, origin: str) -> bool:
@@ -190,10 +289,18 @@ def orphaned_reject_files(
         return []
     if not in_baseline:
         return []
-    untracked = _untracked_set(project_dir)
-    if untracked is None:
+    view = _untracked_view(project_dir)
+    if view is None:
         return []
-    candidates = in_baseline & untracked
+    raw_paths, raw_to_printed = view
+    # A path is an orphan candidate when it is STILL untracked (present in the
+    # current raw listing) AND its printed form sits in
+    # ``BASELINE-<todo>.untracked`` — the exact triple the commit gate uses to
+    # drop it. The baseline comparison stays in the file's printed form, reached
+    # through the raw->printed map (one bridge, both sides agree on the file).
+    candidates = {
+        p for p in raw_paths if raw_to_printed.get(p, p) in in_baseline
+    }
     if not candidates:
         return []
 
@@ -212,9 +319,13 @@ def orphaned_reject_files(
 
 
 __all__ = [
+    "carry_over_link_path",
+    "clear_carry_over_link",
     "orphaned_reject_files",
+    "read_carry_over_link",
     "read_reject_files",
     "reject_files_path",
     "resolve_carry_over",
     "snapshot_rejected_files",
+    "write_carry_over_link",
 ]

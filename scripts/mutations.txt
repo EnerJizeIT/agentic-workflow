@@ -20,7 +20,7 @@ awf/api/dispatch.py @@ os.O_CREAT | os.O_EXCL | os.O_WRONLY @@ os.O_CREAT | os.O
 
 # AUD04-11: git-вызов commit gate обязан нести timeout (зависший hook не
 # должен вешать verify). Мутация убирает timeout из diff-вызова.
-awf/commit_gate.py @@ timeout=30,  # AUD04-11: hung git must not hang the commit gate @@ # AUD04-11: (timeout REMOVED by mutation) @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestCommitGateTimeout::test_commit_gate_git_calls_carry_timeout -q
+awf/infra/git_model.py @@ timeout=GIT_TIMEOUT, @@ # AUD04-11: (timeout REMOVED by mutation) @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestCommitGateTimeout::test_commit_gate_git_calls_carry_timeout -q
 
 # ORCH M6.2 (TODO-0147): мутации по инвариантам M1–M5 (ORCH-волны).
 

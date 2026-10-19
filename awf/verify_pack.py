@@ -40,9 +40,13 @@ Sections (each: status + details + denominator):
     ``not-red`` verdict a pass (annotated, with the note in the report);
     an UNdeclared ``not-red`` on a tests-only diff gets a hint line
     suggesting the declaration — the verdict is never auto-substituted.
-8. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
+8. ``candidate`` — R2.4: reads ``context/CANDIDATE-<todo>.json`` (written by
+   the approve) and re-derives the bound facts (HEAD, contract, environment,
+   candidate tree, degradation set) with the SAME validator the commit gate
+   runs; ``skipped`` when the unit was not approved through the R2.4 path.
+9. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
    explicitly marked as executor data (unverified).
-9. ``lint`` — ``ruff check .``.
+10. ``lint`` — ``ruff check .``.
 
 Verdict / exit code: 0 = every measured check passed, 1 = at least one
 failure, 2 = nothing was measured at all (no baseline, no contract, no
@@ -398,9 +402,13 @@ def _reject_leak_section(project: Path, todo_id: str) -> Section:
         f"WARNING: files of a rejected attempt would be SILENTLY EXCLUDED from "
         f"the {todo_id} commit (still untracked AND in BASELINE-{todo_id}.untracked):"
     ]
+    # R2.2 QA iter 4: the paths are RAW (byte-faithful) — escape them for the
+    # report sink, so a name with a non-UTF-8 byte does not break the write.
+    from .infra.git_model import escape_str_for_ui
+
     for origin, files in orphaned:
         for f in files:
-            lines.append(f"- {f}  (from {origin})")
+            lines.append(f"- {escape_str_for_ui(f)}  (from {origin})")
     lines.append(
         "Fix: re-issue with carry_over_from=<origin> so the retry commit "
         "includes them, or commit them consciously. Nothing is auto-committed."
@@ -753,8 +761,55 @@ def _lint_section(project: Path, timeout: int) -> Section:
     )
 
 
-# ─── TODO contract loading ───────────────────────────────────────────────
+# ─── candidate binding (R2.4) ────────────────────────────────────────────
 
+
+def _candidate_section(project: Path, todo_id: str) -> Section:
+    """R2.4: the candidate evidence binding (§ scope: binding, not gates).
+
+    Reads ``context/CANDIDATE-<todo>.json`` (written by the approve) and
+    re-derives the bound facts from the current tree — the same validator
+    the commit gate runs. Missing evidence = skipped (the unit was not
+    approved through the R2.4 path); a mismatch is a FAIL naming the moved
+    fact (HEAD/contract/candidate/environment).
+    """
+    from . import candidate_verify
+
+    evidence = candidate_verify.read_evidence(project, todo_id)
+    if evidence is None:
+        return Section(
+            name="candidate",
+            status="skipped",
+            lines=[
+                f"skipped — no CANDIDATE-{todo_id}.json (the unit was not "
+                "approved through the R2.4 candidate path)"
+            ],
+        )
+    from . import commit_plan
+
+    baseline = commit_plan.read_baseline_sha(project, todo_id)
+    refusal = candidate_verify.validate_evidence(
+        evidence, project, todo_id, baseline
+    )
+    head = "pass" if not refusal else "fail"
+    lines = [
+        f"- candidate_tree: `{evidence.candidate_tree or '(empty)'}`",
+        f"- check: {evidence.check_status}",
+        f"- generation: {evidence.generation}",
+        f"- degraded: {list(evidence.degraded) or 'none'}",
+    ]
+    if refusal:
+        lines.append(f"- INVALIDATED: {refusal}")
+    return Section(
+        name="candidate",
+        status=head,
+        lines=lines,
+        measured=True,
+        detail="candidate binding valid" if not refusal else "candidate binding invalidated",
+    )
+
+
+# ─── TODO contract loading ───────────────────────────────────────────────
 
 def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | None:
     """Read the TODO (inbox, or the archive) and parse its contract block.
@@ -872,6 +927,7 @@ def verify_pack(
         _untracked_excluded_section(project, todo_id),
         _contract_tests_section(project, contract, cmd_timeout),
         _prove_red_section(project, todo_id, contract, tmp_base),
+        _candidate_section(project, todo_id),
         _done_json_section(project, todo_id, logs_dir),
         _lint_section(project, lint_timeout),
     ]

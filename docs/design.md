@@ -119,7 +119,10 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `todo_ids.py` | Единственный парсер TODO-ID (4+ цифры, явная правая граница) |
 | `unit_contract.py` | Контракт юнита: блок `verify/gates/prove_red` в TODO + `DONE.json` |
 | `commit_plan.py` | Commit-план: файлы vs baseline, verdict, чтение `VERIFIED-{id}.sha` |
+| `commit_delta.py` | R2.3: единый сборщик кандидата (`DeltaAssembler` / `CandidatePlan`) — типизированные операции, rename-пара, отказы; здесь же алгоритм дельта-слияния (F1–F8) |
 | `commit_gate.py` | Auto-commit изолированным `GIT_INDEX_FILE` (индекс пользователя не трогаем) |
+| `publish.py` | R2.5: публикация и архив как возобновляемая операция — intent с OID до `update-ref` (CAS), owned-синхронизация индекса с проверкой содержимого, `UnitReceipt`, возобновляемый архив |
+| `candidate_verify.py` | R2.4: материализация candidate, обязательная проверка в throwaway-worktree, привязка evidence (tree/контракт/среда/поколение/ревизия) и отказ при инвалидации |
 | `verify.py` | Test/lint execution, auto-DONE synthesis |
 | `verify_pack.py` | Verify-отчёт `GATES-{todo}.md` (U5): гейты, diff-минимальность, facts |
 | `prove_red.py` | Prove-red в temp-worktree на baseline (U4) |
@@ -130,7 +133,10 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `doctrine.py` | Доктрина проекта: `.agentic/doctrine/*.md` в промт каждой роли (U9) |
 | `feedback.py` | Отчёт о трении awf владельцу (RUN4 #2) |
 | `include_untracked.py` | Включение pre-existing untracked в коммит юнита (RUN10 #4) |
+| `dispatch_policy.py` | R2.2: config-version и политика грязного source-tree (`require_clean` default / `isolate` / legacy `warn`) + проверка дерева через git-модель |
+| `claim_changes.py` | R2.2: перенос КОДА отклонённого юнита (`claim_changes`): план, digest, invalidation при изменении дерева |
 | `reject_files.py` | REJECT-файлы: списки untracked для carry-over |
+| `_path_link.py` | R2.2: байт-точный кодек переносных ссылок (`.include` / `REJECT-*.files`) — NUL-терминатор, legacy-чтение |
 | `todo_draft.py` | Черновики TODO для супервизора |
 | `opencode_agents.py` | Discovery агентов opencode |
 | `config.py` | Чтение `.agentic/config.yaml` |
@@ -194,7 +200,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 - **Lease:** `.agentic/logs/awf-launch.lease` — заявка публикуется атомарно через `os.link` (владелец сначала пишется в скрытый временный файл, где и стоит `O_EXCL`), поэтому читатель никогда не видит пустой заявки; stale определяется по живости процесса, не по возрасту файла (`api/_lease.py`). Публикация идёт через `dir_fd` (обе стороны ссылки — внутри уже проверенного каталога, симлинк `.agentic`/`logs` не прослеживается). Прочие вызовы получают `run_mode="noop"` с текстом — не исключение. На ФС без жёстких ссылок `awf start` отказывает (fail-closed). Рядом лежит метка идентичности запуска `.agentic/logs/awf-launch.execution` (ExecutionId): ребёнок старого запуска, чью метку переписал новый запуск, работу не выполняет. Метка — не runtime-данные: `reset`/`force-init` её не удаляют, а ПЕРЕЗАПИСЫВАЮТ свежим id (иначе orphan последнего запуска прошёл бы handshake по совпадению или по правилу «метки нет = работай»).
 - **Резолвер живости:** PID из state проверяется по argv — совпадение «это наш orchestrator» (защита от PID-реюза), одинаково для foreground и background (`api/_liveness.py`).
 - **Background-ребёнок — двойной маркер:** env `AWF_BACKGROUND_CHILD=1` + свой argv (`python -m awf start/continue ...`), чтобы резолвер живости и kill находили именно ребёнка (`api/_background.py`).
-- **Платформа:** запуск и разрушение (reset/rollback/force-init) требуют POSIX-семантики файлов — `flock` плюс no-follow-пути, без которых живой запуск не защищён. На не-POSIX эти операции ОТКАЗЫВАЮТ с человеческим текстом (fail-closed), а не запускают ослабленную реализацию. Это осознанное расхождение с `_lock.py`, где Windows-ветка (`msvcrt`) сохранена для счётчика read→merge→write: гарантия интерлока и безобидный file-lock — разные требования (интерлок без `flock` не интерлок).
+- **Платформа:** запуск и разрушение (reset/rollback/force-init) требуют POSIX-семантики файлов — `flock` плюс no-follow-пути, без которых живой запуск не защищён. На не-POSIX эти операции ОТКАЗЫВАЮТ с человеческим текстом (fail-closed), а не запускают ослабленную реализацию. В `_lock.py` Windows-ветка (`msvcrt`) и раньше закрывала только счётчик read→merge→write. После R1-переноса запись состояния идёт через managed-писатель, а он на не-POSIX отказывает ДО счётчика: read→merge→write на Windows не выполняется (fail-closed), ветка `msvcrt` остаётся мёртвым резервом. Это осознанно: интерлок без `flock` интерлоком не считается.
 
 ## Verify-гейты
 

@@ -1,3 +1,8 @@
+# R2.4 (TODO-0223): baseline raised files_over_400 91 -> 92 and
+# todos 6075 -> 6084. The new module awf/candidate_verify.py (candidate
+# materialisation + evidence binding) is >400 lines and its docstrings
+# legitimately use the word TODO; the new acceptance test file carries
+# one TODO-0001 id. Same class as the already-counted mentions.
 files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs wc -l | awk '$1>400 && $2!="total"' | wc -l
 # FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
 # identifiers (backlog item references), and every docs reword there
@@ -1087,6 +1092,32 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # a test identifier, not debt. The file closes the ExecutionId-env coverage
 # gap (the real start_in_background wiring); files_over_400 stays 83
 # (the file is ~90 lines).
+# R2.5 REVIEW-фикс (TODO-0224, стадия agent-implementer, 19.10, iter 2):
+# baseline todos raised 6119 -> 6145 (+26). All +26 are "TODO"-bearing
+# identifier/documentation tokens, never debt: the QA stage's red-guard
+# file tests/negative/test_roadmap_r2_publish_qa.py (the module docstring
+# unit references + the TODO-0001 fixture ids of the two review tests, ~14)
+# and this pass's additions — the RUN-REPORT fact regression test appended
+# to tests/negative/test_roadmap_r2_publish.py (the TODO-0001 fixture and
+# the f-string fact lines) plus the unit-id references in the publish.py /
+# pipeline_state.py / api/run.py fix comments. files_over_400 stays 94 (the
+# publish test grew 296 -> ~360, still under the bar; publish.py was already
+# counted at the R2.5 base).
+# R2.5 REVIEW-фикс 6 (TODO-0224, стадия agent-implementer, 19.10, iter 7):
+# baseline todos raised 6215 -> 6224 (+9) — the QA stage's qa4 red-guard
+# file tests/negative/test_roadmap_r2_publish_qa4.py adds 9 TODO-bearing
+# lines (module docstring unit references + the TODO-0001 fixture ids of
+# the two protocol-boundary tests). Test identifiers, not debt; same class
+# as the earlier R2.5 QA entry. files_over_400 stays 95 (publish.py was
+# already counted; the qa4 file is ~200 lines).
+# R2.5 architector-review (TODO-0224, стадия agent-architect-review, 19.10):
+# baseline todos raised 6230 -> 6235 (+5). Four of the five are this stage's
+# new regression lines in tests/negative/test_roadmap_r2_publish_qa2.py (the
+# TODO-0001 fixture references of the D2-on-resume check); the fifth was
+# already in the new test files when this stage started (6235 - 4 = 6231,
+# one above the implementer's last measurement). All five are test fixture
+# identifiers, never debt — same class as every earlier R2.5 entry.
+# files_over_400 stays 95 (no new file crossed the bar).
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
 # baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
@@ -1868,3 +1899,435 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # production fix (removing the redundant inbox.mkdir in awf/api/dispatch.py)
 # carries no TODO token. Negative-test catalogue, same class as the
 # test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.
+# R2.1 (TODO-0220, git-модель без печатных строк): files_over_400 raised
+# 85 -> 86 — the new awf/infra/git_model.py (1217 lines) is the one git
+# parser the R2 model is built on: the NUL-protocol reader (GitRepository,
+# ChangeRecord), the immutable/versioned BaselineManifest with its
+# stability-checked capture, and the rename-pair ownership attribution
+# live together as one cohesive model module, in the project's documented
+# style (cf. awf/commit_plan.py 959, awf/commit_gate.py). No new
+# TODO-bearing lines (the module and its test name the roadmap unit R2.1,
+# not a TODO-NNNN id), so the todos counter stays 6000. The new test file
+# grew to 14 files / 2176 lines across the R2.1 cycle; no single file
+# crossed the bar.
+# R2.2 (TODO-0221, явный dispatch и перенос кода): baseline todos raised
+# 6000 -> 6014 (+14) — the unit adds the code-transfer channel and the
+# dirty-source-tree policy. The +14 TODO-bearing lines: 4 test identifiers
+# in the new tests/negative/test_roadmap_r2_dispatch.py (SRC_ID/RETRY_ID
+# "TODO-0001"/"TODO-0002", the missing-claim "TODO-9999" probe, one
+# "no TODO reserved" comment); awf/dispatch_policy.py (4 — the module
+# docstring and the require_clean refusal message, which names "no TODO,
+# no baseline"); awf/api/dispatch.py (+2 — the claim_from/policy docstring
+# lines); awf/api/pipeline.py (+1, the claim= create_baseline docstring);
+# awf/cli.py (+1, the claim-changes source_todo help); awf/api/_templates.py
+# (+2, the config_version/dirty_policy template comment). Same class as the
+# test-identifier raises above: documentation/identifier tokens, not debt.
+# files_over_400 unchanged (86): the new modules are 269/307 lines, the new
+# test file 374 — all under the bar.
+# R2.2 REVIEW-фикс (TODO-0221, iter 2, решение супервизора): baseline todos
+# raised 6014 -> 6018 (+4). The +4 TODO-bearing lines are the QA finding file
+# tests/negative/test_roadmap_r2_dispatch_qa.py (SRC/RETRY "TODO-0001"/
+# "TODO-0002", the "BLOCKED-TODO-0221.md" message reference, one "rejected
+# TODO" comment) plus the F3 regression test's identifiers — documentation /
+# identifier tokens, never debt. files_over_400 unchanged (86).
+
+# R2.2 REVIEW-фикс 2 (TODO-0221, iter 3, решение супервизора — M1/M2):
+# baseline todos raised 6018 -> 6023 (+5) and files_over_400 86 -> 88 (+2).
+# The +5 TODO-bearing lines are unit-id references in the fix comments:
+# awf/api/dispatch.py (the M2 claim-link comment), awf/include_untracked.py
+# (the M1 byte-faithful read comment), awf/claim_changes.py (the claim_link
+# docstring), awf/api/hygiene.py (the recompute docstring) and awf/api/run.py
+# (the re-baseline comment). Same class as the iter-2 raises: documentation
+# tokens, not debt. The +2 files over 400 are the CODE-channel module
+# awf/claim_changes.py (381 -> 443: the claim-link read/write/clear helpers
+# and claim_exclusion_paths, the link the re-baseline/recompute re-applies)
+# and tests/negative/test_roadmap_r2_dispatch.py (382 -> 460: the two red
+# regression tests for M1 — non-ASCII adopted path across both dirty
+# surfaces — and M2 — claimed path stays excluded across a re-baseline and a
+# recompute). Same class as the negative-test-catalogue raises above; the
+# production fix itself is net-neutral in line count (the printed-parse
+# branch in _dirty_tree_classes is removed as the R2.1 model read lands).
+
+# R2.2 REVIEW-фикс 3 (TODO-0221, iter 4, решение супервизора — F3, escape_for_ui):
+# baseline todos raised 6023 -> 6025 (+2). The +2 net is the QA-authored
+# regression file tests/negative/test_roadmap_r2_dispatch_qa3.py (3 TODO-
+# bearing identifier/documentation lines: the module docstring, the TODO-0220
+# cross-reference, the SRC id) minus a -1 the F3 display fix removed from the
+# production comment lines. Same class as the iter-2/iter-3 raises: identifier
+# and documentation tokens, never debt. files_over_400 unchanged (88).
+
+# R2.2 architect-review (TODO-0221, stage 3, design drift): baseline todos
+# raised 6025 -> 6028 (+3). The +3 are the new claim-source validation message
+# ("invalid source TODO … (format TODO-NNNN)", mirroring resolve_carry_over)
+# and one unit-id reference in the pipeline._untracked_snapshot docstring —
+# identifier and documentation tokens, never debt. files_over_400 unchanged
+# (88; no new file crossed the bar). The three regression tests added with the
+# fixes carry no new TODO literal.
+
+# R2.2 QA iter 4 (TODO-0221, стадия agent-qa-review): baseline todos raised
+# 6028 -> 6031 (+3). The +3 are the TODO-bearing identifier lines in the new
+# red regression file tests/negative/test_roadmap_r2_dispatch_qa4.py (the
+# module docstring, the SRC/RETRY id constants block, and the leak-gate helper
+# docstring) — the same class as every prior test-id raise: identifier and
+# documentation tokens, never debt. The finding (non-ASCII carry-over path
+# byte-form mismatch) is production code; the fix lands through REVIEW.
+# files_over_400 unchanged (88; the new file is ~150 lines).
+
+# R2.2 architect-review iter 5 (TODO-0221, стадия agent-architect-review,
+# design drift): baseline todos raised 6031 -> 6034 (+3). The +3 are the
+# TODO-bearing identifier/documentation lines in the new red regression file
+# tests/negative/test_roadmap_r2_dispatch_arch.py (the module docstring, the
+# SRC/RETRY id constants block) plus one unit-id reference in the fixed
+# reject_files writer/reader comment — the same class as every prior test-id
+# raise: identifier and documentation tokens, never debt. The finding (the
+# REJECT write/read surface was not byte-faithful: strict UTF-8 broke the
+# "never raises" contract of snapshot_rejected_files on a non-UTF-8 name) is
+# production code; the fix is two surrogateescape codec args.
+# files_over_400 unchanged (88; the new file is ~140 lines, under the bar).
+
+# R2.2 QA iter 5 (TODO-0221, стадия agent-qa-review): baseline todos raised
+# 6034 -> 6037 (+3). The +3 are the TODO-bearing identifier/documentation lines
+# in the new red regression file tests/negative/test_roadmap_r2_dispatch_qa5.py
+# (the module docstring, the SRC/RETRY id constants block) — the same class as
+# every prior test-id raise: identifier and documentation tokens, never debt.
+# The finding (the new second git read in _untracked_view was not wrapped in
+# the best-effort guard) is production code; the fix is one try/except around
+# that read plus its import.
+# files_over_400 unchanged (88; the new file is ~125 lines, under the bar).
+
+# R2.2 architect-review iter 6 (TODO-0221, стадия agent-architect-review):
+# baseline todos raised 6037 -> 6039 (+2). The +2 are the TODO-bearing
+# identifier/documentation lines in the new red regression file
+# tests/negative/test_roadmap_r2_dispatch_arch2.py (the module docstring's
+# (TODO-0221) and the SRC = "TODO-0001" id constant) — the same class as
+# every prior test-id raise: identifier and documentation tokens, never
+# debt. The finding (the isolate surface dropped SourceTreeReport.error and
+# printed a false "0 pre-existing path(s)" for a tree the model refused to
+# read, while the sibling format_dirty_refusal kept the invariant) is
+# production code; the fix is one honest error branch in format_isolate_report.
+# files_over_400 unchanged (88; the new file is ~150 lines, under the bar).
+
+# R2.2 auditor iter 7 (TODO-0221, стадия agent-implementer — M3/LOW-1/LOW-2):
+# baseline todos raised 6039 -> 6041 (+2). The +2 are the TODO-bearing
+# identifier/documentation lines in the new red regression file
+# tests/negative/test_roadmap_r2_dispatch_arch3.py (the module docstring's
+# "(TODO-0221)" and the SRC = "TODO-0001" id constant) — the same class as
+# every prior test-id raise: identifier and documentation tokens, never
+# debt. The findings are production code: M3 — create_baseline's printed git
+# reads (git status --short and the untracked listing) were unguarded, so a
+# non-UTF-8 name under core.quotepath=false crashed awf dispatch /
+# run_next re-baseline; the fix is the triple guard (SubprocessError/OSError/
+# UnicodeDecodeError) with the honest empty degradation. LOW-1 — claim_drift
+# called tree_fingerprint outside its try, letting a GitModelError escape
+# instead of the documented AwfApiError. LOW-2 — the claim-changes CLI split
+# --paths on a comma, so a comma-containing name was unnameable; --paths is
+# now repeatable (one path per occurrence). The fix comments carry M3/LOW
+# tokens, not "TODO", so they add no counter line. files_over_400 unchanged
+# (88; the new file is ~176 lines, under the bar).
+
+# R2.2 architect-review iter 8 (TODO-0221, стадия agent-architect-review):
+# baseline todos raised 6041 -> 6043 (+2). The +2 are the TODO-bearing
+# identifier/documentation lines in the new red regression file
+# tests/negative/test_roadmap_r2_dispatch_arch4.py (the module docstring's
+# "(TODO-0221)" and the SRC = "TODO-0001" id constant) — the same class as
+# every prior test-id raise: identifier and documentation tokens, never
+# debt. The finding is production code: M3's guard covered two of the three
+# printed git_stdout reads in create_baseline (git status --short and the
+# untracked listing) and missed the third — git stash create, the dirty-
+# worktree snapshot — whose own comment promised "a failure never fails the
+# baseline"; a transient (hung/missing) git raised out of it and crashed
+# awf dispatch / awf run_next. Fix: the same triple guard
+# (SubprocessError/OSError/UnicodeDecodeError) with the empty degradation.
+# The fix comment carries "M3" (in create_baseline) but not the literal
+# "TODO"; the dispatch_policy LEGACY_POLICY=WARN de-duplication adds no line.
+# files_over_400 unchanged (88; the new file is ~78 lines, under the bar).
+
+# R2.2 auditor iter 9 (TODO-0221, стадия agent-implementer — M4/LOW-3):
+# baseline todos raised 6043 -> 6049 (+6). The +6 are the TODO-bearing
+# identifier/documentation lines in the new red regression file
+# tests/negative/test_roadmap_r2_dispatch_arch5.py (the module docstring's
+# "(TODO-0221)", the SRC = "TODO-0001" id constant, the "TODO.md" wording in
+# the half-dispatch docstring) plus one unit-id reference in the
+# include_untracked writer comment — identifier and documentation tokens,
+# never debt. The findings are production code: M4 — write_include_audit wrote
+# RAW surrogateescape paths through strict UTF-8, so a non-UTF-8 name crashed
+# AFTER the TODO reservation (dispatch left without .ready/.include) and
+# update_todo's recompute lost the include link after rewriting the snapshot;
+# the fix is errors="surrogateescape" on the writer (atomic_write_text gained
+# the errors param) and the reader. LOW-3 — plan_claim_changes /
+# apply_claim_changes called tree_fingerprint outside try, letting a
+# GitModelError escape instead of the documented AwfApiError.
+# files_over_400 unchanged (88; the new file is ~167 lines, under the bar).
+
+# R2.2 architect-review iter 10 (TODO-0221, стадия agent-architect-review,
+# design drift): baseline todos raised 6049 -> 6054 (+5). The +5 are the
+# TODO-bearing identifier/documentation lines in the new red regression file
+# tests/negative/test_roadmap_r2_dispatch_arch6.py (the module docstring's
+# "(TODO-0221)", the two "<TODO>" placeholder lines of the quoted CLI default,
+# the SRC = "TODO-0001" id constant and the default-paths test docstring) —
+# the same class as every prior test-id raise: identifier and documentation
+# tokens, never debt. The finding is production code: awf/cmd_claim_changes.py
+# handled the --paths default with a dead store (paths = [] over the unchanged
+# None), so `awf claim-changes <TODO>` — the documented "claim all changes"
+# default the tool itself prints — died with a bare TypeError before reaching
+# the core; the fix makes raw_paths an empty list so the comprehension runs.
+# files_over_400 unchanged (88; the new file is ~110 lines, under the bar).
+
+# R2.2 QA iter 8 (TODO-0221, стадия agent-qa-review): baseline todos raised
+# 6054 -> 6057 (+3). The +3 are TODO-bearing identifier lines in the new red
+# regression file tests/negative/test_roadmap_r2_dispatch_qa6.py (the module
+# docstring's "(TODO-0221, iter 8)", the SRC = "TODO-0001" and RETRY =
+# "TODO-0002" id constants) — identifier/documentation tokens, never debt.
+# The finding is production code: the transfer LINK codec (BASELINE-*.include
+# and REJECT-*.files) writes RAW paths joined by "\n" and reads them back with
+# splitlines()+strip(), so a legal git name carrying a newline (0x0a), an
+# ASCII control byte (0x0b/0x0c/0x1c/0x1d/0x1e) or an edge space round-trips
+# to a DIFFERENT path — the include exclusion is lost on re-baseline and the
+# carry-over exclusion at dispatch, so the commit gate silently drops the
+# unit's own adopted file (the byte-faithfulness M4 delivered for non-UTF-8
+# surrogates stops at ASCII control bytes). files_over_400 unchanged (88).
+
+# R2.2 REVIEW-фикс 8 (TODO-0221, стадия agent-implementer, iter 10): baseline
+# todos raised 6057 -> 6058 (+1). The +1 is the "(TODO-0221)" token in the new
+# shared codec module awf/_path_link.py docstring — an identifier token, never
+# debt. The finding is production code: the transfer LINK files
+# (BASELINE-*.include and REJECT-*.files) joined RAW paths with "\n" and read
+# them back with splitlines()+strip(); a legal git name with a newline / ASCII
+# control byte / edge space round-tripped to a different path, so the adopted
+# exclusion was silently lost. The codec now terminates each entry with a NUL
+# (the R2.1 machine protocol; a NUL cannot occur in a path) and reads legacy
+# newline-joined files with the old rule. files_over_400 unchanged (88).
+
+# R2.2 agent-architect-review (TODO-0221, iter 10): baseline todos raised
+# 6058 -> 6063 (+5). All five are unit-id reference tokens in comments /
+# docstrings, never debt: 2 in awf/api/run.py (the baseline-artefact cleanup
+# list comment naming the .worktree TODO-0204 member and the .claim TODO-0221
+# sibling), 1 in awf/api/pipeline.py (the create_baseline "claim" docstring,
+# corrected to name the BASELINE-<todo>.claim audit link), and 2 in the iter-10
+# architect test tests/negative/test_roadmap_r2_dispatch_arch6.py (the module
+# docstring of the two drift findings). Findings: (1) the create_baseline
+# "claim" docstring still claimed "no extra baseline file is made" after M2
+# added BASELINE-<todo>.claim — stale design doc; (2) the failed-service-start
+# rollback enumerated baseline artefacts by hand and omitted .worktree while
+# adding .claim — the "undo EVERY side effect" list was incomplete.
+# files_over_400 unchanged (88).
+# R2.2 QA iter 11 (TODO-0221, стадия agent-qa-review): baseline todos raised
+# 6063 -> 6065 (+2). The +2 are the TODO-bearing tokens of the new red test
+# tests/negative/test_roadmap_r2_dispatch_qa7.py (the module docstring's
+# TODO-0221 and the SRC="TODO-0001" fixture id). Finding QA7-1 [MEDIUM]: the
+# fix-8 transfer-link codec's legacy (no-NUL) branch decodes invalid UTF-8 with
+# surrogateescape, so a binary blob without a NUL returns a bogus surrogate
+# path instead of None — a NEG-3 regression. files_over_400 unchanged (88).
+# R2.2 fix QA7-1 (TODO-0221, iter 12, стадия agent-implementer): baseline todos
+# raised 6065 -> 6066 (+1). The +1 is a single test-identifier line — the
+# no-NUL blob assertion added to the NEG-3 fixture
+# tests/negative/test_neg3_broken_inputs.py (test_g_binary_include_read_list_
+# degrades_and_recovers: read_include_list(project, "TODO-0001") is None). Same
+# class as every prior raise: a test id, not debt. The production fix
+# (awf/_path_link.py — the legacy no-NUL branch now strict-decodes) adds no
+# TODO token. files_over_400 unchanged (88).
+# R2.2 architect-review iter 13 (TODO-0221, стадия agent-architect-review):
+# baseline todos raised 6066 -> 6071 (+5). The +5 are TODO-bearing lines of the
+# new red test tests/negative/test_roadmap_r2_dispatch_arch7.py: the module
+# docstring (TODO-0221), SRC="TODO-0001", and three "TODO-0042" origin tokens
+# in the carry-over-link lifecycle test. Same class as every prior raise: test
+# identifiers, not debt. Finding: the transfer-link readers (carry_over inline
+# in hygiene, claim_changes.read_claim_link, _source_baseline_sha) guarded only
+# OSError, so a non-UTF-8 link blob raised UnicodeDecodeError (a ValueError)
+# past the best-effort contract and crashed the awf run_next re-baseline; the
+# carry_over link lifecycle moved into its owner (awf/reject_files.py) with
+# write/read/clear helpers. The production fix adds no TODO token.
+# files_over_400 unchanged (88): reject_files.py 331, the new test 121.
+# R2.2 qa-review iter 14 (TODO-0221, стадия agent-qa-review): baseline todos
+# raised 6071 -> 6073 (+2). The +2 are TODO-bearing lines of the new
+# regression-lock test tests/negative/test_roadmap_r2_dispatch_qa8.py: the
+# module docstring (TODO-0221) and SRC="TODO-0001". Same class as every prior
+# raise: test identifiers, not debt. The test locks the FOURTH surface of the
+# ARCH-13-1 fix (claim_changes._source_baseline_sha, BASELINE-<src>.sha): a
+# non-UTF-8 blob must degrade to AwfApiError, not raise UnicodeDecodeError past
+# plan_claim_changes — the arch7 test covered only the other three readers.
+# The production code adds no TODO token. files_over_400 unchanged (88).
+# R2.2 agent-implementer, review-fix 10 (TODO-0221, iter 11): baseline todos
+# raised 6073 -> 6074 (+1). The +1 is the "(TODO-0221)" token in the new
+# tests/negative/test_roadmap_r2_dispatch_arch8.py docstring (SRC token not
+# used). Same class as every prior raise: test identifiers, not debt. The test
+# locks the final MEDIUM pair from the audit: F-A (the NUL link codec must not
+# consult the host filesystem encoding — os.fsdecode vs utf-8+surrogateescape)
+# and F-B (.agentic/roles/draft/ joins paths.RUNTIME_DIRS, the one source for
+# the gitignore block and the managed-runtime check). Both production fixes add
+# no TODO token (comments cite the F-A/F-B ids, not the TODO). files_over_400
+# unchanged (88): the new test file is 4 tests.
+# R2.3 (TODO-0222, CandidatePlan и полная дельта): files_over_400 raised
+# 88 -> 91 (+3) and todos 6074 -> 6076 (+2). The three new >400 files:
+# awf/commit_delta.py (1290 lines — the DeltaAssembler / CandidatePlan and
+# the moved REPORTS33 F1–F8 delta algorithm, plus the review-iter3 printed→raw
+# identity bridge ``_raw_identity`` and the single GIT_TIMEOUT import), the
+# acceptance matrix
+# tests/negative/test_roadmap_r2_delta.py (472 lines: the S2-01/B01/mixed-pair/
+# gitlink rows plus the property generator — 32 seeded cases × every
+# orthogonal include × pre-existing × carry-over × rename combination), and
+# the QA matrix tests/negative/test_roadmap_r2_delta_qa.py (428 lines: the
+# F1–F3/H1/M1/M2/F-arrow regressions).
+# The todos delta is +2 NET: +10 new TODO-bearing lines in the three new
+# files (commit_delta.py 4, test_roadmap_r2_delta.py 5,
+# test_roadmap_r2_delta_qa.py 1 — test-ids and roadmap-unit citations) minus
+# 8 removed from commit_plan.py (21 -> 15) and commit_gate.py (33 -> 31) when
+# the moved code left its old docstrings behind. Same class as every prior
+# raise: test identifiers / roadmap-unit citations, not debt. Review-fix: the
+# claim channel now reaches the DeltaAssembler in the prod call, an adopted
+# path is committed whole, a pre-existing untracked path is foreign, and the
+# typed operation reports the mode/blob Git will store (worktree facts, no
+# symlink follow). architect-review: one isolated-index git runner (the
+# commit_gate copy is gone) and the F1–F8 invariant rationale is back on the
+# moved algorithm.
+# R2.3 architect-review: todos 6076 -> 6075 (-1) — the stale section header
+# «REPORTS33 (TODO-0204): the unit delta of a pre-dirty file» left behind when
+# the delta functions moved to commit_delta was removed from commit_gate.py.
+# Same review: the raw file-set pass (_legacy_plan_split / _all_changed_files)
+# moved from commit_plan.py into commit_delta.py so the assembly module no
+# longer calls back into the plan module (no commit_plan <-> commit_delta
+# runtime cycle); PlanSplit regained the frozen=True the move had dropped.
+# R2.4 QA (TODO-0223, stage 4/6): baseline raised files_over_400 92 -> 93 and
+# todos 6084 -> 6088. The QA pass adds 6 tests to
+# tests/negative/test_roadmap_r2_candidate.py (three positive coverage tests —
+# a valid binding commits, the claim candidate is identical at approve/gate,
+# a confirmed degradation commits the full file — plus three findings as red
+# tests). The file crossed 400 lines (316 -> ~500) — same class as the
+# test_roadmap_r2_delta_qa.py / test_audit25_* raises above. The +4 TODO lines
+# are the new tests' TODO-0001/0002 fixtures/asserts (the claim test needs the
+# predecessor TODO-0002 baseline) — test identifiers, not debt. The three red
+# tests must turn green in the fix pass (or be removed with the finding).
+# R2.4 QA-fix (TODO-0223, implementer fix pass): baseline raised todos
+# 6088 -> 6091 (+3). The fix pass adds one end-to-end CLI test
+# (test_cli_confirm_degraded_flag_reaches_the_api, F-QA-4) plus its fixture
+# lines and the two refusal/approval CLI invocations — test identifiers, not
+# debt. files_over_400 unchanged (no source file crossed 400 here).
+
+# R2.5 (TODO-0224, publish/archive как возобновляемая операция): baseline
+# raised files_over_400 93 -> 94 — the new module awf/publish.py (the
+# resumable publication protocol: intent/OID, CAS update-ref, owned index
+# sync, UnitReceipt, archive) crosses the 400-line bar; it is the single
+# home of the protocol, splitting it would scatter the invariant.
+# todos raised 6091 -> 6119 (+28): the counter sums the literal "TODO"
+# token, and the new module plus tests/negative/test_roadmap_r2_publish.py
+# carry unit-id references and test identifiers (TODO-0001 constants), not
+# debt. No production "TODO/FIXME" marker was added.
+
+# QA iter 2 (TODO-0224, стадия agent-qa-review, 19.10): baseline todos
+# raised 6145 -> 6155 (+10). The three new red probes against the REVIEW
+# fixes carry the TODO-0001 fixture id and unit-id comments in
+# tests/negative/test_roadmap_r2_publish_qa.py — test identifiers, not
+# debt. files_over_400 unchanged (no source file crossed 400 here).
+
+# R2.5 REVIEW-фикс 3 (TODO-0224, стадия agent-implementer, 19.10, iter 4):
+# baseline raised files_over_400 94 -> 95 и todos 6155 -> 6165 (+10).
+# files_over_400: пять регрессионных тестов аудитора (M1/L1/L2) дописаны в
+# tests/negative/test_roadmap_r2_publish.py (367 -> 512 строк) — файл
+# контракта проверки (verify блока TODO) обязан их содержать, вынести во
+# второй файл нельзя без правки контракта юнита.
+# todos (+10): имена/ссылки в новых тестах и fix-комментариях
+# (TODO-0195 в _write_resume_audit, fixture-иды TODO-0001) — тестовые
+# идентификаторы, не долг: ни одного прод-маркера TODO/FIXME не добавлено.
+
+# R2.5 QA iter 4 (TODO-0224, стадия agent-qa-review, 19.10): baseline todos
+# raised 6165 -> 6185 (+20). The +20 are the literal "TODO" identifiers of
+# the new tests/negative/test_roadmap_r2_publish_qa2.py (the TODO="TODO-0001"
+# fixture constant and its use-sites in the two red findings — ancestor-HEAD
+# resume, stale superseded fact — and the green receipt-gap test): test
+# identifiers, not debt, the same class as every prior QA raise. No
+# production module gained a "TODO" marker; files_over_400 stays 95 (the new
+# file is 230 lines, well under the bar).
+
+# R2.5 agent-architect-review (TODO-0224, стадия agent-architect-review,
+# 19.10, iter 6): baseline todos raised 6185 -> 6186 (+1). The +1 is the
+# literal "TODO" of the single added unit-level probe
+# (test_publication_fact_io_refusal_is_a_typed_publish_error references the
+# TODO fixture id to write a publication fact) — a test identifier, not
+# debt. The design-drift fixes themselves (one typed fact-writer, the shared
+# fact-unlink, one archive-fact shape) added NO "TODO" marker to production
+# code. files_over_400 stays 95.
+
+# R2.5 QA iter 5 (TODO-0224, стадия agent-qa-review, 19.10): baseline todos
+# raised 6186 -> 6214 (+28), two contributions, both test identifiers, never
+# debt:
+#   * +23 — tests/negative/test_roadmap_r2_publish_qa3.py, written by the
+#     previous QA attempt (the file was already in the tree without a signal):
+#     the TODO-0001 fixture constant, the unit-id docstrings and the fixture
+#     ids of the crash-matrix probes. That attempt raised the counter file
+#     but never the baseline, so the gate was red when this pass started;
+#   * +5 — this pass's six red probes on the state-removal catch-list
+#     (symlinked .agentic/state through kill / close / clean-exit /
+#     service-rollback paths), which reference the same TODO fixture id.
+# No production module gained a TODO/FIXME marker. files_over_400 stays 95
+# (the qa3 file is ~330 lines, well under the bar).
+
+# REVIEW-фикс 6 (TODO-0224, стадия agent-implementer, 19.10, iter 2,
+# attempt 2): baseline todos raised 6214 -> 6215 (+1). The previous attempt
+# raised the counter file but left the baseline one short; the missing token
+# is a test identifier in tests/negative/test_roadmap_r2_publish.py (the
+# TODO fixture id inside the L1 catch-list probe, whose expectation this pass
+# aligned with the iter-6 contract: the refusal propagates as the OSError
+# family with the ManagedPathError kept as __cause__). No production module
+# gained a TODO/FIXME marker; files_over_400 stays 95.
+
+# R2.5 QA iter 8 (TODO-0224, стадия agent-qa-review, 19.10): baseline todos
+# raised 6224 -> 6230 (+6). The +6 are TODO-bearing lines of the new red file
+# tests/negative/test_roadmap_r2_publish_qa5.py (the TODO-0001 fixture id and
+# the unit-id docstrings) — test identifiers, never debt. The two probes
+# demonstrate the byte-faithful-path serialization regression: a non-UTF-8
+# file name (legitimate git bytes, R2.1/surrogateescape) makes
+# publish._write_json raise UnicodeEncodeError past every typed boundary, and
+# the best-effort commit-audit writer raises it too. No production module
+# gained a TODO/FIXME marker; files_over_400 stays 95 (the new test file is
+# ~175 lines, well under the bar).
+
+# R2.5 audit iter 9 (TODO-0224, стадия agent-implementer, 19.10): baseline
+# todos raised 6235 -> 6262 (+27). The +27 are TODO-bearing lines of the new
+# red file tests/negative/test_roadmap_r2_publish_audit6.py (the TODO-0001
+# fixture id and unit-id docstrings) — test identifiers, never debt. The
+# seven probes cover the auditor's A1-A5 findings: commit-msg/post-commit
+# bypassed by commit-tree, a malformed/missing OID wedging the TODO, the
+# RUN-REPORT strict-UTF-8 crash on a byte-faithful path, a transient HEAD
+# read superseding a live intent, and per-path index resets. No production
+# module gained a TODO/FIXME marker (the two working comments were reworded);
+# files_over_400 stays 95.
+
+# R2.5 architector-review iter 10 (TODO-0224, стадия agent-architect-review,
+# 19.10): baseline todos raised 6262 -> 6273 (+11). The +11 are TODO-bearing
+# lines of the new red file tests/negative/test_roadmap_r2_publish_arch.py
+# (the TODO-0001 fixture id and unit-id docstrings) — test identifiers, never
+# debt. The file also keeps files_over_400 at 95: the three new probes were
+# split out of test_roadmap_r2_publish_audit6.py (335 lines) instead of
+# pushing it past the 400-line bar (172 lines in the new file). No production
+# module gained a TODO/FIXME marker.
+
+# R2.5 QA iter 10 (TODO-0224, стадия agent-qa-review, 19.10): baseline
+# todos raised 6273 -> 6292 (+19). The +17 are TODO-bearing lines of the new
+# red file tests/negative/test_roadmap_r2_publish_qa6.py (the TODO-0001 /
+# TODO-0002 fixture ids and unit-id docstrings) — test identifiers, never
+# debt. Three probes: an intent/receipt whose body names ANOTHER unit must
+# not be read as this unit's pending operation nor authorize its archive;
+# and a hook writing a non-UTF-8 byte to stderr must not crash the shared
+# git runner with an untyped UnicodeDecodeError. No production module gained a TODO/FIXME marker; files_over_400
+# stays 95 (the file is 195 lines).
+
+# R2.5 implementer, REVIEW-фикс 9 (TODO-0224, стадия agent-implementer, 19.10):
+# baseline todos raised 6292 -> 6309 (+17). The +17 are TODO-bearing lines of
+# the new regression file tests/negative/test_roadmap_r2_publish_audit7.py
+# (the TODO-0001 fixture id and unit-id docstrings) — test identifiers, never
+# debt. Three probes: the zero-OID CAS must match the repo's object format
+# (sha256 first commit), a refused ARCHIVE fact after a successful move must
+# not report the unit as not archived, and a resumed unit's commit OID must
+# appear once in RUN-REPORT. No production module gained a TODO/FIXME marker;
+# files_over_400 stays 95 (the new file is 193 lines).
+
+# R2.5 architector-review iter 11 (TODO-0224, стадия agent-architect-review,
+# 19.10): baseline todos raised 6309 -> 6315 (+6). The +6 are TODO-bearing
+# lines of the appended architect probes in
+# tests/negative/test_roadmap_r2_publish_arch.py (the TODO-0001 fixture id and
+# unit-id docstrings) — test identifiers, never debt. Three probes: a failing
+# hook with non-UTF-8 stderr must leave a strict-UTF-8-encodable reason; a
+# failing post-commit must not crash the publication after the ref moved; the
+# state catch-list names the precise LockUnavailable instead of the
+# AwfApiError base (OperationRecoveryRequired must propagate). No production
+# module gained a TODO/FIXME marker; files_over_400 stays 95.

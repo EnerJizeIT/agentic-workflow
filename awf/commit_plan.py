@@ -17,18 +17,34 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
-import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import git_utils, paths, run_state
+from . import commit_delta, git_utils, paths, run_state
 from ._log import log as _log
+
+# R2.3: the baseline-fact readers, the file-set computation and the delta
+# algorithm now live in the DeltaAssembler module (one home); re-exported
+# here so every existing importer (commit_gate, tests) keeps working
+# unchanged. The raw passes are re-exported for back-compat — the assembler
+# calls its own copies, never back into this module.
+PlanSplit = commit_delta.PlanSplit
+staged_at_baseline = commit_delta.staged_at_baseline
+worktree_dirty_at_baseline = commit_delta.worktree_dirty_at_baseline
+read_worktree_snapshot = commit_delta.read_worktree_snapshot
+_legacy_plan_split = commit_delta._legacy_plan_split
+_all_changed_files = commit_delta._all_changed_files
 
 OUTCOME_COMMITTED = "committed"
 OUTCOME_SKIPPED = "skipped"
 OUTCOME_REFUSED = "refused"
 OUTCOME_ERROR = "error"
+
+#: The reason an empty plan (no diff vs baseline) produces. ONE literal,
+#: shared by the gate that emits it and the verify-stage archive gate that
+#: must refuse to archive an unexplained empty plan — the strict path keys
+#: on this constant, never on a copied prose prefix.
+NO_CHANGES_REASON = "no changes to commit"
 
 PROCEED_STATUSES = (OUTCOME_COMMITTED, OUTCOME_SKIPPED)
 
@@ -76,6 +92,20 @@ class CommitPlan:
     # the pre-dispatch WIP stays in the worktree. () when the delta
     # mechanism is unavailable (legacy behavior: the whole diff).
     delta_files: tuple[str, ...] = ()
+    # R2.3: a model refusal (unsupported gitlink / unmerged / sparse / split
+    # index, or a mixed-ownership rename pair) — the gate returns
+    # OUTCOME_REFUSED with this reason BEFORE staging anything; never a
+    # silent legacy commit. "" when the plan is usable.
+    refusal: str = ""
+    # R2.4 / добор 0222: the FULL CandidatePlan is consumed on the prod path
+    # now — the candidate tree OID and the degraded (full-file) paths ride on
+    # the plan, so :func:`candidate_refusal` pins the candidate the gate will
+    # actually commit (not a flattened file list). "" / () when the no-baseline
+    # path was used. ``CandidatePlan.baseline_digest`` / ``head_expected`` are
+    # NOT copied: the gate re-derives HEAD through the evidence validator and
+    # reads no baseline digest, so those two were write-only here.
+    candidate_tree: str = ""
+    degraded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,388 +121,115 @@ class CommitOutcome:
     sha: str = ""
 
 
-def _status_path(token: str) -> str:
-    """The path in a ``git status --short`` token.
+def _claimed_paths(project_dir: Path, todo_id: str) -> list[str]:
+    """REVIEW-F1: the CODE-claim channel a unit adopted (R2.2), resolved from
+    its audit links through the ONE transfer-exclusion mechanism (TODO-0221).
 
-    A staged rename/copy carries ``ORIG -> DEST``; the diffs show the
-    DEST, so that is what the exclusion set must hold.
-    """
-    token = token.strip()
-    if " -> " in token:
-        token = token.rsplit(" -> ", 1)[1].strip()
-    return token
-
-
-def staged_at_baseline(project_dir: Path, todo_id: str) -> set[str] | None:
-    """TODO-0195: the paths the index already held at baseline time.
-
-    ``create_baseline`` snapshots ``git status --short`` into
-    ``BASELINE-{todo_id}.status``; an entry whose index column (XY: X) is
-    neither blank nor ``?`` was STAGED at dispatch. Only those are the
-    unit's "foreign WIP": files staged AFTER the baseline are the worker's
-    own (a hard-rule violation, but its work) and join the unit commit.
-
-    None when the snapshot is absent or unreadable (a legacy baseline, e.g.
-    the auto-created one carries only ``.sha``): the caller falls back to
-    the legacy rule (subtract everything staged vs the baseline at commit
-    time) and marks the plan.
+    A dispatch with ``claim_from`` writes ``BASELINE-<todo>.claim`` and excludes
+    the claimed paths from ``BASELINE-<todo>.untracked``. The DeltaAssembler
+    must know the claim, or a claimed tracked predecessor change is treated as
+    pre-existing and silently dropped from the unit commit. Best-effort: a
+    missing / unreadable link, or an import failure, resolves to ``[]`` (the
+    caller then keeps the legacy behavior) — never an exception on the commit
+    path.
     """
     if not todo_id:
-        return None
-    status_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.status"
-    if not status_file.is_file():
-        return None
+        return []
     try:
-        text = status_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    staged: set[str] = set()
-    for line in text.splitlines():
-        if len(line) < 4:
-            continue
-        if line[0] in (" ", "?"):
-            continue  # clean or untracked — not in the index
-        staged.add(_status_path(line[3:]))
-    return staged
+        from .api.hygiene import transfer_exclusions
 
-
-def worktree_dirty_at_baseline(project_dir: Path, todo_id: str) -> set[str] | None:
-    """REPORTS33 (TODO-0204): the paths whose WORKTREE column was dirty at
-    baseline time — unstaged tracked changes (`` M``, `` D``, ...) that
-    pre-date the unit. The delta mechanism applies to exactly these:
-    their pre-dispatch content is captured in the worktree snapshot and
-    must stay OUTSIDE the unit commit.
-
-    Complementary to :func:`staged_at_baseline` (the INDEX column): an
-    ``MM`` entry is foreign staged WIP (0195 rules it), a ``M `` entry is
-    clean in the worktree (nothing pre-dates the unit there).
-
-    None when the snapshot is absent or unreadable (a legacy baseline):
-    the caller keeps the legacy behavior (the whole diff enters the
-    commit, as before).
-    """
-    if not todo_id:
-        return None
-    status_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.status"
-    if not status_file.is_file():
-        return None
-    try:
-        text = status_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    dirty: set[str] = set()
-    for line in text.splitlines():
-        if len(line) < 4:
-            continue
-        if line[0] != " ":
-            continue  # staged (foreign WIP — 0195) or untracked ("?")
-        if line[1] == " ":
-            continue  # clean
-        dirty.add(_status_path(line[3:]))
-    return dirty
-
-
-def read_worktree_snapshot(project_dir: Path, todo_id: str) -> str:
-    """REPORTS33 (TODO-0204): the ``BASELINE-{todo_id}.worktree`` content
-    — the sha of the worktree snapshot ``create_baseline`` took at
-    dispatch time (a ``git stash create`` commit object).
-
-    "" when the file is absent or empty: a legacy baseline, a non-git
-    project, a clean tree at dispatch (nothing to snapshot), or a
-    failed snapshot. Without it the delta mechanism is unavailable and
-    the legacy behavior holds (the whole diff enters the commit).
-    """
-    if not todo_id:
-        return ""
-    snap_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.worktree"
-    if not snap_file.is_file():
-        return ""
-    try:
-        return snap_file.read_text(encoding="utf-8").strip().split("\n")[0]
-    except OSError:
-        return ""
-
-
-@dataclass(frozen=True)
-class PlanSplit:
-    """TODO-0195: one pass over the tree → the unit's commit set and what
-    it leaves outside.
-
-    - ``files`` — the exact commit content (what the gate commits).
-    - ``excluded`` — (path, reason) pairs for the tracked change /
-      untracked file the baseline diff saw but the plan leaves outside:
-      "staged-at-baseline" (foreign WIP in the index at dispatch),
-      "staged" (legacy fallback — no baseline status snapshot, the
-      staged-vs-baseline proxy), "pre-existing untracked".
-    - ``worker_staged`` — paths staged AFTER the baseline (the worker
-      violated the hard rule); they are in ``files`` — the commit gate
-      warns, it does not refuse.
-    - ``legacy_fallback`` — True when ``BASELINE-{todo}.status`` was
-      missing and the legacy whole-staged subtraction was used.
-    - ``delta_files`` (REPORTS33, TODO-0204) — the tracked-dirty-at-
-      baseline files that ARE in ``files``: for them the commit gate
-      commits only the unit's own edit (worktree vs the dispatch-time
-      worktree snapshot), not the pre-dispatch WIP. () when the delta
-      mechanism is unavailable (legacy baseline / no snapshot) — the
-      legacy full-diff commit holds.
-    """
-
-    files: list[str]
-    excluded: list[tuple[str, str]] = field(default_factory=list)
-    worker_staged: list[str] = field(default_factory=list)
-    legacy_fallback: bool = False
-    delta_files: list[str] = field(default_factory=list)
-
-
-def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
-    """A1 + TODO-0195: the unit's commit file set + its exclusions.
-
-    Combines:
-    1. ``git diff --name-only <sha>`` — modified tracked files since
-       baseline (staged and unstaged alike).
-    2. ``git ls-files --others --exclude-standard`` — new untracked files
-       (respects .gitignore — awf runtime dirs stay excluded), minus the
-       pre-existing ones from ``BASELINE-{todo_id}.untracked`` (QA-1).
-
-    The foreign-staged subtraction (R-03/A-01) is now baseline-anchored
-    (TODO-0195, рана C): ONLY the paths the index held at dispatch
-    (``BASELINE-{todo_id}.status``) are subtracted. A file staged after
-    the baseline (the worker's ``git add``) stays in the plan and is
-    reported as ``worker_staged``. No status snapshot (legacy baseline) →
-    the old whole-staged-vs-baseline subtraction, marked
-    ``legacy_fallback``.
-
-    Returns an empty :class:`PlanSplit` on error or no baseline (the gate
-    degrades to its no-changes path, as before).
-    """
-    if not baseline_sha:
-        return PlanSplit(files=[])
-
-    # 1. Modified tracked files
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", baseline_sha],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11: hung git must not hang the commit gate
-        )
-        if result.returncode != 0:
-            logs_dir = project_dir / ".agentic" / "logs"
-            if logs_dir.is_dir():
-                _log(
-                    logs_dir,
-                    f"WARNING: git diff vs baseline {baseline_sha!r} failed "
-                    f"(rc={result.returncode}): {result.stderr.strip()}",
-                )
-            return PlanSplit(files=[])
-        modified_raw = [
-            line.strip() for line in result.stdout.splitlines() if line.strip()
-        ]
-    except (subprocess.SubprocessError, OSError):
-        return PlanSplit(files=[])
-
-    # R-03 + TODO-0195: the foreign-staged set. The unit never stages
-    # (worker hard rule); what the user's index held AT BASELINE is foreign
-    # WIP and is excluded from the plan. What the worker staged AFTER the
-    # baseline is its own work — it joins the plan and is reported
-    # (``worker_staged``) so the gate can warn. The index-vs-HEAD diff is
-    # what "the worker staged, not yet committed" means: after the unit's
-    # own commit (the double-commit pipeline shape) the index matches HEAD
-    # and nothing is reported.
-    try:
-        staged_head = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11
-        )
-    except (subprocess.SubprocessError, OSError):
-        return PlanSplit(files=[])  # can't tell what is staged — no plan, no commit
-    if staged_head.returncode != 0:
+        _carry_over, _include, claim = transfer_exclusions(project_dir, todo_id)
+    except (ImportError, OSError, ValueError, RuntimeError) as exc:
+        # REVIEW-M1: never SILENT — a swallowed failure here drops the claim
+        # channel (the class F1 closed: a claimed predecessor change silently
+        # leaves the unit commit). Log the same warning shape as the legacy
+        # sibling, then degrade to the legacy behavior.
         logs_dir = project_dir / ".agentic" / "logs"
         if logs_dir.is_dir():
             _log(
                 logs_dir,
-                f"WARNING: git diff --cached failed "
-                f"(rc={staged_head.returncode}): {staged_head.stderr.strip()}",
+                f"WARNING: claim-channel resolution failed for {todo_id} "
+                f"({type(exc).__name__}: {exc}) — claiming is degraded",
             )
-        return PlanSplit(files=[])
-    staged_vs_head = {
-        _status_path(line) for line in staged_head.stdout.splitlines() if line.strip()
-    }
+        return []
+    return sorted(claim)
 
-    baseline_staged = staged_at_baseline(project_dir, todo_id)
-    legacy = baseline_staged is None
-    if legacy:
-        # No baseline status snapshot (legacy/auto baseline): the old rule
-        # — subtract everything the index staged vs the baseline NOW.
-        try:
-            foreign = subprocess.run(
-                ["git", "diff", "--cached", "--name-only", baseline_sha],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,  # AUD04-11
-            )
-        except (subprocess.SubprocessError, OSError):
-            return PlanSplit(files=[])
-        if foreign.returncode != 0:
-            logs_dir = project_dir / ".agentic" / "logs"
-            if logs_dir.is_dir():
-                _log(
-                    logs_dir,
-                    f"WARNING: git diff --cached vs baseline {baseline_sha!r} failed "
-                    f"(rc={foreign.returncode}): {foreign.stderr.strip()}",
-                )
-            return PlanSplit(files=[])
-        foreign_paths = {
-            _status_path(line) for line in foreign.stdout.splitlines() if line.strip()
-        }
-        if todo_id:
-            _log(
-                project_dir / ".agentic" / "logs",
-                f"TODO-0195: no BASELINE-{todo_id}.status snapshot (legacy "
-                "baseline) — the whole staged-vs-baseline set is treated "
-                "as foreign (old rule)",
-            )
-    else:
-        foreign_paths = baseline_staged
 
-    modified = [p for p in modified_raw if p not in foreign_paths]
-    worker_staged = sorted(staged_vs_head - foreign_paths)
+def _candidate_plan(
+    project_dir: Path,
+    baseline_sha: str,
+    todo_id: str = "",
+    claim: tuple[str, ...] | list[str] | None = None,
+    *,
+    build_tree: bool = True,
+) -> tuple[commit_delta.CandidatePlan | None, str]:
+    """R2.4: the FULL candidate plan or (None, refusal).
 
-    # REPORTS33 (TODO-0204): the delta mechanism. A file tracked-dirty at
-    # dispatch pre-dates the unit: the commit may carry only the unit's
-    # own edit (worktree vs the dispatch-time worktree snapshot). A file
-    # the unit never touched since the dispatch has an EMPTY delta — it
-    # is excluded from the plan and stays dirty in the worktree (the
-    # dispatch warning's promise, made true). The mechanism needs both
-    # snapshots (``.status`` + ``.worktree``); on absence (legacy
-    # baseline, clean tree at dispatch, git failure) the legacy behavior
-    # holds — the whole diff enters the commit, as before.
-    delta_files: list[str] = []
-    no_delta: set[str] = set()
-    snap_sha = read_worktree_snapshot(project_dir, todo_id)
-    dirty_at_baseline = worktree_dirty_at_baseline(project_dir, todo_id)
-    if snap_sha and dirty_at_baseline:
-        try:
-            snap_diff = subprocess.run(
-                ["git", "diff", "--name-only", snap_sha],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,  # AUD04-11: hung git must not hang the commit gate
-            )
-        except (subprocess.SubprocessError, OSError):
-            snap_diff = None
-        if snap_diff is not None and snap_diff.returncode == 0:
-            touched_since_snap = {
-                _status_path(line)
-                for line in snap_diff.stdout.splitlines()
-                if line.strip()
-            }
-            for p in modified:
-                if p not in dirty_at_baseline:
-                    continue
-                if p in touched_since_snap:
-                    delta_files.append(p)
-                else:
-                    no_delta.add(p)
-            modified = [p for p in modified if p not in no_delta]
+    The prod path consumes the whole :class:`~awf.commit_delta.CandidatePlan`
+    — candidate tree, typed operations, claimed transfers, degraded paths —
+    not a flattened file list. A model refusal (unsupported state /
+    mixed-ownership rename pair) is returned as the refusal text (one home:
+    the assembler's).
 
-    # 2. Untracked files (new files worker created since baseline)
-    # QA-1: exclude pre-existing untracked files (existed before baseline).
-    # Read BASELINE-{todo_id}.untracked snapshot to filter them out.
+    ``claim`` — an explicit adoption (R2.2). ``None`` resolves the unit's own
+    claim channel through :func:`_claimed_paths`, so the approve-time
+    candidate and the gate-time candidate are assembled from the SAME claim
+    (one home: :func:`candidate_verify._build_plan` delegates here).
+
+    ``build_tree`` — materialise the candidate tree OID. ``False`` only
+    projects the file set / exclusions (:func:`_plan_split`, the legacy
+    reader) and skips the isolated-index staging.
+
+    This is the ONE assembler invocation: :func:`_plan_split` projects its
+    result instead of calling :class:`DeltaAssembler` a second time.
+    """
+    if claim is None:
+        claim = _claimed_paths(project_dir, todo_id)
     try:
-        untracked_result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11
-        )
-        if untracked_result.returncode == 0:
-            untracked_now = [
-                line.strip() for line in untracked_result.stdout.splitlines() if line.strip()
-            ]
-        else:
-            untracked_now = []
-    except (subprocess.SubprocessError, OSError):
-        untracked_now = []
+        plan = commit_delta.DeltaAssembler(
+            project_dir, todo_id, baseline_sha, claim=claim
+        ).assemble(strict=True, build_tree=build_tree)
+    except (commit_delta.GitModelError, commit_delta.DeltaConflictError) as exc:
+        return None, str(exc)
+    return plan, ""
 
-    # QA-1: filter out files that were already untracked at baseline time.
-    # BASELINE-{todo_id}.untracked was written by create_baseline().
-    baseline_untracked_path: Path | None = None
-    if todo_id:
-        candidate = project_dir / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
-        if candidate.exists():
-            baseline_untracked_path = candidate
-    if not baseline_untracked_path:
-        # AUD-2026-08-09.3: no baseline for this todo_id → don't grab another
-        # TODO's baseline (would include wrong files). Log warning, include all
-        # untracked (safer than filtering with wrong data).
-        if todo_id:
-            print(
-                f"warning: no BASELINE-{todo_id}.untracked found, "
-                "including all untracked files in commit",
-                file=sys.stderr,
-            )
 
-    pre_existing: set[str] = set()
-    if baseline_untracked_path and baseline_untracked_path.exists():
-        try:
-            pre_existing = {
-                line.strip()
-                for line in baseline_untracked_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            }
-            untracked_new = [f for f in untracked_now if f not in pre_existing]
-        except OSError:
-            untracked_new = untracked_now  # best effort — include all untracked
-    else:
-        untracked_new = untracked_now
+def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
+    """R2.3: the unit's commit file set + exclusions — now ONE assembly.
 
-    # Combine + dedupe (a file could be in both lists if it was deleted
-    # then re-created). Order: modified first, then new untracked.
-    seen: set[str] = set()
-    combined: list[str] = []
-    for path in [*modified, *untracked_new]:
-        if path and path not in seen:
-            seen.add(path)
-            combined.append(path)
+    The legacy baseline-diff pass (:func:`_legacy_plan_split`) supplies the
+    raw set; the :class:`~awf.commit_delta.DeltaAssembler` adds the TYPED
+    rename-pair ownership on top, re-admits the explicit claim channel
+    (:func:`_claimed_paths`, R2.2) as full files, and records any model
+    refusal. A model refusal (unsupported gitlink / unmerged / sparse / split
+    index, or a mixed-ownership rename pair) BLOCKS the plan — the gate turns
+    it into a refusal, never a silent legacy commit.
 
-    # TODO-0195: what the plan left outside (with the reason) — the raw
-    # baseline-diff set minus the commit set. REVIEW-F1: the reason is
-    # precise in BOTH branches — a path excluded because it is foreign
-    # staged (foreign_paths — baseline-anchored or the legacy staged-vs-
-    # baseline proxy) is "staged-at-baseline"/"staged" respectively;
-    # everything else left outside is a pre-existing untracked file.
-    files_set = set(combined)
-    excluded: list[tuple[str, str]] = []
-    for path in dict.fromkeys([*modified_raw, *untracked_now]):
-        if not path or path in files_set:
-            continue
-        if path in (foreign_paths or ()):
-            reason = "staged" if legacy else "staged-at-baseline"
-        elif path in no_delta:
-            reason = "pre-dispatch changes only (no unit delta)"
-        else:
-            reason = "pre-existing untracked"
-        excluded.append((path, reason))
+    Returns an empty :class:`PlanSplit` on a git error or no baseline (the
+    gate degrades to its no-changes path, as before).
 
+    ``PlanSplit`` is the flattened legacy projection of the same
+    :func:`_candidate_plan` the prod path consumes — no second assembler
+    call, so the file set cannot drift from the candidate's.
+    """
+    if not baseline_sha:
+        return PlanSplit(files=[])
+    candidate, refusal = _candidate_plan(
+        project_dir, baseline_sha, todo_id, build_tree=False
+    )
+    if candidate is None:
+        # An unsupported/unrepresentable state, or a mixed-ownership rename
+        # pair that cannot be isolated without stealing foreign work (roadmap
+        # R2.3): refuse the whole unit — never a silent legacy commit, never a
+        # silent drop of the pair. The refusal text is the assembler's (one
+        # home) — the plan does not restate it.
+        return PlanSplit(files=[], refusal=refusal)
     return PlanSplit(
-        files=combined,
-        excluded=sorted(excluded),
-        worker_staged=worker_staged,
-        legacy_fallback=legacy,
-        delta_files=sorted(delta_files),
+        files=list(candidate.files),
+        excluded=list(candidate.excluded),
+        worker_staged=list(candidate.worker_staged),
+        legacy_fallback=candidate.legacy_fallback,
+        delta_files=list(candidate.delta_files),
     )
 
 
@@ -488,65 +245,6 @@ def _files_changed_since_baseline(
     (POSIX). Empty list on error or no baseline.
     """
     return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
-
-
-def _all_changed_files(project_dir: Path) -> list[str]:
-    """No-baseline back-compat file set: everything ``git add -A`` used to
-    stage — tracked changes (staged, unstaged, deleted) plus untracked.
-
-    NUL-separated porcelain so unusual path names survive verbatim. A
-    staged rename/copy is TWO tokens ("R<state> target" + the bare source
-    name, state = the target's worktree status `` ``/``M``/``D``); both
-    are the user's index WIP and are consumed whole for every state,
-    neither contributes a path — the source token is not a path, and a
-    source name that looks like a status prefix (``git mv '?a b' ...``)
-    must not be parsed as one (REVIEW-0087 P3). Consuming the pair for
-    every state (not only the clean "R " one) is what keeps the RM/CM
-    pair's bare source token out of the path branch (REVIEW-0087 P4;
-    REVIEW-0104 F1: a worktree existence check on path entries was wider
-    than this angle — it dropped real " D" deletions, and a source tail
-    that happens to exist in the worktree would still leak). Entries the
-    user's index staged (R-03: the unit never stages — a staged-vs-HEAD
-    entry is the user's WIP and stays out of the plan, same rule as the
-    baseline path). Empty list on error.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain", "-z"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11
-        )
-        if result.returncode != 0:
-            return []
-        tokens = result.stdout.split("\0")
-        files: list[str] = []
-        seen: set[str] = set()
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if (
-                len(tok) >= 4
-                and tok[0] in ("R", "C")
-                and tok[1] in (" ", "M", "D")
-            ):
-                # staged rename/copy, any worktree state of the target
-                # ("R  target" / "RM target" / "RD target" + the bare
-                # source token) — the user's index WIP, consume both
-                # tokens, keep neither
-                i += 2
-                continue
-            if len(tok) >= 4 and tok[2] == " " and tok[0] in (" ", "?"):
-                path = tok[3:]
-                if path and path not in seen:
-                    seen.add(path)
-                    files.append(path)
-            i += 1
-        return files
-    except (subprocess.SubprocessError, OSError):
-        return []
 
 
 def read_baseline_sha(project_dir: Path, todo_id: str) -> str:
@@ -569,12 +267,19 @@ def read_baseline_sha(project_dir: Path, todo_id: str) -> str:
 def plan_files(
     project_dir: Path, baseline_sha: str = "", todo_id: str = ""
 ) -> list[str]:
-    """M2.1: the EXACT commit file set, read the way the plan reads it.
+    """M2.1 legacy reader: the EXACT commit file set, as the plan reads it.
 
     The baseline diff (A1 isolation) when ``baseline_sha`` is given, the
-    full change set (legacy back-compat) otherwise. ``build_commit_plan``
-    and the approve-time binding both go through this one function, so
-    their digests are computed over the same file set by construction.
+    full change set (legacy back-compat) otherwise.
+
+    R2.4: the prod plan path no longer goes through this function —
+    :func:`build_commit_plan` consumes the full :func:`_candidate_plan`
+    (candidate tree + typed operations), and the approve-time binding reuses
+    the evidence ``files_digest``. This stays for the legacy/no-baseline
+    fallbacks (:func:`_files_changed_since_baseline`, the no-candidate
+    approve branch) and for tests. It delegates to the SAME
+    :class:`~awf.commit_delta.DeltaAssembler`, so its file set cannot drift
+    from the candidate's.
     """
     if baseline_sha:
         return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
@@ -656,16 +361,27 @@ def build_commit_plan(
     verified = _read_verified_sha(project_dir, todo_id)
 
     if baseline_sha:
-        split = _plan_split(project_dir, baseline_sha, todo_id)
+        candidate, refusal = _candidate_plan(project_dir, baseline_sha, todo_id)
+        if candidate is None:
+            return CommitPlan(
+                todo_id=todo_id,
+                generation=generation,
+                verified_sha=verified,
+                files=(),
+                baseline_sha=baseline_sha,
+                refusal=refusal,
+            )
         return CommitPlan(
             todo_id=todo_id,
             generation=generation,
             verified_sha=verified,
-            files=tuple(split.files),
+            files=tuple(candidate.files),
             baseline_sha=baseline_sha,
-            excluded=tuple(split.excluded),
-            worker_staged=tuple(split.worker_staged),
-            delta_files=tuple(split.delta_files),
+            excluded=tuple(candidate.excluded),
+            worker_staged=tuple(candidate.worker_staged),
+            delta_files=tuple(candidate.delta_files),
+            candidate_tree=candidate.candidate_tree,
+            degraded=tuple(candidate.degraded),
         )
     return CommitPlan(
         todo_id=todo_id,
@@ -892,16 +608,84 @@ def binding_refusal(plan: CommitPlan, project_dir: Path, authorized_by: str) -> 
             "the APPROVE signal's binding has no valid files_digest — "
             "re-approve with awf_approve."
         )
-    files = plan_files(
-        project_dir, read_baseline_sha(project_dir, plan.todo_id), plan.todo_id
-    )
-    if files_digest(files) != expected_digest:
+    # One home (R2.4): the plan already carries the exact file set it will
+    # commit (built with the full CandidatePlan), so the binding is checked
+    # against ``plan.files`` — not re-assembled through the legacy split.
+    if files_digest(plan.files) != expected_digest:
         return (
             "the commit's file set differs from the set the approve covered "
             "(files digest mismatch) — the gate would commit files the "
             "supervisor did not verify. Re-approve on the current tree."
         )
     return ""
+
+
+def candidate_refusal(plan: CommitPlan, project_dir: Path) -> str:
+    """R2.4: the approval's candidate binding vs the tree the gate will commit.
+
+    The approve pins the CANDIDATE (candidate tree OID, contract digest,
+    environment digest, run generation, unit revision, degraded paths) into
+    the APPROVE signal. This check re-derives the same facts from the
+    current tree and refuses when any moved:
+
+    - HEAD moved → REPLAN (never a commit on top of a new HEAD);
+    - the TODO contract changed → evidence invalidated;
+    - the candidate content changed (blob/mode/path/degradation) →
+      evidence invalidated;
+    - the verification environment changed → evidence invalidated.
+
+    A legacy / hand-made binding (no R2.4 candidate fields at all) carries
+    no candidate evidence and is left to the M2.1 binding checks (the pre-R2.4
+    behavior) — this check cannot invalidate what was never bound. Returns
+    a refusal reason, or "" when the commit may proceed.
+    """
+    if not plan.todo_id:
+        return ""
+    binding = read_approval_binding(project_dir, plan.todo_id)
+    if binding is None:
+        return ""
+    # The discriminator is the PRESENCE of the R2.4 candidate field, not its
+    # truthiness: an EMPTY candidate (nothing to commit) has
+    # ``candidate_tree == ""`` yet still binds contract/environment/HEAD/
+    # unit_revision — a falsy check here would silently skip every R2.4
+    # invalidation for an empty unit.
+    if "candidate_tree" not in binding:
+        return ""  # legacy binding — no candidate evidence to enforce
+    from . import candidate_verify
+
+    stored = candidate_verify.CandidateEvidence.from_dict(
+        {**binding, "todo_id": plan.todo_id}
+    )
+    if stored is None:
+        return (
+            "the APPROVE signal's candidate evidence is unreadable — "
+            "re-verify the candidate and re-approve with fresh evidence."
+        )
+    # F-QA-3: the binding carries ``evidence_digest`` — the digest of its own
+    # binding fields. Re-derive it and refuse when a field was altered without
+    # the digest moving (a tampered unit_revision / candidate_tree / etc.).
+    expected_digest = binding.get("evidence_digest")
+    if isinstance(expected_digest, str) and expected_digest:
+        if stored.evidence_digest() != expected_digest:
+            return (
+                "the APPROVE signal's candidate evidence digest does not match "
+                "its binding fields — the binding was altered after the "
+                "approval. Re-verify the candidate and re-approve with fresh "
+                "evidence."
+            )
+    # The gate already holds the candidate tree it will commit (the plan was
+    # built with ``build_tree=True``), so hand those two facts to the
+    # validator instead of re-materialising the candidate a second time. A
+    # no-baseline plan carries no candidate tree → ``None`` lets the validator
+    # materialise (and refuse) exactly as before.
+    return candidate_verify.validate_evidence(
+        stored,
+        project_dir,
+        plan.todo_id,
+        plan.baseline_sha,
+        candidate_tree=plan.candidate_tree if plan.baseline_sha else None,
+        degraded=plan.degraded,
+    )
 
 
 def preexisting_approval_status(

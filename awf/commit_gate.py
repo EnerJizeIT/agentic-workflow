@@ -16,13 +16,16 @@ so the user's index is never opened — foreign staged entries can neither
 leak into the unit commit nor be unstaged by a failure rollback (A-01).
 
 R-03-F1 (TODO-0093): after a successful isolated commit the real index is
-synced for the plan's files (``_sync_real_index``) — otherwise it stays
-on the pre-commit base and the next unit's plan subtracts the unit's own
-committed files as "foreign" (A-17).
+synced for the plan's files — otherwise it stays on the pre-commit base
+and the next unit's plan subtracts the unit's own committed files as
+"foreign" (A-17). R2.5: that sync moved into the resumable
+publication protocol (``awf.publish._sync_owned_index``), which verifies
+each entry's captured content before re-pointing it, so a foreign or
+user-changed entry survives a reconciliation; this module keeps only the
+gate that delegates the commit to it.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -31,9 +34,24 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import commit_plan, git_utils, paths
-from ._atomic import atomic_write_text
+from . import commit_delta, commit_plan, git_utils, paths, publish
 from ._log import log as _log
+from .infra import managed_fs
+
+# R2.3: the delta-merge algorithm, the per-file delta staging and the
+# isolated-index git runner live in the DeltaAssembler module now (one home).
+# Re-exported under the legacy private names so existing importers — and tests
+# that call ``commit_gate._apply_unit_delta`` directly — keep working unchanged.
+_parse_delta_hunks = commit_delta.parse_delta_hunks
+_head_position = commit_delta.head_position
+_head_end_position = commit_delta.head_end_position
+_apply_unit_delta = commit_delta.apply_unit_delta
+#: One "is there a HEAD yet" rule for the whole commit path (REVIEW: the gate
+#: and the assembler shared a byte-identical copy before — one home, no twins).
+_has_head = commit_delta._has_head
+#: One isolated-index git runner for the whole commit path (commit_delta owns
+#: it; the gate's own commit/diff calls share it instead of a second copy).
+_git_isolated = commit_delta._git_isolated
 
 APPROVE_POLL_INTERVAL: int = 2
 
@@ -143,568 +161,11 @@ def build_commit_message(
     return subject + "\n\n" + "\n".join(body)
 
 
-def _has_head(project_dir: Path) -> bool:
-    """Does the repo have any commit yet (the first-commit case)?"""
-    try:
-        return subprocess.run(
-            ["git", "rev-parse", "--verify", "-q", "HEAD"],
-            cwd=project_dir,
-            capture_output=True,
-            timeout=30,  # AUD04-11
-        ).returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-def _git_isolated(
-    project_dir: Path, args: list[str], env: dict[str, str]
-) -> subprocess.CompletedProcess:
-    """Run one git command against the plan's throwaway index (R-03).
-
-    ``GIT_INDEX_FILE`` keeps every index operation — read-tree, add,
-    diff --cached, the commit itself, and the hooks' own git calls —
-    inside the temporary file. The user's ``.git/index`` is never opened.
-    """
-    return subprocess.run(
-        ["git", *args],
-        cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,  # AUD04-11: hung git must not hang the commit gate
-        env=env,
-    )
-
-
-def _sync_real_index(project_dir: Path, plan: commit_plan.CommitPlan) -> str:
-    """R-03-F1 (TODO-0093): re-point the user's index at the new HEAD for
-    the plan's files.
-
-    The commit ran on a throwaway ``GIT_INDEX_FILE`` — the user's index
-    still holds the pre-commit base for every plan file. Stale, it makes
-    the plan's files look "staged vs the new HEAD" (``git diff
-    --cached``): the next unit (baseline = the new HEAD) subtracts its own
-    committed files from the plan as "foreign" (incident A-17:
-    ``awf/metrics.py`` silently dropped from a unit commit), and
-    ``git status`` shows committed work as staged.
-
-    ``git reset -- <paths>`` is the pinpoint form: it re-points ONLY the
-    listed paths' index entries at the new HEAD — the working tree is not
-    touched and foreign staged entries outside the plan keep their state
-    (A-01).
-
-    Returns "" on success, the warning text on failure. The commit is
-    already made — a failed sync degrades to the old stale-index behavior
-    and must stay visible, not roll back a good commit.
-    """
-    if not plan.files:
-        return ""
-    try:
-        result = subprocess.run(
-            ["git", "reset", "-q", "HEAD", "--", *plan.files],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11: a hung git must not hang the commit gate
-        )
-    except (subprocess.SubprocessError, OSError) as e:
-        return f"index sync after the unit commit failed: {e}"
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        return (
-            f"index sync after the unit commit failed "
-            f"(rc={result.returncode}): {detail}"
-        )
-    return ""
-
-
 def _short_paths(paths_list: list[str], cap: int = 10) -> str:
     """The first ``cap`` paths for a refusal/audit message (… when more)."""
     shown = paths_list[:cap]
     more = len(paths_list) - len(shown)
     return ", ".join(shown) + (f" …({more} more)" if more else "")
-
-
-# ─── REPORTS33 (TODO-0204): the unit delta of a pre-dirty file ─────────
-
-
-def _parse_delta_hunks(
-    patch_text: str,
-) -> list[tuple[int, list[tuple[str, str]]]] | None:
-    """The ``@`` hunks of a unified diff as ``(base_pos, ops)`` pairs, or
-    None when the text is not a parseable text diff (binary, garbage).
-
-    ``base_pos`` — the 0-based position in the BASE content the hunk is
-    anchored at; ``ops`` — ``(op, text)`` lines with op in ``{' ', '-',
-    '+'}`` (a blank context line arrives as ``("", "")``-normalized to
-    ``(" ", "")``).
-    """
-    hunks: list[tuple[int, list[tuple[str, str]]]] = []
-    in_hunk = False
-    for line in patch_text.splitlines():
-        if line.startswith("@@"):
-            m = re.match(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@", line)
-            if m is None:
-                return None
-            in_hunk = True
-            hunks.append((int(m.group(1)) - 1, []))
-        elif in_hunk:
-            if line.startswith(("diff --git", "Binary files")):
-                in_hunk = False  # a next-file header (a pathspec keeps one)
-            elif line == "":
-                hunks[-1][1].append((" ", ""))  # a blank context line
-            elif line[:1] in (" ", "-", "+"):
-                hunks[-1][1].append((line[:1], line[1:]))
-            elif line.startswith("\\"):
-                continue  # "\ No newline at end of file"
-            else:
-                return None  # an unexpected line — not a text diff
-    if not hunks or not any(hunk for _, hunk in hunks):
-        return None
-    return hunks
-
-
-def _head_position(
-    snap_line: int,
-    pre_hunks: list[tuple[int, list[tuple[str, str]]]],
-) -> int:
-    """The 0-based position in HEAD of the snapshot line ``snap_line``
-    (QA F1, REVIEW 2026-10-12: the exact hunk anchor in HEAD coordinates).
-
-    ``pre_hunks`` — the parsed snapshot→HEAD diff (``_parse_delta_hunks``):
-    each hunk is ``(base_pos in snapshot coordinates, ops)`` with op in
-    ``{' ', '-', '+'}``. Insertions ('+') before the line raise its
-    position in HEAD, deletions ('-') before it lower it. A pre-dispatch
-    hunk that removes the line itself still yields a position (the line
-    is simply absent from HEAD — the caller's verbatim match fails and
-    degrades); a hunk that merely surrounds the line is exact.
-    """
-    shift = 0
-    for base_pos, ops in pre_hunks:
-        if base_pos > snap_line:
-            continue  # the hunk starts after the line — no effect
-        pos = base_pos
-        delta = 0
-        found = False
-        for op, _text in ops:
-            if op == "+":
-                delta += 1
-            elif op == "-":
-                delta -= 1
-            if op != "+":
-                if pos == snap_line:
-                    shift += delta
-                    found = True
-                    break
-                pos += 1
-        if not found:
-            # The line was deleted by this hunk (a '-' line), or the hunk
-            # ends before it: the full hunk delta applies either way.
-            shift += delta
-    return snap_line + shift
-
-
-def _head_end_position(
-    snap_end: int,
-    pre_hunks: list[tuple[int, list[tuple[str, str]]]],
-) -> int:
-    """The 0-based insertion position in HEAD of the snapshot BOUNDARY
-    ``snap_end`` (QA F8, REVIEW 2026-10-12: the unit's append point — one
-    past the LAST base-side line of its hunk).
-
-    A boundary sits BETWEEN lines, unlike a line in ``_head_position``:
-    a pre-dispatch insertion AT or before the boundary (a '+' of a
-    pre-hunk whose next base line starts at ``snap_end`` or earlier)
-    pushes the HEAD boundary past the inserted lines — the unit appended
-    after them; a pre-dispatch deletion of a line BEFORE the boundary
-    pulls it back. Context lines before the boundary are in both files
-    and shift nothing.
-    """
-    shift = 0
-    for base_pos, ops in pre_hunks:
-        if base_pos > snap_end:
-            continue  # the hunk starts after the boundary — no effect
-        pos = base_pos
-        for op, _text in ops:
-            if op == "+":
-                # an insertion sits at boundary ``pos`` (before the next
-                # base line, or at the pre-hunk's end)
-                if pos <= snap_end:
-                    shift += 1
-            else:
-                if op == "-" and pos < snap_end:
-                    shift -= 1
-                pos += 1
-    return snap_end + shift
-
-
-def _apply_unit_delta(
-    head_text: str,
-    patch_text: str,
-    pre_hunks: list[tuple[int, list[tuple[str, str]]]],
-) -> str | None:
-    """Apply the unit's edit (the snapshot→worktree diff) to the HEAD
-    content — the content the unit commit must carry.
-
-    A hunk's context may name pre-dispatch lines that are ABSENT from
-    HEAD: with a fuzz of up to 2 the hunk may fail to match only at its
-    EDGE context (deleted lines and the inner context must match
-    verbatim). The anchor is computed exactly in HEAD coordinates
-    (``_head_position``: the snapshot position shifted by the
-    pre-dispatch insertions/deletions before it) and only the EXACT
-    anchor is accepted: a verbatim match at ``anchor`` places the hunk,
-    a miss tries the next fuzz variant, and when no variant places it
-    the merge returns None (QA F1: an unbounded from-0 scan placed the
-    unit's edit into the first duplicated context far away; QA F3: a
-    window scan from ``anchor - window`` let a duplicate pattern inside
-    the window capture it; REVIEW iter 4: the window scan was removed
-    outright — it was unreachable for placeable hunks, whose anchors
-    are exact, and could only fire on an unplaceable hunk, where
-    matching anywhere is an F1-class corruption). A hunk whose base
-    side is all context (an empty seq after the fuzz drop) is never
-    placed either: its old placement at ``min(base_pos + shift,
-    len(target))`` was prepend semantics, ignoring both "the addition
-    comes AFTER the context" and the pre-dispatch shift — the unit's
-    lines could land in the middle (or the start) of the file silently
-    (QA F5); a placeable hunk matches a non-empty variant at its exact
-    anchor, otherwise the merge degrades. A hunk with no base side at
-    all (``base_pos < 0``: the file was emptied before the dispatch,
-    git ``@@ -0,0``) has no anchor in HEAD — the merge would splice at
-    a negative index and leak HEAD lines into the commit; it is
-    unplaceable and returns None (QA F4). CRLF content is never merged
-    either: ``splitlines()`` eats the ``\\r`` (in the HEAD line split and
-    the patch parse alike) and the join reassembles the file with LF —
-    a ``\\r`` in ``head_text`` or ``patch_text`` means the merge would
-    normalize the whole file's line endings silently (the worktree keeps
-    CRLF — phantom dirt after the commit), so it returns None (QA F7).
-    An append hunk (the unit's '+' lines at the END of the hunk) is
-    spliced at the HEAD coordinate of the hunk's END
-    (``_head_end_position``: pre-dispatch insertions at or past the
-    window end count, deletions before it count back), never at
-    ``anchor + len(seq)`` of the matched fuzz variant — a variant that
-    dropped trailing context would move the unit's lines to the start
-    of the window (F8a/F8b) and a pre-dispatch line added after the
-    window would keep sitting after them (F8c); both were silent
-    hybrids (QA F8, REVIEW 2026-10-12). The verbatim check at the
-    exact anchor still guards the window's placement (F1/F3 class).
-    Returns the merged content, or None when a hunk cannot be placed
-    (overlap, or no anchor) or the content is CRLF — the caller
-    degrades to the legacy full-worktree commit, loudly.
-    """
-    if "\r" in head_text or "\r" in patch_text:
-        # QA F7 (REVIEW 2026-10-12, iter 6): CRLF — see the docstring.
-        return None
-    hunks = _parse_delta_hunks(patch_text)
-    if hunks is None:
-        return None
-    target = head_text.splitlines()
-    shift = 0
-    for base_pos, hunk in hunks:
-        expected = [(op, text) for op, text in hunk if op != "+"]
-        lead_ctx = 0
-        while lead_ctx < len(expected) and expected[lead_ctx][0] == " ":
-            lead_ctx += 1
-        trail_ctx = 0
-        while (
-            trail_ctx < len(expected)
-            and expected[len(expected) - 1 - trail_ctx][0] == " "
-        ):
-            trail_ctx += 1
-        # QA F8 (REVIEW 2026-10-12): the unit's lines come at the END of
-        # the hunk (no base-side content after them) — an append hunk.
-        # Its insertion point is the HEAD coordinate of the hunk's END
-        # (one past the last base-side line), computed independently of
-        # the matched variant; ``anchor + len(seq)`` is NOT that point:
-        # a fuzz variant that dropped trailing context ends its window
-        # earlier, and splicing there moved the unit's lines to the
-        # start of the window (F8a/F8b) — silently, mid-file. A
-        # pre-dispatch line added after the window (F8c) likewise kept
-        # sitting after them.
-        first_plus = next((i for i, (op, _t) in enumerate(hunk) if op == "+"), None)
-        is_append = first_plus is not None and all(op == "+" for op, _t in hunk[first_plus:])
-        placed: tuple[int, int, list[str]] | None = None
-        for lead in range(0, min(2, lead_ctx) + 1):
-            for trail in range(0, min(2, trail_ctx) + 1):
-                if lead + trail > 2:
-                    continue
-                end = len(expected) - trail if trail else len(expected)
-                seq = [text for _, text in expected[lead:end]]
-                if not seq:
-                    # QA F5 (REVIEW 2026-10-12): the fuzz dropped the
-                    # whole base side — the variant has no anchor of its
-                    # own. The old placement at min(base_pos + shift,
-                    # len(target)) was prepend semantics: it ignored
-                    # both "the addition comes AFTER the context" and
-                    # the pre-dispatch shift, and could splice the
-                    # unit's lines into the middle (or the start) of
-                    # the file silently. Never place it: a placeable
-                    # hunk matches a non-empty variant at its exact
-                    # anchor, otherwise the merge degrades loudly below.
-                    continue
-                anchor = _head_position(base_pos + lead, pre_hunks) + shift
-                if anchor < 0 or target[anchor:anchor + len(seq)] != seq:
-                    # the exact anchor missed: the next fuzz variant,
-                    # never a search elsewhere — matching away from the
-                    # anchor means a duplicated context pattern
-                    # captured the edit (F1/F3 class).
-                    continue
-                if is_append:
-                    # The window itself is verified verbatim at its
-                    # exact anchor (the F1/F3 guard, the fuzz variant
-                    # only decides WHICH context lines the check keeps);
-                    # the unit's lines go at the mapped hunk END — the
-                    # pre-dispatch lines HEAD gained between the window
-                    # end and that end (``target[anchor + len(seq):
-                    # ins]``) stay put and the addition comes after
-                    # them.
-                    ins = _head_end_position(base_pos + len(expected), pre_hunks) + shift
-                    if ins < anchor + len(seq):
-                        # a pre-dispatch change inside the window would
-                        # have broken the verbatim match — this is
-                        # unreachable; degrade loudly rather than
-                        # splice anyway.
-                        continue
-                    e = 0
-                    kept: list[str] = []
-                    for op, text in hunk:
-                        if op == "+":
-                            continue
-                        if op == " " and lead <= e < end:
-                            kept.append(text)
-                        e += 1
-                    plus = [text for _op, text in hunk[first_plus:]]
-                    out = kept + target[anchor + len(seq) : ins] + plus
-                    placed = (anchor, ins - anchor, out)
-                else:
-                    out: list[str] = []
-                    e = 0
-                    for op, text in hunk:
-                        if op == "+":
-                            out.append(text)
-                        else:
-                            if op == " " and lead <= e < end:
-                                out.append(text)
-                            e += 1
-                    placed = (anchor, len(seq), out)
-                break
-            if placed is not None:
-                break
-        if placed is None:
-            return None
-        idx, span, out = placed
-        target = target[:idx] + out + target[idx + span:]
-        shift += len(out) - span
-    text = "\n".join(target)
-    if target and (not head_text or head_text.endswith("\n")):
-        text += "\n"
-    return text
-
-
-def _commit_delta_file(
-    project_dir: Path,
-    env: dict[str, str],
-    file: str,
-    snap_sha: str,
-    logs_dir: Path | None,
-) -> None:
-    """Commit ONLY the unit's own edit of a tracked-dirty-at-baseline file
-    (REPORTS33, TODO-0204) into the throwaway index.
-
-    The unit started from the dispatch-time worktree (the snapshot's
-    blob) and produced the current worktree; the commit must carry that
-    edit applied to the HEAD content, not the pre-dispatch WIP (which
-    stays in the worktree uncommitted). The unit's edit is the
-    snapshot→worktree diff applied to the HEAD content with the
-    edge-context fuzz (the pre-dispatch lines are absent from HEAD); on a
-    placeable failure (overlap, binary, CRLF line endings, any git
-    error) the file degrades to the legacy full-worktree commit —
-    loudly logged, never silent.
-    """
-    def _warn(msg: str) -> None:
-        print(f"WARNING: {msg}", file=sys.stderr)
-        if logs_dir is not None:
-            _log(logs_dir, msg)
-
-    def _degrade(why: str) -> None:
-        _warn(
-            f"REPORTS33 delta mechanism for {file!r}: {why} — the full "
-            "worktree content enters the unit commit (legacy behavior)"
-        )
-        add = _git_isolated(project_dir, ["add", "--", file], env)
-        if add.returncode != 0:
-            _warn(
-                f"REPORTS33 delta fallback add for {file!r} failed "
-                f"(rc={add.returncode}): "
-                f"{add.stderr.strip() or add.stdout.strip()}"
-            )
-
-    # the three content states: HEAD / snapshot (pre-dispatch) / worktree
-    head_r = _git_isolated(
-        project_dir, ["rev-parse", "-q", "--verify", f"HEAD:{file}"], env
-    )
-    if head_r.returncode != 0:
-        _degrade("the file is not in HEAD — the content merge is unavailable")
-        return
-    head_blob = head_r.stdout.strip()
-    snap_r = _git_isolated(
-        project_dir, ["rev-parse", "-q", "--verify", f"{snap_sha}:{file}"], env
-    )
-    snap_blob = snap_r.stdout.strip() if snap_r.returncode == 0 else None
-    if (project_dir / file).is_file():
-        unit_r = _git_isolated(project_dir, ["hash-object", "--", file], env)
-        unit_blob = unit_r.stdout.strip() if unit_r.returncode == 0 else None
-    else:
-        unit_blob = None
-
-    if unit_blob is None:
-        # The file is deleted in the worktree: a pre-dispatch deletion
-        # cannot "stay in the worktree" — commit the worktree state as-is.
-        _warn(
-            f"REPORTS33 delta mechanism for {file!r}: the file is missing "
-            "in the worktree (a deletion) — the worktree state is "
-            "committed as-is"
-        )
-        _git_isolated(project_dir, ["add", "--", file], env)
-        return
-    if snap_blob is None:
-        # Absent from the dispatch-time snapshot (deleted pre-dispatch);
-        # what the unit (re)created is wholly its own edit.
-        _warn(
-            f"REPORTS33 delta mechanism for {file!r}: the file is absent "
-            "from the dispatch-time snapshot (deleted pre-dispatch) — the "
-            "whole worktree content is committed as the unit's edit"
-        )
-        _git_isolated(project_dir, ["add", "--", file], env)
-        return
-    if unit_blob == snap_blob:
-        # The worktree matches the snapshot — the unit never touched the
-        # file since the dispatch (the plan would have excluded it; a
-        # worktree move between the plan and the commit). No delta: keep
-        # the HEAD index entry, the file is not in the commit.
-        _warn(
-            f"REPORTS33 delta mechanism for {file!r}: the worktree matches "
-            "the dispatch-time snapshot (no unit delta) — the file is "
-            "left out of the unit commit"
-        )
-        return
-
-    head_bytes = subprocess.run(
-        ["git", "cat-file", "blob", head_blob],
-        cwd=project_dir,
-        capture_output=True,
-        check=False,
-        timeout=30,  # AUD04-11
-        env=env,
-    )
-    if head_bytes.returncode != 0:
-        _degrade("the HEAD content could not be read")
-        return
-    try:
-        head_text = head_bytes.stdout.decode("utf-8")
-    except UnicodeDecodeError:
-        _degrade("binary content — the text merge is unavailable")
-        return
-    try:
-        diff_r = _git_isolated(
-            project_dir,
-            ["diff", "--no-renames", "--no-color", snap_sha, "--", file],
-            env,
-        )
-    except UnicodeDecodeError:
-        _degrade("the snapshot→worktree diff is not text")
-        return
-    if diff_r.returncode != 0:
-        _degrade(
-            f"the snapshot→worktree diff failed (rc={diff_r.returncode})"
-        )
-        return
-    # QA F1: the hunk anchors are computed in HEAD coordinates — the
-    # snapshot→HEAD (pre-dispatch) diff tells how snapshot line positions
-    # shift into HEAD. Without it the anchor is unknown: degrade loudly.
-    try:
-        pre_r = _git_isolated(
-            project_dir,
-            ["diff", "--no-renames", "--no-color", snap_sha, "HEAD", "--", file],
-            env,
-        )
-    except UnicodeDecodeError:
-        _degrade("the snapshot→HEAD diff is not text — the anchor is unavailable")
-        return
-    if pre_r.returncode != 0:
-        _degrade(f"the snapshot→HEAD diff failed (rc={pre_r.returncode})")
-        return
-    pre_hunks = _parse_delta_hunks(pre_r.stdout)
-    if pre_hunks is None:
-        _degrade("the snapshot→HEAD diff is not a parseable text diff")
-        return
-    # QA F7 (REVIEW 2026-10-12, iter 6): CRLF in the HEAD content or the
-    # unit diff — the text merge would normalize the line endings to LF
-    # silently (splitlines() eats the \r, the join reassembles with LF).
-    # Degrade loudly with the reason in the log; the legacy worktree
-    # commit keeps CRLF intact.
-    if "\r" in head_text or "\r" in diff_r.stdout:
-        _degrade(
-            "CRLF line endings in the HEAD content or the unit diff — "
-            "the text merge would normalize them to LF (line endings) — "
-            "no clean unit delta"
-        )
-        return
-    merged = _apply_unit_delta(head_text, diff_r.stdout, pre_hunks)
-    if merged is None:
-        _degrade(
-            "the unit edit cannot be merged into the HEAD content (it "
-            "overlaps the pre-dispatch edit, or a hunk has no anchor — "
-            "e.g. the file was emptied before the dispatch) — no clean "
-            "unit delta"
-        )
-        return
-    blob_r = subprocess.run(
-        ["git", "hash-object", "-w", "--stdin"],
-        cwd=project_dir,
-        input=merged,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=30,  # AUD04-11
-        env=env,
-    )
-    if blob_r.returncode != 0:
-        _degrade("the merged content could not be written as a blob")
-        return
-    # QA F2 (REVIEW 2026-10-12): the mode is the file's HEAD mode, not a
-    # hardcoded 100644 — an executable (100755) must not silently lose
-    # its exec bit in the delta commit.
-    mode_r = _git_isolated(
-        project_dir, ["ls-tree", "HEAD", "--", file], env
-    )
-    if mode_r.returncode != 0:
-        _degrade(
-            f"the HEAD mode could not be read (rc={mode_r.returncode})"
-        )
-        return
-    mode = mode_r.stdout.split()
-    if not mode or mode[0] not in ("100644", "100755", "120000"):
-        _degrade(
-            f"unexpected HEAD mode {mode[0] if mode else '?'} — refusing "
-            "to guess the file mode"
-        )
-        return
-    upd = _git_isolated(
-        project_dir,
-        [
-            "update-index",
-            "--cacheinfo",
-            f"{mode[0]},{blob_r.stdout.strip()},{file}",
-        ],
-        env,
-    )
-    if upd.returncode != 0:
-        _degrade(
-            "the merged content could not be seeded into the isolated index "
-            f"(rc={upd.returncode}): {upd.stderr.strip() or upd.stdout.strip()}"
-        )
-        return
 
 
 def _unit_already_committed(
@@ -728,13 +189,11 @@ def _unit_already_committed(
     if not baseline_sha or not todo_id:
         return False
     try:
-        result = subprocess.run(
-            ["git", "log", "--format=%s", f"{baseline_sha}..HEAD"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,  # AUD04-11: hung git must not hang the commit gate
+        # R2.5 architect-review: through the ONE runner the commit path
+        # already owns (``commit_delta``) instead of a second raw launch —
+        # the same cwd/timeout/capture contract, one place (AUD04-11).
+        result = _git_isolated(
+            project_dir, ["log", "--format=%s", f"{baseline_sha}..HEAD"]
         )
     except (subprocess.SubprocessError, OSError):
         return False
@@ -754,16 +213,20 @@ def _commit_via_isolated_index(
     plan: commit_plan.CommitPlan,
     message: str,
     logs_dir: Path | None = None,
+    *,
+    crash_at: str = "",
 ) -> commit_plan.CommitOutcome:
     """R-03: commit EXACTLY ``plan.files`` through a throwaway index.
 
     The isolated index is built from HEAD (when commits exist) plus the
-    plan's files and deleted in ``finally``. On success the user's index
-    is synced for the plan's files (R-03-F1: their entries re-pointed at
-    the new HEAD, so the next unit's plan does not subtract its own
-    committed files as "foreign"); foreign staged entries outside the
-    plan are never touched. On refusal or error the index is
-    byte-identical (nothing was ever staged into it).
+    plan's files and deleted in ``finally``. R2.5: the commit object, the
+    CAS ref move, the owned-index sync and the receipt are the resumable
+    protocol in :mod:`awf.publish`. The sync re-points only the plan files
+    whose real-index entry still equals the captured one (R-03-F1 — the
+    next unit's plan then does not subtract its own committed files as
+    "foreign"); a foreign or user-changed entry is left untouched and the
+    receipt records ``committed_with_reconciliation_required``. On refusal
+    or error the index is byte-identical (nothing was ever staged into it).
     """
     fd, index_path = tempfile.mkstemp(
         prefix=f"awf-commit-index-{plan.todo_id}-", suffix=".idx"
@@ -772,57 +235,20 @@ def _commit_via_isolated_index(
     env = {**os.environ, "GIT_INDEX_FILE": index_path}
     try:
         try:
-            # A 0-byte file is NOT a valid index for git (git 2.43: "index
-            # file smaller than expected") — initialize it properly first.
-            init = _git_isolated(project_dir, ["read-tree", "--empty"], env)
-            if init.returncode != 0:
-                return commit_plan.CommitOutcome(
-                    commit_plan.OUTCOME_ERROR,
-                    f"git read-tree --empty failed (rc={init.returncode}): "
-                    f"{init.stderr.strip()}",
-                )
-            if _has_head(project_dir):
-                read = _git_isolated(project_dir, ["read-tree", "HEAD"], env)
-                if read.returncode != 0:
-                    return commit_plan.CommitOutcome(
-                        commit_plan.OUTCOME_ERROR,
-                        f"git read-tree HEAD failed (rc={read.returncode}): "
-                        f"{read.stderr.strip()}",
-                    )
-            # REPORTS33 (TODO-0204): a tracked-dirty-at-baseline file is
-            # committed as the unit's delta ONLY (the pre-dispatch WIP
-            # stays in the worktree); everything else is added as before.
-            delta = set(plan.delta_files)
-            plain = [f for f in plan.files if f not in delta]
-            if plain:
-                add = _git_isolated(project_dir, ["add", "--", *plain], env)
-                if add.returncode != 0:
-                    return commit_plan.CommitOutcome(
-                        commit_plan.OUTCOME_ERROR,
-                        f"git add failed (rc={add.returncode}): "
-                        f"{add.stderr.strip() or add.stdout.strip()}",
-                    )
-            if delta:
-                snap_sha = commit_plan.read_worktree_snapshot(
-                    project_dir, plan.todo_id
-                )
-                if not snap_sha:
-                    # The plan marked delta files but the snapshot is gone
-                    # (moved out from under the gate) — legacy behavior.
-                    add = _git_isolated(
-                        project_dir, ["add", "--", *sorted(delta)], env
-                    )
-                    if add.returncode != 0:
-                        return commit_plan.CommitOutcome(
-                            commit_plan.OUTCOME_ERROR,
-                            f"git add failed (rc={add.returncode}): "
-                            f"{add.stderr.strip() or add.stdout.strip()}",
-                        )
-                else:
-                    for file in sorted(delta):
-                        _commit_delta_file(
-                            project_dir, env, file, snap_sha, logs_dir
-                        )
+            # R2.3: the ONE staging home — read-tree, plain add, and the
+            # per-file unit delta (REPORTS33) live in the DeltaAssembler
+            # module. The isolated index is initialised there too (a 0-byte
+            # file is not a valid index for git).
+            staged = commit_delta.stage_plan_into_index(
+                project_dir,
+                env,
+                list(plan.files),
+                list(plan.delta_files),
+                plan.todo_id,
+                logs_dir,
+            )
+            if staged:
+                return commit_plan.CommitOutcome(commit_plan.OUTCOME_ERROR, staged)
             if _has_head(project_dir):
                 diff = _git_isolated(project_dir, ["diff", "--cached", "--quiet"], env)
                 if diff.returncode == 0:
@@ -861,34 +287,48 @@ def _commit_via_isolated_index(
                         "then re-verify (or re-dispatch when the work is "
                         "genuinely missing).",
                     )
-            result = _git_isolated(project_dir, ["commit", "-m", message], env)
-        except (subprocess.SubprocessError, OSError) as e:
-            return commit_plan.CommitOutcome(
-                commit_plan.OUTCOME_ERROR, f"git commit failed: {e}"
+            # R2.5: the commit object, the intent, the CAS ref move, the
+            # owned-index sync and the receipt are one resumable protocol
+            # (``awf.publish``). ``env`` carries the already-staged isolated
+            # index; the user's real index is only touched by the verified
+            # owned-sync inside it.
+            outcome = publish.publish_from_env(
+                project_dir, plan, env, message, logs_dir, crash_at=crash_at
             )
-        if result.returncode != 0:
+        except publish.PublishError as e:
+            # D3 (R2.5 REVIEW, iter 5) + architector-review: a publication fact
+            # (intent/receipt/...) could not be written — ``publish._write_json``
+            # is the ONE writer and types BOTH the managed no-follow barrier
+            # (``ManagedPathError``) and a generic I/O refusal as ``PublishError``.
+            # Surface it as a typed outcome instead of letting a bare exception
+            # crash the stage. The message lives in ``e`` (it names the actual
+            # cause); the ref may already carry the unit's commit — a later
+            # publish resumes.
             return commit_plan.CommitOutcome(
                 commit_plan.OUTCOME_ERROR,
-                f"git commit failed (rc={result.returncode}): "
-                f"{result.stderr.strip() or result.stdout.strip()}",
+                f"publication fact refused (the ref may already carry the "
+                f"unit's commit; a later publish resumes safely): {e}",
             )
-        sha = _git_isolated(project_dir, ["rev-parse", "--short", "HEAD"], env)
-        if sha.returncode != 0:
+        except subprocess.SubprocessError as e:
+            # L2 (R2.5 REVIEW, iter 4): a git LAUNCH failure (timeout / the
+            # binary is missing) — this is honestly "the git command failed".
+            return commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_ERROR, f"git command failed: {e}"
+            )
+        except OSError as e:
+            # L2: an OSError here is NOT "the git commit failed" — the git
+            # steps report their own return codes. After the architector-review
+            # the fact writes type their own refusals (``PublishError``), so
+            # this branch is the remaining publication I/O: a git LAUNCH failure
+            # (``FileNotFoundError``) or a tree read. The ref may already carry
+            # the unit's commit, so name that instead of a false git diagnosis:
+            # a later cycle resumes safely (the pending intent is on disk).
             return commit_plan.CommitOutcome(
                 commit_plan.OUTCOME_ERROR,
-                "the commit was created but its sha could not be read",
+                f"publication I/O failed (the ref may already carry the "
+                f"unit's commit; a later publish resumes safely): {e}",
             )
-        # R-03-F1: the throwaway index never touched the user's one — its
-        # plan-file entries still hold the pre-commit base. Re-point them
-        # at the new HEAD (pinpoint: only the plan's paths).
-        sync_warning = _sync_real_index(project_dir, plan)
-        if sync_warning:
-            print(f"WARNING: {sync_warning}", file=sys.stderr)
-            if logs_dir is not None:
-                _log(logs_dir, f"R-03-F1: {sync_warning}")
-        return commit_plan.CommitOutcome(
-            commit_plan.OUTCOME_COMMITTED, "", sha.stdout.strip()
-        )
+        return outcome
     finally:
         try:
             os.unlink(index_path)
@@ -915,21 +355,101 @@ def _write_commit_audit(
         outcome.status == commit_plan.OUTCOME_REFUSED
         and outcome.reason.startswith(_PLAN_SKIP_INCONSISTENT)
     )
+    _write_commit_audit_record(
+        project_dir,
+        plan.todo_id,
+        _audit_record(
+            plan.todo_id,
+            outcome,
+            excluded=plan.excluded,
+            worker_staged=plan.worker_staged,
+            skip_inconsistent=skip_inconsistent,
+        ),
+        logs_dir,
+    )
+
+
+def _write_resume_audit(
+    project_dir: Path,
+    todo_id: str,
+    outcome: commit_plan.CommitOutcome,
+    logs_dir: Path,
+) -> None:
+    """R2.5 REVIEW (M1): the resume path reaches a committed unit BEFORE the
+    plan is built, so it must still leave the per-unit audit fact — the
+    TODO-0195 invariant «any post-plan outcome leaves the audit» covers a
+    resumed publish too. The plan's excluded/worker-staged detail is not
+    re-derived here (the resume builds no plan): the record carries the
+    outcome status, the commit OID and a ``resumed`` mark, which the
+    RUN-REPORT renders as the unit's commit line.
+    """
+    if not todo_id:
+        return
+    _write_commit_audit_record(
+        project_dir,
+        todo_id,
+        _audit_record(todo_id, outcome, resumed=True),
+        logs_dir,
+    )
+
+
+def _audit_record(
+    todo_id: str,
+    outcome: commit_plan.CommitOutcome,
+    *,
+    excluded: list | tuple = (),
+    worker_staged: list | tuple = (),
+    skip_inconsistent: bool = False,
+    resumed: bool = False,
+) -> dict:
+    """The ONE shape of ``COMMIT-AUDIT-{todo}.json``.
+
+    Two callers fill it: the plan path (excluded/worker-staged detail from
+    the plan) and the resume path (no plan — the outcome alone). Before this
+    the same keys were spelled as two literals next to each other, so a new
+    field had to be added in both or the RUN-REPORT readers would drift
+    (R2.5 architect-review). ``resumed`` and ``commit`` appear only on the
+    resume record: the commit OID has ONE home in status / RUN-REPORT
+    (``publish.publication_facts``), and the plan path keeps its historical
+    shape. The resume path needs it in the audit because it runs before any
+    plan is built.
+    """
     record = {
-        "todo_id": plan.todo_id,
+        "todo_id": todo_id,
         "status": outcome.status,
-        "excluded": [[p, r] for p, r in plan.excluded],
-        "worker_staged": list(plan.worker_staged),
+        "excluded": [[p, r] for p, r in excluded],
+        "worker_staged": list(worker_staged),
         "skip_inconsistent": skip_inconsistent,
         "skip_reason": outcome.reason if skip_inconsistent else "",
     }
+    if resumed:
+        record["commit"] = outcome.sha
+        record["resumed"] = True
+    return record
+
+
+def _write_commit_audit_record(
+    project_dir: Path,
+    todo_id: str,
+    record: dict,
+    logs_dir: Path,
+) -> None:
+    """Best-effort write of the audit record (a trace, not a gate).
+
+    R2.5 architector-review: this fact lives in ``.agentic/context`` and is
+    publication state like the intent/receipt, so it leaves through the SAME
+    managed no-follow writer (R1 carry a) — a symlinked ``.agentic`` /
+    ``context`` is refused instead of the audit landing outside the project.
+    The write stays best-effort: a barrier refusal is logged, not raised."""
+    path = paths.context_dir(project_dir) / f"COMMIT-AUDIT-{todo_id}.json"
     try:
-        atomic_write_text(
-            paths.context_dir(project_dir) / f"COMMIT-AUDIT-{plan.todo_id}.json",
-            json.dumps(record, ensure_ascii=False, indent=1) + "\n",
+        managed_fs.managed_write_text(
+            path,
+            publish.dumps_fact(record),
+            root=managed_fs.agentic_root_for(path.parent),
         )
-    except OSError as e:
-        _log(logs_dir, f"TODO-0195: commit audit for {plan.todo_id} not written: {e}")
+    except (OSError, managed_fs.ManagedPathError) as e:
+        _log(logs_dir, f"TODO-0195: commit audit for {todo_id} not written: {e}")
 
 
 def maybe_commit(
@@ -966,6 +486,28 @@ def maybe_commit(
     file-set digest) and any mismatch refuses the commit
     (``commit_plan.binding_refusal``).
     """
+    # R2.5: a crash mid-publication is resumable. A pending intent is keyed
+    # on the TODO and the exact commit OID, so it is resumed BEFORE any
+    # policy/verdict/fingerprint check — the ref may already carry the unit's
+    # own commit (whose approval was consumed), and re-running the checks on
+    # a moved HEAD would wrongly refuse. Resume creates NO second commit.
+    # The resume itself is fully typed (``publish.resume_if_pending`` owns the
+    # git/IO boundary and returns a typed outcome, including ERROR) — the
+    # stage does not re-wrap it here: the boundary lives IN the protocol, and
+    # the per-unit audit below covers both success and failure.
+    pending = publish.resume_if_pending(project_dir, todo_id, logs_dir)
+    if pending is not None:
+        _log(
+            logs_dir,
+            f"R2.5: resumed pending publication for {todo_id}: "
+            f"{pending.status} {pending.reason}".strip(),
+        )
+        # R2.5 REVIEW (M1): a resumed publish is a post-plan outcome too —
+        # leave the per-unit audit fact so the RUN-REPORT shows the unit's
+        # commit instead of silently dropping the section (TODO-0195).
+        _write_resume_audit(project_dir, todo_id, pending, logs_dir)
+        return pending
+
     if policy not in ("commit_and_next", "commit_and_report"):
         return commit_plan.CommitOutcome(
             commit_plan.OUTCOME_SKIPPED, f"policy {policy!r} does not commit"
@@ -984,6 +526,18 @@ def maybe_commit(
     def _finalize(outcome: commit_plan.CommitOutcome) -> commit_plan.CommitOutcome:
         _write_commit_audit(project_dir, plan, outcome, logs_dir)
         return outcome
+
+    # R2.3: a model refusal (unsupported gitlink / unmerged / sparse / split
+    # index, or a mixed-ownership rename pair) blocks the plan — refuse
+    # explicitly, never a silent legacy commit.
+    if plan.refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {plan.refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"R2.3: commit refused for {todo_id} — {plan.refusal}")
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, plan.refusal))
 
     refusal = commit_plan.verdict_refusal(plan, project_dir)
     if refusal:
@@ -1059,11 +613,36 @@ def maybe_commit(
         _log(logs_dir, f"M2.1: commit refused for {todo_id} — {refusal}")
         return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
 
+    # R2.4: the approval's candidate binding — the run generation and the
+    # file set are pinned by M2.1, but the CANDIDATE (its tree, contract,
+    # environment, degraded paths) must still describe the tree the gate
+    # will commit. A moved HEAD, a contract change or a content change
+    # invalidates the evidence → refuse (HEAD moved means REPLAN).
+    refusal = commit_plan.candidate_refusal(plan, project_dir)
+    if refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"R2.4: commit refused for {todo_id} — {refusal}")
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+
     if not plan.files:
         print(f"No changes to commit — skip commit at '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")
+        # R2.5: a unit that legitimately produced no code records a no-code
+        # receipt (with its own evidence) so the archive gate has a fact to
+        # stand on. An empty plan WITHOUT evidence is NOT laundered into a
+        # no-code outcome — no receipt is written and the archive refuses.
+        try:
+            publish.record_no_code_receipt(project_dir, todo_id)
+        except (publish.PublishError, OSError) as e:
+            _log(logs_dir, f"R2.5: no-code receipt not recorded for {todo_id}: {e}")
         return _finalize(
-            commit_plan.CommitOutcome(commit_plan.OUTCOME_SKIPPED, "no changes to commit")
+            commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_SKIPPED, commit_plan.NO_CHANGES_REASON
+            )
         )
 
     # TODO-0195: the worker staged files AFTER the baseline (a hard-rule

@@ -30,11 +30,9 @@ RESET_BASE_DIRS = ["inbox", "outbox", "context", "logs"]
 RESET_FULL_EXTRA = ["handoff", "inputs", "dashboards"]
 #: Runtime-содержимое, которое сносит ``init_project(force=True)``.
 #: Единый источник: ``_clean_runtime`` в ``lifecycle`` берёт список отсюда
-#: (force-init и его preview обязаны удалять одно и то же).
-INIT_RUNTIME_DIRS = [
-    "inbox", "outbox", "handoff", "done", "state",
-    "logs", "context", "dashboards", "inputs",
-]
+#: (force-init и его preview обязаны удалять одно и то же); сам список — из
+#: :data:`awf.paths.RUNTIME_DIRS`, общего с gitignore и dirty-policy.
+INIT_RUNTIME_DIRS = list(paths.RUNTIME_DIRS)
 #: A-1: ``init_project(force=True)`` после сноса runtime падает в общий
 #: путь инициализации и ПЕРЕЗАПИСЫВАЕТ скелет — эти файлы, а не только
 #: каталоги выше. Без них подтверждающий digest не видел бы перегенерацию

@@ -7,9 +7,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import paths
+
 _CONFIG_TEMPLATE = '''project:
   name: '{project_name}'
   root: "."
+
+# R2.2 (roadmap R2): the config schema version. A project WITHOUT this key is
+# a legacy project and keeps the pre-R2.2 dirty-tree behaviour ('warn').
+config_version: {config_version}
+
+discipline:
+  # The dirty-source-tree policy for a dispatch. The VERSION default (when
+  # this key is absent) is 'require_clean' — a dirty user source tree is
+  # refused before anything is reserved (no TODO, no baseline). A freshly
+  # initialized project legitimately holds uncommitted AWF skeleton
+  # (config.yaml, roles, phases, .gitignore), so init seeds the pre-R2.2-
+  # compatible 'isolate' discipline instead: dispatch proceeds and reports
+  # the excluded operations. Owners who want the strict discipline set
+  # 'require_clean' here (or drop this key and keep config_version).
+  #   require_clean — refuse a dirty source tree (no TODO, no baseline);
+  #   isolate       — dispatch anyway: snapshot + excluded table;
+  #   warn          — the legacy behaviour (warn and proceed).
+  dirty_policy: 'isolate'
 
 models:
   supervisor:
@@ -75,12 +95,11 @@ def update_gitignore(project_dir: Path) -> None:
     # AUD06-14: the .bak patterns are anchored under .agentic/ — an unanchored
     # '*.bak' made git untrack the USER's backup files repo-wide after init
     # (e.g. a Rails project's config.ru.bak at the root).
+    # The runtime-dir lines come from the ONE list (paths.RUNTIME_DIRS), the
+    # same source the init wipe and the dirty-policy check read.
     gitignore_block = (
-        ".agentic/inbox/\n.agentic/outbox/\n.agentic/context/\n"
-        ".agentic/handoff/\n.agentic/state/\n"
-        ".agentic/logs/\n.agentic/done/\n"
-        ".agentic/inputs/\n.agentic/dashboards/\n"
-        ".agentic/**/*.bak\n.agentic/**/*.bak-*\n"
+        "".join(f".agentic/{d}/\n" for d in paths.RUNTIME_DIRS)
+        + ".agentic/**/*.bak\n.agentic/**/*.bak-*\n"
     )
     gitignore = project_dir / ".gitignore"
     if gitignore.exists():

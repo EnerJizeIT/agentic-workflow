@@ -167,6 +167,26 @@ def work_fingerprint(
     return h.hexdigest()
 
 
+def verify_command_keys() -> tuple[str, ...]:
+    """The config keys holding the project's verify commands (one home)."""
+    return ("test_cmd", "lint_cmd", "typecheck_cmd", "build_cmd")
+
+
+def candidate_check_commands(config: dict, contract: dict | None) -> list[str]:
+    """R2.4: the commands a MANDATORY candidate check runs.
+
+    A TODO contract ``verify:`` block is the unit's own statement of what
+    proves it; without one, the project's configured ``test_cmd`` is the
+    fallback. No source → ``[]`` (the candidate check is "unavailable", the
+    same posture as the DF5-3 no-verify-commands case).
+    """
+    verify = (contract or {}).get("verify") if contract else None
+    if isinstance(verify, list) and verify:
+        return [str(c) for c in verify if str(c).strip()]
+    test_cmd = cfg_mod.get(config, "verification.test_cmd", "")
+    return [test_cmd] if test_cmd else []
+
+
 def run_verify_commands(
     config: dict,
     project_dir: str | Path | None = None,
@@ -186,9 +206,8 @@ def run_verify_commands(
     ``None`` (audit fix). When None, output is discarded (back-compat for
     ``cmd_baseline`` which captures tests separately).
     """
-    cmd_keys = ["test_cmd", "lint_cmd", "typecheck_cmd", "build_cmd"]
     cmds = []
-    for key in cmd_keys:
+    for key in verify_command_keys():
         val = cfg_mod.get(config, f"verification.{key}", "")
         if val:
             cmds.append(val)
@@ -288,7 +307,7 @@ def attempt_auto_done(
     # Supervisor review stage is still in place as a safety net.
     has_verify_cmds = any(
         cfg_mod.get(config, f"verification.{k}", "")
-        for k in ("test_cmd", "lint_cmd", "typecheck_cmd", "build_cmd")
+        for k in verify_command_keys()
     )
     if has_verify_cmds:
         if not run_verify_commands(config, project_dir=project_dir, todo_id=todo_id):

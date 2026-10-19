@@ -30,7 +30,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import git_utils, paths, todos
+from .. import paths, todos
 from .._atomic import atomic_write_text
 from .._errors import OperationRecoveryRequired
 from .._log import log as _log
@@ -588,6 +588,37 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
     )
 
 
+def transfer_exclusions(
+    project_dir: Path, todo_id: str
+) -> tuple[set[str], set[str], set[str]]:
+    """The transfer exclusions a unit adopted, resolved from its audit links:
+    ``(carry_over, include, claim)`` paths.
+
+    A baseline taken at dispatch excludes the adopted paths from
+    ``BASELINE-<todo>.untracked``; a LATER re-baseline (``awf run_next``) or a
+    baseline recompute must re-apply the SAME exclusions, or an adopted path
+    is re-listed as pre-existing and the commit gate silently drops it from
+    the unit commit. The three channels keep their own links
+    (``BASELINE-<todo>.carry_over`` / ``.include`` / ``.claim``) so the
+    resolution stays traceable; a missing/unreadable link resolves to the
+    empty set (best-effort, like the dispatch-time write).
+    """
+    from ..claim_changes import claim_exclusion_paths, read_claim_link
+    from ..include_untracked import read_include_list
+    from ..reject_files import read_carry_over_link, read_reject_files
+
+    carry_over: set[str] = set()
+    origin = read_carry_over_link(project_dir, todo_id)
+    if origin:
+        carry_over = set(read_reject_files(project_dir, origin) or [])
+    include = set(read_include_list(project_dir, todo_id) or [])
+    claim: set[str] = set()
+    origin = read_claim_link(project_dir, todo_id)
+    if origin:
+        claim = set(claim_exclusion_paths(project_dir, origin))
+    return carry_over, include, claim
+
+
 def _recompute_include_baseline(
     project_dir: Path, todo_id: str, include_files: list[str]
 ) -> None:
@@ -601,17 +632,22 @@ def _recompute_include_baseline(
     trace, or CLEARED when the list is empty (the files return to the
     untracked snapshot). The rest of the baseline (``.sha``/``.status``/
     logs) is untouched — the sha still pins the dispatch moment.
+
+    TODO-0221 M2: the OTHER transfer channels keep their exclusions too —
+    a carry-over / claim the unit adopted must not return to the untracked
+    snapshot just because the include list was recomputed (the same
+    invariant the dispatch baseline holds; resolved from the audit links).
     """
     from ..include_untracked import clear_include_audit, write_include_audit
 
-    untracked = git_utils.git_stdout(
-        project_dir, "ls-files", "--others", "--exclude-standard", check=False
-    )
-    excluded = set(include_files)
-    if excluded:
-        untracked = "\n".join(
-            ln for ln in untracked.splitlines() if ln.strip() not in excluded
-        )
+    carry_over, _include, claim = transfer_exclusions(project_dir, todo_id)
+    excluded = carry_over | claim | set(include_files)
+    # The snapshot's writers must share ONE body — the same printed-form
+    # bridge the dispatch baseline uses, or a non-ASCII adopted path survives
+    # here (see pipeline._untracked_snapshot).
+    from .pipeline import _untracked_snapshot
+
+    untracked = _untracked_snapshot(project_dir, excluded)
     atomic_write_text(
         paths.context_dir(project_dir) / f"BASELINE-{todo_id}.untracked", untracked
     )

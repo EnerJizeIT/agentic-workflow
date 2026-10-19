@@ -74,19 +74,22 @@ def validate_todo_id(todo_id: str) -> str:
     return todo_id
 
 
-def agentic_root_for(logs_dir: Path) -> Path:
-    """Anchor the no-follow walk for a managed logs directory.
+def agentic_root_for(path: Path) -> Path:
+    """Anchor the no-follow walk above the ``.agentic`` component.
 
-    The log writers live at ``<root>/.agentic/logs``; the walk must start
-    at ``<root>`` so the ``.agentic`` component itself is checked (a
-    symlinked ``.agentic`` is the S9-03 escape). For any other shape there
-    is no known project root, so anchor at the directory's own parent —
+    Managed paths live at ``<root>/.agentic/...`` (``logs``, ``state``,
+    ``context``, ...); the walk must start at ``<root>`` so the ``.agentic``
+    component itself is checked (a symlinked ``.agentic`` is the S9-03
+    escape). Walk up to the nearest component named ``.agentic`` and return
+    its parent, whatever the leaf directory is called. For any other shape
+    there is no known project root, so anchor at the path's own parent —
     never ``None``: the parent/leaf no-follow still runs instead of
     silently degrading to leaf-only (the F3 gap).
     """
-    if logs_dir.name == "logs" and logs_dir.parent.name == ".agentic":
-        return logs_dir.parent.parent
-    return logs_dir.parent
+    for anchor in (path, *path.parents):
+        if anchor.name == ".agentic":
+            return anchor.parent
+    return path.parent
 
 
 # ── symlink-free walks ──────────────────────────────────────────────────

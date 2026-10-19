@@ -33,6 +33,7 @@ def atomic_write_text(
     mode: int | None = None,
     *,
     durable: bool = False,
+    errors: str = "strict",
 ) -> None:
     """Write text file atomically via temp + rename.
 
@@ -58,7 +59,7 @@ def atomic_write_text(
         dir=str(path.parent),
     )
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
+        with os.fdopen(fd, "w", encoding=encoding, errors=errors) as f:
             f.write(content)
             if durable:
                 f.flush()

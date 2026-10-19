@@ -22,6 +22,10 @@ def run(args: Any) -> int:
             # U11 (B5): optional tree fingerprint from verify time; the API
             # refuses when the tree moved since (see awf tree-sha).
             verified_sha=getattr(args, "verified_sha", "") or "",
+            # R2.4 (F-QA-4): --confirm-degraded lets the terminal approve a
+            # legitimate full-file degradation event (the API flag was not
+            # reachable from the CLI before).
+            confirm_degraded=bool(getattr(args, "confirm_degraded", False)),
         )
     except api.AwfApiError as e:
         print(str(e))
