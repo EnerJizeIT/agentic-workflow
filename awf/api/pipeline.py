@@ -357,6 +357,7 @@ def approve_commit(
     *,
     evidence: str = "",
     verified_sha: str = "",
+    confirm_degraded: bool = False,
 ) -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
 
@@ -408,6 +409,34 @@ def approve_commit(
     run_active = bool(run and run.get("active"))
     evidence_file = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
     verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
+
+    # R2.4 (roadmap R2): in an active run the approval is bound to a
+    # MATERIALISED CANDIDATE, not to the dirty worktree. The candidate tree
+    # is built through the R2.3 assembler (isolated index, the user's index
+    # is never opened) and the mandatory candidate check runs in a throwaway
+    # worktree — a green run in the original dirty worktree does NOT replace
+    # it. The evidence (candidate tree OID, contract digest, environment
+    # digest, generation, unit revision, degraded paths) is stored and its
+    # digest rides in the APPROVE binding; the gate re-derives it and refuses
+    # on any change.
+    from .. import candidate_verify as _candidate_verify
+    from .. import commit_plan as _commit_plan
+
+    def _discard_candidate_evidence() -> None:
+        # A-04 (audit M1 / PA-1): a refused approve must leave NO evidence
+        # artefact. The evidence is written only on a successful verdict
+        # (below), but a stale CANDIDATE-<todo>.json from an EARLIER
+        # successful approve would survive a refusal — verify_pack reads it
+        # as a valid candidate and misreports a refused unit as approved.
+        # One home for the invariant: clean on ENTRY, before any precheck
+        # (missing evidence= / missing verified_sha=) or verdict can refuse,
+        # so no refusal branch can be forgotten (the M1 → PA-1 recurrence).
+        try:
+            _candidate_verify.evidence_path(project_dir, todo_id).unlink()
+        except OSError:
+            pass
+
+    _discard_candidate_evidence()
 
     verified_fp = ""
     if verified_sha.strip():
@@ -463,6 +492,12 @@ def approve_commit(
             "commit gate would commit a tree you did not verify."
         )
 
+    baseline_sha = _commit_plan.read_baseline_sha(project_dir, todo_id)
+    # The candidate itself is NOT built yet (M2): a reject/conflict verdict
+    # is resolved first (below), so a refused unit does not pay for the
+    # mandatory check (a full test run in a throwaway worktree) only to
+    # discard it.
+
     # SPEC A-run (second tier): record the verdict in the run diary.
     # AUD05-05 (rest): computed from the FRESH state inside the lock
     # (update_run), not from the snapshot read above. If a reject landed
@@ -517,7 +552,10 @@ def approve_commit(
 
     if conflict:
         # Refused: no APPROVE signal, no VERIFIED fingerprint. The
-        # reject's REVIEW file and diary entries are untouched.
+        # reject's REVIEW file and diary entries are untouched. The stale
+        # candidate evidence was already cleared on entry (A-04), so the
+        # refusal cannot leave a file verify_pack would read as a valid
+        # candidate for the rejected unit.
         return ApproveResult(
             todo_id=todo_id,
             signal_file="",
@@ -530,6 +568,40 @@ def approve_commit(
                 "— the commit gate stays closed. Resolve the reject first."
             ),
         )
+
+    # R2.4 (roadmap R2): the candidate is materialised and its mandatory
+    # check runs HERE, past the reject/conflict verdict (M2) — a unit
+    # already counted as rejected never pays for the check. A run-mode
+    # approve with no baseline cannot define a candidate — the candidate
+    # binding is skipped (the pre-R2.4 path); the M2.1 binding still
+    # applies. With a baseline the candidate is mandatory.
+    built = _candidate_verify.build_evidence(
+        project_dir,
+        todo_id,
+        baseline_sha,
+        confirm_degraded=confirm_degraded,
+    ) if (run_active and baseline_sha) else None
+    if built is not None and built.refusal:
+        # A-04: the stale evidence was already cleared on entry; this
+        # refusal writes nothing new.
+        raise AwfApiError(
+            f"candidate verification refused the approval for {todo_id}: "
+            f"{built.refusal} No APPROVE signal, no verdict — fix the "
+            "candidate (or confirm a legitimate degradation) and re-approve."
+        )
+    candidate_evidence = built.evidence if built is not None else None
+
+    # R2.4 (F-QA-1): write the candidate evidence ONLY after the verdict
+    # succeeded — a conflict-refused approve must leave no artefact behind
+    # (A-04). The evidence is built above (it also feeds the APPROVE binding
+    # below); the write is the side effect, and it belongs past the verdict.
+    if candidate_evidence is not None:
+        try:
+            _candidate_verify.write_evidence(project_dir, candidate_evidence)
+        except OSError as e:
+            raise AwfApiError(
+                f"candidate evidence could not be written for {todo_id}: {e}"
+            ) from e
 
     # A-15: the fingerprint is written BEFORE the APPROVE signal becomes
     # visible. The commit gate enforces the file only while it exists, so
@@ -552,7 +624,6 @@ def approve_commit(
         # force-restarted run refuses the stale approval instead of
         # committing on it. Outside a run the signal stays an empty
         # marker (legacy behavior).
-        from .. import commit_plan as _commit_plan
         from .. import run_state as _run_state
 
         gen = approved_generation[0]
@@ -562,13 +633,27 @@ def approve_commit(
             # binding only against an ACTIVE run, and a newer run that
             # starts before the commit fails closed on the mismatch.
             gen = _run_state.generation_of(run or {})
-        baseline_sha = _commit_plan.read_baseline_sha(project_dir, todo_id)
-        files = _commit_plan.plan_files(project_dir, baseline_sha, todo_id)
+        if candidate_evidence is not None:
+            # R2.4: the candidate evidence ALREADY carries the file-set
+            # digest of the plan the supervisor checked — reuse it (one
+            # assembly, not a second one next to the candidate).
+            files_digest = candidate_evidence.files_digest
+        else:
+            files = _commit_plan.plan_files(project_dir, baseline_sha, todo_id)
+            files_digest = _commit_plan.files_digest(files)
         binding = {
             "generation": gen,
             "verified_sha": verified_fp,
-            "files_digest": _commit_plan.files_digest(files),
+            "files_digest": files_digest,
         }
+        if candidate_evidence is not None:
+            # R2.4: the candidate binding — the gate re-derives these from
+            # the current tree (candidate_refusal) and refuses on a change.
+            # ONE schema (binding_projection), not a hand-copied list: a
+            # field added to the evidence cannot desync the signal from its
+            # evidence_digest.
+            binding.update(candidate_evidence.binding_projection())
+            binding["evidence_digest"] = candidate_evidence.evidence_digest()
         atomic_write_text(signal, json.dumps(binding, sort_keys=True) + "\n")
     else:
         signal.touch()

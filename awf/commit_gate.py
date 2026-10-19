@@ -536,6 +536,21 @@ def maybe_commit(
         _log(logs_dir, f"M2.1: commit refused for {todo_id} — {refusal}")
         return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
 
+    # R2.4: the approval's candidate binding — the run generation and the
+    # file set are pinned by M2.1, but the CANDIDATE (its tree, contract,
+    # environment, degraded paths) must still describe the tree the gate
+    # will commit. A moved HEAD, a contract change or a content change
+    # invalidates the evidence → refuse (HEAD moved means REPLAN).
+    refusal = commit_plan.candidate_refusal(plan, project_dir)
+    if refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"R2.4: commit refused for {todo_id} — {refusal}")
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+
     if not plan.files:
         print(f"No changes to commit — skip commit at '{stage_name}'.", file=sys.stderr)
         _log(logs_dir, f"A1: no diff vs baseline at {stage_name}")

@@ -91,6 +91,15 @@ class CommitPlan:
     # OUTCOME_REFUSED with this reason BEFORE staging anything; never a
     # silent legacy commit. "" when the plan is usable.
     refusal: str = ""
+    # R2.4 / добор 0222: the FULL CandidatePlan is consumed on the prod path
+    # now — the candidate tree OID and the degraded (full-file) paths ride on
+    # the plan, so :func:`candidate_refusal` pins the candidate the gate will
+    # actually commit (not a flattened file list). "" / () when the no-baseline
+    # path was used. ``CandidatePlan.baseline_digest`` / ``head_expected`` are
+    # NOT copied: the gate re-derives HEAD through the evidence validator and
+    # reads no baseline digest, so those two were write-only here.
+    candidate_tree: str = ""
+    degraded: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +149,45 @@ def _claimed_paths(project_dir: Path, todo_id: str) -> list[str]:
     return sorted(claim)
 
 
+def _candidate_plan(
+    project_dir: Path,
+    baseline_sha: str,
+    todo_id: str = "",
+    claim: tuple[str, ...] | list[str] | None = None,
+    *,
+    build_tree: bool = True,
+) -> tuple[commit_delta.CandidatePlan | None, str]:
+    """R2.4: the FULL candidate plan or (None, refusal).
+
+    The prod path consumes the whole :class:`~awf.commit_delta.CandidatePlan`
+    — candidate tree, typed operations, claimed transfers, degraded paths —
+    not a flattened file list. A model refusal (unsupported state /
+    mixed-ownership rename pair) is returned as the refusal text (one home:
+    the assembler's).
+
+    ``claim`` — an explicit adoption (R2.2). ``None`` resolves the unit's own
+    claim channel through :func:`_claimed_paths`, so the approve-time
+    candidate and the gate-time candidate are assembled from the SAME claim
+    (one home: :func:`candidate_verify._build_plan` delegates here).
+
+    ``build_tree`` — materialise the candidate tree OID. ``False`` only
+    projects the file set / exclusions (:func:`_plan_split`, the legacy
+    reader) and skips the isolated-index staging.
+
+    This is the ONE assembler invocation: :func:`_plan_split` projects its
+    result instead of calling :class:`DeltaAssembler` a second time.
+    """
+    if claim is None:
+        claim = _claimed_paths(project_dir, todo_id)
+    try:
+        plan = commit_delta.DeltaAssembler(
+            project_dir, todo_id, baseline_sha, claim=claim
+        ).assemble(strict=True, build_tree=build_tree)
+    except (commit_delta.GitModelError, commit_delta.DeltaConflictError) as exc:
+        return None, str(exc)
+    return plan, ""
+
+
 def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
     """R2.3: the unit's commit file set + exclusions — now ONE assembly.
 
@@ -153,20 +201,23 @@ def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> Plan
 
     Returns an empty :class:`PlanSplit` on a git error or no baseline (the
     gate degrades to its no-changes path, as before).
+
+    ``PlanSplit`` is the flattened legacy projection of the same
+    :func:`_candidate_plan` the prod path consumes — no second assembler
+    call, so the file set cannot drift from the candidate's.
     """
     if not baseline_sha:
         return PlanSplit(files=[])
-    try:
-        candidate = commit_delta.DeltaAssembler(
-            project_dir, todo_id, baseline_sha, claim=_claimed_paths(project_dir, todo_id)
-        ).assemble(strict=True)
-    except (commit_delta.GitModelError, commit_delta.DeltaConflictError) as exc:
+    candidate, refusal = _candidate_plan(
+        project_dir, baseline_sha, todo_id, build_tree=False
+    )
+    if candidate is None:
         # An unsupported/unrepresentable state, or a mixed-ownership rename
-        # pair that cannot be isolated without stealing foreign work
-        # (roadmap R2.3): refuse the whole unit — never a silent legacy
-        # commit, never a silent drop of the pair. The refusal text is the
-        # assembler's (one home) — the plan does not restate it.
-        return PlanSplit(files=[], refusal=str(exc))
+        # pair that cannot be isolated without stealing foreign work (roadmap
+        # R2.3): refuse the whole unit — never a silent legacy commit, never a
+        # silent drop of the pair. The refusal text is the assembler's (one
+        # home) — the plan does not restate it.
+        return PlanSplit(files=[], refusal=refusal)
     return PlanSplit(
         files=list(candidate.files),
         excluded=list(candidate.excluded),
@@ -210,12 +261,19 @@ def read_baseline_sha(project_dir: Path, todo_id: str) -> str:
 def plan_files(
     project_dir: Path, baseline_sha: str = "", todo_id: str = ""
 ) -> list[str]:
-    """M2.1: the EXACT commit file set, read the way the plan reads it.
+    """M2.1 legacy reader: the EXACT commit file set, as the plan reads it.
 
     The baseline diff (A1 isolation) when ``baseline_sha`` is given, the
-    full change set (legacy back-compat) otherwise. ``build_commit_plan``
-    and the approve-time binding both go through this one function, so
-    their digests are computed over the same file set by construction.
+    full change set (legacy back-compat) otherwise.
+
+    R2.4: the prod plan path no longer goes through this function —
+    :func:`build_commit_plan` consumes the full :func:`_candidate_plan`
+    (candidate tree + typed operations), and the approve-time binding reuses
+    the evidence ``files_digest``. This stays for the legacy/no-baseline
+    fallbacks (:func:`_files_changed_since_baseline`, the no-candidate
+    approve branch) and for tests. It delegates to the SAME
+    :class:`~awf.commit_delta.DeltaAssembler`, so its file set cannot drift
+    from the candidate's.
     """
     if baseline_sha:
         return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
@@ -297,17 +355,27 @@ def build_commit_plan(
     verified = _read_verified_sha(project_dir, todo_id)
 
     if baseline_sha:
-        split = _plan_split(project_dir, baseline_sha, todo_id)
+        candidate, refusal = _candidate_plan(project_dir, baseline_sha, todo_id)
+        if candidate is None:
+            return CommitPlan(
+                todo_id=todo_id,
+                generation=generation,
+                verified_sha=verified,
+                files=(),
+                baseline_sha=baseline_sha,
+                refusal=refusal,
+            )
         return CommitPlan(
             todo_id=todo_id,
             generation=generation,
             verified_sha=verified,
-            files=tuple(split.files),
+            files=tuple(candidate.files),
             baseline_sha=baseline_sha,
-            excluded=tuple(split.excluded),
-            worker_staged=tuple(split.worker_staged),
-            delta_files=tuple(split.delta_files),
-            refusal=split.refusal,
+            excluded=tuple(candidate.excluded),
+            worker_staged=tuple(candidate.worker_staged),
+            delta_files=tuple(candidate.delta_files),
+            candidate_tree=candidate.candidate_tree,
+            degraded=tuple(candidate.degraded),
         )
     return CommitPlan(
         todo_id=todo_id,
@@ -534,16 +602,84 @@ def binding_refusal(plan: CommitPlan, project_dir: Path, authorized_by: str) -> 
             "the APPROVE signal's binding has no valid files_digest — "
             "re-approve with awf_approve."
         )
-    files = plan_files(
-        project_dir, read_baseline_sha(project_dir, plan.todo_id), plan.todo_id
-    )
-    if files_digest(files) != expected_digest:
+    # One home (R2.4): the plan already carries the exact file set it will
+    # commit (built with the full CandidatePlan), so the binding is checked
+    # against ``plan.files`` — not re-assembled through the legacy split.
+    if files_digest(plan.files) != expected_digest:
         return (
             "the commit's file set differs from the set the approve covered "
             "(files digest mismatch) — the gate would commit files the "
             "supervisor did not verify. Re-approve on the current tree."
         )
     return ""
+
+
+def candidate_refusal(plan: CommitPlan, project_dir: Path) -> str:
+    """R2.4: the approval's candidate binding vs the tree the gate will commit.
+
+    The approve pins the CANDIDATE (candidate tree OID, contract digest,
+    environment digest, run generation, unit revision, degraded paths) into
+    the APPROVE signal. This check re-derives the same facts from the
+    current tree and refuses when any moved:
+
+    - HEAD moved → REPLAN (never a commit on top of a new HEAD);
+    - the TODO contract changed → evidence invalidated;
+    - the candidate content changed (blob/mode/path/degradation) →
+      evidence invalidated;
+    - the verification environment changed → evidence invalidated.
+
+    A legacy / hand-made binding (no R2.4 candidate fields at all) carries
+    no candidate evidence and is left to the M2.1 binding checks (the pre-R2.4
+    behavior) — this check cannot invalidate what was never bound. Returns
+    a refusal reason, or "" when the commit may proceed.
+    """
+    if not plan.todo_id:
+        return ""
+    binding = read_approval_binding(project_dir, plan.todo_id)
+    if binding is None:
+        return ""
+    # The discriminator is the PRESENCE of the R2.4 candidate field, not its
+    # truthiness: an EMPTY candidate (nothing to commit) has
+    # ``candidate_tree == ""`` yet still binds contract/environment/HEAD/
+    # unit_revision — a falsy check here would silently skip every R2.4
+    # invalidation for an empty unit.
+    if "candidate_tree" not in binding:
+        return ""  # legacy binding — no candidate evidence to enforce
+    from . import candidate_verify
+
+    stored = candidate_verify.CandidateEvidence.from_dict(
+        {**binding, "todo_id": plan.todo_id}
+    )
+    if stored is None:
+        return (
+            "the APPROVE signal's candidate evidence is unreadable — "
+            "re-verify the candidate and re-approve with fresh evidence."
+        )
+    # F-QA-3: the binding carries ``evidence_digest`` — the digest of its own
+    # binding fields. Re-derive it and refuse when a field was altered without
+    # the digest moving (a tampered unit_revision / candidate_tree / etc.).
+    expected_digest = binding.get("evidence_digest")
+    if isinstance(expected_digest, str) and expected_digest:
+        if stored.evidence_digest() != expected_digest:
+            return (
+                "the APPROVE signal's candidate evidence digest does not match "
+                "its binding fields — the binding was altered after the "
+                "approval. Re-verify the candidate and re-approve with fresh "
+                "evidence."
+            )
+    # The gate already holds the candidate tree it will commit (the plan was
+    # built with ``build_tree=True``), so hand those two facts to the
+    # validator instead of re-materialising the candidate a second time. A
+    # no-baseline plan carries no candidate tree → ``None`` lets the validator
+    # materialise (and refuse) exactly as before.
+    return candidate_verify.validate_evidence(
+        stored,
+        project_dir,
+        plan.todo_id,
+        plan.baseline_sha,
+        candidate_tree=plan.candidate_tree if plan.baseline_sha else None,
+        degraded=plan.degraded,
+    )
 
 
 def preexisting_approval_status(

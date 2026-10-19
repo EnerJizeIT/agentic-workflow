@@ -451,6 +451,17 @@ def _build_parser():
              "changed after verification.",
     )
     p_approve.add_argument(
+        "--confirm-degraded",
+        dest="confirm_degraded",
+        action="store_true",
+        # R2.4 (F-QA-4): a full-file degradation event enters the commit only
+        # by an explicit confirmation tied to the plan digest. The API flag
+        # existed but was unreachable from the CLI — the legitimate
+        # degradation could not be approved from the terminal.
+        help="R2.4: confirm a full-file degradation event bound to the plan "
+             "digest (a warning alone must not admit foreign work).",
+    )
+    p_approve.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",

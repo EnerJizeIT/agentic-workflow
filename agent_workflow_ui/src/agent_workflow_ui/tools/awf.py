@@ -1575,6 +1575,7 @@ async def awf_approve(
     *,
     evidence: str = "",
     verified_sha: str = "",
+    confirm_degraded: bool = False,
 ) -> dict[str, Any]:
     """Approve auto-commit for a TODO in --auto mode.
 
@@ -1598,6 +1599,11 @@ async def awf_approve(
             no APPROVE signal is published. Outside a run the parameter
             is optional (behavior as before). On match the fingerprint is
             stored to .agentic/context/VERIFIED-{todo}.sha.
+        confirm_degraded: R2.4 — confirm a full-file degradation event bound
+            to the plan digest. Without it an approval whose candidate
+            degrades a file to its full worktree content is refused (a
+            warning alone must not admit foreign work); with it the full
+            file enters the commit.
 
     Returns:
         Dict with: todo_id, signal_file (path to APPROVE-*.ready),
@@ -1614,6 +1620,7 @@ async def awf_approve(
         todo_id=todo_id,
         evidence=evidence,
         verified_sha=verified_sha,
+        confirm_degraded=confirm_degraded,
     )
     if response.get("status") != "ok":
         return response

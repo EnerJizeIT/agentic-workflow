@@ -883,6 +883,7 @@ def stage_delta_file(
     file: str,
     snap_sha: str,
     logs_dir: Path | None,
+    degraded: list[str] | None = None,
 ) -> None:
     """Commit ONLY the unit's own edit of a tracked-dirty-at-baseline file
     into the throwaway index (REPORTS33, TODO-0204).
@@ -890,6 +891,12 @@ def stage_delta_file(
     On a placeable failure (overlap, binary, CRLF line endings, a symlink,
     any git error) the file degrades to the legacy full-worktree commit —
     loudly logged, never silent.
+
+    R2.4 (roadmap R2.3-4): ``degraded`` — when a full-file degradation
+    happens, the path is appended so the CandidatePlan can BIND the fact
+    (a candidate digest that includes the degraded paths). The full file
+    then enters the commit only by an explicit approval tied to that
+    digest; a bare warning is never consent.
 
     The ``--no-renames`` on the two per-file diffs is DELIBERATE, not the
     old gate's global policy: each runs with an explicit ``-- <file>``
@@ -904,11 +911,16 @@ def stage_delta_file(
         if logs_dir is not None:
             _log(logs_dir, msg)
 
+    def _mark_degraded() -> None:
+        if degraded is not None and file not in degraded:
+            degraded.append(file)
+
     def _degrade(why: str) -> None:
         _warn(
             f"REPORTS33 delta mechanism for {file!r}: {why} — the full "
             "worktree content enters the unit commit (legacy behavior)"
         )
+        _mark_degraded()
         add = _git_isolated(project_dir, ["add", "--", file], env)
         if add.returncode != 0:
             _warn(
@@ -948,6 +960,7 @@ def stage_delta_file(
             "from the dispatch-time snapshot (deleted pre-dispatch) — the "
             "whole worktree content is committed as the unit's edit"
         )
+        _mark_degraded()
         _git_isolated(project_dir, ["add", "--", file], env)
         return
     if unit_blob == snap_blob:
@@ -1094,6 +1107,7 @@ def stage_plan_into_index(
     delta_files: list[str] | tuple[str, ...],
     todo_id: str,
     logs_dir: Path | None,
+    degraded: list[str] | None = None,
 ) -> str:
     """Stage the plan's files into the throwaway index (one staging home).
 
@@ -1101,6 +1115,9 @@ def stage_plan_into_index(
     and commit ONLY the unit delta of each ``delta_files`` entry
     (:func:`stage_delta_file`). Returns "" on success, the error text
     otherwise — the caller (gate or assembler) decides the outcome.
+
+    ``degraded`` (R2.4): when given, the paths that degraded to their full
+    worktree content are appended — the CandidatePlan binds the fact.
     """
     delta = set(delta_files)
     plain = [f for f in files if f not in delta]
@@ -1128,6 +1145,8 @@ def stage_plan_into_index(
         if delta:
             snap_sha = read_worktree_snapshot(project_dir, todo_id)
             if not snap_sha:
+                if degraded is not None:
+                    degraded.extend(f for f in sorted(delta) if f not in degraded)
                 add = _git_isolated(project_dir, ["add", "--", *sorted(delta)], env)
                 if add.returncode != 0:
                     return (
@@ -1136,7 +1155,9 @@ def stage_plan_into_index(
                     )
             else:
                 for file in sorted(delta):
-                    stage_delta_file(project_dir, env, file, snap_sha, logs_dir)
+                    stage_delta_file(
+                        project_dir, env, file, snap_sha, logs_dir, degraded
+                    )
     except (subprocess.SubprocessError, OSError) as e:
         return f"git staging failed: {e}"
     return ""
@@ -1191,6 +1212,10 @@ class CandidatePlan:
     - ``candidate_tree`` — the tree oid of the isolated candidate index.
     - ``files`` — the exact commit content (relative display paths).
     - ``excluded`` / ``residual`` — what the plan leaves out, with a reason.
+    - ``degraded`` (R2.4) — the delta files that degraded to their FULL
+      worktree content while the candidate tree was built; the candidate
+      digest binds them, so a full file enters the commit only by explicit
+      approval tied to that digest (roadmap R2.3-4).
     """
 
     todo_id: str
@@ -1206,6 +1231,13 @@ class CandidatePlan:
     worker_staged: tuple[str, ...] = ()
     legacy_fallback: bool = False
     delta_files: tuple[str, ...] = ()
+    degraded: tuple[str, ...] = ()
+    # F-QA-8 (R2.4): non-empty when the candidate tree could NOT be built
+    # (a git staging / write-tree error). An empty ``candidate_tree`` is
+    # ambiguous on its own — it is the legitimate "no files" state AND the
+    # failure state — so the ERROR rides here and the mandatory-check side
+    # refuses instead of silently skipping the check (a fail-open).
+    build_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -1517,8 +1549,12 @@ class DeltaAssembler:
             delta_files = [f for f in delta_files if f not in dropped]
 
         candidate_tree = ""
+        build_error = ""
+        degraded: list[str] = []
         if build_tree and files:
-            candidate_tree = self._build_candidate_tree(files, delta_files)
+            candidate_tree, build_error = self._build_candidate_tree(
+                files, delta_files, degraded
+            )
 
         residual = [
             (p, r) for p, r in excluded if "conflict" in r or "no unit delta" in r
@@ -1537,12 +1573,21 @@ class DeltaAssembler:
             worker_staged=tuple(worker_staged),
             legacy_fallback=legacy_fallback,
             delta_files=tuple(delta_files),
+            degraded=tuple(sorted(degraded)),
+            build_error=build_error,
         )
 
     def _build_candidate_tree(
-        self, files: list[str], delta_files: list[str]
-    ) -> str:
-        """Write the candidate tree oid in an isolated index (inert)."""
+        self, files: list[str], delta_files: list[str], degraded: list[str] | None = None
+    ) -> tuple[str, str]:
+        """Write the candidate tree oid in an isolated index (inert).
+
+        Returns ``(tree_oid, error)``: ``(oid, "")`` on success, ``("",
+        error_text)`` when the staging or ``write-tree`` failed. F-QA-8: an
+        empty oid alone cannot tell "no files" from "build failed" — the
+        error rides out separately so the caller refuses instead of
+        treating a broken build as an empty candidate.
+        """
         import tempfile
 
         fd, index_path = tempfile.mkstemp(
@@ -1552,14 +1597,23 @@ class DeltaAssembler:
         env = {**os.environ, "GIT_INDEX_FILE": index_path}
         try:
             err = stage_plan_into_index(
-                self.project_dir, env, files, delta_files, self.todo_id, self.logs_dir
+                self.project_dir,
+                env,
+                files,
+                delta_files,
+                self.todo_id,
+                self.logs_dir,
+                degraded,
             )
             if err:
-                return ""
+                return "", err
             tree = _git_isolated(self.project_dir, ["write-tree"], env)
             if tree.returncode != 0:
-                return ""
-            return tree.stdout.strip()
+                return "", (
+                    f"git write-tree failed (rc={tree.returncode}): "
+                    f"{tree.stderr.strip() or tree.stdout.strip()}"
+                )
+            return tree.stdout.strip(), ""
         finally:
             try:
                 os.unlink(index_path)

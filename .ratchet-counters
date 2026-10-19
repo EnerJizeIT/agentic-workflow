@@ -1,3 +1,8 @@
+# R2.4 (TODO-0223): baseline raised files_over_400 91 -> 92 and
+# todos 6075 -> 6084. The new module awf/candidate_verify.py (candidate
+# materialisation + evidence binding) is >400 lines and its docstrings
+# legitimately use the word TODO; the new acceptance test file carries
+# one TODO-0001 id. Same class as the already-counted mentions.
 files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs wc -l | awk '$1>400 && $2!="total"' | wc -l
 # FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
 # identifiers (backlog item references), and every docs reword there
@@ -2156,3 +2161,18 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # moved from commit_plan.py into commit_delta.py so the assembly module no
 # longer calls back into the plan module (no commit_plan <-> commit_delta
 # runtime cycle); PlanSplit regained the frozen=True the move had dropped.
+# R2.4 QA (TODO-0223, stage 4/6): baseline raised files_over_400 92 -> 93 and
+# todos 6084 -> 6088. The QA pass adds 6 tests to
+# tests/negative/test_roadmap_r2_candidate.py (three positive coverage tests —
+# a valid binding commits, the claim candidate is identical at approve/gate,
+# a confirmed degradation commits the full file — plus three findings as red
+# tests). The file crossed 400 lines (316 -> ~500) — same class as the
+# test_roadmap_r2_delta_qa.py / test_audit25_* raises above. The +4 TODO lines
+# are the new tests' TODO-0001/0002 fixtures/asserts (the claim test needs the
+# predecessor TODO-0002 baseline) — test identifiers, not debt. The three red
+# tests must turn green in the fix pass (or be removed with the finding).
+# R2.4 QA-fix (TODO-0223, implementer fix pass): baseline raised todos
+# 6088 -> 6091 (+3). The fix pass adds one end-to-end CLI test
+# (test_cli_confirm_degraded_flag_reaches_the_api, F-QA-4) plus its fixture
+# lines and the two refusal/approval CLI invocations — test identifiers, not
+# debt. files_over_400 unchanged (no source file crossed 400 here).

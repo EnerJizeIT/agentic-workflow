@@ -121,6 +121,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `commit_plan.py` | Commit-план: файлы vs baseline, verdict, чтение `VERIFIED-{id}.sha` |
 | `commit_delta.py` | R2.3: единый сборщик кандидата (`DeltaAssembler` / `CandidatePlan`) — типизированные операции, rename-пара, отказы; здесь же алгоритм дельта-слияния (F1–F8) |
 | `commit_gate.py` | Auto-commit изолированным `GIT_INDEX_FILE` (индекс пользователя не трогаем) |
+| `candidate_verify.py` | R2.4: материализация candidate, обязательная проверка в throwaway-worktree, привязка evidence (tree/контракт/среда/поколение/ревизия) и отказ при инвалидации |
 | `verify.py` | Test/lint execution, auto-DONE synthesis |
 | `verify_pack.py` | Verify-отчёт `GATES-{todo}.md` (U5): гейты, diff-минимальность, facts |
 | `prove_red.py` | Prove-red в temp-worktree на baseline (U4) |

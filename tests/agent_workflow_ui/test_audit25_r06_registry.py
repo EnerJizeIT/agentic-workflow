@@ -115,7 +115,7 @@ def test_registry_equals_list_tools():
         (
             "awf",
             "awf_approve",
-            ["todo_id", "project_dir", "evidence", "verified_sha"],
+            ["todo_id", "project_dir", "evidence", "verified_sha", "confirm_degraded"],
             "Approve auto-commit for a TODO in --auto mode.",
         ),
         (
