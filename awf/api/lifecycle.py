@@ -383,6 +383,12 @@ def init_project(
     # Copy supervisor.md template from the awf package
     framework_dir = Path(__file__).resolve().parent.parent.parent
     templates_dir = framework_dir / "templates"
+    if not templates_dir.is_dir():
+        # A wheel ships package data as ``awf/templates`` (pyproject
+        # package-data); the repo root mirror exists only in the source
+        # checkout. Without the fallback `awf init` from a wheel silently
+        # skips supervisor.md and suite-canonical.sh.
+        templates_dir = Path(__file__).resolve().parent.parent / "templates"
     supervisor_template = templates_dir / "roles" / "supervisor.md"
     supervisor_dest = agentic / "roles" / "supervisor.md"
     if supervisor_template.is_file():
@@ -418,6 +424,20 @@ def init_project(
     plan_path = agentic / "phases" / "plan.md"
     atomic_write_text(plan_path, plan_body)
     created_files.append(".agentic/phases/plan.md")
+
+    # M1: the canonical-suite helper ships with the project, so the role
+    # instruction works outside this source tree.
+    suite_template = templates_dir / "scripts" / "suite-canonical.sh"
+    suite_dest = project_dir / "scripts" / "suite-canonical.sh"
+    if suite_template.is_file():
+        suite_dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(suite_template, suite_dest)
+        suite_dest.chmod(0o755)
+        created_files.append("scripts/suite-canonical.sh")
+    else:
+        warnings.append(
+            f"suite-canonical.sh template not found at {suite_template}"
+        )
 
     update_gitignore(project_dir)
 

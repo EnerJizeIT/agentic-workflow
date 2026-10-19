@@ -89,6 +89,21 @@ class TestParseTodoContract:
         except ValueError as e:
             assert "mapping" in str(e)
 
+    def test_flake_accepts_on_and_off(self):
+        for raw, expected in (("on", "on"), ("off", "off"), ("ON", "on")):
+            content = f'---\nverify: ["pytest -q"]\nflake: {raw}\n---\nbody\n'
+            contract, unknown = parse_todo_contract(content)
+            assert contract["flake"] == expected
+            assert unknown == []
+
+    def test_flake_invalid_value_raises(self):
+        content = '---\nverify: ["pytest -q"]\nflake: maybe\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError for an invalid flake value")
+        except ValueError as e:
+            assert "'flake' must be 'on' or 'off'" in str(e)
+
     def test_verify_not_a_list_raises(self):
         content = '---\nverify: "pytest -q"\n---\nbody\n'
         try:

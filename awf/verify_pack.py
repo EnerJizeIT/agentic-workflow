@@ -28,7 +28,14 @@ Sections (each: status + details + denominator):
    the exclusion is the default commit isolation, nothing is lost — no
    fix advice.
 6. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
-   each with a timeout (``run_tree``).
+   each with a timeout (``run_tree``). Test-like commands (``pytest`` /
+   ``py.test`` / ``python -m pytest``, including a venv path) are run twice:
+   ``flake: ok (2/2)`` when both outcomes agree, ``flake: unstable`` +
+   WARNING when they differ. The FIRST outcome decides the gate: pass then
+   fail stays a pass (with the warning), fail then pass stays a FAIL — the
+   red is never hidden. Every other command (``run-all``, coverage, mutation
+   smoke, arbitrary shell) runs ONCE, as before; a timeout is not retried.
+   The contract's ``flake: off`` disables the probe for the whole unit.
   7. ``prove_red`` — the contract's ``prove_red`` list through
     :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
     mutually exclusive ``prove_red_pin`` list runs the same baseline check
@@ -58,6 +65,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -473,6 +481,78 @@ def _untracked_excluded_section(project: Path, todo_id: str) -> Section:
     )
 
 
+#: M1 (2б): a test-like contract command runs twice. The first run is the
+#: canonical result; a differing second run marks the command as flaky.
+FLAKE_RUNS = 2
+
+#: A command is "test-like" when a shell segment *invokes* pytest —
+#: directly (`pytest`, `py.test`, possibly via an absolute venv path), as
+#: `python -m pytest`, or through a runner prefix (`uv run pytest`,
+#: `poetry run pytest`, `env python -m pytest`). The check is structural,
+#: not a substring search, and splits on shell operators with or without
+#: surrounding spaces (`pytest; echo`, `pytest&&echo`, `cd tests;pytest .`).
+#: A wrapper (`coverage run -m pytest`, `bash scripts/run-all.sh`, arbitrary
+#: shell) is NOT test-like and keeps its single run (R1).
+_TEST_PROGRAMS = frozenset({"pytest", "py.test"})
+_PYTHON_RE = re.compile(r"^python\d*(?:\.\d+)*$")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+
+def _shell_segments(tokens: list[str]) -> list[list[str]]:
+    """Split a token list into shell segments on `&&`, `||`, `;`, `|`, `&`."""
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _SHELL_OPERATORS:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return [seg for seg in segments if seg]
+
+
+def _strip_runner_prefixes(args: list[str]) -> list[str]:
+    """Drop `env`, `uv run`, `poetry run` and env assignments before a program."""
+    while args:
+        program = args[0].rsplit("/", 1)[-1]
+        if program == "env":
+            args = args[1:]
+            while args and _ENV_ASSIGN_RE.match(args[0]):
+                args.pop(0)
+            continue
+        if program in {"uv", "poetry"} and len(args) >= 2 and args[1] == "run":
+            args = args[2:]
+            while args and _ENV_ASSIGN_RE.match(args[0]):
+                args.pop(0)
+            continue
+        break
+    return args
+
+
+def _is_test_like(cmd: str) -> bool:
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    for segment in _shell_segments(tokens):
+        args = _strip_runner_prefixes(list(segment))
+        if not args:
+            continue
+        program = args[0].rsplit("/", 1)[-1]
+        if program in _TEST_PROGRAMS:
+            return True
+        if (
+            _PYTHON_RE.match(program)
+            and len(args) >= 3
+            and args[1] == "-m"
+            and args[2].rsplit("/", 1)[-1] in _TEST_PROGRAMS
+        ):
+            return True
+    return False
+
+
 def _contract_tests_section(project: Path, contract: dict | None, timeout: int) -> Section:
     cmds = (contract or {}).get("verify")
     if not isinstance(cmds, list) or not cmds:
@@ -481,21 +561,86 @@ def _contract_tests_section(project: Path, contract: dict | None, timeout: int) 
             status="skipped",
             lines=["skipped — no `verify:` block in the TODO contract"],
         )
+    flake_value = (contract or {}).get("flake", "on")
+    flake_off = flake_value is False or str(flake_value).strip().lower() == "off"
     s = Section(name="contract_tests", status="pass")
     ok = 0
+    unstable = 0
     for cmd in cmds:
-        rc, out, timed_out = _run_cmd(str(cmd), project, timeout)
+        command = str(cmd)
+        probe = not flake_off and _is_test_like(command)
+        rc, out, timed_out = _run_cmd(command, project, timeout)
         if timed_out:
+            # A timeout is never retried: the first run already failed.
             s.status = "fail"
             s.lines.append(f"- `{cmd}`: FAIL — timeout after {timeout}s")
-        elif rc == 0:
+            continue
+        if not probe:
+            if rc == 0:
+                ok += 1
+                s.lines.append(f"- `{cmd}`: pass")
+            else:
+                s.status = "fail"
+                s.lines.append(f"- `{cmd}`: FAIL (rc={rc}) — {_tail(out)}")
+            continue
+        first_rc = rc
+        repeats = [
+            _run_cmd(command, project, timeout)
+            for _ in range(FLAKE_RUNS - 1)
+        ]
+        same_outcome = all(
+            not repeat_timeout and repeat_rc == first_rc
+            for repeat_rc, _repeat_out, repeat_timeout in repeats
+        )
+        # FLAKE_RUNS == 2 → exactly one repeat; the wording below calls it
+        # "the second run". The constant stays the source of the count.
+        second_rc, _second_out, second_timeout = (
+            repeats[0] if repeats else (first_rc, "", False)
+        )
+        seen = "timeout" if second_timeout else f"rc={second_rc}"
+        if first_rc == 0:
             ok += 1
-            s.lines.append(f"- `{cmd}`: pass")
+            if same_outcome:
+                s.lines.append(
+                    f"- `{cmd}`: pass; flake: ok ({FLAKE_RUNS}/{FLAKE_RUNS})"
+                )
+            else:
+                # The first (canonical) outcome passed: the gate stays green,
+                # the differing second run is a visible WARNING.
+                unstable += 1
+                s.lines.append(
+                    f"- `{cmd}`: pass (first outcome used); flake: unstable — "
+                    f"WARNING: first rc=0, second {seen} — flakiness alone "
+                    f"does not fail the gate"
+                )
+            continue
+        s.status = "fail"
+        if same_outcome:
+            s.lines.append(
+                f"- `{cmd}`: FAIL (rc={first_rc}) — {_tail(out)}; "
+                f"flake: ok ({FLAKE_RUNS}/{FLAKE_RUNS})"
+            )
+        elif second_rc == 0 and not second_timeout:
+            unstable += 1
+            s.lines.append(
+                f"- `{cmd}`: FAIL (rc={first_rc}) — {_tail(out)}; "
+                f"flake: unstable — WARNING: second run passed "
+                f"(rc=0); first outcome used, the red is not hidden"
+            )
         else:
-            s.status = "fail"
-            s.lines.append(f"- `{cmd}`: FAIL (rc={rc}) — {_tail(out)}")
+            unstable += 1
+            s.lines.append(
+                f"- `{cmd}`: FAIL (rc={first_rc}) — {_tail(out)}; "
+                f"flake: unstable — WARNING: second run {seen}; "
+                f"first outcome used"
+            )
     s.measured = True
     s.detail = f"{ok} of {len(cmds)} commands passed"
+    if unstable:
+        s.detail += (
+            f", {unstable} unstable (WARNING; the first outcome decided "
+            f"each gate)"
+        )
     return s
 
 

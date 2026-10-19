@@ -5,6 +5,7 @@ TODO front-matter (optional, at the very top of the TODO file, between two
 skipped when locating the block)::
 
     verify: ["python3 -m pytest tests/unit/test_x.py -q"]
+    flake: off
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
     prove_red_pin: ["tests/unit/test_x.py::test_y"]
@@ -31,6 +32,11 @@ the marker into the block; a hand-written line works the same way.
 ``awf_run_next`` starts this TODO without a queue-level pipeline, it reads
 the name from here. Validated as a plain name (letters, digits, ``_``,
 ``.``, ``-``); an empty pipeline = the config default.
+
+``flake`` (M1): the contract's flake-probe switch. ``off`` runs every
+``verify:`` command once (the probe is skipped); ``on`` (the default) keeps
+the probe for test-like commands — ``pytest``/``py.test``/``python -m
+pytest`` run twice, everything else once. Only ``on``/``off`` are valid.
 
 ``prove_red_pin`` (REPORTS29): a list of regression shields of EXISTING
 behavior — on the baseline they must be GREEN, the teeth are proven by
@@ -112,7 +118,7 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: TODO replaces (a string, not a list); the interactive replan wait picks
 #: the TODO up only when the marker names the escalated unit.
 _CONTRACT_KEYS: tuple[str, ...] = (
-    "verify", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
+    "verify", "flake", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
     "prove_red_kind", "prove_red_note",
     "files", "pipeline", "replan_for",
 )
@@ -347,6 +353,18 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
     unknown = [k for k in data if k not in _CONTRACT_KEYS]
     if "verify" in data:
         _check_str_list(data["verify"], "verify")
+    if "flake" in data:
+        value = data["flake"]
+        if isinstance(value, bool):
+            # YAML 1.1 reads ``off``/``on`` as booleans.
+            data["flake"] = "on" if value else "off"
+        elif isinstance(value, str) and value.strip().lower() in {"on", "off"}:
+            data["flake"] = value.strip().lower()
+        else:
+            raise ValueError(
+                "'flake' must be 'on' or 'off' — 'off' runs every `verify:` "
+                "command once (the flake probe is skipped)"
+            )
     if "gates" in data:
         _check_str_list(data["gates"], "gates")
         for g in data["gates"]:

@@ -44,6 +44,11 @@ prove_red: ["tests/unit/test_x.py::test_y"]
   (inbox-юнит без DONE-закрытия; архивный или done-юнит — отказ до
   побочных эффектов).
 - `verify` — список непустых команд проверки.
+- `flake` — переключатель флейк-пробы (M1): `on` (по умолчанию) или `off`.
+  Пробуются только тест-подобные команды (`pytest` / `py.test` /
+  `python -m pytest`, в том числе через venv-путь) — они выполняются
+  дважды. `off` выключает пробу: каждая команда `verify:` выполняется
+  один раз.
 - `gates` — список коротких имён проверок: канонический набор
   `KNOWN_GATES` из `awf/unit_contract.py`
   (`contracts`, `ratchet`, `instructions`, `tests`, `lint`, `mutations`).

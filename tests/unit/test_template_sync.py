@@ -14,6 +14,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PKG_ROLES = REPO_ROOT / "awf" / "templates" / "roles"
 REPO_ROLES = REPO_ROOT / "templates" / "roles"
+PKG_SCRIPTS = REPO_ROOT / "awf" / "templates" / "scripts"
+REPO_SCRIPTS = REPO_ROOT / "templates" / "scripts"
+LIVE_SCRIPTS = REPO_ROOT / "scripts"
 
 
 def _files(root: Path) -> dict[str, bytes]:
@@ -45,3 +48,32 @@ def test_role_template_trees_are_identical():
     )
     diffs = [name for name in pkg if pkg[name] != repo[name]]
     assert not diffs, f"content drift between template copies: {sorted(diffs)}"
+
+
+def test_script_template_trees_are_identical():
+    """M1: both template trees ship the same helper — a fresh clone and a
+    wheel install must run the same suite-canonical.sh."""
+    pkg = _files(PKG_SCRIPTS)
+    repo = _files(REPO_SCRIPTS)
+    missing_in_repo = set(pkg) - set(repo)
+    extra_in_repo = set(repo) - set(pkg)
+    assert not missing_in_repo, (
+        f"files in awf/templates/scripts/ absent from templates/scripts/: {sorted(missing_in_repo)}"
+    )
+    assert not extra_in_repo, (
+        f"files in templates/scripts/ absent from awf/templates/scripts/: {sorted(extra_in_repo)}"
+    )
+    diffs = [name for name in pkg if pkg[name] != repo[name]]
+    assert not diffs, f"content drift between script template copies: {sorted(diffs)}"
+
+
+def test_live_canonical_suite_script_matches_the_shipped_template():
+    """`awf init` copies templates/scripts/suite-canonical.sh: the dogfood
+    copy in scripts/ must not drift from what new projects receive."""
+    name = "suite-canonical.sh"
+    live = LIVE_SCRIPTS / name
+    shipped = REPO_SCRIPTS / name
+    assert live.is_file() and shipped.is_file()
+    assert live.read_bytes() == shipped.read_bytes(), (
+        f"{live} differs from the shipped template {shipped}"
+    )
