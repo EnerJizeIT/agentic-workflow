@@ -2331,3 +2331,35 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # state catch-list names the precise LockUnavailable instead of the
 # AwfApiError base (OperationRecoveryRequired must propagate). No production
 # module gained a TODO/FIXME marker; files_over_400 stays 95.
+
+# M2 REVIEW-фикс (TODO-0226, стадия agent-implementer, 20.10): baseline
+# todos raised 6315 -> 6332 (+17). Unit-id ссылки, не долг; сужение счётчика
+# — в M7. The count is a net figure: the first attempt added +12 tracked and
+# +3 untracked lines and removed 5 (net +10, the raise the supervisor found
+# undocumented), and this REVIEW pass added +7 — one fix comment in
+# awf/_worker_exit.py (F1) and one in awf/signal_watch.py (_late_signal, F2),
+# plus the F1/F2 tests: tests/unit/test_worker_exit.py (1 docstring) and the
+# two new probes in tests/unit/test_signal_watch.py (2 docstrings + 2
+# DONE-TODO-0001 fixture ids). Nothing here is a TODO/FIXME debt marker:
+# every added line names the unit (TODO-0226), an earlier unit or a test
+# fixture. files_over_400 stays 95 (no new file crossed the bar; the
+# largest additions are tests/unit/test_signal_watch.py 715 -> 848 and
+# awf/signal_watch.py, already over the bar).
+
+# M2 архитектурное ревью (TODO-0226, стадия agent-architect-review, 20.10):
+# baseline todos raised 6332 -> 6336 (+4). Все четыре строки — unit-id
+# ссылки и тестовый идентификатор, не долг: docstring общего хелпера
+# _late_signal_done и комментарий третьей kill-поверхности в
+# awf/signal_watch.py (по одной строке с TODO-0226), docstring нового
+# теста hard-timeout и его fixture-путь DONE-TODO-0001.ready в
+# tests/unit/test_signal_watch.py. Сужение счётчика (перестать считать
+# упоминания unit-id) — в M7. files_over_400 stays 95.
+
+# M2 QA-ревью (TODO-0226, стадия agent-qa-review, 20.10): baseline todos
+# raised 6336 -> 6338 (+2). Обе строки — unit-id ссылка и fixture-путь
+# DONE-TODO-0001.ready нового теста
+# TestWorkerExitDiagnostic::test_cpu_frozen_watchdog_rereads_the_signal_too
+# в tests/unit/test_signal_watch.py: третья kill-поверхность (CPU-заморозка)
+# для F2-инварианта не имела своего теста; тест доказан мутацией (снял
+# перечитывание outbox в CPU-frozen ветке — красный, вернул — зелёный).
+# Ни одна строка не является TODO/FIXME-долгом. files_over_400 stays 95.

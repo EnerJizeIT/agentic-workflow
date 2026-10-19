@@ -212,8 +212,9 @@ def _run_worker_stage(project: Path, tmp_path: Path, config: dict | None = None)
 
 class TestSilentWorkContinuePush:
     def test_silent_with_work_retry_then_salvage(self, tmp_path, monkeypatch):
-        """(c) нет сигнала, но работа в дереве → continue-push ретрай
-        (не мгновенный salvage), после бюджета — salvage."""
+        """(c) нет сигнала, но работа в дереве → continue-push ретраи
+        (не мгновенный salvage), после бюджета — salvage. TODO-0226:
+        дефолт бюджета 2, второй ретрай несёт reduce-строку."""
         project, sha = _git_project(tmp_path)
 
         def behavior(run_no, kw):
@@ -222,15 +223,16 @@ class TestSilentWorkContinuePush:
         journal = _mock_worker(monkeypatch, behavior, baseline_sha=sha)
         result = _run_worker_stage(project, tmp_path)
 
-        assert journal["runs"] == 2, "one continue-push retry before salvage"
+        assert journal["runs"] == 3, "two continue-push retries before salvage"
         assert journal["retry_notes"][0] is None
         note = journal["retry_notes"][1]
         assert "NO signal" in note
         assert "Do NOT redo" in note
+        assert "reduce this pass" in journal["retry_notes"][2]
         assert result[2] == 1
         state = read_state(project)
         assert state.get("salvage_count") == 1
-        assert state.get("sw_retry_count") == 1
+        assert state.get("sw_retry_count") == 2
 
     def test_silent_with_work_retry_finishes_with_signal(self, tmp_path, monkeypatch):
         """Ретрай доводит работу и завершает сигналом → переход,

@@ -113,6 +113,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |
 | `signal_watch.py` | File-based signal detection (`run_subprocess_until_signal`) |
+| `_worker_exit.py` | Единый диагностический билдер `worker-exit:` для тихих смертей (нормальный выход и kill-пути) |
 | `signals.py` | Signal classification, file detection, expected prefixes |
 | `transitions.py` | Signal → action resolution (`resolve_transition`) |
 | `todos.py` | TODO lifecycle: archive, restore, retire, reconcile |

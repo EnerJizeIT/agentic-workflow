@@ -12,6 +12,7 @@ from pathlib import Path
 from . import paths
 from ._atomic import atomic_write_text
 from ._log import log as _log
+from ._worker_exit import worker_exit_line, worker_log_tail
 from .doctrine import materialize_doctrine
 from .pipeline import Stage
 from .pipeline_state import write_state
@@ -246,12 +247,21 @@ def run_agent_stage(
     )
     agent_elapsed = time.monotonic() - agent_start
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
+    # TODO-0226: a silent death must leave a trace in the stage log — exit
+    # code, signal, duration and class are the only evidence of why the
+    # session ended without a signal (three such deaths in 0224 were blind).
+    present = read_signal_for_todo(outbox, todo_id, *prefixes)
+    exit_line = worker_exit_line(
+        result.returncode, agent_elapsed, worker_log_tail(log_holder),
+        signal_present=bool(present),
+    )
+    if exit_line:
+        _log(logs_dir, exit_line)
     if result.returncode != 0:
         # U6b: a signal is the stage's contract — the worker's exit code AFTER
         # a signal is noise (context compaction + tool timeouts can flip rc
         # without touching the work; observed on TODO-0014: DONE written, rc=1,
         # pipeline stopped). No signal + rc!=0 stays a failure.
-        present = read_signal_for_todo(outbox, todo_id, *prefixes)
         if present:
             _log(
                 logs_dir,

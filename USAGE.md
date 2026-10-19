@@ -223,7 +223,7 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 
 | Situation | What happens |
 |---|---|
-| Worker didn't signal, but work is in the tree | Continue-push retry with the note "the work is already in the tree — do not redo it, finish it and signal" — budget `retry.silent_work_attempts` (config.yaml, default 1), counted per (TODO, stage), survives kill+continue. After the budget — the salvage path |
+| Worker didn't signal, but work is in the tree | Continue-push retry with the note "the work is already in the tree — do not redo it, finish it and signal" — budget `retry.silent_work_attempts` (config.yaml, default 2), counted per (TODO, stage), survives kill+continue. The first retry is plain; the second also reduces the pass to targeted checks and gates, then the salvage path. Each retry names the last worker log and DONE draft so the worker resumes instead of re-reading the task |
 | Worker didn't signal, no work | Two auto continue-push retries, then the salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
 | Stage state lingers after the engine died, no signal | Zombie-state: `awf_status`/`awf_brief` show the hint with `awf_continue(todo_id=…)`. When the unit is already archived, `awf_run_finish` clears the stale state itself and records the reset in the RUN-REPORT |

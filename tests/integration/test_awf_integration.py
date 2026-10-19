@@ -23,6 +23,7 @@ class _FakePopen:
     """Minimal Popen stub: never exits on its own (caller raises TimeoutError)."""
 
     pid = 1
+    returncode = None
     _poll_count = 0
 
     def __init__(self, *args, **kwargs):

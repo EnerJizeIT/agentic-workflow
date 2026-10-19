@@ -602,3 +602,332 @@ class TestEndpointReachableSmoke:
         finally:
             server.shutdown()
             server.server_close()
+
+
+# ─── Part D: worker-exit diagnostic on the kill paths ──────────────────────
+
+
+class TestWorkerExitDiagnostic:
+    """M2: a silent kill leaves ``worker-exit: ... class=timeout`` in the
+    stage log — with the worker's REAL return code, not a fabricated one."""
+
+    def test_watchdog_kill_logs_the_real_rc(self, tmp_path, monkeypatch):
+        log_file = tmp_path / "hung-agent-worker.out"
+
+        class _TermPopen:
+            spawned = False
+            killed = False
+            returncode = None
+
+            def __init__(self, cmd, cwd=None, **kwargs):
+                type(self).spawned = True
+                self.cmd = cmd
+                self.pid = 999999999
+                # backdate AFTER the run marker is written → the watchdog
+                # fires on the first poll instead of waiting 3s
+                import os as _os
+
+                ts = time.time() - 3600
+                _os.utime(log_file, (ts, ts))
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                type(self).killed = True
+                self.returncode = -15  # the TERM landed before escalation
+
+            def terminate(self):
+                self.kill()
+
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _TermPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        with pytest.raises(TimeoutError, match="no output"):
+            run_subprocess_until_signal(
+                ["hung-agent-worker"], cwd=tmp_path,
+                logs_dir=tmp_path,
+                log_name="hung-agent-worker.out",
+                no_output_timeout=0.01,
+            )
+
+        assert _TermPopen.killed is True
+        text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "worker-exit: rc=-15 signal=SIGTERM duration=" in text
+        assert "class=timeout" in text
+        # exactly one line: the kill path must not double-log through the
+        # normal-exit builder as well
+        assert text.count("worker-exit:") == 1
+
+    def test_signal_consumed_timeout_logs_no_death_line(
+        self, tmp_path, monkeypatch
+    ):
+        """Hard timeout after the signal is on disk is a normal finish —
+        the diagnostic must not call it a death."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        log_file = tmp_path / "hung-agent-worker.out"
+        signal_file = outbox / "DONE-TODO-0001.ready"
+
+        class _SignalThenHangPopen:
+            returncode = None
+
+            def __init__(self, cmd, cwd=None, **kwargs):
+                self.cmd = cmd
+                self.pid = 999999999
+                (signal_file).write_text("")
+
+            def poll(self):
+                import os as _os
+
+                ts = time.time() - 3600
+                _os.utime(log_file, (ts, ts))
+                return None
+
+            def wait(self, timeout=None):
+                return None
+
+            def kill(self):
+                pass
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(
+            "awf.signal_watch.subprocess.Popen", _SignalThenHangPopen
+        )
+        _install_fake_time(monkeypatch, _Clock())
+
+        result = run_subprocess_until_signal(
+            ["hung-agent-worker"], cwd=tmp_path,
+            watch_paths=[signal_file],
+            logs_dir=tmp_path,
+            log_name="hung-agent-worker.out",
+            no_output_timeout=0,
+            hard_timeout=30,
+        )
+
+        assert result.returncode == 0
+        text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "worker-exit:" not in text
+
+    def test_watchdog_rereads_the_signal_before_calling_it_a_death(
+        self, tmp_path, monkeypatch
+    ):
+        """TODO-0226 (F2): a DONE written between the loop's poll and the
+        watchdog kill is a normal finish, not ``class=timeout``."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        signal_file = outbox / "DONE-TODO-0001.ready"
+        log_file = tmp_path / "late-signal-worker.out"
+        holder: dict[str, str] = {}
+
+        class _SignalAtKillPopen:
+            returncode = None
+
+            def __init__(self, cmd, cwd=None, **kwargs):
+                self.cmd = cmd
+                self.pid = 999999999
+                import os as _os
+
+                ts = time.time() - 3600
+                _os.utime(log_file, (ts, ts))
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                # The signal lands in the last window: after the loop's
+                # _detect_new_signal, before the kill path's re-read.
+                signal_file.write_text("", encoding="utf-8")
+                self.returncode = -15
+
+            def terminate(self):
+                self.kill()
+
+        monkeypatch.setattr(
+            "awf.signal_watch.subprocess.Popen", _SignalAtKillPopen
+        )
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        result = run_subprocess_until_signal(
+            ["late-signal-worker"], cwd=tmp_path,
+            watch_paths=[signal_file],
+            logs_dir=tmp_path,
+            log_name="late-signal-worker.out",
+            signal_holder=holder,
+            no_output_timeout=0.01,
+        )
+
+        assert result.returncode == 0
+        assert holder.get("signal") == signal_file.name
+        text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "class=timeout" not in text
+        assert "worker-exit:" not in text
+
+    def test_watchdog_without_a_late_signal_still_logs_timeout(
+        self, tmp_path, monkeypatch
+    ):
+        """TODO-0226 (F2) control: the same armed watch path, no signal on
+        disk at the kill — the death line is written as before."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        signal_file = outbox / "DONE-TODO-0001.ready"
+        log_file = tmp_path / "silent-worker.out"
+
+        class _SilentPopen:
+            returncode = None
+
+            def __init__(self, cmd, cwd=None, **kwargs):
+                self.cmd = cmd
+                self.pid = 999999999
+                import os as _os
+
+                ts = time.time() - 3600
+                _os.utime(log_file, (ts, ts))
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -15
+
+            def terminate(self):
+                self.kill()
+
+        monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _SilentPopen)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        with pytest.raises(TimeoutError, match="no output"):
+            run_subprocess_until_signal(
+                ["silent-worker"], cwd=tmp_path,
+                watch_paths=[signal_file],
+                logs_dir=tmp_path,
+                log_name="silent-worker.out",
+                no_output_timeout=0.01,
+            )
+
+        text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "class=timeout" in text
+
+    def test_hard_timeout_rechecks_the_signal_during_the_kill(
+        self, tmp_path, monkeypatch
+    ):
+        """TODO-0226 (F2), third surface: the TERM → grace → KILL window of
+        the hard timeout is a place a signal lands too. A DONE written while
+        the tree dies is a normal finish, not a timeout death."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        signal_file = outbox / "DONE-TODO-0001.ready"
+        holder: dict[str, str] = {}
+
+        class _SignalAtKillPopen:
+            returncode = None
+
+            def __init__(self, cmd, cwd=None, **kwargs):
+                self.cmd = cmd
+                self.pid = 999999999
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                # The worker finishes its report while the group dies.
+                signal_file.write_text("", encoding="utf-8")
+                self.returncode = -15
+
+            def terminate(self):
+                self.kill()
+
+        monkeypatch.setattr(
+            "awf.signal_watch.subprocess.Popen", _SignalAtKillPopen
+        )
+        _install_fake_time(monkeypatch, _Clock())
+
+        result = run_subprocess_until_signal(
+            ["hard-timeout-worker"], cwd=tmp_path,
+            watch_paths=[signal_file],
+            logs_dir=tmp_path,
+            log_name="hard-timeout-worker.out",
+            signal_holder=holder,
+            no_output_timeout=0,
+            hard_timeout=30,
+        )
+
+        assert result.returncode == 0
+        assert holder.get("signal") == signal_file.name
+        text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "worker-exit:" not in text
+
+    def test_cpu_frozen_watchdog_rereads_the_signal_too(
+        self, tmp_path, monkeypatch
+    ):
+        """TODO-0226 (F2), the other watchdog surface: the CPU-frozen
+        branch (silence AND no tree-CPU progress) must re-read the outbox
+        before calling the kill a timeout death, exactly like the
+        CPU-unreadable branch and the hard timeout. A DONE that lands while
+        the tree dies is a normal finish."""
+        outbox = tmp_path / "outbox"
+        outbox.mkdir()
+        signal_file = outbox / "DONE-TODO-0001.ready"
+        log_file = tmp_path / "frozen-cpu-worker.out"
+        holder: dict[str, str] = {}
+
+        class _SignalAtKillPopen:
+            returncode = None
+
+            def __init__(self, cmd, cwd=None, **kwargs):
+                self.cmd = cmd
+                self.pid = 999999999
+                import os as _os
+
+                ts = time.time() - 3600
+                _os.utime(log_file, (ts, ts))
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                # the report is written while the tree dies
+                signal_file.write_text("", encoding="utf-8")
+                self.returncode = -15
+
+            def terminate(self):
+                self.kill()
+
+        monkeypatch.setattr(
+            "awf.signal_watch.subprocess.Popen", _SignalAtKillPopen
+        )
+        # frozen tree CPU: both readings equal → the CPU-frozen branch fires
+        monkeypatch.setattr("awf._proc.cpu_time_of_tree", lambda pid: 1.0)
+        monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+
+        result = run_subprocess_until_signal(
+            ["frozen-cpu-worker"], cwd=tmp_path,
+            watch_paths=[signal_file],
+            logs_dir=tmp_path,
+            log_name="frozen-cpu-worker.out",
+            signal_holder=holder,
+            no_output_timeout=0.01,
+        )
+
+        assert result.returncode == 0
+        assert holder.get("signal") == signal_file.name
+        text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "class=timeout" not in text
+        assert "worker-exit:" not in text

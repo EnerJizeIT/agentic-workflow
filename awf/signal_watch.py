@@ -21,6 +21,7 @@ from pathlib import Path
 from . import _net, _proc, paths
 from ._env import awf_subprocess_env
 from ._log import log as _log
+from ._worker_exit import worker_exit_line
 from .infra import managed_fs
 
 BD20_POLL_INTERVAL = 3
@@ -61,6 +62,52 @@ def _wait_for_endpoint(url: str, budget: float, logs_dir: Path | None) -> None:
     raise TimeoutError(
         f"Model endpoint {url} unreachable for {budget:.0f}s — worker not started"
     )
+
+
+def _log_timeout_exit(
+    logs_dir: Path | None, run_started: float, rc: int | None,
+) -> None:
+    """TODO-0226: stage-log diagnostic for a watchdog/hard-timeout kill.
+
+    One builder with the normal exit path (``_worker_exit``) — the line
+    cannot drift. ``rc`` is the reaped worker's real return code: the kill
+    is TERM → grace → KILL, so the child may have died from SIGTERM and a
+    hardcoded SIGKILL would name a signal that never landed. ``None`` (an
+    unkillable tree) falls back to the KILL we sent.
+    """
+    if logs_dir:
+        _log(
+            logs_dir,
+            worker_exit_line(
+                -9 if rc is None else rc,
+                time.monotonic() - run_started,
+                cls="timeout",
+            ),
+        )
+
+
+def _late_signal_done(
+    cmd: list[str],
+    late: str | None,
+    signal_holder: dict[str, str] | None,
+    logs_dir: Path | None,
+) -> subprocess.CompletedProcess | None:
+    """TODO-0226 (F2): a signal found after a kill is a normal finish.
+
+    All three kill paths (both watchdog branches, hard timeout) share this
+    decision: the signal landed while the tree was being killed, so the
+    stage is done — not a ``class=timeout`` death.
+    """
+    if not late:
+        return None
+    if signal_holder is not None:
+        signal_holder["signal"] = late
+    if logs_dir:
+        _log(
+            logs_dir,
+            f"BD-20: signal already detected ({late}) — treating stage as done",
+        )
+    return subprocess.CompletedProcess(cmd, 0)
 
 
 def _sort_key_by_numeric_id(name: str) -> tuple[int, str]:
@@ -302,7 +349,23 @@ def run_subprocess_until_signal(
             except Exception:
                 pass  # best-effort — the run goes on without the record
         deadline = time.monotonic() + hard_timeout
+        run_started = time.monotonic()
         signal_seen_at: float | None = None
+
+        def _late_signal() -> str | None:
+            """TODO-0226 (F2): re-read the outbox after a kill.
+
+            The kill paths run AFTER this iteration's
+            ``_detect_new_signal`` (and the TERM → grace → KILL window is
+            seconds long); a DONE written in that window is on disk but
+            unseen. Reporting it as ``class=timeout`` would call a finished
+            stage a silent death and stop the pipeline with the work
+            already done — the same false diagnosis M2 exists to end.
+            """
+            return _detect_new_signal(
+                watch_paths, pre_existing, watch_new_glob, snapshot,
+                new_glob_accept,
+            )
         # U6c/TODO-0180: CPU-aware watchdog state. ``last_cpu`` — the
         # worker tree's total CPU (utime+stime of the whole tree) at the
         # previous reading, taken only while the log is past the silence
@@ -377,6 +440,17 @@ def run_subprocess_until_signal(
                                     f"killing process tree (pid={proc.pid})",
                                 )
                             _proc.kill_process_tree(proc)
+                            # TODO-0226: the watchdog death is a silent one —
+                            # leave the same diagnostic the normal exit path
+                            # writes (shared builder in _worker_exit). A
+                            # signal that landed in the last window is a
+                            # normal finish, not a death (F2).
+                            done = _late_signal_done(
+                                cmd, _late_signal(), signal_holder, logs_dir,
+                            )
+                            if done is not None:
+                                return done
+                            _log_timeout_exit(logs_dir, run_started, proc.returncode)
                             raise TimeoutError(
                                 f"Worker produced no output for "
                                 f"{silent_for / 60:.0f} min (watchdog) — "
@@ -401,6 +475,12 @@ def run_subprocess_until_signal(
                                     f"killing process tree (pid={proc.pid})",
                                 )
                             _proc.kill_process_tree(proc)
+                            done = _late_signal_done(
+                                cmd, _late_signal(), signal_holder, logs_dir,
+                            )
+                            if done is not None:
+                                return done
+                            _log_timeout_exit(logs_dir, run_started, proc.returncode)
                             raise TimeoutError(
                                 f"Worker produced no output for "
                                 f"{silent_for / 60:.0f} min and tree CPU "
@@ -426,6 +506,15 @@ def run_subprocess_until_signal(
                             "BD-20: signal already detected — treating stage as done",
                         )
                     return subprocess.CompletedProcess(cmd, 0)
+                # TODO-0226 (F2): the TERM → grace → KILL kill is another
+                # window a signal can land in — re-read before calling the
+                # stage a timeout death.
+                done = _late_signal_done(
+                    cmd, _late_signal(), signal_holder, logs_dir,
+                )
+                if done is not None:
+                    return done
+                _log_timeout_exit(logs_dir, run_started, proc.returncode)
                 raise TimeoutError(
                     f"Subprocess did not produce signal within {hard_timeout}s"
                 )

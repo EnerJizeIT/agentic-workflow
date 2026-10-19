@@ -21,6 +21,7 @@ from . import commit_plan as _commit_plan
 from . import config as cfg_mod
 from . import paths, todos, verify
 from ._log import log as _log
+from ._worker_exit import worker_log_tail
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
 from .agent_stage import run_agent_stage as _run_agent_stage
 from .commit_gate import maybe_commit as _maybe_commit
@@ -28,7 +29,13 @@ from .pipeline import Stage
 from .pipeline_state import read_state
 from .pipeline_state import write_state as _write_state
 from .plan_progress import mark_plan_step_done as _mark_plan_step_done
-from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
+from .signals import (
+    expected_signal_prefixes,
+    find_signal_file,
+    read_signal_for_todo,
+    signal_type,
+    wait_for_signal,
+)
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
 from .verify_pack import verify_pack as _verify_pack_fn
@@ -763,21 +770,70 @@ def _silent_retry_note(attempt: int, todo_id: str) -> str:
     )
 
 
-def _silent_work_retry_note(attempt: int, todo_id: str) -> str:
+def _progress_block(
+    project_dir: Path, log_holder: dict[str, str], current_todo: str, outbox: Path,
+) -> list[str]:
+    """TODO-0226: where the previous run stopped — paths, not prose.
+
+    The retried worker gets the stage's worker log and the latest DONE
+    draft (when one exists) instead of re-reading the whole task from
+    scratch. Paths are project-relative for a readable prompt.
+    """
+    def _rel(raw: str) -> str:
+        p = Path(raw)
+        try:
+            return str(p.relative_to(project_dir))
+        except ValueError:
+            return raw
+
+    lines = ["## Progress so far", ""]
+    log_path = log_holder.get("log_path", "")
+    if log_path:
+        lines.append(f"Last worker log: `{_rel(log_path)}`")
+    draft = find_signal_file(outbox, "DONE", current_todo, ".md")
+    if draft is not None:
+        lines.append(f"Last DONE draft: `{_rel(str(draft))}`")
+    lines.append(
+        "Continue from where you stopped — do NOT re-read everything from "
+        "scratch."
+    )
+    return lines
+
+
+def _silent_work_retry_note(
+    attempt: int, todo_id: str, *,
+    progress: list[str] | None = None,
+) -> str:
     """TODO-0196: push text for a stage retried after a silent exit that
     LEFT WORK in the tree. The previous run changed files but ended without
-    the signal — the retry continues the work instead of redoing it."""
-    return (
-        f"## ⚠️ RETRY {attempt}: previous attempt left WORK in the tree but NO signal\n"
-        f"The stage restarted because the previous run wrote file changes but did\n"
-        f"not create DONE-{todo_id}.ready — the work exists, only the finish is missing.\n"
-        f"Do NOT redo or rewrite what is already in the tree: check git status / git\n"
-        f"diff, continue from where the previous run stopped, and finish the work.\n"
-        f"Finish by creating the signal file:\n"
-        f"  touch .agentic/outbox/DONE-{todo_id}.ready\n"
-        f"If you truly cannot proceed, create the BLOCKED signal instead of ending\n"
-        f"with plain text.\n"
-    )
+    the signal — the retry continues the work instead of redoing it.
+
+    TODO-0226: the 2nd retry also reduces the pass (no full suite /
+    run-all — targeted checks only) and every retry names the partial
+    artifacts (worker log + DONE draft) so the worker resumes instead of
+    re-researching.
+    """
+    parts = [
+        f"## ⚠️ RETRY {attempt}: previous attempt left WORK in the tree but NO signal",
+        "The stage restarted because the previous run wrote file changes but did",
+        f"not create DONE-{todo_id}.ready — the work exists, only the finish is missing.",
+        "Do NOT redo or rewrite what is already in the tree: check git status / git",
+        "diff, continue from where the previous run stopped, and finish the work.",
+        "Finish by creating the signal file:",
+        f"  touch .agentic/outbox/DONE-{todo_id}.ready",
+        "If you truly cannot proceed, create the BLOCKED signal instead of ending",
+        "with plain text.",
+    ]
+    if attempt >= 2:
+        parts += [
+            "",
+            "## ⚠️ RETRY 2: reduce this pass",
+            "Do NOT run the full suite or scripts/run-all.sh in this pass — run only",
+            "the targeted checks and the gates, then write the DONE report.",
+        ]
+    if progress:
+        parts += ["", *progress]
+    return "\n".join(parts) + "\n"
 
 
 def _declared_output_problem(
@@ -989,23 +1045,6 @@ def execute_supervisor_stage(
     return current_todo, 1, 0
 
 
-def _death_tail(log_holder: dict[str, str]) -> str:
-    """U6b/U6c: this run's worker-log tail (from its start offset).
-
-    Append-mode log (dogfood-11): without the offset an earlier run's
-    network marker would leak into this run's death classification
-    (QA TODO-0017). '' when the run never got a log (the preflight died
-    before the file was created).
-    """
-    from . import _net
-
-    log_path_str = log_holder.get("log_path", "")
-    if not log_path_str:
-        return ""
-    start_offset = int(log_holder.get("log_start_offset") or 0)
-    return _net.read_log_tail(Path(log_path_str), start_offset=start_offset)
-
-
 def _handle_net_death(
     *,
     s_name: str,
@@ -1170,7 +1209,11 @@ def execute_agent_stage(
     # salvage. Separate from the no-work silent budget above; persisted in
     # state like the net counter (keyed by (TODO, stage)) so a kill+continue
     # does not hand out a fresh budget. The attempt loop stays the hard cap.
-    SILENT_WORK_LIMIT = _cfg_int(config, "retry.silent_work_attempts", 1)
+    # TODO-0226: default 2 — the 1st retry is a plain continue-push, the
+    # 2nd carries the reduce-pass line (no full suite / run-all), then
+    # salvage. One retry was not enough to tell "finish it" from "the
+    # worker keeps dying the same way".
+    SILENT_WORK_LIMIT = _cfg_int(config, "retry.silent_work_attempts", 2)
     if _prev_net_state.get("sw_retry_key") != net_key:
         sw_retries = 0
     else:
@@ -1213,7 +1256,7 @@ def execute_agent_stage(
                 # run's log tail, plus the preflight-timeout marker in the
                 # exception text (the endpoint was down before the worker
                 # even started — no log to read yet).
-                tail = _death_tail(log_holder)
+                tail = worker_log_tail(log_holder)
                 # QA (U6c): the preflight text check applies ONLY to
                 # TimeoutError — preflight is the only network death with no
                 # worker log. U6b's RuntimeError embeds the full Cmd (stage
@@ -1265,7 +1308,7 @@ def execute_agent_stage(
             # U6b: worker died without a signal — classify the death BEFORE
             # the silent retry: a dead model endpoint is not fixed by a
             # continue-push, it gets its own backoff-retry budget (30/60/120s).
-            tail = _death_tail(log_holder)
+            tail = worker_log_tail(log_holder)
             if _net.is_network_failure(tail):
                 net_retries, net_retry_scheduled = _handle_net_death(
                     s_name=s_name, net_retries=net_retries,
@@ -1303,7 +1346,12 @@ def execute_agent_stage(
                     f"(elapsed={agent_elapsed:.0f}s, diff in tree, no signal)")
                 _ws(project_dir, sw_retry_count=sw_retries, sw_retry_key=net_key,
                     logs_dir=logs_dir)
-                pending_note = _silent_work_retry_note(sw_retries, current_todo)
+                pending_note = _silent_work_retry_note(
+                    sw_retries, current_todo,
+                    progress=_progress_block(
+                        project_dir, log_holder, current_todo, outbox,
+                    ),
+                )
                 from .signals import clean_stage_signals
                 clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
                 continue
