@@ -26,6 +26,7 @@ from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import (
     managed_write_api_text,
+    refuse_unsafe_surfaces,
     require_agentic,
     require_awf_project,
 )
@@ -162,11 +163,16 @@ def _reconcile(project_dir: Path) -> None:
             cleaned.append(f"cleared stale PID {pid_str}")
 
     # 2. Deduplicate ACK+APPROVE (keep APPROVE, remove ACK)
+    # TODO-0235 (M3d): the unlink below is destructive on the INBOX surface —
+    # a symlinked ``inbox`` used to delete an outside ACK. Barrier first,
+    # leaf included.
     if inbox.is_dir():
+        refuse_unsafe_surfaces(project_dir, "reconcile stale ACK", inbox)
         for ack in inbox.glob("ACK-*.ready"):
             todo_id = ack.name.replace("ACK-", "").replace(".ready", "")
             approve = inbox / f"APPROVE-{todo_id}.ready"
             if approve.exists():
+                refuse_unsafe_surfaces(project_dir, "reconcile stale ACK", ack)
                 ack.unlink()
                 cleaned.append(f"dedup: removed ACK-{todo_id} (APPROVE exists)")
 
@@ -302,6 +308,30 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
         short = short_id(target)
         if any((outbox / f"DONE-{cid}.ready").exists() for cid in (target, short)):
             continue  # completed cycle — leave the signal for the archive flow
+        # TODO-0235 (M3d): consuming the decision is an unlink on INBOX —
+        # a symlinked surface/leaf must refuse, not delete outside. REVIEW B2:
+        # the same call then moves BLOCKED leaves from OUTBOX into CONTEXT
+        # (``_unblock_todo``), so those surfaces and leaves belong to the
+        # same barrier — otherwise a symlinked outbox loses foreign files.
+        clears = (outbox / f"BLOCKED-{target}.ready").exists() or (
+            outbox / f"BLOCKED-{short}.ready"
+        ).exists()
+        closure_leaves: list[Path] = []
+        if clears:
+            ctx = paths.context_dir(project_dir)
+            for cid in (target, short):
+                for ext in (".ready", ".md"):
+                    closure_leaves.append(outbox / f"BLOCKED-{cid}{ext}")
+                    closure_leaves.append(ctx / f"BLOCKED-{cid}{ext}")
+        refuse_unsafe_surfaces(
+            project_dir,
+            "consume pending closure signal",
+            inbox,
+            sig_path,
+            outbox,
+            paths.context_dir(project_dir),
+            *closure_leaves,
+        )
         try:
             sig_path.unlink()
         except OSError:
@@ -435,8 +465,18 @@ def approve_commit(
         # One home for the invariant: clean on ENTRY, before any precheck
         # (missing evidence= / missing verified_sha=) or verdict can refuse,
         # so no refusal branch can be forgotten (the M1 → PA-1 recurrence).
+        # REVIEW B3: it is still an unlink under ``.agentic/context`` — the
+        # surface and the leaf are checked BEFORE the delete, so a symlinked
+        # context refuses with the foreign file intact.
+        evidence = _candidate_verify.evidence_path(project_dir, todo_id)
+        refuse_unsafe_surfaces(
+            project_dir,
+            "discard candidate evidence",
+            paths.context_dir(project_dir),
+            evidence,
+        )
         try:
-            _candidate_verify.evidence_path(project_dir, todo_id).unlink()
+            evidence.unlink()
         except OSError:
             pass
 
@@ -914,6 +954,10 @@ def create_baseline(
     project_dir = require_awf_project(project_dir)
 
     context_dir = paths.context_dir(project_dir)
+    # TODO-0235 (REVIEW B4): the baseline writes and removes files under
+    # ``context/`` — one barrier for the surface before the first write, so a
+    # symlinked context neither overwrites nor deletes outside the project.
+    refuse_unsafe_surfaces(project_dir, "create baseline", context_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
 
     # REPORTS26 B1: track the files THIS call writes — an unexpected
@@ -981,6 +1025,9 @@ def create_baseline(
             if worktree_snap:
                 _write_baseline_file(snap_path, worktree_snap + "\n")
             else:
+                refuse_unsafe_surfaces(
+                    project_dir, "create baseline", context_dir, snap_path
+                )
                 snap_path.unlink(missing_ok=True)
             # QA-1: snapshot untracked files at baseline time so commit_gate
             # can distinguish worker-created files from pre-existing untracked.
@@ -1097,8 +1144,11 @@ def create_baseline(
     except Exception:
         for path in written:
             try:
+                refuse_unsafe_surfaces(
+                    project_dir, "create baseline cleanup", context_dir, path
+                )
                 path.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, AwfApiError):
                 pass
         raise
 
@@ -2338,13 +2388,23 @@ def retry_stage(
     if not salvage_todo:
         salvage_todo = _salvage_todo_from_inbox(project_dir)
 
+    # TODO-0235 (M3d): the salvage cleanup below unlinks INBOX files. Check
+    # the surface AND every leaf BEFORE the kill, so an unsafe path refuses
+    # with no effect (REVIEW N2: the leaf check used to run after the kill).
+    # One call, like the B2 closure barrier: the leaf check already walks the
+    # surface, and a separate call was a second spelling of the same rule.
+    inbox = paths.inbox(project_dir)
+    salvage_notes = list(inbox.glob("SALVAGE-*.md"))
+    refuse_unsafe_surfaces(
+        project_dir, "clean salvage signals", inbox, *salvage_notes
+    )
+
     # Kill if running
     kill_pipeline(project_dir)
 
     # Clean salvage signals (AUD04-08: they are written to the INBOX — the
     # old outbox glob was a no-op that left every note behind)
-    inbox = paths.inbox(project_dir)
-    for p in inbox.glob("SALVAGE-*.md"):
+    for p in salvage_notes:
         try:
             p.unlink()
         except OSError:

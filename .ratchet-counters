@@ -2465,3 +2465,53 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # кейса) не добавили ни одной строки со словом TODO: комментарии
 # переписаны без него. Оба новых кейса лежат в уже >400-строчном
 # контрактном файле, новых файлов нет.
+
+# M3d (TODO-0235, стадия agent-implementer, 20.10): todos 6393 -> 6403
+# (+10). Все десять строк — unit-id ссылки в комментариях правок и
+# тестовый идентификатор, не долг: 3 в awf/api/pipeline.py (барьеры
+# reconcile / pending-closure / retry_stage), 2 в awf/pipeline_engine.py
+# (потребление verify-решения и сигнала перехода), 1 в awf/agent_stage.py,
+# 1 в awf/api/_liveness.py, 1 в awf/plan_checkpoint.py (исключение для
+# системного temp) и 2 в новом tests/negative/test_miniwave_m3d_unlinks.py
+# (модульный docstring с TODO-0235 и fixture-ид TODO-0001). Ни одного
+# TODO/FIXME-маркера долга не добавлено. files_over_400 stays 97 (новый
+# тест — 330 строк, под планкой).
+
+# M3d (TODO-0235, REVIEW виток 2, 20.10): todos 6403 -> 6412 (+9) и
+# files_over_400 97 -> 98 (+1). Причина: три новых кейса в контрактном
+# файле tests/negative/test_miniwave_m3d_unlinks.py (N1 — типизированная
+# остановка стадии на барьере, N2 — preflight листа SALVAGE до kill, N3 —
+# единое правило листа для clean_stage_signals); файл вырос с 330 до 457
+# строк, перешагнув планку 400. Строки со словом TODO — unit-id ссылки в
+# docstring/комментариях и fixture-ид, долговых TODO/FIXME-маркеров нет.
+# Правки кода: helper _unsafe_stage_stop + guarded consume в
+# awf/pipeline_engine.py, preflight до kill в awf/api/pipeline.py,
+# leaf-барьер в awf/signals.py.
+
+# M3d (REVIEW architect-review, 20.10): todos 6412 -> 6408 (-4), планка
+# опущена `--update`. Причина: три одинаковых ветки «чистка сигналов →
+# typed stop» свёрнуты в один helper `_clean_signals_or_stop`, а SALVAGE-
+# заметку пишет один `_write_salvage_note` — строки с unit-id в логах
+# дублей исчезли. Долга не добавлено: новых TODO/FIXME-маркеров нет.
+
+# M3d (TODO-0235, REVIEW виток 3 — B1–B5, 20.10): todos 6408 -> 6411 (+3).
+# Три строки — unit-id ссылки в docstring'ах новых тестов контрактного
+# файла (B1 имя стадии, B2 outbox в барьере закрытия, B5 checkpoint-replace).
+# Долговых TODO/FIXME-маркеров не добавлено; files_over_400 не менялась
+# (файл был выше планки с витка 2). Код: s_name в
+# _consume_verify_decision_guarded, preflight outbox/context в
+# _unblock_todo и в барьере закрытия, барьеры evidence/baseline/checkpoint.
+
+# M3d (REVIEW architect-review, виток 4, 20.10): todos 6411 -> 6414 (+3).
+# Три строки — unit-id ссылки (TODO-0235) в новых docstring'ах/комментариях
+# к общим примитивам: stage_signal_paths в awf/signals.py, единый preflight
+# двух чисток в awf/agent_stage.py, _salvage_attempt и _clean_signals_guarded
+# в awf/pipeline_engine.py. Долговых TODO/FIXME-маркеров не добавлено;
+# files_over_400 не менялась: контрактный файл перешагнул планку 400 ещё на
+# витке 2 (тогда 457 строк), новых файлов нет.
+
+# M3d (TODO-0235, REVIEW виток 4 — F6/F7, стадия agent-implementer, 20.10):
+# todos 6414 -> 6416 (+2). Две строки — unit-id ссылки (TODO-0235, F6/F7)
+# в docstring'ах двух новых кейсов контрактного файла: порядок переноса
+# BLOCKED-закрытия и бюджет сетевого ретрая при отказе чистки. Долговых
+# TODO/FIXME-маркеров не добавлено; files_over_400 не менялась.

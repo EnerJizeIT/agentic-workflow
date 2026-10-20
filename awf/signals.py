@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from .infra import managed_fs
+
 
 def signal_type(signal_filename: str) -> str:
     """Classify a signal basename (without .ready) into a type.
@@ -129,6 +131,27 @@ def read_signal_for_todo(outbox: Path, todo_id: str, *prefixes: str) -> str | No
     return candidates[0][1]
 
 
+def stage_signal_paths(outbox: Path, todo_id: str, *prefixes: str) -> list[Path]:
+    """Every signal leaf ``clean_stage_signals`` may remove — ONE enumeration.
+
+    TODO-0235 (architect-review): a caller that removes several things in a
+    row (the agent stage cleans signals AND a stale PROGRESS note) must
+    preflight the whole set before the FIRST unlink. Re-spelling the
+    prefix/id/extension loop at that caller would be a second implementation
+    of this list — the cleanup and the preflight would drift apart.
+    """
+    short = short_id(todo_id)
+    return [
+        outbox / f"{prefix}-{candidate_id}{ext}"
+        for prefix in prefixes
+        for candidate_id in (todo_id, short)
+        # AUD01-03: ".md.ready" (the BD-21 agent typo form) must be cleaned
+        # too — read_signal_for_todo accepts it, so a clean that skipped it
+        # left a VALID signal behind for the next stage.
+        for ext in (".ready", ".md.ready")
+    ]
+
+
 def clean_stage_signals(outbox: Path, todo_id: str, *prefixes: str) -> None:
     """Remove stale signal markers this action would produce, preserving earlier-stage ones.
 
@@ -139,19 +162,24 @@ def clean_stage_signals(outbox: Path, todo_id: str, *prefixes: str) -> None:
     in pipeline_engine consumes only .ready/.md.ready for the same reason).
     A caller that must delete a stale .md does it at the call site
     (e.g. _consume_verify_decision for AUD04-04), not through this default.
+
+    TODO-0235 (M3d, REVIEW N3): one leaf rule for destructive ops — every
+    component under ``.agentic`` is checked, the LEAF included, even though
+    ``unlink`` on a symlink leaf removes the link, not its target. A
+    symlinked outbox surface or a symlinked signal leaf refuses with
+    :class:`ManagedPathError` before the first unlink. All leaves are checked
+    before the first delete, so a refusal never consumes half the set.
     """
-    short = short_id(todo_id)
-    for prefix in prefixes:
-        for candidate_id in (todo_id, short):
-            # AUD01-03: ".md.ready" (the BD-21 agent typo form) must be
-            # cleaned too — read_signal_for_todo accepts it, so a clean that
-            # skipped it left a VALID signal behind for the next stage.
-            for ext in (".ready", ".md.ready"):
-                p = outbox / f"{prefix}-{candidate_id}{ext}"
-                try:
-                    p.unlink()
-                except FileNotFoundError:
-                    pass
+    managed_fs.require_posix("clean stage signals")
+    root = managed_fs.agentic_root_for(outbox)
+    leaves = stage_signal_paths(outbox, todo_id, *prefixes)
+    for p in leaves:
+        managed_fs.assert_no_symlink_escape(p, root=root)
+    for p in leaves:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def wait_for_signal(

@@ -36,6 +36,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .. import paths
+from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ._errors import AwfApiError
 
@@ -187,10 +188,17 @@ def resolve(project_dir: Path) -> tuple[bool, int | None, str | None]:
             project_dir=project_dir,
         ):
             return True, pid, "pid_file"
-        # dead or foreign (another project) → clean up the stale file
+        # dead or foreign (another project) → clean up the stale file.
+        # TODO-0235 (M3d): the cleanup is best-effort, so an unsafe LOGS
+        # surface (symlinked) skips it instead of deleting outside; the
+        # liveness answer below is unaffected.
         try:
+            managed_fs.require_posix("clean stale pid file")
+            managed_fs.assert_no_symlink_escape(
+                pid_file, root=managed_fs.agentic_root_for(pid_file)
+            )
             pid_file.unlink()
-        except OSError:
+        except (OSError, managed_fs.ManagedPathError):
             pass
 
     state = read_state(project_dir)

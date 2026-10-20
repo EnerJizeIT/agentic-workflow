@@ -14,9 +14,15 @@ from ._atomic import atomic_write_text
 from ._log import log as _log
 from ._worker_exit import worker_exit_line, worker_log_tail
 from .doctrine import materialize_doctrine
+from .infra import managed_fs
 from .pipeline import Stage
 from .pipeline_state import write_state
-from .signals import clean_stage_signals, expected_signal_prefixes, read_signal_for_todo
+from .signals import (
+    clean_stage_signals,
+    expected_signal_prefixes,
+    read_signal_for_todo,
+    stage_signal_paths,
+)
 from .supervisor import (
     build_prompt,
     get_agent_name,
@@ -141,13 +147,21 @@ def run_agent_stage(
     # Clean stale signals this kind could produce
     prefixes = expected_signal_prefixes(kind)
     outbox = paths.outbox(project_dir)
+    stale_progress = outbox / f"PROGRESS-{todo_id}.md"
+    # TODO-0235 (M3d, architect-review): this function removes two sets of
+    # files — the stale signals and the stale PROGRESS note. Both are
+    # preflighted as ONE set before the FIRST unlink: a symlinked surface or
+    # leaf must refuse with nothing consumed, not after the signals are gone.
+    managed_fs.require_posix("start agent stage")
+    managed_root = managed_fs.agentic_root_for(outbox)
+    for leaf in (*stage_signal_paths(outbox, todo_id, *prefixes), stale_progress):
+        managed_fs.assert_no_symlink_escape(leaf, root=managed_root)
     clean_stage_signals(outbox, todo_id, *prefixes)
 
     # DF5-5: clean stale PROGRESS from previous stage so collect_handoff
     # doesn't pick up the previous worker's notes as this stage's output.
     # PROGRESS is per-stage running notes, not cumulative. Previous stage's
     # PROGRESS is already captured in its handoff .md file (BD-19).
-    stale_progress = outbox / f"PROGRESS-{todo_id}.md"
     if stale_progress.exists():
         stale_progress.unlink()
         _log(logs_dir, f"DF5-5: cleaned stale PROGRESS-{todo_id}.md from previous stage")

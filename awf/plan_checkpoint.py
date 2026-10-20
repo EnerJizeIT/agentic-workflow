@@ -109,6 +109,11 @@ def _cleanup_stale_temp_html(project_dir: Path) -> int:
             mtime = Path(stale).stat().st_mtime
             if (now - mtime) < 600:
                 continue
+            # Исключение из S9-01 (TODO-0235): путь лежит в системном temp
+            # ВНЕ ``.agentic`` — managed-корня у него нет (это не поверхность
+            # проекта). Правило «все компоненты, включая лист» (REVIEW N3)
+            # относится к путям под ``.agentic``; здесь цель не наша и
+            # ``unlink`` листа снимает ссылку, а не чужой файл.
             Path(stale).unlink()
             removed += 1
         except OSError:
@@ -262,6 +267,23 @@ def _consume_checkpoint_decision(
     if not f.is_file():
         return False
     consumed = f.parent / (f.name + ".consumed")
+    # TODO-0235 (REVIEW B5): ``os.replace`` is destructive on a ``.agentic``
+    # path too — the context surface and both leaves are checked BEFORE the
+    # rename. A refusal is a no-op with a log line: the caller keeps its
+    # decision, nothing outside the project is touched.
+    try:
+        managed_fs.require_posix("consume checkpoint decision")
+        root = managed_fs.agentic_root_for(f)
+        managed_fs.assert_no_symlink_escape(f.parent, root=root)
+        managed_fs.assert_no_symlink_escape(f, root=root)
+        managed_fs.assert_no_symlink_escape(consumed, root=root)
+    except managed_fs.ManagedPathError as e:
+        if logs_dir is not None:
+            _log(
+                logs_dir,
+                f"B1: checkpoint decision not consumed: unsafe managed path: {e}",
+            )
+        return False
     try:
         os.replace(f, consumed)
     except OSError:
