@@ -14,14 +14,19 @@ from typing import Any
 
 from .. import config as cfg_mod
 from .. import paths, run_state, todos
-from .._atomic import atomic_write_text
+from .._atomic import MODE_OWNER_EDITABLE, atomic_write_text
 from .._lock import LOCK_NAME
 from ..dispatch_policy import CONFIG_VERSION
 from ..infra import managed_fs
 from . import _liveness
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
-from ._helpers import read_file_text, require_agentic, require_git_repo
+from ._helpers import (
+    managed_write_api_text,
+    read_file_text,
+    require_agentic,
+    require_git_repo,
+)
 from ._interlock import INTERLOCK_NAME, destructive_section, ensure_interlock_file
 from ._lease import EXECUTION_NAME, LEASE_NAME, rotate_execution_id
 from ._results import (
@@ -36,13 +41,67 @@ from ._templates import _CONFIG_TEMPLATE, update_gitignore
 
 # ─── init_project ───────────────────────────────────────────────────────
 
-# A-11: the full skeleton (fresh-init dirs + runtime dirs). A re-init
+# M1 (REVIEW виток 4): the dirs a fresh init creates — the CORE. The full
+# skeleton below EXTENDS this list, so the seven core names are typed once:
+# two hand-copied lists were the same "two sources of one surface" drift the
+# init preflight is meant to remove.
+_FRESH_DIRS = [
+    "roles",
+    "pipelines",
+    "phases",
+    "inbox",
+    "outbox",
+    "context",
+    "logs",
+]
+
+# A-11: the full skeleton (fresh-init core + status dirs). A re-init
 # without force only re-creates the ones that are missing.
 _SKELETON_DIRS = [
-    "roles", "pipelines", "phases",
-    "inbox", "outbox", "context", "logs",
+    *_FRESH_DIRS,
     "handoff", "done", "state", "dashboards", "inputs",
 ]
+
+
+def _init_plan_dirs() -> list[str]:
+    """Union of every init surface: runtime wipe, skeleton, doctrine seed.
+
+    M1 (REVIEW виток 4): ``phases``/``pipelines`` are not in
+    ``INIT_RUNTIME_DIRS`` and used to be checked only at the skeleton step —
+    AFTER the force wipe. ONE plan definition, checked before every first
+    effect: a refusal leaves everything (inbox, logs, state) untouched.
+    """
+    from ..doctrine import DOCTRINE_DIRNAME
+    from ._destructive import INIT_RUNTIME_DIRS
+
+    return list(
+        dict.fromkeys([*INIT_RUNTIME_DIRS, *_SKELETON_DIRS, DOCTRINE_DIRNAME])
+    )
+
+
+def _refuse_symlinked_dirs(
+    project_dir: Path, dirs: list[str] | tuple[str, ...], *, what: str
+) -> None:
+    """No-follow preflight for an init plan, BEFORE the first effect.
+
+    C1/C2/M1 (REVIEW): ONE plan definition — ``_init_plan_dirs()`` unions
+    the runtime wipe (``_clean_runtime``), the skeleton creation and the
+    doctrine seed. Copies were a second place for the same invariant to
+    drift; ``what`` only keeps the refusal text specific ("runtime" /
+    "skeleton"). The caller runs the whole plan BEFORE its own first effect
+    (the force branch: before the wipe and again before the writes; the
+    non-force branch: before the missing-dir mkdir), so a refusal leaves
+    the disk untouched — in particular a symlinked ``.agentic`` (or a
+    component such as ``roles``) never sends ``mkdir``/``rmtree``/``write``
+    out of the project (QA F1, Q1).
+    """
+    agentic = project_dir / ".agentic"
+    try:
+        managed_fs.assert_managed_dir(agentic, root=project_dir)
+        for d in dirs:
+            managed_fs.assert_managed_dir(agentic / d, root=project_dir)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(f"init refused — unsafe {what} path: {exc}") from exc
 
 
 def _clean_runtime(project_dir: Path) -> list[str]:
@@ -64,6 +123,10 @@ def _clean_runtime(project_dir: Path) -> list[str]:
     # "what will be removed" cannot drift from what is actually removed.
     from ._destructive import INIT_RUNTIME_DIRS
 
+    # The no-follow preflight runs in the caller over the WHOLE init plan
+    # (runtime ∪ skeleton ∪ doctrine), before the first effect — see
+    # ``_refuse_symlinked_dirs``. A local check would be a second copy and
+    # would still miss ``phases``/``pipelines`` (QA Q1).
     for name in INIT_RUNTIME_DIRS:
         d = agentic / name
         if not d.exists():
@@ -143,6 +206,75 @@ def _read_vision_excerpt(vision_path: Path | None) -> tuple[str, str | None]:
     if len(text) > 4000:
         text = text[:4000] + "\n...[truncated]"
     return text, None
+
+
+def _bootstrap_write(
+    path: Path,
+    content: str,
+    *,
+    operation: str,
+    mode: int | None = None,
+) -> None:
+    """One write primitive for the init skeleton.
+
+    TODO-0234 REVIEW (architect): on POSIX the skeleton is written through
+    the managed barrier (a pre-existing symlinked ``.agentic`` must refuse
+    BEFORE the first byte — the force path can meet one). Off POSIX the
+    barrier refuses by policy, but ``awf init`` is a safe bootstrap and
+    must not fail there (F-P1) — the plain atomic writer keeps the old
+    platform behavior.
+
+    No ``project_dir`` argument: the writer derives the root from the leaf
+    (``managed_fs.agentic_root_for``), so a separately passed spelling of
+    the same root could only disagree with it (the C4/Q4 class).
+    """
+    if managed_fs.is_posix():
+        managed_write_api_text(
+            path,
+            content,
+            operation=operation,
+            mode=0o600 if mode is None else mode,
+        )
+    else:
+        atomic_write_text(path, content, mode=mode)
+
+
+def _seed_doctrine(project_dir: Path) -> list[str]:
+    """Seed the built-in doctrine, translating a barrier refusal.
+
+    One entry point for both init branches (fresh/force and re-init): the
+    lazy import and the error translation used to be repeated at each call
+    site. ``seed_doctrine`` writes through the managed barrier, which can
+    still refuse on a swap after the preflight; the API's error matrix keeps
+    ``AwfApiError``, not a raw ``ManagedPathError`` (same rule as K3).
+    """
+    from ..doctrine import seed_doctrine
+
+    try:
+        return seed_doctrine(project_dir)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"init refused — unsafe doctrine path: {exc}"
+        ) from exc
+
+
+def _doctrine_seed_pending(project_dir: Path) -> bool:
+    """True when ``seed_doctrine`` would write at least one template.
+
+    Q3 (REVIEW виток 5): the init preflight is per-branch — doctrine is
+    checked only when the branch really writes templates. A re-init over an
+    existing catalog touches nothing there, so a symlink on that path must
+    not refuse a branch that writes elsewhere.
+    """
+    from ..doctrine import BUILTIN_DOCTRINE_DIR, doctrine_dir
+
+    if not BUILTIN_DOCTRINE_DIR.is_dir():
+        return False
+    dst = doctrine_dir(project_dir)
+    return any(
+        not (dst / src.name).exists()
+        for src in BUILTIN_DOCTRINE_DIR.glob("*.md")
+    )
 
 
 def init_project(
@@ -236,6 +368,13 @@ def init_project(
                 carried_generation = state_store.current_run_generation(
                     project_dir
                 )
+                # M1 (REVIEW виток 4): ONE preflight over the union — the
+                # runtime wipe, the skeleton and the doctrine seed — BEFORE
+                # the first rmtree. A symlinked ``phases``/``pipelines``
+                # used to refuse only after inbox/logs/state were gone.
+                _refuse_symlinked_dirs(
+                    project_dir, _init_plan_dirs(), what="runtime"
+                )
                 _clean_runtime(project_dir)
                 state_store.seed_run_generation(project_dir, carried_generation)
                 # F-X: the ExecutionId marker has to survive the wipe exactly
@@ -252,18 +391,34 @@ def init_project(
             # logs stay byte-for-byte as they were. Only missing empty
             # skeleton directories are re-created.
             created_dirs: list[str] = []
-            for d in _SKELETON_DIRS:
-                dirpath = agentic / d
-                if not dirpath.exists():
-                    dirpath.mkdir(parents=True, exist_ok=True)
-                    created_dirs.append(f".agentic/{d}/")
+            # Q3 (REVIEW виток 5): this branch only creates MISSING skeleton
+            # dirs — it never writes an existing one. Checking the whole union
+            # refused a live symlink (e.g. ``logs``) that the branch skips,
+            # breaking a routine ``awf init``. Preflight exactly what the
+            # branch touches: ``.agentic`` itself (every write crosses it),
+            # the missing dirs, and doctrine only when the seed has templates
+            # to write.
+            # ONE list drives both the preflight and the mkdir: re-testing
+            # ``exists()`` in the loop was a second answer to the same
+            # question (the "two sources of one surface" drift this unit
+            # removes), and could create a directory the preflight never saw.
+            missing = [
+                d for d in _SKELETON_DIRS if not (agentic / d).exists()
+            ]
+            seed_pending = _doctrine_seed_pending(project_dir)
+            _refuse_symlinked_dirs(
+                project_dir,
+                missing + (["doctrine"] if seed_pending else []),
+                what="skeleton",
+            )
+            for d in missing:
+                (agentic / d).mkdir(parents=True, exist_ok=True)
+                created_dirs.append(f".agentic/{d}/")
             ensure_interlock_file(project_dir)
             # W7: re-init also seeds missing doctrine (non-destructive,
             # same rule as the skeleton dirs above — existing files are
             # user data and are never overwritten).
-            from ..doctrine import seed_doctrine
-
-            for name in seed_doctrine(project_dir):
+            for name in _seed_doctrine(project_dir):
                 created_dirs.append(f".agentic/doctrine/{name}")
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
@@ -356,15 +511,8 @@ def init_project(
         )
 
     created_files: list[str] = []
-    for d in [
-        "roles",
-        "pipelines",
-        "phases",
-        "inbox",
-        "outbox",
-        "context",
-        "logs",
-    ]:
+    _refuse_symlinked_dirs(project_dir, _init_plan_dirs(), what="skeleton")
+    for d in _FRESH_DIRS:
         (agentic / d).mkdir(parents=True, exist_ok=True)
         created_files.append(f".agentic/{d}/")
     ensure_interlock_file(project_dir)
@@ -377,7 +525,14 @@ def init_project(
         typecheck_cmd=typecheck_cmd,
         build_cmd=build_cmd,
     )
-    atomic_write_text(agentic / "config.yaml", config_content)
+    # TODO-0234 REVIEW (architect): API-layer writers share ONE barrier
+    # (``managed_write_api_text``) so a refusal is an AwfApiError here too,
+    # not a raw ManagedPathError leaking out of the API.
+    _bootstrap_write(
+        agentic / "config.yaml",
+        config_content,
+        operation="init config.yaml",
+    )
     created_files.append(".agentic/config.yaml")
 
     # Copy supervisor.md template from the awf package
@@ -392,16 +547,23 @@ def init_project(
     supervisor_template = templates_dir / "roles" / "supervisor.md"
     supervisor_dest = agentic / "roles" / "supervisor.md"
     if supervisor_template.is_file():
-        shutil.copy2(supervisor_template, supervisor_dest)
+        # TODO-0234 REVIEW (architect): ``shutil.copy2`` wrote
+        # ``.agentic/roles/supervisor.md`` outside the barrier — the same
+        # surface the DONE table claimed covered via setup's writer. Route
+        # the copy through the managed writer; mode stays the template's.
+        _bootstrap_write(
+            supervisor_dest,
+            supervisor_template.read_text(encoding="utf-8"),
+            operation="init supervisor.md",
+            mode=supervisor_template.stat().st_mode & 0o777,
+        )
         created_files.append(".agentic/roles/supervisor.md")
     else:
         warnings.append(f"supervisor.md template not found at {supervisor_template}")
 
     # W7: seed the built-in project doctrine (missing only, never
     # overwrite) — a new project starts with the core safety lessons.
-    from ..doctrine import seed_doctrine
-
-    for name in seed_doctrine(project_dir):
+    for name in _seed_doctrine(project_dir):
         created_files.append(f".agentic/doctrine/{name}")
 
     # plan.md stub — point to vision if found (atomic per H5 invariant)
@@ -422,7 +584,12 @@ def init_project(
             f"- [ ] (supervisor заполнит)\n"
         )
     plan_path = agentic / "phases" / "plan.md"
-    atomic_write_text(plan_path, plan_body)
+    _bootstrap_write(
+        plan_path,
+        plan_body,
+        operation="init plan.md",
+        mode=MODE_OWNER_EDITABLE,
+    )
     created_files.append(".agentic/phases/plan.md")
 
     # M1: the canonical-suite helper ships with the project, so the role

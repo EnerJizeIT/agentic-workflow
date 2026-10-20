@@ -2434,3 +2434,34 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # TODO.md в комментарии (n) и 1 unit-id в комментарии к preflight листьев
 # в awf/todos.py. Ни одного TODO/FIXME-маркера долга не добавлено.
 # files_over_400 stays 96 (правка todos.py уложилась; новых файлов нет).
+
+# M3c (TODO-0234, стадия agent-implementer, 20.10): baseline todos
+# 6375 -> 6382 (+7). Семь строк — unit-id ссылки и тестовые
+# идентификаторы нового tests/negative/test_miniwave_m3c_writers.py
+# (модульный docstring с TODO-0234, fixture-ид TODO-0001 и строки кейсов),
+# не долг: ни одного TODO/FIXME-маркера не добавлено. files_over_400
+# stays 96 (новый тест — под 400 строк).
+
+# M3c (TODO-0234, стадия agent-architect-review, 20.10): baseline todos
+# 6382 -> 6388 (+6). Шесть строк — unit-id ссылки в комментариях правок
+# ревью (три в awf/api/lifecycle.py, одна в awf/api/hygiene.py, одна в
+# комментарии тестового seam'а tests/negative/test_roadmap_r1_cancel.py)
+# и одна строка docstring нового кейса
+# test_todo_edit_backup_refuses_symlinked_context, не долг: ни одного
+# TODO/FIXME-маркера не добавлено. files_over_400 stays 96 (новых файлов
+# нет).
+
+# M3c REVIEW (TODO-0234, стадия agent-implementer, 20.10): files_over_400
+# 96 -> 97 и todos 6388 -> 6393 (+5). Файл перешагнул 400 строк — это
+# контрактный tests/negative/test_miniwave_m3c_writers.py: пять новых
+# кейсов ревью K1-K5 (checkpoint-правка TODO, RUN-EVIDENCE/VERIFIED,
+# ветка бэкапа config, mode 0600, отказ на не-POSIX). Пять строк todos —
+# комментарии и docstring'и этих же кейсов со словом TODO, не долг: ни
+# одного TODO/FIXME-маркера не добавлено.
+
+# M3c (TODO-0234, стадия agent-architect-review, 20.10, виток 2): планка
+# НЕ поднималась — files_over_400 97 и todos 6393 без изменений. Правки
+# ревью (preflight в adopt/discard, helper кэша checkpoint, два новых
+# кейса) не добавили ни одной строки со словом TODO: комментарии
+# переписаны без него. Оба новых кейса лежат в уже >400-строчном
+# контрактном файле, новых файлов нет.

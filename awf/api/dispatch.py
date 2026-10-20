@@ -16,6 +16,7 @@ import shlex
 from pathlib import Path
 
 from .. import git_utils, paths
+from .._atomic import MODE_OWNER_EDITABLE
 from ..dispatch_policy import (
     ISOLATE,
     REQUIRE_CLEAN,
@@ -679,7 +680,7 @@ def dispatch_todo(
             fd = managed_fs.open_managed(
                 candidate,
                 flags=os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                mode=0o644,
+                mode=MODE_OWNER_EDITABLE,
                 root=project_dir,
             )
         except FileExistsError:
@@ -801,7 +802,7 @@ def dispatch_todo(
     # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the
     # placeholder — the id is already claimed, no one else can take it).
     # R1.5: no-follow write (same class as the reservation open above).
-    managed_fs.managed_write_text(md_path, body, root=project_dir, mode=0o644)
+    managed_fs.managed_write_text(md_path, body, root=project_dir, mode=MODE_OWNER_EDITABLE)
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status).
     # RUN10 #4: include files are excluded from the untracked snapshot by a
@@ -883,7 +884,7 @@ def dispatch_todo(
     # R1.5: the `.ready` touch is a write under `.agentic` too — no-follow.
     ready_path = inbox / f"{todo_id}.ready"
     try:
-        managed_fs.managed_write_text(ready_path, "", root=project_dir, mode=0o644)
+        managed_fs.managed_write_text(ready_path, "", root=project_dir, mode=MODE_OWNER_EDITABLE)
     except managed_fs.ManagedPathError as e:
         raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
 

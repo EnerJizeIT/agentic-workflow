@@ -41,7 +41,7 @@ from pathlib import Path
 
 from . import _proc, commit_delta, paths, run_state
 from . import config as cfg_mod
-from ._atomic import atomic_write_text
+from .infra import managed_fs
 from .infra.git_model import GIT_TIMEOUT
 from .unit_contract import parse_todo_contract
 from .verify import _verify_cmd_timeout, candidate_check_commands, verify_command_keys
@@ -569,7 +569,29 @@ def read_evidence(project_dir: Path, todo_id: str) -> CandidateEvidence | None:
 
 
 def write_evidence(project_dir: Path, ev: CandidateEvidence) -> None:
-    atomic_write_text(evidence_path(project_dir, ev.todo_id), ev.to_json())
+    """Write the evidence through the managed no-follow barrier.
+
+    TODO-0234 (M3c): the evidence lives under ``.agentic/context`` — a
+    symlinked component must refuse the write instead of sending it outside
+    the project. The callers' contract is ``OSError`` on a failed write, so
+    the barrier's refusal is translated to it.
+
+    C4 (REVIEW): ``evidence_path`` resolves the project through
+    ``paths.context_dir``, so the root passed to the barrier is resolved
+    too — a relative ``project_dir`` is a normal project, not a false
+    "escapes managed root" refusal.
+    """
+    project_dir = Path(project_dir).resolve()
+    try:
+        managed_fs.managed_write_text(
+            evidence_path(project_dir, ev.todo_id),
+            ev.to_json(),
+            root=project_dir,
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise OSError(
+            f"candidate evidence refused — unsafe managed path: {exc}"
+        ) from exc
 
 
 def _generation(project_dir: Path) -> int:

@@ -18,10 +18,9 @@ import yaml
 
 from .. import config as cfg_mod
 from .. import paths
-from .._atomic import atomic_write_text
 from ..xdg import xdg_config_home
 from ._errors import AwfApiError
-from ._helpers import require_agentic
+from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic
 from ._results import (
     AddRoleResult,
     AdoptRoleDraftResult,
@@ -636,7 +635,10 @@ def add_role(
     # ORCH M5.1: draft candidates live in roles/draft/ — live roles,
     # config and the pipeline are not touched by the draft path.
     target_dir = roles_dir / _DRAFT_DIRNAME if draft else roles_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
+    # REVIEW (architect): the managed writer creates the directory through
+    # the verified parent. A bare ``mkdir`` here walked a symlinked
+    # ``roles``/``roles/draft`` — the same leftover removed from the
+    # pipeline, plan and inbox writers in this unit.
     role_file = target_dir / f"{role_name}.md"
     # AUD06-06: defense in depth — even a slug that passed validation must
     # resolve back inside the target dir (guards against future
@@ -730,10 +732,16 @@ def add_role(
         # previous one did (idempotent no-op).
         model_config = f"models.{role_name}.model"
 
-    atomic_write_text(role_file, content)
+    managed_write_api_text(
+        role_file, content, operation="write role"
+    )
 
     if config_update is not None:
-        atomic_write_text(config_path, config_update[0])
+        managed_write_api_text(
+            config_path,
+            config_update[0],
+            operation="update config.yaml",
+        )
 
     return AddRoleResult(
         role_name=role_name,
@@ -904,7 +912,11 @@ def seed_roles(
                 action = "unchanged"
             else:
                 raw_cfg = update[0]
-                atomic_write_text(config_path, raw_cfg)
+                managed_write_api_text(
+                    config_path,
+                    raw_cfg,
+                    operation="update config.yaml",
+                )
                 action = "written"
         models_rows.append(
             {
@@ -1092,15 +1104,18 @@ def adopt_role_draft(project_dir: Path, role_name: str) -> AdoptRoleDraftResult:
     require_agentic(project_dir)
 
     draft = _draft_path(project_dir, slug)
+    roles_dir = project_dir / ".agentic" / "roles"
+    target = roles_dir / f"{slug}.md"
+    # REVIEW (architect): adopt reads the candidate and then UNLINKS it — a
+    # symlinked ``roles``/``roles/draft`` used to delete an outside file.
+    # The preflight runs before the read, so no component is followed.
+    refuse_unsafe_surfaces(project_dir, "adopt role draft", draft, target)
     if not draft.is_file():
         available = ", ".join(_available_draft_names(project_dir)) or "(none)"
         raise AwfApiError(
             f"Draft role {slug!r} not found in .agentic/roles/draft/. "
             f"Available drafts: {available}."
         )
-
-    roles_dir = project_dir / ".agentic" / "roles"
-    target = roles_dir / f"{slug}.md"
     if target.exists():
         raise AwfApiError(
             f"Adopt refused: live role {slug!r} already exists at {target}. "
@@ -1121,7 +1136,9 @@ def adopt_role_draft(project_dir: Path, role_name: str) -> AdoptRoleDraftResult:
             "candidate or discard it, then adopt again."
         )
     content = _strip_draft_marker(raw)
-    atomic_write_text(target, content)
+    managed_write_api_text(
+        target, content, operation="adopt role draft"
+    )
     draft.unlink()
 
     # ORCH M5.3: normalization — see the docstring. analyze_roles_core
@@ -1164,6 +1181,9 @@ def discard_role_draft(project_dir: Path, role_name: str) -> DiscardRoleDraftRes
     require_agentic(project_dir)
 
     draft = _draft_path(project_dir, slug)
+    # REVIEW (architect): the candidate is unlinked after the trace write —
+    # the same preflight as adopt, before anything is read or followed.
+    refuse_unsafe_surfaces(project_dir, "discard role draft", draft)
     if not draft.is_file():
         available = ", ".join(_available_draft_names(project_dir)) or "(none)"
         raise AwfApiError(
@@ -1179,7 +1199,11 @@ def discard_role_draft(project_dir: Path, role_name: str) -> DiscardRoleDraftRes
         trace = context_dir / f"{stem}-{counter}.md"
         counter += 1
 
-    atomic_write_text(trace, draft.read_text(encoding="utf-8"))
+    managed_write_api_text(
+        trace,
+        draft.read_text(encoding="utf-8"),
+        operation="discard role draft",
+    )
     draft.unlink()
     return DiscardRoleDraftResult(
         role_name=slug,
@@ -1539,8 +1563,17 @@ def analyze_roles_core(
                 )
                 current = pattern.sub("", current).rstrip()
             new_content = current.rstrip() + "\n" + addendum
-            atomic_write_text(path, new_content)
-        except OSError:
+            managed_write_api_text(
+                path,
+                new_content,
+                operation="analyze roles",
+            )
+        except (OSError, AwfApiError):
+            # The structured result exists to report PER-ROLE failures: one
+            # role file whose write is refused (a symlinked leaf) must not
+            # abort the patches of the others. A refusal still writes
+            # nothing outside the project — the barrier runs before the
+            # first byte.
             failed.append(role)
 
     if failed:

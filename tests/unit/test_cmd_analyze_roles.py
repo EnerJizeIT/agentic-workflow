@@ -312,8 +312,8 @@ class TestAnalyzeRolesRun:
             "project-auditor": "# Auditor — verifies implementation",
         })
 
-        # Force atomic_write_text to fail for the 'qa' role only.
-        from awf.api.roles import atomic_write_text as real_write
+        # Force the managed writer to fail for the 'qa' role only.
+        from awf.api.roles import managed_write_api_text as real_write
 
         def flaky_write(path, content, *a, **kw):
             if Path(path).name == "qa.md":
@@ -321,7 +321,7 @@ class TestAnalyzeRolesRun:
             return real_write(path, content, *a, **kw)
 
         import awf.api.roles as _roles_mod
-        monkeypatch.setattr(_roles_mod, "atomic_write_text", flaky_write)
+        monkeypatch.setattr(_roles_mod, "managed_write_api_text", flaky_write)
 
         data = cmd_analyze_roles.analyze_roles_core(proj, dry_run=False)
 

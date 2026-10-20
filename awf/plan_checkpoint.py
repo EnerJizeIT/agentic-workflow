@@ -38,8 +38,9 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from . import config as cfg_mod
-from ._atomic import atomic_write_text
+from ._atomic import MODE_OWNER_EDITABLE
 from ._log import log as _log
+from .infra import managed_fs
 
 DEFAULT_CHECKPOINT_TIMEOUT = 3600  # 1 hour — matches AWF_SUPERVISOR_TIMEOUT
 
@@ -203,16 +204,49 @@ def _persist_checkpoint_decision(
         "submitted_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     try:
-        decision_file.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(
-            decision_file, json.dumps(payload, ensure_ascii=False, indent=2)
+        # C3 (REVIEW): the decision file lives under ``.agentic/context`` —
+        # same no-follow barrier as the P1 cache below, so a symlinked
+        # ``context`` cannot send the user's decision (with the edited
+        # plan text) outside the project. The writer creates missing
+        # directories through the verified parent.
+        managed_fs.managed_write_text(
+            decision_file,
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            root=managed_fs.agentic_root_for(decision_file),
         )
-    except OSError:
+    except (OSError, managed_fs.ManagedPathError):
         if logs_dir is not None:
             _log(
                 logs_dir,
                 f"B1: failed to persist checkpoint decision to {decision_file}",
             )
+
+
+def _persist_content_hash(
+    hash_file: Path, todo_id: str, content_hash: str
+) -> None:
+    """P1: remember the approved text so an unchanged plan skips the form.
+
+    REVIEW (architect): the cache lives in ``.agentic/context`` — the same
+    surface as the edit above, so it takes the same no-follow barrier.
+    It is never load-bearing (a miss re-opens the form), therefore a
+    refusal degrades to "no cache", exactly like the other best-effort
+    writers. The managed writer creates the directory itself.
+
+    Every writer in this module anchors the walk through
+    :func:`managed_fs.agentic_root_for` on ITS OWN leaf (decision, cache,
+    task/plan content): the root and the leaf then always share one path
+    form, while a separately passed ``project_dir`` could be relative next
+    to a resolved leaf and read as an escape.
+    """
+    try:
+        managed_fs.managed_write_text(
+            hash_file,
+            f"{todo_id}:{content_hash}\n",
+            root=managed_fs.agentic_root_for(hash_file),
+        )
+    except (OSError, managed_fs.ManagedPathError):
+        pass
 
 
 def _consume_checkpoint_decision(
@@ -285,7 +319,12 @@ def _apply_pending_checkpoint_decision(
             )
             decision = "approve"
         else:
-            atomic_write_text(content_file, content)
+            managed_fs.managed_write_text(
+                content_file,
+                content,
+                root=managed_fs.agentic_root_for(content_file),
+                mode=MODE_OWNER_EDITABLE,
+            )
     _consume_checkpoint_decision(project_dir, todo_id, logs_dir)
     _log(
         logs_dir,
@@ -518,9 +557,15 @@ def run_plan_checkpoint(
                     f"BD-36: edit ignored — empty content submitted for {todo_id}",
                 )
                 return "approve"
-            # BUG-2 fix: atomic_write_text (temp + rename) instead of write_text
-            # (truncate-then-write). Survives crash mid-write.
-            atomic_write_text(content_file, content)
+            # BUG-2 fix: atomic temp + rename instead of truncate-then-write
+            # — now through the managed barrier (no-follow), survives a
+            # crash mid-write.
+            managed_fs.managed_write_text(
+                content_file,
+                content,
+                root=managed_fs.agentic_root_for(content_file),
+                mode=MODE_OWNER_EDITABLE,
+            )
             _log(logs_dir, f"BD-36: {content_label} {content_file.name} rewritten via edit")
 
         # P1: Save content hash for skip-on-unchanged
@@ -530,11 +575,7 @@ def run_plan_checkpoint(
                 # content — otherwise kill+start right after an edit re-shows
                 # the form for the just-approved text.
                 content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-            try:
-                hash_file.parent.mkdir(parents=True, exist_ok=True)
-                hash_file.write_text(f"{todo_id}:{content_hash}\n", encoding="utf-8")
-            except OSError:
-                pass
+            _persist_content_hash(hash_file, todo_id, content_hash)
 
         return decision
     finally:

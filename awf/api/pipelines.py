@@ -23,14 +23,13 @@ import yaml
 
 from .. import config as cfg_mod
 from .. import paths
-from .._atomic import atomic_write_text
 from ..pipeline import (
     active_pipeline_name,
     list_pipeline_names,
     validate_pipeline_stages,
 )
 from ._errors import AwfApiError
-from ._helpers import require_agentic, slugify_role
+from ._helpers import managed_write_api_text, require_agentic, slugify_role
 from ._results import ListPipelinesResult, WritePipelineResult
 
 # A-06: stage schema (allowed keys, types, policies, budgets) is validated
@@ -112,7 +111,6 @@ def write_pipeline(
     stages = _validate_stages(stages, f"pipeline {name!r}")
 
     pipelines_dir = paths.pipelines_dir(project_dir)
-    pipelines_dir.mkdir(parents=True, exist_ok=True)
     target = pipelines_dir / f"{name}.yaml"
 
     overwritten = False
@@ -130,7 +128,9 @@ def write_pipeline(
         allow_unicode=True,
         sort_keys=False,
     )
-    atomic_write_text(target, content)
+    managed_write_api_text(
+        target, content, operation="write pipeline"
+    )
     return WritePipelineResult(
         name=name, file=str(target), stages=len(stages), overwritten=overwritten
     )

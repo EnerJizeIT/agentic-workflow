@@ -216,14 +216,14 @@ class TestQuickWriteResilience:
     def test_quick_write_error_warns_not_raises(self, awf_project, monkeypatch):
         import awf.api.setup as setup_mod
 
-        real = setup_mod.atomic_write_text
+        real = setup_mod.managed_write_api_text
 
         def flaky(path, content, *args, **kwargs):
             if path.name == "quick.yaml":
                 raise OSError("disk on fire")
             return real(path, content, *args, **kwargs)
 
-        monkeypatch.setattr(setup_mod, "atomic_write_text", flaky)
+        monkeypatch.setattr(setup_mod, "managed_write_api_text", flaky)
         result = api.apply_project_setup(
             awf_project, team=[{"agent": DEV}, {"agent": QA}]
         )

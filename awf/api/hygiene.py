@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import paths, todos
-from .._atomic import atomic_write_text
+from .._atomic import MODE_OWNER_EDITABLE
 from .._errors import OperationRecoveryRequired
 from .._log import log as _log
 from .._names import unique_name
@@ -39,7 +39,7 @@ from ..pipeline_state import read_state
 from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
-from ._helpers import refuse_unsafe_surfaces, require_agentic
+from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic
 from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult, UpdateTodoResult
 
 _ID_RE = re.compile(r"^TODO-\d{4,}$")
@@ -79,7 +79,11 @@ def _timestamp() -> str:
 def _write_todo_locked(md: Path, expected_text: str, new_text: str) -> None:
     """R1.2: the version-guarded write; the caller MUST hold the project
     lock (see :func:`_write_todo_checked`). Split out so an outer lock
-    holder (the durable-operation path) does not re-lock and deadlock."""
+    holder (the durable-operation path) does not re-lock and deadlock.
+
+    No ``project_dir`` argument (REVIEW architect): the barrier derives the
+    root from the leaf, so a second spelling of the same root would only
+    add a way for the two to disagree (the C4/Q4 class)."""
     current = md.read_text(encoding="utf-8")
     if current != expected_text:
         raise AwfApiError(
@@ -87,7 +91,12 @@ def _write_todo_locked(md: Path, expected_text: str, new_text: str) -> None:
             "(version conflict: a concurrent update landed first). "
             "Re-read the TODO and retry; the accepted update is kept."
         )
-    atomic_write_text(md, new_text)
+    managed_write_api_text(
+        md,
+        new_text,
+        operation="update todo",
+        mode=MODE_OWNER_EDITABLE,
+    )
 
 
 def _write_todo_checked(
@@ -575,7 +584,7 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
         # a symlinked leaf; this closes the swap window and any caller that
         # skips the barrier).
         managed_fs.managed_write_text(
-            note, "\n".join(note_lines), root=project_dir, mode=0o644
+            note, "\n".join(note_lines), root=project_dir, mode=MODE_OWNER_EDITABLE
         )
         note_rel = note.relative_to(project_dir).as_posix()
 
@@ -655,8 +664,10 @@ def _recompute_include_baseline(
     from .pipeline import _untracked_snapshot
 
     untracked = _untracked_snapshot(project_dir, excluded)
-    atomic_write_text(
-        paths.context_dir(project_dir) / f"BASELINE-{todo_id}.untracked", untracked
+    managed_write_api_text(
+        paths.context_dir(project_dir) / f"BASELINE-{todo_id}.untracked",
+        untracked,
+        operation="rebuild baseline untracked",
     )
     if include_files:
         write_include_audit(project_dir, todo_id, include_files)
@@ -1034,11 +1045,19 @@ def _update_todo_impl(
 
     old_content = md.read_text(encoding="utf-8")
     context_dir = paths.context_dir(project_dir)
-    context_dir.mkdir(parents=True, exist_ok=True)
     ts = _timestamp()
     bak_name = _unique_name(context_dir, f"{todo_id}.md.bak-{ts}")
     backup = context_dir / bak_name
-    backup.write_text(old_content, encoding="utf-8")
+    # TODO-0234 REVIEW (architect): the TODO-edit backup is the same family
+    # as the edit itself — a symlinked ``context`` used to send the old
+    # content out of the project. The managed writer creates the directory
+    # through the verified parent, so the ``mkdir`` is gone too.
+    managed_write_api_text(
+        backup,
+        old_content,
+        operation="backup todo",
+        mode=MODE_OWNER_EDITABLE,
+    )
     backup_rel = backup.relative_to(project_dir).as_posix()
 
     if has_content:

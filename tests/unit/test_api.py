@@ -983,19 +983,37 @@ class TestAnalyzeRoles:
         self._setup_overlapping_roles(tmp_git_repo)
         import awf.api.roles as core_mod
 
-        real_write = core_mod.atomic_write_text
+        real_write = core_mod.managed_write_api_text
 
         def flaky(path, content, *a, **kw):
             if Path(path).name == "qa.md":
                 raise OSError("simulated")
             return real_write(path, content, *a, **kw)
 
-        monkeypatch.setattr(core_mod, "atomic_write_text", flaky)
+        monkeypatch.setattr(core_mod, "managed_write_api_text", flaky)
 
         result = api.analyze_roles(tmp_git_repo, dry_run=False)
         by_role = {e["role"]: e for e in result.patches_applied}
         assert by_role["qa"]["applied"] is False
         assert by_role["project-auditor"]["applied"] is True
+
+    def test_refused_patch_reports_applied_false_for_that_role(self, tmp_git_repo):
+        """M3c: a symlinked role LEAF is a per-role refusal, not a fatal
+        abort — the other roles' patches still land, nothing is written
+        outside the project."""
+        self._setup_overlapping_roles(tmp_git_repo)
+        qa = tmp_git_repo / ".agentic" / "roles" / "qa.md"
+        outside = tmp_git_repo.parent / "outside-qa.md"
+        outside.write_text(qa.read_text(encoding="utf-8"), encoding="utf-8")
+        qa.unlink()
+        qa.symlink_to(outside)
+
+        result = api.analyze_roles(tmp_git_repo, dry_run=False)
+
+        by_role = {e["role"]: e for e in result.patches_applied}
+        assert by_role["qa"]["applied"] is False
+        assert by_role["project-auditor"]["applied"] is True
+        assert "BD-31" not in outside.read_text(encoding="utf-8")
 
     def test_missing_roles_dir_raises(self, tmp_git_repo):
         (tmp_git_repo / ".agentic").mkdir()

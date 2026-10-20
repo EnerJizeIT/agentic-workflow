@@ -300,31 +300,36 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src
 
     def test_cmd_init_uses_atomic(self):
-        """H3: init logic uses atomic_write_text (in api.lifecycle)."""
+        """H3: init logic uses an atomic writer (in api.lifecycle).
+
+        M3c: the managed barrier (``managed_write_api_text``) is the same
+        temp+rename writer plus a no-follow walk; the bare ``atomic_write_text``
+        stays for the non-POSIX bootstrap (F-P1).
+        """
         import inspect
 
         from awf.api import lifecycle
 
         src = inspect.getsource(lifecycle)
-        assert "atomic_write_text" in src
+        assert "managed_write_api_text" in src or "atomic_write_text" in src
 
     def test_cmd_analyze_roles_uses_atomic(self):
-        """H3: analyze_roles logic uses atomic_write_text (now in awf.api.roles)."""
+        """H3: analyze_roles logic uses an atomic writer (now in awf.api.roles)."""
         import inspect
 
         from awf.api import roles
 
         src = inspect.getsource(roles)
-        assert "atomic_write_text" in src
+        assert "managed_write_api_text" in src or "atomic_write_text" in src
 
     def test_cmd_add_role_uses_atomic(self):
-        """H3: add_role logic uses atomic_write_text (in api.roles)."""
+        """H3: add_role logic uses an atomic writer (in api.roles)."""
         import inspect
 
         from awf.api import roles
 
         src = inspect.getsource(roles)
-        assert "atomic_write_text" in src
+        assert "managed_write_api_text" in src or "atomic_write_text" in src
 
     def test_cmd_rollback_uses_atomic(self):
         """H3: rollback logic uses atomic_write_text (in api.pipeline)."""

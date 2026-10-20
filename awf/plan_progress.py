@@ -8,7 +8,9 @@ import re
 from pathlib import Path
 
 from . import config as cfg_mod
+from ._atomic import MODE_OWNER_EDITABLE
 from ._log import log as _log
+from .infra import managed_fs
 
 
 def extract_step_id_from_todo(todo_path: Path) -> int | None:
@@ -140,13 +142,22 @@ def mark_plan_step_done(
             continue  # concurrent edit landed — reapply to fresh content
 
         # H5 fix: atomic write (was direct write_text — crash mid-write
-        # corrupts plan.md).
+        # corrupts plan.md). TODO-0234: the managed barrier anchors at the
+        # nearest ``.agentic`` (a project plan) and degrades to the plan
+        # directory when ``phases.current`` points outside the project.
+        # 0o644 — the same mode every plan writer uses (the owner edits the
+        # plan in the checkpoint form); without it the file flipped to 0600
+        # just because this step landed.
         try:
-            from ._atomic import atomic_write_text
-            atomic_write_text(plan_path, new_content)
+            managed_fs.managed_write_text(
+                plan_path,
+                new_content,
+                root=managed_fs.agentic_root_for(plan_path.parent),
+                mode=MODE_OWNER_EDITABLE,
+            )
             _log(logs_dir, f"BD-33: marked Step {step_id} done in plan.md (TODO {todo_id})")
             return True
-        except OSError as e:
+        except (OSError, managed_fs.ManagedPathError) as e:
             _log(logs_dir, f"BD-33: failed to write {plan_path}: {e}")
             return False
 

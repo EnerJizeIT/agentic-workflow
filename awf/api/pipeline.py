@@ -24,7 +24,11 @@ from ..pipeline_state import read_state
 from . import _lease, _liveness
 from ._background import PipelineArgs, start_in_background
 from ._errors import AwfApiError
-from ._helpers import require_agentic, require_awf_project
+from ._helpers import (
+    managed_write_api_text,
+    require_agentic,
+    require_awf_project,
+)
 from ._results import (
     ApproveResult,
     BaselineResult,
@@ -466,11 +470,12 @@ def approve_commit(
         verified_fp = current_fp
 
     if evidence.strip():
-        atomic_write_text(
+        managed_write_api_text(
             evidence_file,
             f"# Run evidence — {todo_id}\n\n"
             f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
             f"{evidence.strip()}\n",
+            operation="write run evidence",
         )
     elif run_active and not evidence_file.is_file():
         raise AwfApiError(
@@ -609,8 +614,11 @@ def approve_commit(
     # rename); the old order left a window where the gate could start on
     # the bare signal and skip the re-check.
     if verified_fp:
-        paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)
-        atomic_write_text(verified_file, f"{verified_fp}\n")
+        managed_write_api_text(
+            verified_file,
+            f"{verified_fp}\n",
+            operation="write verified fingerprint",
+        )
 
     inbox = paths.inbox(project_dir)
     inbox.mkdir(parents=True, exist_ok=True)

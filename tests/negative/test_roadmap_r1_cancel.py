@@ -13,16 +13,15 @@
 3. Повтор операции по operation_id возвращает её фактический исход;
    неизвестный исход — recovery_required, а не повтор-дубль.
 
-Инъекция барьера — через ``Path.write_text`` (резервная копия пишется
-обеими версиями и до первой записи содержимого): так тест доказуемо
-красный на базовой версии и зелёный после правки.
+Инъекция барьера — через ``hygiene.managed_write_api_text`` (резервная
+копия пишется обеими версиями и до первой записи содержимого): так тест
+доказуемо красный на базовой версии и зелёный после правки.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import inspect
-import pathlib
 import threading
 import time
 from pathlib import Path
@@ -31,8 +30,6 @@ from types import SimpleNamespace
 import pytest
 
 from awf import api
-
-_REAL_WRITE_TEXT = pathlib.Path.write_text
 
 
 def _recovery_required():
@@ -64,20 +61,23 @@ def _wait_for(pred, timeout: float = 10.0) -> bool:
 
 
 def _install_first_backup_gate(monkeypatch):
-    """Block the FIRST ``.bak-`` write_text (the backup before the content
+    """Block the FIRST ``.bak-`` managed write (the backup before the content
     write); later calls pass. Returns (ready, release) events."""
+    from awf.api import hygiene
+
     ready = threading.Event()
     release = threading.Event()
     state = {"fired": False}
+    real_write = hygiene.managed_write_api_text
 
-    def gate(self, data, *a, **k):
-        if not state["fired"] and ".bak-" in self.name:
+    def gate(path, content, *a, **k):
+        if not state["fired"] and ".bak-" in path.name:
             state["fired"] = True
             ready.set()
             release.wait(timeout=30)
-        return _REAL_WRITE_TEXT(self, data, *a, **k)
+        return real_write(path, content, *a, **k)
 
-    monkeypatch.setattr(pathlib.Path, "write_text", gate)
+    monkeypatch.setattr(hygiene, "managed_write_api_text", gate)
     return ready, release
 
 
@@ -299,19 +299,20 @@ class TestOperationIdHoldsLockAcrossRmw:
         op_release = threading.Event()
         plain_backup = threading.Event()
         seen = {"n": 0}
-        real = pathlib.Path.write_text
+        from awf.api import hygiene
+        real = hygiene.managed_write_api_text
 
-        def gate(self, data, *a, **k):
-            if ".bak-" in self.name:
+        def gate(path, content, *a, **k):
+            if ".bak-" in path.name:
                 seen["n"] += 1
                 if seen["n"] == 1:
                     op_ready.set()
                     op_release.wait(timeout=30)
                 elif seen["n"] == 2:
                     plain_backup.set()
-            return real(self, data, *a, **k)
+            return real(path, content, *a, **k)
 
-        monkeypatch.setattr(pathlib.Path, "write_text", gate)
+        monkeypatch.setattr(hygiene, "managed_write_api_text", gate)
         outcomes: dict[str, object] = {}
 
         def op_worker() -> None:
@@ -549,7 +550,7 @@ def _fail_journal_writes(monkeypatch, *, fail_start=True, fail_finish=False):
     R1.5: the journal writer moved into the StateStore
     (``state_store.write_operation``) — hygiene no longer touches the file
     bytes itself. The injection point follows the owner: patch the Store
-    writer, not ``hygiene.atomic_write_text``.
+    writer, not the TODO-content writer.
     """
     from awf.infra import state_store
 
