@@ -34,11 +34,12 @@ from .._atomic import atomic_write_text
 from .._errors import OperationRecoveryRequired
 from .._log import log as _log
 from .._names import unique_name
+from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
-from ._helpers import require_agentic
+from ._helpers import refuse_unsafe_surfaces, require_agentic
 from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult, UpdateTodoResult
 
 _ID_RE = re.compile(r"^TODO-\d{4,}$")
@@ -210,10 +211,21 @@ def clear_stale_closures(project_dir: Path, todo_id: str) -> tuple[list[str], Pa
     Returns ``(moved basenames, trace dir)`` — both empty/None when there is
     nothing to move. DONE-* signals are never moved.
     """
+    # REVIEW F4/G1: the trace LEAF is a destination too — check it before
+    # mkdir. This mover touches inbox (ACK closures), outbox (BLOCKED
+    # closures) and context (the trace dir) — ``done`` is NOT one of them.
+    trace = paths.context_dir(project_dir) / f"unblock-{todo_id}-{_timestamp()}"
+    refuse_unsafe_surfaces(
+        project_dir,
+        f"clear closures for {todo_id}",
+        paths.inbox(project_dir),
+        paths.outbox(project_dir),
+        paths.context_dir(project_dir),
+        trace,
+    )
     files = closure_files(project_dir, todo_id)
     if not files:
         return [], None
-    trace = paths.context_dir(project_dir) / f"unblock-{todo_id}-{_timestamp()}"
     trace.mkdir(parents=True, exist_ok=True)
     moved: list[str] = []
     for f in files:
@@ -311,9 +323,31 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
             )
         inbox = paths.inbox(project_dir)
         outbox = paths.outbox(project_dir)
+        context_dir = paths.context_dir(project_dir)
         md = inbox / f"{todo_id}.md"
+        # REVIEW G2: a missing id is "not found", not "unsafe managed path" —
+        # the existence check comes BEFORE the barrier so the diagnosis is
+        # about the id the caller asked for.
         if not md.is_file():
             raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to remove.")
+        # REVIEW F4/G1: every surface this mover touches, LEAVES included:
+        # inbox (md/.ready), outbox (signals), context (BASELINE deletion),
+        # done/<id> (the archive leaf).
+        done_dir = paths.done_dir(project_dir) / todo_id
+        # REVIEW виток 3: the LEAF is checked too, not just ``done/<id>`` —
+        # a symlinked directory at ``done/<id>/removed-<ts>.md`` would send
+        # the move outside the project. Same shape as ``retire_todo`` (G3):
+        # one timestamp, one path — the barrier checks the file moved below.
+        trace = done_dir / f"removed-{_timestamp()}.md"
+        refuse_unsafe_surfaces(
+            project_dir,
+            f"remove {todo_id}",
+            inbox,
+            outbox,
+            context_dir,
+            done_dir,
+            trace,
+        )
 
         short = short_id(todo_id)
         ids = (todo_id, short) if short != todo_id else (todo_id,)
@@ -343,9 +377,7 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
                 f"{todo_id} has PROGRESS — it was started. Use awf reset --orphans."
             )
 
-        done_dir = paths.done_dir(project_dir) / todo_id
         done_dir.mkdir(parents=True, exist_ok=True)
-        trace = done_dir / f"removed-{_timestamp()}.md"
         shutil.move(str(md), str(trace))
         trace_rel = trace.relative_to(project_dir).as_posix()
 
@@ -362,7 +394,6 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
         # The unit no longer exists — its baseline snapshot is dead weight
         # (commit gate / prove-red would read it for a TODO that is gone).
         removed_files: list[str] = []
-        context_dir = paths.context_dir(project_dir)
         for tid in ids:
             for p in sorted(context_dir.glob(f"BASELINE-{tid}.*")):
                 if p.is_file():
@@ -463,12 +494,26 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
                 f"{todo_id} is already archived (done/{todo_id}/TODO.md{extra}) — "
                 "use awf restore to bring an archived TODO back."
             )
+        # REVIEW G2: a missing id is "not found", not "unsafe managed path".
         if not md.is_file():
             raise AwfApiError(
                 f"{todo_id}.md not found in inbox and no done/{todo_id}/TODO.md — "
                 "nothing to retire."
             )
 
+        # REVIEW F4/G1/G3: the surfaces this mover touches, LEAVES included:
+        # inbox (md/.ready), outbox (PROGRESS/DONE/REVIEW), done/<id> and the
+        # RETIRED note file itself. ``context`` is not touched.
+        ts = _timestamp()
+        note = done_dir / f"RETIRED-{ts}.md"
+        refuse_unsafe_surfaces(
+            project_dir,
+            f"retire {todo_id}",
+            inbox,
+            outbox,
+            done_dir,
+            note,
+        )
         # Live pipeline on THIS id: the engine owns the files right now.
         # A pipeline on another id does not touch this TODO's files — allowed.
         running, pid, _tail = check_pipeline_running(project_dir)
@@ -510,8 +555,9 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
             moved.append(to_rel)
             pairs.append((src.relative_to(project_dir).as_posix(), to_rel))
 
-        ts = _timestamp()
-        note = done_dir / f"RETIRED-{ts}.md"
+        # The note path checked by the barrier above IS the file written
+        # below — one timestamp, one name (architect-review: a second
+        # ``_timestamp()`` here checked a path nothing ever wrote).
         note_lines = [
             f"# RETIRED: {todo_id}",
             "",
@@ -524,7 +570,13 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
         ]
         note_lines += [f"- {src} → {to}" for src, to in pairs]
         note_lines.append("")
-        note.write_text("\n".join(note_lines), encoding="utf-8")
+        # REVIEW G3: the last write must not follow a symlink either — the
+        # note leaf is no-follow written (the barrier above already refused
+        # a symlinked leaf; this closes the swap window and any caller that
+        # skips the barrier).
+        managed_fs.managed_write_text(
+            note, "\n".join(note_lines), root=project_dir, mode=0o644
+        )
         note_rel = note.relative_to(project_dir).as_posix()
 
         _log(

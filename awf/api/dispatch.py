@@ -29,7 +29,7 @@ from ..dispatch_policy import (
 from ..infra import managed_fs
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
-from ._helpers import require_awf_project
+from ._helpers import refuse_unsafe_surfaces, require_awf_project
 from ._results import DispatchTodoResult
 from .pipeline import create_baseline
 
@@ -640,10 +640,23 @@ def dispatch_todo(
     # ``.agentic``/``inbox`` used to send the unit file and its ``.ready``
     # signal OUTSIDE the project (S9-01 class). Refuse before the first side
     # effect; the writes below go through the no-follow managed helpers too.
-    try:
-        managed_fs.assert_no_symlink_escape(inbox, root=project_dir)
-    except managed_fs.ManagedPathError as e:
-        raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
+    #
+    # REVIEW G1: the barrier covers every managed surface the dispatch can
+    # reach — its own writes (inbox md/.ready, context baselines) and the
+    # helpers it calls (clear_stale_closures reads inbox/outbox and writes
+    # ``context/unblock-*``) — plus ``done``, the archive surface of the
+    # unit being created. It runs BEFORE the id reservation: with a
+    # symlinked ``done`` the old order wrote the md and five baseline files
+    # and only then refused in ``clear_stale_closures``, leaving a
+    # half-dispatch (md+baselines, no ``.ready``). Now nothing is written.
+    refuse_unsafe_surfaces(
+        project_dir,
+        f"dispatch {todo_id}",
+        inbox,
+        paths.outbox(project_dir),
+        paths.context_dir(project_dir),
+        paths.done_dir(project_dir),
+    )
     # F-0219-2: no ``inbox.mkdir`` here. A plain ``Path.mkdir(parents=True)``
     # after the preflight re-follows ``.agentic``: a swap to an outward
     # symlink between the check and the mkdir created an empty ``inbox``

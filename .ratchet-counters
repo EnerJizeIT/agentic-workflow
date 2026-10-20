@@ -2386,3 +2386,51 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # tests/negative/test_miniwave_m3_managedfs_round2.py (модульный docstring).
 # Ни одного TODO/FIXME-маркера долга не добавлено. files_over_400 stays 95
 # (новый тест — 174 строки).
+
+# M3b (TODO-0233, стадия agent-implementer, 20.10): baseline todos
+# 6355 -> 6360 (+5). Пять строк — unit-id ссылки и тестовые
+# идентификаторы, не долг: 2 в awf/api/hygiene.py (docstring общего
+# барьера _refuse_unsafe_surfaces: TODO-0233 и TODO-0227), 1 в
+# awf/infra/state_store/_records.py (комментарий preflight GC) и 2 в
+# новом tests/negative/test_miniwave_m3b_movers.py (модульный docstring
+# с TODO-0233 и fixture-ид TODO-0001). Ни одного TODO/FIXME-маркера
+# долга не добавлено. files_over_400 stays 95 (правка managed_fs.py
+# уложилась в 399 строк — под планкой; новый тест 229 строк).
+
+# M3b (TODO-0233, виток REVIEW-фикса 2, 20.10): files_over_400
+# 95 -> 96 (+1). Причина датирована: контрактный файл
+# tests/negative/test_miniwave_m3b_movers.py вырос до 509 строк —
+# в него добавлены кейсы (g)-(j) витка: барьер по поверхностям
+# операции, порядок «не найдено → барьер», лист RETIRED-заметки,
+# dry_run GC. Дробить файл нельзя: verify-контракт юнита запускает
+# ровно этот путь, второй файл выпал бы из контрактного прогона.
+# todos остаётся 6360: новых TODO/FIXME-маркеров долга не добавлено
+# (bare-слово в docstring переформулировано).
+
+# M3b QA (TODO-0233, стадия agent-qa-review, 20.10): baseline todos
+# 6360 -> 6361 (+1). Единственная новая строка с токеном «TODO» — заголовок
+# раздела (k) с детектором `test_remove_todo_refuses_symlinked_trace_leaf`
+# в tests/negative/test_miniwave_m3b_movers.py. Это unit-id ссылка в
+# комментарии, не долг: ни одного TODO/FIXME-маркера не добавлено.
+# files_over_400 stays 96 (файл уже был над планкой, новых файлов нет).
+
+# M3b REVIEW-4 (TODO-0233, стадия agent-implementer, 20.10): baseline
+# todos 6361 -> 6369 (+8). Все восемь — unit-id ссылки и имена архивных
+# файлов в новом коде/тестах, не долг: 2 в awf/api/_helpers.py
+# (комментарий H1), 1 в awf/infra/state_store/_records.py (комментарий H1),
+# 2 в awf/todos.py (комментарий H2 про REVIEW-TODO-0006), 3 в
+# tests/negative/test_miniwave_m3b_movers.py (строки ожидаемых имён
+# BLOCKED-/REVIEW-/TODO.md и комментарий H2). Ни одного TODO/FIXME-маркера
+# долга не добавлено. files_over_400 stays 96 (новых файлов нет).
+# M3b REVIEW-4, доп. (TODO-0233, 20.10): todos 6369 -> 6370 (+1) после
+# правки tests/unit/test_todo_lifecycle.py — docstring обновлённого теста
+# `test_archives_review_signal_with_the_unit` ссылается на unit-id (H2).
+# Это ссылка на юнит, не долг. files_over_400 stays 96.
+
+# M3b (TODO-0233, стадия agent-architect-review, 20.10): baseline todos
+# 6370 -> 6375 (+5). Все пять — не долг: 3 строки с реальными именами
+# архивных листов (BLOCKED-/REVIEW-/DONE-TODO-0001.md) в параметризации
+# нового кейса (n) tests/negative/test_miniwave_m3b_movers.py, 1 упоминание
+# TODO.md в комментарии (n) и 1 unit-id в комментарии к preflight листьев
+# в awf/todos.py. Ни одного TODO/FIXME-маркера долга не добавлено.
+# files_over_400 stays 96 (правка todos.py уложилась; новых файлов нет).

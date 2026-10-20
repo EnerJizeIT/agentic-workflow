@@ -160,14 +160,16 @@ class TestArchiveTodo:
         assert not (outbox / "DONE-0001.ready").exists()
         assert not (outbox / "PROGRESS-0001.md").exists()
 
-    def test_preserves_review_signal(self, project):
-        """REVIEW-TODO-0001.md should NOT be archived (it's a rejection)."""
+    def test_archives_review_signal_with_the_unit(self, project):
+        """H2 (TODO-0233): a rejected attempt's REVIEW report archives with
+        the unit — it used to outlive the cycle in the outbox forever."""
         outbox = project / ".agentic/outbox"
         outbox.mkdir(parents=True, exist_ok=True)
         (outbox / "REVIEW-TODO-0001.md").write_text("# Review feedback\n")
-        archive_todo(project, "TODO-0001")
-        # REVIEW should still be in outbox (not moved)
-        assert (outbox / "REVIEW-TODO-0001.md").exists()
+        result = archive_todo(project, "TODO-0001")
+        assert result is not None
+        assert not (outbox / "REVIEW-TODO-0001.md").exists()
+        assert (result / "REVIEW-TODO-0001.md").is_file()
 
     def test_multiple_todos_archive_independently(self, project):
         _setup_todo(project, "TODO-0001")

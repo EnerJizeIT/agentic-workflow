@@ -364,15 +364,18 @@ def managed_write_text(
         try:
             os.fchmod(fd, mode)
             with os.fdopen(fd, "w", encoding=encoding) as f:
+                fd = -1  # fdopen owns it now
                 f.write(content)
                 if durable:
                     f.flush()
                     os.fsync(f.fileno())
+            os.replace(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         except Exception:
+            with contextlib.suppress(OSError):
+                os.close(fd)
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name, dir_fd=dir_fd)
             raise
-        os.replace(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         if durable:
             # The rename is durable only once the directory entry is fsynced.
             with contextlib.suppress(OSError):

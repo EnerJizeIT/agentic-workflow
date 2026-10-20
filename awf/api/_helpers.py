@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from .. import git_utils, paths
+from ..infra import managed_fs
 from ._errors import AwfApiError
 
 # Cyrillic transliteration for role slugs. Canonical home (FU-14): the
@@ -103,6 +104,45 @@ def require_git_repo(project_dir: Path) -> None:
         )
 
 
+def refuse_unsafe_surfaces(
+    project_dir: Path, operation: str, *surfaces: Path
+) -> None:
+    """No-follow preflight over the managed surfaces ONE operation touches.
+
+    TODO-0233 (M3b): the same S9-01 class ``archive_todo`` closed in
+    TODO-0227 — a symlinked ``.agentic``/``inbox``/``outbox``/``done``/
+    ``context`` used to send ``shutil.move`` / ``unlink`` outside the
+    project. The barrier runs before the first effect.
+
+    The caller passes its OWN surface paths — the ones it reads, creates or
+    moves into, LEAVES included (``done/<id>``, ``context/<trace>``,
+    ``done/<id>/RETIRED-<ts>.md``). There is deliberately no union list
+    here: REVIEW G1 — ``clear_stale_closures`` never touches ``done``, so
+    checking it refused on a foreign surface and reported a misleading
+    "unsafe done" for an operation that would not have gone near it. A
+    mover that starts touching another surface must pass it in, otherwise
+    the barrier does not cover it.
+
+    One barrier for the whole API layer: ``dispatch_todo`` and the
+    ``hygiene`` movers call THIS helper — a private copy in ``hygiene``
+    imported by ``dispatch`` was a second implementation of the same
+    invariant (REVIEW architect-review).
+    """
+    root = managed_fs.agentic_root_for(paths.agentic_dir(project_dir))
+    try:
+        # H1 (TODO-0233, виток 4): the no-follow guarantee does not exist
+        # off POSIX — the policy other managed barriers already follow
+        # (``_wipe``/``_lease``). Refuse BEFORE any surface walk, so a
+        # platform without lstat/O_NOFOLLOW never gets a weaker barrier.
+        managed_fs.require_posix(operation)
+        for surface in surfaces:
+            managed_fs.assert_no_symlink_escape(surface, root=root)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"{operation} refused — unsafe managed path: {exc}"
+        ) from exc
+
+
 def read_file_text(path: Path, max_chars: int | None = None) -> str:
     """Read file as text, optionally truncated to ``max_chars``.
 
@@ -151,6 +191,7 @@ __all__ = [
     "require_agentic",
     "require_awf_project",
     "require_git_repo",
+    "refuse_unsafe_surfaces",
     "read_file_text",
     "read_log_tail",
 ]

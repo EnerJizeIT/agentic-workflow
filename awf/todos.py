@@ -106,6 +106,9 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     - outbox/DONE-{id}.json     → done/{id}/DONE.json (U3 machine facts, U5)
     - outbox/DONE-{id}.ready    → deleted
     - outbox/TEST-RESULTS-{id}.log → done/{id}/TEST-RESULTS-{id}.log (AUD15-07)
+    - outbox/BLOCKED-{id}.{md,json} → done/{id}/ (H2: dead-attempt report)
+    - outbox/REVIEW-{id}.{md,json}  → done/{id}/ (H2: rejected-attempt report)
+    - outbox/BLOCKED-{id}.ready     → deleted (signal consumed)
 
     Returns path to done/{todo_id}/ dir, or None if nothing to archive.
     Idempotent — safe to call multiple times.
@@ -183,6 +186,18 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
         if tr.is_file():
             moves.setdefault(dest / f"TEST-RESULTS-{tid_variant}.log", []).append(tr)
 
+    # H2 (TODO-0233, виток 4): reports of dead/rejected attempts used to
+    # outlive the cycle in the outbox (live case: REVIEW-TODO-0006.md).
+    # They belong to the archived unit — move them into done/<id>/ under
+    # their own names; the BLOCKED .ready markers are signals, consumed
+    # below like DONE/PROGRESS .ready.
+    for prefix in ("BLOCKED", "REVIEW"):
+        for tid_variant in (todo_id, _short_id(todo_id)):
+            for ext in (".md", ".json"):
+                src = outbox_p / f"{prefix}-{tid_variant}{ext}"
+                if src.is_file():
+                    moves.setdefault(dest / src.name, []).append(src)
+
     # Handoff files -> done/{id}/handoff/
     handoff_p = handoff_dir(project_dir)
     if handoff_p.is_dir():
@@ -194,6 +209,20 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
         )
         for hf in sorted(candidates):
             moves.setdefault(dest / "handoff" / hf.name, []).append(hf)
+
+    # M3b (TODO-0233, architect-review): every DESTINATION LEAF, not only
+    # ``dest``. The barrier above checks ``done/<id>`` as a directory; a
+    # symlinked directory AT a leaf name (``done/<id>/DONE.md`` or the H2
+    # ``BLOCKED-/REVIEW-<id>.md``) makes ``shutil.move`` write INTO it —
+    # outside the project, leaving the link in place. Same F4 lesson as the
+    # hygiene movers and ``records/<kind>``: the leaf is a destination too.
+    # Runs after the read-only ``moves`` collection and before the first
+    # mkdir/move, so a refusal has no side effect.
+    try:
+        for dst in moves:
+            managed_fs.assert_no_symlink_escape(dst, root=root)
+    except managed_fs.ManagedPathError as e:
+        raise OSError(f"archive {todo_id} refused: {e}") from e
 
     moved_anything = False
 
@@ -211,12 +240,13 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
             moved_anything = True
 
     # .ready signals from outbox are consumed, not archived.
-    for prefix in ("PROGRESS", "DONE"):
+    for prefix in ("PROGRESS", "DONE", "BLOCKED"):
         for tid_variant in (todo_id, _short_id(todo_id)):
-            src = outbox_p / f"{prefix}-{tid_variant}.ready"
-            if src.is_file():
-                src.unlink()
-                moved_anything = True
+            for name in (f"{prefix}-{tid_variant}.ready", f"{prefix}-{tid_variant}.md.ready"):
+                src = outbox_p / name
+                if src.is_file():
+                    src.unlink()
+                    moved_anything = True
 
     # A-12 + REVIEW F1: a done/<id>/ file is never overwritten.
     for dst, srcs in moves.items():
