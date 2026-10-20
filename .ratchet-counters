@@ -2515,3 +2515,10 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # в docstring'ах двух новых кейсов контрактного файла: порядок переноса
 # BLOCKED-закрытия и бюджет сетевого ретрая при отказе чистки. Долговых
 # TODO/FIXME-маркеров не добавлено; files_over_400 не менялась.
+
+# DESIGN 0238 (REVIEW виток 5, H1/H2/H3, стадия agent-implementer, 20.10):
+# files_over_400 98 -> 99. Один новый файл перешагнул планку 400 строк —
+# контрактный тест tests/negative/test_design_agentic_writers.py (две
+# машинные проверки: outside-surface против дефолтов под .agentic и
+# multi-match-проба с site-токеном). Прод-кода юнит не добавил.
+# Долговых TODO/FIXME-маркеров не добавлено.
