@@ -15,14 +15,63 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config as cfg_mod
 from .. import paths
+from .._log import log as _log
 from ..infra import managed_fs
 from ._errors import AwfApiError
 from ._helpers import read_log_tail
+
+# How long the launcher waits before probing a fresh background child
+# (_verify_child_alive in api/pipeline.py). The reaper must not collect the
+# child before that probe looks at it — see _reap_in_background.
+CHILD_PROBE_SECONDS = 1.0
+
+
+def _reap_in_background(
+    proc: subprocess.Popen,
+    logs_dir: Path,
+    *,
+    grace_seconds: float = CHILD_PROBE_SECONDS + 1.0,
+) -> threading.Thread | None:
+    """TODO-0241: reap the launched engine in a daemon thread.
+
+    The MCP server (parent) used to never ``wait()`` on the detached child;
+    a finished engine stayed a ``Zs`` zombie and its rc was lost. The
+    thread calls ``proc.wait()`` (the only reaping call), logs the rc and
+    exits. A Popen stand-in without ``wait`` degrades to a no-op.
+    """
+    if not hasattr(proc, "wait"):
+        return None
+
+    def _wait() -> None:
+        # Grace: the launcher's immediate-death probe (_verify_child_alive)
+        # samples the child with ``kill 0``, and a REAPED pid cannot be
+        # probed. Collecting it sooner turns a just-started child into
+        # "gone" and reports a spurious launch failure; the zombie must not
+        # outlive the probe, not race it. The wait is tied to the probe
+        # delay constant, not to a second guess.
+        if grace_seconds > 0:
+            time.sleep(grace_seconds)
+        try:
+            rc = proc.wait()
+        except Exception:  # noqa: BLE001 — reaping must never crash the parent
+            return
+        try:
+            _log(logs_dir, f"background engine exited: rc={rc} pid={proc.pid}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    thread = threading.Thread(
+        target=_wait, name="awf-engine-reaper", daemon=True
+    )
+    thread.start()
+    return thread
 
 
 @dataclass
@@ -197,6 +246,12 @@ def start_in_background(
             # to allow checkpoint (form opens in browser, stdout goes to file).
             env=child_env,
         )
+
+    # TODO-0241: reap the child so a finished engine is not left as Zs and
+    # its rc lands in the log. The owner starts HERE, at the spawn, not at
+    # the happy return: a refusal in the PID-file write below still leaves
+    # a live child, and an unowned child would never report its rc.
+    _reap_in_background(proc, logs_dir)
 
     # R1.1/F2: the PID file goes through the same managed no-follow writer
     # as every other report/log (F-A class). A preflight re-check plus a

@@ -929,7 +929,24 @@ async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     ("" when the warning is off)."""
     result = await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
     if isinstance(result, dict) and result.get("status") == "ok":
-        if result.get("active"):
+        # TODO-0241 (REVIEW E1): actionable facts (a BLOCKED closure, a
+        # dead engine) go through the single advice owner — the same
+        # function awf_status and the brief use. A local engine_dead
+        # branch here ranked the resume above the unanswered question.
+        #
+        # A LIVE pipeline keeps this surface's own run-loop advice: the
+        # owner ranks ``expected_action`` first on awf_status (a running
+        # stage is "do not intervene"), and the run payload carries no
+        # such fact, so a stale BLOCKED closure would otherwise answer a
+        # question awf_status does not ask. The order between blocked and
+        # engine_dead is untouched — it still lives in the owner.
+        if result.get("engine_dead") or (
+            result.get("blocked_ids") and not result.get("pipeline_running")
+        ):
+            from awf.brief import next_action_from_status
+
+            result["next_action"] = next_action_from_status(result)
+        elif result.get("active"):
             result["next_action"] = (
                 f"Run active (position {result.get('position', '?')}) — "
                 "awf_run_next(project_dir) launches the next queued unit."

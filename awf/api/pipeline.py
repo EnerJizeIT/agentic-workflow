@@ -22,7 +22,7 @@ from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
 from ..pipeline_state import read_state
 from . import _lease, _liveness
-from ._background import PipelineArgs, start_in_background
+from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import (
     managed_write_api_text,
@@ -111,7 +111,7 @@ def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
     import os
     import time as _time
 
-    _time.sleep(1.0)
+    _time.sleep(CHILD_PROBE_SECONDS)
     try:
         os.kill(pid, 0)
         return True

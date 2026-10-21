@@ -2710,3 +2710,37 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # юнита в прозе новых правок (отказ ``different payload`` в тестах).
 # files_over_400 остался 101: test_reports32_revise_append.py ужат до 398
 # строк вместо повышения храповика.
+
+# TODO-0241 (живучесть движка, стадия agent-implementer, 21.10):
+# files_over_400 101 -> 103, todos 6586 -> 6597 (+11). Два новых файла
+# перешагнули планку: awf/_engine_liveness.py (464 строки — единственный
+# владелец heartbeat/engine-exit/parent-death, инвариант один, дробление
+# его рассыплет) и awf/orchestrator.py (388 -> 420 строк после обёртки
+# движка записью exit). Строки «todos» — unit-id ссылки в docstring'ах
+# нового модуля, контрактного теста и подписи кейсов (a)-(e), не долг:
+# ни одного TODO/FIXME-маркера не добавлено.
+# TODO-0241 (доп. замер, agent-implementer, 21.10): todos 6597 -> 6599 (+2).
+# Оба — unit-id в прозе: строка компонента awf/_engine_liveness.py в
+# docs/design.md и подпись причины в этом файле счётчиков. Не долг.
+# files_over_400 без изменений (103).
+# TODO-0241 (agent-architect-review, 21.10): правки ревью — RLock под
+# сигнал-хендлер, сверка pid heartbeat со state, единая константа задержки
+# пробы спавна. files_over_400 (103) и todos (6599) без изменений: модуль
+# вырос 475 -> 492 строки, но планку перешагнул раньше и уже посчитан.
+
+# TODO-0241 (REVIEW виток 3 — D1, agent-implementer, 21.10): baseline
+# files_over_400 103 -> 104 и todos 6599 -> 6600. Причина files: контрактный
+# tests/negative/test_engine_liveness.py перешагнул планку 400 (QA-виток
+# довёл файл до 406 строк, D1 добавил кейс согласованности трёх поверхностей
+# -> 433). Дробить нельзя: verify-контракт юнита запускает ровно этот путь.
+# Причина todos (+1): net-прирост QA-файла находок
+# (.agentic/context/QA-0241-findings-test.py, unit-id и fixture-иды в прозе)
+# минус строки, ушедшие из правок. Долговых TODO/FIXME-маркеров не добавлено:
+# правки D1 (lifecycle.py, brief.py, тест) не несут токена TODO.
+
+# TODO-0241 (REVIEW виток 4 — E1/E2, agent-implementer, 21.10): baseline
+# todos 6600 -> 6604. Причина: четыре строки прозы с unit-id в правках
+# витка — поле blocked_ids в RunStatusResult (_results.py), счётчик
+# закрытий в run_status (run.py), маршрут совета на MCP-поверхности
+# (tools/awf.py) и actionable-гейт карточки (brief.py). Долговых
+# TODO/FIXME-маркеров не добавлено; files_over_400 без изменений (104).

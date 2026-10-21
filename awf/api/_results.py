@@ -64,6 +64,12 @@ class StatusResult:
     # in every status until someone resumes it. The hint text (with the
     # exact awf_continue call) when detected; None otherwise.
     zombie_state: str | None = None
+    # TODO-0241: state says a stage runs, but the engine PID is dead or its
+    # heartbeat is stale. The line is "stage=..., todo=..., <reason>";
+    # None when the engine is alive (or no stage is on disk). Read-only —
+    # state is never mutated by a status call.
+    engine_dead: str | None = None
+    engine_dead_todo: str | None = None
     # RUN3 #1: named pipelines — active (config default_pipeline, "default"
     # when undeclared) + number of pipeline files in .agentic/pipelines/
     active_pipeline: str | None = None
@@ -562,6 +568,19 @@ class RunStatusResult:
     # Requirement 4: commit / receipt / archive are separate facts, not
     # one inferred from another.
     publication: dict[str, Any] = field(default_factory=dict)
+    # TODO-0241: the engine-death line ("stage=..., todo=..., <reason>").
+    # "" when the engine is alive or no stage state is on disk.
+    engine_dead: str = ""
+    engine_dead_todo: str = ""
+    # TODO-0241 (REVIEW E1): the BLOCKED closures of the same read — the
+    # run surface must keep the shared advice order (blocked above
+    # engine_dead) instead of building its own branch.
+    blocked_ids: list[str] = field(default_factory=list)
+    # The shared liveness answer of the same read: True = a live pipeline
+    # owns the project (the stage state is merely not rewritten yet). The
+    # run surface publishes the fact instead of letting its consumer
+    # rebuild it to tell a live run from a dead one.
+    pipeline_running: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

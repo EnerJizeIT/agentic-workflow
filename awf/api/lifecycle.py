@@ -739,6 +739,23 @@ def _count_done_blocked(inbox: Path, outbox: Path, done: Path | None = None) -> 
     return done_count, blocked_count, blocked_ids
 
 
+def blocked_closure_ids(project_dir: Path) -> list[str]:
+    """The BLOCKED closures of the project — the counter every surface reads.
+
+    ``awf_status`` and the run status both need this one fact; the second
+    surface used to reach into the private counter and assemble the three
+    paths itself, which is the "written next to" shape the shared-owner
+    rule forbids. The derivation (inbox ready + outbox closure, done/
+    fallback) stays in ``_count_done_blocked``; this is its public door.
+    """
+    _, _, blocked_ids = _count_done_blocked(
+        paths.inbox(project_dir),
+        paths.outbox(project_dir),
+        paths.done_dir(project_dir),
+    )
+    return blocked_ids
+
+
 def _run_brief(project_dir: Path) -> dict | None:
     """SPEC A-run: compact run state for the status payload (None when none)."""
     from .run import run_brief
@@ -1027,12 +1044,40 @@ def get_status(project_dir: Path) -> StatusResult:
                 f"Review git diff, then ACK, retry, or split the task."
             )
 
+    # TODO-0241: the engine-death line — state says a stage runs, but the
+    # PID is dead or the heartbeat is stale. Read-only; salvage owns its
+    # own surface.
+    #
+    # The "no verdict while the resolver says running" rule lives in
+    # status_engine_dead (the launch window would otherwise put
+    # ``pipeline_running: True`` next to ``engine_dead``), the resume
+    # wording in engine_dead_hint. Neither is rebuilt here.
+    #
+    # No ``expected_action`` prefill: the advice ORDER has one owner —
+    # ``next_action_from_status`` (blocked above engine_dead; a BLOCKED
+    # closure asks the owner to answer the worker, not to resume it). The
+    # fields below carry the fact; the surfaces derive the sentence.
+    engine_dead: str | None = None
+    engine_dead_todo: str | None = None
+    from .._engine_liveness import status_engine_dead
+
+    # The salvage guard, the launch-window guard and the death verdict all
+    # live in status_engine_dead — one owner, the same answer for run_status.
+    _dead = status_engine_dead(
+        project_dir, _state, config_data, pipeline_running=pipeline_running
+    )
+    if _dead is not None:
+        engine_dead = _dead.line
+        engine_dead_todo = _dead.todo_id or None
+
     # TODO-0196: zombie-state — the engine died with the stage state still
     # on disk and no signal for the unit: without the hint the run limps in
     # every status until someone notices. Salvage and a lying signal own
-    # their own surfaces; the running pipeline is normal.
+    # their own surfaces; the running pipeline is normal. The
+    # engine-death line above names the same fact more precisely when it
+    # has the pid, so this hint is the narrower fallback (single owner).
     zombie_state: str | None = None
-    if _state and not pipeline_running and not salvage_needed:
+    if _state and not pipeline_running and not salvage_needed and not engine_dead:
         zombie_state = _zombie_state_hint(project_dir, _state)
 
     # REPORTS32 (TODO-0202): the "office" — who is on the team and on which
@@ -1067,6 +1112,8 @@ def get_status(project_dir: Path) -> StatusResult:
         salvage_needed=salvage_needed,
         salvage_stage=salvage_stage,
         zombie_state=zombie_state,
+        engine_dead=engine_dead,
+        engine_dead_todo=engine_dead_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
         run_state=_run_brief(project_dir),

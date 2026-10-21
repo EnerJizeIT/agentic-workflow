@@ -629,6 +629,33 @@ def run_status(project_dir: Path) -> RunStatusResult:
     # stall against). The same detector/line as the brief card.
     stall = stall_line(detect_stage_stall(project_dir)) if active else ""
 
+    # TODO-0241: the engine-death line — the run status must not say
+    # "running" when the stage state outlived the engine. Read-only.
+    # The liveness guard is status_engine_dead's (the shared resolver owns
+    # the fact — a live pipeline in the launch window means the stage state
+    # is merely not rewritten yet, not a dead engine).
+    from .._engine_liveness import status_engine_dead
+    from ..pipeline_state import read_state as _read_pipeline_state
+
+    _engine_running, _, _ = _liveness.resolve(project_dir)
+    _dead = status_engine_dead(
+        project_dir,
+        _read_pipeline_state(project_dir),
+        None,
+        pipeline_running=_engine_running,
+    )
+    engine_dead = _dead.line if _dead is not None else ""
+    engine_dead_todo = _dead.todo_id if _dead is not None else ""
+
+    # TODO-0241 (REVIEW E1): the BLOCKED closures — a BLOCKED stop keeps
+    # the stage state (with the now dead pid) and the closure in outbox/.
+    # One counter with a public door (``blocked_closure_ids``), the same
+    # one awf_status reads, so the advice order ("blocked above
+    # engine_dead") is never rebuilt on this surface.
+    from .lifecycle import blocked_closure_ids
+
+    blocked_ids = blocked_closure_ids(project_dir)
+
     if not state:
         message = "No run found — start one with awf_run_start(queue=[...])."
     elif active:
@@ -637,6 +664,7 @@ def run_status(project_dir: Path) -> RunStatusResult:
             + _current_pipeline_hint(state.get("queue"), current)
             + (f", budget left ~{left} min (productive)" if budget else "")
             + (f" Stage stall: {stall}." if stall else "")
+            + (f" Engine dead: {engine_dead}." if engine_dead else "")
         )
     else:
         message = (
@@ -691,6 +719,10 @@ def run_status(project_dir: Path) -> RunStatusResult:
         decisions=[dict(d) for d in record.decisions],
         stall=stall,
         publication=publication,
+        engine_dead=engine_dead,
+        engine_dead_todo=engine_dead_todo,
+        blocked_ids=blocked_ids,
+        pipeline_running=_engine_running,
     )
 
 

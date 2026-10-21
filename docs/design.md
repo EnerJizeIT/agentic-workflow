@@ -114,6 +114,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |
 | `signal_watch.py` | File-based signal detection (`run_subprocess_until_signal`) |
 | `_worker_exit.py` | Единый диагностический билдер `worker-exit:` для тихих смертей (нормальный выход и kill-пути) |
+| `_engine_liveness.py` | Живучесть движка (TODO-0241): `engine.heartbeat` (старт/смена стадии/тик), `ENGINE-EXIT-<ts>.md` (rc/сигнал/стадия/трейсбек), parent-death (`PR_SET_PDEATHSIG` + ppid-fallback), детектор `engine_dead` для статуса |
 | `signals.py` | Signal classification, file detection, expected prefixes |
 | `transitions.py` | Signal → action resolution (`resolve_transition`) |
 | `todos.py` | TODO lifecycle: archive, restore, retire, reconcile |

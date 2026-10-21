@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -85,7 +86,7 @@ def _make_stalled_stage(
                 "stage_kind": "execute",
                 "stage_idx": 1,
                 "todo_id": todo,
-                "pipeline_pid": 424242,
+                "pipeline_pid": os.getpid(),
                 "updated_at": old.replace(microsecond=0)
                 .isoformat()
                 .replace("+00:00", "Z"),

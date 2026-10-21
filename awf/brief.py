@@ -139,6 +139,11 @@ class BriefResult:
     # dead engine + stage state on disk + no signal; the State section
     # names the resume (awf_continue).
     zombie_state: str = ""
+    # TODO-0241: the engine-death line from the status ("" when none) —
+    # state says a stage runs, but the engine PID is dead / heartbeat is
+    # stale. The State section names the resume.
+    engine_dead: str = ""
+    engine_dead_todo: str = ""
     # TODO-0197 (REPORTS32 п.4): active inbox units OUTSIDE the active
     # run's queue (ready to start / closing a previous cycle) — rendered
     # as their own "outside run" line, never mixed into the "active:"
@@ -471,6 +476,8 @@ def _state_lines(r: BriefResult) -> list[str]:
         lines.append(f"- stall: {r.stall}")
     if r.zombie_state:
         lines.append(f"- zombie-state: {r.zombie_state}")
+    if r.engine_dead:
+        lines.append(f"- engine_dead: {r.engine_dead}")
     for t in r.active_todos:
         prog = t.get("progress")
         if prog:
@@ -579,6 +586,42 @@ def render_brief(r: BriefResult) -> str:
     return "\n".join(L).rstrip() + "\n"
 
 
+def _status_get(s: Any, name: str, default: Any = None) -> Any:
+    """Read one field from a status (dataclass or its ``as_dict`` form).
+
+    The advice owner and the card used to carry a private copy of this
+    lookup next to each other; one reader keeps their view of a status
+    identical by construction.
+    """
+    if isinstance(s, dict):
+        return s.get(name, default)
+    return getattr(s, name, default)
+
+
+# The facts that need the owner's hand, in the order they outrank the calm
+# states. ``next_action_from_status`` ranks exactly these before
+# pipeline_running/active/suggestion; ``_actionable_fact`` is the same list,
+# not a second copy — adding a fact here teaches both surfaces at once.
+_ACTIONABLE_FIELDS = ("expected_action", "salvage_needed", "blocked_ids", "engine_dead")
+
+
+def _actionable_fact(s: Any) -> bool:
+    """True when the status carries a fact that needs the owner's hand.
+
+    The brief gates the setup chain on this answer: a configured project
+    whose first unit blocked or crashed must hear the answer/resume step,
+    not the goal → form → normalize walkthrough. The advice ORDER still
+    belongs to ``next_action_from_status`` alone.
+    """
+    for name in _ACTIONABLE_FIELDS:
+        if name == "blocked_ids":
+            if list(_status_get(s, name) or []):
+                return True
+        elif str(_status_get(s, name) or ""):
+            return True
+    return False
+
+
 def next_action_from_status(s: Any) -> str:
     """Derive the supervisor's next step from live state (RUN6 #5).
 
@@ -587,9 +630,7 @@ def next_action_from_status(s: Any) -> str:
     on a ``StatusResult`` dataclass or its ``as_dict()`` form.
     """
     def _get(name: str, default: Any = None) -> Any:
-        if isinstance(s, dict):
-            return s.get(name, default)
-        return getattr(s, name, default)
+        return _status_get(s, name, default)
 
     expected = _get("expected_action")
     if expected:
@@ -606,6 +647,12 @@ def next_action_from_status(s: Any) -> str:
         return (
             f"Blocked: read `outbox/BLOCKED-{first}.md`, answer the question, "
             f"then `awf_continue(ack='{first}')`."
+        )
+    if _get("engine_dead"):
+        from ._engine_liveness import engine_dead_hint
+
+        return engine_dead_hint(
+            str(_get("engine_dead")), str(_get("engine_dead_todo") or "")
         )
     if _get("pipeline_running"):
         stage = _get("current_stage_name") or "?"
@@ -691,8 +738,21 @@ def build_brief(
     next_action = ""
     phase_summary = ""
     phase_clipped = False
-    if continues and status is not None:
-        raw_action = str(status.expected_action or status.suggestion or "")
+
+    # TODO-0241 (REVIEW E2): a fact that needs the owner's hand (a BLOCKED
+    # closure, a pending salvage, a dead engine) outranks the setup chain.
+    # Gating the advice on ``continues`` hid the resume for a configured
+    # project whose FIRST unit crashed (no done/, no run record). The
+    # field list lives with the advice owner (``_actionable_fact``); the
+    # ORDER still belongs to next_action_from_status alone.
+    if status is not None and (continues or _actionable_fact(status)):
+        # TODO-0241 D1: the advice ORDER has one owner. The card used to
+        # take ``expected_action or suggestion`` first, which let a stale
+        # suggestion outrank a BLOCKED closure (and the engine-dead hint).
+        # ``next_action_from_status`` already prefers ``expected_action``,
+        # then salvage → blocked → engine_dead → running → active →
+        # suggestion; deriving through it keeps the three surfaces in step.
+        raw_action = next_action_from_status(status)
         next_action, clipped_action = _clip_by_words(raw_action, _NEXT_ACTION_MAX_WORDS)
         if clipped_action:
             next_action += " …"
@@ -712,6 +772,8 @@ def build_brief(
     pipeline_pid: int | None = None
     current_stage: str | None = None
     zombie_state = ""
+    engine_dead = ""
+    engine_dead_todo = ""
     if status is not None:
         active_todos = [dict(t) for t in status.active_todos]
         # TODO-0197: the outside-run units from the same status read.
@@ -733,6 +795,17 @@ def build_brief(
             status.get("zombie_state") or ""
             if isinstance(status, dict)
             else getattr(status, "zombie_state", "") or ""
+        )
+        # TODO-0241: the engine-death facts from the same status read.
+        engine_dead = str(
+            status.get("engine_dead") or ""
+            if isinstance(status, dict)
+            else getattr(status, "engine_dead", "") or ""
+        )
+        engine_dead_todo = str(
+            status.get("engine_dead_todo") or ""
+            if isinstance(status, dict)
+            else getattr(status, "engine_dead_todo", "") or ""
         )
 
     # ORCH M4.2: the stalled-stage warning — the active stage's quiet
@@ -818,6 +891,8 @@ def build_brief(
         run_evidence_plan_lines=run_evidence_plan_lines,
         stall=stall,
         zombie_state=zombie_state,
+        engine_dead=engine_dead,
+        engine_dead_todo=engine_dead_todo,
     )
     result.text = render_brief(result)
     return result
