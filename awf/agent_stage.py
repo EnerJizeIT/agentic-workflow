@@ -297,6 +297,31 @@ def run_agent_stage(
     )
 
 
+def _latest_commit_line(project_dir: Path) -> str:
+    """The newest commit as ``<sha> <subject>`` — lossless decode.
+
+    A commit subject is arbitrary bytes (a non-UTF-8 file name echoed into
+    it is legal). Strict UTF-8 raised ``UnicodeDecodeError`` (a ``ValueError``)
+    past every salvage boundary and the handoff was never written (TODO-0239);
+    ``surrogateescape`` keeps the bytes without a second codec.
+    """
+    try:
+        last = subprocess.run(
+            ["git", "log", "-1", "--pretty=%h %s"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            check=False,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    # ``subprocess.run`` is monkeypatched to ``None`` by the handoff tests —
+    # the read stays defensive on purpose.
+    return (getattr(last, "stdout", "") or "").strip()
+
+
 def collect_handoff(
     role: str,
     todo_id: str,
@@ -466,19 +491,9 @@ def collect_handoff(
     if diff_stat_text:
         parts += ["## Git diff summary (vs baseline)", "", "```", diff_stat_text, "```", ""]
 
-    try:
-        last = subprocess.run(
-            ["git", "log", "-1", "--pretty=%h %s"],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        if last is not None and (getattr(last, "stdout", "") or "").strip():
-            parts += ["## Latest commit", "", f"`{last.stdout.strip()}`", ""]
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    latest_commit = _latest_commit_line(project_dir)
+    if latest_commit:
+        parts += ["## Latest commit", "", f"`{latest_commit}`", ""]
 
     parts += [
         "## What the next role should know",

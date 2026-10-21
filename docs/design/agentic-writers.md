@@ -144,7 +144,8 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/hygiene.py` · `mkdir` trace-каталога | `.agentic/context/unblock-<id>-<ts>/` (каталог) | `grep -n "trace.mkdir(parents=True" awf/api/hygiene.py` | `trace.mkdir(parents=True` | `unit-0239` |
 | `awf/api/hygiene.py` · remove: `mkdir` каталога done | `.agentic/done/<id>/` (каталог) | `grep -n -B3 "^        done_dir.mkdir" awf/api/hygiene.py` | `has PROGRESS — it was started` | `unit-0239` |
 | `awf/api/hygiene.py` · archive: `mkdir` каталога done | `.agentic/done/<id>/` (каталог) | `grep -n -B4 "^        done_dir.mkdir" awf/api/hygiene.py` | `sorted(outbox.glob(f"REVIEW-{tid}.*")` | `unit-0239` |
-| `awf/api/_lease.py` · lease запуска | `.agentic/logs/launch.lease` | `tests/negative/test_roadmap_r1_safety.py::TestOtherManagedWriters::test_managed_write_text_refuses_symlinked_agentic` | `test_managed_write_text_refuses_symlinked_agentic` | `barrier` |
+| `awf/api/_lease.py` · lease запуска (`_publish_claim`) | `.agentic/logs/awf-launch.lease` | `grep -n "dir_fd = os.open(" awf/api/_lease.py` | `dir_fd = os.open(` | `unit-0239` |
+| `awf/api/_lease.py` · `os.link` lease-заявки | `.agentic/logs/awf-launch.lease` (публикация) | `grep -n "os.link($" awf/api/_lease.py` | `os.link(` | `unit-0239` |
 | `awf/api/_lease.py` · `os.unlink` | `.agentic/logs/` (lease) | `grep -n "os.unlink(str(path))" awf/api/_lease.py` | `os.unlink(str(path))` | `unit-0239` |
 | `awf/api/_lease.py` · `path.unlink` | `.agentic/logs/` (lease) | `grep -n "path.unlink()" awf/api/_lease.py` | `path.unlink()` | `unit-0239` |
 | `awf/api/_lease.py` · `mkdir` каталога logs | `.agentic/logs/` (каталог) | `grep -n "logs.mkdir(parents=True" awf/api/_lease.py` | `logs.mkdir(parents=True` | `unit-0239` |
@@ -165,6 +166,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/pipeline.py` · REVIEW-файл: запись | `.agentic/outbox/REVIEW-<id>.md` | `grep -n -A2 "atomic_write_text($" awf/api/pipeline.py` | `review_file, f"# REVIEW` | `unit-0239` |
 | `awf/api/pipeline.py` · ACK-сигнал | `.agentic/inbox/ACK-<id>.ready` | `grep -n "atomic_write_text(ack_path" awf/api/pipeline.py` | `atomic_write_text(ack_path` | `unit-0239` |
 | `awf/api/pipeline.py` · APPROVE `.ready` `touch` | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "signal.touch()" awf/api/pipeline.py` | `signal.touch()` | `unit-0239` |
+| `awf/api/pipeline.py` · APPROVE-бинд: запись | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "atomic_write_text(signal, json.dumps(binding" awf/api/pipeline.py` | `atomic_write_text(signal, json.dumps(binding` | `unit-0242` |
 | `awf/api/pipeline.py` · ACK `.ready` `touch` | `.agentic/inbox/ACK-<id>.ready` | `grep -n 'ACK-{ack}.ready").touch()' awf/api/pipeline.py` | `ACK-{ack}.ready").touch()` | `unit-0239` |
 | `awf/api/pipeline.py` · last-kill запись | `.agentic/state/last-kill.json` | `grep -n "LAST_KILL_FILE, json.dumps(record)" awf/api/pipeline.py` | `LAST_KILL_FILE, json.dumps(record)` | `unit-0239` |
 | `awf/api/pipeline.py` · reconcile ACK (A2) | `.agentic/inbox/ACK-*.ready` | `grep -n "ack.unlink()" awf/api/pipeline.py` | `ack.unlink()` | `unit-0239` |
@@ -173,25 +175,23 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/pipeline.py` · approve evidence `unlink` | `.agentic/context/RUN-EVIDENCE-<id>.md` | `tests/negative/test_miniwave_m3d_unlinks.py::test_approve_evidence_unlink_is_guarded` | `test_approve_evidence_unlink_is_guarded` | `barrier` |
 | `awf/api/pipeline.py` · note «BLOCKED cleared» (A3) | `.agentic/context/NOTE-*.md` | `grep -n "BLOCKED cleared" awf/api/pipeline.py` | `BLOCKED cleared` | `unit-0239` |
 | `awf/api/pipeline.py` · `mkdir` context (A1) | `.agentic/context/` (каталог) | `grep -n "context_dir.mkdir(parents=True" awf/api/pipeline.py` | `context_dir.mkdir(parents=True` | `unit-0239` |
-| `awf/api/pipeline.py` · `mkdir` inbox (M3c #2) | `.agentic/inbox/` (каталог) | `grep -nE "[^_]inbox.mkdir\(parents=True" awf/api/pipeline.py` | `inbox.mkdir(parents=True` | `unit-0239` |
+| `awf/api/pipeline.py` · `mkdir` inbox (M3c #2) | `.agentic/inbox/` (каталог) | `tests/negative/test_inventory_batch1.py::test_approve_refuses_symlinked_inbox` | `test_approve_refuses_symlinked_inbox` | `barrier` |
 | `awf/api/pipeline.py` · `mkdir` ACK-inbox | `.agentic/inbox/` (ACK-поверхность) | `grep -n "ack_inbox.mkdir(parents=True" awf/api/pipeline.py` | `ack_inbox.mkdir(parents=True` | `unit-0239` |
 | `awf/api/pipeline.py` · `mkdir` outbox | `.agentic/outbox/` (каталог) | `grep -n "outbox.mkdir(parents=True" awf/api/pipeline.py` | `outbox.mkdir(parents=True` | `unit-0239` |
 | `awf/api/pipeline.py` · `mkdir` state | `.agentic/state/` (каталог) | `grep -n "state_dir.mkdir(parents=True" awf/api/pipeline.py` | `state_dir.mkdir(parents=True` | `unit-0239` |
 | `awf/api/pipeline.py` · salvage `unlink` | `.agentic/inbox/SALVAGE-*.md` | `grep -n -B2 "^            p.unlink()" awf/api/pipeline.py` | `for p in salvage_notes` | `unit-0239` |
 | `awf/api/roles.py` · adopt/discard черновика | `.agentic/roles/draft/<slug>.md` | `tests/negative/test_miniwave_m3d_unlinks.py::test_role_adopt_refuses_symlinked_draft` | `test_role_adopt_refuses_symlinked_draft` | `barrier` |
-| `awf/api/run.py` · RUN-REPORT: запись | `.agentic/outbox/RUN-REPORT-<ts>.md` | `grep -n -B8 "atomic_write_text(report" awf/api/run.py` | `_goal_check_lines(state, reason, salvage)` | `unit-0239` |
-| `awf/api/run.py` · SERVICE-RUN-REPORT: запись | `.agentic/outbox/SERVICE-RUN-REPORT-<ts>.md` | `grep -n -B8 "atomic_write_text(report" awf/api/run.py` | `f"- current: {main_cur or '—'}"` | `unit-0239` |
-| `awf/api/run.py` · RUN-REPORT `unlink` | `.agentic/outbox/RUN-REPORT-<ts>.md` | `grep -n "report.unlink()" awf/api/run.py` | `report.unlink()` | `unit-0239` |
-| `awf/api/run.py` · `.ready` `unlink` | `.agentic/inbox/<id>.ready` | `grep -n "ready_path.unlink()" awf/api/run.py` | `ready_path.unlink()` | `unit-0239` |
+| `awf/api/run.py` · RUN-REPORT: запись | `.agentic/outbox/RUN-REPORT-<ts>.md` | `tests/negative/test_inventory_batch1.py::test_run_report_write_refuses_symlinked_outbox` | `test_run_report_write_refuses_symlinked_outbox` | `barrier` |
+| `awf/api/run.py` · SERVICE-RUN-REPORT: запись | `.agentic/outbox/SERVICE-RUN-REPORT-<ts>.md` | `tests/negative/test_inventory_batch1.py::test_service_run_report_write_refuses_symlinked_outbox` | `test_service_run_report_write_refuses_symlinked_outbox` | `barrier` |
+| `awf/api/run.py` · RUN-REPORT `unlink` | `.agentic/outbox/RUN-REPORT-<ts>.md` | `tests/negative/test_inventory_batch1.py::test_run_report_unlink_refuses_symlinked_outbox` | `test_run_report_unlink_refuses_symlinked_outbox` | `barrier` |
+| `awf/api/run.py` · `.ready` `unlink` | `.agentic/inbox/<id>.ready` | `tests/negative/test_inventory_batch1.py::test_ready_unlink_refuses_symlinked_inbox` | `test_ready_unlink_refuses_symlinked_inbox` | `barrier` |
 | `awf/api/run.py` · service pipeline (S1, red-with-owner) | `.agentic/pipelines/role-draft-<slug>.yaml` | `grep -n "atomic_write_text(out, header" awf/api/run.py` | `atomic_write_text(out, header` | `unit-0239` |
 | `awf/api/run.py` · service evidence (S2, red-with-owner): запись | `.agentic/context/RUN-EVIDENCE-<id>.md` | `grep -n -A2 "atomic_write_text($" awf/api/run.py` | `f"# Service run evidence` | `unit-0239` |
-| `awf/api/run.py` · `.ready` `touch` | `.agentic/inbox/<id>.ready` | `grep -n "ready_path.touch()" awf/api/run.py` | `ready_path.touch()` | `unit-0239` |
+| `awf/api/run.py` · `.ready` `touch` | `.agentic/inbox/<id>.ready` | `tests/negative/test_inventory_batch1.py::test_ready_touch_refuses_symlinked_inbox` | `test_ready_touch_refuses_symlinked_inbox` | `barrier` |
 | `awf/api/run.py` · service APPROVE `.ready` `touch` | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "signal.touch()" awf/api/run.py` | `signal.touch()` | `unit-0239` |
 | `awf/api/run.py` · service-rollback inbox | `.agentic/inbox/<id>.md`, `.agentic/inbox/<id>.ready` | `grep -n '(inbox / f"{todo_id}{suffix}").unlink()' awf/api/run.py` | `(inbox / f"{todo_id}{suffix}").unlink()` | `unit-0239` |
 | `awf/api/run.py` · service-rollback baseline | `.agentic/context/BASELINE-<id>.*` | `grep -n '(ctx / name).unlink()' awf/api/run.py` | `(ctx / name).unlink()` | `unit-0239` |
 | `awf/api/run.py` · service-rollback pipeline | `.agentic/pipelines/role-draft-*.yaml` | `grep -n '"pipelines" / f"{pipe_name}.yaml").unlink()' awf/api/run.py` | `"pipelines" / f"{pipe_name}.yaml").unlink()` | `unit-0239` |
-| `awf/api/run.py` · `mkdir` outbox (RUN-REPORT) | `.agentic/outbox/` (каталог) | `grep -n -A1 "outbox.mkdir(parents=True, exist_ok=True)" awf/api/run.py` | `report = outbox / f"RUN-REPORT-{ts}.md"` | `unit-0239` |
-| `awf/api/run.py` · `mkdir` outbox (SERVICE-RUN-REPORT) | `.agentic/outbox/` (каталог) | `grep -n -A1 "outbox.mkdir(parents=True, exist_ok=True)" awf/api/run.py` | `report = outbox / f"SERVICE-RUN-REPORT-{ts}.md"` | `unit-0239` |
 | `awf/api/run.py` · `mkdir` pipelines | `.agentic/pipelines/` (каталог) | `grep -n "out.parent.mkdir(parents=True" awf/api/run.py` | `out.parent.mkdir(parents=True` | `unit-0239` |
 | `awf/api/run.py` · `mkdir` context | `.agentic/context/` (каталог) | `grep -n "ctx.mkdir(parents=True" awf/api/run.py` | `ctx.mkdir(parents=True` | `unit-0239` |
 | `awf/api/run.py` · `mkdir` approve inbox | `.agentic/inbox/` (APPROVE-поверхность) | `grep -n "inbox.mkdir(parents=True" awf/api/run.py` | `inbox.mkdir(parents=True` | `unit-0239` |
@@ -238,11 +238,10 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/_log.py` · ротация лога | `.agentic/logs/*.log` | `grep -n "old.unlink()" awf/_log.py` | `old.unlink()` | `unit-0239` |
 | `awf/_log.py` · `rename` лога в архив | `.agentic/logs/*.log` | `grep -n "log_file.rename(archive)" awf/_log.py` | `log_file.rename(archive)` | `unit-0239` |
 | `awf/_log.py` · `mkdir` корня логов | `.agentic/` (корень при отсутствии) | `grep -n "root.mkdir(parents=True" awf/_log.py` | `root.mkdir(parents=True` | `unit-0239` |
-| `awf/metrics.py` · кэш цен моделей: `write_text` | `.agentic/state/metrics_models_cache.json` | `grep -n "write_text" awf/metrics.py` | `f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")` | `unit-0239` |
-| `awf/metrics.py` · кэш цен моделей: `mkdir` | `.agentic/state/` (каталог) | `grep -n "f.parent.mkdir(parents=True, exist_ok=True)" awf/metrics.py` | `f.parent.mkdir(parents=True, exist_ok=True)` | `unit-0239` |
-| `awf/metrics.py` · кэш подписок: `write_text` | `.agentic/state/metrics_subscriptions.json` | `grep -n "write_text" awf/metrics.py` | `cache_file.write_text(` | `unit-0239` |
-| `awf/metrics.py` · кэш подписок: `mkdir` | `.agentic/state/` (каталог) | `grep -n "cache_file.parent.mkdir(parents=True, exist_ok=True)" awf/metrics.py` | `cache_file.parent.mkdir(parents=True, exist_ok=True)` | `unit-0239` |
-| `awf/metrics.py` · отчёт метрик | `~/Desktop` (вне проекта) | `grep -n "out_dir = str(desktop)" awf/metrics.py` | `out_dir = str(desktop)` | `exception+outside-surface: отчёт кладётся на рабочий стол владельца` |
+| `awf/metrics.py` · кэш цен моделей: запись | `.agentic/state/metrics_models_cache.json` | `tests/negative/test_inventory_batch1.py::test_metrics_models_cache_refuses_symlinked_state` | `test_metrics_models_cache_refuses_symlinked_state` | `barrier` |
+| `awf/metrics.py` · кэш подписок: запись | `.agentic/state/metrics_subscriptions.json` | `tests/negative/test_inventory_batch1.py::test_metrics_subscriptions_cache_refuses_symlinked_state` | `test_metrics_subscriptions_cache_refuses_symlinked_state` | `barrier` |
+| `awf/metrics.py` · отчёт метрик: `write_text` | `~/Desktop` (вне проекта) | `grep -n "out_path.write_text" awf/metrics.py` | `out_path.write_text(` | `exception+outside-surface: отчёт кладётся на рабочий стол владельца` |
+| `awf/metrics.py` · `mkdir` зеркала отчёта | `metrics.mirror_dir` (вне проекта) | `grep -n "dest_dir.mkdir(parents=True, exist_ok=True)" awf/metrics.py` | `dest_dir.mkdir(parents=True, exist_ok=True)` | `exception+outside-surface: архивное зеркало вне проекта` |
 | `awf/mutations.py` · подмена исходника | `файлы проекта (инструмент мутаций)` | `grep -n "target.write_text(original.replace" awf/mutations.py` | `target.write_text(original.replace(m.find, m.repl, 1)` | `exception+test-tooling: мутационная проверка намеренно пишет исходник и возвращает байты` |
 | `awf/mutations.py` · восстановление исходника | `файлы проекта (инструмент мутаций)` | `grep -n "target.write_text(original, encoding" awf/mutations.py` | `target.write_text(original, encoding="utf-8")` | `exception+test-tooling: мутационная проверка намеренно пишет исходник и возвращает байты` |
 | `awf/opencode_agents.py` · `opencode.json` (apply) | `opencode.json` (конфиг вне `.agentic`) | `grep -n -A2 "^        atomic_write_text($" awf/opencode_agents.py` | `json.dumps(d, indent=2, ensure_ascii=False),` | `exception+outside-surface: конфиг opencode вне .agentic` |
@@ -256,7 +255,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/pipeline_engine.py` · consume verify decision | `.agentic/inbox/{ACK,APPROVE}-<id>.ready` | `tests/negative/test_miniwave_m3d_unlinks.py::test_engine_verify_decision_refuses_symlinked_inbox` | `test_engine_verify_decision_refuses_symlinked_inbox` | `barrier` |
 | `awf/pipeline_engine.py` · consume stage signal | `.agentic/outbox/DONE-<id>.ready` | `tests/negative/test_miniwave_m3d_unlinks.py::test_engine_transition_refuses_symlinked_outbox` | `test_engine_transition_refuses_symlinked_outbox` | `barrier` |
 | `awf/pipeline_engine.py` · unsafe stage stop | `.agentic/state/*`, `.agentic/inbox/SALVAGE-<id>.md` | `tests/negative/test_miniwave_m3d_unlinks.py::test_engine_unsafe_stage_stop_is_logged_and_salvaged` | `test_engine_unsafe_stage_stop_is_logged_and_salvaged` | `barrier` |
-| `awf/pipeline_engine.py` · `mkdir` context | `.agentic/context/` (каталог) | `grep -n "ctx.mkdir(parents=True" awf/pipeline_engine.py` | `ctx.mkdir(parents=True` | `unit-0239` |
+| `awf/pipeline_engine.py` · `mkdir` context | `.agentic/context/` (каталог) | `tests/negative/test_inventory_batch1.py::test_unblock_todo_refuses_context_swapped_after_preflight` | `test_unblock_todo_refuses_context_swapped_after_preflight` | `barrier` |
 | `awf/pipeline_engine.py` · перенос BLOCKED-закрытий | `.agentic/context/BLOCKED-<id>.{md,ready}` | `grep -n "src.replace(dst)" awf/pipeline_engine.py` | `src.replace(dst)` | `unit-0239` |
 | `awf/pipeline_engine.py` · хвостовой `unlink` | `.agentic/inbox/`, `.agentic/outbox/` | `grep -n "p.unlink()" awf/pipeline_engine.py` | `p.unlink()` | `unit-0239` |
 | `awf/plan_checkpoint.py` · решение и кэш | `.agentic/context/CHECKPOINT-*`, `.agentic/context/PLAN-*.hash` | `tests/negative/test_miniwave_m3c_writers.py::test_checkpoint_hash_cache_refuses_symlinked_context` | `test_checkpoint_hash_cache_refuses_symlinked_context` | `barrier` |

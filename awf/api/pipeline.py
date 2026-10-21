@@ -20,6 +20,7 @@ from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
+from ..infra import managed_fs
 from ..pipeline_state import read_state
 from . import _lease, _liveness
 from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
@@ -340,8 +341,12 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
         if any((outbox / f"BLOCKED-{cid}.ready").exists() for cid in (target, short)):
             from ..pipeline_engine import _unblock_todo
 
-            _unblock_todo(project_dir, target, paths.agentic_dir(project_dir) / "logs")
-            note += ", BLOCKED cleared"
+            if _unblock_todo(
+                project_dir, target, paths.agentic_dir(project_dir) / "logs"
+            ):
+                note += ", BLOCKED cleared"
+            else:
+                note += ", BLOCKED not cleared (unsafe path or move failed)"
         return target, note
     return "", ""
 
@@ -661,7 +666,12 @@ def approve_commit(
         )
 
     inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
+    try:
+        managed_fs.managed_mkdir(inbox)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"approve {todo_id} refused — unsafe managed path: {exc}"
+        ) from exc
     signal = inbox / f"APPROVE-{todo_id}.ready"
     if run_active:
         # M2.1: the approval is bound to the cycle it was made for — the
@@ -1216,6 +1226,40 @@ def rollback(
         )
 
 
+def _rollback_diff_stat(project_dir: Path, baseline_sha: str) -> str:
+    """``git diff --stat`` for the rollback summary — decoded STRICTLY.
+
+    The summary is display text, so a raw non-UTF-8 name (``core.quotePath``
+    off) must surface as a refusal, never as a silently aliased path
+    (``single-owners.md``). Both failures below are translated into the
+    API's refusal type — a decode error escaping as a traceback was the
+    remaining gap from the M4 audit.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", baseline_sha, "--stat"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            # FU-19 (AUD01-02 tail): the last unbounded git call — contract
+            # docs/contracts/subprocess-timeouts.md.
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AwfApiError(
+            f"git diff timed out after {e.timeout}s — a hung git call blocks "
+            "the rollback. Check the repo state (index.lock, huge diff) and retry."
+        ) from e
+    except UnicodeDecodeError as e:
+        raise AwfApiError(
+            "git diff --stat output is not valid UTF-8 — the rollback summary "
+            "cannot be rendered. Nothing was reset; rename the offending "
+            "path or commit it and retry."
+        ) from e
+    return result.stdout
+
+
 def _rollback_impl(
     project_dir: Path,
     todo_id: str,
@@ -1292,23 +1336,7 @@ def _rollback_impl(
             todo_id=todo_id,
         )
 
-    try:
-        diff_result = subprocess.run(
-            ["git", "diff", baseline_sha, "--stat"],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            # FU-19 (AUD01-02 tail): the last unbounded git call — contract
-            # docs/contracts/subprocess-timeouts.md.
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise AwfApiError(
-            f"git diff timed out after {e.timeout}s — a hung git call blocks "
-            "the rollback. Check the repo state (index.lock, huge diff) and retry."
-        ) from e
-    diff_stat = diff_result.stdout
+    diff_stat = _rollback_diff_stat(project_dir, baseline_sha)
 
     if mode == "dry-run":
         return RollbackResult(

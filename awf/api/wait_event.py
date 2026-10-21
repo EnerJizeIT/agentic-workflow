@@ -299,7 +299,13 @@ def _last_completed_todo(project_dir: Path) -> tuple[str, str] | None:
     commit_ts = 0
     try:
         out = git_utils.git_stdout(
-            project_dir, "log", "-n", "30", "--pretty=%ct%x00%s", check=False
+            project_dir,
+            "log",
+            "-n",
+            "30",
+            "--pretty=%ct%x00%s",
+            check=False,
+            errors="surrogateescape",
         )
     except (RuntimeError, OSError):
         out = ""

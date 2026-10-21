@@ -26,7 +26,11 @@ from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
 from . import _liveness
 from ._errors import AwfApiError
-from ._helpers import require_awf_project
+from ._helpers import (
+    managed_write_api_text,
+    refuse_unsafe_surfaces,
+    require_awf_project,
+)
 from ._results import (
     RunFinishResult,
     RunNextResult,
@@ -954,6 +958,11 @@ def _write_report(
 ) -> Path | None:
     """Write RUN-REPORT-{ts}.md to outbox. Returns the path (or None on OSError).
 
+    An unsafe managed path — a symlinked ``.agentic``/``outbox`` or a
+    symlink leaf — is a refusal (``AwfApiError``) before any byte lands: the
+    report is never written outside the project. An ordinary ``OSError``
+    still degrades to ``None``.
+
     REPORTS29 (TODO-0170): when the state still names a ``current`` unit,
     the report carries the honest facts — archived or not, pipeline
     alive or dead — and, for a forced close over an unfinished unit, the
@@ -961,7 +970,6 @@ def _write_report(
     """
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     outbox = paths.outbox(project_dir)
-    outbox.mkdir(parents=True, exist_ok=True)
     report = outbox / f"RUN-REPORT-{ts}.md"
 
     queue = list(state.get("queue") or [])
@@ -1095,7 +1103,9 @@ def _write_report(
     if summary:
         lines += ["## Supervisor summary", "", summary, ""]
     try:
-        atomic_write_text(report, "\n".join(lines))
+        managed_write_api_text(
+            report, "\n".join(lines), operation="write run report"
+        )
     except OSError:
         return None
     return report
@@ -1173,22 +1183,88 @@ _STALE_CLOSE_DETAIL = (
 )
 
 
-def _drop_stale_report(report: Path | None) -> None:
+def _publish_ready_signal(path: Path, *, operation: str) -> None:
+    """Publish an empty ``.ready`` signal through the no-follow barrier.
+
+    A bare ``Path.touch`` call follows a symlinked ``.agentic``/``inbox`` and
+    creates the marker outside the project (S9-01 class). The managed writer
+    refuses such a path before any byte lands. An ALREADY existing regular
+    marker is left untouched — not rewritten and not re-stamped: for this
+    signal the fact of existence is what the engine consumes, while the
+    supervisor's freshness gates (a new unit waking a replan) must NOT see a
+    pre-existing marker as "appeared now". An existing marker that is a
+    SYMLINK is not "already published": the leaf rule of the inventory refuses
+    it even when its target exists, otherwise a link to a foreign file would
+    count as a ready signal.
+    """
+    if path.exists() and not path.is_symlink():
+        return
+    managed_write_api_text(path, "", operation=operation)
+
+
+def _unlink_managed_quietly(
+    project_dir: Path, path: Path, *, operation: str
+) -> None:
+    """Best-effort removal behind the API's canonical no-follow preflight.
+
+    The delete is a cleanup step, not a security boundary by itself — but it
+    must not follow a symlinked ``.agentic``/``inbox``/``outbox`` component
+    (S9-01 class). One preflight for the whole API layer
+    (:func:`refuse_unsafe_surfaces`, raw + root basis), not a private copy: a
+    second spelling of the same invariant drifts on the first change. An
+    unsafe path or an unsupported platform skips the cleanup; it never raises
+    into the caller's refusal path.
+    """
+    try:
+        refuse_unsafe_surfaces(project_dir, operation, path)
+    except (AwfApiError, OSError) as exc:
+        _log_cleanup_refusal(project_dir, path, operation, exc)
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _log_cleanup_refusal(project_dir, path, operation, exc)
+
+
+def _log_cleanup_refusal(
+    project_dir: Path, path: Path, operation: str, exc: BaseException
+) -> None:
+    """Name a skipped cleanup in the orchestrator log.
+
+    The cleanup is best-effort by contract, but silence is not: a stale
+    report left behind by a symlinked ``outbox`` is exactly the outcome
+    :func:`_drop_stale_report` exists to prevent, so the refusal must be
+    visible. The logger itself is silent on failure (it never breaks a run),
+    so this cannot turn a refusal into an error.
+    """
+    from .. import paths
+    from .._log import log as _log
+
+    _log(
+        paths.logs_dir(project_dir),
+        f"stale report kept: {path} ({operation}; {type(exc).__name__}: {exc})",
+    )
+
+
+def _drop_stale_report(project_dir: Path, report: Path | None) -> None:
     """Discard the report written just before a refused CAS close.
 
     The close did not land, so the report describes nothing — leaving it
     would strand an orphan report in the outbox."""
     if report is None:
         return
-    try:
-        report.unlink()
-    except OSError:
-        pass
+    _unlink_managed_quietly(
+        project_dir, report, operation="drop stale run report"
+    )
 
 
-def _stale_close_result(report: Path | None, what: str) -> RunNextResult:
+def _stale_close_result(
+    project_dir: Path, report: Path | None, what: str
+) -> RunNextResult:
     """Drop the just-written report and name the stale CAS refusal."""
-    _drop_stale_report(report)
+    _drop_stale_report(project_dir, report)
     return RunNextResult(
         action="refused",
         todo_id="",
@@ -1201,10 +1277,12 @@ def _stale_close_result(report: Path | None, what: str) -> RunNextResult:
     )
 
 
-def _stale_finish_result(report: Path | None, reason: str) -> RunFinishResult:
+def _stale_finish_result(
+    project_dir: Path, report: Path | None, reason: str
+) -> RunFinishResult:
     """The ``run_finish`` twin of :func:`_stale_close_result` — same cause,
     ``RunFinishResult`` shape (the run stays active)."""
-    _drop_stale_report(report)
+    _drop_stale_report(project_dir, report)
     return RunFinishResult(
         active=True,
         reason=reason,
@@ -1233,7 +1311,7 @@ def stop_run(
     if not _close_run_cas(
         project_dir, generation, reason=reason, report_file=report_str
     ):
-        return _stale_close_result(report, "Run stop")
+        return _stale_close_result(project_dir, report, "Run stop")
     return RunNextResult(
         action="stopped",
         todo_id="",
@@ -1582,7 +1660,13 @@ def run_next(
     # newest_active marks the unlaunched TODO active.
     ready_path = paths.inbox(project_dir) / f"{next_id}.ready"
     had_ready = ready_path.exists()
-    ready_path.touch()
+    try:
+        _publish_ready_signal(
+            ready_path, operation=f"publish ready signal {next_id}"
+        )
+    except AwfApiError:
+        _release_reservation()
+        raise
 
     from .pipeline import start_pipeline
 
@@ -1634,10 +1718,11 @@ def run_next(
         # baseline above: a cleanup failure must not turn the refusal
         # into an error.
         if not had_ready:
-            try:
-                ready_path.unlink()
-            except OSError:
-                pass
+            _unlink_managed_quietly(
+                project_dir,
+                ready_path,
+                operation=f"roll back ready signal {next_id}",
+            )
         _release_reservation()
         return RunNextResult(
             action="refused",
@@ -1942,7 +2027,7 @@ def run_finish(
         reason=reason,
         report_file=report_str,
     ):
-        return _stale_finish_result(report, reason)
+        return _stale_finish_result(project_dir, report, reason)
     return RunFinishResult(
         active=False,
         reason=reason,
@@ -3298,10 +3383,13 @@ def _write_service_report(
     """SERVICE-RUN-REPORT-{ts}.md in the outbox — the service run's OWN
     report (never a RUN-REPORT: those belong to the main run). It always
     carries the main run's snapshot — the proof that the service run did
-    not touch it — and the continuation command."""
+    not touch it — and the continuation command.
+
+    Same write contract as :func:`_write_report`: an unsafe managed path is
+    a refusal (``AwfApiError``) before any byte lands; an ordinary
+    ``OSError`` degrades to ``None``."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     outbox = paths.outbox(project_dir)
-    outbox.mkdir(parents=True, exist_ok=True)
     report = outbox / f"SERVICE-RUN-REPORT-{ts}.md"
     slug = _service_slug_of(svc)
     queue = list(svc.get("queue") or [])
@@ -3334,7 +3422,9 @@ def _write_service_report(
         "",
     ]
     try:
-        atomic_write_text(report, "\n".join(lines))
+        managed_write_api_text(
+            report, "\n".join(lines), operation="write service run report"
+        )
     except OSError:
         return None
     return report

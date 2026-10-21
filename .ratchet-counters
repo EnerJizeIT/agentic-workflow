@@ -2744,3 +2744,26 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # закрытий в run_status (run.py), маршрут совета на MCP-поверхности
 # (tools/awf.py) и actionable-гейт карточки (brief.py). Долговых
 # TODO/FIXME-маркеров не добавлено; files_over_400 без изменений (104).
+
+# TODO-0239 (инвентарь, батч 1, стадия agent-implementer, 21.10):
+# files_over_400 104 -> 105 и todos 6604 -> 6612 (+8).
+# Причина files: awf/infra/managed_fs.py перешагнул планку 400
+# (399 -> 447) — в него добавлен примитив managed_mkdir (no-follow
+# компонентов, mkdirat + проверка листа), он обязан жить рядом с
+# managed_write_text/open_managed: тот же walk, тот же отказ, дробление
+# рассыпало бы инвариант. Причина todos: unit-id ссылки и fixture-иды в
+# прозе нового контрактного tests/negative/test_inventory_batch1.py
+# (TODO-0001/TODO-0239), в docstring'ах правок (managed_mkdir, git-log
+# кодек, U3-граница digest) и в доке agentic-writers. Долговых
+# TODO/FIXME-маркеров не добавлено: все строки — идентификаторы юнита,
+# тестовые иды и имена файлов.
+
+# TODO-0239 (инвентарь, батч 1, стадия agent-architect-review, 22.10):
+# files_over_400 105 -> 106. Причина: контрактный
+# tests/negative/test_inventory_batch1.py перешагнул планку (399 -> 423) —
+# добавлен кейс листа: существующий `.ready`-маркер, который является
+# симлинком на чужой файл, не считается «уже опубликованным» и отказывает
+# по правилу листа, тогда как обычный существующий маркер остаётся
+# нетронутым. Дробить нельзя: verify-контракт юнита запускает ровно этот
+# путь. todos не изменился (6612): новых строк со словом TODO нет — правка
+# ревью (условие + docstring) и тест говорят именами, не unit-id.

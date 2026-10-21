@@ -20,9 +20,17 @@ def _git(cwd: Path, *args: str, check: bool = True, errors: str = "strict") -> s
     return result.stdout
 
 
-def git_stdout(cwd: Path | str, *args: str, check: bool = True) -> str:
-    """Public alias for _git — for callers outside this module."""
-    return _git(Path(cwd), *args, check=check)
+def git_stdout(
+    cwd: Path | str, *args: str, check: bool = True, errors: str = "strict"
+) -> str:
+    """Public alias for _git — for callers outside this module.
+
+    ``errors="surrogateescape"`` is the lossless read for a human-readable
+    ``git log`` subject (arbitrary bytes are legal there); the default stays
+    strict so a caller that parses a printed LISTING still sees the decode
+    failure instead of a silently aliased path.
+    """
+    return _git(Path(cwd), *args, check=check, errors=errors)
 
 
 def current_sha(project_dir: str | Path) -> str:
@@ -110,12 +118,14 @@ def tree_fingerprint(project_dir: str | Path) -> str:
     identity), not a printed ``ls-files``: that read C-quoted a non-ASCII
     name (so the hash keyed it by an alias other readers never use) and, with
     ``core.quotePath=false``, a non-UTF-8 name raised ``UnicodeDecodeError``
-    and aborted the whole fingerprint. An ASCII tree keeps its old digest
-    (same names, order and encoding). A non-ASCII name now hashes in the
-    model's RAW identity — the identity every other reader speaks, so the
-    digest changes for such a tree, and only for it. The ``status`` read is
-    a hash INPUT, never parsed for paths, and decodes with
-    ``surrogateescape`` so an unusual name cannot crash it.
+    and aborted the whole fingerprint. An ASCII tree whose names the printed
+    read left untouched keeps its old digest (same names, order and
+    encoding). A name the printed ``ls-files`` C-quoted — a non-ASCII name,
+    or an ASCII one with a tab, a quote, a backslash or a control character
+    — now hashes in the model's RAW identity (the identity every other
+    reader speaks): the digest changes for such a tree, and only for it.
+    The ``status`` read is a hash INPUT, never parsed for paths, and decodes
+    with ``surrogateescape`` so an unusual name cannot crash it.
 
     No side effects: the index and the working tree are never modified
     (``git stash create`` is NOT used — it drops untracked-only states).

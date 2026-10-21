@@ -323,6 +323,52 @@ def open_managed(
             os.close(f)
 
 
+def managed_mkdir(path: Path, *, root: Path | None = None) -> None:
+    """Create a managed directory — no-follow on every component.
+
+    Replaces a bare ``Path.mkdir(parents=True, exist_ok=True)`` at a writer
+    whose directory lives under a symlink-reachable ``.agentic`` (audit
+    0239): a symlinked component sends the new directory outside the
+    project, and ``mkdir`` happily follows it. Components are opened
+    ``O_DIRECTORY|O_NOFOLLOW`` from the project root, the leaf is created
+    with ``mkdirat`` on the verified parent and then re-opened with
+    ``O_NOFOLLOW`` — a link swapped in on any component aborts before the
+    target directory appears; an existing leaf that is not a real directory
+    is refused too.
+
+    ``root`` defaults to :func:`agentic_root_for` of the target — never
+    "skip the check".
+    """
+    require_posix("create managed directory")
+    if root is None:
+        root = agentic_root_for(path)
+    assert_no_symlink_escape(path, root=root)
+    if path == root:
+        return
+    dir_fd, dir_fds = _open_dir_chain(root, path, create=True)
+    try:
+        try:
+            os.mkdir(path.name, 0o700, dir_fd=dir_fd)
+        except FileExistsError:
+            pass
+        try:
+            leaf = os.open(
+                path.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise ManagedPathError(
+                    f"managed path component is not a directory: {path.name}"
+                ) from exc
+            raise
+        os.close(leaf)
+    finally:
+        for f in dir_fds:
+            os.close(f)
+
+
 def managed_write_text(
     path: Path,
     content: str,
@@ -396,5 +442,6 @@ __all__ = [
     "assert_managed_dir",
     "open_append_log",
     "open_managed",
+    "managed_mkdir",
     "managed_write_text",
 ]

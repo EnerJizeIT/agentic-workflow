@@ -335,7 +335,7 @@ def _probe_line_numbers(row: Row) -> set[int]:
 
 FS_OPERATION_RE = re.compile(
     r"atomic_write_text|write_text|write_bytes|\.touch\(|\.mkdir\(|"
-    r"\.unlink\(|os\.unlink\(|shutil\.move\(|\.rename\(|\.replace\(|"
+    r"\.unlink\(|os\.unlink\(|os\.link\(|shutil\.move\(|\.rename\(|\.replace\(|"
     r"rmtree\(|rmdir\(|\bopen\s*\(")
 NOTE_ROW_MARKERS = ("note «BLOCKED cleared»",)
 
@@ -695,14 +695,14 @@ def test_unit_rows_probe_their_operation_line() -> None:
 
 
 def test_writer_row_probing_the_path_line_is_red() -> None:
-    """The mutation T3 describes: put the RUN-REPORT probe back on the path."""
+    """The mutation T3 describes: put a writer row's probe back on the path."""
     rows = validate_document(DOC.read_text(encoding="utf-8"))
     target = next(row for row in rows
                   if row.component.startswith("awf/api/run.py")
-                  and "RUN-REPORT" in row.component
-                  and "SERVICE" not in row.component)
-    mutated = [replace(target, probe='grep -n \'f"RUN-REPORT-{ts}.md"\' awf/api/run.py',
-                       expectation='f"RUN-REPORT-{ts}.md"')
+                  and row.verdict.strip() == "unit-0239"
+                  and "service evidence" in row.component)
+    mutated = [replace(target, probe='grep -n \'f"RUN-EVIDENCE-{todo_id}.md"\' awf/api/run.py',
+                       expectation='f"RUN-EVIDENCE-{todo_id}.md"')
                if row is target else row for row in rows]
     assert operation_less_rows(mutated), (
         "a path-line probe must not pass for a writer row")

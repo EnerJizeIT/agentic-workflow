@@ -510,16 +510,35 @@ def test_m4_baseline_status_is_unknown_not_clean_on_decode_failure(
 
 
 def test_m4_design_tells_the_truth_about_the_fingerprint_migration() -> None:
-    """U3: for a tree with a non-ASCII untracked name the new digest differs,
-    so an older ``VERIFIED-*.sha`` is rejected as tree changed — deliberately,
-    with a re-verify. The design must say so instead of promising survival."""
+    """U3: the new digest differs for a tree whose names the old printed read
+    C-quoted, so an older ``VERIFIED-*.sha`` is rejected as tree changed —
+    deliberately, with a re-verify. The boundary is the C-quote spelling, not
+    "non-ASCII": an ASCII name with a quote or a tab was aliased too, and the
+    design must say so instead of promising survival."""
     text = DESIGN.read_text(encoding="utf-8")
     assert "пережил миграцию с прежним digest" not in text, (
         "the false claim about digest migration is back in the design"
     )
     assert "отвергаются как tree changed" in text, (
-        "the design must name the deliberate re-verify for non-ASCII trees"
+        "the design must name the deliberate re-verify for C-quoted trees"
     )
+    assert "C-quote" in text and "ASCII с табом" in text, (
+        "the design must name the C-quote boundary (ASCII names included), "
+        "not only non-ASCII"
+    )
+
+
+def test_m4_c_quoted_ascii_name_keeps_its_raw_identity(tmp_path: Path) -> None:
+    """U3 truth: an ASCII name git's printed ``ls-files`` would C-quote (a
+    quote, a tab) is read by the model as its RAW bytes — the digest key is
+    the real name, not the escaped alias."""
+    from awf.infra import git_model
+
+    repo = _repo(tmp_path)
+    name = 'quote" and\ttab.txt'
+    (repo / name).write_text("data\n", encoding="utf-8")
+
+    assert name.encode("utf-8") in git_model.GitRepository(repo).untracked_paths()
 
 
 # ─── REVIEW iter 6 (architect): the fallback writer keeps T2 ─────────────

@@ -50,7 +50,7 @@ git пути, — красный: голая подкоманда, печата�
 
 | Модуль | Причина | Долг |
 | --- | --- | --- |
-| `awf/git_utils.py` | печатные хелперы: `status_porcelain` (mutation-гейт: непустой статус = грязно, недекодируемое имя — непустая метка) и `diff_stat` (`--stat` сводка для `awf_brief`/dashboard). В `tree_fingerprint` статус — это ВХОД хеша, а не разбор путей (декод `surrogateescape`), а имена untracked читает модель (`untracked_paths`): отдельного печатного читателя путей больше нет — `untracked_files` удалён | формат `.status` и отображение вне модели; старые `VERIFIED-*.sha` на дереве с не-ASCII untracked отвергаются как tree changed — осознанно, пере-верификация (см. «Долг: два отпечатка») |
+| `awf/git_utils.py` | печатные хелперы: `status_porcelain` (mutation-гейт: непустой статус = грязно, недекодируемое имя — непустая метка) и `diff_stat` (`--stat` сводка для `awf_brief`/dashboard). В `tree_fingerprint` статус — это ВХОД хеша, а не разбор путей (декод `surrogateescape`), а имена untracked читает модель (`untracked_paths`): отдельного печатного читателя путей больше нет — `untracked_files` удалён | формат `.status` и отображение вне модели; старые `VERIFIED-*.sha` на дереве с именем, которое печатный `ls-files` C-quote'ил (не-ASCII или ASCII с табом, кавычкой, обратным слэшем, control), отвергаются как tree changed — осознанно, пере-верификация (см. «Долг: два отпечатка») |
 | `awf/api/pipeline.py` | писатель снапшотов baseline: `status --short` для `.status` и печатный запасной путь `_untracked_snapshot`, когда модель не прочитала дерево; чтение под тройным guard'ом | формат `.status` baseline |
 | `awf/verify.py` | `git_utils.diff_stat` — человекочитаемая сводка для dashboard/wait_event, не разбор путей; `git diff --quiet` путей не печатает; декод `errors`/`UnicodeDecodeError` в guard'ах | отображение вне модели |
 | `awf/api/context.py` | `git diff --stat` — человекочитаемая сводка для `awf_brief`, не разбор путей; декод `errors="replace"` | отображение вне модели |
@@ -72,8 +72,12 @@ C-quote отдаёт другую идентичность, чем сырые б
 C-quote к той же сырой идентичности. Печатные чтения остались только там,
 где формат `.status` ещё печатный, где `--stat` — человекочитаемая сводка, и
 в запасном писателе снимка (ленивый C-quote-мост).
-Каждое исключение под guard'ом (`surrogateescape` / `UnicodeDecodeError` /
-`errors="replace"`), и это проверяет тест.
+Каждое исключение держит guard на уровне модуля (`surrogateescape` /
+`UnicodeDecodeError` / `errors="replace"`), и это проверяет тест — не у
+каждого вызова: `git diff --stat` rollback'а (`api/pipeline.py`)
+декодируется строго, поэтому не-UTF-8 имя в сводке — отказ операции
+(`AwfApiError`, до `git reset`), а не молчаливый алиас пути. Git-log-читатели (handoff, wait_event, dashboard,
+metrics) после добора 0239 говорят `surrogateescape`.
 
 **Снос легаси.** `commit_delta._legacy_plan_split` (печатный разбор
 `--name-only`) удалён: набор файлов считается моделью

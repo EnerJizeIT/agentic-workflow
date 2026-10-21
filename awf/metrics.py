@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import shutil
 import sqlite3
@@ -83,6 +84,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as config_mod
+from .infra import managed_fs
 from .todo_ids import extract_todo_id
 
 DEFAULT_REFERENCE_MODEL = "anthropic/claude-sonnet-4-6"
@@ -236,6 +238,9 @@ def _git(repo: Path, *args: str) -> str:
             cwd=repo,
             capture_output=True,
             text=True,
+            # Тема коммита — произвольные байты (не-UTF-8 имя в subject
+            # законно); строгий UTF-8 ронял весь отчёт метрик (TODO-0239).
+            errors="surrogateescape",
             check=False,
             timeout=30,
         ).stdout
@@ -692,6 +697,40 @@ def _models_cache_file(project_dir: Path, cache_path: str | None) -> Path:
     return f
 
 
+def _write_cache_managed(
+    path: Path, content: str, *, project_dir: Path, warnings: list[str]
+) -> None:
+    """Записать кэш метрик через no-follow барьер.
+
+    Граница проходит по проекту, а не по наличию компонента ``.agentic``:
+    лист ВНУТРИ проекта (даже без ``.agentic`` — например, настроенный
+    ``cache/models.json``) проверяется от корня проекта, поэтому симлинк
+    ``cache`` наружу даёт отказ, а не молчаливую запись снаружи. Кэш по
+    умолчанию лежит под ``.agentic/state`` — тот же случай.
+
+    Лист ВНЕ проекта (``~/.cache/awf/models.json``) — внешняя поверхность
+    того же класса, что отчёт на рабочем столе: недостающих родителей
+    создаём до записи, барьер якорим на родителе листа, и говорим об этом
+    предупреждением. Молчаливой внешней записи нет.
+
+    Классификация «внутри/вне» идёт по лексически нормализованному пути
+    (``normpath``, НЕ ``resolve``): настроенный путь с избыточным ``..``
+    (``cache/../state/x.json``) остаётся внутри проекта, а ``../shared`` —
+    снаружи. Симлинк-компоненты ``normpath`` не раскрывает — барьер
+    no-follow остаётся на месте.
+    """
+    path = Path(os.path.normpath(path))
+    project_dir = Path(os.path.normpath(project_dir))
+    if path.is_relative_to(project_dir):
+        managed_fs.managed_write_text(path, content, root=project_dir)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    warnings.append(
+        f"кэш метрик вне проекта ({path}) — запись вне managed-барьера проекта"
+    )
+    managed_fs.managed_write_text(path, content, root=path.parent)
+
+
 def load_models_cache(
     project_dir: Path, cache_path: str | None, warnings: list[str]
 ) -> tuple[dict | None, str | None]:
@@ -754,9 +793,11 @@ def save_models_cache(
     data = {"version": 1, "saved_at": saved_at, "catalog": snap_catalog}
     f = _models_cache_file(project_dir, cache_path)
     try:
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as e:
+        _write_cache_managed(
+            f, json.dumps(data, ensure_ascii=False, indent=2),
+            project_dir=project_dir, warnings=warnings,
+        )
+    except (OSError, managed_fs.ManagedPathError) as e:
         warnings.append(f"кэш цен моделей не записан: {e}")
         return None
     return saved_at
@@ -1018,11 +1059,13 @@ def resolve_subscriptions_table(
         data, err = refresh_subscription_table(url, warnings)
         if data is not None:
             try:
-                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(
-                    json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+                _write_cache_managed(
+                    cache_file,
+                    json.dumps(data, ensure_ascii=False, indent=2),
+                    project_dir=project_dir,
+                    warnings=warnings,
                 )
-            except OSError as e:
+            except (OSError, managed_fs.ManagedPathError) as e:
                 warnings.append(f"кэш подписок не записан: {e}")
             return _table(data, "url", f"обновлено по {url}")
         warnings.append(f"обновление подписок не удалось: {err}")

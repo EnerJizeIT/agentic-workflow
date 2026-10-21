@@ -98,15 +98,23 @@ def _replan_answer(sup_signal: object, current_todo: str, project_dir: Path) -> 
     return ""
 
 
-def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
+def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> bool:
     """Day-2 B2: clear the BLOCKED closure so the TODO counts as active again.
 
     Moves ``BLOCKED-{todo}.{ready,md}`` (canonical + legacy short form) from
     outbox to ``.agentic/context/`` as evidence — mirrors the manual recovery
     the user had to perform before this existed.
+
+    Returns True only when the closure was actually cleared — no
+    ``BLOCKED-<id>.ready`` marker (canonical or short) left in outbox: the
+    caller's note must not claim "BLOCKED cleared" after a refusal or a
+    partial move (TODO-0239 A3, REVIEW-фикс F1).
     """
     from .signals import short_id
 
+    # Canonical first, legacy short form second — one list, so the leaf
+    # collection, the preflight and the closure check cannot disagree.
+    candidate_ids = list(dict.fromkeys((todo_id, short_id(todo_id))))
     outbox = paths.outbox(project_dir)
     ctx = paths.context_dir(project_dir)
     root = managed_fs.agentic_root_for(outbox)
@@ -121,7 +129,7 @@ def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
     # False for it), so the rule is ``is_symlink() or exists()``. Surfaces and
     # leaves share ONE refusal branch: the outcome is the same, said once.
     pairs: list[tuple[Path, Path]] = []
-    for candidate_id in {todo_id, short_id(todo_id)}:
+    for candidate_id in candidate_ids:
         for ext in (".ready", ".md"):
             src = outbox / f"BLOCKED-{candidate_id}{ext}"
             if not (src.is_symlink() or src.exists()):
@@ -131,14 +139,14 @@ def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
         managed_fs.require_posix("unblock todo")
         for path in (outbox, ctx, *(p for pair in pairs for p in pair)):
             managed_fs.assert_no_symlink_escape(path, root=root)
+        managed_fs.managed_mkdir(ctx, root=root)
     except managed_fs.ManagedPathError as e:
         _log(
             logs_dir,
             f"Day-2 B2: BLOCKED closure not moved for {todo_id} — "
             f"unsafe managed path: {e}",
         )
-        return
-    ctx.mkdir(parents=True, exist_ok=True)
+        return False
     moved = False
     for src, dst in pairs:
         try:
@@ -146,8 +154,23 @@ def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
             moved = True
         except OSError:
             pass
-    if moved:
+    # REVIEW-фикс F1: the closure is defined by the .ready marker, not by
+    # "something moved". A partial move (the .md left outbox, the .ready
+    # stayed) is not cleared — say so, so the note cannot lie.
+    closure_left = any(
+        (outbox / f"BLOCKED-{cid}.ready").is_symlink()
+        or (outbox / f"BLOCKED-{cid}.ready").exists()
+        for cid in candidate_ids
+    )
+    if moved and not closure_left:
         _log(logs_dir, f"Day-2 B2: BLOCKED closure moved to context/ for {todo_id}")
+    elif closure_left:
+        _log(
+            logs_dir,
+            f"Day-2 B2: BLOCKED marker remains in outbox; "
+            f"closure not cleared for {todo_id}",
+        )
+    return moved and not closure_left
 
 
 def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
