@@ -159,7 +159,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/_liveness.py` · stale pid | `.agentic/logs/*.pid` | `grep -n "pid_file.unlink()" awf/api/_liveness.py` | `pid_file.unlink()` | `exception+housekeeping: молча пропустить отказ и продолжить (A4)` |
 | `awf/api/pipeline.py` · RUN-EVIDENCE | `.agentic/context/RUN-EVIDENCE-<id>.md` | `tests/negative/test_miniwave_m3c_writers.py::test_run_evidence_write_refuses_symlinked_context` | `test_run_evidence_write_refuses_symlinked_context` | `barrier` |
 | `awf/api/pipeline.py` · baseline (поверхность) | `.agentic/context/BASELINE-<id>.sha` | `tests/negative/test_miniwave_m3d_unlinks.py::test_baseline_refuses_symlinked_context` | `test_baseline_refuses_symlinked_context` | `barrier` |
-| `awf/api/pipeline.py` · baseline-файлы (лист) | `.agentic/context/BASELINE-<id>.*` | `grep -n "atomic_write_text(path, content)" awf/api/pipeline.py` | `atomic_write_text(path, content)` | `unit-0239` |
+| `awf/api/pipeline.py` · baseline-файлы (лист) | `.agentic/context/BASELINE-<id>.*` | `grep -n "atomic_write_text(path, content, errors=" awf/api/pipeline.py` | `atomic_write_text(path, content, errors=` | `unit-0239` |
 | `awf/api/pipeline.py` · REVIEW-файл: запись | `.agentic/outbox/REVIEW-<id>.md` | `grep -n -A2 "atomic_write_text($" awf/api/pipeline.py` | `review_file, f"# REVIEW` | `unit-0239` |
 | `awf/api/pipeline.py` · ACK-сигнал | `.agentic/inbox/ACK-<id>.ready` | `grep -n "atomic_write_text(ack_path" awf/api/pipeline.py` | `atomic_write_text(ack_path` | `unit-0239` |
 | `awf/api/pipeline.py` · APPROVE `.ready` `touch` | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "signal.touch()" awf/api/pipeline.py` | `signal.touch()` | `unit-0239` |

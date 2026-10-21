@@ -32,10 +32,9 @@ This module is the mechanical fix, three parts:
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
-from . import git_utils, paths
+from . import paths
 from ._atomic import atomic_write_text
 from ._errors import AwfApiError
 from ._log import log as _log
@@ -118,52 +117,16 @@ def _raw_untracked(project_dir: Path) -> list[str] | None:
         return None
 
 
-def _untracked_view(project_dir: Path) -> tuple[list[str], dict[str, str]] | None:
-    """The current untracked listing as ``(raw_paths, raw -> printed)``, None
-    when git cannot say.
-
-    The leak-gate speaks the same RAW identity as every other transfer channel
-    (``include_untracked`` / ``claim_from``), while
-    ``BASELINE-<todo>.untracked`` keeps git's PRINTED lines
-    (``pipeline._untracked_snapshot`` bridges them positionally — R2.3 migrates
-    both sides together). Both listings come from the SAME deterministic
-    ``git ls-files`` scan in the SAME byte order, so index i is one file; the
-    printed form of a raw path is known without re-parsing git's C-quoting (the
-    one-parser principle). When the two listings do not pair (a newline in a
-    name splits the printed one) the map degrades to identity — the legacy
-    behaviour, never worse.
-    """
-    raw = _raw_untracked(project_dir)
-    if raw is None:
-        return None
-    try:
-        # Second git read (the PRINTED listing). It must carry the SAME
-        # best-effort guard as the raw read: ``git_utils._git(text=True)``
-        # lets ``subprocess.TimeoutExpired`` / ``OSError`` (hung or missing
-        # git) and ``UnicodeDecodeError`` (non-UTF-8 name under
-        # ``core.quotepath=false``) escape. Without it a transient git
-        # failure would raise out of ``snapshot_rejected_files`` (contract:
-        # never raises) and ``orphaned_reject_files`` (contract: ``[]`` when
-        # git cannot measure) — the failsafe surfaces of verify-pack/approve.
-        printed = git_utils.untracked_files(project_dir)
-    except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-        return None
-    if len(printed) != len(raw):
-        return raw, {p: p for p in raw}
-    return raw, dict(zip(raw, printed))
-
-
 def _baseline_untracked_set(project_dir: Path, todo_id: str) -> set[str]:
-    """Paths recorded in ``BASELINE-<todo>.untracked`` (empty when absent)."""
-    f = paths.context_dir(Path(project_dir)) / f"BASELINE-{todo_id}.untracked"
-    if not f.is_file():
-        return set()
-    try:
-        return {
-            ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()
-        }
-    except OSError:
-        return set()
+    """Paths recorded in ``BASELINE-<todo>.untracked``, RAW (empty when absent).
+
+    One reader for the fact: the raw NUL form and the legacy printed form are
+    both decoded to the model's raw identity, so the comparison below needs no
+    printed bridge of its own.
+    """
+    from .infra.git_model import read_untracked_snapshot
+
+    return read_untracked_snapshot(project_dir, todo_id) or set()
 
 
 def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> list[str]:
@@ -174,16 +137,13 @@ def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> 
     it (RUN5 #1 Part A.1: best-effort + log).
     """
     project_dir = Path(project_dir)
-    view = _untracked_view(project_dir)
-    if view is None:
+    raw_paths = _raw_untracked(project_dir)
+    if raw_paths is None:
         _log(logs_dir, f"leak-gate: cannot list untracked files for {todo_id} "
                        f"(not a git repo or git failed) — REJECT files not recorded")
         return []
-    raw_paths, raw_to_printed = view
     baseline = _baseline_untracked_set(project_dir, todo_id)
-    new = sorted(
-        p for p in raw_paths if raw_to_printed.get(p, p) not in baseline
-    )
+    new = sorted(p for p in raw_paths if p not in baseline)
     try:
         # The paths are RAW (``display_path``: ``surrogateescape``); the shared
         # codec writes each entry NUL-terminated, so a name with a newline /
@@ -277,30 +237,17 @@ def orphaned_reject_files(
     """
     project_dir = Path(project_dir)
     ctx = paths.context_dir(project_dir)
-    baseline_listing = ctx / f"BASELINE-{todo_id}.untracked"
-    if not baseline_listing.is_file():
-        return []
-    try:
-        in_baseline = {
-            ln.strip() for ln in baseline_listing.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        }
-    except OSError:
-        return []
+    in_baseline = _baseline_untracked_set(project_dir, todo_id)
     if not in_baseline:
         return []
-    view = _untracked_view(project_dir)
-    if view is None:
+    raw_paths = _raw_untracked(project_dir)
+    if raw_paths is None:
         return []
-    raw_paths, raw_to_printed = view
     # A path is an orphan candidate when it is STILL untracked (present in the
-    # current raw listing) AND its printed form sits in
-    # ``BASELINE-<todo>.untracked`` — the exact triple the commit gate uses to
-    # drop it. The baseline comparison stays in the file's printed form, reached
-    # through the raw->printed map (one bridge, both sides agree on the file).
-    candidates = {
-        p for p in raw_paths if raw_to_printed.get(p, p) in in_baseline
-    }
+    # current raw listing) AND sits in ``BASELINE-<todo>.untracked`` — the
+    # exact triple the commit gate uses to drop it. Both sides are the model's
+    # raw identity, so no printed bridge is needed.
+    candidates = {p for p in raw_paths if p in in_baseline}
     if not candidates:
         return []
 

@@ -83,6 +83,7 @@ from typing import Any
 from . import paths
 from ._errors import AwfApiError
 from ._proc import run_tree
+from .infra.git_model import GitModelError, GitRepository, display_path
 from .unit_contract import parse_todo_contract
 
 #: CLI exit codes, one per verdict family.
@@ -636,20 +637,20 @@ def _diff_test_files(project_dir: Path, baseline_sha: str) -> list[str]:
     filtered to paths that look like tests. Deleted files are skipped:
     they cannot be copied, and the baseline checkout already holds its
     own copy.
+
+    M4 (TODO-0228): the paths come from the R2.1 model, not a ``-z``
+    subprocess decoded with ``text=True`` — a non-UTF-8 name under
+    ``core.quotepath=false`` raised ``UnicodeDecodeError`` here and aborted
+    the whole prove-red run.
     """
-    changed: set[str] = set()
-    for args in (
-        ["git", "diff", "--name-only", "-z", baseline_sha],
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-    ):
-        r = run_tree(
-            args, cwd=project_dir, capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            raise AwfApiError(
-                f"{' '.join(args)} failed: {(r.stderr or r.stdout).strip()[:300]}"
-            )
-        changed.update(p for p in r.stdout.split("\0") if p)
+    try:
+        repo = GitRepository(project_dir)
+        changed = {
+            display_path(p)
+            for p in (*repo.changed_paths(baseline_sha), *repo.untracked_paths())
+        }
+    except (GitModelError, OSError) as exc:
+        raise AwfApiError(f"git path read failed: {exc}") from exc
     return [
         rel for rel in sorted(changed)
         if _looks_like_test_file(rel) and (project_dir / rel).is_file()

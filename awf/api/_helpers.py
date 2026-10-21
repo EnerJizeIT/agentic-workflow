@@ -228,6 +228,7 @@ def managed_write_api_text(
     operation: str,
     mode: int = 0o600,
     encoding: str = "utf-8",
+    errors: str = "strict",
 ) -> None:
     """Write a project file through the managed no-follow barrier.
 
@@ -260,6 +261,7 @@ def managed_write_api_text(
             root=managed_fs.agentic_root_for(path),
             mode=mode,
             encoding=encoding,
+            errors=errors,
         )
     except managed_fs.ManagedPathError as exc:
         raise AwfApiError(

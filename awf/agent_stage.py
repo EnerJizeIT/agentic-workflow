@@ -362,6 +362,7 @@ def collect_handoff(
                 cwd=str(project_dir),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 check=False,
                 timeout=10,
             )
@@ -370,21 +371,12 @@ def collect_handoff(
         except (subprocess.TimeoutExpired, OSError) as e:
             _log(logs_dir, f"handoff git-diff failed: {e}")
         try:
-            names = subprocess.run(
-                ["git", "diff", "--name-only", base_sha],
-                cwd=str(project_dir),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-            if names is not None:
-                changed_files = [
-                    line.strip()
-                    for line in (getattr(names, "stdout", "") or "").splitlines()
-                    if line.strip()
-                ]
-        except (subprocess.TimeoutExpired, OSError):
+            from .infra.git_model import GitModelError, GitRepository, display_path
+
+            changed_files = [
+                display_path(p) for p in GitRepository(project_dir).changed_paths(base_sha)
+            ]
+        except (GitModelError, OSError):
             pass
 
     if not base_sha:
@@ -507,7 +499,11 @@ def collect_handoff(
     out_file = handoff_dir / f"{stage_name or role}-{todo_id}.md"
     # QA-C: handoff write atomic (was direct write_text — inconsistent with
     # rest of codebase which uses atomic_write_text for crash safety).
-    atomic_write_text(out_file, "\n".join(parts))
+    # The facts block carries RAW display identities (``display_path``):
+    # a non-UTF-8 name arrives as a surrogate and a strict UTF-8 write used
+    # to abort the handoff. Human-readable artifact only — the backslash
+    # escape keeps the name visible and the file writable.
+    atomic_write_text(out_file, "\n".join(parts), errors="backslashreplace")
     print(f"Handoff out: {out_file}")
     _log(logs_dir, f"Handoff written: {out_file}")
     return out_file

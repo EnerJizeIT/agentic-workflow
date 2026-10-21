@@ -230,8 +230,9 @@ class TestDispatchCarryOver:
             todo_id=RETRY,
             carry_over_from=ORIGIN,
         )
-        baseline_untracked = _ctx(leak_project) / f"BASELINE-{RETRY}.untracked"
-        lines = baseline_untracked.read_text(encoding="utf-8").splitlines()
+        from awf.infra.git_model import read_untracked_snapshot
+
+        lines = read_untracked_snapshot(leak_project, RETRY) or set()
         assert "src/a.py" not in lines, "carried-over file must not look pre-existing"
         assert "b.py" not in lines
         assert "stale.txt" in lines, "genuinely pre-existing untracked stays listed"
@@ -250,8 +251,9 @@ class TestDispatchCarryOver:
     def test_without_carry_over_behavior_unchanged(self, leak_project: Path) -> None:
         _make_rejected_attempt(leak_project)
         api.dispatch_todo(leak_project, "# TODO-0002\nretry\n", todo_id=RETRY)
-        lines = _ctx(leak_project) / f"BASELINE-{RETRY}.untracked"
-        text = lines.read_text(encoding="utf-8").splitlines()
+        from awf.infra.git_model import read_untracked_snapshot
+
+        text = read_untracked_snapshot(leak_project, RETRY) or set()
         assert "src/a.py" in text and "b.py" in text, "legacy path: all untracked listed"
         assert not (_ctx(leak_project) / f"BASELINE-{RETRY}.carry_over").exists()
 
@@ -354,7 +356,7 @@ class TestCarryOverLinkLifecycle:
         assert not link.exists(), (
             "non-carry re-dispatch must drop the stale carry-over link"
         )
-        lines = (
-            _ctx(leak_project) / f"BASELINE-{RETRY}.untracked"
-        ).read_text(encoding="utf-8").splitlines()
+        from awf.infra.git_model import read_untracked_snapshot
+
+        lines = read_untracked_snapshot(leak_project, RETRY) or set()
         assert "src/a.py" in lines, "non-carry baseline lists all untracked again"

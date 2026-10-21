@@ -97,9 +97,15 @@ class TestBaselineShellSafety:
 
         with patch("awf.api.pipeline.run_tree") as mock_tree, \
                 patch("awf.api.pipeline.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                [], returncode=0, stdout="", stderr=""
-            )
+            # The model reads bytes (no text=); the printed helpers pass
+            # text=True. One fake, two protocols.
+            def _fake(cmd, *a, **kw):
+                binary = not (kw.get("text") or kw.get("encoding"))
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=b"" if binary else "", stderr=b"" if binary else ""
+                )
+
+            mock_run.side_effect = _fake
             cmd_baseline.run(args)
 
             assert not mock_tree.called, "empty test_cmd must not run any command"
@@ -115,9 +121,15 @@ class TestBaselineShellSafety:
         args = type("Args", (), {"todo_id": "TODO-0004"})()
 
         with patch("awf.api.pipeline.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                [], returncode=0, stdout="Python 3.12\n", stderr=""
-            )
+            def _fake(cmd, *a, **kw):
+                binary = not (kw.get("text") or kw.get("encoding"))
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout=b"" if binary else "Python 3.12\n",
+                    stderr=b"" if binary else "",
+                )
+
+            mock_run.side_effect = _fake
             cmd_baseline.run(args)
 
             found = False

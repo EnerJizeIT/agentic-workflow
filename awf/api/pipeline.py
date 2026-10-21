@@ -858,46 +858,52 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
 
 def _untracked_snapshot(project_dir: Path, excluded: set[str]) -> str:
     """The ``BASELINE-<todo>.untracked`` body: git's untracked listing minus
-    the adopted paths, matched by their RAW identity.
+    the adopted paths, in the RAW identity of the R2.1 model.
 
-    The snapshot predates the R2.1 model: its readers (commit gate, verify,
-    reject) compare against the PRINTED ``git ls-files`` lines, so the file
-    must keep that form (R2.3 migrates both sides together). The printed
-    listing C-quotes a non-ASCII name (``"\\321\\204..."``) while the adopted
-    paths are raw (``файл.txt``), so dropping them by the raw comparison
-    silently missed the exclusion (TODO-0221 architect: the writer surface of
-    the R2.2 invariant). The raw and printed listings come from the same git
-    scan in the same byte order, so they are paired positionally and the
-    printed line of an adopted path is dropped — the file keeps its format,
-    the exclusion finally bites. Any mismatch degrades to the legacy compare
-    (never worse than before the bridge).
+    The format is the NUL machine protocol (``_path_link``): the paths are
+    written with git's own bytes, so a name holding a newline, a control byte,
+    an edge space or a non-UTF-8 byte is ONE path, not two lines. The adopted
+    paths (``carry_over`` / ``include`` / ``claim``) are compared in the same
+    raw identity, so the exclusion finally bites for a non-ASCII name.
 
-    The printed read carries the same triple guard as the raw read below and
-    ``reject_files._untracked_view`` (M3): a hung/missing git
-    (``SubprocessError``/``OSError``) or a non-UTF-8 name emitted raw under
-    ``core.quotepath=false`` (``UnicodeDecodeError``) must degrade the snapshot,
-    not crash the baseline write (``awf dispatch`` / ``awf run_next``).
+    Migration (TODO-0228 review): files written before this change keep git's
+    PRINTED form and the readers decode them lazily
+    (``git_model.read_untracked_snapshot``). The model read carries the same
+    triple guard as its siblings (M3): a hung/missing git
+    (``SubprocessError``/``OSError``) or an unrepresentable tree degrades the
+    snapshot to the legacy printed read, and any failure there to "" — the
+    baseline write never crashes ``awf dispatch`` / ``awf run_next``.
     """
+    from .._path_link import encode_path_link
+    from ..infra.git_model import (
+        GitModelError,
+        GitRepository,
+        display_path,
+        raw_identity,
+    )
+
+    try:
+        raw_paths = GitRepository(project_dir).untracked_paths()
+    except (GitModelError, OSError):
+        raw_paths = None
+    if raw_paths is not None:
+        return encode_path_link(
+            [p for p in (display_path(p) for p in raw_paths) if p not in excluded]
+        )
     try:
         printed = git_utils.git_stdout(
             project_dir, "ls-files", "--others", "--exclude-standard", check=False
         )
     except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-        printed = ""
-    if not excluded:
-        return printed
-    from ..infra.git_model import GitModelError, GitRepository, display_path
-
-    try:
-        raw = GitRepository(project_dir).untracked_paths()
-    except (GitModelError, OSError):
-        raw = []
-    lines = printed.splitlines()
-    if raw and len(lines) == len(raw):
-        return "\n".join(
-            ln for ln, p in zip(lines, raw) if display_path(p) not in excluded
-        )
-    return "\n".join(ln for ln in lines if ln.strip() not in excluded)
+        return ""
+    # The printed listing is newline-delimited — split on ``\n`` ONLY, as the
+    # canonical legacy reader does: ``splitlines()`` would also cut on
+    # U+2028/U+2029, so a raw name under ``core.quotePath=false`` would become
+    # two fake paths (the T2 class, held here on the writer surface too).
+    lines = [ln for ln in printed.split("\n") if ln]
+    if excluded:
+        lines = [ln for ln in lines if raw_identity(ln) not in excluded]
+    return "\n".join(lines)
 
 
 def create_baseline(
@@ -967,7 +973,11 @@ def create_baseline(
     written: list[Path] = []
 
     def _write_baseline_file(path: Path, content: str) -> None:
-        atomic_write_text(path, content)
+        # The untracked snapshot carries RAW path bytes (surrogateescape);
+        # the other baseline files are ASCII. One writer, one codec — a
+        # non-UTF-8 name must not crash the dispatch after the TODO is
+        # reserved.
+        atomic_write_text(path, content, errors="surrogateescape")
         written.append(path)
 
     try:
@@ -988,14 +998,25 @@ def create_baseline(
             # M3: the printed read decodes strictly (``text=True``); a
             # non-UTF-8 name under ``core.quotepath=false`` raises a
             # ``UnicodeDecodeError`` and a hung/missing git raises
-            # ``SubprocessError``/``OSError``. Degrade the status snapshot to
-            # empty (the commit gate's documented legacy fallback) instead of
-            # crashing the dispatch / re-baseline.
+            # ``SubprocessError``/``OSError``. U2 (TODO-0228): an EMPTY
+            # snapshot would read as "the index was clean" and let a
+            # pre-staged non-UTF-8 file enter the unit plan — a lie. Write
+            # no file instead (the reader's documented legacy fallback:
+            # ``staged_at_baseline`` → None, the whole staged-vs-baseline
+            # set is treated as foreign), and drop any earlier dispatch's
+            # file so a re-dispatch never reads it.
             try:
                 status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
             except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-                status = ""
-            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", status)
+                status = None
+            status_path = context_dir / f"BASELINE-{todo_id}.status"
+            if status is None:
+                refuse_unsafe_surfaces(
+                    project_dir, "create baseline", context_dir, status_path
+                )
+                status_path.unlink(missing_ok=True)
+            else:
+                _write_baseline_file(status_path, status)
             # REPORTS33 (TODO-0204): snapshot of the dirty worktree — the
             # commit gate's delta mechanism: a tracked-dirty file enters
             # the unit commit only as the unit's own edit (worktree vs

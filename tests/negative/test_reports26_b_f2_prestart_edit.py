@@ -45,10 +45,9 @@ def _project(tmp_git_repo: Path) -> Path:
 
 
 def _untracked_snapshot(proj: Path) -> list[str]:
-    f = paths.context_dir(proj) / f"BASELINE-{TODO}.untracked"
-    if not f.is_file():
-        return []
-    return [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    from awf.infra.git_model import read_untracked_snapshot
+
+    return sorted(read_untracked_snapshot(proj, TODO) or set())
 
 
 class TestRemoveDispatchedUnit:

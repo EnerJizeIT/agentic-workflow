@@ -331,6 +331,7 @@ def managed_write_text(
     mode: int = 0o600,
     encoding: str = "utf-8",
     durable: bool = False,
+    errors: str = "strict",
 ) -> None:
     """Atomically write ``content`` to a managed path — no-follow all along.
 
@@ -363,7 +364,7 @@ def managed_write_text(
         )
         try:
             os.fchmod(fd, mode)
-            with os.fdopen(fd, "w", encoding=encoding) as f:
+            with os.fdopen(fd, "w", encoding=encoding, errors=errors) as f:
                 fd = -1  # fdopen owns it now
                 f.write(content)
                 if durable:

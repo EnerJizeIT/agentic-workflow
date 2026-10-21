@@ -137,7 +137,7 @@ def _short_sides(payload: str) -> list[str]:
     plain ASCII), so the arrow INSIDE a quoted side is part of the name, never
     a boundary. The tokens are returned as printed — the caller decides
     whether to keep that form or bridge it to the raw identity with
-    :func:`_raw_identity`."""
+    :func:`awf.infra.git_model.raw_identity`."""
     payload = payload.rstrip("\n")
     if not payload:
         return []
@@ -156,66 +156,6 @@ def _short_sides(payload: str) -> list[str]:
 
 def _baseline_file(project_dir: Path, todo_id: str, suffix: str) -> Path:
     return paths.context_dir(project_dir) / f"BASELINE-{todo_id}.{suffix}"
-
-
-def _raw_identity(printed: str) -> str:
-    """REVIEW-H1: bridge a PRINTED ``git`` path to the raw display identity.
-
-    The baseline snapshots keep git's printed form (the R2.3 writer contract);
-    under the default ``core.quotePath=true`` a non-ASCII name arrives
-    C-quoted (``"\\321\\204..."``). The R2.1 model hands back the RAW path,
-    so comparing raw to printed silently loses the match — a foreign staged
-    rename on a non-ASCII name would then read as OWNED (S2-01 broken). This
-    decodes the C-quoted form back to the string :func:`display_path` would
-    produce for the raw bytes, so ownership compares identity to identity. A
-    line that is not quoted (ASCII, or an already-raw name under
-    ``core.quotePath=false``) is returned unchanged.
-    """
-    if len(printed) < 2 or printed[0] != '"' or printed[-1] != '"':
-        return printed
-    body = printed[1:-1]
-    out = bytearray()
-    simple = {
-        "a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A,
-        "v": 0x0B, "f": 0x0C, "r": 0x0D, '"': 0x22, "\\": 0x5C,
-    }
-    i = 0
-    n = len(body)
-    while i < n:
-        ch = body[i]
-        if ch == "\\" and i + 1 < n:
-            nxt = body[i + 1]
-            if "0" <= nxt <= "7":
-                j = i + 1
-                digits = ""
-                while j < n and len(digits) < 3 and "0" <= body[j] <= "7":
-                    digits += body[j]
-                    j += 1
-                out.append(int(digits, 8) & 0xFF)
-                i = j
-                continue
-            out.append(simple.get(nxt, ord(nxt)))
-            i += 2
-            continue
-        out.extend(ch.encode("utf-8", "surrogateescape"))
-        i += 1
-    return out.decode("utf-8", "surrogateescape")
-
-
-def raw_lines(text: str) -> list[str]:
-    """A printed git listing (one path per line — ``--name-only``,
-    ``ls-files``) bridged to RAW display identities, in order.
-
-    The SAME identity the R2.1 model and the baseline readers speak, so a
-    path read live and a path read from a baseline snapshot compare as equal
-    (REVIEW F-arrow: identity space must be uniform, or a name with an inner
-    `` -> `` / a non-ASCII name silently mismatches). Blanks are dropped.
-    """
-    return [
-        _raw_identity(line.strip())
-        for line in text.splitlines()
-        if line.strip()
-    ]
 
 
 def read_worktree_snapshot(project_dir: Path, todo_id: str) -> str:
@@ -271,7 +211,7 @@ def staged_at_baseline(project_dir: Path, todo_id: str) -> set[str] | None:
             continue  # clean or untracked — not in the index
         sides = _short_sides(line[3:])
         if sides:
-            staged.add(_raw_identity(sides[-1]))
+            staged.add(git_model.raw_identity(sides[-1]))
     return staged
 
 
@@ -297,7 +237,7 @@ def worktree_dirty_at_baseline(project_dir: Path, todo_id: str) -> set[str] | No
             continue  # clean
         sides = _short_sides(line[3:])
         if sides:
-            dirty.add(_raw_identity(sides[-1]))
+            dirty.add(git_model.raw_identity(sides[-1]))
     return dirty
 
 
@@ -327,30 +267,8 @@ def baseline_dirty_paths(project_dir: Path, todo_id: str) -> set[str] | None:
         if xy[0] == " " and xy[1] == " ":
             continue
         for side in _short_sides(line[3:]):
-            dirty.add(_raw_identity(side))
+            dirty.add(git_model.raw_identity(side))
     return dirty
-
-
-def read_baseline_untracked(project_dir: Path, todo_id: str) -> set[str] | None:
-    """The ``BASELINE-{todo_id}.untracked`` snapshot (pre-existing untracked
-    paths) in RAW identity (REVIEW-H1: the printed C-quoted form is decoded,
-    so a non-ASCII path matches the model's raw path), or None when the file
-    is missing."""
-    if not todo_id:
-        return None
-    f = _baseline_file(project_dir, todo_id, "untracked")
-    if not f.is_file():
-        return None
-    try:
-        return {
-            _raw_identity(line.strip())
-            for line in f.read_text(
-                encoding="utf-8", errors="surrogateescape"
-            ).splitlines()
-            if line.strip()
-        }
-    except OSError:
-        return None
 
 
 def read_include_list(project_dir: Path, todo_id: str) -> list[str]:
@@ -375,93 +293,59 @@ def read_include_list(project_dir: Path, todo_id: str) -> list[str]:
 # ─── the raw file-set pass (moved from commit_plan — one home) ───────────
 
 
-def _legacy_plan_split(
+def _raw_file_set(
     project_dir: Path, baseline_sha: str, todo_id: str = ""
 ) -> PlanSplit:
-    """The pre-R2.3 file-set pass (baseline diff + untracked filter).
+    """The raw file-set pass (baseline diff + untracked filter).
 
     The RAW set the :class:`DeltaAssembler` enriches with typed rename
     ownership (:meth:`DeltaAssembler._typed_operations`) and an explicit
     claim. Moved here from ``commit_plan`` (R2.3 architect-review): the
     file-set computation belongs to the assembly module — the plan-level
     :func:`awf.commit_plan._plan_split` calls in, never the reverse (one
-    home, no commit_plan <-> commit_delta callback). Behavior is unchanged
-    from the R-03 / TODO-0195 / REPORTS33 implementation; ``commit_plan``
-    re-exports the name for its plan surface.
+    home, no commit_plan <-> commit_delta callback).
+
+    M4 (TODO-0228): every path read goes through the R2.1 model
+    (:class:`~awf.infra.git_model.GitRepository`, NUL protocol). The printed
+    ``--name-only`` parser is gone: a strict UTF-8 decode of git's
+    C-quoted/raw listing used to raise ``UnicodeDecodeError`` under
+    ``core.quotePath=false`` + a non-UTF-8 name, and a name with a newline
+    split into two paths. Facts and their order are those of the R-03 /
+    TODO-0195 / REPORTS33 implementation.
     """
     if not baseline_sha:
         return PlanSplit(files=[])
 
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", baseline_sha],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT,  # AUD04-11: hung git must not hang the commit gate
-        )
-        if result.returncode != 0:
-            logs_dir = project_dir / ".agentic" / "logs"
-            if logs_dir.is_dir():
-                _log(
-                    logs_dir,
-                    f"WARNING: git diff vs baseline {baseline_sha!r} failed "
-                    f"(rc={result.returncode}): {result.stderr.strip()}",
-                )
-            return PlanSplit(files=[])
-        modified_raw = raw_lines(result.stdout)
-    except (subprocess.SubprocessError, OSError):
-        return PlanSplit(files=[])
+    repo = GitRepository(project_dir)
+    logs_dir = project_dir / ".agentic" / "logs"
 
-    try:
-        staged_head = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT,  # AUD04-11
-        )
-    except (subprocess.SubprocessError, OSError):
-        return PlanSplit(files=[])  # can't tell what is staged — no plan, no commit
-    if staged_head.returncode != 0:
-        logs_dir = project_dir / ".agentic" / "logs"
-        if logs_dir.is_dir():
-            _log(
-                logs_dir,
-                f"WARNING: git diff --cached failed "
-                f"(rc={staged_head.returncode}): {staged_head.stderr.strip()}",
-            )
+    def _paths(read) -> list[str] | None:
+        """Model paths as raw display identities; None on a git failure (the
+        caller degrades to an empty plan, never a partial commit set)."""
+        try:
+            return [_display(p) for p in read()]
+        except (GitModelError, OSError) as exc:
+            if logs_dir.is_dir():
+                _log(logs_dir, f"WARNING: git path read failed: {exc}")
+            return None
+
+    modified_raw = _paths(lambda: repo.changed_paths(baseline_sha))
+    if modified_raw is None:
         return PlanSplit(files=[])
-    staged_vs_head = set(raw_lines(staged_head.stdout))
+    staged_list = _paths(repo.staged_paths)
+    if staged_list is None:
+        return PlanSplit(files=[])  # can't tell what is staged — no plan, no commit
+    staged_vs_head = set(staged_list)
 
     baseline_staged = staged_at_baseline(project_dir, todo_id)
     legacy = baseline_staged is None
     if legacy:
         # No baseline status snapshot (legacy/auto baseline): the old rule
         # — subtract everything the index staged vs the baseline NOW.
-        try:
-            foreign = subprocess.run(
-                ["git", "diff", "--cached", "--name-only", baseline_sha],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=GIT_TIMEOUT,  # AUD04-11
-            )
-        except (subprocess.SubprocessError, OSError):
+        foreign_list = _paths(lambda: repo.staged_paths(baseline_sha))
+        if foreign_list is None:
             return PlanSplit(files=[])
-        if foreign.returncode != 0:
-            logs_dir = project_dir / ".agentic" / "logs"
-            if logs_dir.is_dir():
-                _log(
-                    logs_dir,
-                    f"WARNING: git diff --cached vs baseline {baseline_sha!r} failed "
-                    f"(rc={foreign.returncode}): {foreign.stderr.strip()}",
-                )
-            return PlanSplit(files=[])
-        foreign_paths = set(raw_lines(foreign.stdout))
+        foreign_paths = set(foreign_list)
         if todo_id:
             _log(
                 project_dir / ".agentic" / "logs",
@@ -489,19 +373,9 @@ def _legacy_plan_split(
     snap_sha = read_worktree_snapshot(project_dir, todo_id)
     dirty_at_baseline = worktree_dirty_at_baseline(project_dir, todo_id)
     if snap_sha and dirty_at_baseline:
-        try:
-            snap_diff = subprocess.run(
-                ["git", "diff", "--name-only", snap_sha],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=GIT_TIMEOUT,  # AUD04-11: hung git must not hang the commit gate
-            )
-        except (subprocess.SubprocessError, OSError):
-            snap_diff = None
-        if snap_diff is not None and snap_diff.returncode == 0:
-            touched_since_snap = set(raw_lines(snap_diff.stdout))
+        snap_list = _paths(lambda: repo.changed_paths(snap_sha))
+        if snap_list is not None:
+            touched_since_snap = set(snap_list)
             for p in modified:
                 if p not in dirty_at_baseline:
                     continue
@@ -514,30 +388,13 @@ def _legacy_plan_split(
     # 2. Untracked files (new files worker created since baseline)
     # QA-1: exclude pre-existing untracked files (existed before baseline).
     # Read BASELINE-{todo_id}.untracked snapshot to filter them out.
-    try:
-        untracked_result = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT,  # AUD04-11
-        )
-        if untracked_result.returncode == 0:
-            untracked_now = raw_lines(untracked_result.stdout)
-        else:
-            untracked_now = []
-    except (subprocess.SubprocessError, OSError):
-        untracked_now = []
+    untracked_list = _paths(repo.untracked_paths)
+    untracked_now = untracked_list if untracked_list is not None else []
 
     # QA-1: filter out files that were already untracked at baseline time.
-    # BASELINE-{todo_id}.untracked was written by create_baseline().
-    baseline_untracked_path: Path | None = None
-    if todo_id:
-        candidate = project_dir / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
-        if candidate.exists():
-            baseline_untracked_path = candidate
-    if not baseline_untracked_path:
+    # One reader for the fact: the canonical raw/legacy decoder in the model.
+    pre_existing = git_model.read_untracked_snapshot(project_dir, todo_id)
+    if pre_existing is None:
         # AUD-2026-08-09.3: no baseline for this todo_id → don't grab another
         # TODO's baseline (would include wrong files). Log warning, include all
         # untracked (safer than filtering with wrong data).
@@ -547,22 +404,9 @@ def _legacy_plan_split(
                 "including all untracked files in commit",
                 file=sys.stderr,
             )
-
-    pre_existing: set[str] = set()
-    if baseline_untracked_path and baseline_untracked_path.exists():
-        try:
-            pre_existing = set(
-                raw_lines(
-                    baseline_untracked_path.read_text(
-                        encoding="utf-8", errors="surrogateescape"
-                    )
-                )
-            )
-            untracked_new = [f for f in untracked_now if f not in pre_existing]
-        except OSError:
-            untracked_new = untracked_now  # best effort — include all untracked
-    else:
         untracked_new = untracked_now
+    else:
+        untracked_new = [f for f in untracked_now if f not in pre_existing]
 
     # Combine + dedupe (a file could be in both lists if it was deleted
     # then re-created). Order: modified first, then new untracked.
@@ -601,65 +445,50 @@ def _legacy_plan_split(
     )
 
 
-def _all_changed_files(project_dir: Path) -> list[str]:
+def worktree_file_set(project_dir: Path) -> list[str]:
     """No-baseline back-compat file set: everything ``git add -A`` used to
-    stage — tracked changes (staged, unstaged, deleted) plus untracked.
+    stage — tracked changes (unstaged, deleted) plus untracked.
 
-    NUL-separated porcelain so unusual path names survive verbatim. A
-    staged rename/copy is TWO tokens ("R<state> target" + the bare source
-    name, state = the target's worktree status `` ``/``M``/``D``); both
-    are the user's index WIP and are consumed whole for every state,
-    neither contributes a path — the source token is not a path, and a
-    source name that looks like a status prefix (``git mv '?a b' ...``)
-    must not be parsed as one (REVIEW-0087 P3). Consuming the pair for
-    every state (not only the clean "R " one) is what keeps the RM/CM
-    pair's bare source token out of the path branch (REVIEW-0087 P4;
-    REVIEW-0104 F1: a worktree existence check on path entries was wider
-    than this angle — it dropped real " D" deletions, and a source tail
-    that happens to exist in the worktree would still leak). Entries the
-    user's index staged (R-03: the unit never stages — a staged-vs-HEAD
-    entry is the user's WIP and stays out of the plan, same rule as the
-    baseline path). Empty list on error. Moved here from ``commit_plan``
-    (R2.3 architect-review) with its sibling ``_legacy_plan_split``: the
-    file-set computation lives in the assembly module now.
+    M4 (TODO-0228): the facts come from the R2.1 model — ``changes()`` for
+    indexed records and ``untracked_paths()`` for new files — so a
+    non-UTF-8 name (or a name holding a newline) survives verbatim; the
+    printed ``status --porcelain`` token parser is gone.
+
+    Entries the user's index staged stay OUT (R-03: the unit never stages —
+    a staged-vs-HEAD entry is the user's WIP, same rule as the baseline
+    path): a record whose index side differs from HEAD is skipped, and a
+    staged rename/copy contributes neither of its two paths. Empty list on
+    a git error.
     """
     try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain", "-z"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=GIT_TIMEOUT,  # AUD04-11
-        )
-        if result.returncode != 0:
-            return []
-        tokens = result.stdout.split("\0")
-        files: list[str] = []
-        seen: set[str] = set()
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if (
-                len(tok) >= 4
-                and tok[0] in ("R", "C")
-                and tok[1] in (" ", "M", "D")
-            ):
-                # staged rename/copy, any worktree state of the target
-                # ("R  target" / "RM target" / "RD target" + the bare
-                # source token) — the user's index WIP, consume both
-                # tokens, keep neither
-                i += 2
-                continue
-            if len(tok) >= 4 and tok[2] == " " and tok[0] in (" ", "?"):
-                path = tok[3:]
-                if path and path not in seen:
-                    seen.add(path)
-                    files.append(path)
-            i += 1
-        return files
-    except (subprocess.SubprocessError, OSError):
+        repo = GitRepository(project_dir)
+        records = repo.changes()
+        untracked = repo.untracked_paths()
+    except (GitModelError, OSError):
         return []
+    files: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        if record.kind == "untracked":
+            continue  # the full untracked listing is read below
+        # The legacy rule: the user's index staged this path when the X side
+        # of ``XY`` is not the clean marker — ``.``/blank in the v2 protocol,
+        # ``?`` for an untracked record. A staged rename of an unchanged file
+        # has equal blobs, so blob equality alone is not the staging fact (M4
+        # review); a worktree-only deletion is ``.D`` and MUST stay in
+        # (REVIEW-0104 F1).
+        if record.xy[:1] not in (" ", ".", "?"):
+            continue
+        path = _display(record.path)
+        if path and path not in seen:
+            seen.add(path)
+            files.append(path)
+    for raw in untracked:
+        path = _display(raw)
+        if path and path not in seen:
+            seen.add(path)
+            files.append(path)
+    return files
 
 
 # ─── the delta-merge algorithm (moved from commit_gate — one home) ───────
@@ -1052,7 +881,7 @@ def stage_delta_file(
     if blob_r.returncode != 0:
         _degrade("the merged content could not be written as a blob")
         return
-    mode_r = _git_isolated(project_dir, ["ls-tree", "HEAD", "--", file], env)
+    mode_r = _git_isolated(project_dir, ["ls-tree", "-z", "HEAD", "--", file], env)
     if mode_r.returncode != 0:
         _degrade(f"the HEAD mode could not be read (rc={mode_r.returncode})")
         return
@@ -1340,7 +1169,9 @@ class DeltaAssembler:
         # REVIEW-F2: a path already UNTRACKED at baseline is pre-existing work
         # the unit does not own — the dirty set above deliberately skips the
         # ``??`` rows, so the untracked snapshot is the second foreign source.
-        pre_existing_untracked = read_baseline_untracked(self.project_dir, self.todo_id)
+        pre_existing_untracked = git_model.read_untracked_snapshot(
+            self.project_dir, self.todo_id
+        )
 
         owned: list[CandidateOperation] = []
         conflicts: list[CandidateOperation] = []
@@ -1440,13 +1271,13 @@ class DeltaAssembler:
             return False
         return True
 
-    # -- legacy file set (moved from commit_plan._plan_split) -----------
+    # -- raw file set (moved from commit_plan._plan_split) --------------
 
-    def _legacy_split(self) -> PlanSplit:
+    def _raw_split(self) -> PlanSplit:
         """The baseline-diff file set + exclusions (preserves the pre-R2.3
         semantics the gate and the sentinel rely on). RENAME enrichment is
         applied on top in :meth:`assemble`, so this stays the raw set."""
-        return _legacy_plan_split(
+        return _raw_file_set(
             self.project_dir, self.baseline_sha, self.todo_id
         )
 
@@ -1485,14 +1316,14 @@ class DeltaAssembler:
             )
 
         if self.baseline_sha:
-            split = self._legacy_split()
+            split = self._raw_split()
             files = list(split.files)
             excluded = list(split.excluded)
             worker_staged = list(split.worker_staged)
             legacy_fallback = split.legacy_fallback
             delta_files = list(split.delta_files)
         else:
-            files = list(_all_changed_files(self.project_dir))
+            files = list(worktree_file_set(self.project_dir))
             excluded = []
             worker_staged = []
             legacy_fallback = False

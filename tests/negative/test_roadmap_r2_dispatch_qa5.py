@@ -3,27 +3,19 @@
 
 Файл КРАСНЫЙ на текущем дереве (находка стадии agent-qa-review, iter 5).
 
-Итерация 5 перевела ``reject_files`` на raw-модель R2.1: ``_raw_untracked``
-читает пути через ``GitRepository.untracked_paths()`` (``-z``, байты), а
-``_untracked_view`` ДОБАВЛЯЕТ второй git-вызов — печатный список
-``git_utils.untracked_files`` — чтобы позиционно связать raw-путь с его
-печатной формой (мост к ``BASELINE-*.untracked``).
+M4 review: the leak-gate reads untracked paths with ONE git call —
+``GitRepository.untracked_paths()`` (the NUL protocol). The old second printed
+scan and its ``raw -> printed`` map are gone: no consumer used the map, and a
+printed scan is a second implementation of the same fact.
 
-До итерации 5 вся git-работа ``reject_files`` шла ОДНИМ вызовом, обёрнутым в
-``except (subprocess.SubprocessError, OSError)`` → ``None`` (best-effort).
-Теперь guard стоит только на первом вызове (``_raw_untracked`` ловит
-``GitModelError``/``OSError``); второй вызов — ``git_utils.untracked_files`` —
-НЕ обёрнут, а ``git_utils._git`` пропускает ``subprocess.TimeoutExpired`` и
-``OSError`` наружу. Поэтому зависший/пропавший git на втором чтении валит:
+The contract this file pins is unchanged and now lives on the live surface:
 
-* ``snapshot_rejected_files`` — контракт «Never raises — the reject must not
-  fail on it» (RUN5 #1 Part A.1), т.е. падает сам ``awf reject``;
-* ``orphaned_reject_files`` — контракт «[] when … git cannot measure»
-  (failsafe-поверхность verify-pack / approve).
-
-Класс ровно тот, что итерация 5 закрыла для ``UnicodeEncodeError`` (arch
-AR-1), но по другому триггеру: не кодировка имени, а сбой git. Обе ветки
-обязаны деградировать в ``[]``/``None``, а не вылетать.
+* ``snapshot_rejected_files`` — «Never raises — the reject must not fail on
+  it» (RUN5 #1 Part A.1): a hung/missing git degrades to ``[]``;
+* ``orphaned_reject_files`` — «[] when … git cannot measure»
+  (failsafe-поверхность verify-pack / approve);
+* ``core.quotepath=false`` + non-UTF-8 name is not a failure at all: the model
+  returns the raw path, so the finding is recorded instead of dropped.
 
 Все репозитории — disposable в ``tmp_path``.
 """
@@ -34,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from awf import api, git_utils, paths, reject_files
+from awf import api, paths, reject_files
 
 SRC = "TODO-0001"
 RETRY = "TODO-0002"
@@ -63,31 +55,30 @@ def repo(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def second_read_fails(monkeypatch):
-    """Only the PRINTED listing (``git_utils.untracked_files`` — the new
-    second read of ``_untracked_view``) fails; the raw model read stays live,
-    so the failure lands exactly on the unguarded call."""
+def untracked_read_fails(monkeypatch):
+    """The single model read fails, as a hung/missing git would."""
+    from awf.infra.git_model import GitModelError, GitRepository
 
-    def boom(_project_dir):
-        raise subprocess.TimeoutExpired(cmd="git ls-files", timeout=30)
+    def boom(self):
+        raise GitModelError("git ls-files timed out")
 
-    monkeypatch.setattr(git_utils, "untracked_files", boom)
+    monkeypatch.setattr(GitRepository, "untracked_paths", boom)
 
 
-def test_snapshot_never_raises_on_transient_git_failure(repo, second_read_fails):
-    """A hung git on the printed read must not fail the reject: the snapshot is
-    best-effort and degrades to ``[]`` (RUN5 #1 Part A.1)."""
+def test_snapshot_never_raises_on_transient_git_failure(repo, untracked_read_fails):
+    """A hung git on the untracked read must not fail the reject: the snapshot
+    is best-effort and degrades to ``[]`` (RUN5 #1 Part A.1)."""
     (repo / FINDING).write_text("finding\n", encoding="utf-8")
     recorded = reject_files.snapshot_rejected_files(
         repo, SRC, paths.logs_dir(repo)
     )
     assert recorded == [], (
-        "snapshot_rejected_files must swallow a git failure on the printed "
+        "snapshot_rejected_files must swallow a git failure on the untracked "
         f"read and return []; got {recorded!r}"
     )
 
 
-def test_orphaned_never_raises_on_transient_git_failure(repo, second_read_fails):
+def test_orphaned_never_raises_on_transient_git_failure(repo, untracked_read_fails):
     """The failsafe must return ``[]`` when git cannot measure, not raise."""
     (repo / FINDING).write_text("finding\n", encoding="utf-8")
     ctx = paths.context_dir(repo)
@@ -102,11 +93,11 @@ def test_orphaned_never_raises_on_transient_git_failure(repo, second_read_fails)
     )
 
 
-def test_snapshot_never_raises_with_quotepath_false_non_utf8(repo, monkeypatch):
+def test_snapshot_reads_non_utf8_under_quotepath_false(repo):
     """A DETERMINISTIC trigger, no failure injection: with ``core.quotepath=false``
-    (a legitimate user config) ``git ls-files`` emits the raw non-UTF-8 bytes,
-    which ``git_utils._git(text=True)`` decodes strictly → ``UnicodeDecodeError``.
-    The second read of ``_untracked_view`` is unguarded, so the reject fails."""
+    (a legitimate user config) ``git ls-files`` emits raw non-UTF-8 bytes. The
+    model returns them as the raw identity, so the reject records the finding
+    instead of dropping it."""
     import os
 
     _git(repo, "config", "core.quotepath", "false")
@@ -118,8 +109,7 @@ def test_snapshot_never_raises_with_quotepath_false_non_utf8(repo, monkeypatch):
     recorded = reject_files.snapshot_rejected_files(
         repo, SRC, paths.logs_dir(repo)
     )
-    assert recorded == [], (
-        "snapshot_rejected_files must degrade to [] (best-effort) instead of "
-        "raising UnicodeDecodeError on a non-UTF-8 name under "
+    assert recorded == [os.fsdecode(name)], (
+        "snapshot_rejected_files must keep the raw non-UTF-8 finding under "
         f"core.quotepath=false; got {recorded!r}"
     )

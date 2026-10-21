@@ -5,14 +5,15 @@ import hashlib
 import subprocess
 from pathlib import Path
 
-from .infra.git_model import GIT_TIMEOUT
+from .infra.git_model import GIT_TIMEOUT, GitModelError, GitRepository, display_path
 
 
-def _git(cwd: Path, *args: str, check: bool = True) -> str:
-    """Run a git command and return stdout."""
+def _git(cwd: Path, *args: str, check: bool = True, errors: str = "strict") -> str:
+    """Run a git command and return stdout (strict UTF-8 by default)."""
     result = subprocess.run(
         ["git"] + list(args),
-        cwd=cwd, capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT,
+        cwd=cwd, capture_output=True, text=True, errors=errors,
+        check=False, timeout=GIT_TIMEOUT,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
@@ -32,12 +33,6 @@ def current_sha(project_dir: str | Path) -> str:
 def diff_stat(project_dir: str | Path, baseline_sha: str) -> str:
     """Return git diff --stat output vs baseline."""
     return _git(Path(project_dir), "diff", "--stat", baseline_sha, check=False)
-
-
-def untracked_files(project_dir: str | Path) -> list[str]:
-    """Return list of untracked (non-ignored) files."""
-    out = _git(Path(project_dir), "ls-files", "--others", "--exclude-standard", check=False)
-    return [f for f in out.splitlines() if f]
 
 
 def has_diff(project_dir: str | Path, baseline_sha: str) -> bool:
@@ -76,7 +71,8 @@ def commit_all(project_dir: str | Path, message: str) -> bool:
     try:
         commit_result = subprocess.run(
             ["git", "commit", "-m", message],
-            cwd=cwd, capture_output=True, text=True, check=False, timeout=GIT_TIMEOUT,
+            cwd=cwd, capture_output=True, text=True, errors="surrogateescape",
+            check=False, timeout=GIT_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         return False
@@ -87,8 +83,18 @@ def commit_all(project_dir: str | Path, message: str) -> bool:
 
 
 def status_porcelain(project_dir: str | Path) -> str:
-    """Return ``git status --porcelain`` (empty = clean tree)."""
-    return _git(Path(project_dir), "status", "--porcelain", check=False)
+    """Return ``git status --porcelain`` (empty = clean tree).
+
+    M4: the listing is printed, so a non-UTF-8 name under
+    ``core.quotePath=false`` cannot be decoded. It becomes a non-empty
+    marker, never an empty string: callers read "empty" as "clean" (the
+    mutation dirty-gate refuses on a non-empty status), and an unknown
+    tree must not pass for a clean one.
+    """
+    try:
+        return _git(Path(project_dir), "status", "--porcelain", check=False)
+    except UnicodeDecodeError:
+        return "?? <non-UTF-8 path — status undecodable>\n"
 
 
 def tree_fingerprint(project_dir: str | Path) -> str:
@@ -99,6 +105,17 @@ def tree_fingerprint(project_dir: str | Path) -> str:
     files with their content hashes. Same state → same hash, at any time
     (no timestamps involved); a new commit, an edited tracked file, or a
     new/changed/deleted untracked file → different hash.
+
+    The untracked NAMES come from the model (``-z`` bytes, ``display_path``
+    identity), not a printed ``ls-files``: that read C-quoted a non-ASCII
+    name (so the hash keyed it by an alias other readers never use) and, with
+    ``core.quotePath=false``, a non-UTF-8 name raised ``UnicodeDecodeError``
+    and aborted the whole fingerprint. An ASCII tree keeps its old digest
+    (same names, order and encoding). A non-ASCII name now hashes in the
+    model's RAW identity — the identity every other reader speaks, so the
+    digest changes for such a tree, and only for it. The ``status`` read is
+    a hash INPUT, never parsed for paths, and decodes with
+    ``surrogateescape`` so an unusual name cannot crash it.
 
     No side effects: the index and the working tree are never modified
     (``git stash create`` is NOT used — it drops untracked-only states).
@@ -111,17 +128,19 @@ def tree_fingerprint(project_dir: str | Path) -> str:
     head = _git(pd, "rev-parse", "HEAD").strip()  # RuntimeError: no commits
     h = hashlib.sha256()
     h.update(b"head\n" + head.encode("utf-8"))
-    status = _git(pd, "status", "--porcelain", check=False)
-    h.update(b"status\n" + status.encode("utf-8", errors="replace"))
+    status = _git(pd, "status", "--porcelain", check=False, errors="surrogateescape")
+    h.update(b"status\n" + status.encode("utf-8", errors="surrogateescape"))
     diff = _git(pd, "diff", "--binary", "HEAD", check=False)
     h.update(b"diff\n" + diff.encode("utf-8", errors="replace"))
-    untracked = [
-        f
-        for f in _git(pd, "ls-files", "--others", "--exclude-standard", check=False)
-        .splitlines()
-        if f
-    ]
-    h.update(b"untracked\n" + "\n".join(sorted(untracked)).encode("utf-8"))
+    try:
+        names = GitRepository(pd).untracked_paths()
+    except GitModelError:
+        # The rest of the read degrades, not aborts: a git that refuses the
+        # repository (an unreadable ``.git/info/exclude``, the M1 scenario)
+        # previously produced a fingerprint without untracked names.
+        names = []
+    untracked = [display_path(p) for p in names]
+    h.update(b"untracked\n" + "\n".join(sorted(untracked)).encode("utf-8", "surrogateescape"))
     for name in untracked:
         path = pd / name
         if path.is_file():
@@ -129,7 +148,7 @@ def tree_fingerprint(project_dir: str | Path) -> str:
             with open(path, "rb") as fh:
                 for chunk in iter(lambda: fh.read(1 << 20), b""):
                     content_hash.update(chunk)
-            h.update(name.encode("utf-8") + b"\0" + content_hash.digest())
+            h.update(name.encode("utf-8", "surrogateescape") + b"\0" + content_hash.digest())
     return h.hexdigest()
 
 

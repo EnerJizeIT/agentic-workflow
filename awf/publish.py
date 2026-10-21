@@ -1046,7 +1046,7 @@ def _committed_entry(project_dir: Path, commit_oid: str, path: str) -> str:
     tree (``""`` when the path is absent — a deletion, or an unborn commit)."""
     if not commit_oid:
         return ""
-    r = _git(project_dir, ["ls-tree", commit_oid, "--", path])
+    r = _git(project_dir, ["ls-tree", "-z", commit_oid, "--", path])
     if r.returncode != 0:
         return ""
     line = r.stdout.strip()

@@ -1469,8 +1469,9 @@ class TestDispatchIncludeUntracked:
         return tmp_git_repo
 
     def _baseline_untracked(self, repo: Path) -> list[str]:
-        f = repo / ".agentic" / "context" / f"BASELINE-{self.TODO}.untracked"
-        return [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        from awf.infra.git_model import read_untracked_snapshot
+
+        return sorted(read_untracked_snapshot(repo, self.TODO) or set())
 
     def test_dispatch_lists_pre_existing_untracked(self, proj: Path) -> None:
         for i in range(1, 13):

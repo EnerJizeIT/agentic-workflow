@@ -804,7 +804,8 @@ def _write_salvage_prompt(
             diff = subprocess.run(
                 ["git", "diff", "--stat", baseline_sha],
                 cwd=str(project_dir),
-                capture_output=True, text=True, check=False, timeout=10,
+                capture_output=True, text=True, errors="replace",
+                check=False, timeout=10,
             )
             diff_output = diff.stdout.strip() if diff.stdout else "(no changes)"
         except (subprocess.TimeoutExpired, OSError):

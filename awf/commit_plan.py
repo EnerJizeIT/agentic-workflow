@@ -32,8 +32,6 @@ PlanSplit = commit_delta.PlanSplit
 staged_at_baseline = commit_delta.staged_at_baseline
 worktree_dirty_at_baseline = commit_delta.worktree_dirty_at_baseline
 read_worktree_snapshot = commit_delta.read_worktree_snapshot
-_legacy_plan_split = commit_delta._legacy_plan_split
-_all_changed_files = commit_delta._all_changed_files
 
 OUTCOME_COMMITTED = "committed"
 OUTCOME_SKIPPED = "skipped"
@@ -197,11 +195,11 @@ def _candidate_plan(
 def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
     """R2.3: the unit's commit file set + exclusions — now ONE assembly.
 
-    The legacy baseline-diff pass (:func:`_legacy_plan_split`) supplies the
-    raw set; the :class:`~awf.commit_delta.DeltaAssembler` adds the TYPED
-    rename-pair ownership on top, re-admits the explicit claim channel
-    (:func:`_claimed_paths`, R2.2) as full files, and records any model
-    refusal. A model refusal (unsupported gitlink / unmerged / sparse / split
+    The model-backed raw pass (:func:`awf.commit_delta._raw_file_set`)
+    supplies the raw set; the :class:`~awf.commit_delta.DeltaAssembler` adds
+    the TYPED rename-pair ownership on top, re-admits the explicit claim
+    channel (:func:`_claimed_paths`, R2.2) as full files, and records any
+    model refusal. A model refusal (unsupported gitlink / unmerged / sparse / split
     index, or a mixed-ownership rename pair) BLOCKS the plan — the gate turns
     it into a refusal, never a silent legacy commit.
 
@@ -283,18 +281,20 @@ def plan_files(
     """
     if baseline_sha:
         return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
-    return _all_changed_files(project_dir)
+    return commit_delta.worktree_file_set(project_dir)
 
 
 def files_digest(files: list[str] | tuple[str, ...]) -> str:
     """M2.1: stable digest of the exact commit file set.
 
     sha256 over the NUL-joined sorted paths — order-insensitive, empty set
-    has its own (deterministic) digest.
+    has its own (deterministic) digest. The plan carries RAW path identities
+    (surrogateescape), so the encoding must round-trip them — a non-UTF-8
+    name must not crash approve/commit.
     """
     h = hashlib.sha256()
     for name in sorted(files):
-        h.update(name.encode("utf-8"))
+        h.update(name.encode("utf-8", errors="surrogateescape"))
         h.update(b"\0")
     return h.hexdigest()
 
@@ -387,7 +387,7 @@ def build_commit_plan(
         todo_id=todo_id,
         generation=generation,
         verified_sha=verified,
-        files=tuple(_all_changed_files(project_dir)),
+        files=tuple(commit_delta.worktree_file_set(project_dir)),
     )
 
 

@@ -76,6 +76,12 @@ from . import paths
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._proc import run_tree
+from .infra.git_model import (
+    GitModelError,
+    GitRepository,
+    display_path,
+    read_untracked_snapshot,
+)
 from .infra.managed_fs import ManagedPathError, managed_write_text
 from .prove_red import (
     VERDICT_BROKEN,
@@ -266,6 +272,7 @@ def _git_lines(project: Path, *args: str) -> tuple[int, str]:
             cwd=str(project),
             capture_output=True,
             text=True,
+            errors="surrogateescape",
             check=False,
             timeout=30,
         )
@@ -277,6 +284,27 @@ def _git_lines(project: Path, *args: str) -> tuple[int, str]:
         # section, so hand it the timeout text.
         return 124, f"git {' '.join(args)} timed out after {e.timeout}s"
     return cp.returncode, (cp.stdout or "").strip()
+
+
+def _git_paths(project: Path, rev: str) -> tuple[int, str, list[str], list[str]]:
+    """Tracked-changed and untracked paths vs ``rev`` from the R2.1 model.
+
+    M4 (TODO-0228, добор 0221): the printed ``--name-only`` /
+    ``ls-files --others`` reads crashed the whole verify pack with a
+    ``UnicodeDecodeError`` under ``core.quotePath=false`` + a non-UTF-8 name
+    (text=True decodes strictly) and with ``OSError``/``SubprocessError`` on
+    a hung git. The model reads the NUL protocol and hands back raw bytes,
+    so a non-UTF-8 name is displayed, never fatal. A git refusal degrades
+    to ``rc=1`` + its text — every caller already turns that into a failed
+    or skipped section.
+    """
+    try:
+        repo = GitRepository(project)
+        tracked = [display_path(p) for p in repo.changed_paths(rev)]
+        untracked = [display_path(p) for p in repo.untracked_paths()]
+    except (GitModelError, OSError) as exc:
+        return 1, str(exc), [], []
+    return 0, "", tracked, untracked
 
 
 def _diff_section(project: Path, todo_id: str, contract: dict | None) -> Section:
@@ -303,28 +331,23 @@ def _diff_section(project: Path, todo_id: str, contract: dict | None) -> Section
             status="skipped",
             lines=[f"skipped — no BASELINE-{todo_id}.sha, diff not measured"],
         )
-    rc, names = _git_lines(project, "diff", "--name-only", sha)
+    rc, err, tracked_names, untracked_names = _git_paths(project, sha)
     if rc != 0:
         return Section(
             name="diff",
             status="fail",
-            lines=[f"git diff vs {sha[:12]} failed: {names[:200]}"],
+            lines=[f"git diff vs {sha[:12]} failed: {err[:200]}"],
             measured=True,
             detail="git error",
         )
-    rc, untracked = _git_lines(project, "ls-files", "--others", "--exclude-standard")
-    untracked_set = set(untracked.splitlines()) if rc == 0 and untracked else set()
+    untracked_set = set(untracked_names)
     # Files that were ALREADY untracked at the baseline are not this unit's work.
-    old_untracked_file = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
-    old_untracked: set[str] = set()
-    if old_untracked_file.is_file():
-        old_untracked = {
-            ln.strip() for ln in old_untracked_file.read_text(encoding="utf-8").splitlines() if ln.strip()
-        }
+    # One reader for the fact: raw NUL form or the legacy printed form.
+    old_untracked = read_untracked_snapshot(project, todo_id) or set()
     new_untracked = sorted(
         f for f in untracked_set - old_untracked if not _is_noise(f)
     )
-    tracked_names = [f for f in names.splitlines() if not _is_noise(f)]
+    tracked_names = [f for f in tracked_names if not _is_noise(f)]
     changed = sorted(set(tracked_names) | set(new_untracked))
 
     rc, shortstat = _git_lines(project, "diff", "--shortstat", sha)
@@ -440,21 +463,14 @@ def _untracked_excluded_section(project: Path, todo_id: str) -> Section:
     only), so the status is always "pass" (or "skipped" when there is no
     baseline snapshot to measure against). Never a verdict failure.
     """
-    baseline_listing = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
-    if not baseline_listing.is_file():
+    baseline_set = read_untracked_snapshot(project, todo_id)
+    if baseline_set is None:
         return Section(
             name="untracked_excluded",
             status="skipped",
             lines=[f"skipped — no BASELINE-{todo_id}.untracked snapshot"],
         )
-    try:
-        excluded = sorted(
-            ln.strip()
-            for ln in baseline_listing.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        )
-    except OSError:
-        excluded = []
+    excluded = sorted(baseline_set)
     if not excluded:
         return Section(
             name="untracked_excluded",
@@ -660,23 +676,12 @@ def _changed_paths(project: Path, todo_id: str) -> list[str] | None:
         sha = raw.splitlines()[0] if raw else ""
     if not sha:
         return None
-    rc, names = _git_lines(project, "diff", "--name-only", sha)
+    rc, _err, names, untracked_names = _git_paths(project, sha)
     if rc != 0:
         return None
-    rc, untracked = _git_lines(project, "ls-files", "--others", "--exclude-standard")
-    untracked_set = set(untracked.splitlines()) if rc == 0 and untracked else set()
-    old_untracked_file = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
-    old_untracked: set[str] = set()
-    if old_untracked_file.is_file():
-        try:
-            old_untracked = {
-                ln.strip()
-                for ln in old_untracked_file.read_text(encoding="utf-8").splitlines()
-                if ln.strip()
-            }
-        except OSError:
-            old_untracked = set()
-    changed = {f for f in names.splitlines() if f and not _is_noise(f)}
+    untracked_set = set(untracked_names)
+    old_untracked = read_untracked_snapshot(project, todo_id) or set()
+    changed = {f for f in names if f and not _is_noise(f)}
     changed |= {f for f in untracked_set - old_untracked if not _is_noise(f)}
     return sorted(changed)
 
@@ -1099,10 +1104,17 @@ def verify_pack(
             report_path.relative_to(project)
         except ValueError:
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(report_str, encoding="utf-8")
+            report_path.write_text(
+                report_str, encoding="utf-8", errors="backslashreplace"
+            )
         else:
             try:
-                managed_write_text(report_path, report_str, root=project)
+                managed_write_text(
+                    report_path,
+                    report_str,
+                    root=project,
+                    errors="backslashreplace",
+                )
             except (ManagedPathError, OSError):
                 # Reporting is best-effort: an unsafe runtime path must not
                 # crash the verify pack (the verdict is already computed).

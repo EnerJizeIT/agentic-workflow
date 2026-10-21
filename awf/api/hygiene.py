@@ -668,6 +668,7 @@ def _recompute_include_baseline(
         paths.context_dir(project_dir) / f"BASELINE-{todo_id}.untracked",
         untracked,
         operation="rebuild baseline untracked",
+        errors="surrogateescape",
     )
     if include_files:
         write_include_audit(project_dir, todo_id, include_files)

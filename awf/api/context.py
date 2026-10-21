@@ -369,6 +369,7 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         cwd=str(project_dir),
         capture_output=True,
         text=True,
+        errors="replace",
         check=False,
         timeout=30,
     )

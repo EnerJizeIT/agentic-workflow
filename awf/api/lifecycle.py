@@ -1127,6 +1127,7 @@ def get_report(project_dir: Path) -> ReportResult:
         cwd=str(project_dir),
         capture_output=True,
         text=True,
+        errors="replace",
         check=False,
         timeout=30,
     )

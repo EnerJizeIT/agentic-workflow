@@ -2522,3 +2522,51 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # машинные проверки: outside-surface против дефолтов под .agentic и
 # multi-match-проба с site-токеном). Прод-кода юнит не добавил.
 # Долговых TODO/FIXME-маркеров не добавлено.
+
+# M4 (TODO-0228, стадия agent-implementer, 20.10): baseline todos raised
+# 6416 -> 6430 (+14). Все четырнадцать — unit-id ссылки и тестовые
+# идентификаторы, не долг: 6 строк нового контрактного теста
+# tests/negative/test_miniwave_m4_guards.py (модульный docstring с
+# TODO-0228, fixture-иды TODO-0001), 2 в awf/commit_delta.py (docstring
+# model-backed набора файлов), по одному в awf/git_utils.py, awf/verify.py,
+# awf/verify_pack.py (ссылка на M4/добор 0221 в объяснении guard'а),
+# docs/design.md (принцип 16 со ссылкой на реестр),
+# tests/unit/test_handoff_v2.py (объяснение NUL-заглушки) и
+# scripts/instruction-gates.conf (обоснование лимита). Ни одного TODO/FIXME-маркера долга не
+# добавлено. files_over_400 stays 99 (новый тест — 343 строки).
+
+# M4 (TODO-0228, REVIEW-фикс, стадия agent-implementer, 20.10): baseline
+# files_over_400 99 -> 100 и todos 6430 -> 6434. Планку перешагнул
+# контрактный tests/negative/test_miniwave_m4_guards.py (343 -> 422): сканер
+# стал белым списком (голые ls-files/status, --stat, log/show --name-only) и
+# вырос на комментарии и кейсы. Дробить нельзя — verify-контракт юнита
+# запускает ровно этот файл. Четыре новых строки со словом TODO — ссылки
+# unit-id в миграционных docstring'ах (pipeline, git_model) и в
+# тестовых-хелперах, переведённых на канонический читатель снимка; это
+# идентификаторы, не долговые TODO/FIXME-маркеры.
+
+# M4 QA (TODO-0228, стадия agent-qa-review, 20.10): todos 6434 -> 6444 (+10).
+# Все десять — ссылки unit-id и fixture-иды новых тестов QA-витка в
+# tests/negative/test_miniwave_m4_guards.py (legacy-снимок с ведущим
+# пробелом: `TODO-0001` в путях BASELINE-*, вызовах verify/commit_plan и
+# двух docstring'ах) плюс одна ссылка (M4, TODO-0228 review) в комментарии
+# awf/verify_pack.py. Долговых TODO/FIXME-маркеров не добавлено.
+# Причина: два найденных бага — (1) legacy-читатель снимка делал strip и
+# терял ведущий пробел пути (F1b на старом снимке), (2) запись отчёта
+# verify-pack падала UnicodeEncodeError на не-UTF-8 имени. files_over_400
+# не менялась (контрактный файл уже был выше планки: 422 -> ~497).
+# M4 QA iter 2 (TODO-0228, стадия agent-qa-review, 20.10): todos 6444 -> 6447
+# (+3). Один — новая строка этого QA-прохода
+# (test_legacy_snapshot_does_not_split_on_a_unicode_line_separator,
+# unit-id в вызове _legacy_snapshot). Два — TODO-bearing строки тестов/доков,
+# пришедшие после прошлого подъёма (стадия architect-review и правка
+# scripts/instruction-gates.conf; её DONE утверждает «within baseline», но
+# ratchet после последних правок не перезапускался). Долговых TODO/FIXME-
+# маркеров в прод-коде не добавлено. files_over_400 без изменений (100).
+
+# M4 (TODO-0228, REVIEW-фикс виток 5, стадия agent-implementer): todos
+# 6447 -> 6453 (+6). Четыре — unit-id ссылки нового теста U2
+# (create_baseline/_.status/staged_at_baseline/_plan_split с "TODO-0001");
+# две — строки, пришедшие после прошлого подъёма (долговых TODO/FIXME-маркеров
+# не добавлено, все шесть — идентификаторы юнита в тесте). files_over_400
+# без изменений (100): тест вырос 440 -> ~517 строк, но уже был выше планки.
