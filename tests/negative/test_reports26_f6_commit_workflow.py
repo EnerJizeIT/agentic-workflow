@@ -247,9 +247,9 @@ class TestDelivery:
     def test_mcp_tool_registered_counter_53(self):
         names = [s.name for s in _registry.TOOLS]
         assert "awf_commit_workflow" in names
-        assert len(names) == 53, f"registry has {len(names)} tools, expected 53"
+        assert len(names) == 54, f"registry has {len(names)} tools, expected 54"
         counts = _registry.tool_counts()
-        assert counts == {"total": 53, "awf": 48, "ui": 5}
+        assert counts == {"total": 54, "awf": 49, "ui": 5}
 
     def test_cli_subcommand_registered(self):
         from awf import cli

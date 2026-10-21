@@ -530,7 +530,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-53 tools: 48 `awf_*` workflow + 5 UI (forms).
+54 tools: 49 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -627,6 +627,7 @@ applies to any stage kind.
 | `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Retire a rejected/abandoned TODO that stays "active" (RETIRED note in `done/<id>/`) |
 | `awf_todo_update` | Reword a not-started TODO, keeping the number (backup in `context/`, `.ready` + baseline untouched) |
+| `awf_review_append` | Append a supervisor `## REVIEW-фикс (супервизор, виток N)` section to a started TODO (numbered, backup in `context/`) |
 
 **`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
 `BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
@@ -638,9 +639,22 @@ closures on its own when re-issuing the same number, and refuses to re-issue a n
 whose DONE closure is still in the outbox.
 
 **`awf_todo_remove`** (CLI `awf todo-remove`). Removes a TODO that never started — no
-dispatch `.ready`, no signals, no progress. The file moves to
-`done/<id>/removed-<timestamp>.md`, the trace stays. A `.ready` or any signal/progress
-refuses the removal and points to `awf unblock` / `awf reset --orphans`.
+signals, no progress. The dispatch `.ready` is an artifact and does not block (it moves
+beside the file). The file moves to
+`done/<id>/removed-<timestamp>.md`, the trace stays. A signal or progress refuses
+the removal: stale closures point to `awf unblock`, a started unit to
+`awf todo-retire`. The removal is
+also refused while the active run queue (main or service slot) still names the TODO —
+replace it in the queue first (`awf_run_revise` with `{"from": …, "to": …}`) or finish
+the run; otherwise the queue would keep a dangling reference.
+
+**`awf_review_append`** (CLI `awf review-append TODO-NNNN --text "…" |
+--text-file <path>`). Appends a numbered `## REVIEW-фикс (супервизор, виток N)`
+section to a STARTED unit (PROGRESS, an outbox signal, or an inbox ACK/APPROVE),
+backing the previous content up to `context/TODO-<id>.md.bak-<ts>`; the number, the
+dispatch `.ready` and the baseline stay untouched. Refusals: empty text; no TODO file
+in the inbox; a unit that never started (a queued TODO takes `awf todo-update`); an
+archived unit (`awf restore` first); a live pipeline on this id (`awf kill` first).
 
 **`awf_todo_retire`** (CLI `awf todo-retire TODO-NNNN --reason "…"`). The reject path
 writes `DONE-<id>.{md,json}` to the outbox but NOT the `DONE-<id>.ready` signal — so a
@@ -649,7 +663,9 @@ moves the TODO's files (`TODO-<id>.md`, `.ready`, `PROGRESS-*`, `DONE-*.md/.json
 without `.ready`, `REVIEW-*`) to `done/<id>/` and writes
 `done/<id>/RETIRED-<timestamp>.md` with the reason, who and time — no fake DONE signal.
 Refusals: no TODO file in inbox or `done/`; already archived (`done/<id>/TODO.md`);
-a live pipeline on this id (`awf kill` or wait first); empty `--reason` (required).
+a live pipeline on this id (`awf kill` or wait first); an active run slot still
+planning to launch the TODO in its not-started queue region (replace it there
+first); empty `--reason` (required).
 `awf restore` still brings a retired TODO back.
 
 **`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |

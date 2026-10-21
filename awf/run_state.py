@@ -16,6 +16,7 @@ Crash-safe: the file survives process death; the supervisor re-reads it via
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -189,13 +190,16 @@ def _revision_entry_ok(e: object) -> bool:
 
 def _normalize_revision(e: dict) -> dict:
     """ORCH M3.4/M4.1/REPORTS32: the canonical revision shape
-    ``{ts, key, kind, reason, changes, generation, resume_from}``; absent
-    or mistyped fields degrade to empty (a partial entry survives as far
-    as its key allows). ``resume_from`` (ORCH M4.1) — the stage the
-    stopped unit resumes from; absent in v1 (M3.4) records → ``""``.
-    A change's ``class`` (REPORTS32, TODO-0198: ``appended`` /
-    ``inserted``) survives the normalization; absent (a plain pipeline
-    change) the key is not added — legacy records stay as-is."""
+    ``{ts, key, kind, args_digest, reason, changes, generation,
+    resume_from}``; absent or mistyped fields degrade to empty (a partial
+    entry survives as far as its key allows). ``resume_from`` (ORCH M4.1) —
+    the stage the stopped unit resumes from; absent in v1 (M3.4) records →
+    ``""``. ``args_digest`` (AA1, TODO-0240 review v7) — the request
+    payload the key names; absent in older records → ``""`` (replayable,
+    no comparison possible). A change's ``class`` (REPORTS32, TODO-0198:
+    ``appended`` / ``inserted``) survives the normalization; absent (a
+    plain pipeline change) the key is not added — legacy records stay
+    as-is."""
 
     def _norm_change(c: dict) -> dict:
         norm = {
@@ -222,6 +226,7 @@ def _normalize_revision(e: dict) -> dict:
         "ts": str(e.get("ts") or ""),
         "key": str(e.get("key") or "").strip(),
         "kind": "revision",
+        "args_digest": str(e.get("args_digest") or ""),
         "reason": str(e.get("reason") or ""),
         "changes": norm_changes,
         "generation": generation,
@@ -396,6 +401,50 @@ def read_run(
     # (""/[]/[]); broken values degrade with a warning, not a traceback.
     _sanitize_plan_fields(data, logs_dir)
     return data
+
+
+def active_runs(project_dir: Path) -> Iterator[tuple[str, dict]]:
+    """The ACTIVE run slots as ``(slot, state)`` — ONE traversal.
+
+    Reads every slot the registry names (:data:`_RUN_SLOT_FILES`), so a
+    third slot is one entry here instead of a second loop in each reader.
+    The registry and the slot files belong to this module; callers outside
+    it must not reach for :data:`_RUN_SLOT_FILES` themselves (TODO-0240
+    review: a private cross-module import grew in ``awf.api.hygiene``).
+
+    A corrupt or absent slot file reads as "no run" (:func:`read_run`),
+    so a broken file never hides the other slot.
+    """
+    for name in _RUN_SLOT_FILES:
+        state = read_run(project_dir, slot=name) or {}
+        if state.get("active"):
+            yield name, state
+
+
+def queued_todo_slot(project_dir: Path, todo_id: str) -> str:
+    """The active run slot still PLANNING to launch ``todo_id`` (``""`` = none).
+
+    One predicate for every writer that moves or deletes a TODO file
+    (``remove_todo``, ``retire_todo``, ``remove_orphans``): the run slot is
+    a reference, and a file moved under it leaves the queue naming a unit
+    that cannot launch.
+
+    Only the NOT-STARTED region counts (queue positions from ``index`` on,
+    minus ``current``): retiring a rejected/current unit is the documented
+    recovery path, and a completed element is history
+    (``test_launch_unblocks_after_retire`` /
+    ``test_completed_queue_element_does_not_block_remove``).
+    """
+    for name, run in active_runs(project_dir):
+        try:
+            index = int(run.get("index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        queue_ids = [q["todo_id"] for q in normalize_queue(run.get("queue"))]
+        current = str(run.get("current") or "")
+        if todo_id in queue_ids[index:] and todo_id != current:
+            return name
+    return ""
 
 
 def _ensure_lock_file(project_dir: Path) -> None:
@@ -699,6 +748,7 @@ def append_revision(
     changes: list[dict],
     generation: int,
     resume_from: str = "",
+    args_digest: str = "",
 ) -> None:
     """ORCH M3.4 / REPORTS32 (TODO-0198): append an applied revision to the
     state dict IN PLACE.
@@ -708,8 +758,10 @@ def append_revision(
     atomic write as the queue change it records (the decisions' path, M1:
     one lock hold, one write). The entry is
     ``{ts, key, kind: "revision", reason, changes, generation,
-    resume_from}``. ``resume_from`` (ORCH M4.1) names the stage the
-    stopped unit resumes from (``""`` when the stop was a no-op). A change's
+    resume_from, args_digest}``. ``resume_from`` (ORCH M4.1) names the stage
+    the stopped unit resumes from (``""`` when the stop was a no-op);
+    ``args_digest`` (AA1, TODO-0240 review v7) pins the request payload to
+    the key — a repeat with a different queue is not a repeat. A change's
     ``class`` (REPORTS32: ``appended`` / ``inserted`` — the element joined
     the queue rather than changing a pipeline) is kept; a plain pipeline
     change has no key, so legacy records stay as-is. The caller checks
@@ -737,6 +789,7 @@ def append_revision(
             "ts": now_iso(),
             "key": str(key or "").strip(),
             "kind": "revision",
+            "args_digest": str(args_digest or ""),
             "reason": str(reason or "").strip(),
             "changes": [
                 _norm_change(c)

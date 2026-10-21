@@ -234,7 +234,7 @@ class TestRemoveTodo:
     def test_refuses_with_outbox_signal(self, project):
         (paths.inbox(project) / "TODO-0002.md").write_text("body")
         (paths.outbox(project) / "PROGRESS-TODO-0002.md").write_text("half done")
-        with pytest.raises(api.AwfApiError, match="signals"):
+        with pytest.raises(api.AwfApiError, match="PROGRESS"):
             api.remove_todo(project, "TODO-0002")
         assert (paths.inbox(project) / "TODO-0002.md").exists()
 

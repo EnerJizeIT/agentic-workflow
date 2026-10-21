@@ -707,8 +707,14 @@ async def awf_todo_remove(
     the dispatch ``.ready`` is an artifact, not a start marker — it no
     longer blocks the removal and moves to the trace dir; the unit's
     ``context/BASELINE-<id>.*`` is deleted (reported in ``removed_files``).
-    Refused when PROGRESS, any outbox signal, or an inbox ACK/APPROVE
-    exists (hints: ``awf_unblock`` / ``awf_reset(orphans=True)``).
+    Refused when a signal or PROGRESS exists: stale closures point to
+    ``awf_unblock`` (or ``awf_reset(orphans=True)``), a started unit to
+    ``awf_todo_retire``. Also refused while the active run queue (main or
+    service slot) still names the TODO: replace it in the queue first
+    (``run_revise`` with ``{"from": ..., "to": ...}``) or finish the run —
+    a service slot has no ``run_revise``, close it with
+    ``awf_run_service_finish`` — otherwise the queue would keep a dangling
+    reference.
     """
     result = await _exec(
         api.remove_todo,
@@ -742,6 +748,8 @@ async def awf_todo_retire(
 
     Refusals: no TODO file in inbox or done/; already archived
     (``done/<id>/TODO.md``); a live pipeline on this id (kill/wait first);
+    an active run slot (main or service) still planning to launch the TODO
+    in its not-started queue region (replace it in the queue first);
     empty ``reason`` (required — it is the RETIRED note body).
     """
     result = await _exec(
@@ -755,6 +763,53 @@ async def awf_todo_retire(
             f"Unit {result.get('todo_id', '?')} retired (RETIRED note: "
             f"{result.get('retired_note', 'done/<id>/')}). Still needed — "
             "re-dispatch via awf_dispatch_todo; bring this one back — awf_restore."
+        )
+    return result
+
+
+@_mutating
+async def awf_review_append(
+    todo_id: str,
+    text: str,
+    reason: str = "",
+    project_dir: str | None = None,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
+    """Append a supervisor REVIEW-fix section to a STARTED TODO (TODO-0240).
+
+    The plain ``awf_todo_update`` refuses a unit that already started; a
+    review round needs the opposite. This appends exactly one section
+    ``## REVIEW-фикс (супервизор, виток N)`` — N is one past the highest
+    round number already in the file (``max(existing) + 1``, so a gap or a
+    hand-written suffix never repeats a number) — and backs the previous
+    content up to
+    ``context/TODO-<id>.md.bak-<timestamp>``. The number, ``.ready`` and
+    the baseline stay untouched.
+
+    Refusals: empty ``text``; no TODO file in the inbox; the unit never
+    started (no PROGRESS/signals — a queued TODO takes ``awf_todo_update``);
+    the unit is archived (``done/<id>/TODO.md`` — use ``awf_restore``); a
+    live pipeline on this id (``awf_kill`` first, then append).
+
+    ``operation_id`` is durable like ``awf_todo_update``: a retry after a
+    transport cut returns the recorded outcome, it does not append a second
+    section.
+    """
+    result = await _exec(
+        api.review_append,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        text=text,
+        reason=reason,
+        operation_id=operation_id,
+    )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id', 'TODO')}: '{result.get('section', '')}' "
+            f"appended (backup: {result.get('backup', '')}). Re-run the unit "
+            "with awf_continue (a run) or awf_start. A DONE closure left by "
+            "the previous attempt is NOT cleared by awf_unblock — clear the "
+            "outbox/DONE-<id>.* signals by hand before the re-run."
         )
     return result
 
@@ -1020,6 +1075,13 @@ async def awf_run_revise(
     Invalid (non-int, out of range) → refusal. Without ``position`` new
     elements are appended.
 
+    REPLACE (TODO-0240): an item ``{"from": "TODO-A", "to": "TODO-B"}``
+    replaces the NOT-STARTED element A with B in place (position and
+    pipeline kept, class ``"replaced"``). B needs a launchable TODO
+    (``inbox/<B>.md`` non-empty — the engine's launch precondition; a
+    ``.ready`` alone cannot launch) and must not duplicate a queued id;
+    a conflict refuses the whole request.
+
     Refusals (each returns the current state; the previous plan stays in
     force): no active run; a stage is running without ``stop_running``
     (stop the unit first); any conflict; a missing key; an invalid
@@ -1041,7 +1103,8 @@ async def awf_run_revise(
         queue: Items to revise — a list of {"todo_id": "TODO-NNNN",
             "pipeline": "<name>"}; an empty pipeline reverts the element to
             the config default. An id not in the run queue is appended /
-            inserted (needs its inbox TODO file).
+            inserted (needs its inbox TODO file). A replace item is
+            {"from": "TODO-A", "to": "TODO-B"}.
         reason: Why the composition changes (stored in the revision record).
         key: Idempotency key — required for the apply; a repeat with the
             same key is a no-op (no second revision).

@@ -68,6 +68,7 @@ from ._results import (
     ResetResult,
     RestoreResult,
     RetireTodoResult,
+    ReviewAppendResult,
     RoleDraftsResult,
     RollbackResult,
     RunFinishResult,
@@ -91,7 +92,13 @@ from ._stack import derive_project_name, detect_stack
 from .brief import brief
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
-from .hygiene import remove_todo, retire_todo, unblock_todo, update_todo
+from .hygiene import (
+    remove_todo,
+    retire_todo,
+    review_append,
+    unblock_todo,
+    update_todo,
+)
 from .lifecycle import (
     get_report,
     get_status,
@@ -192,6 +199,7 @@ __all__ = [
     "UpdateTodoResult",
     "RemoveTodoResult",
     "RetireTodoResult",
+    "ReviewAppendResult",
     "WritePipelineResult",
     "ListPipelinesResult",
     "FeedbackResult",
@@ -230,6 +238,7 @@ __all__ = [
     "unblock_todo",
     "remove_todo",
     "retire_todo",
+    "review_append",
     "update_todo",
     # Autonomous run (забег)
     "run_start",

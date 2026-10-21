@@ -53,17 +53,40 @@ def _require_run_project(project_dir: Path) -> Path:
     return require_awf_project(project_dir)
 
 
-def _validate_queue(queue: list[str | dict] | None) -> list[dict]:
+def _validate_queue(
+    queue: list[str | dict] | None, *, allow_replace: bool = False
+) -> list[dict]:
     """RUN3 #2: validate + normalize the queue.
 
     Items may be ``TODO-NNNN`` strings (legacy, pipeline from config) or
     objects ``{"todo_id": "TODO-NNNN", "pipeline": "<name>"}`` — mixed lists
     are fine. Returns the canonical form ``[{"todo_id", "pipeline"}, ...]``
     (empty ``pipeline`` = the config default).
+
+    TODO-0240: with ``allow_replace`` (``run_revise`` only) an item may also
+    be ``{"from": "TODO-A", "to": "TODO-B"}`` — replace the NOT-STARTED
+    element A of the active queue with B. It normalizes to
+    ``{"replace_from", "replace_to"}`` and keeps A's pipeline; a plain
+    ``run_start`` refuses this form (a new run has nothing to replace).
     """
     items: list[dict] = []
     for q in queue or []:
-        if isinstance(q, dict):
+        if isinstance(q, dict) and ("from" in q or "to" in q):
+            if not allow_replace:
+                raise AwfApiError(
+                    "a replace item {'from', 'to'} belongs to run_revise, "
+                    "not to a run start — start the queue with TODO ids and "
+                    "replace an element afterwards"
+                )
+            src = str(q.get("from", "")).strip()
+            dst = str(q.get("to", "")).strip()
+            if not is_valid_todo_id(src) or not is_valid_todo_id(dst):
+                raise AwfApiError(
+                    f"invalid replace item {q!r} — use "
+                    "{'from': 'TODO-NNNN', 'to': 'TODO-NNNN'}"
+                )
+            items.append({"replace_from": src, "replace_to": dst})
+        elif isinstance(q, dict):
             todo_id = str(q.get("todo_id", "")).strip()
             pipeline = str(q.get("pipeline", "") or "").strip()
             if not is_valid_todo_id(todo_id):
@@ -86,7 +109,9 @@ def _validate_queue(queue: list[str | dict] | None) -> list[dict]:
             "{'todo_id', 'pipeline'} objects, e.g. ['TODO-0010', "
             "{'todo_id': 'TODO-0011', 'pipeline': 'audit-llm'}]"
         )
-    ids = [i["todo_id"] for i in items]
+    ids = [
+        i.get("todo_id") or i.get("replace_from", "") for i in items
+    ]
     if len(ids) != len(set(ids)):
         raise AwfApiError("queue contains duplicate TODO ids")
     return items
@@ -1342,7 +1367,7 @@ def run_next(
             )
 
     todo_md = paths.inbox(project_dir) / f"{next_id}.md"
-    if not todo_md.is_file() or todo_md.stat().st_size == 0:
+    if _launchable_todo_reason(project_dir, next_id):
         return RunNextResult(
             action="refused",
             todo_id=next_id,
@@ -1894,6 +1919,102 @@ def run_finish(
     )
 
 
+def _revision_payload_mismatch(stored: dict, request_digest: str) -> bool:
+    """AA1 (TODO-0240 review v7): the same key with a DIFFERENT payload.
+
+    A revision key is the idempotency identity of ONE request — a repeat
+    must carry the same queue/position/reason. The digest is stored with
+    the revision; a mismatch is not a repeat and replaying the first
+    outcome would hide the caller's second request. A record written
+    before the digest existed carries no value and stays replayable.
+    """
+    recorded = str(stored.get("args_digest") or "")
+    return bool(recorded) and recorded != request_digest
+
+
+def _revise_payload_refusal(
+    *,
+    key: str,
+    generation: int,
+    current_queue: list[dict],
+    changes: list[dict],
+    unchanged: list[dict],
+) -> RunReviseResult:
+    """The explicit answer to a key reused with a different payload (AA1)."""
+    return RunReviseResult(
+        action="refused",
+        preview=False,
+        key=key,
+        generation=generation,
+        current_queue=current_queue,
+        changes=changes,
+        conflicts=[],
+        unchanged=unchanged,
+        message=(
+            f"Refused: key {key} was already used for a DIFFERENT revision "
+            "(the recorded payload does not match this queue/position/"
+            "reason) — key reused with different payload, recovery "
+            "required. A different revision needs a new key. Nothing was "
+            "changed."
+        ),
+    )
+
+
+def _replay_revision_result(
+    *,
+    key: str,
+    generation: int,
+    current_queue: list[dict],
+    unchanged: list[dict],
+    stored: dict,
+) -> RunReviseResult:
+    """The answer to a repeated idempotency key — ONE shape for both paths.
+
+    TODO-0240: the early check (before the plan conflicts decide the
+    answer) and the authoritative one inside the CAS mutator must speak
+    identically — a repeat is a NO-OP, not a failed plan, and it carries no
+    conflicts (the stale "source is not in the queue" one is not a result
+    of the repeat). One constructor, so the two answers cannot drift.
+    """
+    return RunReviseResult(
+        action="noop",
+        preview=False,
+        key=key,
+        generation=generation,
+        current_queue=current_queue,
+        changes=[],
+        conflicts=[],
+        unchanged=unchanged,
+        revision=stored,
+        message=(
+            f"Revision with key {key} was already applied "
+            f"({str(stored.get('ts') or '?')}) — no-op, nothing was "
+            "written twice."
+        ),
+    )
+
+
+def _launchable_todo_reason(project_dir: Path, todo_id: str) -> str:
+    """The launch precondition in ONE place (TODO-0240).
+
+    ``run_next`` refuses an element whose ``inbox/<id>.md`` is missing or
+    empty — a ``.ready`` alone marks a dispatched unit but cannot start
+    one. The engine's launch and both queue writers (append and replace)
+    ask the same question here; a second definition let a replace plant an
+    element the engine would then refuse at launch. Each caller keeps its
+    own message. Returns ``""`` when the id can launch, else the conflict
+    reason.
+    """
+    todo_md = paths.inbox(project_dir) / f"{todo_id}.md"
+    if todo_md.is_file() and todo_md.stat().st_size > 0:
+        return ""
+    return (
+        f"TODO file missing — inbox/{todo_id}.md is absent or empty; the "
+        "queue element needs a launchable TODO (run_next refuses an empty "
+        "file, a .ready alone cannot launch one)"
+    )
+
+
 def _revision_items(
     project_dir: Path,
     state: dict,
@@ -1918,15 +2039,22 @@ def _revision_items(
     present and non-empty) and the id is neither completed nor current.
     Without a file it is a conflict (the launch would refuse it anyway).
 
+    TODO-0240: a ``{"replace_from", "replace_to"}`` item REPLACES a
+    not-started element in place — same position and pipeline, only the id
+    changes. The target must be launchable and must not duplicate any id
+    the queue carries (or another change already claimed).
+
     Returns ``(current_queue, changes, conflicts, unchanged)``:
     - ``current_queue`` — every queue item with its lifecycle state
       (``completed`` | ``current`` | ``started`` | ``queued``);
     - ``changes`` — requested items that change a not-started element's
-      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default)
-      OR add a new element (``{"todo_id", "from": "", "to", "class"}``
-      with ``class`` = ``appended`` / ``inserted``);
+      pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default),
+      replace an element (``{"todo_id": <to>, "from": <from>, "to",
+      "class": "replaced"}``) OR add a new element (``{"todo_id", "from":
+      "", "to", "class"}`` with ``class`` = ``appended`` / ``inserted``);
     - ``conflicts`` — requested items that cannot be changed or added
-      (current / started / completed / TODO file missing);
+      (current / started / completed / TODO file missing / duplicate
+      target / replace source not queued);
     - ``unchanged`` — requested items whose pipeline already matches.
     """
     queue = list(state.get("queue") or [])
@@ -1975,7 +2103,63 @@ def _revision_items(
     changes: list[dict] = []
     conflicts_list: list[dict] = []
     unchanged: list[dict] = []
+    # TODO-0240: every id the queue holds (or a request already claimed) —
+    # a replace/appended target must not duplicate it.
+    taken: set[str] = set(by_id)
     for req in requested:
+        if "replace_from" in req:
+            src = str(req.get("replace_from") or "")
+            dst = str(req.get("replace_to") or "")
+            entry = by_id.get(src)
+            if entry is None:
+                conflicts_list.append(
+                    {
+                        "todo_id": src,
+                        "reason": (
+                            "source TODO is not in the run queue — replace "
+                            "an element that exists"
+                        ),
+                    }
+                )
+                continue
+            pos, _pipe = entry
+            lifecycle = _lifecycle(src, pos)
+            if lifecycle != "queued":
+                conflicts_list.append({"todo_id": src, "reason": conflicts[lifecycle]})
+                continue
+            # The specific lifecycle reasons come FIRST: ``taken`` already
+            # covers every queue id (completed and current included), so a
+            # generic duplicate check first would make these branches dead
+            # and answer "duplicate" where the precise reason is known.
+            if dst in completed:
+                conflicts_list.append({"todo_id": dst, "reason": "already completed"})
+                continue
+            if dst == current:
+                conflicts_list.append(
+                    {"todo_id": dst, "reason": "the current (in-flight) element"}
+                )
+                continue
+            if dst in taken:
+                conflicts_list.append(
+                    {
+                        "todo_id": dst,
+                        "reason": (
+                            f"target {dst} is already in the run queue (or "
+                            "claimed by another change) — a queue never "
+                            "carries a duplicate id"
+                        ),
+                    }
+                )
+                continue
+            missing = _launchable_todo_reason(project_dir, dst)
+            if missing:
+                conflicts_list.append({"todo_id": dst, "reason": missing})
+                continue
+            changes.append(
+                {"todo_id": dst, "from": src, "to": dst, "class": "replaced"}
+            )
+            taken.add(dst)
+            continue
         tid = req["todo_id"]
         to = str(req.get("pipeline", "") or "")
         entry = by_id.get(tid)
@@ -2001,18 +2185,20 @@ def _revision_items(
                 {"todo_id": tid, "reason": "the current (in-flight) element"}
             )
             continue
-        todo_md = paths.inbox(project_dir) / f"{tid}.md"
-        if not todo_md.is_file() or todo_md.stat().st_size == 0:
+        if tid in taken:
             conflicts_list.append(
                 {
                     "todo_id": tid,
                     "reason": (
-                        f"TODO file missing — inbox/{tid}.md is absent or "
-                        "empty; a new element joins the run only with a "
-                        "launchable TODO"
+                        "target already claimed — a queue never carries a "
+                        "duplicate id (another change names it)"
                     ),
                 }
             )
+            continue
+        missing = _launchable_todo_reason(project_dir, tid)
+        if missing:
+            conflicts_list.append({"todo_id": tid, "reason": missing})
             continue
         changes.append(
             {
@@ -2022,7 +2208,18 @@ def _revision_items(
                 "class": "inserted" if position is not None else "appended",
             }
         )
+        taken.add(tid)
     return current_queue, changes, conflicts_list, unchanged
+
+
+def _replace_pairs(changes: list[dict]) -> str:
+    """The ``A→B`` list of the replace changes — ONE wording for both
+    answers (preview and applied) of :func:`run_revise` (TODO-0240)."""
+    return ", ".join(
+        f"{c['from']}→{c['to']}"
+        for c in changes
+        if c.get("class") == "replaced"
+    )
 
 
 def run_revise(
@@ -2076,7 +2273,19 @@ def run_revise(
       the stop is a no-op and the revision applies.
     - a repeat with the same ``key`` is a no-op: the stored revision is
       returned, nothing is written twice (the check and the append are one
-      step under one lock hold).
+      step under one lock hold). The replay is not write-free — R1.4
+      allocates a durable Store generation — so a LIVE stage still refuses
+      first (the stop-first gate keeps every writer out); stop the unit,
+      then the repeat answers with the no-op.
+    - TODO-0240 — REPLACE: an item ``{"from": "TODO-A", "to": "TODO-B"}``
+      replaces the NOT-STARTED element A with B in place (position and
+      pipeline kept). B must be a valid TODO id with a launchable file
+      (``inbox/<B>.md`` present and non-empty — the same precondition
+      ``run_next`` applies; an ``inbox/<B>.ready`` alone cannot launch),
+      and must not duplicate any id the queue carries. Any conflict
+      (missing target / duplicate / source not queued) refuses the WHOLE
+      request atomically; the change is class ``"replaced"`` with
+      ``from=A`` / ``to=B`` in the revision record.
     - the applied revision is recorded in the run state (state/run.yaml,
       ``revisions``: ``{ts, key, kind: "revision", reason, changes,
       generation, resume_from}`` — the decisions' path) in the SAME CAS
@@ -2090,9 +2299,17 @@ def run_revise(
       supervisor re-verifies and re-approves on the current cycle.
     """
     project_dir = _require_run_project(project_dir)
-    requested = _validate_queue(queue)
+    requested = _validate_queue(queue, allow_replace=True)
     reason_clean = str(reason or "").strip()
     key_clean = str(key or "").strip()
+
+    # AA1 (TODO-0240 review v7): the key names ONE revision — the digest of
+    # the request (queue + position + reason) is recorded with it, so a
+    # repeat with a DIFFERENT payload is refused instead of silently
+    # replaying the first outcome.
+    request_digest = state_store.payload_digest(
+        {"queue": requested, "position": position, "reason": reason_clean}
+    )
 
     state = run_state.read_run(project_dir)
     if not state or not state.get("active"):
@@ -2148,9 +2365,14 @@ def run_revise(
     n_repipelined = len([c for c in changes if "class" not in c])
     n_appended = len([c for c in changes if c.get("class") == "appended"])
     n_inserted = len([c for c in changes if c.get("class") == "inserted"])
+    n_replaced = len([c for c in changes if c.get("class") == "replaced"])
 
     if preview:
         bits = [f"{n_repipelined} element(s) would change"]
+        if n_replaced:
+            bits.append(
+                f"{n_replaced} would be replaced ({_replace_pairs(changes)})"
+            )
         if n_appended:
             ids = ", ".join(
                 c["todo_id"] for c in changes if c.get("class") == "appended"
@@ -2199,6 +2421,32 @@ def run_revise(
                 "or pass stop_running=true to stop it as part of this call "
                 "(ORCH M4.1). The previous plan stays in force."
             ),
+        )
+
+    # TODO-0240: a repeat with the same key is a no-op even when the queue
+    # no longer carries the source (a replace moved it, so the request would
+    # otherwise be reclassified as a conflict). The authoritative check still
+    # runs under the lock inside the mutator (serialized writers); this early
+    # answer only spares the caller a misleading conflict. R1.4 keeps the
+    # counter gap: the replay still allocates a Store generation (the same
+    # "no-op replay advances the counter" invariant the CAS replay path has).
+    stored = run_state.find_revision(state, key_clean)
+    if stored is not None:
+        if _revision_payload_mismatch(stored, request_digest):
+            return _revise_payload_refusal(
+                key=key_clean,
+                generation=gen,
+                current_queue=current_queue,
+                changes=changes,
+                unchanged=unchanged,
+            )
+        state_store.next_run_generation(project_dir, floor=gen)
+        return _replay_revision_result(
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            unchanged=unchanged,
+            stored=stored,
         )
 
     if conflicts:
@@ -2317,6 +2565,9 @@ def run_revise(
     def _revise_mutator(st: dict) -> dict:
         existing = run_state.find_revision(st, key_clean)
         if existing is not None:
+            if _revision_payload_mismatch(existing, request_digest):
+                outcome["mismatch"] = existing
+                return st
             outcome["existing"] = existing
             return st
         queue = list(st.get("queue") or [])
@@ -2330,6 +2581,24 @@ def run_revise(
                         and str(q.get("todo_id", "")) == ch["todo_id"]
                     ):
                         q["pipeline"] = ch["to"]
+            elif cls == "replaced":
+                # TODO-0240: the element keeps its position and pipeline —
+                # only the id changes. A plain string item (legacy state)
+                # is replaced in place by the canonical dict form.
+                for i, q in enumerate(queue):
+                    qid = (
+                        str(q.get("todo_id", ""))
+                        if isinstance(q, dict)
+                        else str(q)
+                    )
+                    if qid == ch["from"]:
+                        pipe = (
+                            str(q.get("pipeline", "") or "")
+                            if isinstance(q, dict)
+                            else ""
+                        )
+                        queue[i] = {"todo_id": ch["to"], "pipeline": pipe}
+                        break
             elif cls == "inserted":
                 # REPORTS32 (TODO-0198): insert at the validated position;
                 # several new elements keep the request order.
@@ -2355,7 +2624,8 @@ def run_revise(
         # projection-local increment.
         st["generation"] = revised_generation
         run_state.append_revision(
-            st, key_clean, reason_clean, changes, gen, resume_from=resume_from
+            st, key_clean, reason_clean, changes, gen,
+            resume_from=resume_from, args_digest=request_digest,
         )
         outcome["applied"] = True
         return st
@@ -2394,29 +2664,32 @@ def run_revise(
     # (the close-CAS witness) and the projection agree. A no-op repeat
     # ("existing") changed nothing, so it must not republish. A mirror fault
     # must not undo the applied revision: the projection already landed.
-    if "existing" not in outcome and _written is not None:
+    if (
+        "existing" not in outcome
+        and "mismatch" not in outcome
+        and _written is not None
+    ):
         try:
             state_store.publish_active_run(project_dir, _written)
         except Exception:  # noqa: BLE001 — mirror only, revision is authoritative
             pass
 
-    if "existing" in outcome:
-        stored = outcome["existing"]
-        return RunReviseResult(
-            action="noop",
-            preview=False,
+    if "mismatch" in outcome:
+        return _revise_payload_refusal(
             key=key_clean,
             generation=gen,
             current_queue=current_queue,
-            changes=[],
-            conflicts=conflicts,
+            changes=changes,
             unchanged=unchanged,
-            revision=stored,
-            message=(
-                f"Revision with key {key_clean} was already applied "
-                f"({str(stored.get('ts') or '?')}) — no-op, nothing was "
-                "written twice."
-            ),
+        )
+
+    if "existing" in outcome:
+        return _replay_revision_result(
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            unchanged=unchanged,
+            stored=outcome["existing"],
         )
 
     # _written is the state the CAS just wrote — its last revision entry is
@@ -2434,6 +2707,10 @@ def run_revise(
     parts = []
     if n_repipelined:
         parts.append(f"{n_repipelined} element(s) re-pipelined")
+    if n_replaced:
+        parts.append(
+            f"{n_replaced} element(s) replaced ({_replace_pairs(changes)})"
+        )
     if n_appended:
         ids = ", ".join(
             c["todo_id"] for c in changes if c.get("class") == "appended"

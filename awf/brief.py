@@ -36,6 +36,8 @@ MAX_WORDS = 900
 # awf_commit_workflow line. TODO-0196: 32 → 19 words — the State section
 # gained the zombie-state line (engine dead + stage state + no signal);
 # same rule, the line is paid by the changelog tail, not MAX_WORDS.
+# TODO-0240: the tool map gained awf_review_append — paid by the map's own
+# `when` hints (shorter lines), not by the changelog tail.
 _PHASE_PROMPT_MAX_WORDS = 45
 _CHANGELOG_MAX_LINES = 10
 _CHANGELOG_MAX_WORDS = 19

@@ -244,6 +244,77 @@ class TestApproveEntrypoint:
         assert rc == 1
 
 
+class TestReviewAppendEntrypoint:
+    """TODO-0240: ``awf review-append`` — the CLI half of the MCP tool.
+
+    The unit added the command next to the API; without this the entry point
+    an owner actually types is never exercised (the same class of gap
+    NEG-2026-09-19 was about).
+    """
+
+    def test_appends_to_a_started_unit(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliReviewAppend")
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("# t\n", encoding="utf-8")
+        outbox = repo / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        (outbox / "PROGRESS-TODO-0001.md").write_text(
+            "stage: dev\n", encoding="utf-8"
+        )
+        capsys.readouterr()
+
+        rc = cli.main(
+            [
+                "review-append",
+                "TODO-0001",
+                "--text",
+                "фикс: пустой вход",
+                "--project-dir",
+                str(repo),
+            ]
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        text = (inbox / "TODO-0001.md").read_text(encoding="utf-8")
+        assert "## REVIEW-фикс (супервизор, виток 1)" in text
+        assert "фикс: пустой вход" in text
+
+    def test_recovery_outcome_is_exit_code_2(self, tmp_path, capsys, monkeypatch):
+        """REVIEW (architect): the durable branch must answer like
+        ``awf todo-update`` — an unknown outcome prints ``outcome=…`` and
+        exits 2, a plain refusal exits 1. The command was written next to
+        its sibling and had dropped that branch, so a script would retry a
+        ``recovery_required`` blindly."""
+        from awf._errors import OperationRecoveryRequired
+
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliReviewRecovery")
+        capsys.readouterr()
+
+        def _unknown(_project_dir, _todo_id, _text, **_kw):
+            raise OperationRecoveryRequired("ra-op")
+
+        monkeypatch.setattr(api, "review_append", _unknown)
+        rc = cli.main(
+            [
+                "review-append",
+                "TODO-0001",
+                "--text",
+                "fix",
+                "--operation-id",
+                "ra-op",
+                "--project-dir",
+                str(repo),
+            ]
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 2, out
+        assert "outcome=recovery_required" in out
+
+
 class TestRollbackEntrypoint:
     def test_dry_run_after_baseline(self, tmp_path, capsys):
         repo = _git_repo(tmp_path)

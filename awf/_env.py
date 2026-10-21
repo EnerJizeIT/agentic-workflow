@@ -92,6 +92,7 @@ CONTROL_TOOLS: tuple[str, ...] = (
     "awf_todo_remove",
     "awf_todo_retire",
     "awf_todo_update",
+    "awf_review_append",
     # run state
     "awf_run_start",
     "awf_run_next",

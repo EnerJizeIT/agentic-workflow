@@ -104,7 +104,7 @@ class TestRemoveStillRefusesStarted:
         self._dispatched(proj)
         (paths.outbox(proj) / f"PROGRESS-{TODO}.md").write_text("half done")
 
-        with pytest.raises(api.AwfApiError, match="signals"):
+        with pytest.raises(api.AwfApiError, match="PROGRESS"):
             api.remove_todo(proj, TODO)
 
         inbox = paths.inbox(proj)

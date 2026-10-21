@@ -1467,6 +1467,24 @@ def _remove_orphans_impl(
     except managed_fs.ManagedPathError as exc:
         raise AwfApiError(f"remove_orphans refused — {exc}") from exc
 
+    # TODO-0240 REVIEW Y2: the dangling-reference guard is the same fact for
+    # every remover. An orphan with a stale ``.ready`` may still sit in the
+    # NOT-STARTED region of an active run slot (main or service) — deleting
+    # the file would leave the queue naming a unit that cannot launch.
+    # Checked before the first unlink. The predicate lives with the queue it
+    # reads (``run_state``), not in a sibling API module.
+    held = [
+        tid for tid in orphan_ids
+        if run_state.queued_todo_slot(project_dir, tid)
+    ]
+    if held:
+        raise AwfApiError(
+            f"remove_orphans refused — {', '.join(held)} still in the active "
+            "run queue — replace it first (awf_run_revise with {'from': ..., "
+            "'to': ...}) or finish the run (a service slot has no run_revise: "
+            "close it with awf_run_service_finish)."
+        )
+
     removed: list[str] = []
     for tid, ready, md in plan:
         deleted_any = False

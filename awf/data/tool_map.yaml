@@ -74,19 +74,22 @@ groups:
     tools:
       - mcp: awf_unblock
         cli: unblock
-        when: "clear stale BLOCKED/ACK signals"
+        when: "clear stale closures"
       - mcp: awf_todo_remove
         cli: todo-remove
-        when: "remove a never-started unit"
+        when: "remove never-started unit"
       - mcp: awf_todo_retire
         cli: todo-retire
-        when: "retire a stuck rejected unit"
+        when: "retire rejected unit"
       - mcp: awf_todo_update
         cli: todo-update
-        when: "reword a not-started unit"
+        when: "reword not-started unit"
+      - mcp: awf_review_append
+        cli: review-append
+        when: "append REVIEW fix"
       - mcp: awf_restore
         cli: restore
-        when: "restore an archived unit"
+        when: "restore archived unit"
       - mcp: awf_reset
         cli: reset
         when: "clean runtime (confirm first)"

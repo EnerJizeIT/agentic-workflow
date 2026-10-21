@@ -2570,3 +2570,143 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # две — строки, пришедшие после прошлого подъёма (долговых TODO/FIXME-маркеров
 # не добавлено, все шесть — идентификаторы юнита в тесте). files_over_400
 # без изменений (100): тест вырос 440 -> ~517 строк, но уже был выше планки.
+
+# TODO-0240 (процессные ворота, стадия agent-implementer, 21.10): baseline
+# todos raised 6453 -> 6508 (+55). Все строки — unit-id ссылки в новых
+# docstring'ах/комментариях (run.py, hygiene.py, verify_pack.py, cli.py,
+# api/_results.py, MCP awf.py, check-contracts.sh, docs/unit-contract.md),
+# тестовые идентификаторы нового контрактного файла
+# tests/unit/test_process_gates.py (T1..T4 = "TODO-0001".."TODO-0004",
+# fixture-пути done/<id>/TODO.md) и обновлённые счётчики в доках. Ни одного
+# TODO/FIXME-маркера долга не добавлено: это идентификаторы юнита и тестов.
+# files_over_400 stays 100: новый тест — 283 строки, под планкой; правки
+# прод-модулей новых файлов не создали.
+
+# TODO-0240 (процессные ворота, стадия agent-architect-review, 21.10):
+# baseline todos raised 6508 -> 6512 (+4). Две строки — поздние правки
+# стадии implementer после её прогона ratchet (docstrings, не вошедшие в
+# тот замер), две — docstring'и нового общего предиката запуска
+# (_launchable_todo_reason) и стража обоих слотов рана
+# (_active_run_slot_holding). Всё — идентификаторы юнита, долговых
+# TODO/FIXME-маркеров не добавлено. files_over_400 не изменился.
+
+# TODO-0240 (процессные ворота, стадия agent-qa-review, 21.10): baseline
+# todos raised 6512 -> 6517 (+5). QA добавил три теста к
+# tests/unit/test_process_gates.py: «review_append не трогает .ready и
+# baseline, контракт парсится», «replace сохраняет pipeline элемента»,
+# «архивный юнит (done/<id>/TODO.md) не сканируется замком матрицы».
+# Пять новых строк содержат слово TODO — это docstring-описание контракта
+# юнита и пути done/<id>/TODO.md в фикстуре архива, долговых TODO/FIXME-
+# маркеров не добавлено. files_over_400 не изменился: тест 395 строк
+# (было 329), всё ещё под планкой 400.
+
+# TODO-0240 (процессные ворота, REVIEW-фикс виток 2, стадия
+# agent-implementer, 21.10): files_over_400 100 -> 101, todos 6517 -> 6536
+# (+19). files_over_400: контрактный tests/unit/test_process_gates.py
+# перешагнул планку 400 (QA оставил 395 строк). Новые кейсы: V1 — обе формы
+# имени QA-файла, V6 — проза не триггерит замок матрицы, V7 — отказ
+# не-стартовавшему юниту. Дробить файл нельзя: verify-контракт юнита
+# запускает ровно этот путь. todos +19 — unit-id ссылки и docstring'и правок
+# (awf/verify_pack.py, awf/api/hygiene.py, MCP tools/awf.py, USAGE.md,
+# docs/unit-contract.md, тест) ПЛЮС секция «REVIEW-фикс (виток 2)», которую
+# супервизор дописал в inbox/TODO-0240.md уже после замера QA. Ни одного
+# TODO/FIXME-маркера долга не добавлено: все строки — идентификаторы юнита,
+# имена QA-файлов и пути done/<id>/TODO.md.
+
+# TODO-0240 (арх-ревью, 21.10): todos 6536 -> 6537 (+1). Новый кейс
+# test_round_number_never_repeats описывает, как считается номер витка, и
+# несёт один идентификатор TODO-0240. Долговых TODO/FIXME-маркеров не
+# добавлено. Заодно исправлен сам счётчик витков: len(секций)+1 повторил бы
+# уже стоящий в файле номер («виток 2 — заметка»), теперь max(номер)+1.
+
+# TODO-0240 (QA виток 3, 21.10): todos 6537 -> 6539 (+2). Две строки —
+# docstring-описание и `md.rename(archived / "TODO.md")` нового красного
+# теста test_archived_unit_refused_as_closed (W1, архивный юнит). Это
+# тестовые идентификаторы и путь архива, не долг: ни одного TODO/FIXME-
+# маркера не добавлено. files_over_400 не изменился (101).
+
+# TODO-0240 (процессные ворота, стадия agent-architect-review виток 3,
+# 21.10): todos 6539 -> 6544 (+5). Строки с идентификатором юнита в
+# docstring'ах общих помощников (implementer'а после прошлого замера:
+# `_active_run_slot_holding`, `_started_signal_names`, `_discard_backup`;
+# арх-ревью: `_live_pipeline_on`, `_backup_and_write_todo`,
+# `_replay_revision_result`); одна строка с `TODO-0234` ушла вместе с
+# переехавшим в помощник комментарием. Ни одного долгового
+# TODO/FIXME-маркера не добавлено: это идентификаторы юнита.
+# files_over_400 не изменился (101): тест вырос 440 -> 557 строк, но уже
+# был выше планки.
+
+# TODO-0240 (QA-ревью, стадия agent-qa-review, 21.10): todos 6544 -> 6549
+# (+5). Красный тест на дыру liveness (service-run в окне запуска) и
+# зелёный CLI-тест `awf review-append` несут идентификаторы юнита в
+# docstring'ах и фикстурах (TODO-0001 / TODO-0240). Ни одного долгового
+# TODO/FIXME-маркера не добавлено: это тестовые id. files_over_400 не
+# изменился (101): contract-тест уже был выше планки.
+
+# TODO-0240 (арх-ревью виток 4, 21.10): todos 6549 -> 6551 (+2). Обе строки —
+# идентификатор юнита в docstring'ах: новый общий помощник _replace_pairs
+# (одна формулировка списка замен для preview и applied) и обновлённый
+# контракт _revision_items (класс replaced, конфликты duplicate/not queued).
+# Долговых TODO/FIXME-маркеров не добавлено. files_over_400 не изменился:
+# hygiene.py и run.py уже были выше планки, новых файлов нет.
+
+# TODO-0240 (REVIEW виток 5 — Y1/Y2, agent-implementer, 21.10):
+# todos 6551 -> 6558 (+7). Шесть строк — docstrings нового класса
+# TestQueueReferencesOnEveryRemover и помощника _service_slot_holding
+# (идентификаторы юнита в именах тестов/фикстур); седьмая — комментарий
+# Y2 в _remove_orphans_impl (lifecycle.py). В hygiene.py строки не
+# выросли: подсказка PROGRESS заменена той же длины. Долговых
+# TODO/FIXME-маркеров не добавлено. files_over_400 не изменился (101):
+# tests/unit/test_process_gates.py уже был выше планки.
+# Уточнение к записи выше: 6558 -> 6559 (+1) — docstring
+# test_retire_of_the_current_unit_is_the_recovery_path (идентификатор юнита
+# в тексте ссылки на test_launch_unblocks_after_retire). Тот же класс
+# тестов, долговых маркеров нет.
+
+# TODO-0240 (арх-ревью, agent-architect-review, 21.10): todos 6559 -> 6566
+# (+7). Все семь строк — идентификатор TODO в ПРОЗЕ доков и docstring'ов,
+# ни одного долгового TODO/FIXME-маркера:
+#   * USAGE.ru.md (+6): новый абзац `awf_review_append` — канон имени
+#     (`TODO-NNNN`), путь бэкапа `context/TODO-<id>.md.bak-<ts>`, «нет файла
+#     TODO в inbox», «очередной TODO правит awf todo-update»; плюс строка
+#     про отказ удаления, пока TODO числится в очереди активного рана
+#     (паритет с английским USAGE).
+#   * tools/awf.py (+1): в docstring `awf_todo_retire` добавлен отказ
+#     «активный слот рана всё ещё планирует запуск TODO» — тот же отказ,
+#     что уже описан в USAGE EN/RU и в docstring `retire_todo`.
+# files_over_400 не изменился (101): правки только в уже длинных файлах.
+
+# TODO-0240 (виток 6, agent-implementer, 21.10): todos 6566 -> 6568
+# (+2). Оба — идентификатор TODO-0240 в ПРОЗЕ нового кода, долговых
+# TODO/FIXME-маркеров нет:
+#   * awf/_safety_tripwire.py (+1): docstring плагина (Z1).
+#   * awf/api/hygiene.py (+1): docstring durable-обёртки review_append
+#     (Z2) — «TODO-0240 Z2» одной строкой.
+# files_over_400 не изменился (101).
+# Плюс 6568 -> 6570 (+2): та же секция «QA-файл находки» синхронно
+# скопирована в пакетный шаблон awf/templates/roles/agent-qa-review.md
+# (канон имени и полная форма — два идентификатора в прозе).
+
+# TODO-0240 (арх-ревью, доп. виток, agent-architect-review, 21.10):
+# todos 6570 -> 6577 (+7). Три строки — этой стадии: docstring общего
+# слотового помощника run_state.active_runs (unit-id в ссылке), docstring
+# общего durable-протокола hygiene._durable_operation и комментарий
+# ветки recovery_required в cmd_review_append.py. Остальные четыре —
+# поздние правки стадии implementer после её замера ratchet (docstring'и
+# витка 6), тот же класс: идентификаторы юнита в прозе, не долг.
+# Ни одного TODO/FIXME-маркера долга не добавлено.
+# files_over_400 не изменился (101): новых файлов нет, правки — в уже
+# длинных модулях.
+
+# TODO-0240 (виток 7, agent-implementer, 21.10): todos 6577 -> 6585 (+8).
+# Виток 7 (AA1-AA3): идентификатор юнита в прозе нового кода и тестов —
+# docstring/комментарии hygiene._durable_operation и payload-отказа,
+# run.py (_revision_payload_mismatch, _revise_payload_refusal,
+# request_digest), run_state (append_revision, _normalize_revision),
+# verify_pack._pytest_timeout_available и docstring'и четырёх новых
+# тестов test_process_gates.py. Долговых TODO/FIXME-маркеров нет.
+# files_over_400 не изменился (101).
+# Уточнение по тому же витку: 6585 -> 6586 (+1) — ещё один идентификатор
+# юнита в прозе новых правок (отказ ``different payload`` в тестах).
+# files_over_400 остался 101: test_reports32_revise_append.py ужат до 398
+# строк вместо повышения храповика.

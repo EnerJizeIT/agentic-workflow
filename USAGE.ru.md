@@ -305,7 +305,7 @@ awf не может заставить клиента переподключит
 
 ## Все tools (справочник)
 
-53 инструментов: 48 `awf_*` workflow + 5 UI (формы).
+54 инструмента: 49 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -459,6 +459,7 @@ $ awf start --pipeline audit-llm
 | `awf_todo_remove` | Удалить не стартовавший TODO (след в `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Вывести отклонённый/брошенный TODO, застрявший «активным» (RETIRED-заметка в `done/<id>/`) |
 | `awf_todo_update` | Переписать текст не стартовавшего TODO, сохранив номер (бэкап в `context/`, `.ready` + baseline не трогаются) |
+| `awf_review_append` | Дописать стартовавшему TODO секцию `## REVIEW-фикс (супервизор, виток N)` (нумерация, бэкап в `context/`) |
 
 **`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
 лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой
@@ -470,9 +471,22 @@ $ awf start --pipeline audit-llm
 ещё лежит в outbox.
 
 **`awf_todo_remove`** (CLI `awf todo-remove`). Убирает TODO, который никогда не
-стартовал — нет dispatch-`.ready`, сигналов и прогресса. Файл переносится в
-`done/<id>/removed-<timestamp>.md`, след остаётся. Если есть `.ready` или любой
-сигнал/прогресс — отказ с подсказкой `awf unblock` / `awf reset --orphans`.
+стартовал — нет сигналов и прогресса. Dispatch-`.ready` — артефакт, удалению не
+мешает (переезжает рядом с файлом). Файл переносится в
+`done/<id>/removed-<timestamp>.md`, след остаётся. Если есть сигнал или прогресс —
+отказ: stale-закрытия указывают на `awf unblock`, стартовавший юнит — на
+`awf todo-retire`. Удаление также отклоняется, пока TODO числится в очереди
+активного рана (слот main или service): сначала замени его в очереди
+(`awf_run_revise` с `{"from": …, "to": …}`) или заверши ран — иначе очередь
+останется со ссылкой на удалённый файл.
+
+**`awf_review_append`** (CLI `awf review-append TODO-NNNN --text "…" |
+--text-file <path>`). Дописывает стартовавшему TODO нумерованную секцию
+`## REVIEW-фикс (супервизор, виток N)` и бэкапит прежнее содержимое в
+`context/TODO-<id>.md.bak-<ts>`; номер, dispatch-`.ready` и baseline остаются
+нетронутыми. Отказы: пустой текст; нет файла TODO в inbox; юнит ещё не
+стартовал (очередной TODO правит `awf todo-update`); архивный юнит (сначала
+`awf restore`); живой пайплайн на этом id (сначала `awf kill`).
 
 **`awf_todo_retire`** (CLI `awf todo-retire TODO-NNNN --reason "…"`). Reject-путь
 пишет в outbox `DONE-<id>.{md,json}`, но НЕ сигнал `DONE-<id>.ready` — из-за этого
@@ -481,7 +495,9 @@ $ awf start --pipeline audit-llm
 `.ready`, `REVIEW-*`) в `done/<id>/` и пишет `done/<id>/RETIRED-<timestamp>.md` с
 причиной, кем и когда — без фейкового DONE-сигнала. Отказы: нет файла TODO ни в inbox,
 ни в `done/`; уже архивирован (`done/<id>/TODO.md`); живой пайплайн на этом id
-(`awf kill` или дождаться); пустая `--reason` (обязательна). `awf restore` по-прежнему
+(`awf kill` или дождаться); активный слот рана всё ещё планирует запуск TODO в
+неначатой части очереди (сначала заменить его там); пустая `--reason`
+(обязательна). `awf restore` по-прежнему
 возвращает retired-TODO.
 
 **`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |

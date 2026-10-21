@@ -648,6 +648,25 @@ class UpdateTodoResult:
 
 
 @dataclass
+class ReviewAppendResult:
+    """Result of :func:`awf.api.review_append` (TODO-0240).
+
+    ``section`` is the heading written (``## REVIEW-фикс (супервизор,
+    виток N)``); ``round`` is N. The append works on a STARTED unit (the
+    plain reword refuses one), but never while the pipeline is live on it.
+    """
+
+    todo_id: str
+    section: str
+    round: int
+    backup: str  # project-relative context/TODO-<id>.md.bak-<ts>
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class WritePipelineResult:
     """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
 
@@ -692,15 +711,17 @@ class RunReviseResult:
 
     ``action`` is one of:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
-    - ``applied`` — the not-started elements' pipelines changed and/or new
-      elements joined the queue (``changes`` entries carry
-      ``class: "appended"`` / ``"inserted"``), the revision is recorded
+    - ``applied`` — the not-started elements' pipelines changed, elements
+      were replaced (``changes`` entries carry ``class: "replaced"`` with
+      ``from`` / ``to``), and/or new elements joined the queue
+      (``class: "appended"`` / ``"inserted"``), the revision is recorded
       (``revision`` = the stored entry);
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
     - ``refused`` — no active run / live engine / conflicts (current /
-      started / completed / TODO file missing) / missing key / invalid
-      ``position`` / CAS mismatch / a failed stop (M4.1);
+      started / completed / TODO file missing / duplicate target /
+      replace source not queued) / missing key / invalid ``position`` /
+      CAS mismatch / a failed stop (M4.1);
       ``current_queue`` + ``generation`` carry the current state (the
       previous plan stays in force).
 
@@ -844,5 +865,6 @@ __all__ = [
     "UnblockResult",
     "RemoveTodoResult",
     "RetireTodoResult",
+    "ReviewAppendResult",
     "UpdateTodoResult",
 ]

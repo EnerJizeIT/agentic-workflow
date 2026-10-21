@@ -244,6 +244,42 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # TODO-0240: append a supervisor REVIEW-fix section to a STARTED unit
+    # (the plain todo-update refuses started TODOs; no section numbering by
+    # hand, a backup lands in context/).
+    p_review_append = sub.add_parser(
+        "review-append",
+        help="Append a supervisor REVIEW-fix section to a started TODO",
+    )
+    p_review_append.add_argument("todo_id", help="TODO id (e.g. TODO-0001)")
+    _review_group = p_review_append.add_mutually_exclusive_group(required=True)
+    _review_group.add_argument("--text", help="Review fix text (short)")
+    _review_group.add_argument(
+        "--text-file",
+        dest="text_file",
+        help="Review fix text read from a file",
+    )
+    p_review_append.add_argument(
+        "--reason",
+        default="",
+        help="Why the review fix is appended (written to the log)",
+    )
+    p_review_append.add_argument(
+        "--operation-id",
+        dest="operation_id",
+        default=None,
+        help=(
+            "Durable operation id: a repeat after a transport cut returns "
+            "the recorded outcome instead of appending a second section"
+        ),
+    )
+    p_review_append.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -790,6 +826,9 @@ def _run_command(args) -> int:
         if args.command == "todo-update":
             from . import cmd_todo_update
             return cmd_todo_update.run(args)
+        if args.command == "review-append":
+            from . import cmd_review_append
+            return cmd_review_append.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):

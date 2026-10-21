@@ -19,6 +19,9 @@ operations that leave a trace:
 - :func:`update_todo` rewords a not-started TODO in place, keeping the
   number, ``.ready`` and the baseline (previous content backed up to
   ``context/TODO-<id>.md.bak-<ts>``); started TODOs are refused.
+- :func:`review_append` appends a numbered supervisor
+  ``## REVIEW-фикс (супервизор, виток N)`` section to a STARTED TODO (the
+  inverse of :func:`update_todo`), with the same backup trace.
 - :func:`clear_stale_closures` is the shared helper — ``dispatch_todo``
   calls it automatically on re-dispatch of the same number.
 """
@@ -26,10 +29,12 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from .. import paths, todos
+from .. import paths, run_state, todos
 from .._atomic import MODE_OWNER_EDITABLE
 from .._errors import OperationRecoveryRequired
 from .._log import log as _log
@@ -40,7 +45,13 @@ from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic
-from ._results import RemoveTodoResult, RetireTodoResult, UnblockResult, UpdateTodoResult
+from ._results import (
+    RemoveTodoResult,
+    RetireTodoResult,
+    ReviewAppendResult,
+    UnblockResult,
+    UpdateTodoResult,
+)
 
 _ID_RE = re.compile(r"^TODO-\d{4,}$")
 #: R1.2 (TODO-0216): an OperationId is a portable, path-safe token naming one
@@ -174,6 +185,161 @@ def _write_operation(project_dir: Path, operation_id: str, **fields) -> None:
     from ..infra import state_store
 
     state_store.write_operation(project_dir, operation_id, **fields)
+
+
+def _durable_operation(
+    project_dir: Path,
+    operation_id: str,
+    todo_id: str,
+    action: str,
+    *,
+    result_keys: frozenset[str],
+    replay: Callable[[dict], Any],
+    apply: Callable[[Path], Any],
+    args: Any = None,
+) -> Any:
+    """The R1.2 durable-operation protocol — ONE implementation.
+
+    Both TODO writers (``update_todo`` and ``review_append``) promise the
+    same retry contract (TODO-0240 review: the second copy was written
+    next to the first and could drift, as the CLI already did):
+
+    - a recorded ``applied`` replay returns the stored result — no second
+      backup, no second section;
+    - a recorded ``refused`` replay raises the stored error again;
+    - a ``running`` record with no finish means the outcome is unknown —
+      :class:`OperationRecoveryRequired` is raised, never a duplicate
+      effect.
+
+    ``apply`` receives the resolved project dir and runs with the lock
+    held (``flock`` is per open file description: nesting deadlocks).
+    ``result_keys`` is the minimum the replay needs to rebuild the result;
+    a recorded ``applied`` with an incomplete body is not a factual
+    outcome, it is recovery_required. A refusal (an expected
+    ``AwfApiError``) is recorded as ``refused``; any other exception
+    leaves the record at ``running`` on purpose — a crash mid-write is
+    exactly the unknown outcome the retry must detect.
+
+    ``args`` (AA1, TODO-0240 review v7) is the call's content payload —
+    the text a writer would append. Its digest is journalled with the
+    record: the same ``operation_id`` with a DIFFERENT payload is not a
+    retry of the recorded operation, it is a second operation wearing the
+    same name, so it is refused as recovery_required instead of silently
+    replaying the first outcome. A record written before the digest
+    existed (``None``) cannot be compared and stays replayable. The
+    argument is OPTIONAL: a writer whose documented contract is
+    "the id alone names the operation" (``update_todo``) passes none and
+    keeps that contract.
+    """
+    _validate_id(todo_id)
+    _validate_operation_id(operation_id)
+    resolved = Path(project_dir).resolve()
+    require_agentic(resolved)
+    from .._lock import locked
+    from ..infra import state_store
+
+    args_digest = None if args is None else state_store.payload_digest(args)
+
+    with locked(resolved):
+        prior = _read_operation(resolved, operation_id)
+        if prior is not None:
+            # AUD-1 (TODO-0216 iter-4): an operation_id names ONE operation.
+            # Reusing it for another unit or action must not hand back the
+            # first operation's result — the journal records the target it
+            # actually effected; anything else is an unknown outcome, not a
+            # foreign ok.
+            recorded_target = (prior.get("todo_id"), prior.get("action"))
+            if recorded_target != (todo_id, action):
+                raise OperationRecoveryRequired(
+                    operation_id,
+                    f"operation {operation_id}: replay requested for "
+                    f"({todo_id}, {action}) but the journal records "
+                    f"{recorded_target} — the id names a different operation; "
+                    "outcome unknown, recovery_required, do not retry blindly",
+                )
+            recorded_args = prior.get("args_digest")
+            if (
+                args_digest is not None
+                and recorded_args is not None
+                and recorded_args != args_digest
+            ):
+                # AA1 (TODO-0240 review v7): one key — one payload. A
+                # repeat with a different text is not the recorded
+                # operation; replaying the first result would hide the
+                # second request and its effect would stay unwritten.
+                raise OperationRecoveryRequired(
+                    operation_id,
+                    f"operation {operation_id}: the key was reused with a "
+                    "different payload (the journal records other content) "
+                    "— not a retry; recovery_required, do not retry blindly",
+                )
+            status = prior.get("status")
+            if status == "applied":
+                stored = prior.get("result")
+                if not isinstance(stored, dict) or not result_keys <= stored.keys():
+                    raise OperationRecoveryRequired(
+                        operation_id,
+                        f"operation {operation_id}: journal records 'applied' "
+                        "but carries no complete result — outcome unknown, "
+                        "recovery_required, do not retry blindly",
+                    )
+                return replay(stored)
+            if status == "refused":
+                raise AwfApiError(
+                    prior.get("error") or f"operation {operation_id} refused"
+                )
+            raise OperationRecoveryRequired(operation_id)
+        # F-HIGH: the START record must land BEFORE any effect. If it
+        # cannot, refuse now — a retry with no record would re-apply.
+        try:
+            _write_operation(
+                resolved, operation_id, status="running", todo_id=todo_id,
+                action=action, args_digest=args_digest,
+            )
+        except state_store.STATE_WRITE_FAILURES as e:
+            # F-AR1 (architect-review): the writer runs under the managed
+            # barrier, whose refusal is ``ManagedPathError`` — NOT an
+            # OSError. Catch the ONE state-write family, not a respelled
+            # subset: the documented "refused before any effect, retry is
+            # safe" contract must hold for a swapped/symlinked
+            # ``.agentic``/``state`` too.
+            raise AwfApiError(
+                f"operation {operation_id}: journal start write failed "
+                f"({e}) — refused before any effect; retry is safe"
+            ) from e
+        try:
+            result = apply(resolved)
+        except AwfApiError as e:
+            try:
+                _write_operation(
+                    resolved, operation_id, status="refused", todo_id=todo_id,
+                    action=action, args_digest=args_digest, error=str(e),
+                )
+            except state_store.STATE_WRITE_FAILURES as je:
+                # Nothing applied — a lost refusal note cannot duplicate.
+                _log(
+                    paths.logs_dir(resolved),
+                    f"operation {operation_id}: refusal journal write "
+                    f"failed: {je}",
+                )
+            raise
+        # F-HIGH: the effect landed. If the finish record cannot be
+        # written, the outcome is not durably known — surface
+        # recovery_required (a retry would read the open ``running``
+        # record) instead of returning a result the journal cannot prove.
+        try:
+            _write_operation(
+                resolved, operation_id, status="applied", todo_id=todo_id,
+                action=action, args_digest=args_digest, result=result.as_dict(),
+            )
+        except state_store.STATE_WRITE_FAILURES as e:
+            raise OperationRecoveryRequired(
+                operation_id,
+                f"operation {operation_id}: applied but the finish record "
+                f"could not be written ({e}) — recovery_required, do not "
+                "retry blindly",
+            ) from e
+        return result
 
 
 def closure_files(project_dir: Path, todo_id: str) -> list[Path]:
@@ -330,6 +496,23 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
             raise AwfApiError(
                 "pipeline is running — wait for verify/salvage, or awf kill first"
             )
+        # TODO-0240: a TODO the active run still plans to launch is a live
+        # reference — removing the file would leave a dangling queue entry.
+        # Replace or cancel it in the queue first, then remove. Both run
+        # slots count (main + service), so no slot is left naming a gone
+        # unit. Only the NOT-STARTED region counts (Z6): an element already
+        # completed or current was launched, and a completed one is history —
+        # the broad "still holding" predicate refused it with advice
+        # ("replace it first") that replace itself cannot execute.
+        holding_slot = run_state.queued_todo_slot(project_dir, todo_id)
+        if holding_slot:
+            raise AwfApiError(
+                f"{todo_id} is in the active run queue ({holding_slot}) — "
+                "replace it first (awf_run_revise with {'from': ..., 'to': "
+                "...}) or finish the run (a service slot has no run_revise: "
+                "close it with awf_run_service_finish), then remove the "
+                "TODO."
+            )
         inbox = paths.inbox(project_dir)
         outbox = paths.outbox(project_dir)
         context_dir = paths.context_dir(project_dir)
@@ -360,21 +543,10 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
 
         short = short_id(todo_id)
         ids = (todo_id, short) if short != todo_id else (todo_id,)
-        outbox_signals = [
-            p
-            for tid in ids
-            for p in sorted(outbox.glob(f"*-{tid}.*"))
-            if p.is_file()
-        ]
-        inbox_signals = [
-            p
-            for tid in ids
-            for prefix in ("ACK-", "APPROVE-")
-            if (p := inbox / f"{prefix}{tid}.ready").is_file()
-        ]
-        if outbox_signals or inbox_signals:
-            names = ", ".join(p.name for p in outbox_signals + inbox_signals)
-            if any(p.name.startswith("DONE-") for p in outbox_signals):
+        signals = _started_signal_names(project_dir, todo_id)
+        if signals:
+            names = ", ".join(signals)
+            if any(name.startswith("DONE-") for name in signals):
                 hint = "DONE — the TODO is closed as finished; use awf restore."
             else:
                 hint = "stale BLOCKED/ACK — use awf unblock; orphans — awf reset --orphans."
@@ -383,7 +555,7 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
             )
         if todos.has_progress(outbox, todo_id):
             raise AwfApiError(
-                f"{todo_id} has PROGRESS — it was started. Use awf reset --orphans."
+                f"{todo_id} has PROGRESS — it was started. Use awf todo-retire."
             )
 
         done_dir.mkdir(parents=True, exist_ok=True)
@@ -470,6 +642,8 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
     - ``done/<id>/TODO.md`` exists — already archived (use ``awf restore``);
     - a live pipeline on this id (PID alive + ``state/current.yaml``
       ``todo_id``) — ``awf kill`` or wait first;
+    - an active run slot (main or service) still PLANS to launch the TODO
+      (not-started queue region) — replace it there first, or finish the run;
     - empty ``reason`` — required (it becomes the RETIRED note body).
     """
     _validate_id(todo_id)
@@ -524,15 +698,26 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
             note,
         )
         # Live pipeline on THIS id: the engine owns the files right now.
-        # A pipeline on another id does not touch this TODO's files — allowed.
-        running, pid, _tail = check_pipeline_running(project_dir)
-        if running:
-            state = read_state(project_dir)
-            if isinstance(state, dict) and state.get("todo_id") == todo_id:
-                raise AwfApiError(
-                    f"a live pipeline is running on {todo_id} (pid {pid}) — "
-                    "wait for it to finish or awf kill first"
-                )
+        live, pid = _live_pipeline_on(project_dir, todo_id)
+        if live:
+            raise AwfApiError(
+                f"a live pipeline is running on {todo_id} (pid {pid}) — "
+                "wait for it to finish or awf kill first"
+            )
+        # TODO-0240 REVIEW Y2: the same dangling-reference guard as
+        # ``remove_todo`` — an active run slot (main or service) that still
+        # PLANS to launch this unit would keep naming a moved file. A
+        # launched/current unit is excluded: retire is the reject-recovery
+        # path (``test_launch_unblocks_after_retire``).
+        holding_slot = run_state.queued_todo_slot(project_dir, todo_id)
+        if holding_slot:
+            raise AwfApiError(
+                f"{todo_id} is in the active run queue ({holding_slot}) — "
+                "replace it first (awf_run_revise with {'from': ..., 'to': "
+                "...}) or finish the run (a service slot has no run_revise: "
+                "close it with awf_run_service_finish), then retire the "
+                "TODO."
+            )
 
         short = short_id(todo_id)
         ids = (todo_id, short) if short != todo_id else (todo_id,)
@@ -676,6 +861,276 @@ def _recompute_include_baseline(
         clear_include_audit(project_dir, todo_id)
 
 
+def _backup_and_write_todo(
+    project_dir: Path,
+    md: Path,
+    old_content: str,
+    new_content: str,
+    *,
+    _lock_held: bool = False,
+) -> str:
+    """Back up the TODO, then write it guarded — ONE trace for both writers.
+
+    :func:`update_todo` and :func:`review_append` append to the same file
+    (TODO-0240): the order lives here once — the previous content lands in
+    ``context/TODO-<id>.md.bak-<ts>`` BEFORE the new text, and a failed
+    write removes the orphan backup (T1(b): catching only ``AwfApiError``
+    left it behind on an ``OSError`` like ``FileExistsError``).
+
+    The backup goes through the managed writer, not a plain ``write_text``
+    (TODO-0234 REVIEW architect): it is the same family as the edit — a
+    symlinked ``context`` used to send the old content out of the project,
+    and the managed writer creates the directory through the verified
+    parent. Returns the project-relative backup path; re-raises after the
+    backup is gone.
+    """
+    context_dir = paths.context_dir(project_dir)
+    bak_name = _unique_name(context_dir, f"{md.stem}.md.bak-{_timestamp()}")
+    backup = context_dir / bak_name
+    managed_write_api_text(
+        backup,
+        old_content,
+        operation="backup todo",
+        mode=MODE_OWNER_EDITABLE,
+    )
+    try:
+        _write_todo_checked(
+            project_dir, md, old_content, new_content, _lock_held=_lock_held
+        )
+    except Exception:
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+        raise
+    return backup.relative_to(project_dir).as_posix()
+
+
+_REVIEW_SECTION_RE = re.compile(
+    r"^##\s+REVIEW-фикс\s+\(супервизор,\s+виток\s+(\d+)", re.MULTILINE
+)
+
+
+def _next_review_round(text: str) -> int:
+    """The next ``виток`` number: ``max(existing) + 1``.
+
+    Not ``len(sections) + 1``: a hand-written section may carry a suffix
+    (``… виток 2 — заметка``) or the numbering may have a gap, and either
+    way a length-based count repeats a number that is already in the file.
+    """
+    rounds = [int(n) for n in _REVIEW_SECTION_RE.findall(text)]
+    return (max(rounds) if rounds else 0) + 1
+
+
+def _live_pipeline_on(project_dir: Path, todo_id: str) -> tuple[bool, int]:
+    """True when a LIVE pipeline owns this TODO's files (``pid`` alongside).
+
+    ONE liveness fact for every writer (TODO-0240 review): the engine writes
+    ``state.todo_id`` only after the first stage starts, so the run slot's
+    ``current`` is the other half of the same signal — either one naming this
+    unit means the engine owns the file. EVERY active run slot counts, not
+    just the main one: ``run_service_start`` writes ``state/service-run.yaml``
+    with ``current`` BEFORE the first stage writes ``state.todo_id``, the same
+    launch window; a predicate reading only the main slot let a review section
+    land on a service-owned file (QA-X1). :func:`retire_todo`,
+    :func:`review_append` and :func:`update_todo` all ask here, so their
+    refusals cannot disagree about which unit is live. A pipeline on another
+    id does not touch this TODO's files — allowed.
+    """
+    running, pid, _tail = check_pipeline_running(project_dir)
+    if not running:
+        return False, pid
+    state = read_state(project_dir)
+    if isinstance(state, dict) and state.get("todo_id") == todo_id:
+        return True, pid
+    for _slot, run in run_state.active_runs(project_dir):
+        if str(run.get("current") or "") == todo_id:
+            return True, pid
+    return False, pid
+
+
+def _started_signal_names(project_dir: Path, todo_id: str) -> list[str]:
+    """Start signals of a unit, as file names (``[]`` = none) — ONE rule.
+
+    :func:`update_todo` and :func:`review_append` ask here (TODO-0240
+    review V7), :func:`remove_todo` reuses the enumeration for its hints:
+    an outbox ``*-<id>.*`` signal or an inbox ``ACK-``/``APPROVE-``
+    closure. ``PROGRESS`` is NOT folded in — a progress file is a separate
+    fact with its own refusal (``todos.has_progress``), and merging it into
+    the names made the callers re-split the list to tell them apart.
+    """
+    outbox = paths.outbox(project_dir)
+    inbox = paths.inbox(project_dir)
+    short = short_id(todo_id)
+    ids = (todo_id, short) if short != todo_id else (todo_id,)
+    found = [
+        p
+        for tid in ids
+        for p in sorted(outbox.glob(f"*-{tid}.*"))
+        if p.is_file() and not p.name.startswith("PROGRESS-")
+    ]
+    found += [
+        p
+        for tid in ids
+        for prefix in ("ACK-", "APPROVE-")
+        if (p := inbox / f"{prefix}{tid}.ready").is_file()
+    ]
+    return list(dict.fromkeys(p.name for p in found))
+
+
+def review_append(
+    project_dir: Path,
+    todo_id: str,
+    text: str,
+    reason: str = "",
+    operation_id: str | None = None,
+) -> ReviewAppendResult:
+    """TODO-0240: append a supervisor REVIEW-fix section to a STARTED unit.
+
+    The plain :func:`update_todo` refuses a unit that already started; a
+    review round needs the opposite — the supervisor fixes the task text
+    AFTER the worker's attempt. This writer appends exactly one section
+    ``## REVIEW-фикс (супервизор, виток N)`` where N is one past the
+    highest existing round (a hand-written suffix or a gap in numbering
+    never produces a duplicate), keeps a backup in
+    ``context/TODO-<id>.md.bak-<ts>`` and leaves the number, ``.ready`` and
+    the baseline untouched.
+
+    Refusals (clear errors, nothing written):
+    - an empty ``text``;
+    - no ``TODO-<id>.md`` in the inbox;
+    - the unit is archived (``done/<id>/TODO.md``) — a closed unit comes
+      back only via ``awf restore``;
+    - the unit never started (no PROGRESS/outbox signal/ACK/APPROVE) — a
+      queued TODO takes :func:`update_todo` (``awf todo-update``), not a
+      review fix;
+    - a LIVE pipeline on this id — the engine owns the file right now, so
+      the caller stops it first (``awf kill``).
+
+    With ``operation_id`` the call is durable, like :func:`update_todo`
+    (TODO-0240 Z2): the outcome is journalled under ``state/operations/``,
+    so a repeat after a transport cut returns the recorded result instead
+    of appending a SECOND section and advancing the round.
+    """
+    if operation_id is None:
+        return _review_append_impl(project_dir, todo_id, text, reason)
+    return _durable_operation(
+        project_dir,
+        operation_id,
+        todo_id,
+        "review_append",
+        result_keys=frozenset(
+            {"todo_id", "section", "round", "backup", "message"}
+        ),
+        replay=lambda stored: ReviewAppendResult(
+            todo_id=stored["todo_id"],
+            section=stored["section"],
+            round=stored["round"],
+            backup=stored["backup"],
+            message=stored["message"],
+        ),
+        apply=lambda resolved: _review_append_impl(
+            resolved, todo_id, text, reason, _lock_held=True,
+        ),
+        args={
+            "text": (text or "").strip(),
+            "reason": (reason or "").strip(),
+        },
+    )
+
+
+def _review_append_impl(
+    project_dir: Path,
+    todo_id: str,
+    text: str,
+    reason: str = "",
+    *,
+    _lock_held: bool = False,
+) -> ReviewAppendResult:
+    """The review append itself; the durable wrapper calls it under its lock."""
+    _validate_id(todo_id)
+    body = (text or "").strip()
+    if not body:
+        raise AwfApiError(
+            "text is empty — write the review fix (the section body), or "
+            "omit the call"
+        )
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+
+    if _lock_held:
+        return _review_append_locked(project_dir, todo_id, body, reason)
+    from .._lock import locked
+
+    with locked(project_dir):
+        return _review_append_locked(project_dir, todo_id, body, reason)
+
+
+def _review_append_locked(
+    project_dir: Path,
+    todo_id: str,
+    body: str,
+    reason: str,
+) -> ReviewAppendResult:
+    """The append body — the caller holds the project lock."""
+    inbox = paths.inbox(project_dir)
+    md = inbox / f"{todo_id}.md"
+    # W1 (REVIEW виток 3): the archive is checked FIRST. A real archive
+    # MOVES the inbox file away, so the "not found" branch would answer
+    # a closed unit with the wrong refusal ("nothing to append to").
+    archived = paths.done_dir(project_dir) / todo_id / "TODO.md"
+    if archived.is_file():
+        raise AwfApiError(
+            f"{todo_id} is closed (done/{todo_id}/TODO.md exists) — a "
+            "closed unit takes no review fix; use awf restore first."
+        )
+    if not md.is_file():
+        raise AwfApiError(
+            f"{todo_id}.md not found in inbox — nothing to append a "
+            "review section to."
+        )
+    live, pid = _live_pipeline_on(project_dir, todo_id)
+    if live:
+        raise AwfApiError(
+            f"a live pipeline is running on {todo_id} (pid {pid}) — "
+            "the engine owns the file right now; awf kill first, "
+            "then append the review fix."
+        )
+    started = _started_signal_names(project_dir, todo_id)
+    progress = todos.has_progress(paths.outbox(project_dir), todo_id)
+    if not started and not progress:
+        raise AwfApiError(
+            f"{todo_id} has not started (no PROGRESS, no signal) — a "
+            "review fix belongs to a STARTED unit; a queued TODO takes "
+            "awf todo-update (awf_todo_update)."
+        )
+
+    old_content = md.read_text(encoding="utf-8")
+    round_no = _next_review_round(old_content)
+    heading = f"## REVIEW-фикс (супервизор, виток {round_no})"
+    new_content = _apply_append(old_content, heading + "\n\n" + body)
+
+    backup_rel = _backup_and_write_todo(
+        project_dir, md, old_content, new_content, _lock_held=True
+    )
+
+    why = f", reason: {reason.strip()}" if reason.strip() else ""
+    _log(
+        paths.logs_dir(project_dir),
+        f"review-append: {todo_id} — {heading}, backup: {backup_rel}{why}",
+    )
+
+    return ReviewAppendResult(
+        todo_id=todo_id,
+        section=heading,
+        round=round_no,
+        backup=backup_rel,
+        message=(
+            f"{todo_id}: appended '{heading}' (backup: {backup_rel})."
+        ),
+    )
+
+
 def _apply_append(text: str, block: str) -> str:
     """Append a block to the end of the TODO text, separated by one blank
     line (TODO-0162). The result always ends with a single newline."""
@@ -748,120 +1203,34 @@ def update_todo(
     recorded as ``refused``; any other exception leaves the record at
     ``running`` on purpose — a crash mid-write is exactly the unknown
     outcome the retry must detect.
+
+    The id names the operation by itself here: unlike
+    :func:`review_append`, the journal stores no payload digest, so a
+    retry with the same id replays the recorded outcome even when the
+    ``content`` differs. A caller that may resend different content uses
+    a new ``operation_id``.
     """
     if operation_id is None:
         return _update_todo_impl(
             project_dir, todo_id, content, reason, include_untracked,
             append, section_updates,
         )
-    _validate_id(todo_id)
-    _validate_operation_id(operation_id)
-    resolved = Path(project_dir).resolve()
-    require_agentic(resolved)
-    from .._lock import locked
-    from ..infra import state_store
-
-    # F-MED-1: the whole check→start→finish journal is under the project
-    # lock. Two callers with one operation_id can no longer both read "not
-    # started" and both apply — the second waits, then replays the recorded
-    # outcome. The apply itself runs with ``_lock_held`` so it does not
-    # re-lock (flock is per open file description: nesting deadlocks).
-    with locked(resolved):
-        prior = _read_operation(resolved, operation_id)
-        if prior is not None:
-            # AUD-1 (TODO-0216 iter-4): an operation_id names ONE operation.
-            # Reusing it for another unit must not hand back the first
-            # operation's result as if the second had applied — the journal
-            # records the target it actually effected; anything else means
-            # the id was reused, and the requested effect was never
-            # attempted. That is an unknown outcome, not a foreign ok.
-            recorded_target = (prior.get("todo_id"), prior.get("action"))
-            if recorded_target != (todo_id, "update_todo"):
-                raise OperationRecoveryRequired(
-                    operation_id,
-                    f"operation {operation_id}: replay requested for "
-                    f"({todo_id}, update_todo) but the journal records "
-                    f"{recorded_target} — the id names a different operation; "
-                    "outcome unknown, recovery_required, do not retry blindly",
-                )
-            status = prior.get("status")
-            if status == "applied":
-                stored = prior.get("result")
-                # A recorded "applied" without a complete result is not the
-                # factual outcome: replaying it as an empty ok would be the
-                # guess requirement 4 forbids. Treat it as unknown.
-                if not isinstance(stored, dict) or not {
-                    "todo_id", "backup", "message",
-                } <= stored.keys():
-                    raise OperationRecoveryRequired(
-                        operation_id,
-                        f"operation {operation_id}: journal records 'applied' "
-                        "but carries no complete result — outcome unknown, "
-                        "recovery_required, do not retry blindly",
-                    )
-                return UpdateTodoResult(
-                    todo_id=stored["todo_id"],
-                    backup=stored["backup"],
-                    message=stored["message"],
-                )
-            if status == "refused":
-                raise AwfApiError(
-                    prior.get("error") or f"operation {operation_id} refused"
-                )
-            raise OperationRecoveryRequired(operation_id)
-        # F-HIGH: the START record must land BEFORE any effect. If it
-        # cannot, refuse now — a retry with no record would re-apply.
-        try:
-            _write_operation(
-                resolved, operation_id, status="running", todo_id=todo_id,
-                action="update_todo",
-            )
-        except state_store.STATE_WRITE_FAILURES as e:
-            # F-AR1 (architect-review): the writer now runs under the managed
-            # barrier, whose refusal is ``ManagedPathError`` — NOT an OSError.
-            # Catch the ONE state-write family, not a respelled subset: the
-            # documented "refused before any effect, retry is safe" contract
-            # must hold for a swapped/symlinked ``.agentic``/``state`` too.
-            raise AwfApiError(
-                f"operation {operation_id}: journal start write failed "
-                f"({e}) — refused before any effect; retry is safe"
-            ) from e
-        try:
-            result = _update_todo_impl(
-                resolved, todo_id, content, reason, include_untracked,
-                append, section_updates, _lock_held=True,
-            )
-        except AwfApiError as e:
-            try:
-                _write_operation(
-                    resolved, operation_id, status="refused", todo_id=todo_id,
-                    action="update_todo", error=str(e),
-                )
-            except state_store.STATE_WRITE_FAILURES as je:
-                # Nothing applied — a lost refusal note cannot duplicate.
-                _log(
-                    paths.logs_dir(resolved),
-                    f"operation {operation_id}: refusal journal write "
-                    f"failed: {je}",
-                )
-            raise
-        # F-HIGH: the effect landed. If the finish record cannot be
-        # written, the outcome is not durably known — surface
-        # recovery_required (a retry would read the open ``running``
-        # record) instead of returning a result the journal cannot prove.
-        try:
-            _write_operation(
-                resolved, operation_id, status="applied", todo_id=todo_id,
-                action="update_todo", result=result.as_dict(),
-            )
-        except state_store.STATE_WRITE_FAILURES as e:
-            raise OperationRecoveryRequired(
-                operation_id,
-                f"operation {operation_id}: applied but the finish record "
-                f"could not be written ({e}) — recovery_required, do not "
-                "retry blindly",
-            ) from e
-        return result
+    return _durable_operation(
+        project_dir,
+        operation_id,
+        todo_id,
+        "update_todo",
+        result_keys=frozenset({"todo_id", "backup", "message"}),
+        replay=lambda stored: UpdateTodoResult(
+            todo_id=stored["todo_id"],
+            backup=stored["backup"],
+            message=stored["message"],
+        ),
+        apply=lambda resolved: _update_todo_impl(
+            resolved, todo_id, content, reason, include_untracked,
+            append, section_updates, _lock_held=True,
+        ),
+    )
 
 
 def _update_todo_impl(
@@ -975,37 +1344,20 @@ def _update_todo_impl(
         raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to update.")
 
     # Live pipeline on THIS id: the engine owns the files right now.
-    # A pipeline on another id does not touch this TODO's files — allowed.
-    running, pid, _tail = check_pipeline_running(project_dir)
-    if running:
-        state = read_state(project_dir)
-        if isinstance(state, dict) and state.get("todo_id") == todo_id:
-            raise AwfApiError(
-                f"a live pipeline is running on {todo_id} (pid {pid}) — "
-                "wait for it to finish or awf kill first"
-            )
-
-    outbox = paths.outbox(project_dir)
-    short = short_id(todo_id)
-    ids = (todo_id, short) if short != todo_id else (todo_id,)
-    outbox_signals = [
-        p
-        for tid in ids
-        for p in sorted(outbox.glob(f"*-{tid}.*"))
-        if p.is_file()
-    ]
-    inbox_signals = [
-        p
-        for tid in ids
-        for prefix in ("ACK-", "APPROVE-")
-        if (p := paths.inbox(project_dir) / f"{prefix}{tid}.ready").is_file()
-    ]
-    if outbox_signals or inbox_signals or todos.has_progress(outbox, todo_id):
-        names = ", ".join(p.name for p in outbox_signals + inbox_signals) or "PROGRESS"
+    live, pid = _live_pipeline_on(project_dir, todo_id)
+    if live:
         raise AwfApiError(
-            f"{todo_id} has signals: {names} — it is in flight. Fix the unit "
-            "via REVIEW/replan, or retire it (awf todo-retire) and "
-            "re-dispatch."
+            f"a live pipeline is running on {todo_id} (pid {pid}) — "
+            "wait for it to finish or awf kill first"
+        )
+
+    started = _started_signal_names(project_dir, todo_id)
+    if started or todos.has_progress(paths.outbox(project_dir), todo_id):
+        names = ", ".join(started) or "PROGRESS"
+        raise AwfApiError(
+            f"{todo_id} has signals: {names} — it is in flight. "
+            "Fix the unit via REVIEW/replan, or retire it (awf todo-retire) "
+            "and re-dispatch."
         )
 
     # REPORTS26 B-f2: the inclusion is validated BEFORE any side effect —
@@ -1045,21 +1397,6 @@ def _update_todo_impl(
         )
 
     old_content = md.read_text(encoding="utf-8")
-    context_dir = paths.context_dir(project_dir)
-    ts = _timestamp()
-    bak_name = _unique_name(context_dir, f"{todo_id}.md.bak-{ts}")
-    backup = context_dir / bak_name
-    # TODO-0234 REVIEW (architect): the TODO-edit backup is the same family
-    # as the edit itself — a symlinked ``context`` used to send the old
-    # content out of the project. The managed writer creates the directory
-    # through the verified parent, so the ``mkdir`` is gone too.
-    managed_write_api_text(
-        backup,
-        old_content,
-        operation="backup todo",
-        mode=MODE_OWNER_EDITABLE,
-    )
-    backup_rel = backup.relative_to(project_dir).as_posix()
 
     if has_content:
         new_content = content
@@ -1081,21 +1418,11 @@ def _update_todo_impl(
             parts.append("added: " + ", ".join(added))
         what = "section_updates — " + "; ".join(parts)
 
-    # T1(b): the backup must not outlive a failed write. The version
-    # check lives inside the write helper, so on a version conflict — or
-    # any other failure there (a lock-open race, a full disk) — the
-    # just-written orphan backup is removed. Catching only AwfApiError
-    # left the orphan behind on an OSError like FileExistsError.
-    try:
-        _write_todo_checked(
-            project_dir, md, old_content, new_content, _lock_held=_lock_held
-        )
-    except Exception:
-        try:
-            backup.unlink()
-        except OSError:
-            pass
-        raise
+    # T1(b): the backup must not outlive a failed write — the shared helper
+    # owns the backup + guarded write + orphan cleanup order.
+    backup_rel = _backup_and_write_todo(
+        project_dir, md, old_content, new_content, _lock_held=_lock_held
+    )
 
     why = f", reason: {reason.strip()}" if reason.strip() else ""
     include_note = ""
@@ -1133,6 +1460,7 @@ __all__ = [
     "has_done_closure",
     "remove_todo",
     "retire_todo",
+    "review_append",
     "unblock_todo",
     "update_todo",
 ]

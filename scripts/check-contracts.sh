@@ -9,6 +9,15 @@
 #
 # Run it from the project root: Gate: one-liners use paths relative to it.
 #
+# TODO-0240: the same run checks the units still in flight
+# (.agentic/inbox/TODO-*.md): a "## Границы" block naming an FS
+# destructive/write call (unlink/rmtree/move/replace/write_text/mkdir)
+# must carry a "## Матрица замыкания" table. Only BACKTICKED tokens in the
+# boundaries block trigger the lock — an FS word in prose ("replace the old
+# check") is not an operation. Archived units (done/) are not read — the
+# rule guards live plans only. The summary prints the denominator:
+# "closure matrix: N triggered / M units".
+#
 # M2: every run prints its denominator — contracts read, tokens resolved,
 # gates executed, review-only rules. A gate that measured nothing must not
 # report the same green as one that measured everything.
@@ -93,9 +102,74 @@ for f in $files; do
 done
 
 # M2: the denominator prints on every run, not only on success.
+# TODO-0240: unit-contract closure-matrix lock (inbox/*.md only).
+# A unit whose boundaries block mentions an FS destructive/write call must
+# carry a `## Матрица замыкания` section with a table (operation |
+# surface | root/leaf | order). Archived contracts (done/) are not read —
+# the rule guards units still in flight.
+n_units=0
+n_triggered=0
+inbox=".agentic/inbox"
+if [ -d "$inbox" ]; then
+  unit_fail=0
+  for uf in "$inbox"/TODO-*.md; do
+    [ -f "$uf" ] || continue
+    n_units=$((n_units + 1))
+    bounds=$(awk '/^## (Границы|Boundaries)/{flag=1;next}/^## /{flag=0}flag' "$uf")
+    # Trigger only the backticked tokens: prose mentioning an FS verb is not
+    # an operation. A path token (`awf/x.py`) never matches the word list.
+    tokens=$(printf '%s\n' "$bounds" | grep -o '`[^`]*`' | tr -d '`' || true)
+    if printf '%s\n' "$tokens" | grep -qE '(^|[^A-Za-z0-9_])(unlink|rmtree|move|replace|write_text|mkdir)([^A-Za-z0-9_]|$)'; then
+      n_triggered=$((n_triggered + 1))
+      matrix=$(awk '/^## Матрица замыкания/{flag=1;next}/^## /{flag=0}flag' "$uf")
+      # Z3: the table must be the real four-column shape, not a decorative
+      # `| stub |` line. Header cells: операция | поверхность | корень/лист |
+      # порядок; each data row needs four non-empty cells.
+      matrix_problem=""
+      if ! printf '%s' "$matrix" | grep -q '^[[:space:]]*|'; then
+        matrix_problem="no table"
+      else
+        header=$(printf '%s\n' "$matrix" | grep -m1 '^[[:space:]]*|' || true)
+        for col in 'операция' 'поверхность' 'корень/лист' 'порядок'; do
+          printf '%s' "$header" | grep -qi -- "$col" \
+            || matrix_problem="header has no '$col' column"
+        done
+        if [ -z "$matrix_problem" ]; then
+          printf '%s\n' "$matrix" | awk '
+            /^[[:space:]]*\|/ {
+              line=$0
+              sub(/^[[:space:]]*\|/, "", line)
+              sub(/\|[[:space:]]*$/, "", line)
+              n=split(line, cell, "|")
+              if (hdr == 0) { hdr=1; next }
+              allsep=1; empty=0
+              for (i=1; i<=n; i++) {
+                c=cell[i]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", c)
+                if (c !~ /^[-:]+$/) allsep=0
+                if (c == "") empty=1
+              }
+              if (allsep) next
+              if (empty || n < 4) bad=1
+            }
+            END { exit bad ? 1 : 0 }
+          ' || matrix_problem="a row has fewer than 4 columns or an empty cell"
+        fi
+      fi
+      if [ -n "$matrix_problem" ]; then
+        echo "FAIL: $uf: boundaries touch the FS but the '## Матрица замыкания' table is invalid — $matrix_problem"
+        unit_fail=1
+      fi
+    fi
+  done
+  if [ "$unit_fail" -eq 1 ]; then
+    fail=1
+  fi
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "check-contracts: ok ($n_contracts contracts, $n_tokens path tokens, $n_gates gates run, $n_review review-only)"
+  echo "check-contracts: ok ($n_contracts contracts, $n_units unit contracts, closure matrix: $n_triggered triggered / $n_units units, $n_tokens path tokens, $n_gates gates run, $n_review review-only)"
 else
-  echo "check-contracts: FAILED ($n_contracts contracts, $n_tokens path tokens, $n_gates gates run, $n_review review-only)"
+  echo "check-contracts: FAILED ($n_contracts contracts, $n_units unit contracts, closure matrix: $n_triggered triggered / $n_units units, $n_tokens path tokens, $n_gates gates run, $n_review review-only)"
 fi
 exit "$fail"

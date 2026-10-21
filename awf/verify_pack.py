@@ -27,7 +27,12 @@ Sections (each: status + details + denominator):
    will exclude from this unit's commit. Informational (status "pass"):
    the exclusion is the default commit isolation, nothing is lost — no
    fix advice.
-6. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
+6. ``qa_findings`` — TODO-0240: ``context/QA-<NNNN>-findings-test.py`` (the
+   full ``QA-TODO-<NNNN>-…`` name is accepted too), when present, runs once
+   as a pytest module; a green file passes, a red one fails the pack (the
+   same weight as a contract test). No file → ``none`` (skipped); no pytest
+   → an explicit section error.
+7. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
    each with a timeout (``run_tree``). Test-like commands (``pytest`` /
    ``py.test`` / ``python -m pytest``, including a venv path) are run twice:
    ``flake: ok (2/2)`` when both outcomes agree, ``flake: unstable`` +
@@ -36,7 +41,7 @@ Sections (each: status + details + denominator):
    red is never hidden. Every other command (``run-all``, coverage, mutation
    smoke, arbitrary shell) runs ONCE, as before; a timeout is not retried.
    The contract's ``flake: off`` disables the probe for the whole unit.
-  7. ``prove_red`` — the contract's ``prove_red`` list through
+8. ``prove_red`` — the contract's ``prove_red`` list through
     :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
     mutually exclusive ``prove_red_pin`` list runs the same baseline check
     but for regression shields of EXISTING behavior: green on the baseline
@@ -47,13 +52,13 @@ Sections (each: status + details + denominator):
     ``not-red`` verdict a pass (annotated, with the note in the report);
     an UNdeclared ``not-red`` on a tests-only diff gets a hint line
     suggesting the declaration — the verdict is never auto-substituted.
-8. ``candidate`` — R2.4: reads ``context/CANDIDATE-<todo>.json`` (written by
+9. ``candidate`` — R2.4: reads ``context/CANDIDATE-<todo>.json`` (written by
    the approve) and re-derives the bound facts (HEAD, contract, environment,
    candidate tree, degradation set) with the SAME validator the commit gate
    runs; ``skipped`` when the unit was not approved through the R2.4 path.
-9. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
-   explicitly marked as executor data (unverified).
-10. ``lint`` — ``ruff check .``.
+10. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
+    explicitly marked as executor data (unverified).
+11. ``lint`` — ``ruff check .``.
 
 Verdict / exit code: 0 = every measured check passed, 1 = at least one
 failure, 2 = nothing was measured at all (no baseline, no contract, no
@@ -63,11 +68,13 @@ it notes the problem in the report instead.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +98,7 @@ from .prove_red import (
     _looks_like_test_file,
     prove_red,
 )
+from .signals import short_id
 from .unit_contract import parse_done_json, parse_todo_contract, render_done_json
 
 #: Per-gate subprocess timeout (seconds).
@@ -567,6 +575,128 @@ def _is_test_like(cmd: str) -> bool:
         ):
             return True
     return False
+
+
+def _qa_findings_path(project: Path, todo_id: str) -> Path | None:
+    """The QA-finding test file, both accepted names (TODO-0240 review V1).
+
+    The canonical name drops the ``TODO-`` prefix (``QA-0228-…`` — the form
+    every live file uses, :func:`awf.signals.short_id` is the one prefix
+    rule); the full id (``QA-TODO-0228-…``) stays accepted for callers that
+    pass it verbatim. The canonical name wins when both exist.
+    """
+    short = short_id(todo_id)
+    names = [f"QA-{short}-findings-test.py"]
+    full = f"QA-{todo_id}-findings-test.py"
+    if full not in names:
+        names.append(full)
+    context_dir = paths.context_dir(project)
+    for name in names:
+        path = context_dir / name
+        if path.is_file():
+            return path
+    return None
+
+
+_QA_PASSED_RE = re.compile(r"\b(\d+)\s+passed\b")
+
+
+def _pytest_timeout_available() -> bool:
+    """True when the ``pytest-timeout`` plugin loads in this interpreter.
+
+    AA2 (TODO-0240 review v7): the plugin lives in the ``dev`` extra, but
+    the verify pack runs in the RUNTIME environment — a machine with pytest
+    and without the plugin would answer ``--timeout`` with rc=4
+    ("unrecognized arguments") and turn a GREEN QA file into a confirmed
+    finding. The per-command wall-clock timeout in ``_run_cmd``
+    (``run_tree`` kills the process group) stays in force either way, so
+    the flag is an optimisation, not the guard.
+    """
+    return importlib.util.find_spec("pytest_timeout") is not None
+
+
+def _pytest_reports_passed(output: str) -> bool:
+    """True when the pytest summary carries at least one passed test (X3)."""
+    return any(int(n) > 0 for n in _QA_PASSED_RE.findall(output))
+
+
+def _qa_findings_section(project: Path, todo_id: str, timeout: int) -> Section:
+    """TODO-0240: run ``context/QA-<NNNN>-findings-test.py`` when it exists.
+
+    The file is the supervisor's reproduction test for a QA finding — a
+    pytest MODULE (``test_*`` functions), not a bare script: it runs through
+    ``pytest`` ONCE (no flake probe), and its outcome carries the same
+    weight as a contract command — a red finding fails the pack. No file →
+    ``none`` (skipped, not measured); pytest itself being unavailable is an
+    explicit section error, never a pass.
+    """
+    path = _qa_findings_path(project, todo_id)
+    if path is None:
+        return Section(
+            name="qa_findings",
+            status="skipped",
+            lines=["none — no QA-<NNNN>-findings-test.py"],
+            detail="none",
+        )
+    py = shlex.quote(sys.executable)
+    # Z1: the QA file lives outside ``tests/``, so the suite's conftest (and
+    # its session-kill tripwire) is not loaded for it. Load the packaged
+    # tripwire as a plugin and make that package importable regardless of
+    # where awf was installed — an unguarded natural repro such as
+    # ``os.killpg(1, 15)`` would signal the whole user session.
+    pkg_parent = Path(__file__).resolve().parent.parent
+    env_prefix = (
+        f"PYTHONPATH={shlex.quote(str(pkg_parent))}"
+        "${PYTHONPATH:+:$PYTHONPATH} "
+    )
+    timeout_arg = (
+        f"--timeout={int(timeout)} " if _pytest_timeout_available() else ""
+    )
+    cmd = (
+        f"{env_prefix}{py} -m pytest {shlex.quote(str(path))} -q "
+        f"{timeout_arg}-p no:cacheprovider "
+        "-p awf._safety_tripwire"
+    )
+    rc, out, timed_out = _run_cmd(cmd, project, timeout)
+    if "No module named pytest" in out:
+        return Section(
+            name="qa_findings",
+            status="fail",
+            lines=[f"- `{path.name}`: ERROR — pytest is not available in {sys.executable}"],
+            measured=True,
+            detail="pytest-missing",
+        )
+    if timed_out:
+        return Section(
+            name="qa_findings",
+            status="fail",
+            lines=[f"- `{path.name}`: FAIL — timeout after {timeout}s"],
+            measured=True,
+            detail="timeout",
+        )
+    ok = rc == 0
+    if ok and not _pytest_reports_passed(out):
+        # An all-skip/xfail module exits 0 without proving anything — a
+        # finding is only disproved by a test that actually ran (X3).
+        return Section(
+            name="qa_findings",
+            status="fail",
+            lines=[
+                f"- `{path.name}`: FAIL — no tests executed "
+                f"(no 'passed' in the pytest output) — {_tail(out)}"
+            ],
+            measured=True,
+            detail="no tests executed",
+        )
+    return Section(
+        name="qa_findings",
+        status="pass" if ok else "fail",
+        lines=[
+            f"- `{path.name}`: {'pass' if ok else f'FAIL (rc={rc})'} — {_tail(out)}"
+        ],
+        measured=True,
+        detail="pass" if ok else f"fail (rc={rc})",
+    )
 
 
 def _contract_tests_section(project: Path, contract: dict | None, timeout: int) -> Section:
@@ -1075,6 +1205,7 @@ def verify_pack(
         _diff_section(project, todo_id, contract),
         _reject_leak_section(project, todo_id),
         _untracked_excluded_section(project, todo_id),
+        _qa_findings_section(project, todo_id, cmd_timeout),
         _contract_tests_section(project, contract, cmd_timeout),
         _prove_red_section(project, todo_id, contract, tmp_base),
         _candidate_section(project, todo_id),

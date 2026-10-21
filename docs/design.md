@@ -144,6 +144,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `paths.py` | Пути `.agentic/` |
 | `git_utils.py` | Git-операции: tree fingerprint (`awf tree-sha`), diff, reset |
 | `_proc.py` | `kill_process_tree` (guard `proc.pid > 1` — safety invariant) |
+| `_safety_tripwire.py` | Pytest-плагин tripwire сессии для QA-файлов `context/` (Z1) |
 | `_env.py` | Worker-окружение: `OPENCODE_CONFIG_CONTENT`, `automation.readonly_roles`, реестр permission-ключей и мерж профиля tools стадии (ORCH M7.2) |
 | `_atomic.py`, `_lock.py` | Атомарные записи, file lock (read→merge→write) |
 | `cli.py`, `cmd_*.py` | CLI: `awf start`, `awf baseline`, `awf brief`, `awf metrics`, ... |
