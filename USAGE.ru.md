@@ -111,6 +111,13 @@ push/PR; эта команда и `--report`-прогон по `scripts/mutation
 «Что пытался») и хвост последнего лога (≤20 строк). `--stdout` печатает
 отчёт, файл не пишет. Супервизор не молчит: молчание не чинит инструмент.
 
+**`awf config-get <dotted.key> [--project-dir DIR]`** — печатает одно
+значение из `config.yaml` для скриптов: строки как есть, остальные
+значения — YAML. Коды возврата: 0 — значение напечатано, 1 — ключа нет,
+3 — YAML `null`, 4 — строка из одних пробелов. Так канонический хелпер
+сьюта отличает «не настроено» от команды: коды 3/4 он превращает в свой
+rc 2, а не запускает команду с именем `null`.
+
 ## Коммит workflow
 
 **`awf commit-workflow`** (MCP: `awf_commit_workflow`) — коммитит
@@ -432,6 +439,10 @@ $ awf start --pipeline audit-llm
   `awf_write_pipeline`) пишет ТОЛЬКО `.agentic/pipelines/<name>.yaml` —
   стадии генерируются как в setup-форме (plan → роли → verify);
   config.yaml и supervisor.md не трогаются.
+- `awf pipeline-write <name> --variant full|code-health` пишет один из
+  встроенных стартовых пайплайнов — байт-в-байт то же, что предлагает
+  setup-форма. Role-файлы здесь — забота проекта: команда
+  предупреждает о недостающей роли, но не материализует её (это setup).
 - `awf pipelines` (MCP `awf_pipelines`) — список файлов + активный
   (`default_pipeline` из config.yaml).
 - Неизвестное имя в `--pipeline` (или `awf_start(pipeline=...)`) — внятная
@@ -726,7 +737,7 @@ reject'ы, причина остановки) и предложенный сле
 ### Роли и конфиг
 | Tool | Что делает |
 |---|---|
-| `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`); черновики: `draft` / `adopt` / `discard` / `list_drafts` |
+| `awf_add_role` | Создание роли в `.agentic/roles/`: шаблон или из opencode-скилла (`from_skill`); `refresh=True` пересобирает существующую роль-из-скилла; черновики: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Детекция перекрытий зон ролей |
 | `awf_check_model_config` | Валидация моделей в config.yaml vs opencode.json |
 | `awf_feedback` | Отчёт bug/feature о трении с awf на стол владельца |
@@ -758,6 +769,15 @@ pipeline не трогаются, setup-фаза не перезапускает
 `awf_add_role(name, draft=True)`, `awf_add_role(list_drafts=True)`,
 `awf_add_role(adopt=...)`, `awf_add_role(discard=...)` — одно действие
 за вызов.
+
+**Пере-материализация роли из скилла** — `awf add-role <name> --refresh`
+(MCP `awf_add_role(name, refresh=True)`) пересобирает существующую
+роль-из-скилла: тело скилла и строка модели обновляются, а AWF-OVERRIDE,
+BD-31, блоки дисциплины/канона и строки владельца сохраняются.
+Домаркерные копии управляемых правил заменяются, а не дублируются.
+Роль без управляемых маркеров — отказ (ничего не пишется), пока не
+передан `--force`; если скилл-источник пропал — `skipped` с причиной.
+Повторный вызов — no-op.
 
 **Строка модели роли** — каждый role-файл, созданный `awf add-role`,
 называет свою модель единообразной строкой в начале файла

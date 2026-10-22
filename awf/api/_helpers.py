@@ -41,6 +41,25 @@ def slugify(name: str) -> str:
     return re.sub(r"[^a-z0-9_-]", "-", transliterated).strip("-")
 
 
+#: A role/skill/draft slug — lowercase letters, digits, ``-``/``_``, starting
+#: with a letter or digit. One pattern for every caller: a role name, a skill
+#: name and a draft slug all name a file under a managed directory, so the
+#: escape classes (absolute path, ``..``) are the same.
+_SLUG_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def is_slug_name(value: str) -> bool:
+    """True when *value* is a role/skill slug — the ONE spelling of the rule.
+
+    REVIEW architect (M6): add_role, its ``from_skill`` and provenance
+    guards, ``_find_skill_file``, the draft slug validator and the package
+    role template each spelled the same pattern by hand — five owners of one
+    rule, free to drift apart. They now ask this predicate; the messages stay
+    with the callers (they name the input the user gave).
+    """
+    return bool(_SLUG_NAME_RE.fullmatch(value))
+
+
 def slugify_role(name: str) -> str:
     """Normalize a role name to its saved file slug.
 

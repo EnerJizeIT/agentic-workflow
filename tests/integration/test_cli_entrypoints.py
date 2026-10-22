@@ -1619,3 +1619,15 @@ class TestBlockedDraftEntrypoint:
         assert "bug a.py:10" in out and "fix a.py:10" in out
         assert "Скоуп: …" in out and "Переносы: …" in out
         assert (inbox / "TODO-0002.md").read_bytes() == before
+
+
+def test_add_role_mutual_exclusion_names_refresh(tmp_path, capsys):
+    """REVIEW S2: --refresh is a mode; the refusal text names it."""
+    rc = cli.main(
+        ["add-role", "x", "--draft", "--refresh", "--project-dir", str(tmp_path)]
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "--refresh" in out
+    assert "--draft" in out

@@ -210,8 +210,13 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None,
 
         context_msg = str(data.get("context_message", "")).strip()
         sup_instr = str(data.get("supervisor_instruction", "")).strip()
+        # M6/R2: the composition choice from the form; an
+        # absent field (older form) keeps the chain. Read BEFORE the guard:
+        # a flow variant is a materialization request on its own and
+        # apply_project_setup already accepts it without a team.
+        flow_variant = str(data.get("flow_variant") or "").strip()
         # Skip only when there's truly nothing to materialize
-        if team or context_msg or sup_instr:
+        if team or flow_variant or context_msg or sup_instr:
             try:
                 result = apply_project_setup(
                     project_dir,
@@ -223,6 +228,7 @@ def process_role_saves(data: dict[str, Any], project_dir: Path | None = None,
                     stage_mode=str(data.get("stage_mode") or "").strip() or "chain",
                     primary_role=str(data.get("primary_role") or "").strip(),
                     include_qa=data.get("include_qa") in ("on", "true", True),
+                    flow_variant=flow_variant,
                 )
                 if result.pipeline_file:
                     log.info("Pipeline written to %s", result.pipeline_file)

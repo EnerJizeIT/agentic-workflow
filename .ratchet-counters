@@ -1118,6 +1118,14 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # one above the implementer's last measurement). All five are test fixture
 # identifiers, never debt — same class as every earlier R2.5 entry.
 # files_over_400 stays 95 (no new file crossed the bar).
+# TODO-0230 (M6, роли/пайплайны, 22.10): baseline todos raised 6692 -> 6708
+# (+16). The unit writes TODO-0230 identifiers on new comment/docstring
+# lines: the discipline/suite blocks in awf/api/roles.py, refresh report
+# fields in _results.py, the built-in-pipeline helper in setup.py, the
+# suite helper in lifecycle.py, the new acceptance test/docstring and the
+# practices catalog — plus +1 from architect-review's refresh docstring
+# line in awf/api/roles.py. All are unit identifiers, not debt — same
+# class as every earlier entry.
 todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
 # baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
@@ -2819,3 +2827,29 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # TODO-NNNN fixtures/asserts (16 TODO-bearing lines). Same class as the
 # counted test identifiers above — test ids, not debt. No TODO/FIXME marker
 # was added; files_over_400 unchanged (the target file was already counted).
+
+# TODO-0230 M6 REVIEW-фикс (N1/N2, стадия agent-implementer, 22.10):
+# files_over_400 106 -> 107 и todos 6708 -> 6709 (+1).
+# files_over_400: контрактный tests/negative/test_miniwave_m6_roles.py
+# перешагнул планку (363 -> 419) — три кейса ревью (модель живёт только в
+# файле роли, явный model= пишется в конфиг, refresh+draft отвергается до
+# записи). Дробить нельзя: verify-контракт юнита запускает ровно этот путь,
+# второй файл выпал бы из контрактного прогона.
+# todos +1: строка «REVIEW N1 (TODO-0230)» в docstring _refresh_skill_role —
+# ссылка на юнит в прозе, не долговой TODO/FIXME-маркер.
+
+# TODO-0230 M6 REVIEW-фикс, виток 3 (R1-R6, стадия agent-implementer,
+# 22.10): todos 6709 -> 6715 (+6). Все шесть строк — unit-id ссылки в прозе
+# правок ревью, не долг: три комментария/докстринга в awf/api/setup.py
+# (R2 — вариант без команды, R3 — разные сообщения), два в
+# awf/api/roles.py (R4 — description/force при refresh) и один в
+# tests/unit/test_template_sync.py (R6 — сообщения про symlink/пакет).
+# Ни одного TODO/FIXME-маркера долга не добавлено. files_over_400 без
+# изменений (107): контрактный тест уже был выше планки, новых файлов нет.
+
+# TODO-0230 M6 REVIEW-фикс, виток 8 (W1-W5, стадия agent-implementer,
+# 22.10): todos 6715 -> 6716 (+1). Единственная новая TODO-bearing строка —
+# docstring теста tests/negative/test_audit25_w7_protocol_ship.py
+# («V5: add_role now appends the managed defaults») — unit-id в прозе, не
+# долговой маркер. Правки W1/W2/W3 в roles.py/setup.py/_templates.py и
+# W5-тест новых TODO-строк не добавили. files_over_400 без изменений (108).

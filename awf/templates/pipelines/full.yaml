@@ -1,0 +1,43 @@
+name: full
+stages:
+- name: plan
+  role: supervisor
+  description: Supervisor studies the plan and creates the unit
+- name: agent-implementer
+  role: agent-implementer
+  task: 'Implement the unit per its contract: minimal, in-pattern changes; evidence
+    in DONE.'
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: agent-architect-review
+  role: agent-architect-review
+  task: Review the diff for design drift, dead code and 'written next to' instead
+    of correctly; fix within the unit's scope by refactoring (no new functionality);
+    findings with verdicts in DONE.
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: agent-qa-review
+  role: agent-qa-review
+  task: Hunt behavioral bugs in the unit's change; add or adjust tests at the right
+    level; evidence required.
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: agent-project-auditor
+  role: agent-project-auditor
+  task: 'Wide project slice around the change: portability, cross-unit inconsistencies,
+    rough edges; findings list required (empty is allowed with justification).'
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: verify
+  role: supervisor
+  description: Supervisor verifies the result
+  on_approved: commit_and_next
+  on_rejected: replan

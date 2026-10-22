@@ -37,7 +37,11 @@ from ._results import (
     StatusResult,
 )
 from ._stack import derive_project_name, detect_stack
-from ._templates import _CONFIG_TEMPLATE, update_gitignore
+from ._templates import (
+    _CONFIG_TEMPLATE,
+    awf_templates_dir,
+    update_gitignore,
+)
 
 # ─── init_project ───────────────────────────────────────────────────────
 
@@ -214,6 +218,7 @@ def _bootstrap_write(
     *,
     operation: str,
     mode: int | None = None,
+    root: Path | None = None,
 ) -> None:
     """One write primitive for the init skeleton.
 
@@ -224,19 +229,36 @@ def _bootstrap_write(
     must not fail there (F-P1) — the plain atomic writer keeps the old
     platform behavior.
 
-    No ``project_dir`` argument: the writer derives the root from the leaf
+    For a leaf under ``.agentic`` the root is derived from the leaf
     (``managed_fs.agentic_root_for``), so a separately passed spelling of
-    the same root could only disagree with it (the C4/Q4 class).
+    the same root could only disagree with it (the C4/Q4 class). ``root``
+    is for the one skeleton file OUTSIDE ``.agentic``
+    (``scripts/suite-canonical.sh``): there is no anchor component to
+    walk up to, and the leaf-derived root would start at the leaf's own
+    parent — a symlinked ``scripts/`` would slip through unexamined.
     """
-    if managed_fs.is_posix():
+    if not managed_fs.is_posix():
+        atomic_write_text(path, content, mode=mode)
+        return
+    if root is None:
         managed_write_api_text(
             path,
             content,
             operation=operation,
             mode=0o600 if mode is None else mode,
         )
-    else:
-        atomic_write_text(path, content, mode=mode)
+        return
+    try:
+        managed_fs.managed_write_text(
+            path,
+            content,
+            root=root,
+            mode=0o600 if mode is None else mode,
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"{operation} refused — unsafe managed path: {exc}"
+        ) from exc
 
 
 def _seed_doctrine(project_dir: Path) -> list[str]:
@@ -535,15 +557,10 @@ def init_project(
     )
     created_files.append(".agentic/config.yaml")
 
-    # Copy supervisor.md template from the awf package
-    framework_dir = Path(__file__).resolve().parent.parent.parent
-    templates_dir = framework_dir / "templates"
-    if not templates_dir.is_dir():
-        # A wheel ships package data as ``awf/templates`` (pyproject
-        # package-data); the repo root mirror exists only in the source
-        # checkout. Without the fallback `awf init` from a wheel silently
-        # skips supervisor.md and suite-canonical.sh.
-        templates_dir = Path(__file__).resolve().parent.parent / "templates"
+    # Copy supervisor.md template from the awf package. TODO-0230 (Y2):
+    # the package directory is the single source — a checkout and a wheel
+    # read the same path next to ``__file__``; there is no root mirror.
+    templates_dir = awf_templates_dir()
     supervisor_template = templates_dir / "roles" / "supervisor.md"
     supervisor_dest = agentic / "roles" / "supervisor.md"
     if supervisor_template.is_file():
@@ -597,10 +614,47 @@ def init_project(
     suite_template = templates_dir / "scripts" / "suite-canonical.sh"
     suite_dest = project_dir / "scripts" / "suite-canonical.sh"
     if suite_template.is_file():
-        suite_dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(suite_template, suite_dest)
-        suite_dest.chmod(0o755)
-        created_files.append("scripts/suite-canonical.sh")
+        # lexists: a dangling symlink leaf is "already there" too — following
+        # it would create the file OUTSIDE the project (QA F6b).
+        if os.path.lexists(suite_dest) and not suite_dest.exists():
+            # M6 (Q3): a dangling symlink is not a working helper — say so,
+            # the role instruction points at it. Not touched: following it
+            # would write outside the project.
+            warnings.append(
+                "scripts/suite-canonical.sh is a broken symlink/leaf — "
+                f"not touched (template: {suite_template})"
+            )
+        elif os.path.lexists(suite_dest):
+            # TODO-0230 (M6): a project may already own this helper (custom
+            # stack, tuned flags). init copies only missing files — a
+            # force-init must not clobber the owner's script.
+            warnings.append(
+                f"scripts/suite-canonical.sh already exists — kept as-is "
+                f"(template: {suite_template})"
+            )
+        else:
+            # REVIEW T2 (QA F6): the same bootstrap primitive as the rest of
+            # the skeleton — a symlinked ``scripts/`` must refuse, not write
+            # outside. ``root`` is the project: the leaf-derived anchor would
+            # start at ``scripts/`` and never check it.
+            # M6 REVIEW (architect): an unreadable template is a warning, not
+            # an executable file with "(error reading ...)" as its body.
+            try:
+                suite_body = suite_template.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                warnings.append(
+                    f"suite-canonical.sh template unreadable at "
+                    f"{suite_template} — not copied: {exc}"
+                )
+            else:
+                _bootstrap_write(
+                    suite_dest,
+                    suite_body,
+                    operation="init suite-canonical.sh",
+                    mode=0o755,
+                    root=project_dir,
+                )
+                created_files.append("scripts/suite-canonical.sh")
     else:
         warnings.append(
             f"suite-canonical.sh template not found at {suite_template}"

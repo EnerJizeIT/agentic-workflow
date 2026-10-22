@@ -21,6 +21,7 @@ def _active_modes(args: Any) -> list[str]:
             ("adopt", bool(getattr(args, "adopt", "") or "")),
             ("discard", bool(getattr(args, "discard", "") or "")),
             ("draft", bool(getattr(args, "draft", False))),
+            ("refresh", bool(getattr(args, "refresh", False))),
         )
         if on
     ]
@@ -31,12 +32,12 @@ def run(args: Any) -> int:
     modes = _active_modes(args)
     if len(modes) > 1:
         print(
-            "Pick ONE of --draft / --adopt NAME / --discard NAME / "
-            "--list-drafts."
+            "Pick ONE of --draft / --refresh / --adopt NAME / "
+            "--discard NAME / --list-drafts."
         )
         return 1
     # --draft is the create mode with draft=True; no flag = plain create.
-    if "draft" in modes or not modes:
+    if "draft" in modes or "refresh" in modes or not modes:
         return run_create(args)
 
     mode = modes[0]  # list / adopt / discard
@@ -98,13 +99,14 @@ def run(args: Any) -> int:
 
 
 def run_create(args: Any) -> int:
-    """Create mode (live or --draft): the original add-role behavior."""
+    """Create mode (live, ``--draft``) or re-materialize (``--refresh``)."""
     role_name = getattr(args, "name", "") or ""
     description = getattr(args, "description", "") or ""
     model = getattr(args, "model", "") or ""
     from_skill = getattr(args, "from_skill", "") or ""
     force = bool(getattr(args, "force", False))
     draft = bool(getattr(args, "draft", False))
+    refresh = bool(getattr(args, "refresh", False))
     project_dir = Path(getattr(args, "project_dir", "."))
 
     if not role_name:
@@ -116,7 +118,7 @@ def run_create(args: Any) -> int:
 
     # --from-skill replaces the template — there is no model slot to fill,
     # so no interactive prompt (also keeps the command scriptable).
-    if not model and not from_skill:
+    if not model and not from_skill and not refresh:
         model = input(
             f"Model id for role '{role_name}' (e.g. claude-sonnet-4-20250514, gpt-4.1): "
         ).strip()
@@ -130,10 +132,18 @@ def run_create(args: Any) -> int:
             from_skill=from_skill,
             force=force,
             draft=draft,
+            refresh=refresh,
         )
     except api.AwfApiError as e:
         print(str(e))
         return 1
+
+    if refresh:
+        status = result.refresh_status or "skipped"
+        print(f"Refresh {result.role_name}: {status}")
+        if result.refresh_reason:
+            print(f"  reason: {result.refresh_reason}")
+        return 0 if status in ("updated", "unchanged") else 1
 
     print(f"Created: {result.role_file}")
     if from_skill:

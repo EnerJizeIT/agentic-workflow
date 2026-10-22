@@ -188,18 +188,12 @@ class TestWorkspaceDiscipline:
         assert "Live runs of external processes" in prompt
 
 
-# ─── B (run2 report): supervisor authority phrase in both copies ──────────
+# ─── B (run2 report): supervisor authority phrase in the shipped copy ──────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-SUPERVISOR_TEMPLATE_COPIES = (
-    "awf/templates/roles/supervisor.md",
-    "templates/roles/supervisor.md",
-)
-PHASE_RUN_TEMPLATE_COPIES = (
-    "awf/templates/roles/supervisor/phase-run.md",
-    "templates/roles/supervisor/phase-run.md",
-)
+SUPERVISOR_TEMPLATE_COPIES = ("awf/templates/roles/supervisor.md",)
+PHASE_RUN_TEMPLATE_COPIES = ("awf/templates/roles/supervisor/phase-run.md",)
 
 
 def _read_template(rel: str) -> str:
@@ -209,7 +203,7 @@ def _read_template(rel: str) -> str:
 class TestSupervisorAuthorityPhrase:
     """Owner-confirmed right (run2 report): replan / spec rewrite / split
     is a standard supervisor option — no owner approval. The phrase must
-    live in BOTH template copies (test_template_sync keeps them identical)."""
+    live in the shipped template (the only copy since TODO-0230 Y1)."""
 
     @pytest.mark.parametrize("rel", SUPERVISOR_TEMPLATE_COPIES)
     def test_supervisor_md_has_authority_phrase(self, rel):

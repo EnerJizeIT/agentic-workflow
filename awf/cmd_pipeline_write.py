@@ -18,6 +18,10 @@ def run(args: Any) -> int:
     """Execute ``awf pipeline-write`` and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
 
+    variant = str(getattr(args, "variant", "") or "").strip()
+    if variant:
+        return _write_variant(project_dir, args.name, variant, args.force)
+
     # De-duplicate roles by slug (order kept) — a duplicate would be
     # skipped silently inside build_pipeline_stages.
     seen: set[str] = set()
@@ -59,6 +63,42 @@ def run(args: Any) -> int:
             )
     except Exception:
         pass  # the warning is best-effort; the write already succeeded
+
+    verb = "Overwrote" if result.overwritten else "Wrote"
+    print(f"{verb} pipeline {result.name!r} ({result.stages} stages) → {result.file}")
+    print("config.yaml and supervisor.md were not touched.")
+    return 0
+
+
+def _write_variant(project_dir: Path, name: str, variant: str, force: bool) -> int:
+    """Write a built-in starter pipeline (the setup form's variant path).
+
+    The composition (template lookup, stage validation, description) lives
+    in ``awf.api.setup.write_variant_pipeline`` — the same public entry the
+    setup flow's builder uses. This command only formats the answer; it
+    reaches into no private helper. The written text is the preview text
+    (``pipeline_variant_yaml_text``), by construction of that one builder.
+
+    The side-effect contract is unchanged: only the pipeline file is
+    touched; a missing role file is reported, never materialized
+    (materialization belongs to the setup/refresh flow).
+    """
+    from .api.setup import write_variant_pipeline
+
+    try:
+        result, unresolved = write_variant_pipeline(
+            project_dir, name, variant, force=force
+        )
+    except (ValueError, api.AwfApiError) as e:
+        print(f"ERROR: {e}")
+        return 1
+
+    for role in unresolved:
+        print(
+            f"WARNING: role '{role}' has no role file (checked "
+            f".agentic/roles/ and the global awf roles dir) — its "
+            f"stage will fail at runtime.",
+        )
 
     verb = "Overwrote" if result.overwritten else "Wrote"
     print(f"{verb} pipeline {result.name!r} ({result.stages} stages) → {result.file}")

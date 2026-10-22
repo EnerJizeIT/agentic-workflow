@@ -1988,6 +1988,7 @@ async def awf_add_role(
     from_skill: str = "",
     force: bool = False,
     draft: bool = False,
+    refresh: bool = False,
     adopt: str = "",
     discard: str = "",
     list_drafts: bool = False,
@@ -2063,6 +2064,13 @@ async def awf_add_role(
             the candidate only.
         draft: Write the candidate to .agentic/roles/draft/ (default:
             False — live role file, original behavior).
+        refresh: Re-materialize an existing skill-sourced role from its
+            provenance skill, keeping AWF-OVERRIDE / BD-31 / discipline /
+            suite-canon blocks and the user's own lines; pre-marker copies
+            of the managed rules are replaced, never duplicated. Reports
+            refresh_status: ``updated`` / ``unchanged`` / ``skipped`` (not
+            skill-sourced, or the skill is gone) / ``conflict`` (no role
+            file). A repeated call is a no-op (default: False).
         adopt: Slug of a draft candidate to move to the live roles
             (default: "" — not an adopt call).
         discard: Slug of a draft candidate to remove (default: "" —
@@ -2099,6 +2107,7 @@ async def awf_add_role(
                 ("from_skill", from_skill),
                 ("force", force),
                 ("draft", draft),
+                ("refresh", refresh),
                 ("adopt", adopt),
                 ("discard", discard),
                 ("list_drafts", list_drafts),
@@ -2121,13 +2130,13 @@ async def awf_add_role(
             preset=preset,
             models=models,
         )
-    modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
+    modes = sum(1 for m in (draft, refresh, adopt, discard, list_drafts) if m)
     if modes > 1:
         return {
             "status": "error",
             "error": (
-                "Pick ONE of draft / adopt / discard / list_drafts — "
-                "they are mutually exclusive."
+                "Pick ONE of draft / refresh / adopt / discard / "
+                "list_drafts — they are mutually exclusive."
             ),
         }
     resolved = _resolve_project_dir(project_dir)
@@ -2150,6 +2159,7 @@ async def awf_add_role(
         from_skill=from_skill,
         force=force,
         draft=draft,
+        refresh=refresh,
     )
 
 
@@ -3261,8 +3271,10 @@ async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
         salvage_stage, last_signal, pipeline_running, stall (the
         stalled-stage line, "" when off), office (list of {role, model,
         source} — the team's roles with their model and where it comes
-        from: "config" / "md" / "none"), tool_map (groups),
-        rituals, recovery, doctrine, what_new, text (the rendered card).
+        from: "config" / "md" / "none"), tool_map (groups; a group whose
+        source entry sets ``hidden`` stays in the JSON but the card does
+        not render it), rituals, recovery, doctrine, what_new, text (the
+        rendered card).
         On error: {status: "error", error: "..."}.
     """
     return await _exec(api.brief, project_dir=_resolve_project_dir(project_dir))

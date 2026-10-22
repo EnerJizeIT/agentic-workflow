@@ -116,6 +116,26 @@ def _without_model_line(text: str) -> str:
     return "\n".join(lines)
 
 
+def _strip_managed_blocks(text: str) -> str:
+    """TODO-0230 (M6 V5): add_role now appends the managed defaults.
+
+    The discipline and suite-canon blocks belong to the generator, not to
+    the package template; the shipped template text itself must stay
+    byte-identical after the model line is accounted for.
+    """
+    for marker in (
+        "<!-- awf-discipline:start -->",
+        "<!-- awf-suite-canon:start -->",
+    ):
+        index = text.find(marker)
+        if index != -1:
+            text = text[:index]
+    text = text.rstrip()
+    if text.endswith("---"):
+        text = text[:-3].rstrip()
+    return text
+
+
 def test_add_role_ships_builtin_templates(tmp_git_repo):
     """add-role кладёт шипующийся шаблон; строка модели добавлена
     (TODO-0175), тело шаблона не искажено."""
@@ -128,7 +148,10 @@ def test_add_role_ships_builtin_templates(tmp_git_repo):
         assert role_file.is_file()
         content = role_file.read_text(encoding="utf-8")
         assert "**Модель:**" in content
-        assert _without_model_line(content) == built_in
+        assert (
+            _strip_managed_blocks(_without_model_line(content))
+            == built_in.strip()
+        )
 
 
 def test_add_role_other_names_keep_placeholder(tmp_git_repo):

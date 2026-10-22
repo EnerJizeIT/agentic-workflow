@@ -181,7 +181,13 @@ def load_tool_map() -> list[dict[str, Any]]:
             }
             for t in (g.get("tools") or [])
         ]
-        groups.append({"title": str(g.get("title") or ""), "tools": tools})
+        groups.append(
+            {
+                "title": str(g.get("title") or ""),
+                "hidden": bool(g.get("hidden")),
+                "tools": tools,
+            }
+        )
     return groups
 
 
@@ -558,6 +564,8 @@ def render_brief(r: BriefResult) -> str:
     L.append("## Tool map")
     L.append("")
     for group in r.tool_map:
+        if group.get("hidden"):
+            continue
         L.append(f"**{group['title']}**")
         for t in group["tools"]:
             L.append(_tool_line(t))

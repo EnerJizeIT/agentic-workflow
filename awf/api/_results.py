@@ -212,6 +212,12 @@ class AddRoleResult:
     # config.yaml ("models.<role>.model"); "" when nothing was written
     # (no model, or the draft path, which never touches the config).
     model_config: str = ""
+    # TODO-0230 (M6): refresh mode report. "" (create), "updated",
+    # "unchanged", "skipped" (not skill-sourced / skill gone / no managed
+    # markers without --force) or "conflict" (role file missing or
+    # unreadable). ``refresh_reason`` explains a skip/conflict.
+    refresh_status: str = ""
+    refresh_reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

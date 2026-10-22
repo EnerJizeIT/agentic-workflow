@@ -18,8 +18,8 @@
 #
 #   scripts/suite-canonical.sh [--force] [--project DIR]
 #
-# Код возврата: код сьюта (0 — зелёный). 2 — не удалось посчитать tree-sha
-# или неверные аргументы.
+# Код возврата: код сьюта (0 — зелёный). 2 — не удалось посчитать tree-sha,
+# неверные аргументы или пустой verification.test_cmd («сьют не настроен»).
 set -u
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 2
@@ -57,25 +57,36 @@ if ! command -v git >/dev/null 2>&1; then
   exit 2
 fi
 
+# Интерпретатор проекта — один на весь скрипт: `AWF_PYTHON` (если задан) или
+# `python3`. Тот же, что запускает awf, считает sha команды и пишет артефакт;
+# иначе «чистый PATH без python3» ломал бы скрипт после успешного выбора awf.
+pybin=${AWF_PYTHON:-python3}
+
 # CLI: в дереве исходников — $root/bin/awf; в чужом проекте — `awf` на PATH
-# или установленный пакет (`python3 -m awf`).
+# (только если он реально запускается: битый entry point с
+# ModuleNotFoundError не должен ронять скрипт) или установленный пакет через
+# `$pybin -m awf`.
 awf=""
 if [ -x "$root/bin/awf" ]; then
   awf="$root/bin/awf"
-elif command -v awf >/dev/null 2>&1; then
+elif command -v awf >/dev/null 2>&1 \
+  && "$(command -v awf)" --help >/dev/null 2>&1; then
   awf=$(command -v awf)
-elif python3 -c 'import awf' >/dev/null 2>&1; then
-  awf=""
-else
-  echo "suite-canonical: awf CLI not found (tried \$root/bin/awf, 'awf' on PATH, 'python3 -m awf')" >&2
-  exit 2
+fi
+if [ -z "$awf" ]; then
+  if "$pybin" -c 'import awf' >/dev/null 2>&1; then
+    awf=""
+  else
+    echo "suite-canonical: awf CLI not found (tried \$root/bin/awf, a working 'awf' on PATH, '$pybin -m awf')" >&2
+    exit 2
+  fi
 fi
 
 run_awf() {
   if [ -n "$awf" ]; then
     "$awf" "$@"
   else
-    python3 -m awf "$@"
+    "$pybin" -m awf "$@"
   fi
 }
 
@@ -84,8 +95,32 @@ sha=$(run_awf tree-sha) || {
   exit 2
 }
 
-cmd=${AWF_SUITE_CMD:-python3 -m pytest tests/ -q -n auto --timeout=300 -p no:cacheprovider}
-cmd8=$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$cmd") || exit 2
+# Команда: `AWF_SUITE_CMD` побеждает; иначе — `verification.test_cmd` из
+# config.yaml (init подбирает её под стек: npm test / go test / cargo test).
+# Пустое значение test_cmd — «сьют не настроен» (rc=2), а не повод гнать
+# чужой pytest; полный pytest остаётся только для старого проекта БЕЗ ключа.
+# config-get: 1 — ключа нет, 3 — YAML null, 4 — пустая/пробельная строка,
+# 5 — config.yaml битый (rc=2 «broken», а не зелёный pytest-фолбэк).
+if [ -n "${AWF_SUITE_CMD:-}" ]; then
+  cmd=$AWF_SUITE_CMD
+else
+  cfg_cmd=$(run_awf config-get verification.test_cmd)
+  cfg_rc=$?
+  if [ "$cfg_rc" -eq 5 ]; then
+    echo "suite not configured: broken .agentic/config.yaml" >&2
+    exit 2
+  fi
+  if [ "$cfg_rc" -ge 3 ]; then
+    echo "suite not configured: set verification.test_cmd or AWF_SUITE_CMD" >&2
+    exit 2
+  fi
+  if [ "$cfg_rc" -ne 0 ]; then
+    cmd="$pybin -m pytest tests/ -q -n auto --timeout=300 -p no:cacheprovider"
+  else
+    cmd=$cfg_cmd
+  fi
+fi
+cmd8=$("$pybin" -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$cmd") || exit 2
 
 context=".agentic/context"
 artifact="$context/SUITE-$sha-$cmd8.json"
@@ -112,7 +147,7 @@ if [ "$force" -ne 1 ] && [ -f "$artifact" ]; then
   # The cache is keyed by the tree AND by the command: the same tree with a
   # different AWF_SUITE_CMD must not serve the other command's result as
   # canonical (the artifact stores "command" for exactly this check).
-  cached_exit=$(python3 - "$artifact" "$cmd" <<'PY'
+  cached_exit=$("$pybin" - "$artifact" "$cmd" <<'PY'
 import json
 import sys
 
@@ -152,7 +187,7 @@ SUITE_EXIT="$rc" \
 SUITE_DURATION="$((end_s - start_s))" \
 SUITE_LOG="$log" \
 SUITE_ARTIFACT="$artifact" \
-python3 - <<'PY' || echo "suite-canonical: WARNING — could not write $artifact" >&2
+"$pybin" - <<'PY' || echo "suite-canonical: WARNING — could not write $artifact" >&2
 import json
 import os
 import re

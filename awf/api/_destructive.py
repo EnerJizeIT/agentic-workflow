@@ -41,6 +41,10 @@ INIT_REWRITTEN_FILES = [
     ".agentic/config.yaml",
     ".agentic/roles/supervisor.md",
     ".agentic/phases/plan.md",
+    # U4 (M6): ``scripts/suite-canonical.sh`` is NOT here —
+    # init copies it only when missing, so the confirm digest must not
+    # claim a rewrite that never happens. The plan still names the path,
+    # with its real fate (see ``preview_destruction``).
 ]
 #: Проекции, которые reset всегда очищает в ``state/``.
 RESET_STATE_FILES = ["state/current.yaml", "state/run.yaml"]
@@ -129,6 +133,25 @@ def preview_destruction(
         # (fall-through in ``lifecycle.init_project``) — name them so the
         # confirmed digest covers the actual plan, not just the wipe.
         scope += list(INIT_REWRITTEN_FILES)
+        # U4: the suite helper is created only when missing —
+        # never rewritten. Say its real fate (a dangling symlink included)
+        # instead of listing it among the rewritten files.
+        suite = project / "scripts" / "suite-canonical.sh"
+        if suite.is_symlink() and not suite.exists():
+            scope.append(
+                "scripts/suite-canonical.sh — broken file/symlink "
+                "(kept as-is, not overwritten)"
+            )
+        elif suite.exists():
+            scope.append(
+                "scripts/suite-canonical.sh — kept as-is "
+                "(init writes it only when missing)"
+            )
+        else:
+            scope.append(
+                "scripts/suite-canonical.sh — will be created "
+                "(copy of the package template)"
+            )
         label = "init_project(force=True)"
         rmode = "force"
     elif kind == "remove-orphans":

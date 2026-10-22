@@ -379,16 +379,30 @@ CANONICAL_ROLES = [
 
 def _assert_canonical_rule(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    assert "<!-- M1-canonical-suite:start -->" in text
-    assert "<!-- M1-canonical-suite:end -->" in text
+    # M6: the rule has one owner — the materialization generator.
+    # A role written by it carries the managed marker; hand-materialized
+    # pre-M6 roles still carry the legacy M1 marker.
+    assert (
+        "<!-- M1-canonical-suite:start -->" in text
+        or "<!-- awf-suite-canon:start -->" in text
+    )
     assert "scripts/suite-canonical.sh" in text
     assert "tree-sha" in text
 
 
 @pytest.mark.parametrize("role", ["agent-implementer.md", "agent-qa-review.md"])
-def test_tracked_role_templates_carry_the_canonical_suite_rule(role: str):
-    """(d) правило доказано на TRACKED-шаблонах — свежий клон его видит."""
-    _assert_canonical_rule(TEMPLATES / role)
+def test_tracked_role_templates_deliver_the_canonical_suite_rule(
+    role: str, tmp_git_repo
+):
+    """(d) the rule reaches a fresh clone — through the generator, not the .md."""
+    from awf import api
+
+    api.init_project(tmp_git_repo, project_name="M1TemplateRule")
+    api.add_role(tmp_git_repo, role.removesuffix(".md"))
+    _assert_canonical_rule(tmp_git_repo / ".agentic" / "roles" / role)
+    # M6: the tracked template itself holds no hand-written copy.
+    template_text = (TEMPLATES / role).read_text(encoding="utf-8")
+    assert "<!-- M1-canonical-suite:start -->" not in template_text
 
 
 @pytest.mark.parametrize("role", CANONICAL_ROLES)

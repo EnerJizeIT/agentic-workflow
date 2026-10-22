@@ -140,6 +140,13 @@ task, awf-repo git sha best-effort, date), the skeleton «Что пытался 
 `--stdout` prints the report without writing a file. The supervisor does
 not stay silent: silence does not fix the tool.
 
+**`awf config-get <dotted.key> [--project-dir DIR]`** — prints one
+`config.yaml` value for scripts: strings raw, other values as YAML. Exit
+codes: 0 — value printed, 1 — key absent, 3 — YAML `null`, 4 — a
+whitespace-only string. That is how the canonical suite helper tells "not
+configured" from a command: it maps 3/4 to its own rc 2 instead of
+running a command named `null`.
+
 ## Workflow commit
 
 **`awf commit-workflow`** (MCP: `awf_commit_workflow`) — commits the
@@ -427,6 +434,11 @@ $ awf start --pipeline audit-llm
   `awf_write_pipeline`) writes ONLY `.agentic/pipelines/<name>.yaml` —
   stages are generated like in the setup form (plan → roles → verify);
   config.yaml and supervisor.md are not touched.
+- `awf pipeline-write <name> --variant full|code-health` writes one of the
+  built-in starter pipelines — byte-identical to what the project-setup
+  form offers. Role files are the project's responsibility here: the
+  command warns about a missing role instead of materializing it (that is
+  the setup flow's job).
 - `awf pipelines` (MCP `awf_pipelines`) lists the files and marks the
   active one (`default_pipeline` from config.yaml).
 - An unknown `--pipeline` name (or `awf_start(pipeline=...)`) is a clear
@@ -489,6 +501,15 @@ the pipeline are untouched, the setup phase is not re-run. MCP:
 `awf_add_role(name, draft=True)`,
 `awf_add_role(list_drafts=True)`, `awf_add_role(adopt=...)`,
 `awf_add_role(discard=...)` — one action per call.
+
+**Refresh a role from its skill** — `awf add-role <name> --refresh` (MCP
+`awf_add_role(name, refresh=True)`) re-materializes an existing
+skill-sourced role: the skill body and model line are rebuilt, while
+AWF-OVERRIDE, BD-31, the discipline/suite-canon blocks and the owner's
+own lines are kept. Pre-marker copies of the managed rules are replaced,
+never duplicated. A role without managed markers is refused (nothing is
+written) unless `--force` is passed; a role whose provenance skill is
+gone reports `skipped` with the reason. A repeated call is a no-op.
 
 **Role model line** — every role file created by `awf add-role`
 names its model in a uniform line near the top
@@ -896,7 +917,7 @@ for every replan/split goes into the run report/note.
 ### Roles & Config
 | Tool | What it does |
 |---|---|
-| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); draft area: `draft` / `adopt` / `discard` / `list_drafts` |
+| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); `refresh=True` re-materializes an existing skill-sourced role; draft area: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
 | `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop |

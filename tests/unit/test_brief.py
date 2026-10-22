@@ -11,7 +11,7 @@ Covers:
 - determinism (two calls, same state — identical except the date line)
 - --json (machine variant)
 - empty/nonexistent project (no crash)
-- supervisor.md prompt line (both template copies) + USAGE paragraphs
+- supervisor.md prompt line + USAGE paragraphs
 """
 from __future__ import annotations
 
@@ -36,10 +36,7 @@ from awf.brief import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-SUPERVISOR_TEMPLATE_COPIES = (
-    "awf/templates/roles/supervisor.md",
-    "templates/roles/supervisor.md",
-)
+SUPERVISOR_TEMPLATE_COPIES = ("awf/templates/roles/supervisor.md",)
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────

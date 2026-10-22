@@ -38,7 +38,8 @@ init → goal → form → normalize → brief → run → verify → done
 Механика фаз:
 
 - `awf/phase.py` — `detect_phase()`, `get_phase_prompt()`, `advance_phase()`; `ALL_PHASES = [init, goal, form, normalize, brief, run, verify, done]`.
-- Phase templates: `templates/roles/supervisor/phase-{init,goal,form,normalize,brief,run,verify}.md` + общий `_core.md` (у `done` шаблона нет — фаза терминальная).
+- Phase templates: `awf/templates/roles/supervisor/phase-{init,goal,form,normalize,brief,run,verify}.md` + общий `_core.md` (у `done` шаблона нет — фаза терминальная).
+- Шаблоны живут в одном месте: пакетный каталог `awf/templates/` (рядом с `__file__` пакета). Корневого `templates/` в репозитории нет — движок стейджит изменённые пути поштучно, а путь за симлинком (`fatal: pathspec ... is beyond a symbolic link`) ломал approve. Проект может переопределить промпты своим `templates/` — `awf/phase.py` проверяет его первым; иначе источник пакетный.
 - Каждый tool возвращает `next_action` — компактную инструкцию для следующего шага.
 - `awf_init` и `awf_load_supervisor_context` возвращают compact phase prompt (не полный supervisor.md).
 - Потерянный контекст или новая сессия → `awf_brief` (MCP/CLI): карточка, собранная из живого состояния — фаза, что дальше, run, активные TODO, карта инструментов, ритуалы, recovery-рецепты.

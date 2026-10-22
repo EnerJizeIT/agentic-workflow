@@ -170,3 +170,8 @@ groups:
         when: "mutation smoke"
       - cli: todo-draft
         when: "task skeleton from AUDIT-INDEX.md"
+  - title: helpers
+    hidden: true
+    tools:
+      - cli: config-get
+        when: "read one config.yaml value"

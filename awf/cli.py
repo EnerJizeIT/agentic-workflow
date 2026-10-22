@@ -109,6 +109,10 @@ def _build_parser():
     AUD07-08: the subparsers action is returned so `awf help` can generate
     its command list from the same source that dispatches the commands.
     """
+    # REVIEW W5: the variant names are the one registry in awf.api.setup —
+    # a new starter must appear here without a second hardcoded list.
+    from .api.setup import BUILTIN_PIPELINES
+
     parser = argparse.ArgumentParser(
         prog="awf",
         description="Agentic Workflow Framework",
@@ -441,6 +445,26 @@ def _build_parser():
         help="List draft candidates: name, source, created, file",
     )
     p_add_role.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-materialize an existing skill-sourced role from its skill, "
+        "keeping AWF-OVERRIDE / BD-31 / discipline blocks and local lines",
+    )
+    p_add_role.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_config_get = sub.add_parser(
+        "config-get",
+        help=(
+            "Print one config.yaml value (dotted key): strings raw, other "
+            "values YAML; exit 1 when the key is absent"
+        ),
+    )
+    p_config_get.add_argument("key", help="Dotted key, e.g. verification.test_cmd")
+    p_config_get.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
@@ -750,12 +774,20 @@ def _build_parser():
         "name",
         help="Pipeline name (letters, digits, '_', '.', '-' — no path separators)",
     )
-    p_pipeline_write.add_argument(
+    role_or_variant = p_pipeline_write.add_mutually_exclusive_group(
+        required=True
+    )
+    role_or_variant.add_argument(
         "--role",
         action="append",
-        required=True,
         help="Worker role for a stage (repeatable; supervisor plan/verify "
              "stages are added automatically, as in the setup form)",
+    )
+    role_or_variant.add_argument(
+        "--variant",
+        choices=list(BUILTIN_PIPELINES),
+        help="Write a built-in starter pipeline (same text the setup form "
+             "offers) instead of a role composition",
     )
     p_pipeline_write.add_argument(
         "--force",
@@ -893,6 +925,9 @@ def _run_command(args) -> int:
         if args.command == "add-role":
             from . import cmd_add_role
             return cmd_add_role.run(args)
+        if args.command == "config-get":
+            from . import cmd_config_get
+            return cmd_config_get.run(args)
         if args.command == "baseline":
             from . import cmd_baseline
             return cmd_baseline.run(args)
