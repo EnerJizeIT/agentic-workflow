@@ -305,7 +305,7 @@ awf не может заставить клиента переподключит
 
 ## Все tools (справочник)
 
-54 инструмента: 49 `awf_*` workflow + 5 UI (формы).
+55 инструмента: 50 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -460,6 +460,7 @@ $ awf start --pipeline audit-llm
 | `awf_todo_retire` | Вывести отклонённый/брошенный TODO, застрявший «активным» (RETIRED-заметка в `done/<id>/`) |
 | `awf_todo_update` | Переписать текст не стартовавшего TODO, сохранив номер (бэкап в `context/`, `.ready` + baseline не трогаются) |
 | `awf_review_append` | Дописать стартовавшему TODO секцию `## REVIEW-фикс (супервизор, виток N)` (нумерация, бэкап в `context/`) |
+| `awf_blocked_draft` | Собрать готовый черновик `## REVIEW-фикс` из BLOCKED-заметки по схеме (находки + направления + пустые слоты решений; TODO не трогается) |
 
 **`awf_unblock`** (CLI `awf unblock`). Перевыданный TODO остаётся невидимым, пока рядом
 лежит старый `BLOCKED-<id>.ready` / `ACK-<id>.ready` — `awf_status` показывает пустой

@@ -18,7 +18,7 @@ groups:
         when: "start the active unit"
       - mcp: awf_continue
         cli: continue
-        when: "resume dead pipeline (--ack BLOCKED)"
+        when: "resume dead pipeline (--ack)"
       - mcp: awf_retry_stage
         when: "retry the salvage stage"
       - mcp: awf_kill
@@ -33,7 +33,7 @@ groups:
         cli: commit-workflow
         when: "workflow files → git"
       - mcp: awf_current_step
-        when: "phase + its full prompt"
+        when: "phase + full prompt"
       - mcp: awf_load_supervisor_context
         when: "full context, one call"
       - mcp: awf_wait_for_event
@@ -42,7 +42,7 @@ groups:
         cli: pipelines
         when: "list pipelines + active"
       - mcp: awf_check_model_config
-        when: "models vs providers (pre-start)"
+        when: "models vs providers"
   - title: run
     tools:
       - mcp: awf_run_start
@@ -54,11 +54,11 @@ groups:
       - mcp: awf_run_note
         when: "owner's live status line"
       - mcp: awf_run_revise
-        when: "revise queue (not-started, by key)"
+        when: "revise not-started queue"
       - mcp: awf_run_finish
         when: "close the run (report)"
       - mcp: awf_run_service_start
-        when: "create role during main run"
+        when: "create role mid-run"
       - mcp: awf_run_service_status
         when: "service + main snapshot"
       - mcp: awf_run_service_finish
@@ -87,6 +87,9 @@ groups:
       - mcp: awf_review_append
         cli: review-append
         when: "append REVIEW fix"
+      - mcp: awf_blocked_draft
+        cli: blocked-draft
+        when: "draft from BLOCKED"
       - mcp: awf_restore
         cli: restore
         when: "restore archived unit"
@@ -123,6 +126,7 @@ groups:
         cli: brief
         when: "this card (new session)"
       - mcp: awf_dispatch_todo
+        cli: dispatch
         when: "unit + baseline + signal"
       - mcp: awf_write_pipeline
         cli: pipeline-write

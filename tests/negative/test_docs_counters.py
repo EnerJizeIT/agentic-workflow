@@ -6,17 +6,18 @@ current total.
 added the four service-run tools — 52 tools (5 UI + 47 workflow);
 REPORTS26 F6 (TODO-0166) added ``awf_commit_workflow`` — 53 tools
 (5 UI + 48 workflow); TODO-0240 added ``awf_review_append`` — 54 tools
-(5 UI + 49 workflow). The docs carried stale totals (48 / 47 / 45 /
+(5 UI + 49 workflow); TODO-0229 added ``awf_blocked_draft`` — 55 tools
+(5 UI + 50 workflow). The docs carried stale totals (48 / 47 / 45 /
 37 = 5 UI + 32 workflow) in several places. This guard pins every live
 doc that claims a tools counter:
 
-  * the current total ``54`` is present in a counting context — a line
+  * the current total ``55`` is present in a counting context — a line
     that talks about tools / the UI+workflow split;
-  * no stale total (``53`` / ``52`` / ``48`` / ``45`` / ``37`` / ``32``)
-    appears in a counting context.
+  * no stale total (``54`` / ``53`` / ``52`` / ``48`` / ``45`` / ``37`` /
+    ``32``) appears in a counting context.
 
-Note: after TODO-0240 the workflow count is 49, so ``48`` joins the
-stale list; ``49`` is the live workflow count.
+Note: after TODO-0229 the workflow count is 50 — ``49`` is the previous
+workflow count, so ``49`` (workflow) and ``48``/``49`` (totals) are stale.
 
 A bare number on a non-counting line (a line number, a year, ...) is not
 flagged — only lines that count tools.
@@ -44,8 +45,8 @@ DOCS = [
     REPO_ROOT / "agent_workflow_ui" / "README.md",
 ]
 
-_CURRENT_RE = re.compile(r"\b54\b")
-_STALE_RE = re.compile(r"\b(?:53|52|48|45|37|32)\b")
+_CURRENT_RE = re.compile(r"\b55\b")
+_STALE_RE = re.compile(r"\b(?:54|53|52|49|48|45|37|32)\b")
 
 # A line counts tools when it mentions "tool(s)" ...
 _TOOL_LINE = re.compile(r"\btools?\b", re.I)
@@ -71,7 +72,7 @@ def test_docs_exist():
 
 
 def test_current_counter_present():
-    """Each doc carries the current total (54) in a counting line."""
+    """Each doc carries the current total (55) in a counting line."""
     bad = []
     for doc in DOCS:
         lines = _counting_lines(doc)

@@ -366,7 +366,7 @@ class DispatchTodoResult:
     pre_existing_untracked: list[str] = field(default_factory=list)
     untracked_warning: str = ""  # capped one-line warning; "" when the list is empty
     # REPORTS26 F5: True when the auto-issued number replaced a foreign
-    # TODO-NNNN in the first line's heading (a copied template kept its
+    # TODO-NNNN in the title heading (a copied template kept its
     # old title). Always False for an explicit todo_id (mismatch is
     # refused, or written as-is via allow_mismatch).
     renumbered: bool = False
@@ -397,6 +397,23 @@ class DispatchTodoResult:
     # changes were claimed and the claimed display paths ([] when no claim).
     claim_from: str | None = None
     claimed_files: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class BlockedDraftResult:
+    """Result of :func:`awf.api.blocked_draft` (TODO-0229, M5)."""
+
+    todo_id: str
+    #: The ready ``## REVIEW-фикс`` text: the BLOCKED note's findings and fix
+    #: directions plus the supervisor's empty decision slots. The supervisor
+    #: pastes it into the TODO — this tool never writes the TODO itself.
+    review_text: str
+    #: Where the BLOCKED note was read from (absolute path).
+    note_path: str
+    message: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -1537,3 +1537,85 @@ class TestFeedbackEntrypoint:
         ):
             assert heading in out
         assert not desk.exists() or not list(desk.glob("*.md"))
+
+
+class TestDispatchEntrypoint:
+    """TODO-0229: `awf dispatch` — CLI parity for the MCP dispatch (source_ref)."""
+
+    def test_dispatch_with_source_ref_inserts_checklist(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliDispatch")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "source.md").write_text(
+            "## R1 Ownership\n\n- owner one\n- owner two\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "docs"], cwd=repo, check=True)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "dispatch",
+            "--content", "# TODO-0001 — cli unit\n\nbody\n",
+            "--source-ref", "docs/source.md#R1 Ownership",
+            "--project-dir", str(repo),
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        inbox = repo / ".agentic" / "inbox"
+        todo = (inbox / "TODO-0001.md").read_text(encoding="utf-8")
+        assert "## Первоисточник (R1 Ownership)" in todo
+        assert "- [ ] owner one" in todo
+        assert "- [ ] owner two" in todo
+        assert (inbox / "TODO-0001.ready").is_file()
+        assert (repo / ".agentic" / "context" / "BASELINE-TODO-0001.sha").is_file()
+
+    def test_dispatch_missing_source_file_returns_1_without_todo(self, tmp_path, capsys):
+        """A refused source_ref must exit 1 and leave no TODO/.ready/baseline."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliDispatchBad")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "bootstrap"], cwd=repo, check=True)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "dispatch",
+            "--content", "# TODO-0001 — cli unit\n",
+            "--source-ref", "docs/nope.md#R1",
+            "--project-dir", str(repo),
+        ])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "no such file" in captured.out + captured.err
+        inbox = repo / ".agentic" / "inbox"
+        assert not (inbox / "TODO-0001.md").exists()
+        assert not (inbox / "TODO-0001.ready").exists()
+        assert not list((repo / ".agentic" / "context").glob("BASELINE-TODO-0001.*"))
+
+
+class TestBlockedDraftEntrypoint:
+    """TODO-0229: `awf blocked-draft` — CLI parity, read-only for the TODO."""
+
+    def test_blocked_draft_prints_review_text_and_keeps_todo(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliDraft")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0002.md").write_text("# TODO-0002 — unit\nbody\n")
+        before = (inbox / "TODO-0002.md").read_bytes()
+        (repo / ".agentic" / "outbox" / "BLOCKED-TODO-0002.md").write_text(
+            "## ВЕРДИКТ\n\nblocked\n\n"
+            "## НАХОДКИ\n\n- bug a.py:10\n\n"
+            "## НАПРАВЛЕНИЯ-ФИКСА\n\n- fix a.py:10\n",
+            encoding="utf-8",
+        )
+
+        rc = cli.main(["blocked-draft", "TODO-0002", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "## REVIEW-фикс" in out
+        assert "bug a.py:10" in out and "fix a.py:10" in out
+        assert "Скоуп: …" in out and "Переносы: …" in out
+        assert (inbox / "TODO-0002.md").read_bytes() == before

@@ -58,6 +58,7 @@ from ._results import (
     ApplyProjectSetupResult,
     ApproveResult,
     BaselineResult,
+    BlockedDraftResult,
     DiscardRoleDraftResult,
     DispatchTodoResult,
     InitResult,
@@ -93,6 +94,7 @@ from .brief import brief
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
 from .hygiene import (
+    blocked_draft,
     remove_todo,
     retire_todo,
     review_append,
@@ -183,6 +185,7 @@ __all__ = [
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
+    "BlockedDraftResult",
     "DispatchTodoResult",
     "SupervisorContextResult",
     "ApplyIncrementPlanResult",
@@ -239,6 +242,7 @@ __all__ = [
     "remove_todo",
     "retire_todo",
     "review_append",
+    "blocked_draft",
     "update_todo",
     # Autonomous run (забег)
     "run_start",

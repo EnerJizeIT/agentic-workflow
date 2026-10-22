@@ -530,7 +530,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-54 tools: 49 `awf_*` workflow + 5 UI (forms).
+55 tools: 50 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -628,6 +628,7 @@ applies to any stage kind.
 | `awf_todo_retire` | Retire a rejected/abandoned TODO that stays "active" (RETIRED note in `done/<id>/`) |
 | `awf_todo_update` | Reword a not-started TODO, keeping the number (backup in `context/`, `.ready` + baseline untouched) |
 | `awf_review_append` | Append a supervisor `## REVIEW-фикс (супервизор, виток N)` section to a started TODO (numbered, backup in `context/`) |
+| `awf_blocked_draft` | Build a ready `## REVIEW-фикс` draft from a standard BLOCKED note (findings + fix directions + empty decision slots; the TODO is not touched) |
 
 **`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
 `BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty

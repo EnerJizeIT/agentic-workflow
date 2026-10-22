@@ -100,7 +100,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
-| `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update |
+| `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
+| `api/_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref) и `blocked_draft` |
 | `api/workflow_commit.py` | `commit_workflow` + dry-run `uncommitted_workflow_files`: workflow-определения `.agentic/` в git изолированным индексом (REPORTS26 F6) |
 | `run_state.py` | `.agentic/state/run.yaml`: лок read→merge→write, shape-проверка (AUD02-06) |
 | `run_plan_read.py` | Единый reader записи забега (ORCH M1.2): одна запись — два представления (brief-карточка / полный контекст) |

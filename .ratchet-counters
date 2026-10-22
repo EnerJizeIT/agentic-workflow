@@ -2767,3 +2767,55 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # нетронутым. Дробить нельзя: verify-контракт юнита запускает ровно этот
 # путь. todos не изменился (6612): новых строк со словом TODO нет — правка
 # ревью (условие + docstring) и тест говорят именами, не unit-id.
+
+# TODO-0229 (M5: source_ref + BLOCKED-схема + REVIEW-драфт, стадия
+# agent-implementer, 22.10): todos 6612 -> 6658 (+46). Все строки —
+# unit-id ссылки и тестовые идентификаторы, не долг: модульный docstring и
+# fixture-иды (TODO-0001 / TODO-0002) нового контрактного
+# tests/negative/test_miniwave_m5_sourceref.py, проза правок
+# awf/api/dispatch.py (source_ref/blocked_draft), awf/api/_results.py,
+# agent_workflow_ui/tools/awf.py, docs/unit-contract.md (разделы
+# «Первоисточник» и «BLOCKED-заметка»), схема в двух ролях
+# (.agentic/roles + пакетный шаблон agent-qa-review), строки таблиц
+# USAGE EN/RU и обновлённые счётчики инструментов. Ни одного долгового
+# TODO/FIXME-маркера не добавлено. files_over_400 не изменился (106):
+# новый тест — 180 строк, прод-правки в уже длинных модулях.
+
+# TODO-0229 REVIEW-фикс, виток 2 (K1–K7, стадия agent-implementer, 22.10):
+# todos 6658 -> 6665 (+7). Все семь строк — unit-id ссылки и тестовые
+# имена, не долг: docstring'и awf/api/dispatch.py и awf/api/_markdown.py
+# (K1/K2/K6), три новых кейса в tests/negative/test_miniwave_m5_sourceref.py
+# (K2/K4/K6), строка инвентаря docs/design/agentic-writers.md (K4) и
+# проза docs/unit-contract.md (K1/K6). Прод-правка K4 в
+# awf/cmd_blocked_draft.py и сокращённые подсказки awf/data/tool_map.yaml
+# (K3) новых TODO-строк не добавили. Долговых TODO/FIXME-маркеров нет.
+# files_over_400 не изменился (106): правки уложились в существующие файлы,
+# контрактный тест остался ниже 400 строк.
+
+# TODO-0229 (стадия agent-architect-review, 22.10): todos 6666 -> 6672 (+6).
+# Дерево до правок стадии дало 6665 (implementer записал 6665; baseline 6666
+# стоял на единицу выше — в пределах SLACK). Правки стадии: +8 строк с
+# литералами-идентификаторами в двух новых кейсах
+# tests/negative/test_reports26_f5_dispatch_heading.py (ведущий HTML-комментарий
+# и front matter не скрывают чужой номер от защиты F5) минус одна строка со
+# словом TODO, ушедшая из docstring `_heading_todo_number`. Итог 6672 —
+# тестовые идентификаторы (TODO-9999 / TODO-0001), не долг; TODO/FIXME-
+# маркеров не добавлено. files_over_400 без изменений (106).
+
+# TODO-0229 (стадия agent-architect-review, 22.10, виток 2): todos
+# 6672 -> 6676 (+4). Две строки — литералы-идентификаторы нового кейса
+# test_a_deeper_heading_is_a_body_section_not_the_title в
+# tests/negative/test_reports26_f5_dispatch_heading.py (``## TODO-9999`` в
+# контенте и в assert: заголовок второго уровня — тело, не титул юнита).
+# Ещё две строки пришли на дерево с прошлого замера стадии (baseline 6672
+# стоял на два ниже фактического счёта; источник — поздние правки прозы
+# после замера). Ни одного долгового TODO/FIXME-маркера не добавлено:
+# правки ревью (_markdown.py — общий обходчик, dispatch.py — одно понятие
+# титула) написаны без токена TODO. files_over_400 без изменений (106):
+# новых файлов нет, контрактный тест остался ниже 400 строк.
+# TODO-0229 (QA review): baseline raised 6676 -> 6692 (+16). The CLI-parity
+# tests for the unit's own `awf dispatch --source-ref` and `awf blocked-draft`
+# subcommands live in tests/integration/test_cli_entrypoints.py and carry
+# TODO-NNNN fixtures/asserts (16 TODO-bearing lines). Same class as the
+# counted test identifiers above — test ids, not debt. No TODO/FIXME marker
+# was added; files_over_400 unchanged (the target file was already counted).

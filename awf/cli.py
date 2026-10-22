@@ -280,6 +280,51 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # TODO-0229 (M5): CLI parity for the dispatch + the REVIEW draft.
+    p_dispatch = sub.add_parser(
+        "dispatch",
+        help="Create a unit atomically: TODO file + baseline + .ready signal",
+    )
+    _dispatch_content = p_dispatch.add_mutually_exclusive_group(required=True)
+    _dispatch_content.add_argument("--content", help="TODO body (short)")
+    _dispatch_content.add_argument(
+        "--content-file",
+        dest="content_file",
+        help="TODO body read from a file",
+    )
+    p_dispatch.add_argument(
+        "--source-ref",
+        dest="source_ref",
+        default=None,
+        help="Source of truth as '<file>#<section>' — inserted as a checklist",
+    )
+    p_dispatch.add_argument("--role", default=None, help="Optional role hint")
+    p_dispatch.add_argument("--todo-id", dest="todo_id", default=None)
+    p_dispatch.add_argument("--pipeline", default=None)
+    p_dispatch.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
+    p_blocked_draft = sub.add_parser(
+        "blocked-draft",
+        help="Print a ready REVIEW-fix draft built from a BLOCKED note",
+    )
+    p_blocked_draft.add_argument("todo_id", help="TODO id (e.g. TODO-0204)")
+    p_blocked_draft.add_argument(
+        "--out",
+        default="",
+        help="Write the draft to this file instead of stdout",
+    )
+    p_blocked_draft.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -829,6 +874,12 @@ def _run_command(args) -> int:
         if args.command == "review-append":
             from . import cmd_review_append
             return cmd_review_append.run(args)
+        if args.command == "dispatch":
+            from . import cmd_dispatch
+            return cmd_dispatch.run(args)
+        if args.command == "blocked-draft":
+            from . import cmd_blocked_draft
+            return cmd_blocked_draft.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):

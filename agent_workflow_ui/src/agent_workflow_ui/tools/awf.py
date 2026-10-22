@@ -814,6 +814,40 @@ async def awf_review_append(
     return result
 
 
+async def awf_blocked_draft(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Build a ready ``## REVIEW-фикс`` draft from a BLOCKED note (TODO-0229).
+
+    Reads ``outbox/BLOCKED-<id>.md``, takes its standard ``## НАХОДКИ`` and
+    ``## НАПРАВЛЕНИЯ-ФИКСА`` sections and returns a paste-ready text with the
+    supervisor's empty decision slots (``Скоуп: …`` / ``Переносы: …``).
+
+    Read-only for the TODO: it is NOT written — the supervisor pastes the
+    draft and fills the slots. Refuses when the note is missing or does not
+    follow the BLOCKED schema (``docs/unit-contract.md``). CLI parity:
+    ``awf blocked-draft TODO-NNNN``.
+
+    Args:
+        todo_id: The blocked unit (e.g. "TODO-0204").
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+    """
+    result = await _exec(
+        api.blocked_draft,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id') or 'the unit'}: paste the returned review_text "
+            "into the TODO, fill the Скоуп / Переносы slots, then re-run the "
+            "unit with awf_continue (a run) or awf_start."
+        )
+    return result
+
+
 @_mutating
 async def awf_todo_update(
     todo_id: str,
@@ -2272,6 +2306,7 @@ async def awf_dispatch_todo(
     carry_over_from: str | None = None,
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
+    source_ref: str | None = None,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -2313,13 +2348,20 @@ async def awf_dispatch_todo(
             lists the files that stay excluded (``pre_existing_untracked``
             + ``untracked_warning``).
         allow_mismatch: REPORTS26 F5 — heading/title mismatch policy. When
-            the first line of the content is a heading carrying a TODO
-            number different from the one being issued: with an explicit
+            the title heading (the first heading after leading comments and
+            front matter) carries a TODO number different from the one being
+            issued: with an explicit
             ``todo_id`` the dispatch is refused (no side effects, the
             message names both numbers); ``allow_mismatch=True`` accepts
             the mismatch and writes the content as-is. With the auto
             number the heading is renumbered instead — the answer then
             carries ``renumbered: true``.
+        source_ref: TODO-0229 (M5) — the source of truth for the unit as
+            ``<file>#<section>`` (e.g. ``R2-GIT-OWNERSHIP.md#R2.5``). Its
+            bullets land in the TODO as a ``## Первоисточник (<section>)``
+            checklist. A missing file/section refuses before any side
+            effect. A relative path must stay inside the project; an
+            absolute one is used as passed.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
@@ -2327,7 +2369,7 @@ async def awf_dispatch_todo(
         pre_existing_untracked (list, excluded from the commit),
         untracked_warning (one line, "" when nothing is excluded),
         renumbered (True when the auto-issued number replaced a foreign
-        one in the first line's heading).
+        one in the title heading).
     """
     response = await _exec(
         api.dispatch_todo,
@@ -2339,6 +2381,7 @@ async def awf_dispatch_todo(
         carry_over_from=carry_over_from,
         include_untracked=include_untracked,
         allow_mismatch=allow_mismatch,
+        source_ref=source_ref,
     )
     if response.get("status") != "ok":
         return response

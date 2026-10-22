@@ -380,7 +380,7 @@ class TestDispatchCarryOverParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -420,7 +420,7 @@ class TestDispatchCarryOverParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -431,7 +431,7 @@ class TestDispatchCarryOverParam:
     def test_error_propagates(self, mcp_project, monkeypatch):
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             raise api.AwfApiError("REJECT-TODO-0001.files not found")
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
@@ -475,7 +475,7 @@ class TestDispatchIncludeUntrackedParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -516,7 +516,7 @@ class TestDispatchIncludeUntrackedParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -554,7 +554,7 @@ class TestDispatchAllowMismatchParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["allow_mismatch"] = allow_mismatch
             return _R()
 
@@ -595,7 +595,7 @@ class TestDispatchAllowMismatchParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["allow_mismatch"] = allow_mismatch
             return _R()
 

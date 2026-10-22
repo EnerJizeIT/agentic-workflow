@@ -288,6 +288,8 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/verify.py` · DONE-"синтез" | `.agentic/outbox/DONE-<id>.md` | `grep -n "atomic_write_text(done_md" awf/verify.py` | `atomic_write_text(done_md` | `unit-0239` |
 | `awf/verify.py` · синтезированный `.ready` `touch` | `.agentic/outbox/DONE-<id>.ready` | `grep -n 'DONE-{todo_id}.ready").touch()' awf/verify.py` | `DONE-{todo_id}.ready").touch()` | `unit-0239` |
 | `docs/design.md` · политика ссылается на инвентарь | `docs/design.md` (политика) | `grep -n "Запись состояния — fail-closed" docs/design.md` | `agentic-writers.md` | `exception+policy-source: документ-источник политики, не операция записи` |
+| `awf/cmd_blocked_draft.py` · `--out` внутри `.agentic`: отказ | `.agentic/**` (симлинки разрешаются) | `tests/negative/test_miniwave_m5_sourceref.py::test_c_blocked_draft_out_inside_agentic_refused` | `test_c_blocked_draft_out_inside_agentic_refused` | `barrier` |
+| `awf/cmd_blocked_draft.py` · `--out`: `write_text` | `--out <файл>` (вне `.agentic`) | `grep -n "write_text(result.review_text" awf/cmd_blocked_draft.py` | `write_text(result.review_text` | `exception+outside-surface: пишет только в явно переданный --out; путь внутри .agentic отвергается` |
 
 ## Формат пробы
 

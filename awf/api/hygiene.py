@@ -22,6 +22,9 @@ operations that leave a trace:
 - :func:`review_append` appends a numbered supervisor
   ``## REVIEW-фикс (супервизор, виток N)`` section to a STARTED TODO (the
   inverse of :func:`update_todo`), with the same backup trace.
+- :func:`blocked_draft` builds a ready ``## REVIEW-фикс`` text from a
+  standard ``outbox/BLOCKED-<id>.md`` note — read-only, the supervisor
+  pastes it into the TODO and fills the decision slots.
 - :func:`clear_stale_closures` is the shared helper — ``dispatch_todo``
   calls it automatically on re-dispatch of the same number.
 """
@@ -45,7 +48,9 @@ from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic
+from ._markdown import section_body
 from ._results import (
+    BlockedDraftResult,
     RemoveTodoResult,
     RetireTodoResult,
     ReviewAppendResult,
@@ -1454,7 +1459,70 @@ def _update_todo_impl(
     )
 
 
+def blocked_draft(project_dir: Path, todo_id: str) -> BlockedDraftResult:
+    """Build a ready ``## REVIEW-фикс`` draft from a BLOCKED note.
+
+    TODO-0229 (M5): every blocked round used to cost the supervisor a manual
+    rewrite of the note into a REVIEW-fix section. This reads
+    ``outbox/BLOCKED-<id>.md``, takes its ``## НАХОДКИ`` and
+    ``## НАПРАВЛЕНИЯ-ФИКСА`` sections and returns a paste-ready text with the
+    supervisor's decision slots left empty. It does NOT write the TODO — the
+    supervisor stays the one who decides scope and carries.
+    """
+    project_dir = Path(project_dir).resolve()
+    require_agentic(project_dir)
+    todo = str(todo_id or "").strip()
+    _validate_id(todo)
+    note = paths.outbox(project_dir) / f"BLOCKED-{todo}.md"
+    if not note.is_file():
+        raise AwfApiError(
+            f"no BLOCKED note for {todo} ({note}) — nothing to draft a "
+            "REVIEW-fix from"
+        )
+    try:
+        text = note.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise AwfApiError(f"cannot read {note}: {e}") from e
+
+    findings = section_body(text, "НАХОДКИ")
+    fixes = section_body(text, "НАПРАВЛЕНИЯ-ФИКСА")
+    if not findings and not fixes:
+        raise AwfApiError(
+            f"BLOCKED-{todo}.md does not follow the BLOCKED schema — expected "
+            "'## НАХОДКИ' / '## НАПРАВЛЕНИЯ-ФИКСА' sections "
+            "(docs/unit-contract.md)"
+        )
+
+    review_text = "\n".join(
+        [
+            "## REVIEW-фикс",
+            "",
+            "**Находки:**",
+            "",
+            findings or "_нет_",
+            "",
+            "**Направления фикса:**",
+            "",
+            fixes or "_нет_",
+            "",
+            "Скоуп: …",
+            "",
+            "Переносы: …",
+        ]
+    ) + "\n"
+    return BlockedDraftResult(
+        todo_id=todo,
+        review_text=review_text,
+        note_path=str(note),
+        message=(
+            f"REVIEW-fix draft for {todo} built from {note.name} — paste it "
+            "into the TODO and fill the Скоуп / Переносы slots."
+        ),
+    )
+
+
 __all__ = [
+    "blocked_draft",
     "closure_files",
     "clear_stale_closures",
     "has_done_closure",
