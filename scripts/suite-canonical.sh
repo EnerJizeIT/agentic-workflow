@@ -196,17 +196,103 @@ from pathlib import Path
 text = Path(os.environ["SUITE_LOG"]).read_text(encoding="utf-8", errors="replace")
 
 
+command = os.environ["SUITE_CMD"]
+
+
+def _named_runner(words):
+    """The runner name from whole command WORDS (REPORTS: counts must not lie).
+
+    A substring match over the raw string would classify
+    ``/tmp/pytest-of-x/stub.sh`` (or a project checked out under a
+    ``pytest``-named path) as pytest and read pytest words from
+    unrelated output.
+    """
+    names = [Path(w).name for w in words]
+    if any(n in ("pytest", "py.test") for n in names):
+        return "pytest"
+    if any(n in ("npm", "npx", "yarn", "pnpm", "jest") for n in names):
+        return "npm"
+    if "go" in names and "test" in names:
+        return "go"
+    if "cargo" in names and "test" in names:
+        return "cargo"
+    return None
+
+
+def _unwrap_one(words):
+    """The command behind ONE wrapper level (W6): timeout, env, bash -c.
+
+    ``timeout 600 python3 -m pytest`` or ``env GATE=1 npm test`` — the
+    wrapper words come off; ``bash -c '...'`` re-splits the payload with
+    the same separators. One level only: a wrapper inside a wrapper stays
+    unknown and keeps counts null.
+    """
+    if not words:
+        return None
+    first, rest = words[0], words[1:]
+    if first == "timeout":
+        i = 0
+        while i < len(rest) and rest[i].startswith("-"):
+            i += 1
+        if i >= len(rest):
+            return None
+        return rest[i + 1:] or None
+    if first == "env":
+        i = 0
+        while i < len(rest) and (
+            rest[i].startswith("-") or re.match(r"[^=\s]+=", rest[i])
+        ):
+            i += 1
+        return rest[i:] or None
+    if first in ("bash", "sh", "dash") and len(rest) >= 2 and rest[0] == "-c":
+        # The payload's quotes glue to its words (`'python3`, `pytest'`) —
+        # carve them out before re-splitting.
+        joined = " ".join(rest[1:]).replace("'", " ").replace('"', " ")
+        return [w for w in re.split(r"[;&|()<>\s]+", joined) if w] or None
+    return None
+
+
+def detect_runner(cmd):
+    """The suite runner named by the command.
+
+    Whole command words first; a known runner behind one wrapper level
+    (timeout / env / bash -c) is still named (W6)."""
+    words = [w for w in re.split(r"[;&|()<>\s]+", cmd) if w]
+    named = _named_runner(words)
+    if not named and words:
+        named = _named_runner(_unwrap_one(words) or [])
+    if named:
+        return named
+    return Path(words[0]).name if words else "unknown"
+
+
+runner = detect_runner(command)
+_found = [False]
+
+
 def count(pattern):
-    m = re.search(pattern, text)
-    return int(m.group(1)) if m else 0
+    m = re.search(pattern, text, re.IGNORECASE)
+    if not m:
+        return 0
+    _found[0] = True
+    return int(m.group(1))
 
 
-counts = {
-    "passed": count(r"(\d+) passed"),
-    "failed": count(r"(\d+) failed"),
-    "errors": count(r"(\d+) errors?"),
-    "skipped": count(r"(\d+) skipped"),
-}
+# Known formats: pytest/Jest ("3 passed, 2 failed"), cargo ("test result:
+# ok. 3 passed; 0 failed") and any runner that prints the same words. When
+# NOTHING numeric is recognised the artifact carries counts: null and the
+# runner name — zeros would claim "nothing failed, nothing ran" as a fact.
+# go test prints no counts unless -v; that stays null, not a fake zero.
+counts = None
+if runner in ("pytest", "npm", "go", "cargo"):
+    counts = {
+        "passed": count(r"(\d+) passed"),
+        "failed": count(r"(\d+) failed"),
+        "errors": count(r"(\d+) errors?"),
+        "skipped": count(r"(\d+) (?:skipped|ignored)"),
+    }
+    if not _found[0]:
+        counts = None
 tail = "\n".join(
     line for line in text.splitlines()[-20:] if line.strip()
 )[-4000:]
@@ -219,6 +305,13 @@ payload = {
     "duration_seconds": int(os.environ["SUITE_DURATION"]),
     "exit": int(os.environ["SUITE_EXIT"]),
     "counts": counts,
+    # W6: honest zeros are not facts — when nothing was recognised the
+    # artifact says so and names the unwrap limit.
+    "counts_hint": (
+        "no counts recognized in the output; wrappers are unwrapped one "
+        "level (timeout / env / bash -c)" if counts is None else ""
+    ),
+    "runner": runner,
     "tail": tail,
 }
 

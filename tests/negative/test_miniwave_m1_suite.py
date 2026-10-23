@@ -37,8 +37,14 @@ exit 0
 
 
 def _stub_command(tmp_path: Path) -> tuple[str, Path]:
-    """A fake full-suite command: counts invocations, prints one pytest line."""
-    stub = tmp_path / "stub.sh"
+    """A fake full-suite command: counts invocations, prints one pytest line.
+
+    The stub is NAMED ``pytest`` because the artifact's runner is detected
+    from whole command words (a substring in a tmp path must not classify
+    an arbitrary command as pytest), and this fixture stands in for a real
+    pytest run.
+    """
+    stub = tmp_path / "pytest"
     counter = tmp_path / "counter.txt"
     stub.write_text(STUB, encoding="utf-8")
     stub.chmod(0o755)

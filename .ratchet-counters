@@ -3,7 +3,21 @@
 # materialisation + evidence binding) is >400 lines and its docstrings
 # legitimately use the word TODO; the new acceptance test file carries
 # one TODO-0001 id. Same class as the already-counted mentions.
-files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs wc -l | awk '$1>400 && $2!="total"' | wc -l
+# M7 (TODO-0231): a rename leaves the old path in the index until the unit
+# commit, so `wc` must see only files present in the worktree; missing cached
+# paths are skipped instead of breaking the counter (xargs fed them to wc).
+# T4 (TODO-0231, REVIEW-виток 4): real @lines annotations now exist — the four
+# file-length mentions below carry `@lines <path> (...)`; --update rewrites
+# their right side from wc -l. The fifth "(8 lines)" mention (RUN10-2026-09-24,
+# #3) counts DEBT-MARKER lines inside tests/unit/test_metrics.py, not the
+# file's length — an @lines annotation would rewrite it to the file's wc and
+# lie; it stays a hand-written number. The "(3/8 lines)" pair in the same
+# entry follows it.
+# T4 (TODO-0231, REVIEW-виток 4): baseline raised files_over_400 108 -> 109 —
+# the vitok-4 acceptance tests extend test_miniwave_m7_hygiene.py beyond the
+# 400-line bar it sat on exactly; the dwarf file test_miniwave_m7_hygiene_
+# vitok4.py stays under it. Same class as the earlier test-in-test raises.
+files_over_400	git ls-files --cached --others --exclude-standard '*.py' | while IFS= read -r f; do [ -f "$f" ] && wc -l < "$f"; done | awk '$1>400' | wc -l
 # FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
 # identifiers (backlog item references), and every docs reword there
 # shifted the count (see "reword to keep the todos ratchet at baseline").
@@ -878,9 +892,9 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # REPORTS26 B6 (TODO-0159, review fix: baseline timeout / rc 126-127 ->
 # broken-runner): baseline raised 4598 -> 4600, files_over_400 raised
 # 67 -> 68 — the two new TestCommandNotRunOnBaseline tests add 2
-# TODO-0001 fixture use-sites, and
-# tests/negative/test_reports26_b6_prove_red_runner.py crosses the bar
-# (361 -> 425 lines). Same class as above: test identifiers, not debt.
+# TODO-0001 fixture use-sites, and the runner test file crosses the bar
+# (@lines tests/negative/test_reports26_b6_prove_red_runner.py (361 -> 425 lines)).
+# Same class as above: test identifiers, not debt.
 # REPORTS26 B5 (TODO-0160, restart-recovery doctrine + regression test):
 # baseline raised 4600 -> 4617 — the unit adds 17 TODO-bearing lines: 9
 # in the new tests/negative/test_reports26_b5_restart_recovery.py (the
@@ -1126,7 +1140,24 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # practices catalog — plus +1 from architect-review's refresh docstring
 # line in awf/api/roles.py. All are unit identifiers, not debt — same
 # class as every earlier entry.
-todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
+# M7 (TODO-0231): the todos counter used to match every right-lined "TODO",
+# including TODO-NNNN unit ids and test fixture ids — so each test-heavy unit
+# raised the baseline by hand. It now counts ONLY real debt markers: TODO:,
+# FIXME and XXX introduced by a comment prefix (#, //, /*, *, --), or a bare
+# marker at the start of a line. Unit ids in code, strings and docs are not
+# debt. Documented recalculation: 6633 -> 0 (the repo carries no real debt
+# marker; every counted line was an identifier).
+# Z2 (REVIEW виток 6): `TODO(owner):` is debt too — the parenthesised scope
+# between the marker and the colon does not change the meaning, so the
+# counter reads an optional `(…)` group there (same for FIXME/XXX).
+# ARCH (TODO-0231): the marker alternation lives ONCE (`DEBT=` in the
+# command); the three prefix branches only decide WHERE a marker may start
+# (line-start comment, inline comment, bare line start). Z2 had to edit three
+# copies — that is the drift this collapse removes.
+# Line-count numbers in the comments below are refreshed by
+# `sh scripts/ratchet.sh --update` from `@lines <path> (<count> lines)`
+# annotations — no manual doc drift.
+todos	DEBT='TODO[[:space:]]*(\([^)]*\))?[[:space:]]*:|FIXME[[:space:]]*(\([^)]*\))?[[:space:]]*([^A-Za-z0-9_]|$)|XXX[[:space:]]*(\([^)]*\))?[[:space:]]*([^A-Za-z0-9_]|$)'; git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cIE "(^[[:space:]]*(#|//|/\*|\*|--)[[:space:]]*|[[:space:]](#|//)[[:space:]]*|^[[:space:]]*)($DEBT)" 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
 # baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
 # new tests/negative/test_reports33_setup_form.py (the module docstring's
@@ -1493,7 +1524,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # added before the fix pass) adds 3 TODO-bearing lines (the same 3-per-test
 # shape: the {TODO} f-string in the BASELINE assert, the
 # build_commit_plan/maybe_commit calls) and pushes the file past the
-# 400-line bar (399 -> 445 lines). Same class as the already-counted test
+# 400-line bar (@lines tests/negative/test_reports33_dirty_delta.py (399 -> 586 lines)). Same class as the already-counted test
 # identifiers in tests/ — not debt. The fix pass itself only REMOVED lines
 # from awf/commit_gate.py (the window scan + _find_seq + _DELTA_ANCHOR_WINDOW
 # are dead after F1/F3/iter 4 and are gone).
@@ -1908,7 +1939,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # carries no TODO token. Negative-test catalogue, same class as the
 # test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.
 # R2.1 (TODO-0220, git-модель без печатных строк): files_over_400 raised
-# 85 -> 86 — the new awf/infra/git_model.py (1217 lines) is the one git
+# 85 -> 86 — the new awf/infra/git_model.py (@lines awf/infra/git_model.py (1217 -> 1373 lines)) is the one git
 # parser the R2 model is built on: the NUL-protocol reader (GitRepository,
 # ChangeRecord), the immutable/versioned BaselineManifest with its
 # stability-checked capture, and the rename-pair ownership attribution
@@ -2305,7 +2336,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # lines of the new red file tests/negative/test_roadmap_r2_publish_arch.py
 # (the TODO-0001 fixture id and unit-id docstrings) — test identifiers, never
 # debt. The file also keeps files_over_400 at 95: the three new probes were
-# split out of test_roadmap_r2_publish_audit6.py (335 lines) instead of
+# split out of tests/negative/roadmap_r2/test_roadmap_r2_publish_audit6.py (@lines tests/negative/roadmap_r2/test_roadmap_r2_publish_audit6.py (335 -> 336 lines)) instead of
 # pushing it past the 400-line bar (172 lines in the new file). No production
 # module gained a TODO/FIXME marker.
 

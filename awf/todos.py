@@ -1,11 +1,81 @@
 """Port of lib/todos.sh — shared helpers for enumerating TODOs."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
+from . import paths
 from ._names import unique_name
 from .paths import handoff_dir
 from .signals import short_id as _short_id
+
+#: A ``## REVIEW-фикс`` section heading. Two spellings exist in the archive:
+#: the canonical ``(супервизор, виток N)`` and the legacy ``## REVIEW-фикс 2``.
+#: ONE vocabulary for every reader and writer of the round number — the
+#: supervisor's appender and the RUN-REPORT counter must never disagree about
+#: what a heading says (TODO-0231 architect: they did, on legacy headings).
+_REVIEW_HEADING_RE = re.compile(r"^##\s+REVIEW-фикс[^\n]*$", re.MULTILINE)
+_REVIEW_ROUND_RE = re.compile(r"виток\s+(\d+)")
+_REVIEW_LEGACY_RE = re.compile(r"^##\s+REVIEW-фикс\s+(\d+)")
+
+
+def review_headings(text: str) -> list[str]:
+    """Every ``## REVIEW-фикс`` heading line, in file order."""
+    return _REVIEW_HEADING_RE.findall(text or "")
+
+
+def review_round(heading: str) -> int | None:
+    """The round number a heading declares — None when it declares none.
+
+    The canonical marker wins (``виток N`` anywhere in the heading); the
+    legacy spelling is its leading number (``## REVIEW-фикс 2 (…)``). ``iter
+    N`` is NEVER read: that is the pipeline's attempt counter, a different
+    fact (TODO-0231 W1). A heading without a number is numbered by its
+    position — the caller's fallback, not this function's.
+    """
+    m = _REVIEW_ROUND_RE.search(heading or "")
+    if m:
+        return int(m.group(1))
+    m = _REVIEW_LEGACY_RE.match(heading or "")
+    return int(m.group(1)) if m else None
+
+
+def review_summary(text: str) -> tuple[int | None, int]:
+    """The aggregated review-round facts: (highest declared round, sections).
+
+    ``highest`` is None when no heading declares a number. The two readers
+    need different arithmetic — the appender advances past the numbers, the
+    RUN-REPORT shows the current round — so they take the SAME aggregate and
+    differ only in the final step. A second comprehension beside the parser
+    is where the two answers could drift again (architect TODO-0231).
+    """
+    sections = review_headings(text)
+    rounds = [n for n in (review_round(h) for h in sections) if n is not None]
+    return (max(rounds) if rounds else None, len(sections))
+
+
+def read_todo_text(project_dir: str | Path, todo_id: str) -> str:
+    """The unit's TODO source: the live inbox file, else the archive copy.
+
+    The ONE reader for "what did this unit declare" — candidate evidence,
+    prove-red's contract keys and the RUN-REPORT iteration count all ask the
+    same question. A unit lives in exactly one place (in the inbox while
+    live, under ``done/<id>/`` once archived). ``surrogateescape`` keeps a
+    non-UTF-8 file byte-faithful instead of raising; an unreadable file
+    degrades to "". A caller that must name the exact path it failed to read
+    (verify-pack's contract log) opens the file itself — "" cannot say WHICH
+    of the two places was unreadable.
+    """
+    for f in (
+        paths.inbox(project_dir) / f"{todo_id}.md",
+        paths.done_dir(project_dir) / todo_id / "TODO.md",
+    ):
+        if f.is_file():
+            try:
+                return f.read_text(encoding="utf-8", errors="surrogateescape")
+            except OSError:
+                return ""
+    return ""
 
 
 def is_closed(inbox: Path, outbox: Path, todo_id: str) -> bool:

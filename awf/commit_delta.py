@@ -1430,7 +1430,11 @@ class DeltaAssembler:
         import tempfile
 
         fd, index_path = tempfile.mkstemp(
-            prefix=f"awf-candidate-{self.todo_id}-", suffix=".idx"
+            prefix=f"awf-candidate-{self.todo_id}-",
+            suffix=".idx",
+            # W4: the same temp policy as the commit gate and the candidate
+            # checker — one base (/tmp/opencode) for throwaway indexes.
+            dir=paths.temp_base(),
         )
         os.close(fd)
         env = {**os.environ, "GIT_INDEX_FILE": index_path}

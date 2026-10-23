@@ -67,20 +67,50 @@ _SKELETON_DIRS = [
 ]
 
 
-def _init_plan_dirs() -> list[str]:
-    """Union of every init surface: runtime wipe, skeleton, doctrine seed.
+def _init_plan_dirs(project_dir: Path) -> list[str]:
+    """Union of every init surface: runtime wipe, skeleton, seed writes.
 
     M1 (REVIEW виток 4): ``phases``/``pipelines`` are not in
     ``INIT_RUNTIME_DIRS`` and used to be checked only at the skeleton step —
     AFTER the force wipe. ONE plan definition, checked before every first
     effect: a refusal leaves everything (inbox, logs, state) untouched.
+
+    Z1 (REVIEW виток 6) / architect TODO-0231: the seed surfaces are part of
+    THIS union, not appended by each caller — three copies of the same
+    conditional were the "two sources of one surface" drift the plan exists
+    to remove. ``doctrine`` stays unconditional here (the force branch always
+    preflighted it); the checkpoint surface is appended only when its seed
+    would write.
     """
     from ..doctrine import DOCTRINE_DIRNAME
     from ._destructive import INIT_RUNTIME_DIRS
 
     return list(
-        dict.fromkeys([*INIT_RUNTIME_DIRS, *_SKELETON_DIRS, DOCTRINE_DIRNAME])
+        dict.fromkeys(
+            [
+                *INIT_RUNTIME_DIRS,
+                *_SKELETON_DIRS,
+                DOCTRINE_DIRNAME,
+                *_pending_seed_surfaces(project_dir),
+            ]
+        )
     )
+
+
+def _pending_seed_surfaces(project_dir: Path) -> list[str]:
+    """The ``.agentic``-relative surfaces the seed steps will write NOW.
+
+    Per-branch by design (Q3): a seed that writes nothing must not refuse a
+    branch over a symlink on its surface. ONE definition — the full plan and
+    the re-init branch read the same list, so a new seed cannot be checked
+    in one place and forgotten in the other.
+    """
+    surfaces: list[str] = []
+    if _doctrine_seed_pending(project_dir):
+        surfaces.append("doctrine")
+    if _checkpoint_seed_pending(project_dir):
+        surfaces.append(paths.CHECKPOINT_SURFACE)
+    return surfaces
 
 
 def _refuse_symlinked_dirs(
@@ -280,6 +310,57 @@ def _seed_doctrine(project_dir: Path) -> list[str]:
         ) from exc
 
 
+def _seed_checkpoint_template(project_dir: Path) -> list[str]:
+    """W7 (TODO-0231): copy the checkpoint template into the project.
+
+    The init branches share this: the file lands at
+    ``paths.CHECKPOINT_TEMPLATE`` (managed barrier), and an
+    existing copy — or a dangling leaf — is the USER's file and is never
+    touched. A missing/unreadable vendor template skips silently: the
+    report line then simply does not render (RUN-REPORT prints the path
+    only when the file is there).
+    """
+    from ._templates import awf_templates_dir
+
+    template = awf_templates_dir() / paths.CHECKPOINT_TEMPLATE
+    dest = paths.agentic_dir(project_dir) / paths.CHECKPOINT_TEMPLATE
+    if not template.is_file() or os.path.lexists(dest):
+        return []
+    try:
+        body = template.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    try:
+        _bootstrap_write(
+            dest,
+            body,
+            operation="init checkpoint-template.md",
+            mode=MODE_OWNER_EDITABLE,
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"init refused — unsafe checkpoint-template path: {exc}"
+        ) from exc
+    return [f".agentic/{paths.CHECKPOINT_TEMPLATE}"]
+
+
+def _checkpoint_seed_pending(project_dir: Path) -> bool:
+    """True when the W7 seed would write the checkpoint template.
+
+    Q3's lesson (REVIEW виток 5) applied to the coproduct: preflight
+    exactly the surface this init branch touches — the seed exists only
+    when the vendor template is present and the project has no copy yet.
+    """
+    from ._templates import awf_templates_dir
+
+    return (
+        (awf_templates_dir() / paths.CHECKPOINT_TEMPLATE).is_file()
+        and not os.path.lexists(
+            paths.agentic_dir(project_dir) / paths.CHECKPOINT_TEMPLATE
+        )
+    )
+
+
 def _doctrine_seed_pending(project_dir: Path) -> bool:
     """True when ``seed_doctrine`` would write at least one template.
 
@@ -394,8 +475,13 @@ def init_project(
                 # runtime wipe, the skeleton and the doctrine seed — BEFORE
                 # the first rmtree. A symlinked ``phases``/``pipelines``
                 # used to refuse only after inbox/logs/state were gone.
+                # Z1 (REVIEW виток 6): W7 added the fourth write surface
+                # (``.agentic/docs``) — without it in the plan the force
+                # wipe ran first and only the managed barrier refused.
                 _refuse_symlinked_dirs(
-                    project_dir, _init_plan_dirs(), what="runtime"
+                    project_dir,
+                    _init_plan_dirs(project_dir),
+                    what="runtime",
                 )
                 _clean_runtime(project_dir)
                 state_store.seed_run_generation(project_dir, carried_generation)
@@ -427,10 +513,9 @@ def init_project(
             missing = [
                 d for d in _SKELETON_DIRS if not (agentic / d).exists()
             ]
-            seed_pending = _doctrine_seed_pending(project_dir)
             _refuse_symlinked_dirs(
                 project_dir,
-                missing + (["doctrine"] if seed_pending else []),
+                missing + _pending_seed_surfaces(project_dir),
                 what="skeleton",
             )
             for d in missing:
@@ -442,6 +527,8 @@ def init_project(
             # user data and are never overwritten).
             for name in _seed_doctrine(project_dir):
                 created_dirs.append(f".agentic/doctrine/{name}")
+            for rel in _seed_checkpoint_template(project_dir):
+                created_dirs.append(rel)
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
             vision_path = paths.find_vision_file(project_dir)
@@ -533,7 +620,13 @@ def init_project(
         )
 
     created_files: list[str] = []
-    _refuse_symlinked_dirs(project_dir, _init_plan_dirs(), what="skeleton")
+    # Z1 (REVIEW виток 6): the same augmented plan as the force branch —
+    # the docs surface preflights whenever the checkpoint seed would write.
+    _refuse_symlinked_dirs(
+        project_dir,
+        _init_plan_dirs(project_dir),
+        what="skeleton",
+    )
     for d in _FRESH_DIRS:
         (agentic / d).mkdir(parents=True, exist_ok=True)
         created_files.append(f".agentic/{d}/")
@@ -582,6 +675,13 @@ def init_project(
     # overwrite) — a new project starts with the core safety lessons.
     for name in _seed_doctrine(project_dir):
         created_files.append(f".agentic/doctrine/{name}")
+
+    # W7 (TODO-0231 виток 5): the checkpoint template ships with the
+    # project the same way the doctrine does — copied (missing only,
+    # never overwritten) so the RUN-REPORT's path is a real file, not a
+    # dead link to the installed package.
+    for rel in _seed_checkpoint_template(project_dir):
+        created_files.append(rel)
 
     # plan.md stub — point to vision if found (atomic per H5 invariant)
     if vision_path is not None:

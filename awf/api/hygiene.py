@@ -100,7 +100,11 @@ def _write_todo_locked(md: Path, expected_text: str, new_text: str) -> None:
     No ``project_dir`` argument (REVIEW architect): the barrier derives the
     root from the leaf, so a second spelling of the same root would only
     add a way for the two to disagree (the C4/Q4 class)."""
-    current = md.read_text(encoding="utf-8")
+    # W3: the TODO is a byte-faithful input (the same contract as the
+    # T1 readers) — a non-UTF-8 file must survive a version check, an
+    # append and a backup, so the read and BOTH writes stay in the
+    # surrogateescape spelling.
+    current = md.read_text(encoding="utf-8", errors="surrogateescape")
     if current != expected_text:
         raise AwfApiError(
             f"{md.name} changed after it was read — write refused "
@@ -112,6 +116,7 @@ def _write_todo_locked(md: Path, expected_text: str, new_text: str) -> None:
         new_text,
         operation="update todo",
         mode=MODE_OWNER_EDITABLE,
+        errors="surrogateescape",
     )
 
 
@@ -897,6 +902,7 @@ def _backup_and_write_todo(
         old_content,
         operation="backup todo",
         mode=MODE_OWNER_EDITABLE,
+        errors="surrogateescape",
     )
     try:
         _write_todo_checked(
@@ -911,20 +917,30 @@ def _backup_and_write_todo(
     return backup.relative_to(project_dir).as_posix()
 
 
-_REVIEW_SECTION_RE = re.compile(
-    r"^##\s+REVIEW-фикс\s+\(супервизор,\s+виток\s+(\d+)", re.MULTILINE
-)
-
-
 def _next_review_round(text: str) -> int:
-    """The next ``виток`` number: ``max(existing) + 1``.
+    """The next ``виток`` number — the appender's fallback matches the reader.
 
-    Not ``len(sections) + 1``: a hand-written section may carry a suffix
-    (``… виток 2 — заметка``) or the numbering may have a gap, and either
-    way a length-based count repeats a number that is already in the file.
+    Numbered history: ``max(existing) + 1``. Not ``len(sections) + 1``: a
+    hand-written section may carry a suffix (``… виток 2 — заметка``) or the
+    numbering may have a gap, and either way a length-based count repeats a
+    number that is already in the file.
+
+    Unnumbered history (AA1, TODO-0231 виток 7): a heading that declares no
+    number is the round it sits in — the RUN-REPORT fallback reports ``iters:
+    len(sections)`` for such a file, so the appender must advance the SAME
+    fallback: next = ``len(sections) + 1``. The old ``0 + 1`` restarted at 1
+    and wrote a duplicate «виток 1» over the section that already was round 1.
+
+    The heading vocabulary comes from :func:`awf.todos.review_round` — the
+    ONE reader of "what round does this heading declare" — so a unit whose
+    history mixes the legacy ``## REVIEW-фикс 2`` spelling advances past
+    those numbers too instead of restarting at 1 (architect TODO-0231: the
+    appender and the RUN-REPORT counter used to read different vocabularies).
     """
-    rounds = [int(n) for n in _REVIEW_SECTION_RE.findall(text)]
-    return (max(rounds) if rounds else 0) + 1
+    highest, count = todos.review_summary(text)
+    if highest is not None:
+        return highest + 1
+    return count + 1
 
 
 def _live_pipeline_on(project_dir: Path, todo_id: str) -> tuple[bool, int]:
@@ -1110,7 +1126,7 @@ def _review_append_locked(
             "awf todo-update (awf_todo_update)."
         )
 
-    old_content = md.read_text(encoding="utf-8")
+    old_content = md.read_text(encoding="utf-8", errors="surrogateescape")
     round_no = _next_review_round(old_content)
     heading = f"## REVIEW-фикс (супервизор, виток {round_no})"
     new_content = _apply_append(old_content, heading + "\n\n" + body)
@@ -1401,7 +1417,7 @@ def _update_todo_impl(
             message=f"{todo_id} updated: {what}; number/.ready/baseline sha kept.",
         )
 
-    old_content = md.read_text(encoding="utf-8")
+    old_content = md.read_text(encoding="utf-8", errors="surrogateescape")
 
     if has_content:
         new_content = content

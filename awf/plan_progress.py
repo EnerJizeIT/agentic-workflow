@@ -30,7 +30,9 @@ def extract_step_id_from_todo(todo_path: Path) -> int | None:
     if not todo_path.is_file():
         return None
     try:
-        text = todo_path.read_text(encoding="utf-8")
+        # T1: surrogateescape — a non-UTF-8 TODO keeps its bytes; the
+        # step marker is ASCII, so the scan survives it.
+        text = todo_path.read_text(encoding="utf-8", errors="surrogateescape")
     except OSError:
         return None
 

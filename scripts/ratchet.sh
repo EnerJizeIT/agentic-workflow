@@ -20,6 +20,15 @@
 #
 # Counters live in .ratchet-counters, one per line: name<TAB>command.
 #
+# A comment in .ratchet-counters may carry a line-count annotation:
+#   # @lines <path> (<count> lines)        — rewritten to the file's wc -l
+#   # @lines <path> (<old> -> <count> lines) — only the right side is rewritten
+# The suffix (lines / строк) is preserved. A missing file leaves the line
+# alone. --update refreshes the annotations, so doc numbers stop drifting.
+# Scope: ONLY annotations that name their path after @lines. A bare
+# "(N lines)" elsewhere in a comment has no file to measure and stays a
+# hand-written number.
+#
 # Exit codes: 0 within baseline, 1 a count grew or drifted, 2 the ratchet
 # could not run (broken counter, missing counters or baseline file).
 set -u
@@ -97,6 +106,74 @@ if [ "${1:-}" = "show" ]; then
   exit 0
 fi
 
+# Rewrite one ``@lines <path> (<count>[ lines| строк])`` annotation from the
+# file's current line count. An optional ``<old> -> <count>`` keeps the old
+# anchor and refreshes only the right side. A missing file leaves the line
+# untouched (a stale annotation must not invent a number).
+refresh_annotation() {
+  line=$1
+  rest=${line#*@lines }
+  path=${rest%% *}
+  case "$rest" in
+    *"("*")"*) ;;
+    *) printf '%s\n' "$line"; return 0 ;;
+  esac
+  inside=${rest#*(}
+  inside=${inside%%)*}
+  # shellcheck disable=SC2086 — the words are the annotation's own fields
+  set -- $inside
+  first=${1:-}
+  case "$first" in
+    ''|*[!0-9]*) printf '%s\n' "$line"; return 0 ;;
+  esac
+  # W2: ``set -u`` treats an unset $2 as an error — a bare-count annotation
+  # ``# @lines file.py (12)`` has no word after the count. Defaults, not a
+  # rc=0 exit with a blanked line.
+  if [ "${2:-}" = "->" ]; then
+    third=${3:-}
+    case "$third" in
+      ''|*[!0-9]*) printf '%s\n' "$line"; return 0 ;;
+    esac
+    unit=${4:-lines}
+    prefix="$first -> "
+  else
+    # W2: no unit word after the count — the bare form stays bare
+    # (``(12)`` refreshes to ``(N)``, never to ``(N lines)``).
+    unit=${2:-}
+    prefix=""
+  fi
+  [ -f "$path" ] || { printf '%s\n' "$line"; return 0; }
+  count=$(wc -l < "$path" 2>/dev/null | tr -d '[:space:]')
+  case "$count" in
+    ''|*[!0-9]*) printf '%s\n' "$line"; return 0 ;;
+  esac
+  # ``rest`` starts right after ``@lines ``: the annotation's own "(...)" is
+  # the first one there, while prose parentheses before the annotation (unit
+  # ids like ``(TODO-0209)``) stay untouched.
+  head="${line%%@lines *}@lines ${rest%%(*}"
+  tail=${rest#*)}
+  if [ -n "$prefix" ]; then
+    printf '%s(%s%s %s)%s\n' "$head" "$prefix" "$count" "$unit" "$tail"
+  elif [ -n "$unit" ]; then
+    printf '%s(%s %s)%s\n' "$head" "$count" "$unit" "$tail"
+  else
+    printf '%s(%s)%s\n' "$head" "$count" "$tail"
+  fi
+}
+
+refresh_annotations() {
+  [ -f "$COUNTERS" ] || return 0
+  tmp="$COUNTERS.tmp.$$"
+  : > "$tmp" || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *"@lines "*) line=$(refresh_annotation "$line") ;;
+    esac
+    printf '%s\n' "$line" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  done < "$COUNTERS"
+  mv "$tmp" "$COUNTERS"
+}
+
 if [ "${1:-}" = "--update" ]; then
   refusals=''
   if [ -f "$BASELINE" ]; then
@@ -130,6 +207,10 @@ EOF
       fi
     fi
   done
+  if ! refresh_annotations; then
+    echo "ratchet: could not refresh @lines annotations in $COUNTERS" >&2
+    exit 2
+  fi
   printf '%s\n' "$current" > "$BASELINE"
   echo "Baseline written:"; cat "$BASELINE"; exit 0
 fi

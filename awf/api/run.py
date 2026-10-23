@@ -948,6 +948,40 @@ def _publication_lines(project_dir: Path, todo_ids) -> list[str]:
     return ["## Publication", ""] + lines + [""]
 
 
+def _iteration_lines(project_dir: Path, todo_ids) -> list[str]:
+    """TODO-0231: the unit's iteration price — ``iters: N (REVIEW-фикс M
+    раз)`` from the unit's own history (the REVIEW-фикс sections the
+    supervisor appended). ``N`` is the highest round number found in the
+    headings; a heading without a number contributes the section it sits
+    in, so the fallback is the count of sections (W1: review rounds start
+    at 2 — the first pass carries no heading). ``M`` is how many sections
+    exist. A unit without review rounds has no line.
+
+    The aggregate comes from :func:`awf.todos.review_summary` — the same one
+    the supervisor's appender advances (it only adds one), so the report and
+    the next round number cannot disagree (architect TODO-0231)."""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in todo_ids:
+        todo = str(raw or "")
+        if not todo or todo in seen:
+            continue
+        seen.add(todo)
+        text = todos.read_todo_text(project_dir, todo)
+        if not text:
+            continue
+        highest, count = todos.review_summary(text)
+        if not count:
+            continue
+        iters = highest if highest is not None else count
+        lines.append(
+            f"- {todo}: iters: {iters} (REVIEW-фикс {count} раз)"
+        )
+    if not lines:
+        return []
+    return ["## Unit iterations", ""] + lines + [""]
+
+
 def _write_report(
     project_dir: Path,
     state: dict,
@@ -1003,6 +1037,14 @@ def _write_report(
         f"**Elapsed:** {int(run_state.elapsed_minutes(state))} min "
         f"(budget {state.get('budget_minutes', 0)} min)",
     ]
+    # T3: the template lives in the USER's project, not in the installed
+    # package — a path in the report is a dead link unless the file is
+    # actually there. Renders only an existing link.
+    if (paths.agentic_dir(project_dir) / paths.CHECKPOINT_TEMPLATE).is_file():
+        lines.append(
+            f"**Checkpoint template:** .agentic/{paths.CHECKPOINT_TEMPLATE} "
+            "(manual fill: proven / price / leftovers / next-stage readiness)"
+        )
     # REPORTS29 (TODO-0170): the current unit's honest facts — the report
     # must not say "8/8 done" while the 8th unit is not archived.
     current_unit = str(state.get("current") or "")
@@ -1080,6 +1122,11 @@ def _write_report(
     # R2.5 (REVIEW, iter 2): the publication facts (commit / receipt /
     # archive) as separate lines — requirement 4.
     lines += _publication_lines(
+        project_dir, [current_unit, *completed, *rejects.keys()]
+    )
+    # TODO-0231: the iteration price per unit — review rounds are the
+    # dominant cost of a unit, so the report names them.
+    lines += _iteration_lines(
         project_dir, [current_unit, *completed, *rejects.keys()]
     )
     # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,

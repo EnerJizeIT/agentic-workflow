@@ -44,22 +44,29 @@ mutation outside the tool. It is mutually exclusive with ``prove_red``:
 declaring both is a contract error (one TODO either proves a fix or pins a
 behavior).
 
-``prove_red_kind`` + ``prove_red_note`` (TODO-0201): the declared kind of
-the prove-red check. The only kind is ``coverage`` — a
-coverage/validation unit whose tests check behavior implemented EARLIER
-(other units), so on this unit's baseline they are green by construction
-and prove-red honestly returns ``not-red``. With the kind declared, a
-``not-red`` verdict is a PASS of the verify-pack ``prove_red`` section
-(annotated "coverage unit — not-red is expected (declared)", with the
-note in the report) instead of a failure; every other verdict and every
-other section are unaffected by the declaration. The kind requires
-``prove_red`` (the kind modifies that check) and ``prove_red_note`` (a
-one-line justification); the two keys are a pair — either both or
-neither is a contract error. The kind is mutually exclusive with
-``prove_red_pin`` (both expect green on the baseline, for different
-reasons). An UNdeclared ``not-red`` on a tests-only diff gets a hint line
-in the GATES report suggesting the declaration — the verdict itself is
-never auto-substituted.
+``prove_red_kind`` + ``prove_red_note`` (TODO-0201, TODO-0231): the
+declared kind of the prove-red check. Kinds:
+
+- ``coverage`` — a coverage/validation unit whose tests check behavior
+  implemented EARLIER (other units), so on this unit's baseline they are
+  green by construction and prove-red honestly returns ``not-red``. With
+  the kind declared, a ``not-red`` verdict is a PASS of the verify-pack
+  ``prove_red`` section (annotated, with the note in the report) instead
+  of a failure.
+- ``new-api`` — a new module/symbol unit: the test falls on the baseline
+  only because the symbol does not exist yet (prove-red reports that as
+  its ``new_code_acceptable`` fact). With the kind declared that verdict
+  is ``new-api-ok`` — a PASS with a warning section; a real broken runner
+  (collection error outside the project, no tests, timeout) stays a fail.
+
+Every other verdict and every other section are unaffected by the
+declaration. The kind requires ``prove_red`` (the kind modifies that
+check) and ``prove_red_note`` (a one-line justification); the two keys are
+a pair — either both or neither is a contract error. The kind is mutually
+exclusive with ``prove_red_pin`` (both expect green on the baseline, for
+different reasons). An UNdeclared ``not-red`` on a tests-only diff gets a
+hint line in the GATES report suggesting the declaration — the verdict
+itself is never auto-substituted.
 
 DONE.json (optional, written by the worker to ``.agentic/outbox/``)::
 
@@ -110,10 +117,10 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: of EXISTING behavior that must be GREEN on the baseline (mutually
 #: exclusive with ``prove_red``); the teeth are proven by mutation, outside
 #: the tool.
-#: ``prove_red_kind`` / ``prove_red_note`` (TODO-0201): the declared
-#: coverage kind (only ``coverage``) + its one-line justification — a pair:
-#: either both or neither; the kind requires a ``prove_red`` list and is
-#: mutually exclusive with ``prove_red_pin``.
+#: ``prove_red_kind`` / ``prove_red_note`` (TODO-0201, TODO-0231): the
+#: declared kind (``coverage`` or ``new-api``) + its one-line
+#: justification — a pair: either both or neither; the kind requires a
+#: ``prove_red`` list and is mutually exclusive with ``prove_red_pin``.
 #: ``replan_for`` (TODO-0213): the replan marker — the id of the unit this
 #: TODO replaces (a string, not a list); the interactive replan wait picks
 #: the TODO up only when the marker names the escalated unit.
@@ -399,11 +406,12 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
                 "e.g. prove_red_kind: coverage"
             )
         kind = v.strip()
-        if kind != "coverage":
+        if kind not in ("coverage", "new-api"):
             raise ValueError(
-                f"unknown prove_red_kind {kind!r} — the only declared kind "
-                "is 'coverage' (a coverage/validation unit: its tests check "
-                "already-implemented behavior, so not-red is expected)"
+                f"unknown prove_red_kind {kind!r} — the declared kinds are "
+                "'coverage' (tests check already-implemented behavior, so "
+                "not-red is expected) and 'new-api' (the test falls on the "
+                "baseline only because the new symbol does not exist yet)"
             )
         if "prove_red_pin" in data:
             raise ValueError(
@@ -416,9 +424,9 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         if not isinstance(note, str) or not note.strip():
             raise ValueError(
                 "'prove_red_kind' requires 'prove_red_note' — a one-line "
-                "justification of why this unit is coverage (not-red on "
-                "the baseline is expected); the note goes into the GATES "
-                "report"
+                "justification of the declared kind (why not-red is "
+                "expected for `coverage`, or which symbol is new for "
+                "`new-api`); the note goes into the GATES report"
             )
         pr = data.get("prove_red")
         if not isinstance(pr, list) or not pr:

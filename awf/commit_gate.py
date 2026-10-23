@@ -105,7 +105,9 @@ def _todo_title(project_dir: Path, todo_id: str) -> str:
     """
     todo_file = paths.inbox(project_dir) / f"{todo_id}.md"
     try:
-        text = todo_file.read_text(encoding="utf-8")
+        # T1: surrogateescape — a non-UTF-8 TODO degrades its title, it
+        # does not crash the commit plan.
+        text = todo_file.read_text(encoding="utf-8", errors="surrogateescape")
     except OSError:
         return ""
     for line in text.splitlines():
@@ -229,7 +231,11 @@ def _commit_via_isolated_index(
     or error the index is byte-identical (nothing was ever staged into it).
     """
     fd, index_path = tempfile.mkstemp(
-        prefix=f"awf-commit-index-{plan.todo_id}-", suffix=".idx"
+        prefix=f"awf-commit-index-{plan.todo_id}-",
+        suffix=".idx",
+        # W4: same temp policy as the delta assembler and the candidate
+        # checker — one base (/tmp/opencode) for throwaway indexes.
+        dir=paths.temp_base(),
     )
     os.close(fd)
     env = {**os.environ, "GIT_INDEX_FILE": index_path}

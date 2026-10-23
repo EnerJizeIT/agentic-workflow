@@ -1,7 +1,48 @@
-"""Path resolution for .agentic/ directories."""
+"""Path resolution for .agentic/ directories and the shared awf temp base."""
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
+
+#: SPEC-2: awf's throwaway WORKTREES and isolated git indexes live under
+#: ``/tmp/opencode``, not the shared system temp. ONE source for every caller —
+#: two literals drift the moment one of them moves. The remaining throwaway
+#: file (publish's commit-msg) joins this policy with the unified temp module
+#: in TODO-0243, not by a fourth per-call literal.
+TMP_BASE = "/tmp/opencode"
+
+
+def temp_base() -> Path:
+    """The temp base, created on demand; the system temp when it cannot be.
+
+    Best-effort by design: a scratch directory is a commodity — an
+    environment where the base cannot be created must not fail the check
+    that asked for it. The probe catches the case the ``mkdir`` above
+    cannot: the base may already exist and be unwritable (another user's
+    ``/tmp/opencode``) — ``exist_ok=True`` succeeds silently, and the first
+    ``mkdtemp`` inside would raise. A throwaway probe directory proves the
+    base is actually usable before it is returned.
+    """
+    base = Path(TMP_BASE)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        probe = Path(tempfile.mkdtemp(dir=base))
+        probe.rmdir()
+    except OSError:
+        return Path(tempfile.gettempdir())
+    return base
+
+
+#: W7 (TODO-0231): the seeded stage-checkpoint template, `.agentic`-relative
+#: (the anchor itself lives in :func:`agentic_dir`). The init seed, the
+#: seed-pending preflight and the RUN-REPORT link all read this one literal —
+#: three spellings of the same path are a dead link waiting for one of them
+#: to move (architect TODO-0231).
+CHECKPOINT_TEMPLATE = "docs/checkpoint-template.md"
+
+#: The `.agentic`-relative SURFACE the init preflight names — the template's
+#: own directory, derived so the two cannot disagree.
+CHECKPOINT_SURFACE = CHECKPOINT_TEMPLATE.split("/", 1)[0]
 
 
 def agentic_dir(project_dir: str | Path = ".") -> Path:

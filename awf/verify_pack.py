@@ -52,6 +52,10 @@ Sections (each: status + details + denominator):
     ``not-red`` verdict a pass (annotated, with the note in the report);
     an UNdeclared ``not-red`` on a tests-only diff gets a hint line
     suggesting the declaration — the verdict is never auto-substituted.
+    The ``new-api`` kind (TODO-0231) makes a ``broken-runner`` whose typed
+    cause is the missing new symbol (prove-red's ``new_code_acceptable``
+    fact) a ``new-api-ok`` pass — a warning does not colour the exit code;
+    a real broken runner keeps its fail.
 9. ``candidate`` — R2.4: reads ``context/CANDIDATE-<todo>.json`` (written by
    the approve) and re-derives the bound facts (HEAD, contract, environment,
    candidate tree, degradation set) with the SAME validator the commit gate
@@ -869,18 +873,35 @@ def _prove_red_section(
     for w in res.warnings:
         lines.append(f"warning: {w}")
     kind = contract.get("prove_red_kind")
-    # TODO-0201: a declared coverage unit — not-red is expected by
-    # construction (the tests guard already-implemented behavior), so it
-    # is a pass with the justification; every other verdict is unchanged
-    # (the declaration exempts nothing else).
-    if kind == "coverage" and res.verdict == VERDICT_NOT_RED:
-        note = contract.get("prove_red_note")
-        lines.append(
+    # TODO-0201/TODO-0231: a declared kind turns EXACTLY ONE verdict into a
+    # pass with its justification; every other verdict stays a fail (the
+    # declaration exempts nothing else). ``new-api`` passes a broken-runner
+    # whose typed cause is the missing new symbol (prove-red's
+    # ``new_code_acceptable`` fact — never the warning's prose); a broken
+    # runner WITHOUT that fact (collection error outside the project, 0
+    # tests, timeout) keeps its fail. ``coverage`` passes a not-red: the
+    # tests guard already-implemented behavior, so they are green on this
+    # unit's baseline by construction.
+    declared: tuple[str, str] | None = None
+    if kind == "new-api" and res.verdict == VERDICT_BROKEN and res.new_code_acceptable:
+        declared = (
+            "new-api-ok — the test falls on the baseline only because the "
+            "new symbol does not exist yet (declared `prove_red_kind: "
+            "new-api`). This is a pass with a warning, not a red.",
+            "new-api-ok",
+        )
+    elif kind == "coverage" and res.verdict == VERDICT_NOT_RED:
+        declared = (
             "coverage unit — not-red is expected (declared "
             "`prove_red_kind: coverage`): the tests guard "
             "already-implemented behavior, so they are green on this "
-            "unit's baseline by construction."
+            "unit's baseline by construction.",
+            "coverage-ok (declared not-red)",
         )
+    if declared is not None:
+        annotation, detail = declared
+        lines.append(annotation)
+        note = contract.get("prove_red_note")
         if isinstance(note, str) and note.strip():
             lines.append(f"note: {note.strip()}")
         return Section(
@@ -888,7 +909,7 @@ def _prove_red_section(
             status="pass",
             lines=lines,
             measured=True,
-            detail="coverage-ok (declared not-red)",
+            detail=detail,
         )
     # An undeclared not-red keeps its fail; a tests-only diff suggests the
     # unit is coverage (a hint line only, the verdict is untouched).
@@ -1104,7 +1125,11 @@ def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | N
     for f in candidates:
         if f.is_file():
             try:
-                text = f.read_text(encoding="utf-8")
+                # T1: surrogateescape — a non-UTF-8 TODO is legitimate input
+                # (byte-faithful text, the same tolerance as the unified
+                # reader ``todos.read_todo_text``); a strict decode crashed
+                # the whole pack before any section or report was written.
+                text = f.read_text(encoding="utf-8", errors="surrogateescape")
             except OSError as e:
                 _log(logs_dir, f"U5: {f} unreadable ({e}) — no contract")
                 return None

@@ -39,12 +39,19 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import _proc, commit_delta, paths, run_state
+from . import _proc, commit_delta, paths, run_state, todos
 from . import config as cfg_mod
 from .infra import managed_fs
 from .infra.git_model import GIT_TIMEOUT
 from .unit_contract import parse_todo_contract
 from .verify import _verify_cmd_timeout, candidate_check_commands, verify_command_keys
+
+#: SPEC-2/PA-2: candidate temporaries (the throwaway worktree and the
+#: isolated index) sit in the awf temp base like every other temporary —
+#: ``paths.temp_base`` is the ONE owner of that path and its fallback, so
+#: there is deliberately no per-module spelling of it here (architect
+#: TODO-0231: the alias was a second name for one policy).
+
 
 #: The evidence file the supervisor's verifier writes and the commit gate
 #: reads: ``.agentic/context/CANDIDATE-<todo>.json``.
@@ -84,20 +91,6 @@ def current_head(project_dir: Path) -> str:
     return commit_delta.head_sha(project_dir)
 
 
-def read_todo_text(project_dir: Path, todo_id: str) -> str:
-    """The TODO source (inbox, or the archive) — "" when neither exists."""
-    for f in (
-        paths.inbox(project_dir) / f"{todo_id}.md",
-        paths.done_dir(project_dir) / todo_id / "TODO.md",
-    ):
-        if f.is_file():
-            try:
-                return f.read_text(encoding="utf-8")
-            except OSError:
-                return ""
-    return ""
-
-
 def contract_digest(project_dir: Path, todo_id: str) -> str:
     """Digest of the TODO's contract block (verify/gates/prove_red/files).
 
@@ -106,7 +99,7 @@ def contract_digest(project_dir: Path, todo_id: str) -> str:
     did not move. No block → the digest of an empty contract (a fixed,
     deterministic marker).
     """
-    text = read_todo_text(project_dir, todo_id)
+    text = todos.read_todo_text(project_dir, todo_id)
     try:
         contract, unknown = parse_todo_contract(text)
     except ValueError:
@@ -134,7 +127,7 @@ def environment_digest(project_dir: Path) -> str:
 
 def unit_revision(project_dir: Path, todo_id: str, baseline_sha: str) -> str:
     """The revision identity of the unit: TODO bytes + baseline sha."""
-    text = read_todo_text(project_dir, todo_id)
+    text = todos.read_todo_text(project_dir, todo_id)
     return _sha256_text(f"{todo_id}\0{baseline_sha}\0{text}")
 
 
@@ -152,7 +145,7 @@ def candidate_commands(project_dir: Path, todo_id: str) -> list[str]:
     Delegates to :func:`awf.verify.candidate_check_commands` (one home for
     the contract/config resolution). No source → ``[]``.
     """
-    text = read_todo_text(project_dir, todo_id)
+    text = todos.read_todo_text(project_dir, todo_id)
     try:
         contract, _unknown = parse_todo_contract(text)
     except ValueError:
@@ -223,7 +216,8 @@ def materialize_candidate(
     index — the candidate is inert.
 
     ``worktree_dir`` — an explicit destination (tests pass ``tmp_path``);
-    otherwise a fresh ``tempfile.mkdtemp`` under the system temp. The
+    otherwise a fresh ``tempfile.mkdtemp`` under ``/tmp/opencode`` (PA-2;
+    the system temp when that base cannot be created). The
     caller owns cleanup when it passes a dir; a self-made dir is removed on
     every outcome by the caller that owns the mkdtemp — :func:`build_evidence`
     (``try/finally``).
@@ -258,7 +252,7 @@ def materialize_candidate(
         return Materialization(plan, tree, None, "", tuple(plan.degraded))
     self_made = worktree_dir is None
     dest = worktree_dir if worktree_dir is not None else Path(
-        tempfile.mkdtemp(prefix=f"awf-candidate-wt-{todo_id}-")
+        tempfile.mkdtemp(prefix=f"awf-candidate-wt-{todo_id}-", dir=paths.temp_base())
     )
     err = _checkout_tree(project_dir, tree, dest)
     if err:
@@ -290,7 +284,9 @@ def _checkout_tree(project_dir: Path, tree_oid: str, dest: Path) -> str:
     lays the files down, and the file is removed in ``finally``.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    fd, index_path = tempfile.mkstemp(prefix="awf-candidate-co-", suffix=".idx")
+    fd, index_path = tempfile.mkstemp(
+        prefix="awf-candidate-co-", suffix=".idx", dir=paths.temp_base()
+    )
     os.close(fd)
     os.unlink(index_path)  # git read-tree creates the index itself
     env = {**os.environ, "GIT_INDEX_FILE": index_path}

@@ -41,7 +41,7 @@ def _delta():
     return commit_delta
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _git(proj: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
