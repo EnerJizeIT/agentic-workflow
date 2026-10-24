@@ -47,7 +47,7 @@ pip install awf agent-workflow-ui
 | **opencode** | any recent version with MCP support |
 | **OS** | Linux (tested), macOS (should work), Windows (untested) |
 | **Models** | Model-agnostic. Tested with Qwen vLLM. Should work with Claude, GPT, or any opencode-supported provider. |
-| **Git** | Required (commit gate, baselines, rollback) |
+| **Git** | 2.36+ (`git hook run`); git 2.5–2.35 works via a direct hook fallback with the same semantics |
 
 > **Timeouts:** agent stages time out after 1 hour. Extend with
 > `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200`

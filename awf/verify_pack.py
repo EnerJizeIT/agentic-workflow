@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import shlex
 import shutil
@@ -104,6 +105,7 @@ from .prove_red import (
 )
 from .signals import short_id
 from .unit_contract import parse_done_json, parse_todo_contract, render_done_json
+from .verify import parse_argv
 
 #: Per-gate subprocess timeout (seconds).
 GATE_TIMEOUT = 300
@@ -174,19 +176,37 @@ def _run_cmd(
     cmd: str,
     cwd: Path,
     timeout: int,
+    env: dict[str, str] | None = None,
 ) -> tuple[int | None, str, bool]:
-    """Run a shell command. Returns (rc, output, timed_out)."""
+    """Run a command as argv (``shlex.split``), no shell.
+
+    A4 (REVIEW виток 2): the same launch mechanism as the candidate check
+    (:func:`awf.candidate_verify.run_check`) and verify.py — one command→
+    argv rule (:func:`awf.verify.parse_argv`), so a command means the same
+    thing on every surface it is gated by. An env prefix
+    (``PYTHONPATH=... python -m pytest``) is SHELL syntax — pass the
+    environment through ``env`` instead. Bad quoting and a launch failure
+    (missing executable, permission denied — the old ``shell=True`` turned
+    those into rc 127) fail typed (rc 127 + ``ABORTED`` text), never a
+    traceback.
+
+    Returns (rc, output, timed_out)."""
+    parts, problem = parse_argv(cmd)
+    if problem:
+        return 127, f"ABORTED: {problem}", False
     try:
         cp = run_tree(
-            cmd,
+            parts,
             timeout=timeout,
             capture_output=True,
             text=True,
             cwd=str(cwd),
-            shell=True,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return None, "", True
+    except (subprocess.SubprocessError, OSError) as e:
+        return 127, f"ABORTED: {e}", False
     out = (cp.stdout or "") + (("\n" + cp.stderr) if cp.stderr else "")
     return cp.returncode, out, False
 
@@ -649,19 +669,24 @@ def _qa_findings_section(project: Path, todo_id: str, timeout: int) -> Section:
     # where awf was installed — an unguarded natural repro such as
     # ``os.killpg(1, 15)`` would signal the whole user session.
     pkg_parent = Path(__file__).resolve().parent.parent
-    env_prefix = (
-        f"PYTHONPATH={shlex.quote(str(pkg_parent))}"
-        "${PYTHONPATH:+:$PYTHONPATH} "
+    # A4 (REVIEW виток 2): the env prefix (``PYTHONPATH=... ${PYTHONPATH:…}``)
+    # is shell syntax — with the argv launcher it moves into the explicit
+    # environment, appended after any inherited value exactly like the old
+    # ``${PYTHONPATH:+:$PYTHONPATH}`` expansion did.
+    qa_env = dict(os.environ)
+    inherited = os.environ.get("PYTHONPATH")
+    qa_env["PYTHONPATH"] = (
+        f"{pkg_parent}{':' + inherited if inherited else ''}"
     )
     timeout_arg = (
         f"--timeout={int(timeout)} " if _pytest_timeout_available() else ""
     )
     cmd = (
-        f"{env_prefix}{py} -m pytest {shlex.quote(str(path))} -q "
+        f"{py} -m pytest {shlex.quote(str(path))} -q "
         f"{timeout_arg}-p no:cacheprovider "
         "-p awf._safety_tripwire"
     )
-    rc, out, timed_out = _run_cmd(cmd, project, timeout)
+    rc, out, timed_out = _run_cmd(cmd, project, timeout, env=qa_env)
     if "No module named pytest" in out:
         return Section(
             name="qa_findings",
@@ -704,6 +729,21 @@ def _qa_findings_section(project: Path, todo_id: str, timeout: int) -> Section:
 
 
 def _contract_tests_section(project: Path, contract: dict | None, timeout: int) -> Section:
+    if isinstance(contract, _BrokenContract):
+        # F2 (REVIEW виток 3): the block exists but does not parse — the
+        # gate FAILS with the reason ("skipped — no block" would hide a
+        # declared verification entirely; "broken runner" is what the
+        # supervisor would need to see to re-materialize the contract).
+        return Section(
+            name="contract_tests",
+            status="fail",
+            lines=[
+                f"- the TODO has a contract block, but it does not parse: "
+                f"{contract.reason} — fix the block (front-matter YAML/"
+                "`verify:` keys) and rerun the pack"
+            ],
+            detail=f"fail — broken contract block: {contract.reason}",
+        )
     cmds = (contract or {}).get("verify")
     if not isinstance(cmds, list) or not cmds:
         return Section(
@@ -1112,11 +1152,31 @@ def _candidate_section(project: Path, todo_id: str) -> Section:
 
 # ─── TODO contract loading ───────────────────────────────────────────────
 
+
+class _BrokenContract(dict):
+    """F2 (REVIEW виток 3): the TODO HAS a contract block, but it does not
+    parse — the opposite of "no block", it must not be rendered as one.
+
+    Behaves as an empty contract for every ``.get()`` reader (diff/prove-red
+    skip their declared keys, the same as for a missing block); only
+    ``_contract_tests_section`` checks the type and FAILS the gate with the
+    parse reason instead of skipping it with "no block".
+    """
+
+    reason: str
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+
 def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | None:
     """Read the TODO (inbox, or the archive) and parse its contract block.
 
-    Returns None when there is no block; a broken block is noted in the log
-    and treated as absent — the pack must not crash on it.
+    Returns None when there is NO block at all (the pack must not crash on
+    it); a block that does not parse returns :class:`_BrokenContract`
+    (F2) so the gate still reports the TODO's own declared commands — the
+    fact it exists and refuses to parse is never silently "skipped".
     """
     candidates = (
         paths.inbox(project) / f"{todo_id}.md",
@@ -1136,8 +1196,9 @@ def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | N
             try:
                 contract, unknown = parse_todo_contract(text)
             except ValueError as e:
-                _log(logs_dir, f"U5: contract block in {f} is broken: {e}")
-                return None
+                reason = f"contract block in {f} is broken: {e}"
+                _log(logs_dir, f"U5: {reason}")
+                return _BrokenContract(reason)
             if unknown:
                 _log(logs_dir, f"U5: unknown contract keys in {f}: {', '.join(unknown)}")
             return contract

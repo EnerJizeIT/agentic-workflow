@@ -332,6 +332,115 @@ def _check_str_list(value: object, field: str) -> None:
             raise ValueError(f"'{field}[{k}]' must be a non-empty string, got {item!r}")
 
 
+#: A4 (REVIEW виток 2): shell operator characters that a ``verify:`` command
+#: must not carry OUTSIDE quotes. The declared commands run as argv
+#: (``shlex.split``, no shell — one launch mechanism shared by
+#: candidate_verify and verify_pack), so an operator would silently become a
+#: literal argument — a command that means something else than people expect.
+#: F3 (REVIEW виток 3) adds command substitution — ``$(`` and backticks — and
+#: the background ``&``: the same silent-literal class, and unlike ``VAR=val``
+#: or globbing (both pass through argv as plain arguments) they promise
+#: execution semantics the argv runner does not deliver.
+_SHELL_OPS = ("&&", "||", ";", "|", ">", "<", "$(", "&", "`")
+
+
+def _first_shell_op_outside_quotes(cmd: str) -> str | None:
+    """The first shell operator at a quoted-agnostic position, or ``None``.
+
+    A single pass tracks single- and double-quote (with ``\\`` escapes in
+    double quotes); operators only count OUTSIDE any quote — a command like
+    ``grep -n "pid > 1" f.py`` stays legal, and so does any operator inside
+    quotes (an ``$(...)`` in a quoted text is a literal argument for shlex
+    too). A backslash-escaped operator outside quotes (``a\\;b``) is a
+    literal argument for ``shlex`` too, so it is not reported.
+    ``&&``/``||`` are checked before the single-char forms so ``&&`` is
+    not reported as its ``&``-less neighbour.
+    """
+    quote = ""
+    escaped = False
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif quote == '"' and ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch == "\\":
+            # Outside quotes a backslash escapes the next character: shlex
+            # keeps ``a\;b`` as ONE argument, so the escaped operator is not
+            # a shell operator here either.
+            i += 2
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            i += 1
+            continue
+        for op in _SHELL_OPS:
+            if cmd.startswith(op, i):
+                return op
+        i += 1
+    return None
+
+
+def shell_operator_refusal(cmd: str) -> str:
+    """The A4 refusal text for a command carrying an unquoted shell operator.
+
+    The ONE wording of the shell-operator policy (REVIEW виток 6, I1): the
+    contract validation renders it with the ``verify[k]`` address, and every
+    argv runner (config ``verification.*`` commands, candidate check,
+    verify-pack) renders it as its own typed refusal — one predicate, one
+    message. An empty string means the command is clean.
+
+    K1 (REVIEW виток 8): the SAME predicate owns the H1 newline rule, so a
+    config ``test_cmd``/``baseline_cmd`` cannot smuggle a second command past
+    the argv runner either. A trailing ``\\r\\n``/``\\n`` (a YAML block scalar
+    always appends one) is normalized away — one command; an INTERIOR newline
+    means multiple commands on one surface and is refused.
+    """
+    text = str(cmd).rstrip("\r\n")
+    if "\n" in text or "\r" in text:
+        return (
+            "multi-line verify — one command per entry: verify runs argv "
+            "without a shell; use a script or separate commands"
+        )
+    op = _first_shell_op_outside_quotes(text)
+    if not op:
+        return ""
+    return (
+        f"contains a shell operator ({op!r}) outside quotes — commands run as "
+        "argv without a shell, so use a script or separate commands (or quote "
+        'the operator into a `sh -c "..."` argument)'
+    )
+
+
+def _check_verify_shell_operators(value: list) -> None:
+    """A4 (REVIEW виток 2) + F3 (REVIEW виток 3) + H1 (REVIEW виток 5):
+    ``verify:`` commands are argv, not shell lines.
+
+    An unquoted ``&&``/``||``/``;``/``|``/``>``/``<``/``&``/backtick/
+    ``$(``  would pass through the argv runner as a literal argument — a
+    silent behavior change the writer did not declare. ``VAR=val`` and
+    globbing stay legal: argv passes them through as plain arguments. The
+    contract refuses the command up front; a pipeline step is a script
+    file or separate commands.
+
+    H1: a trailing ``\\r\\n``/``\\n`` (a YAML block scalar always appends
+    one) is normalized away; INTERIOR newlines make the command
+    multi-line — refused, for the same reason. K1 (виток 8): both the
+    operator and the newline rule live in :func:`shell_operator_refusal`
+    so the contract and every config runner give the same verdict.
+    """
+    for k, raw in enumerate(value):
+        refusal = shell_operator_refusal(raw)
+        if refusal:
+            raise ValueError(f"'verify[{k}]' ({raw!r}) {refusal}")
+
+
 def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
     """Parse + validate the optional contract block at the top of a TODO.
 
@@ -360,6 +469,7 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
     unknown = [k for k in data if k not in _CONTRACT_KEYS]
     if "verify" in data:
         _check_str_list(data["verify"], "verify")
+        _check_verify_shell_operators(data["verify"])
     if "flake" in data:
         value = data["flake"]
         if isinstance(value, bool):

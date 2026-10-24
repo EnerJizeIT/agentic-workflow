@@ -171,9 +171,11 @@ def _todo_evidence_plan(todo_md: Path) -> dict:
     Returns ``{todo_sha, verify, gates, prove_red, note}`` — the file hash
     (sha256 of the TODO's bytes) plus the contract's verify/gates/
     prove_red, read through the shared contract parser (ONE meaning).
-    Absent block → empty plan + note; unreadable or broken block → the
-    same (the engine's own contract handling surfaces the break at verify
-    time; the snapshot must never kill the launch).
+    Absent block → empty plan + note; unreadable block → the same (the
+    launch must never die on it). A block that EXISTS but does not parse
+    is NOT «no block»: the plan carries the ``contract: "broken"`` marker
+    (I2, REVIEW виток 6) so the release surfaces see the break instead of
+    an empty command list.
     """
     from ..unit_contract import parse_todo_contract
 
@@ -192,8 +194,12 @@ def _todo_evidence_plan(todo_md: Path) -> dict:
     try:
         contract, _unknown = parse_todo_contract(content)
     except ValueError as e:
+        # I2 (REVIEW виток 6): a block that does not parse is NOT "no
+        # block" — the marker keeps the two apart on every surface that
+        # reads the plan (the note alone is free text).
         return {
             "todo_sha": todo_sha,
+            "contract": "broken",
             "verify": [],
             "gates": [],
             "prove_red": [],

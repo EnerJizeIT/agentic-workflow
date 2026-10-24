@@ -178,7 +178,20 @@ def _normalize_evidence_plan(e: dict) -> dict:
         "gates": _str_list(e.get("gates")),
         "prove_red": _str_list(e.get("prove_red")),
         "note": str(e.get("note") or ""),
+        **_contract_marker(e),
     }
+
+
+def _contract_marker(e: dict) -> dict:
+    """I2 (REVIEW виток 6): keep the ``contract: "broken"`` marker.
+
+    The marker is what tells the release surfaces "the block exists but
+    does not parse" apart from "no block" — dropped on read it would
+    silently collapse back into the absent case. Absent marker → no key,
+    so a healthy plan keeps the historical shape.
+    """
+    marker = str(e.get("contract") or "").strip()
+    return {"contract": marker} if marker else {}
 
 
 def _revision_entry_ok(e: object) -> bool:
@@ -701,9 +714,11 @@ def append_evidence_plan(state: dict, todo_id: str, plan: dict) -> None:
     replaced: a retry that re-launches the same item appends a fresh
     snapshot; the surfaces read the current element's (last) entry.
 
-    ``plan`` carries ``{todo_sha, verify, gates, prove_red, note}`` —
-    the launch-time snapshot of the TODO's contract + file hash
-    (``awf/api/run.py::_todo_evidence_plan``).
+    ``plan`` carries ``{todo_sha, contract, verify, gates, prove_red,
+    note}`` — the launch-time snapshot of the TODO's contract + file hash
+    (``awf/api/run.py::_todo_evidence_plan``). ``contract`` is the I2
+    marker (``"broken"``) and is kept only when set, so a healthy snapshot
+    keeps the historical shape.
     """
     plans = state.get("evidence_plans")
     if not isinstance(plans, list):
@@ -714,17 +729,19 @@ def append_evidence_plan(state: dict, todo_id: str, plan: dict) -> None:
             return []
         return [x for x in v if isinstance(x, str) and x.strip()]
 
-    plans.append(
-        {
-            "ts": now_iso(),
-            "todo_id": str(todo_id or "").strip(),
-            "todo_sha": str(plan.get("todo_sha") or ""),
-            "verify": _str_items(plan.get("verify")),
-            "gates": _str_items(plan.get("gates")),
-            "prove_red": _str_items(plan.get("prove_red")),
-            "note": str(plan.get("note") or ""),
-        }
-    )
+    entry = {
+        "ts": now_iso(),
+        "todo_id": str(todo_id or "").strip(),
+        "todo_sha": str(plan.get("todo_sha") or ""),
+        "verify": _str_items(plan.get("verify")),
+        "gates": _str_items(plan.get("gates")),
+        "prove_red": _str_items(plan.get("prove_red")),
+        "note": str(plan.get("note") or ""),
+    }
+    # One home for the marker shape on BOTH sides of the state file
+    # (``_normalize_evidence_plan`` reads, this writes).
+    entry.update(_contract_marker(plan))
+    plans.append(entry)
 
 
 def find_revision(state: dict, key: str) -> dict | None:

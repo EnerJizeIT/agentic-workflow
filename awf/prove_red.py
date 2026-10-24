@@ -446,14 +446,24 @@ def _contract_from_todo(project_dir: Path, todo_id: str) -> dict | None:
     The TEXT comes from ``todos.read_todo_text`` — the one reader of the
     unit's declaration — so the contract keys here and the candidate
     evidence can never disagree on which file the unit lives in.
+
+    M3 (REVIEW виток 10): a block that EXISTS but does not parse is a
+    refusal, not "no block" — the old ``None`` made ``awf prove-red`` say
+    "no prove_red in the contract" and let a restored unit silently fall
+    back to the pytest default.
     """
     text = todos.read_todo_text(project_dir, todo_id)
     if not text:
         return None
     try:
         contract, _ = parse_todo_contract(text)
-    except ValueError:
-        return None
+    except ValueError as e:
+        reason = str(e).splitlines()[0] if str(e) else str(e)
+        raise AwfApiError(
+            f"the contract block in {todo_id} exists but does not parse: "
+            f"{reason} — fix the block (front-matter YAML/`verify:` keys); "
+            "a broken block is not «no block»"
+        ) from None
     return contract
 
 

@@ -18,6 +18,7 @@ from .infra.git_model import (
     read_untracked_snapshot,
 )
 from .infra.managed_fs import ManagedPathError, managed_write_text
+from .unit_contract import shell_operator_refusal
 
 
 def _write_test_results(
@@ -57,6 +58,35 @@ def _verify_cmd_timeout() -> int:
         return max(0, int(raw))
     except (ValueError, TypeError):
         return DEFAULT_VERIFY_TIMEOUT
+
+
+def parse_argv(cmd: str) -> tuple[list[str], str]:
+    """One configured command line → argv for the no-shell runners.
+
+    The ONE home for the command→argv rule of every awf verification
+    surface (this module, candidate_verify, verify_pack): a configured
+    command is an argv line, not a shell line, so it means the same thing
+    wherever it is gated. I1 (REVIEW виток 6): a shell operator outside
+    quotes is a typed refusal here too — otherwise a config ``test_cmd``
+    like ``pytest | tee log`` would silently run as ``pytest`` with a
+    literal ``| tee log`` argument (a false green on the surface that
+    gates the unit). K1 (REVIEW виток 8): the same predicate owns the
+    newline rule, so an interior newline in a config command is refused
+    instead of running as one command with an extra literal argument; a
+    trailing newline is normalized. Returns ``(parts, "")`` on success and
+    ``([], reason)`` on failure — the caller renders the reason in its own
+    typed refusal; no surface grows a second quoting policy.
+    """
+    refusal = shell_operator_refusal(cmd)
+    if refusal:
+        return [], refusal
+    try:
+        parts = shlex.split(cmd)
+    except ValueError as e:
+        return [], f"bad quoting: {e}"
+    if not parts:
+        return [], "empty command"
+    return parts, ""
 
 
 def detect_work_evidence(
@@ -226,15 +256,12 @@ def run_verify_commands(
     log_chunks: list[str] = []
     cmd_timeout = _verify_cmd_timeout()
     for cmd in cmds:
-        try:
-            parts = shlex.split(cmd)
-        except ValueError as e:
+        parts, problem = parse_argv(cmd)
+        if problem:
             # AUD14-02: bad quoting in test_cmd must not traceback the pipeline
             if log_path is not None:
-                log_chunks.append(f"$ {cmd}\nABORTED: bad quoting: {e}\n")
+                log_chunks.append(f"$ {cmd}\nABORTED: {problem}\n")
                 _write_test_results(log_path, log_root, log_chunks)
-            return False
-        if not parts:
             return False
         try:
             result = _proc.run_tree(

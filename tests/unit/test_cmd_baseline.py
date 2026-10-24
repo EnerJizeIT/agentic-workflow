@@ -9,7 +9,6 @@ snippets still go through ``awf.api.pipeline.subprocess.run``.
 """
 from __future__ import annotations
 
-import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -56,11 +55,12 @@ class TestBaselineShellSafety:
             else:
                 assert False, "No call found with /bin/true as list"
 
-    def test_test_cmd_shell_injection_safe(self, tmp_path: Path, monkeypatch) -> None:
-        """test_cmd with ; separator — split into args, not shell injection.
-
-        FU-10: patch run_tree (the test_cmd path), not subprocess.run.
-        """
+    def test_test_cmd_shell_operator_refused(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """I1 (REVIEW виток 6): ``;`` in test_cmd is a dispatch refusal with
+        the shared A4 text — it never reaches run_tree, so there is neither
+        a shell string nor a silent literal-argument run."""
         proj = self._setup(tmp_path)
         agentic = proj / ".agentic"
         (agentic / "config.yaml").write_text(
@@ -71,18 +71,12 @@ class TestBaselineShellSafety:
         args = type("Args", (), {"todo_id": "TODO-0002"})()
 
         with patch("awf.api.pipeline.run_tree") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                [], returncode=1, stdout="", stderr=""
-            )
-            cmd_baseline.run(args)
-
-            # shlex.split turns `;` into a separator: the injection fragment
-            # becomes a distinct argv element, never a shell string.
-            expected = shlex.split("/bin/true; /bin/echo injected")
-            assert mock_run.called, "run_tree not called for test_cmd"
-            cmd_arg = mock_run.call_args_list[0][0][0]
-            assert cmd_arg == expected, f"test_cmd not shlex-split: {cmd_arg!r}"
-            assert mock_run.call_args_list[0][1].get("shell") is not True
+            rc = cmd_baseline.run(args)
+            assert rc == 1, "a refused config must fail the clause, not dispatch"
+            captured = capsys.readouterr().out
+            assert "shell operator" in captured, captured
+            assert "use a script or separate commands" in captured, captured
+            mock_run.assert_not_called()
 
     def test_empty_test_cmd_skipped(self, tmp_path: Path, monkeypatch) -> None:
         """Empty test_cmd → no subprocess call for it."""

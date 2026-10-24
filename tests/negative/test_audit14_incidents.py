@@ -221,7 +221,10 @@ class TestBadQuoting:
 
         with pytest.raises(AwfApiError) as ei:
             api.create_baseline(proj, "TODO-0001")
-        assert "не парсится" in str(ei.value)
+        # TODO-0232 (I1): the refusal text is the SHARED argv rule
+        # (`verify.parse_argv`) — same wording as verify's log and the
+        # candidate check, not a baseline-only phrase.
+        assert "bad quoting" in str(ei.value)
 
 
 # ── AUD04-11: commit_gate git calls must have timeouts ────────────────────

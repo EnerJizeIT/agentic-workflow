@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import traceback
@@ -22,6 +21,8 @@ from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
 from ..infra import managed_fs
 from ..pipeline_state import read_state
+from ..signals import find_signal_file, short_id
+from ..verify import parse_argv
 from . import _lease, _liveness
 from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
 from ._errors import AwfApiError
@@ -170,12 +171,22 @@ def _reconcile(project_dir: Path) -> None:
     if inbox.is_dir():
         refuse_unsafe_surfaces(project_dir, "reconcile stale ACK", inbox)
         for ack in inbox.glob("ACK-*.ready"):
-            todo_id = ack.name.replace("ACK-", "").replace(".ready", "")
-            approve = inbox / f"APPROVE-{todo_id}.ready"
-            if approve.exists():
+            # The signal→unit mapping is the SHARED one (``_signal_todo_id``;
+            # architect-review M8), and the APPROVE lookup accepts the
+            # canonical AND legacy spelling (``find_signal_file``, the same
+            # rule every consumer uses). An inline name slice missed a
+            # canonical APPROVE when the ACK carried the legacy short name
+            # (``ACK-0009`` + ``APPROVE-TODO-0009``) and left a duplicate.
+            todo_id = _signal_todo_id(inbox, ack.stem)
+            if not todo_id:
+                # No TODO file to map the short name against — fall back to
+                # the name the signal carries (the old behavior for a junk ack).
+                todo_id = ack.name.replace("ACK-", "").replace(".ready", "")
+            approve = find_signal_file(inbox, "APPROVE", todo_id, ".ready")
+            if approve is not None:
                 refuse_unsafe_surfaces(project_dir, "reconcile stale ACK", ack)
                 ack.unlink()
-                cleaned.append(f"dedup: removed ACK-{todo_id} (APPROVE exists)")
+                cleaned.append(f"dedup: removed {ack.name} (APPROVE exists)")
 
     # 3. Multiple active TODOs → WARN ONLY (NEG-2026-09-19 R2).
     # Destructive cleanup is never right here: a run queue pre-readies all of
@@ -192,8 +203,6 @@ def _reconcile(project_dir: Path) -> None:
 
 def _newest_blocked_todo(project_dir: Path) -> str:
     """Day-2 B3: newest TODO closed by BLOCKED (no DONE). ``""`` if none."""
-    from ..signals import short_id
-
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     if not inbox.is_dir():
@@ -201,13 +210,15 @@ def _newest_blocked_todo(project_dir: Path) -> str:
     candidates: list[tuple[int, str]] = []
     for ready in inbox.glob("TODO-*.ready"):
         todo_id = ready.stem
-        md = inbox / f"{todo_id}.md"
-        if not md.is_file() or md.stat().st_size == 0:
+        # The «unit is live» halves are the SAME predicates the ACK/APPROVE
+        # consumer uses — an inline copy drifts (and crashes on a stat race
+        # the helpers already treat as «absent»). The blocked signal is this
+        # reader's own extra condition (architect-review M8).
+        if not _unit_file_present(inbox, todo_id):
             continue
         short = short_id(todo_id)
         blocked = any((outbox / f"BLOCKED-{cid}.ready").exists() for cid in (todo_id, short))
-        done = any((outbox / f"DONE-{cid}.ready").exists() for cid in (todo_id, short))
-        if blocked and not done:
+        if blocked and not _unit_cycle_done(outbox, todo_id):
             try:
                 num = int(short)
             except ValueError:
@@ -224,6 +235,134 @@ def _todo_closed(project_dir: Path, todo_id: str) -> bool:
     return todos.is_closed(paths.inbox(project_dir), paths.outbox(project_dir), todo_id)
 
 
+def _signal_todo_id(inbox: Path, stem: str) -> str:
+    """The TODO id an inbox signal file (``stem``, no ``.ready``) addresses.
+
+    One home for the decision-signal → TODO mapping (architect-review M8):
+    the full id passes through, a legacy short form (``ACK-0009.ready``)
+    maps by the short id of the ready TODO. The consumer
+    (:func:`_resolve_pending_closure`), the noop-hint reader
+    (:func:`_newest_armed_ack` / :func:`_armed_ack_file`) and the REVIEW
+    reader (:func:`_pending_review_todo`) all ask here, so they can never
+    disagree about which unit a signal belongs to.
+    """
+    candidate = stem.split("-", 1)[1] if "-" in stem else ""
+    if candidate.startswith("TODO-"):
+        return candidate
+    for ready in inbox.glob("TODO-*.ready"):
+        if short_id(ready.stem) == candidate:
+            return ready.stem
+    return ""
+
+
+def _unit_file_present(inbox: Path, target: str) -> bool:
+    """The unit behind a decision signal has its TODO file in the inbox.
+
+    The FIRST half of «a signal can be consumed» — one home for the three
+    callers that need it separately for their own diagnostics (the ACK
+    arming path answers «no TODO file», the consumer and the REVIEW reader
+    just skip). An unreadable surface is «absent» — a refusal there must
+    not crash the resume path.
+    """
+    md = inbox / f"{target}.md"
+    try:
+        return md.is_file() and md.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _unit_cycle_done(outbox: Path, target: str) -> bool:
+    """The unit behind a decision signal already finished its cycle.
+
+    The SECOND half of «a signal can be consumed» (architect-review M8,
+    A5): a ``DONE`` in the outbox (full or legacy short id) means nothing
+    is waiting for an answer — the signal stays on disk for the archive
+    flow. Shared by the ACK arming path's diagnostic and the consumer's
+    filter, so the two can never disagree about what counts as completed.
+    """
+    short = short_id(target)
+    return any(
+        (outbox / f"DONE-{cid}.ready").exists() for cid in (target, short)
+    )
+
+
+def _signal_is_consumable(inbox: Path, outbox: Path, target: str) -> bool:
+    """Whether a signal for ``target`` can still be consumed.
+
+    One home for the filter both the consumer and the noop-hint apply
+    (architect-review M8, A5): the unit needs a non-empty TODO file, and a
+    completed cycle (``DONE`` in the outbox) is not waiting for an answer.
+    Composed of the same two halves the ACK arming path reports separately.
+    """
+    return _unit_file_present(inbox, target) and not _unit_cycle_done(
+        outbox, target
+    )
+
+
+def _armed_ack_file(inbox: Path, target: str) -> Path | None:
+    """The ACK signal waiting for ``target`` in ``inbox``, or ``None``.
+
+    ARCHITECT-REVIEW M8: found through the SAME mapping the consumer uses
+    (:func:`_signal_todo_id`), not through the canonical file spelling — a
+    legacy short-name ack (``ACK-0009.ready``) is consumable for TODO-0009
+    too, so the noop hint must neither deny nor misname it. Without this
+    the extracted mapping would have a bypass and the two readers could
+    disagree.
+    """
+    try:
+        for p in inbox.glob("ACK-*.ready"):
+            if p.is_file() and _signal_todo_id(inbox, p.stem) == target:
+                return p
+    except OSError:
+        return None
+    return None
+
+
+def _arm_ack_file(inbox: Path, ack: str) -> Path:
+    """Write the ACK for ``ack`` — or reuse the one already waiting.
+
+    M2 (REVIEW виток 10): a legacy short-name signal (``ACK-0009.ready``)
+    maps to the same unit through the consumer's own reader; writing the
+    canonical spelling next to it would leave a duplicate the consumer
+    never eats (a second ACK can answer a FUTURE blocked cycle). The
+    returned path is the file the consumer will consume.
+    """
+    existing = _armed_ack_file(inbox, ack)
+    if existing is not None:
+        return existing
+    inbox.mkdir(parents=True, exist_ok=True)
+    path = inbox / f"ACK-{ack}.ready"
+    path.touch()
+    return path
+
+
+def _newest_armed_ack(project_dir: Path) -> str:
+    """M8 (UX-щель): the TODO id of the newest CONSUMABLE ``ACK-*.ready``
+    waiting in the inbox (the supervisor's pending answer) — ``""`` when
+    none.
+
+    A5 (REVIEW виток 2): the filter is the consumer's OWN
+    (:func:`_signal_todo_id` + :func:`_signal_is_consumable`) — only
+    ACTIVE/CURRENT units count. Advertising an ack whose TODO file is gone
+    or whose unit is already completed would tell the supervisor to kill a
+    live pipeline for an answer that can never be consumed.
+    """
+    inbox = paths.inbox(project_dir)
+    if not inbox.is_dir():
+        return ""
+    try:
+        ready = [p for p in inbox.glob("ACK-*.ready") if p.is_file()]
+        ready.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return ""
+    outbox = paths.outbox(project_dir)
+    for sig_path in ready:
+        target = _signal_todo_id(inbox, sig_path.stem)
+        if target and _signal_is_consumable(inbox, outbox, target):
+            return target
+    return ""
+
+
 def _pending_review_todo(project_dir: Path) -> str:
     """Day-2 review follow-up: newest TODO with a supervisor REVIEW and no DONE.
 
@@ -231,27 +370,24 @@ def _pending_review_todo(project_dir: Path) -> str:
     if the process died before it was consumed, the answer would otherwise be a
     silent dead-end. Returns ``""`` when there is no pending review.
     """
-    from ..signals import short_id
-
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     if not inbox.is_dir():
         return ""
     candidates: list[tuple[int, str]] = []
     for review in outbox.glob("REVIEW-*.md"):
-        candidate = review.stem.split("-", 1)[1] if "-" in review.stem else ""
-        todo_id = candidate if candidate.startswith("TODO-") else ""
-        if not todo_id:
-            for ready in inbox.glob("TODO-*.ready"):
-                if short_id(ready.stem) == candidate:
-                    todo_id = ready.stem
-                    break
-        if not todo_id:
+        # A REVIEW is a decision signal like ACK/APPROVE, so the mapping and
+        # the «TODO file present» half come from the SAME helpers the
+        # consumer and the noop hint use (``_signal_todo_id`` /
+        # ``_unit_file_present``) — a third private copy would drift.
+        todo_id = _signal_todo_id(inbox, review.stem)
+        if not todo_id or not _unit_file_present(inbox, todo_id):
             continue
-        md = inbox / f"{todo_id}.md"
-        if not md.is_file() or md.stat().st_size == 0:
-            continue
-        if (outbox / f"DONE-{todo_id}.ready").exists():
+        # The cycle-done half comes from the SAME helper the ACK/APPROVE
+        # consumer uses (``_unit_cycle_done``) — an inline ``DONE-<id>.ready``
+        # check would miss the legacy short form (``DONE-0009.ready``) and
+        # report a completed unit's review as pending (architect-review M8).
+        if _unit_cycle_done(outbox, todo_id):
             continue  # cycle completed — the review is stale
         try:
             num = int(short_id(todo_id))
@@ -279,36 +415,25 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
 
     Returns ``("", "")`` when there is nothing to resume.
     """
-    from ..signals import short_id
-
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     if not inbox.is_dir():
         return "", ""
 
-    def _todo_for_signal(stem: str) -> str:
-        candidate = stem.split("-", 1)[1] if "-" in stem else ""
-        if candidate.startswith("TODO-"):
-            return candidate
-        # legacy short form: ACK-0009.ready → TODO-0009
-        for ready in inbox.glob("TODO-*.ready"):
-            if short_id(ready.stem) == candidate:
-                return ready.stem
-        return ""
-
     signals = sorted(inbox.glob("ACK-*.ready")) + sorted(inbox.glob("APPROVE-*.ready"))
     for sig_path in signals:
-        target = _todo_for_signal(sig_path.stem)
+        # The signal→unit mapping and the consumability filter are SHARED
+        # with the noop-hint reader (``_newest_armed_ack``) — architect-review
+        # M8: one home, so the hint can never advertise an answer this loop
+        # would skip.
+        target = _signal_todo_id(inbox, sig_path.stem)
         if not target:
             continue
         if todo_id and target != todo_id:
             continue
-        md = inbox / f"{target}.md"
-        if not md.is_file() or md.stat().st_size == 0:
-            continue
+        if not _signal_is_consumable(inbox, outbox, target):
+            continue  # no TODO file, or a completed cycle — not an answer
         short = short_id(target)
-        if any((outbox / f"DONE-{cid}.ready").exists() for cid in (target, short)):
-            continue  # completed cycle — leave the signal for the archive flow
         # TODO-0235 (M3d): consuming the decision is an unlink on INBOX —
         # a symlinked surface/leaf must refuse, not delete outside. REVIEW B2:
         # the same call then moves BLOCKED leaves from OUTBOX into CONTEXT
@@ -1091,52 +1216,68 @@ def create_baseline(
             test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
             run_cmd = baseline_cmd or test_cmd
             cmd_key = "baseline_cmd" if baseline_cmd else "test_cmd"
-            if run_cmd:
-                try:
-                    parts = shlex.split(run_cmd)
-                except ValueError as e:
-                    # AUD14-02: bad quoting in test_cmd must not traceback baseline
+            if run_cmd.strip():
+                # I1 (REVIEW виток 6) + architect-review M8: the config
+                # commands are the SAME argv class as the contract's
+                # `verify:` — one parse rule (`verify.parse_argv`: shlex +
+                # the A4 operator refusal), so `test_cmd` means the same
+                # thing here, in verify and in the candidate check. A blank
+                # command stays "not configured" (the legacy skip), never
+                # an "empty command" refusal.
+                parts, problem = parse_argv(run_cmd)
+                if problem:
+                    # AUD14-02: bad quoting must not traceback baseline
                     raise AwfApiError(
-                        f"verification.{cmd_key} не парсится: {e} (cmd: {run_cmd!r})"
-                    ) from e
-                if parts:
-                    try:
-                        result = run_tree(
-                            parts,
-                            cwd=str(project_dir),
-                            capture_output=True,
-                            text=True,
-                            timeout=300,
-                        )
-                    except subprocess.TimeoutExpired:
-                        # cmd hung (watcher / stdin prompt / infinite loop).
-                        # Don't block baseline creation — record failure, continue.
-                        _write_baseline_file(
-                            tests_log_path,
-                            f"{cmd_key} timed out after 300s: {run_cmd}\n",
-                        )
-                        test_status = "failed"
-                        test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
-                    except FileNotFoundError:
-                        # REPORTS26 B1: bare binary not in PATH (e.g. `vitest`
-                        # stored from package.json scripts). Same contract as
-                        # the timeout: record failure, continue — dispatch
-                        # must not die on a broken command.
-                        _write_baseline_file(
-                            tests_log_path,
-                            f"{cmd_key} не найдена в PATH: {run_cmd}. "
-                            "Поправьте verification.baseline_cmd/test_cmd\n",
-                        )
-                        test_status = "failed"
-                        test_log_excerpt = f"{cmd_key} не найдена в PATH: {run_cmd}"
-                    else:
-                        log_content = result.stdout + result.stderr
-                        _write_baseline_file(tests_log_path, log_content)
-                        test_status = "passed" if result.returncode == 0 else "failed"
-                        test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
+                        f"verification.{cmd_key}: {problem} (cmd: {run_cmd!r})"
+                    )
+                try:
+                    result = run_tree(
+                        parts,
+                        cwd=str(project_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+                except subprocess.TimeoutExpired:
+                    # cmd hung (watcher / stdin prompt / infinite loop).
+                    # Don't block baseline creation — record failure, continue.
+                    _write_baseline_file(
+                        tests_log_path,
+                        f"{cmd_key} timed out after 300s: {run_cmd}\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
+                except FileNotFoundError:
+                    # REPORTS26 B1: bare binary not in PATH (e.g. `vitest`
+                    # stored from package.json scripts). Same contract as
+                    # the timeout: record failure, continue — dispatch
+                    # must not die on a broken command.
+                    _write_baseline_file(
+                        tests_log_path,
+                        f"{cmd_key} не найдена в PATH: {run_cmd}. "
+                        "Поправьте verification.baseline_cmd/test_cmd\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"{cmd_key} не найдена в PATH: {run_cmd}"
+                except OSError as e:
+                    # architect-review M8: the argv launcher (no shell) raises
+                    # for a non-executable command / bad interpreter, where the
+                    # old shell reported rc 126. Same contract as the missing
+                    # binary — one typed "record failure, keep going" outcome,
+                    # never a traceback out of dispatch. The other argv
+                    # surfaces (verify.run_verify_commands, verify_pack._run_cmd,
+                    # candidate_verify.run_check) already catch OSError.
+                    _write_baseline_file(
+                        tests_log_path,
+                        f"{cmd_key} не запускается: {e}\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"{cmd_key} не запускается: {e}"
                 else:
-                    _write_baseline_file(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
-                    test_status = "no_test_cmd"
+                    log_content = result.stdout + result.stderr
+                    _write_baseline_file(tests_log_path, log_content)
+                    test_status = "passed" if result.returncode == 0 else "failed"
+                    test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
             else:
                 _write_baseline_file(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
                 test_status = "no_test_cmd"
@@ -1740,8 +1881,11 @@ def continue_pipeline(
             # signal is skipped and the answer says so.
             ack_note = f"(ack {ack} not applied — the explicit pin {explicit_pin} wins)"
         else:
-            ack_md = paths.inbox(project_dir) / f"{ack}.md"
-            if not ack_md.is_file() or ack_md.stat().st_size == 0:
+            # The SAME two predicates the consumer and the noop hint use
+            # (``_unit_file_present`` / ``_unit_cycle_done``) — kept apart
+            # only because each refusal owns its own diagnostic text.
+            ack_inbox = paths.inbox(project_dir)
+            if not _unit_file_present(ack_inbox, ack):
                 return StartResult(
                     run_mode="noop",
                     run_id=None,
@@ -1753,12 +1897,7 @@ def continue_pipeline(
                         f"unit comes back via awf_restore."
                     ),
                 )
-            from ..signals import short_id
-
-            outbox = paths.outbox(project_dir)
-            if any(
-                (outbox / f"DONE-{cid}.ready").exists() for cid in (ack, short_id(ack))
-            ):
+            if _unit_cycle_done(paths.outbox(project_dir), ack):
                 return StartResult(
                     run_mode="noop",
                     run_id=None,
@@ -1769,10 +1908,12 @@ def continue_pipeline(
                         f"nothing to accept."
                     ),
                 )
-            ack_inbox = paths.inbox(project_dir)
             ack_inbox.mkdir(parents=True, exist_ok=True)
-            (ack_inbox / f"ACK-{ack}.ready").touch()
+            _arm_ack_file(ack_inbox, ack)
 
+    # M2 (REVIEW виток 10): a pin that won over the ack means the ack was
+    # never written — the post-reconcile re-arm must skip it.
+    pin_overridden = bool(ack) and bool(explicit_pin) and explicit_pin != ack
     # A-02: launch lease (same as start_pipeline) — one owner of the
     # window "liveness check → spawn → PID file write". Acquired AFTER the
     # ack block on purpose: an ack that gets refused by a concurrent
@@ -1806,9 +1947,98 @@ def continue_pipeline(
     try:
         # DF6-2: reconcile state before continuing
         _reconcile(project_dir)
+        # M2 (REVIEW виток 10): reconcile may drop the ACK this call just
+        # wrote (it dedupes an ACK against an APPROVE it keeps). The answer
+        # below reports the state ON DISK — re-arm the requested signal so
+        # «ACK is armed» stays a fact, never a leftover claim.
+        if ack and not pin_overridden:
+            _arm_ack_file(paths.inbox(project_dir), ack)
         # AUD04-07: shared liveness resolver (PID file + state), same as start.
         live_pid = _liveness.resolve(project_dir)[1]
         if live_pid:
+            # M8 (UX-щель 0230-а): a written ACK (the one this call just
+            # armed, or a pre-existing one waiting for consumption) must not
+            # be silently stranded by the noop answer — the supervisor
+            # reads «running» again and never applies the decision. The
+            # answer names the arming and the exact recipe.
+            # A1 (REVIEW виток 2): when an explicit ``todo_id`` pin won over
+            # the ack, the ack was NOT written — the armed wording would
+            # lie. F4 (REVIEW виток 3): the answer names the pin's own
+            # situation, not "nothing is armed". Architect-review M8: the
+            # «no ACK for X» half is asserted only when the inbox agrees —
+            # a consumable ACK already waiting for the pinned unit is
+            # NAMED instead of denied (the old text claimed a fact the code
+            # never checked).
+            inbox = paths.inbox(project_dir)
+            outbox = paths.outbox(project_dir)
+            # I3 (REVIEW виток 6): with a pin the hint reports the PIN's own
+            # ACK state — a consumable ACK waiting for ANOTHER unit must not
+            # be advertised, or the recipe sends the supervisor to kill a
+            # live pipeline for an answer the pinned unit cannot consume.
+            pin_ack = (
+                _armed_ack_file(inbox, explicit_pin)
+                if explicit_pin
+                and _signal_is_consumable(inbox, outbox, explicit_pin)
+                else None
+            )
+            if pin_overridden:
+                if pin_ack is not None:
+                    hint = (
+                        f" ACK not applied (todo_id pin wins); "
+                        f"{pin_ack.name} is already waiting — kill "
+                        f"the pipeline, then run awf continue with the pin "
+                        f'and its ack: continue(todo_id="{explicit_pin}", '
+                        f'ack="{explicit_pin}") to apply it.'
+                    )
+                else:
+                    hint = (
+                        f" ACK not applied (todo_id pin wins); no ACK for "
+                        f"{explicit_pin} is waiting — kill the pipeline, then "
+                        "run awf continue with the ack (no pin) to apply it."
+                    )
+            else:
+                armed = (ack or "").strip()
+                # M2 (REVIEW виток 10): «armed» is a fact on disk, checked
+                # AFTER reconcile — the old text reported the requested id
+                # even when reconcile had just removed its signal.
+                if armed and _armed_ack_file(inbox, armed) is None:
+                    armed = ""
+                if not armed:
+                    if explicit_pin:
+                        armed = explicit_pin if pin_ack is not None else ""
+                    else:
+                        armed = _newest_armed_ack(project_dir)
+                if armed:
+                    # L1 (REVIEW виток 9): the recipe must PIN the ACK it
+                    # names. A bare ``continue`` resolves the explicit
+                    # todo_id pin, then the state unit, BEFORE the pending
+                    # ACK — the named answer would stay stranded in the
+                    # inbox, exactly the UX gap 4a closes.
+                    # M2: name the REAL file when it carries the legacy short
+                    # spelling (``ACK-0001.ready``), so the supervisor can
+                    # recognise the signal the consumer will eat.
+                    armed_file = _armed_ack_file(inbox, armed)
+                    where = ""
+                    if (
+                        armed_file is not None
+                        and armed_file.name != f"ACK-{armed}.ready"
+                    ):
+                        where = f" ({armed_file.name})"
+                    hint = (
+                        f" ACK is armed for {armed}{where}; to apply it, kill the pipeline "
+                        f"(PID {live_pid}), then run awf_continue("
+                        f'todo_id="{armed}", ack="{armed}").'
+                    )
+                elif explicit_pin:
+                    # The pin's own state is empty: the recipe drops the pin
+                    # instead of naming an answer the pinned unit refuses.
+                    hint = (
+                        f" No ACK is waiting for {explicit_pin}; drop the "
+                        "todo_id pin and run awf continue without the pin to "
+                        "apply an armed ACK."
+                    )
+                else:
+                    hint = ""
             return StartResult(
                 run_mode="noop",
                 run_id=None,
@@ -1817,6 +2047,7 @@ def continue_pipeline(
                 message=(
                     f"Pipeline already running (PID {live_pid}). "
                     f"Use awf_status to check progress. If stuck, kill PID {live_pid} first."
+                    + hint
                 ),
             )
 

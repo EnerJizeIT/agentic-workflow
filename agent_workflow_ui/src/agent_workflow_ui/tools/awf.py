@@ -3041,7 +3041,7 @@ async def awf_wait_for_event(
         if run_active:
             _EVENT_ACTIONS = {
                 "verify": "Pipeline at verify. Run your own probes → awf_approve(evidence=...) or awf_reject.",
-                "blocked": "Worker blocked. Read BLOCKED note → fix context and awf_retry_stage, or stop with awf_run_finish.",
+                "blocked": "Worker blocked. Read BLOCKED note → replan: awf kill → awf_unblock(todo_id) → awf_continue(todo_id=…, from_stage=…), or stop with awf_run_finish.",
                 "checkpoint": "Checkpoint form opened. Tell the user (the run is paused until they submit).",
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage / ACK / split the TODO.",
                 "done": (

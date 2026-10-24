@@ -38,6 +38,25 @@ from ._results import WaitEventResult
 # the supervisor's next call dies mid-wait (-32001).
 TRANSPORT_CAP = 55
 MIN_WAIT = 30
+
+# M5 (REVIEW виток 10): the stale-APPROVE verdict re-materialised the
+# candidate on EVERY verify poll. The answer is a pure function of the
+# APPROVE signal (mtime), the baseline sha, the working tree (content
+# fingerprint), the ACTIVE run (generation, the binding is refused when no
+# run is active) and the stored VERIFIED-<id>.sha — so it is cached on
+# those inputs; a poll on unchanged state no longer builds a throwaway
+# candidate worktree. N1 (REVIEW виток 11): the run state and VERIFIED live
+# under the gitignored ``.agentic/``, so neither a restart (generation
+# moves) nor a new approval fingerprint changes the tree — omitting them
+# from the key kept a pre-restart "valid" and the supervisor was never told
+# to re-approve. A tree that cannot be fingerprinted is NOT cached: an
+# empty tree would be one shared key for every tree, and a verdict read
+# from it could name another tree's state.
+_STALE_STATUS_CACHE: dict[
+    tuple[str, str, int, str, str, int, bool, int, str, str, str],
+    tuple[str, str],
+] = {}
+_STALE_STATUS_CACHE_MAX = 16
 # RUN10 #2: the safety gap between the mcp timeout (opencode.json) and the
 # wait cap advised from it — the transport cut lands mid-wait otherwise.
 WAIT_CAP_MARGIN = 30
@@ -663,7 +682,7 @@ def _stale_decision_hint(project_dir: Path, todo_id: str) -> str:
     by the engine (no hint); a FRESH signal takes the normal wait path (no
     hint either).
     """
-    from .. import commit_plan, paths
+    from .. import commit_plan, paths, run_state
 
     sig = paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready"
     try:
@@ -672,11 +691,78 @@ def _stale_decision_hint(project_dir: Path, todo_id: str) -> str:
         return ""
     if int(mtime) >= int(time.time()):
         return ""  # fresh — the new wait takes the normal path
-    status, reason = commit_plan.preexisting_approval_status(
-        project_dir,
-        todo_id,
-        commit_plan.read_baseline_sha(project_dir, todo_id),
+    # M5: the binding verdict is cached by its real INPUTS — the APPROVE
+    # signal (mtime), the baseline sha (the plan is built from it, and a
+    # baseline file may live outside the tree fingerprint), the tree
+    # content, the active run (generation; the verdict is refused outside
+    # one) and the stored VERIFIED fingerprint. A changed
+    # tree/signal/baseline/run/VERIFIED misses the cache and is judged
+    # afresh; a tree that cannot be fingerprinted is never cached (no shared
+    # empty key).
+    #
+    # N1: the run state and VERIFIED live under the gitignored
+    # ``.agentic/``, so neither a restart (generation moves) nor a new
+    # approval fingerprint changes the tree — omitting them from the key
+    # kept a pre-restart "valid" and the supervisor was never told to
+    # re-approve. The SAME class of gap was the unit revision (TODO bytes)
+    # and the verification environment: PA-A added both to the candidate
+    # binding, and both also sit outside the tree fingerprint — a cache hit
+    # would have kept the old verdict after the contract moved, exactly the
+    # invalidation PA-A exists to report.
+    baseline_sha = commit_plan.read_baseline_sha(project_dir, todo_id)
+    try:
+        from .. import candidate_verify
+        from ..git_utils import tree_fingerprint
+
+        tree = tree_fingerprint(project_dir)
+        revision = candidate_verify.unit_revision(
+            project_dir, todo_id, baseline_sha
+        )
+        environment = candidate_verify.environment_digest(project_dir)
+    except Exception:
+        tree = revision = environment = ""
+    # N1: both live under gitignored ``.agentic/`` — a restart or a fresh
+    # VERIFIED leaves the tree untouched, so they carry their own key parts.
+    try:
+        run = run_state.read_run(project_dir) or {}
+    except Exception:
+        run = {}
+    verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
+    try:
+        verified_mtime = verified_file.stat().st_mtime_ns
+    except OSError:
+        verified_mtime = 0
+    # ``None`` (exists but unreadable — fail closed) is a different verdict
+    # input from ``""`` (nothing to re-check); collapsing them would let one
+    # state's cached reason answer for the other.
+    verified = commit_plan.read_verified_sha(project_dir, todo_id)
+    key = (
+        (
+            str(project_dir),
+            todo_id,
+            int(mtime),
+            tree,
+            baseline_sha,
+            run_state.generation_of(run),
+            bool(run.get("active")),
+            verified_mtime,
+            "<unreadable>" if verified is None else verified,
+            revision,
+            environment,
+        )
+        if tree
+        else None
     )
+    cached = _STALE_STATUS_CACHE.get(key) if key is not None else None
+    if cached is None:
+        cached = commit_plan.preexisting_approval_status(
+            project_dir, todo_id, baseline_sha
+        )
+        if key is not None:
+            if len(_STALE_STATUS_CACHE) >= _STALE_STATUS_CACHE_MAX:
+                _STALE_STATUS_CACHE.clear()
+            _STALE_STATUS_CACHE[key] = cached
+    status, reason = cached
     if status != "stale":
         return ""
     return (
@@ -723,8 +809,10 @@ def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = No
         return WaitEventResult(
             event_type="blocked",
             message=(
-                f"Worker blocked: {last_signal}. Read BLOCKED file in outbox, "
-                "decide how to proceed (fix TODO, change role, or rollback)."
+                f"Worker blocked: {last_signal}. Read BLOCKED file in outbox. "
+                "To replan: kill the pipeline, clear the closure with "
+                "awf_unblock(todo_id), then continue from the needed stage "
+                "with awf_continue(todo_id=…, from_stage=…)."
             ),
             state_snapshot=_state_to_dict(state),
         )

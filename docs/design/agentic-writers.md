@@ -167,7 +167,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/pipeline.py` · ACK-сигнал | `.agentic/inbox/ACK-<id>.ready` | `grep -n "atomic_write_text(ack_path" awf/api/pipeline.py` | `atomic_write_text(ack_path` | `unit-0239` |
 | `awf/api/pipeline.py` · APPROVE `.ready` `touch` | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "signal.touch()" awf/api/pipeline.py` | `signal.touch()` | `unit-0239` |
 | `awf/api/pipeline.py` · APPROVE-бинд: запись | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "atomic_write_text(signal, json.dumps(binding" awf/api/pipeline.py` | `atomic_write_text(signal, json.dumps(binding` | `unit-0242` |
-| `awf/api/pipeline.py` · ACK `.ready` `touch` | `.agentic/inbox/ACK-<id>.ready` | `grep -n 'ACK-{ack}.ready").touch()' awf/api/pipeline.py` | `ACK-{ack}.ready").touch()` | `unit-0239` |
+| `awf/api/pipeline.py` · ACK `.ready` `touch` | `.agentic/inbox/ACK-<id>.ready` | `grep -n "path.touch()" awf/api/pipeline.py` | `path.touch()` | `unit-0239` |
 | `awf/api/pipeline.py` · last-kill запись | `.agentic/state/last-kill.json` | `grep -n "LAST_KILL_FILE, json.dumps(record)" awf/api/pipeline.py` | `LAST_KILL_FILE, json.dumps(record)` | `unit-0239` |
 | `awf/api/pipeline.py` · reconcile ACK (A2) | `.agentic/inbox/ACK-*.ready` | `grep -n "ack.unlink()" awf/api/pipeline.py` | `ack.unlink()` | `unit-0239` |
 | `awf/api/pipeline.py` · pending closure | `.agentic/inbox/CLOSE-*.ready` | `tests/negative/test_miniwave_m3d_unlinks.py::test_resolve_pending_closure_refuses_symlinked_inbox` | `test_resolve_pending_closure_refuses_symlinked_inbox` | `barrier` |

@@ -17,6 +17,12 @@
 # the vitok-4 acceptance tests extend test_miniwave_m7_hygiene.py beyond the
 # 400-line bar it sat on exactly; the dwarf file test_miniwave_m7_hygiene_
 # vitok4.py stays under it. Same class as the earlier test-in-test raises.
+# M8 (TODO-0232, стадия agent-implementer): baseline raised files_over_400
+# 109 -> 110 — новый приёмочный tests/negative/test_miniwave_m8_carries.py
+# (git-хуки, PA-A/PA-B, UX-щели, добор фактов публикации) перешагнул планку
+# 400 строк. Дробить нельзя: verify-контракт юнита запускает ровно этот
+# файл. Класс прежний — тест-файл, не прод-долг; TODO-иды в нём это ссылки
+# на юнит, а не маркеры долга.
 files_over_400	git ls-files --cached --others --exclude-standard '*.py' | while IFS= read -r f; do [ -f "$f" ] && wc -l < "$f"; done | awk '$1>400' | wc -l
 # FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
 # identifiers (backlog item references), and every docs reword there

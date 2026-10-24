@@ -274,16 +274,33 @@ def test_coverage_wrapper_is_not_doubled(tmp_path, monkeypatch):
         "cd tests;pytest . -q",
     ],
 )
-def test_shell_operators_without_spaces_still_double(cmd, tmp_path, monkeypatch):
-    """(c) S3: оператор без пробелов не выключает флейк-пробу."""
+def test_shell_operators_without_spaces_refused(cmd, tmp_path):
+    """S3 под A4 (TODO-0232): `;`/`&&` вне кавычек больше не легальны в
+    контракте — verify-команды идут argv без shell, оператор стал бы
+    литеральным аргументом. Контракт обязан отказать, не «двойной прогон»."""
+    from awf.unit_contract import parse_todo_contract
+
     project = _project_with_contract(tmp_path, verify=cmd)
-    calls = _fake_runner(monkeypatch, iter([(0, "1 passed", False)] * 2))
+    content = (project / ".agentic" / "inbox" / f"{TID}.md").read_text(
+        encoding="utf-8"
+    )
+    with pytest.raises(ValueError):
+        parse_todo_contract(content)
 
-    result, _report_text = _report(project, tmp_path)
 
-    assert calls.count(cmd) == 2
-    assert result.sections["contract_tests"] == "pass"
-    assert result.verdict == "ok"
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "python3 -m pytest tests/ -q; echo done",
+        "python3 -m pytest tests/ -q&&echo ok",
+        "cd tests;pytest . -q",
+    ],
+)
+def test_shell_operators_still_test_like(cmd):
+    """S3 (сохранён напрямую): сам классификатор флейк-пробы оператор без
+    пробелов по-прежнему считает тест-подобным — контракт отказывает раньше,
+    но `_is_test_like` свои сегменты не потерял."""
+    assert verify_pack._is_test_like(cmd) is True
 
 
 @pytest.mark.parametrize(
