@@ -10,14 +10,17 @@ rc — зомби ``Zs``, state говорил «стадия идёт», salvag
   todo_id), атомарная запись через managed-путь. Пишется на старте,
   каждой смене стадии и периодически (watchdog-поток, интервал из
   ``engine.heartbeat_seconds``, по умолчанию 30 с).
-- ``.agentic/context/ENGINE-EXIT-<ts>.md`` — причина любого завершения
-  (rc, сигнал, стадия, todo, хвост трейсбека). ``atexit`` + обработчики
-  SIGTERM/SIGINT, плюс явный ``finish(rc)`` из движка.
+- ``.agentic/context/ENGINE-EXIT-<ts>-<pid>[-n].md`` — причина любого
+  завершения (rc, сигнал, стадия, todo, хвост трейсбека). ``atexit`` +
+  обработчики SIGTERM/SIGINT, плюс явный ``finish(rc)`` из движка.
+  Каталог держит последние ``ENGINE_EXIT_RETENTION`` записей (crash-loop
+  не вытесняет свежие улики).
 
-Parent-death: на Linux ``prctl(PR_SET_PDEATHSIG, SIGTERM)`` до спавна
-воркера; fallback (не-Linux или ошибка prctl) — watchdog сверяет
-``os.getppid()`` с исходным и выходит с записью причины. Не-Linux —
-no-op с одной строкой в лог.
+Parent-death: выключен по умолчанию (TODO-0242 P0-1 — durable-ран
+переживает рестарт хоста). При ``engine.kill_with_parent: true`` — на
+Linux ``prctl(PR_SET_PDEATHSIG, SIGTERM)``; fallback (не-Linux или ошибка
+prctl) — watchdog сверяет ``os.getppid()`` с исходным и выходит с записью
+причины. Фоновый движок (``AWF_BACKGROUND_CHILD``) не вооружается никогда.
 
 Статус (``engine_dead``) читает те же файлы: state говорит «стадия идёт»,
 а pid мёртв (kill 0) или heartbeat старше порога — строка с точным
@@ -36,6 +39,7 @@ import sys
 import threading
 import time
 import traceback
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +52,10 @@ from .infra import managed_fs
 HEARTBEAT_NAME = "engine.heartbeat"
 DEFAULT_HEARTBEAT_SECONDS = 30.0
 DEFAULT_STALE_SECONDS = 120.0
+MAX_HEARTBEAT_SECONDS = 30.0
+#: How many ``ENGINE-EXIT-*.md`` records the context directory keeps; an
+#: older crash-loop cannot push the fresh evidence out of the listing.
+ENGINE_EXIT_RETENTION = 20
 _PR_SET_PDEATHSIG = 1
 
 
@@ -55,9 +63,23 @@ def heartbeat_path(project_dir: Path) -> Path:
     return paths.state_dir(project_dir) / HEARTBEAT_NAME
 
 
-def exit_file_path(project_dir: Path, ts: str | None = None) -> Path:
+def exit_file_path(
+    project_dir: Path,
+    ts: str | None = None,
+    *,
+    pid: int | None = None,
+    counter: int = 0,
+) -> Path:
+    """``ENGINE-EXIT-<ts>-<pid>[-<counter>].md`` — the ONE name builder.
+
+    TODO-0242 (A.4): the pid keeps two exits of one second apart (the
+    second-resolution stamp alone let a crash-loop erase its own evidence);
+    ``counter`` is the last-resort clash suffix for one pid.
+    """
     stamp = ts or _stamp()
-    return paths.context_dir(project_dir) / f"ENGINE-EXIT-{stamp}.md"
+    owner = os.getpid() if pid is None else pid
+    suffix = f"-{counter}" if counter else ""
+    return paths.context_dir(project_dir) / f"ENGINE-EXIT-{stamp}-{owner}{suffix}.md"
 
 
 def _stamp(now: datetime | None = None) -> str:
@@ -71,22 +93,43 @@ def _now_iso(now: datetime | None = None) -> str:
 
 
 def heartbeat_interval_seconds(config: dict | None = None) -> float:
+    """Current heartbeat interval, clamped to :data:`MAX_HEARTBEAT_SECONDS`.
+
+    A value above the ceiling is a configuration mistake with a real cost:
+    the liveness verdict gets slower than the status surfaces' patience
+    (the wait cap is minutes), and the 600s value from a copied config made
+    ``engine_dead`` take ten minutes to see. Clamp loudly, never silently.
+    """
     value = cfg_mod.get(config or {}, "engine.heartbeat_seconds")
     try:
         interval = float(value)
     except (TypeError, ValueError):
         return DEFAULT_HEARTBEAT_SECONDS
-    return interval if interval > 0 else DEFAULT_HEARTBEAT_SECONDS
+    if interval <= 0:
+        return DEFAULT_HEARTBEAT_SECONDS
+    if interval > MAX_HEARTBEAT_SECONDS:
+        warnings.warn(
+            f"engine.heartbeat_seconds={interval:g} exceeds the "
+            f"{MAX_HEARTBEAT_SECONDS:g}s ceiling — clamped; a larger "
+            "interval delays the engine-dead verdict",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return MAX_HEARTBEAT_SECONDS
+    return interval
 
 
 def heartbeat_stale_seconds(config: dict | None = None) -> float:
+    """Staleness threshold: ``max(3 × interval, 120)`` unless set explicitly."""
     value = cfg_mod.get(config or {}, "engine.heartbeat_stale_seconds")
     try:
         stale = float(value)
     except (TypeError, ValueError):
         interval = heartbeat_interval_seconds(config)
         return max(interval * 3, DEFAULT_STALE_SECONDS)
-    return stale if stale > 0 else DEFAULT_STALE_SECONDS
+    return stale if stale > 0 else max(
+        heartbeat_interval_seconds(config) * 3, DEFAULT_STALE_SECONDS
+    )
 
 
 def _managed_write(path: Path, text: str, logs_dir: Path | None) -> bool:
@@ -166,9 +209,15 @@ def write_engine_exit(
     reason: str = "",
     logs_dir: Path | None = None,
 ) -> Path | None:
-    """Записать ``ENGINE-EXIT-<ts>.md``; None, если запись не удалась."""
+    """Записать ``ENGINE-EXIT-<ts>-<pid>[-n].md``; None, если запись не удалась.
+
+    TODO-0242 (A.4): the second-resolution stamp alone let two exits in one
+    second overwrite each other (the crash-loop erased its own evidence).
+    The pid plus a counter make every exit its own file. The context
+    directory keeps :data:`ENGINE_EXIT_RETENTION` newest records.
+    """
     stamp = _stamp()
-    target = exit_file_path(project_dir, stamp)
+    target = _unique_exit_path(project_dir, stamp)
     lines = [
         f"# ENGINE-EXIT {stamp}",
         "",
@@ -182,14 +231,81 @@ def write_engine_exit(
         lines.append(f"- reason: {reason}")
     lines += ["", "## traceback tail", ""]
     tail = "\n".join((traceback_tail or "").strip().splitlines()[-40:])
-    lines.append(tail if tail else "(none)")
+    lines.append(tail if tail else "(no exception)")
     lines.append("")
     if _managed_write(target, "\n".join(lines), logs_dir):
+        _prune_engine_exits(project_dir, keep=target)
         return target
     return None
 
 
+def _unique_exit_path(project_dir: Path, stamp: str) -> Path:
+    """The first free ``ENGINE-EXIT-<stamp>-<pid>[-n].md``."""
+    counter = 0
+    candidate = exit_file_path(project_dir, stamp, counter=counter)
+    while candidate.exists():
+        counter += 1
+        candidate = exit_file_path(project_dir, stamp, counter=counter)
+    return candidate
+
+
+def _prune_engine_exits(project_dir: Path, *, keep: Path) -> None:
+    """Keep the newest :data:`ENGINE_EXIT_RETENTION` exit records."""
+    try:
+        records = sorted(
+            paths.context_dir(project_dir).glob("ENGINE-EXIT-*.md"),
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
+        )
+    except OSError:
+        return
+    for old in records[:-ENGINE_EXIT_RETENTION]:
+        if old == keep:
+            continue
+        # TODO-0242 (arch review): the prune is a DELETE on a managed
+        # surface, not a private cleanup — a swapped/symlinked
+        # ``.agentic``/``context`` must refuse instead of unlinking
+        # outside the project (the same no-follow walk the writers
+        # inventory demands of every delete site).
+        try:
+            managed_fs.require_posix("prune engine-exit records")
+            managed_fs.assert_no_symlink_escape(
+                old, root=managed_fs.agentic_root_for(old)
+            )
+            old.unlink()
+        except (OSError, managed_fs.ManagedPathError):
+            pass
+
+
 # ── parent-death ────────────────────────────────────────────────────────
+
+
+def _prctl_pdeathsig(
+    value: int, logs_dir: Path | None, *, label: str
+) -> bool:
+    """One ``prctl(PR_SET_PDEATHSIG, value)`` call, best effort.
+
+    Arming (``SIGTERM``) and disarming (``0``) share the libc handle, the
+    errno read and the degrade-to-log rule — two near-identical blocks
+    drifted apart on the next edit otherwise. ``label`` is what the log
+    line names; ``None`` from the handle (no libc) is the documented no-op.
+    """
+    try:
+        from . import _libc
+
+        libc = _libc.get_libc()
+        if libc is None:
+            return False
+        rc = libc.prctl(_PR_SET_PDEATHSIG, value, 0, 0, 0)
+    except Exception as exc:  # noqa: BLE001 — degrade to the ppid watchdog
+        _log_once(logs_dir, f"engine-liveness: {label} failed: {exc}")
+        return False
+    if rc != 0:
+        _log_once(
+            logs_dir,
+            f"engine-liveness: {label} rc={rc} errno={ctypes.get_errno()}",
+        )
+        return False
+    return True
 
 
 def install_parent_death_signal(
@@ -204,20 +320,23 @@ def install_parent_death_signal(
             "(watchdog ppid fallback is used)",
         )
         return False
-    try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        rc = libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-    except Exception as exc:  # noqa: BLE001 — degrade to the ppid watchdog
-        _log_once(logs_dir, f"engine-liveness: prctl failed: {exc}")
-        return False
-    if rc != 0:
-        _log_once(
-            logs_dir,
-            f"engine-liveness: prctl PR_SET_PDEATHSIG rc={rc} "
-            f"errno={ctypes.get_errno()}",
-        )
-        return False
-    return True
+    return _prctl_pdeathsig(
+        signal.SIGTERM, logs_dir, label="prctl PR_SET_PDEATHSIG"
+    )
+
+
+def disarm_parent_death_signal(logs_dir: Path | None = None) -> bool:
+    """``prctl(PR_SET_PDEATHSIG, 0)`` — чистое завершение не ждёт смерти родителя.
+
+    TODO-0242 (A.1): the opt-in signal describes how the engine DIES
+    unexpectedly, not how it finishes. A normal ``finish`` must clear it:
+    otherwise the process keeps a parent-death trigger it no longer owns
+    (a long-lived launcher that exits later would signal an already
+    finished process group). Best effort — a failure is a log line.
+    """
+    return _prctl_pdeathsig(
+        0, logs_dir, label="prctl(PR_SET_PDEATHSIG, 0)"
+    )
 
 
 # ── the engine-side owner ───────────────────────────────────────────────
@@ -255,6 +374,14 @@ class EngineLiveness:
         # init as "parent died". Detached engines are meant to outlive the
         # launcher — parent-death applies to foreground engines only.
         self._detached = os.environ.get("AWF_BACKGROUND_CHILD") == "1"
+        # TODO-0242 (P0-1): a durable run must OUTLIVE its launcher. The
+        # parent-death signal was the default and an MCP restart/reconnect
+        # killed six engines in one incident (2026-10-23). It is now opt-in
+        # (``engine.kill_with_parent: true``); the ppid watchdog follows the
+        # same switch — otherwise the fallback would do the same damage.
+        self._kill_with_parent = bool(
+            cfg_mod.get(self.config, "engine.kill_with_parent", False)
+        )
         self._pdeath = False
         self._old_handlers: dict[int, object] = {}
         self._exc_tail = ""
@@ -269,8 +396,16 @@ class EngineLiveness:
             return self
         self._started = True
         self.write()
-        if not self._detached:
+        if self._kill_with_parent and not self._detached:
             self._pdeath = install_parent_death_signal(self.logs_dir)
+            # TODO-0242 (A.1): the parent may have died BETWEEN the process
+            # start and the prctl — the signal is not retroactive. Check the
+            # ppid once, immediately. The watchdog keeps its own rule: it
+            # covers only the failed-prctl path (``_pdeath`` False), not a
+            # second opinion on an armed signal.
+            if os.getppid() != self._initial_ppid:
+                self.finish(1, reason=f"parent died (ppid {self._initial_ppid})")
+                os._exit(1)
         self._install_signals()
         try:
             atexit.register(self._atexit)
@@ -315,9 +450,11 @@ class EngineLiveness:
                 # record — and no artifact may be left behind.
                 return
         self._stop.set()
+        # TODO-0242 REVIEW (F6): rc without a Python exception is NOT a
+        # traceback — ``write_engine_exit`` writes "(no exception)" for an
+        # empty tail. A fabricated ``format_stack()`` here turned a plain
+        # non-zero exit into a misleading "traceback" section.
         tail = self._exc_tail
-        if not tail and reason == "" and rc not in (0, None):
-            tail = "".join(traceback.format_stack())
         try:
             write_engine_exit(
                 self.project_dir,
@@ -335,6 +472,11 @@ class EngineLiveness:
             atexit.unregister(self._atexit)
         except Exception:  # noqa: BLE001
             pass
+        if self._pdeath:
+            # TODO-0242 (A.1): the armed death trigger belongs to an
+            # unexpected death, not to a clean finish — clear it.
+            disarm_parent_death_signal(self.logs_dir)
+            self._pdeath = False
         self._restore_signals()
 
     # -- internals ------------------------------------------------------
@@ -345,7 +487,8 @@ class EngineLiveness:
     def _watch(self) -> None:
         while not self._stop.wait(self.interval):
             if (
-                not self._detached
+                self._kill_with_parent
+                and not self._detached
                 and not self._pdeath
                 and os.getppid() != self._initial_ppid
             ):
@@ -406,6 +549,21 @@ def engine_dead_hint(line: str, todo_id: str = "") -> str:
     return (
         f"Engine is dead ({line}) — resume with "
         f"awf_continue(todo_id='{todo_id or '?'}')."
+    )
+
+
+def closed_run_hint() -> str:
+    """The one wording for ``engine_dead`` over a CLOSED run (F8/Q2).
+
+    A run record exists but is not active: the stage state is history, and
+    resuming it would revive a finished run. The same sibling-drift rule
+    as :func:`engine_dead_hint`: the surfaces that answer "engine is dead"
+    must not assemble this sentence each in their own `brief.py` /
+    `wait_event.py` copy.
+    """
+    return (
+        "Run is not active — the stage state is a leftover. Start a new "
+        "run with awf_run_start(queue=[...])."
     )
 
 
@@ -516,7 +674,9 @@ def _heartbeat_age_seconds(heartbeat: dict, *, now: float | None = None) -> floa
 __all__ = [
     "EngineDead",
     "EngineLiveness",
+    "closed_run_hint",
     "detect_engine_dead",
+    "disarm_parent_death_signal",
     "engine_dead_hint",
     "exit_file_path",
     "heartbeat_interval_seconds",

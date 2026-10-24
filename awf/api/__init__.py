@@ -148,6 +148,7 @@ from .run import (
     supervisor_beat,
 )
 from .setup import apply_project_setup
+from .supervise import supervise_run
 from .wait_event import (
     TRANSPORT_CAP,
     WAIT_CAP_MARGIN,
@@ -252,6 +253,8 @@ __all__ = [
     "run_brief",
     "run_note",
     "run_revise",
+    # TODO-0242 (P0-2): restart a dead engine within a bounded budget
+    "supervise_run",
     # TODO-0178: the supervisor heartbeat (owner-idle → downtime)
     "supervisor_beat",
     # ORCH M5.2: service run (role creation during the main run)

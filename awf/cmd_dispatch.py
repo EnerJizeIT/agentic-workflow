@@ -43,4 +43,8 @@ def run(args: Any) -> int:
         print(f"  {path}")
     for warning in result.pre_check_warnings:
         print(f"  warning: {warning}")
+    # TODO-0242 (B.13): the soft size lock reaches the CLI too (parity with
+    # the MCP answer) — a warning, never a refusal.
+    if result.size_warning:
+        print(f"  warning: {result.size_warning}")
     return 0

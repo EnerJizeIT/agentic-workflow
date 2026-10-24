@@ -76,6 +76,10 @@ class StatusResult:
     pipeline_count: int = 0
     # SPEC A-run: autonomous run state (active run only; None otherwise)
     run_state: dict[str, Any] | None = None
+    # TODO-0242 REVIEW (F8): whether a run is ACTIVE. The status surface
+    # needs the fact to decide resume advice — a closed run with a stale
+    # stage state must hear "start a new one", not "awf_continue".
+    run_active: bool = False
     # REPORTS26 F6 (TODO-0166): workflow definitions not yet in git
     # (.agentic/config.yaml, roles/, pipelines/, phases/, doctrine/ —
     # changed tracked + untracked non-gitignored). [] = nothing to commit.
@@ -376,6 +380,10 @@ class DispatchTodoResult:
     # old title). Always False for an explicit todo_id (mismatch is
     # refused, or written as-is via allow_mismatch).
     renumbered: bool = False
+    # TODO-0242 (B.13): the soft unit-size lock — one line when the text
+    # looks like a mega-unit (>6 numbered requirements or >12 files in the
+    # boundaries block). Not a refusal: the supervisor decides.
+    size_warning: str = ""
     # TODO-0186: verify-path validation at dispatch — the contract's
     # verify: path tokens that do not exist relative to the project.
     # Warning only (the dispatch never refuses); [] when the verify
@@ -477,6 +485,11 @@ class SupervisorContextResult:
     # prove_red) + file hash (the same entry the brief card renders
     # compactly). None when nothing was launched.
     run_evidence_plan: dict | None = None
+    # TODO-0242 (A.3): the engine-death fact reaches the supervisor
+    # bootstrap too — a state that outlived the engine must not read as a
+    # calm phase hint. "" when the engine is alive (or no stage is on disk).
+    engine_dead: str = ""
+    engine_dead_todo: str = ""
     # the nearest permitted action (run-aware after a reject: awf_run_next)
     next_action: str = ""
 
@@ -525,6 +538,11 @@ class WaitEventResult:
     # (no signal, a fresh signal, or a valid pre-existing one the engine
     # will consume).
     stale_decision_hint: str = ""
+    # TODO-0242 (A.3): the concrete next command for actionable events —
+    # on ``engine_dead`` exactly ``awf_continue(todo_id=...)``. "" for the
+    # passive events (timeout/idle/done/stage_changed), which keep their
+    # instruction in ``message``.
+    next_action: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

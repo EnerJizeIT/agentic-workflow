@@ -591,6 +591,30 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_supervise = sub.add_parser(
+        "supervise",
+        help="Watchdog: restart a dead engine up to a bounded budget",
+    )
+    p_supervise.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    p_supervise.add_argument(
+        "--max-restarts",
+        dest="max_restarts",
+        type=int,
+        default=5,
+        help="Restarts allowed for this run (default: 5)",
+    )
+    p_supervise.add_argument(
+        "--pause",
+        dest="pause_seconds",
+        type=float,
+        default=30.0,
+        help="Seconds between checks (default: 30)",
+    )
+
     p_metrics = sub.add_parser(
         "metrics", help="U8: token/cost metrics of the work program (report to desktop)"
     )
@@ -949,6 +973,9 @@ def _run_command(args) -> int:
         if args.command == "kill":
             from . import cmd_kill
             return cmd_kill.run(args)
+        if args.command == "supervise":
+            from . import cmd_supervise
+            return cmd_supervise.run(args)
         if args.command == "pipeline-write":
             from . import cmd_pipeline_write
             return cmd_pipeline_write.run(args)

@@ -36,6 +36,7 @@ from ._markdown import (
     find_headings,
     first_heading_index,
     lines_below,
+    section_body,
     skip_leading_trivia,
 )
 from ._results import DispatchTodoResult
@@ -464,6 +465,48 @@ def _insert_after_title(content: str, block: str) -> str:
     while insert < len(lines) and not lines[insert].strip():
         insert += 1
     return _insert_at(content, insert, block)
+
+
+_SIZE_REQUIREMENTS_LIMIT = 6
+_SIZE_FILES_LIMIT = 12
+
+
+def unit_size_warning(content: str) -> str:
+    """TODO-0242 (B.13): the soft mega-unit lock — a warning, not a refusal.
+
+    Size was never visible at dispatch time: a TODO with sixteen numbered
+    requirements and twenty files went into one unit and the worker had to
+    hold all of it. Count the two cheap structural signals — numbered
+    requirements (``## Требования``) and named files (``## Границы``).
+    """
+    # The section reader is the shared walker (``_markdown.section_body``):
+    # a body heading inside a fence is an example, and a nested ``###``
+    # stays inside the section — the same rules the other section readers
+    # use. A second, regex-only reader here would answer differently.
+    requirements = len(
+        re.findall(
+            r"^[ \t]*\d+[.)][ \t]+",
+            section_body(content, "Требования"),
+            re.MULTILINE,
+        )
+    )
+    boundaries = section_body(content, "Границы")
+    files = {
+        token
+        for token in re.findall(r"`([^`]+)`", boundaries)
+        if "/" in token or "." in token
+    }
+    if requirements > _SIZE_REQUIREMENTS_LIMIT:
+        return (
+            f"looks like a mega-unit: {requirements} numbered requirements "
+            f"(>{_SIZE_REQUIREMENTS_LIMIT}) — split it before dispatch"
+        )
+    if len(files) > _SIZE_FILES_LIMIT:
+        return (
+            f"looks like a mega-unit: {len(files)} files in the boundaries "
+            f"block (>{_SIZE_FILES_LIMIT}) — split it before dispatch"
+        )
+    return ""
 
 
 def _next_todo_id(project_dir: Path) -> str:
@@ -1155,6 +1198,7 @@ def dispatch_todo(
             *baseline.files_created,
         ],
         pre_check_warnings=pre_check_warnings,
+        size_warning=unit_size_warning(content),
         carry_over_from=carry_over_from,
         carry_over_files=[escape_str_for_ui(p) for p in carry_over_files],
         pre_existing_untracked=[escape_str_for_ui(p) for p in pre_existing],

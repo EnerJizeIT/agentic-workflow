@@ -216,7 +216,9 @@ def _durable_operation(
 
     - a recorded ``applied`` replay returns the stored result — no second
       backup, no second section;
-    - a recorded ``refused`` replay raises the stored error again;
+    - a recorded ``refused`` replay does NOT stick: the same id
+      re-runs the operation (the refusal was a snapshot of the
+      preconditions, not a verdict);
     - a ``running`` record with no finish means the outcome is unknown —
       :class:`OperationRecoveryRequired` is raised, never a duplicate
       effect.
@@ -294,11 +296,14 @@ def _durable_operation(
                         "recovery_required, do not retry blindly",
                     )
                 return replay(stored)
-            if status == "refused":
-                raise AwfApiError(
-                    prior.get("error") or f"operation {operation_id} refused"
-                )
-            raise OperationRecoveryRequired(operation_id)
+            if status != "refused":
+                raise OperationRecoveryRequired(operation_id)
+            # TODO-0242 (B.8): a refusal is a snapshot of the preconditions
+            # at that moment, not a verdict forever. Fall through to the
+            # standard start record below: it overwrites the refusal with a
+            # fresh ``running``, and the apply re-checks the world. The old
+            # replay raised the stored error even after the cause (a live
+            # pipeline, a stale lock) was gone, so it stuck to the id.
         # F-HIGH: the START record must land BEFORE any effect. If it
         # cannot, refuse now — a retry with no record would re-apply.
         try:
@@ -320,10 +325,15 @@ def _durable_operation(
         try:
             result = apply(resolved)
         except AwfApiError as e:
+            message = (
+                f"{e} (the refusal is not final — after the cause is "
+                "removed, retry with the same operation_id; a genuinely "
+                "different operation needs a new id)"
+            )
             try:
                 _write_operation(
                     resolved, operation_id, status="refused", todo_id=todo_id,
-                    action=action, args_digest=args_digest, error=str(e),
+                    action=action, args_digest=args_digest, error=message,
                 )
             except state_store.STATE_WRITE_FAILURES as je:
                 # Nothing applied — a lost refusal note cannot duplicate.
@@ -332,7 +342,7 @@ def _durable_operation(
                     f"operation {operation_id}: refusal journal write "
                     f"failed: {je}",
                 )
-            raise
+            raise AwfApiError(message) from e
         # F-HIGH: the effect landed. If the finish record cannot be
         # written, the outcome is not durably known — surface
         # recovery_required (a retry would read the open ``running``
@@ -1215,7 +1225,9 @@ def update_todo(
 
     - a recorded ``applied`` replay returns the stored result (no second
       backup, no second append);
-    - a recorded ``refused`` replay raises the stored error again;
+    - a recorded ``refused`` replay does NOT stick: the same id
+      re-runs the operation (the refusal was a snapshot of the
+      preconditions, not a verdict);
     - a ``running`` record with no finish means the outcome is unknown —
       :class:`OperationRecoveryRequired` is raised (→ recovery_required),
       never a duplicate effect.

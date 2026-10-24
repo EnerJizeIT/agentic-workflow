@@ -974,9 +974,16 @@ async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
         # such fact, so a stale BLOCKED closure would otherwise answer a
         # question awf_status does not ask. The order between blocked and
         # engine_dead is untouched — it still lives in the owner.
-        if result.get("engine_dead") or (
+        # TODO-0242 (A.6): resume advice only for an ACTIVE run. An inactive
+        # run with a stale stage state is closed history — its message says
+        # "Run finished", so the next action must start a new run, not
+        # resurrect the old one.
+        # A BLOCKED closure needs an answer even when the run record is
+        # gone — the closure itself is the fact. The engine-dead resume,
+        # however, belongs to an ACTIVE run only (A.6).
+        if (
             result.get("blocked_ids") and not result.get("pipeline_running")
-        ):
+        ) or (result.get("active") and result.get("engine_dead")):
             from awf.brief import next_action_from_status
 
             result["next_action"] = next_action_from_status(result)
@@ -1098,9 +1105,11 @@ async def awf_run_revise(
     preview: bool = False,
     stop_running: bool = False,
     position: int | None = None,
+    after: str | None = None,
+    before: str | None = None,
 ) -> dict[str, Any]:
     """Revise the not-started queue elements of the active run (ORCH M3.4);
-    add new elements to it (REPORTS32).
+    add new elements to it (REPORTS32); remove or anchor (TODO-0242).
 
     One typed operation with a preview and an idempotency key.
     ``preview=True`` shows the current queue, the elements that would
@@ -1108,8 +1117,10 @@ async def awf_run_revise(
     (current/started/completed/TODO file missing) with NO side effects.
     The apply changes the pipeline of the NOT-STARTED elements only —
     completed and current are never touched — and records the revision in
-    the run state (state/run.yaml, the decisions' path). A repeat with the
-    same ``key`` is a no-op.
+    the run state (state/run.yaml, the decisions' path). The key names ONE
+    request: a repeat with the same ``key`` AND the same payload is a
+    no-op; the same ``key`` with a DIFFERENT payload is refused
+    (recovery-required) — a different revision needs a new key.
 
     APPEND/INSERT (REPORTS32): a ``queue`` item whose todo_id is NOT in
     the run queue joins it — appended at the queue END (``changes`` carry
@@ -1125,6 +1136,15 @@ async def awf_run_revise(
     same as append), never before a started/current/completed element.
     Invalid (non-int, out of range) → refusal. Without ``position`` new
     elements are appended.
+
+    ANCHORS (TODO-0242): ``after="TODO-NNNN"`` / ``before="TODO-NNNN"``
+    place the new elements relative to an existing queue element; each is
+    mutually exclusive with ``position`` (and with the other anchor). The
+    resulting position goes through the same NOT-STARTED zone check.
+
+    REMOVE (TODO-0242): an item ``{"remove": "TODO-NNNN"}`` removes a
+    NOT-STARTED element (class ``"removed"``); a current/started/completed
+    element is a conflict and refuses the whole request.
 
     REPLACE (TODO-0240): an item ``{"from": "TODO-A", "to": "TODO-B"}``
     replaces the NOT-STARTED element A with B in place (position and
@@ -1166,6 +1186,10 @@ async def awf_run_revise(
         position: Queue position for NEW (not-in-queue) elements — an int
             in [index, len(queue)]; None (default) = append at the end.
             Invalid → refusal.
+        after: Anchor for NEW elements — insert right after this queued
+            element (mutually exclusive with position/before).
+        before: Anchor for NEW elements — insert right before this queued
+            element (mutually exclusive with position/after).
 
     Returns:
         Dict with: action (preview/applied/noop/refused), key, generation,
@@ -1182,6 +1206,8 @@ async def awf_run_revise(
         preview=preview,
         stop_running=stop_running,
         position=position,
+        after=after,
+        before=before,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         action = result.get("action")
@@ -2431,6 +2457,13 @@ async def awf_dispatch_todo(
             f"to {response.get('todo_id')} (the template carried a foreign "
             "TODO number)."
         )
+    # TODO-0242 (B.13): the soft size lock is a warning, not a refusal —
+    # the supervisor still decides whether to split.
+    if response.get("size_warning"):
+        response["next_action"] = (
+            f"{response['next_action']} Size warning: "
+            f"{response['size_warning']}."
+        )
     return response
 
 
@@ -2944,6 +2977,8 @@ async def awf_wait_for_event(
       ``awf_dispatch_todo`` outside
     - ``timeout`` — no event within timeout
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
+    - ``engine_dead`` — the state outlived the engine; the answer carries
+      ``next_action=awf_continue(todo_id=...)`` (A.3) — resume, do not wait
 
     R3 (NEG-2026-09-19): the MCP transport cuts long tool calls (JSON-RPC
     -32001) — the default client timeout is ~60s, so a single wait works
@@ -2975,7 +3010,7 @@ async def awf_wait_for_event(
 
     Returns:
         Dict with: event_type (verify/blocked/salvage/checkpoint/done/
-        timeout/stage_changed/idle), message (instruction for supervisor),
+        timeout/stage_changed/idle/engine_dead), message (instruction for supervisor),
         state_snapshot, suggested_timeout (recommended wait size for the
         next call, never above the project's wait cap), next_action
         (instruction + the actual single-wait cap), timeout_clamped (true
@@ -3058,6 +3093,10 @@ async def awf_wait_for_event(
                     f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
                 ),
                 "idle": "Pipeline not running. Check awf_status → awf_run_next or awf_run_finish.",
+                "engine_dead": (
+                    "Engine is dead — resume the run: awf_continue(todo_id=…) "
+                    "(the event message names the exact id). Do NOT keep waiting."
+                ),
             }
         else:
             _EVENT_ACTIONS = {
@@ -3070,6 +3109,10 @@ async def awf_wait_for_event(
                 ),
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
+                "engine_dead": (
+                    "Engine is dead but the run is not active — start a new "
+                    "run with awf_run_start, do not resume a closed one."
+                ),
             }
         # RUN10 #1: an UNKNOWN event type inside a run must not advise
         # "wait for user" either — the run loop keeps waiting.
@@ -3079,7 +3122,14 @@ async def awf_wait_for_event(
             if run_active
             else "Check awf_status, then wait for user."
         )
-        response["next_action"] = _EVENT_ACTIONS.get(et, default_action)
+        # TODO-0242 REVIEW (F9): the API is the owner of a concrete next
+        # command for actionable events — ``engine_dead`` carries
+        # ``awf_continue(todo_id=...)`` (A.3). The table is only a FALLBACK:
+        # overwriting the API advice told the supervisor to keep waiting on
+        # a dead engine, so the run was never resumed.
+        response["next_action"] = response.get("next_action") or _EVENT_ACTIONS.get(
+            et, default_action
+        )
         # B3 / RUN6 #3: every response carries the actual single-wait cap
         # (project-aware: config/env, default ~55s transport cap); clamped
         # requests say so explicitly.

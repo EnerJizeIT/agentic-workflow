@@ -321,6 +321,35 @@ the `AWF_MCP_LOG` env var. It rotates once to `.1` past 1 MB.
 └── state/dashboard_port     # Dashboard HTTP server port
 ```
 
+## Engine liveness and worker isolation
+
+Two optional `config.yaml` blocks (defaults shown — an old config without
+them keeps the documented behaviour):
+
+```yaml
+engine:
+  heartbeat_seconds: 30          # clamped to <= 30 (a larger value warns)
+  heartbeat_stale_seconds: 120   # default max(3 x heartbeat_seconds, 120)
+  kill_with_parent: false        # true = the engine dies with its launcher
+worker:
+  mcp_servers: [agent-workflow-ui]  # MCP servers an EXECUTE worker keeps
+```
+
+`kill_with_parent: false` is the durable-run default (TODO-0242): a restart
+of opencode or the MCP server must not take a running pipeline with it. The
+heartbeat drives `engine_dead`; the ceiling keeps the verdict within the
+status surfaces' patience. `worker.mcp_servers` trims the execute worker's
+tool context to the control server; every other configured MCP server is
+switched off for that subprocess (a name the config does not define is a
+warning, never a failure). An explicit empty list (`mcp_servers: []`) is a
+value, not an absence: it turns every MCP server off for the worker.
+
+`awf supervise` is the watchdog for the leftover case: while the run has an
+active unit it restarts a dead engine (`awf continue`) up to
+`--max-restarts` (default 5) with `--pause` seconds between checks (default
+30), logging `supervise: restart #k` into `logs/awf-supervise.log`. When the
+budget is exhausted it stops and reports instead of looping forever.
+
 ## Custom pipelines
 
 You design the pipeline in the setup form. Any roles, any depth. Every
@@ -780,7 +809,8 @@ not-started queue elements only — the current and completed elements are
 never touched. `preview=true` shows the current queue, the elements that
 would change and the conflicts (current/started/completed/not in the queue)
 without writing anything. The apply is atomic (a conflict refuses the whole
-request) and is idempotent by `key`: a repeat with the same key is a no-op.
+request) and is idempotent by `key`: a repeat with the same key AND the
+same payload is a no-op (a different payload under the same key is refused).
 By default it is refused while a stage is running (stop the unit first).
 `stop_running=true` authorizes the stop: the unit is stopped by the
 engine's standard kill path (`kill_pipeline`: the pipeline's TERM → grace →
@@ -797,6 +827,17 @@ stage, `stop_running=true` is a no-op stop, not an error. The applied
 revision is recorded in `state/run.yaml` (`revisions`, the decisions' path)
 in the same CAS write as the queue change (A-13 generation condition); the
 revised pipelines take effect at each element's launch (`awf_run_next`).
+
+**Queue shapes and the idempotency key (TODO-0242).** A revision item is
+one of three shapes: `{"todo_id": "TODO-NNNN", "pipeline": "<name>"}`
+(re-pipeline), `{"from": "TODO-A", "to": "TODO-B"}` (replace an element in
+place), or `{"remove": "TODO-NNNN"}` (drop a NOT-STARTED element). New
+elements land at the end by default; `position` names the slot, and
+`after="TODO-A"` / `before="TODO-A"` anchor them to an existing element
+(mutually exclusive with `position` and with each other). The key is the
+identity of ONE request: the same key with the same payload is a no-op,
+the same key with a DIFFERENT payload is refused as recovery-required —
+a different revision needs a new key.
 
 **Service run (ORCH M5.2): role creation during the main run.**
 `awf_run_service_start(project_dir, slug, description)` starts a SERVICE

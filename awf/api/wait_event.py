@@ -772,6 +772,45 @@ def _stale_decision_hint(project_dir: Path, todo_id: str) -> str:
     )
 
 
+def _engine_dead_event(
+    state: dict[str, Any] | None, project_dir: Path | None
+) -> WaitEventResult | None:
+    """TODO-0242 (A.3): the state outlived the engine → its own event.
+
+    Without this the wait keeps polling a stage that will never signal and
+    answers ``timeout`` — the silent-death shape the liveness unit exists
+    to remove. ``status_engine_dead`` stays the single owner of the fact;
+    a live pipeline (the launch window) is not death.
+    """
+    if project_dir is None or not state:
+        return None
+    from .._engine_liveness import closed_run_hint, engine_dead_hint
+    from ._liveness import engine_dead_now
+
+    dead = engine_dead_now(project_dir, state)
+    if dead is None:
+        return None
+    # TODO-0242 REVIEW (Q2): the resume advice belongs to an ACTIVE run
+    # only — ``awf_run_status`` already answers "run finished, start a new
+    # one" for the same state (A.6). A closed run with a stale stage state
+    # must not be told to revive its dead engine.
+    from .. import run_state as _run_state
+
+    run = _run_state.read_run(project_dir)
+    if run is not None and not run.get("active"):
+        return WaitEventResult(
+            event_type="idle",
+            message=closed_run_hint(),
+            state_snapshot=_state_to_dict(state),
+        )
+    return WaitEventResult(
+        event_type="engine_dead",
+        message=engine_dead_hint(dead.line, dead.todo_id),
+        state_snapshot=_state_to_dict(state),
+        next_action=f"awf_continue(todo_id='{dead.todo_id or '?'}')",
+    )
+
+
 def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = None) -> WaitEventResult | None:
     """Check if current state has an interesting event. Return result or None."""
     # RUN10 #1: a fully cleared state file (None) now reaches this check on
@@ -816,6 +855,14 @@ def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = No
             ),
             state_snapshot=_state_to_dict(state),
         )
+
+    # TODO-0242 (A.3): a state that claims a running stage over a dead
+    # engine is not "still working" — the wait must say so instead of
+    # polling to the timeout. One owner of the fact (status_engine_dead),
+    # one wording (engine_dead_hint).
+    dead = _engine_dead_event(state, project_dir)
+    if dead is not None:
+        return dead
 
     if stage_kind == "verify":
         snapshot = _state_to_dict(state)

@@ -657,8 +657,14 @@ def next_action_from_status(s: Any) -> str:
             f"then `awf_continue(ack='{first}')`."
         )
     if _get("engine_dead"):
-        from ._engine_liveness import engine_dead_hint
+        # TODO-0242 REVIEW (F8): resume advice belongs to an ACTIVE run
+        # only — the same invariant A.6/Q2 hold on awf_run_status and
+        # awf_wait_for_event. A closed run with a stale stage state gets
+        # "start a new one", never ``awf_continue``.
+        from ._engine_liveness import closed_run_hint, engine_dead_hint
 
+        if _get("run_state") is not None and _get("run_active", True) is False:
+            return closed_run_hint()
         return engine_dead_hint(
             str(_get("engine_dead")), str(_get("engine_dead_todo") or "")
         )

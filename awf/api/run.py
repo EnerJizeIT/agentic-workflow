@@ -75,7 +75,22 @@ def _validate_queue(
     """
     items: list[dict] = []
     for q in queue or []:
-        if isinstance(q, dict) and ("from" in q or "to" in q):
+        if isinstance(q, dict) and "remove" in q:
+            # TODO-0242 (B.12): remove a NOT-STARTED element — a queue
+            # revision, not a start item.
+            if not allow_replace:
+                raise AwfApiError(
+                    "a remove item {'remove': 'TODO-NNNN'} belongs to "
+                    "run_revise, not to a run start"
+                )
+            target = str(q.get("remove", "")).strip()
+            if not is_valid_todo_id(target):
+                raise AwfApiError(
+                    f"invalid remove item {q!r} — use "
+                    "{'remove': 'TODO-NNNN'}"
+                )
+            items.append({"remove": target})
+        elif isinstance(q, dict) and ("from" in q or "to" in q):
             if not allow_replace:
                 raise AwfApiError(
                     "a replace item {'from', 'to'} belongs to run_revise, "
@@ -113,8 +128,15 @@ def _validate_queue(
             "{'todo_id', 'pipeline'} objects, e.g. ['TODO-0010', "
             "{'todo_id': 'TODO-0011', 'pipeline': 'audit-llm'}]"
         )
+    # TODO-0242 REVIEW (Q4): a ``remove`` target is NOT an identity of a
+    # queue item — the same id in a remove+re-pipeline (or remove+replace)
+    # pair is a self-contradiction the revision reports as a named
+    # conflict, not a malformed queue. Two real ids (todo_id/replace_from)
+    # still may not repeat.
     ids = [
-        i.get("todo_id") or i.get("replace_from", "") for i in items
+        i.get("todo_id") or i.get("replace_from", "")
+        for i in items
+        if "remove" not in i
     ]
     if len(ids) != len(set(ids)):
         raise AwfApiError("queue contains duplicate TODO ids")
@@ -643,7 +665,10 @@ def run_status(project_dir: Path) -> RunStatusResult:
     # "running" when the stage state outlived the engine. Read-only.
     # The liveness guard is status_engine_dead's (the shared resolver owns
     # the fact — a live pipeline in the launch window means the stage state
-    # is merely not rewritten yet, not a dead engine).
+    # is merely not rewritten yet, not a dead engine). This surface needs
+    # the resolver's answer itself (``pipeline_running`` below), so it asks
+    # both owners directly; callers holding only the state use
+    # ``_liveness.engine_dead_now`` (TODO-0242 A.3).
     from .._engine_liveness import status_engine_dead
     from ..pipeline_state import read_state as _read_pipeline_state
 
@@ -2185,6 +2210,35 @@ def _launchable_todo_reason(project_dir: Path, todo_id: str) -> str:
     )
 
 
+def _queue_item_fields(item: object) -> tuple[str, str]:
+    """One reader for a queue item's ``(todo_id, pipeline)``.
+
+    A queue item is the canonical ``{"todo_id", "pipeline"}`` dict or the
+    legacy plain ``TODO-NNNN`` string (``run_state.normalize_queue`` owns
+    that fact). The queue readers below used to re-derive the pair inline,
+    each answering a string item slightly differently; they all go through
+    this one.
+    """
+    if isinstance(item, dict):
+        return (
+            str(item.get("todo_id", "")),
+            str(item.get("pipeline", "") or ""),
+        )
+    return str(item), ""
+
+
+def _queue_item_id(item: object) -> str:
+    return _queue_item_fields(item)[0]
+
+
+def _queue_item_index(queue: list, todo_id: str) -> int | None:
+    """The first position of ``todo_id`` in ``queue``; None when absent."""
+    for pos, item in enumerate(queue):
+        if _queue_item_id(item) == todo_id:
+            return pos
+    return None
+
+
 def _revision_items(
     project_dir: Path,
     state: dict,
@@ -2239,14 +2293,6 @@ def _revision_items(
     # NEXT launch; until then the raw list lags one cycle behind).
     completed = set(_completed_view(project_dir, state))
 
-    def _item_fields(item: object) -> tuple[str, str]:
-        if isinstance(item, dict):
-            return (
-                str(item.get("todo_id", "")),
-                str(item.get("pipeline", "") or ""),
-            )
-        return str(item), ""
-
     def _lifecycle(tid: str, pos: int) -> str:
         if tid in completed:
             return "completed"
@@ -2259,7 +2305,7 @@ def _revision_items(
     current_queue: list[dict] = []
     by_id: dict[str, tuple[int, str]] = {}
     for pos, item in enumerate(queue):
-        tid, pipe = _item_fields(item)
+        tid, pipe = _queue_item_fields(item)
         current_queue.append(
             {"todo_id": tid, "pipeline": pipe, "position": pos, "state": _lifecycle(tid, pos)}
         )
@@ -2276,10 +2322,70 @@ def _revision_items(
     # TODO-0240: every id the queue holds (or a request already claimed) —
     # a replace/appended target must not duplicate it.
     taken: set[str] = set(by_id)
+    removed_ids: set[str] = set()
+    # TODO-0242 REVIEW (Q4): an id that this same request removes AND
+    # re-adds (re-pipeline, or replace source/target) is one
+    # self-contradictory plan. It becomes ONE named conflict instead of a
+    # duplicate-id exception or a silent drop in the mutator.
+    remove_targets = {
+        str(r.get("remove") or "") for r in requested if "remove" in r
+    }
+    readd_targets: set[str] = set()
+    for r in requested:
+        if "todo_id" in r:
+            readd_targets.add(str(r.get("todo_id") or ""))
+        if "replace_from" in r or "replace_to" in r:
+            readd_targets.add(str(r.get("replace_from") or ""))
+            readd_targets.add(str(r.get("replace_to") or ""))
+    removed_and_readded = remove_targets & readd_targets
+    for tid in sorted(removed_and_readded):
+        conflicts_list.append(
+            {
+                "todo_id": tid,
+                "reason": (
+                    "element removed and re-added in one revision; do it "
+                    "in two steps"
+                ),
+            }
+        )
     for req in requested:
+        if "remove" in req:
+            # TODO-0242 (B.12): remove a NOT-STARTED element. Same
+            # lifecycle guard as every other queue change; a completed or
+            # in-flight unit is history, not a plan.
+            src = str(req.get("remove") or "")
+            if src in removed_and_readded:
+                continue
+            entry = by_id.get(src)
+            if entry is None:
+                conflicts_list.append(
+                    {
+                        "todo_id": src,
+                        "reason": (
+                            "element is not in the run queue — remove an "
+                            "element that exists"
+                        ),
+                    }
+                )
+                continue
+            if src in removed_ids:
+                conflicts_list.append(
+                    {"todo_id": src, "reason": "removed twice by this request"}
+                )
+                continue
+            pos, _pipe = entry
+            lifecycle = _lifecycle(src, pos)
+            if lifecycle != "queued":
+                conflicts_list.append({"todo_id": src, "reason": conflicts[lifecycle]})
+                continue
+            changes.append({"todo_id": src, "class": "removed"})
+            removed_ids.add(src)
+            continue
         if "replace_from" in req:
             src = str(req.get("replace_from") or "")
             dst = str(req.get("replace_to") or "")
+            if src in removed_and_readded or dst in removed_and_readded:
+                continue
             entry = by_id.get(src)
             if entry is None:
                 conflicts_list.append(
@@ -2332,6 +2438,8 @@ def _revision_items(
             continue
         tid = req["todo_id"]
         to = str(req.get("pipeline", "") or "")
+        if tid in removed_and_readded:
+            continue
         entry = by_id.get(tid)
         if entry is not None:
             pos, pipe = entry
@@ -2392,6 +2500,35 @@ def _replace_pairs(changes: list[dict]) -> str:
     )
 
 
+def _position_after_removals(
+    changes: list[dict], queue: list, insert_at: int | None
+) -> int | None:
+    """TODO-0242 REVIEW (Q1): the insert position the queue will actually
+    carry — the request base corrected by the removals that stand before
+    it. The mutator applies exactly this shift; the answers (preview,
+    applied, next_action) must name the same number, not the pre-removal
+    base.
+
+    One owner for the shift: the mutator calls this BEFORE it pops, on
+    the untouched queue. Re-counting while popping used the shrunken
+    indices and counted a removal that stood AT the base as "before" it.
+    """
+    if insert_at is None:
+        return None
+    # A non-int position is the zone check's refusal (it names the bad
+    # value); the shift only makes sense for a real integer base.
+    if isinstance(insert_at, bool) or not isinstance(insert_at, int):
+        return insert_at
+    removed_before = 0
+    for ch in changes:
+        if ch.get("class") != "removed":
+            continue
+        pos = _queue_item_index(queue, ch["todo_id"])
+        if pos is not None and pos < insert_at:
+            removed_before += 1
+    return insert_at - removed_before
+
+
 def run_revise(
     project_dir: Path,
     *,
@@ -2401,6 +2538,8 @@ def run_revise(
     preview: bool = False,
     stop_running: bool = False,
     position: int | None = None,
+    after: str | None = None,
+    before: str | None = None,
 ) -> RunReviseResult:
     """ORCH M3.4 / REPORTS32 (TODO-0198): revise the NOT-STARTED elements
     of the active run's queue — one typed operation with a preview and an
@@ -2441,9 +2580,12 @@ def run_revise(
       ``awf continue`` resumes the unit from the stopped stage; the answer
       and the revision record name it (``resume_from``). No live stage →
       the stop is a no-op and the revision applies.
-    - a repeat with the same ``key`` is a no-op: the stored revision is
-      returned, nothing is written twice (the check and the append are one
-      step under one lock hold). The replay is not write-free — R1.4
+    - a repeat with the same ``key`` AND the same payload is a no-op: the
+      stored revision is returned, nothing is written twice (the check and
+      the append are one step under one lock hold). The same ``key`` with a
+      DIFFERENT payload is not a repeat — it is refused (recovery
+      required): one key names one revision, and a different revision
+      needs a new key. The replay is not write-free — R1.4
       allocates a durable Store generation — so a LIVE stage still refuses
       first (the stop-first gate keeps every writer out); stop the unit,
       then the repeat answers with the no-op.
@@ -2473,12 +2615,35 @@ def run_revise(
     reason_clean = str(reason or "").strip()
     key_clean = str(key or "").strip()
 
+    # TODO-0242 (B.12): anchors are an alternative to an explicit position —
+    # at most ONE of position/after/before names where new elements land.
+    given = sum(
+        value is not None for value in (position, after, before)
+    )
+    if given > 1:
+        return RunReviseResult(
+            action="refused",
+            preview=bool(preview),
+            key=key_clean,
+            message=(
+                "Refused: position/after/before are mutually exclusive — "
+                "name where new elements land exactly once. Nothing was "
+                "changed."
+            ),
+        )
+
     # AA1 (TODO-0240 review v7): the key names ONE revision — the digest of
-    # the request (queue + position + reason) is recorded with it, so a
-    # repeat with a DIFFERENT payload is refused instead of silently
+    # the request (queue + position/anchors + reason) is recorded with it,
+    # so a repeat with a DIFFERENT payload is refused instead of silently
     # replaying the first outcome.
     request_digest = state_store.payload_digest(
-        {"queue": requested, "position": position, "reason": reason_clean}
+        {
+            "queue": requested,
+            "position": position,
+            "after": after,
+            "before": before,
+            "reason": reason_clean,
+        }
     )
 
     state = run_state.read_run(project_dir)
@@ -2500,18 +2665,54 @@ def run_revise(
         index = 0
     current = str(state.get("current") or "")
     queue_len = len(state.get("queue") or [])
+
+    # TODO-0242 (B.12): resolve an anchor to the base insertion position.
+    # The anchor must be a queued element of THIS run; the resulting
+    # position still goes through the same NOT-STARTED zone check below.
+    # REVIEW (Q3): an anchor/position names where NEW elements land — a
+    # remove-only (or replace-only) request has none, so neither is
+    # validated as an insertion point and the removal passes.
+    anchor_id = str(after or before or "").strip()
+    insert_at = position
+    queued_ids = {_queue_item_id(q) for q in (state.get("queue") or [])}
+    has_new = any(
+        "todo_id" in r and str(r.get("todo_id", "")) not in queued_ids
+        for r in requested
+    )
+    if not has_new:
+        anchor_id = ""
+        insert_at = None
+    elif after is not None or before is not None:
+        anchor_pos = _queue_item_index(state.get("queue") or [], anchor_id)
+        if anchor_pos is None:
+            return RunReviseResult(
+                action="refused",
+                preview=bool(preview),
+                key=key_clean,
+                generation=gen,
+                current_queue=[],
+                message=(
+                    f"Refused: anchor {anchor_id or '?'} is not in the run "
+                    "queue — after/before name an element that exists. "
+                    "Nothing was changed."
+                ),
+            )
+        insert_at = anchor_pos + 1 if after is not None else anchor_pos
+
     current_queue, changes, conflicts, unchanged = _revision_items(
-        project_dir, state, requested, position=position
+        project_dir, state, requested, position=insert_at
+    )
+    # TODO-0242 REVIEW (Q1): the position the caller sees is the one the
+    # queue will actually carry — removals before the base shift it.
+    reported_position = _position_after_removals(
+        changes, state.get("queue") or [], insert_at
     )
 
-    # REPORTS32 (TODO-0198): the insert position is the NEW element's
-    # position in the queue — the valid zone is the NOT-STARTED region
-    # (index .. len(queue), len = an append). Outside it the element would
-    # land before a started/current/completed element → refusal.
-    if position is not None and (
-        isinstance(position, bool)
-        or not isinstance(position, int)
-        or not index <= position <= queue_len
+    # An anchor that this same request removes cannot position the new
+    # elements — the plan would be self-contradictory. Atomic refusal.
+    if anchor_id and any(
+        c.get("class") == "removed" and c.get("todo_id") == anchor_id
+        for c in changes
     ):
         return RunReviseResult(
             action="refused",
@@ -2523,7 +2724,32 @@ def run_revise(
             conflicts=conflicts,
             unchanged=unchanged,
             message=(
-                f"Refused: invalid position {position!r} — it must be an "
+                f"Refused: {anchor_id} is both the anchor and a removal in "
+                "this request — an element cannot position new elements and "
+                "leave the queue at once. Nothing was changed."
+            ),
+        )
+
+    # REPORTS32 (TODO-0198): the insert position is the NEW element's
+    # position in the queue — the valid zone is the NOT-STARTED region
+    # (index .. len(queue), len = an append). Outside it the element would
+    # land before a started/current/completed element → refusal.
+    if insert_at is not None and (
+        isinstance(insert_at, bool)
+        or not isinstance(insert_at, int)
+        or not index <= insert_at <= queue_len
+    ):
+        return RunReviseResult(
+            action="refused",
+            preview=bool(preview),
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                f"Refused: invalid position {insert_at!r} — it must be an "
                 f"integer in [{index}, {queue_len}] (the NOT-STARTED "
                 "region: the new element may stand at index or later, up "
                 "to the queue end for an append; it must never land "
@@ -2536,9 +2762,26 @@ def run_revise(
     n_appended = len([c for c in changes if c.get("class") == "appended"])
     n_inserted = len([c for c in changes if c.get("class") == "inserted"])
     n_replaced = len([c for c in changes if c.get("class") == "replaced"])
+    n_removed = len([c for c in changes if c.get("class") == "removed"])
+
+    # TODO-0242 REVIEW (F5/G1): an active run with an empty queue is
+    # unreadable (``run_state._run_shape_ok`` requires a non-empty list), so
+    # a removal of ALL elements would answer "applied" while every reader
+    # sees "No run found". Refuse: closing a run is ``awf_run_finish``.
+    # The guard stands AFTER the conflicts/key/preview checks (G1): the
+    # operator must see the REAL blocker first, and a preview always shows
+    # the plan.
+    empties_the_queue = (
+        len(current_queue) - n_removed + n_appended + n_inserted == 0
+    )
 
     if preview:
         bits = [f"{n_repipelined} element(s) would change"]
+        if n_removed:
+            ids = ", ".join(
+                c["todo_id"] for c in changes if c.get("class") == "removed"
+            )
+            bits.append(f"{n_removed} would be removed ({ids})")
         if n_replaced:
             bits.append(
                 f"{n_replaced} would be replaced ({_replace_pairs(changes)})"
@@ -2552,8 +2795,16 @@ def run_revise(
             ids = ", ".join(
                 c["todo_id"] for c in changes if c.get("class") == "inserted"
             )
-            bits.append(f"{n_inserted} would be inserted at position {position} ({ids})")
+            bits.append(
+                f"{n_inserted} would be inserted at position {reported_position} ({ids})"
+            )
         bits.append(f"{len(conflicts)} conflict(s)" if conflicts else "no conflicts")
+        if empties_the_queue:
+            bits.append(
+                "the apply would be REFUSED: the request removes the last "
+                "queued element (an active run needs one; finish the run "
+                "with awf_run_finish)"
+            )
         return RunReviseResult(
             action="preview",
             preview=True,
@@ -2649,7 +2900,8 @@ def run_revise(
             unchanged=unchanged,
             message=(
                 "key is required to apply the revision — it is the "
-                "idempotency identity (a repeat with the same key is a no-op)."
+                "idempotency identity (a repeat with the same key and the "
+                "same payload is a no-op; a different payload is refused)."
             ),
         )
 
@@ -2666,6 +2918,23 @@ def run_revise(
             message=(
                 "Nothing to change — the requested pipelines already match "
                 "the queue. No revision was recorded."
+            ),
+        )
+
+    if empties_the_queue:
+        return RunReviseResult(
+            action="refused",
+            preview=False,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                "Refused: cannot remove the last queued element — an active "
+                "run needs at least one element. Finish the run with "
+                "awf_run_finish. Nothing was changed."
             ),
         )
 
@@ -2741,41 +3010,43 @@ def run_revise(
             outcome["existing"] = existing
             return st
         queue = list(st.get("queue") or [])
-        insert_at = position
+        # TODO-0242 (B.12): removals land first (by id, so positions that
+        # shifted do not matter); the insert base is corrected by how many
+        # removed elements stood before it. The correction comes from the
+        # SAME helper the answers use — counting it again on the mutating
+        # queue shifted later indices into the region and under-counted.
+        place_at = _position_after_removals(changes, queue, insert_at)
+        for ch in changes:
+            if ch.get("class") != "removed":
+                continue
+            pos = _queue_item_index(queue, ch["todo_id"])
+            if pos is not None:
+                queue.pop(pos)
         for ch in changes:
             cls = str(ch.get("class") or "")
+            if cls == "removed":
+                continue
             if not cls:
-                for q in queue:
-                    if (
-                        isinstance(q, dict)
-                        and str(q.get("todo_id", "")) == ch["todo_id"]
-                    ):
-                        q["pipeline"] = ch["to"]
+                pos = _queue_item_index(queue, ch["todo_id"])
+                if pos is not None and isinstance(queue[pos], dict):
+                    queue[pos]["pipeline"] = ch["to"]
             elif cls == "replaced":
                 # TODO-0240: the element keeps its position and pipeline —
                 # only the id changes. A plain string item (legacy state)
                 # is replaced in place by the canonical dict form.
-                for i, q in enumerate(queue):
-                    qid = (
-                        str(q.get("todo_id", ""))
-                        if isinstance(q, dict)
-                        else str(q)
-                    )
-                    if qid == ch["from"]:
-                        pipe = (
-                            str(q.get("pipeline", "") or "")
-                            if isinstance(q, dict)
-                            else ""
-                        )
-                        queue[i] = {"todo_id": ch["to"], "pipeline": pipe}
-                        break
+                pos = _queue_item_index(queue, ch["from"])
+                if pos is not None:
+                    _tid, pipe = _queue_item_fields(queue[pos])
+                    queue[pos] = {"todo_id": ch["to"], "pipeline": pipe}
             elif cls == "inserted":
                 # REPORTS32 (TODO-0198): insert at the validated position;
-                # several new elements keep the request order.
+                # several new elements keep the request order. TODO-0242:
+                # ``place_at`` is the base corrected by removed elements.
+                base = 0 if place_at is None else place_at
                 queue.insert(
-                    insert_at, {"todo_id": ch["todo_id"], "pipeline": ch["to"]}
+                    base, {"todo_id": ch["todo_id"], "pipeline": ch["to"]}
                 )
-                insert_at += 1
+                place_at = base + 1
             else:  # "appended"
                 queue.append({"todo_id": ch["todo_id"], "pipeline": ch["to"]})
         st["queue"] = queue
@@ -2810,7 +3081,7 @@ def run_revise(
     if not cas_ok:
         fresh = run_state.read_run(project_dir) or {}
         fresh_queue, _c, _f, _u = _revision_items(
-            project_dir, fresh, requested, position=position
+            project_dir, fresh, requested, position=insert_at
         )
         return RunReviseResult(
             action="refused",
@@ -2877,6 +3148,11 @@ def run_revise(
     parts = []
     if n_repipelined:
         parts.append(f"{n_repipelined} element(s) re-pipelined")
+    if n_removed:
+        ids = ", ".join(
+            c["todo_id"] for c in changes if c.get("class") == "removed"
+        )
+        parts.append(f"{n_removed} removed ({ids})")
     if n_replaced:
         parts.append(
             f"{n_replaced} element(s) replaced ({_replace_pairs(changes)})"
@@ -2890,7 +3166,7 @@ def run_revise(
         ids = ", ".join(
             c["todo_id"] for c in changes if c.get("class") == "inserted"
         )
-        parts.append(f"{n_inserted} inserted at position {position} ({ids})")
+        parts.append(f"{n_inserted} inserted at position {reported_position} ({ids})")
     if resume_from:
         next_action = (
             f"Resume the stopped unit with awf_continue (it continues from "
@@ -2900,7 +3176,7 @@ def run_revise(
     elif n_inserted:
         next_action = (
             f"Continue the run with awf_run_next — the inserted element(s) "
-            f"stand at position {position}; the later elements shift one "
+            f"stand at position {reported_position}; the later elements shift one "
             "place."
         )
     elif n_appended:
@@ -2983,7 +3259,7 @@ def _service_slug_of(state: dict) -> str:
     """The slug of a service run state (derived from the unit's pipeline
     name role-draft-<slug>; "" when the state carries no such item)."""
     for q in state.get("queue") or []:
-        pipe = str(q.get("pipeline", "") or "") if isinstance(q, dict) else ""
+        _tid, pipe = _queue_item_fields(q)
         if pipe.startswith(SERVICE_PIPELINE_PREFIX):
             return pipe[len(SERVICE_PIPELINE_PREFIX):]
     return ""

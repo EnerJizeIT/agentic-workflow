@@ -245,6 +245,9 @@ def run_agent_stage(
             agent_name=agent_name,
             restrict_control_tools=(kind == "execute"),
             tools_profile=stage.tools or None,
+            # TODO-0242 (P0-3): an execute worker sees the configured MCP
+            # servers only (default: the control server).
+            isolate_mcp=(kind == "execute"),
         ),
         hard_timeout=hard_timeout,
         log_holder=log_holder,

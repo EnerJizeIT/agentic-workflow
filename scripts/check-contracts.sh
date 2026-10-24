@@ -135,6 +135,9 @@ if [ -d "$inbox" ]; then
             || matrix_problem="header has no '$col' column"
         done
         if [ -z "$matrix_problem" ]; then
+          # TODO-0242 (B.11): a header-only table (no data row) proves
+          # nothing, and a data row made of placeholders is decoration. The
+          # matrix must carry >= 1 real row: rc 1 = no data, rc 2 = placeholder.
           printf '%s\n' "$matrix" | awk '
             /^[[:space:]]*\|/ {
               line=$0
@@ -142,18 +145,31 @@ if [ -d "$inbox" ]; then
               sub(/\|[[:space:]]*$/, "", line)
               n=split(line, cell, "|")
               if (hdr == 0) { hdr=1; next }
-              allsep=1; empty=0
+              allsep=1; empty=0; placeholder=1
               for (i=1; i<=n; i++) {
                 c=cell[i]
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", c)
                 if (c !~ /^[-:]+$/) allsep=0
                 if (c == "") empty=1
+                if (c !~ /^(\.\.\.|…|[-—?]+|[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|<[^>]*>)$/) placeholder=0
               }
               if (allsep) next
               if (empty || n < 4) bad=1
+              data++
+              if (placeholder) ph_bad=1
             }
-            END { exit bad ? 1 : 0 }
-          ' || matrix_problem="a row has fewer than 4 columns or an empty cell"
+            END {
+              if (data == 0) exit 1
+              if (ph_bad) exit 2
+              exit bad ? 1 : 0
+            }
+          ' >/dev/null 2>&1
+          arc=$?
+          if [ "$arc" -eq 2 ]; then
+            matrix_problem="a data row is only placeholders — fill the surface/order cells"
+          elif [ "$arc" -ne 0 ]; then
+            matrix_problem="no real data row (or a row has fewer than 4 columns / an empty cell)"
+          fi
         fi
       fi
       if [ -n "$matrix_problem" ]; then

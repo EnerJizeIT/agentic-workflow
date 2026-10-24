@@ -132,8 +132,8 @@ def run_pipeline(args: Any) -> int:
 
     A run of the engine is visible even when it dies without a signal:
     ``engine.heartbeat`` is refreshed by the loop/watchdog and
-    ``ENGINE-EXIT-<ts>.md`` is written on every exit path (normal, rc,
-    exception, SIGTERM/SIGINT, parent death). Diagnostics never stop the
+    ``ENGINE-EXIT-<ts>-<pid>[-n].md`` is written on every exit path (normal,
+    rc, exception, SIGTERM/SIGINT, parent death). Diagnostics never stop the
     pipeline: a failed write degrades to a log line.
     """
     from ._engine_liveness import EngineLiveness

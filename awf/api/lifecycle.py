@@ -1244,6 +1244,11 @@ def get_status(project_dir: Path) -> StatusResult:
     except Exception:  # noqa: BLE001 — status must never fall over
         office = []
 
+    # TODO-0242 (F8): ``run_active`` and ``run_state`` come from ONE read —
+    # a second read could disagree with the record the advice owner checks,
+    # and the two fields are consumed together ("closed run ≠ no run").
+    run_brief_state = _run_brief(project_dir)
+
     return StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -1270,7 +1275,8 @@ def get_status(project_dir: Path) -> StatusResult:
         engine_dead_todo=engine_dead_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
-        run_state=_run_brief(project_dir),
+        run_state=run_brief_state,
+        run_active=bool(run_brief_state and run_brief_state.get("active")),
         uncommitted_workflow_files=uncommitted_wf,
         standalone_todos=standalone_todos_list,
         office=office,
@@ -1592,12 +1598,23 @@ def list_orphans(project_dir: Path) -> list[str]:
 
     Pure read-only function. Use :func:`remove_orphans` to delete them,
     or :func:`reset_runtime` with ``orphans=True`` for the one-step legacy mode.
+
+    TODO-0242 (B.9): a unit still in the NOT-STARTED region of an active
+    run slot (main or service) is NOT an orphan to offer — ``remove_orphans``
+    refuses it as a dangling queue reference. The list and the remover ask
+    the same predicate (``run_state.queued_todo_slot``): a plan never names
+    units the one-step ``reset --orphans`` would reject.
     """
     project_dir = Path(project_dir).resolve()
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     active_ids = todos.list_active_todos(inbox, outbox)
-    return [tid for tid in active_ids if not todos.has_progress(outbox, tid)]
+    return [
+        tid
+        for tid in active_ids
+        if not todos.has_progress(outbox, tid)
+        and not run_state.queued_todo_slot(project_dir, tid)
+    ]
 
 
 def remove_orphans(

@@ -255,3 +255,13 @@
 - ⬜ **Юнит мини-волны (по аудиту 0224-iter8): ManagedFS-хвост** — `state_store/_wipe.delete_state_tree` без no-follow preflight (симлинк `.agentic/state` уводит iterdir/rmtree наружу) + `todos.archive_todo` (shutil.move не под managed-барьером, симлинк `.agentic/done` уводит архив наружу). Закрыть единым проходом с тестами-канарейками (класс R1.1 на последних поверхностях).
 - ⬜ **Добор из приёмки 0224 (финал, виток 11):** (а) `publish.py:706-753` — хуки через `git hook run` требуют git ≥2.36 без проверки версии/fallback/объявленного минимума (на 2.25–2.35 коммит падает с неверным диагнозом «pre-commit hook…») — объявить минимум или fallback; (б) `prepare-commit-msg` не запускается (только commit-msg/post-commit/pre-commit); (в) `run_state._ensure_lock_file:399-419` — mkdir+... (семья барьеров, проверить no-follow); (г) `publication_facts:1400,1406` — чтение ... (уточнить при следующем проходе публикации); (д) `post-commit` в семантике (LOW).
 - ⬜ **Добор из арх-ревью 0230 (виток 7):** `awf/api/roles.py` — 2209 строк: создание роли, refresh, draft-зона и блоки дисциплины в одном файле. Вынести refresh + блоки в отдельный модуль мешает встречная зависимость (`add_role` зовёт `_refresh_skill_role`, refresh зовёт хелперы создания) — нужен перенос всего слоя материализации ролей, отдельный юнит с контрактом.
+
+## opencode 2.* — миграция (запланированный ран)
+
+⬜ **Перевести awf на поддержку opencode 2.x.** План, карта зависимостей, проверенные факты и риски — `docs/design/opencode-v2-migration.md` (там же — отчёт исследования и мои проверки: `--standalone` подтверждён на v2.1.4, БД v2 — `session_v2`/`session_message`).
+
+- **P0 (до апгрейда):** `--standalone` в spawn (`awf/agent_stage.py`, `awf/supervisor.py`) с версионным гейтом (`opencode.standalone: auto|on|off`); preflight «major ≥ 2 без standalone → отказ». Без этого kill/таймаут оставляет орфан-сессии на фоновом сервере (риск RUN8 #2).
+- **P1:** `awf/metrics.py` — проба схемы БД (v1 `session/part/message` vs v2 `session_v2/session_message`), иначе тихие нули; `model_check`/плагин — та же проба, `opencode models --standalone`.
+- **P2:** preflight baseURL v1→v2 (`providers.*.settings.baseURL`), маркеры сетевых ошибок по v2-выводу; `opencode_agents.py` не трогать.
+- **Приёмка:** на v2 — e2e зелёные, kill не оставляет процессов, метрики видят новые сессии; на v1 поведение не изменилось. Откат — вернуть бинарь v1; конфиг v2 файлом не переписывает, `.agentic/` не затрагивает.
+- **Когда:** отдельным рабочим раном после текущей волны; апгрейд — явным решением владельца.

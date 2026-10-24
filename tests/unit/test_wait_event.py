@@ -703,8 +703,13 @@ class TestRunDoneFuse:
     def test_no_done_on_kill_during_wait_in_active_run(self, awf_project):
         """The RUN9 shape: the pipeline dies mid-wait (state fully
         cleared, pid dead) while the run's current element is unfinished —
-        the poll loop must keep the old wait (timeout), not hand out the
-        evidence-based or the bare 'Pipeline exited' done."""
+        the poll loop must not hand out the evidence-based or the bare
+        'Pipeline exited' done.
+
+        TODO-0242 (A.3): a state that outlived its engine now answers
+        ``engine_dead`` (the actionable fact) instead of waiting out the
+        timeout; the invariant this test guards is the absence of ``done``.
+        """
         import threading
         import time as _time
 
@@ -728,7 +733,8 @@ class TestRunDoneFuse:
         threading.Thread(target=kill_later, daemon=True).start()
         result = api.wait_for_event(awf_project, timeout=2, poll_interval=1)
 
-        assert result.event_type == "timeout"
+        assert result.event_type in ("engine_dead", "timeout")
+        assert result.event_type != "done"
         assert "TODO-0001" not in result.message
 
     def test_no_done_without_current_in_active_run(self, awf_project):

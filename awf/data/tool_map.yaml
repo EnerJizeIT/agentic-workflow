@@ -24,6 +24,8 @@ groups:
       - mcp: awf_kill
         cli: kill
         when: "stop a stuck pipeline"
+      - cli: supervise
+        when: "restart a dead engine"
   - title: check
     tools:
       - mcp: awf_status
@@ -37,7 +39,7 @@ groups:
       - mcp: awf_load_supervisor_context
         when: "full context, one call"
       - mcp: awf_wait_for_event
-        when: "block for the next event"
+        when: "block until an event"
       - mcp: awf_pipelines
         cli: pipelines
         when: "list pipelines + active"
@@ -56,15 +58,15 @@ groups:
       - mcp: awf_run_revise
         when: "revise not-started queue"
       - mcp: awf_run_finish
-        when: "close the run (report)"
+        when: "close the run"
       - mcp: awf_run_service_start
         when: "create role mid-run"
       - mcp: awf_run_service_status
         when: "service + main snapshot"
       - mcp: awf_run_service_finish
-        when: "close service run (report)"
+        when: "close service run"
       - mcp: awf_run_service_approve
-        when: "approve service unit (evidence)"
+        when: "approve service unit"
       - mcp: awf_approve
         cli: approve
         when: "approve (evidence, sha)"
@@ -124,7 +126,7 @@ groups:
     tools:
       - mcp: awf_brief
         cli: brief
-        when: "this card (new session)"
+        when: "this card"
       - mcp: awf_dispatch_todo
         cli: dispatch
         when: "unit + baseline + signal"
@@ -152,7 +154,7 @@ groups:
         when: "reset to baseline sha"
       - mcp: awf_prove_red
         cli: prove-red
-        when: "prove tests red at baseline"
+        when: "prove red at baseline"
       - mcp: awf_verify_pack
         cli: verify-pack
         when: "deterministic verify report"
@@ -160,7 +162,7 @@ groups:
         cli: report
         when: "statuses, diff, test log"
       - mcp: awf_open_pipeline_dashboard
-        when: "open the live dashboard"
+        when: "open live dashboard"
       - mcp: awf_tree_sha
         cli: tree-sha
         when: "tree fingerprint (verified-sha)"
@@ -169,7 +171,7 @@ groups:
       - cli: mutations
         when: "mutation smoke"
       - cli: todo-draft
-        when: "task skeleton from AUDIT-INDEX.md"
+        when: "skeleton from AUDIT-INDEX.md"
   - title: helpers
     hidden: true
     tools:

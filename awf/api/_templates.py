@@ -45,6 +45,16 @@ verification:
   typecheck_cmd: '{typecheck_cmd}'
   build_cmd: '{build_cmd}'
 
+engine:
+  # Engine liveness (TODO-0241/0242; docs/design.md, USAGE.md). The interval
+  # is clamped to at most 30s (a larger value warns); the staleness threshold
+  # defaults to max(3 x heartbeat_seconds, 120) unless set explicitly.
+  heartbeat_seconds: 30
+  heartbeat_stale_seconds: 120
+  # true = the engine dies with its launcher. false is the durable-run
+  # default: an opencode/MCP restart must not kill a running stage.
+  kill_with_parent: false
+
 phases:
   current: ".agentic/phases/plan.md"
 
