@@ -52,7 +52,7 @@ include = ["awf*"]
 [tool.setuptools.package-data]
 # AUD13-02: data/ holds role_zones.yaml (BD-31 zone inference) — without it
 # a PyPI install silently degrades to the 5-key fallback table.
-awf = ["templates/**/*", "data/**"]
+awf = ["templates/**/*", "data/**", "checklists/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

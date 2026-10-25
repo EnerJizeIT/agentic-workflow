@@ -517,6 +517,19 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_checklist = sub.add_parser(
+        "checklist",
+        help="DoD: show/check/apply/hash the unit's completion checklist",
+    )
+    p_checklist.add_argument("action", choices=["show", "check", "apply", "hash"])
+    p_checklist.add_argument("todo_id", help="TODO id (e.g. TODO-0244)")
+    p_checklist.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_checklist.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_rollback = sub.add_parser("rollback", help="Rollback to baseline")
     p_rollback.add_argument("todo_id")
     p_rollback.add_argument("--hard", action="store_true")
@@ -961,6 +974,9 @@ def _run_command(args) -> int:
         if args.command == "verify-pack":
             from . import cmd_verify_pack
             return cmd_verify_pack.run(args)
+        if args.command == "checklist":
+            from . import cmd_checklist
+            return cmd_checklist.run(args)
         if args.command == "rollback":
             from . import cmd_rollback
             return cmd_rollback.run(args)

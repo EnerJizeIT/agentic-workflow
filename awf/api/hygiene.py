@@ -35,20 +35,27 @@ import shutil
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from .. import paths, run_state, todos
 from .._atomic import MODE_OWNER_EDITABLE
 from .._errors import OperationRecoveryRequired
 from .._log import log as _log
+from .._markdown import append_block, section_body
 from .._names import unique_name
+from ..checklists import (
+    CHECKLIST_NAME,
+    ChecklistError,
+    block_has_items,
+    block_of,
+    validate_readable_block,
+)
 from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic
-from ._markdown import section_body
 from ._results import (
     BlockedDraftResult,
     RemoveTodoResult,
@@ -881,7 +888,7 @@ def _recompute_include_baseline(
         clear_include_audit(project_dir, todo_id)
 
 
-def _backup_and_write_todo(
+def backup_and_write_todo(
     project_dir: Path,
     md: Path,
     old_content: str,
@@ -889,10 +896,11 @@ def _backup_and_write_todo(
     *,
     _lock_held: bool = False,
 ) -> str:
-    """Back up the TODO, then write it guarded — ONE trace for both writers.
+    """Back up the TODO, then write it guarded — ONE trace for every writer.
 
-    :func:`update_todo` and :func:`review_append` append to the same file
-    (TODO-0240): the order lives here once — the previous content lands in
+    :func:`update_todo`, :func:`review_append` (TODO-0240) and the DoD
+    ``checklist apply`` (TODO-0244) write the same file: the order lives
+    here once — the previous content lands in
     ``context/TODO-<id>.md.bak-<ts>`` BEFORE the new text, and a failed
     write removes the orphan backup (T1(b): catching only ``AwfApiError``
     left it behind on an ``OSError`` like ``FileExistsError``).
@@ -963,10 +971,11 @@ def _live_pipeline_on(project_dir: Path, todo_id: str) -> tuple[bool, int]:
     just the main one: ``run_service_start`` writes ``state/service-run.yaml``
     with ``current`` BEFORE the first stage writes ``state.todo_id``, the same
     launch window; a predicate reading only the main slot let a review section
-    land on a service-owned file (QA-X1). :func:`retire_todo`,
-    :func:`review_append` and :func:`update_todo` all ask here, so their
-    refusals cannot disagree about which unit is live. A pipeline on another
-    id does not touch this TODO's files — allowed.
+    land on a service-owned file (QA-X1). :func:`retire_todo` asks here
+    directly; :func:`review_append` and :func:`update_todo` ask through
+    :func:`unit_readiness`, so no writer can disagree about which unit is
+    live. A pipeline on another id does not touch this TODO's files —
+    allowed.
     """
     running, pid, _tail = check_pipeline_running(project_dir)
     if not running:
@@ -983,8 +992,9 @@ def _live_pipeline_on(project_dir: Path, todo_id: str) -> tuple[bool, int]:
 def _started_signal_names(project_dir: Path, todo_id: str) -> list[str]:
     """Start signals of a unit, as file names (``[]`` = none) — ONE rule.
 
-    :func:`update_todo` and :func:`review_append` ask here (TODO-0240
-    review V7), :func:`remove_todo` reuses the enumeration for its hints:
+    :func:`update_todo` and :func:`review_append` ask here through
+    :func:`unit_readiness` (TODO-0240 review V7); :func:`remove_todo` reuses
+    the enumeration for its hints:
     an outbox ``*-<id>.*`` signal or an inbox ``ACK-``/``APPROVE-``
     closure. ``PROGRESS`` is NOT folded in — a progress file is a separate
     fact with its own refusal (``todos.has_progress``), and merging it into
@@ -1007,6 +1017,51 @@ def _started_signal_names(project_dir: Path, todo_id: str) -> list[str]:
         if (p := inbox / f"{prefix}{tid}.ready").is_file()
     ]
     return list(dict.fromkeys(p.name for p in found))
+
+
+class Readiness(NamedTuple):
+    """The two facts «is this unit in flight?», read once.
+
+    ``update_todo`` (refuses a started unit), ``review_append`` (needs a
+    started one) and the DoD ``checklist apply`` need the SAME pair — the
+    live-pipeline window and the start signals/PROGRESS. Each caller keeps
+    its own refusal text and its own polarity; the facts come from here, so
+    a caller cannot re-derive one half and let the other through.
+    """
+
+    live: bool
+    pid: int
+    started: list[str]
+    progress: bool
+
+
+def unit_readiness(project_dir: Path, todo_id: str) -> Readiness:
+    """Read the in-flight facts for one unit: liveness + start signals."""
+    live, pid = _live_pipeline_on(project_dir, todo_id)
+    return Readiness(
+        live=live,
+        pid=pid,
+        started=_started_signal_names(project_dir, todo_id),
+        progress=todos.has_progress(paths.outbox(project_dir), todo_id),
+    )
+
+
+def not_started_reason(project_dir: Path, todo_id: str) -> str:
+    """Why a unit is NOT a not-started candidate (``""`` means it is).
+
+    The one readiness sentence for the DoD ``checklist apply``; the facts
+    come from :func:`unit_readiness`, the same pair ``update_todo`` and
+    ``review_append`` refuse or require on (TODO-0244).
+    """
+    facts = unit_readiness(project_dir, todo_id)
+    if facts.live:
+        return (
+            f"a live pipeline is running on {todo_id} (pid {facts.pid}) — "
+            "the engine owns the file right now"
+        )
+    if facts.started or facts.progress:
+        return f"{todo_id} has started ({', '.join(facts.started) or 'PROGRESS'})"
+    return ""
 
 
 def review_append(
@@ -1120,16 +1175,14 @@ def _review_append_locked(
             f"{todo_id}.md not found in inbox — nothing to append a "
             "review section to."
         )
-    live, pid = _live_pipeline_on(project_dir, todo_id)
-    if live:
+    facts = unit_readiness(project_dir, todo_id)
+    if facts.live:
         raise AwfApiError(
-            f"a live pipeline is running on {todo_id} (pid {pid}) — "
+            f"a live pipeline is running on {todo_id} (pid {facts.pid}) — "
             "the engine owns the file right now; awf kill first, "
             "then append the review fix."
         )
-    started = _started_signal_names(project_dir, todo_id)
-    progress = todos.has_progress(paths.outbox(project_dir), todo_id)
-    if not started and not progress:
+    if not facts.started and not facts.progress:
         raise AwfApiError(
             f"{todo_id} has not started (no PROGRESS, no signal) — a "
             "review fix belongs to a STARTED unit; a queued TODO takes "
@@ -1141,7 +1194,7 @@ def _review_append_locked(
     heading = f"## REVIEW-фикс (супервизор, виток {round_no})"
     new_content = _apply_append(old_content, heading + "\n\n" + body)
 
-    backup_rel = _backup_and_write_todo(
+    backup_rel = backup_and_write_todo(
         project_dir, md, old_content, new_content, _lock_held=True
     )
 
@@ -1162,10 +1215,38 @@ def _review_append_locked(
     )
 
 
+def _refuse_unreadable_checklist(todo_text: str) -> None:
+    """Refuse a TODO write that breaks the frozen DoD block (F14/F15).
+
+    ONE guard for every writer in this module — the full reword, the reword
+    that carries its own block, and ``section_updates``. A body that opens
+    an unterminated fence swallows the block (``block_of`` → None) and the
+    gate reports ``checklist: none``: a unit with a DoD block passes with
+    zero checks. A body that carries a second heading makes the gate run
+    the first while a human reads two. Callers run it only when the unit
+    HAD a block — a legacy unit without one stays writable.
+    """
+    try:
+        validate_readable_block(todo_text)
+    except ChecklistError as e:
+        raise AwfApiError(f"checklist: {e}") from None
+
+
 def _apply_append(text: str, block: str) -> str:
     """Append a block to the end of the TODO text, separated by one blank
-    line (TODO-0162). The result always ends with a single newline."""
-    return text.rstrip("\n") + "\n\n" + block.strip("\n") + "\n"
+    line (TODO-0162). The result always ends with a single newline.
+
+    A block carrying the frozen DoD heading is refused: dispatch already
+    put that one block at the end of the TODO, and a second copy would be
+    read by a human while the gate keeps executing the first (TODO-0244).
+    """
+    if block_of(block) is not None:
+        raise AwfApiError(
+            f"cannot append a second '## {CHECKLIST_NAME}' block — the DoD "
+            "block is frozen at dispatch; change it with `awf checklist "
+            "apply` (a not-started unit) or re-dispatch"
+        )
+    return append_block(text, block)
 
 
 def _apply_section_update(text: str, heading: str, body: str) -> tuple[str, bool]:
@@ -1192,7 +1273,7 @@ def _apply_section_update(text: str, heading: str, body: str) -> tuple[str, bool
     h = next((i for i, ln in enumerate(lines) if pat.match(ln)), None)
     if h is None:
         section = f"## {key}" + (f"\n{body_core}" if body_core else "")
-        return text.rstrip("\n") + "\n\n" + section + "\n", True
+        return append_block(text, section), True
     n = next(
         (i for i in range(h + 1, len(lines)) if re.match(r"^##\s", lines[i])),
         len(lines),
@@ -1321,7 +1402,11 @@ def _update_todo_impl(
     - two or more content modes at once (``content``/``append``/
       ``section_updates``); an empty ``append``; an empty
       ``section_updates`` map; an empty heading key in
-      ``section_updates``;
+      ``section_updates``; a ``section_updates`` key naming the frozen DoD
+      block (any heading case); an ``append`` block carrying a second DoD
+      block; a write that breaks the frozen DoD block (an unterminated
+      fence in a new body, a second heading, or a block added by
+      ``section_updates`` to a unit that had none);
     - no content mode at all AND no ``include_untracked``;
     - an invalid ``include_untracked`` path (before any side effect);
     - the TODO already started — any outbox signal (``PROGRESS-*``,
@@ -1350,6 +1435,20 @@ def _update_todo_impl(
             "section_updates: an empty heading key — name the ## heading "
             "to replace or add"
         )
+    if section_updates is not None:
+        # The block READER matches a heading case-insensitively
+        # (``awf._markdown.find_headings``), so the guard uses the same rule: an
+        # exact-case compare would let ``"чек-лист завершения"`` through and
+        # the section updater (case-sensitive) would append a SECOND heading
+        # at the end instead of touching the first one.
+        frozen = CHECKLIST_NAME.casefold()
+        for heading in section_updates:
+            if heading.strip().casefold() == frozen:
+                raise AwfApiError(
+                    "section_updates cannot rewrite "
+                    f"'## {CHECKLIST_NAME}' — the DoD block is frozen at "
+                    "dispatch; re-dispatch the unit to change it"
+                )
     modes = [
         name
         for name, on in (
@@ -1377,16 +1476,15 @@ def _update_todo_impl(
         raise AwfApiError(f"{todo_id}.md not found in inbox — nothing to update.")
 
     # Live pipeline on THIS id: the engine owns the files right now.
-    live, pid = _live_pipeline_on(project_dir, todo_id)
-    if live:
+    facts = unit_readiness(project_dir, todo_id)
+    if facts.live:
         raise AwfApiError(
-            f"a live pipeline is running on {todo_id} (pid {pid}) — "
+            f"a live pipeline is running on {todo_id} (pid {facts.pid}) — "
             "wait for it to finish or awf kill first"
         )
 
-    started = _started_signal_names(project_dir, todo_id)
-    if started or todos.has_progress(paths.outbox(project_dir), todo_id):
-        names = ", ".join(started) or "PROGRESS"
+    if facts.started or facts.progress:
+        names = ", ".join(facts.started) or "PROGRESS"
         raise AwfApiError(
             f"{todo_id} has signals: {names} — it is in flight. "
             "Fix the unit via REVIEW/replan, or retire it (awf todo-retire) "
@@ -1434,6 +1532,35 @@ def _update_todo_impl(
     if has_content:
         new_content = content
         what = f"content replaced ({len(content)} chars)"
+        old_block = block_of(old_content)
+        # S4/Q3: a full reword must not silently drop the frozen DoD block.
+        # The new text's block is authoritative only when it actually CARRIES
+        # items — a heading with no body is not a block (it would let the
+        # unit pass with zero checks). Otherwise the old block is carried
+        # over verbatim.
+        if (
+            old_block is not None
+            and block_has_items(old_content)
+            and not block_has_items(new_content)
+        ):
+            new_block = block_of(new_content)
+            if new_block is not None:
+                new_content = new_content.replace(new_block, "", 1)
+            new_content = append_block(new_content, old_block)
+            # F14 (TODO-0244): the carried block is what the gate will read —
+            # it must be readable in the text actually written (a new body
+            # ending in an unterminated fence would swallow it, leaving a
+            # unit with a DoD block that reports `checklist: none`).
+            _refuse_unreadable_checklist(new_content)
+            what += ", frozen checklist block kept"
+        elif block_of(new_content) is not None:
+            # The new text brings its OWN block (the carry above did not run,
+            # so that block is authoritative). A full reword is then a writer
+            # of a block it did not compose — the same F14/F15 guard applies:
+            # it must read back, and there must be exactly one. Without this
+            # branch a reword could write the very two-block or unreadable
+            # text the dispatch refuses.
+            _refuse_unreadable_checklist(new_content)
     elif append is not None:
         new_content = _apply_append(old_content, append)
         what = f"appended ({len(append.strip())} chars)"
@@ -1444,6 +1571,17 @@ def _update_todo_impl(
         for heading, body in sections.items():
             new_content, is_added = _apply_section_update(new_content, heading, body)
             (added if is_added else replaced).append(heading.strip())
+        # F14/F15 on the THIRD writer: a section body is free text, so it can
+        # open an unterminated fence (the frozen block after it becomes
+        # invisible) or carry its own ``## Чек-лист завершения`` heading. The
+        # heading-key guard above only covers the direct route.
+        if block_of(old_content) is not None:
+            _refuse_unreadable_checklist(new_content)
+        elif block_of(new_content) is not None:
+            raise AwfApiError(
+                f"section_updates cannot add a '## {CHECKLIST_NAME}' block — "
+                "the DoD block is composed at dispatch; re-dispatch the unit"
+            )
         parts = []
         if replaced:
             parts.append("replaced: " + ", ".join(replaced))
@@ -1453,7 +1591,7 @@ def _update_todo_impl(
 
     # T1(b): the backup must not outlive a failed write — the shared helper
     # owns the backup + guarded write + orphan cleanup order.
-    backup_rel = _backup_and_write_todo(
+    backup_rel = backup_and_write_todo(
         project_dir, md, old_content, new_content, _lock_held=_lock_held
     )
 

@@ -52,8 +52,30 @@ def _project(tmp_git_repo: Path) -> Path:
     return tmp_git_repo
 
 
+def _strip_checklist(proj: Path) -> None:
+    """Start the update/remove suites from the UNIT BODY.
+
+    Dispatch composes the DoD block (TODO-0244) and freezes it into the
+    TODO; that block has its own suite. These tests assert byte-exact
+    update semantics on the body, so the block is stripped after dispatch
+    (it is ignored by git, so the baseline snapshot is unaffected).
+    """
+    from awf.checklists import block_of
+
+    path = paths.inbox(proj) / f"{TODO}.md"
+    text = path.read_text(encoding="utf-8")
+    block = block_of(text)
+    assert block is not None, "dispatch must compose the DoD block"
+    path.write_text(text.replace(block, "").rstrip() + "\n", encoding="utf-8")
+
+
+def _dispatch(proj: Path, content: str, **kwargs) -> None:
+    api.dispatch_todo(proj, content, todo_id=TODO, **kwargs)
+    _strip_checklist(proj)
+
+
 def _dispatched(proj: Path) -> Path:
-    api.dispatch_todo(proj, DOC, todo_id=TODO)
+    _dispatch(proj, DOC)
     inbox = paths.inbox(proj)
     assert (inbox / f"{TODO}.md").is_file()
     assert (inbox / f"{TODO}.ready").is_file()

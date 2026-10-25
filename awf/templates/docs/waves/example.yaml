@@ -1,0 +1,22 @@
+# Пример волны: дополнительные пункты завершения для группы юнитов.
+#
+# Волна — это набор пунктов, который супервизор объявляет на серию юнитов
+# (`wave: <name>` в контракте TODO). Файл волны проекта лежит в
+# `.agentic/checklists/waves/<name>.yaml`; этот шаблон — образец формата,
+# его копируют в проект и правят под волну.
+#
+# Схема — как у base/classes: id / text / probe / expect / classes.
+# Дубли id с базовым набором, классами или приёмкой юнита — отказ диспатча.
+name: example
+items:
+  - id: wave-example-tests
+    text: Новое поведение закрыто регрессионным тестом
+    probe:
+      type: file_exists
+      path: tests
+
+  - id: wave-example-doc
+    text: Изменение описано в docs
+    probe:
+      type: file_exists
+      path: docs

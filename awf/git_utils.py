@@ -140,7 +140,7 @@ def tree_fingerprint(project_dir: str | Path) -> str:
     h.update(b"head\n" + head.encode("utf-8"))
     status = _git(pd, "status", "--porcelain", check=False, errors="surrogateescape")
     h.update(b"status\n" + status.encode("utf-8", errors="surrogateescape"))
-    diff = _git(pd, "diff", "--binary", "HEAD", check=False)
+    diff = _git(pd, "diff", "--no-ext-diff", "--binary", "HEAD", check=False)
     h.update(b"diff\n" + diff.encode("utf-8", errors="replace"))
     try:
         names = GitRepository(pd).untracked_paths()

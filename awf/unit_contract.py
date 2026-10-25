@@ -124,10 +124,14 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: ``replan_for`` (TODO-0213): the replan marker — the id of the unit this
 #: TODO replaces (a string, not a list); the interactive replan wait picks
 #: the TODO up only when the marker names the escalated unit.
+#: ``checklist_classes`` / ``wave`` (TODO-0244): the DoD composition the
+#: unit DECLARES — classes are merged only when named here (boundary hints
+#: are printed, never merged); a wave names a project wave file.
 _CONTRACT_KEYS: tuple[str, ...] = (
     "verify", "flake", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
     "prove_red_kind", "prove_red_note",
     "files", "pipeline", "replan_for",
+    "checklist_classes", "wave",
 )
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
@@ -237,12 +241,31 @@ def replan_for_of(content: str | None) -> str | None:
         return None
 
 
+def _yaml_body_is_contract(body: list[str]) -> bool:
+    """The title-following leniency is only for a real contract body.
+
+    A markdown horizontal rule after the title also starts with ``---``; its
+    body is prose, not a YAML mapping. Treating it as a broken contract would
+    refuse a TODO the baseline dispatched.
+    """
+    try:
+        data = yaml.safe_load("\n".join(body))
+    except yaml.YAMLError:
+        return False
+    return data is None or isinstance(data, dict)
+
+
 def _find_contract_block(content: str) -> tuple[int | None, int | None, str | None]:
     """Locate the contract block. Returns (open_line, close_line, error).
 
     (None, None, None) — no block; (i, j, None) — the block spans lines
     ``i`` (``---``) and ``j`` (``---``) with YAML between; (i, None, error)
     — block opened but broken.
+
+    The title may precede the block: a TODO usually opens with
+    ``# TODO — <title>``, and a contract written just below it is still the
+    contract (one heading only, and only when ``---`` follows it directly;
+    a horizontal rule deeper in the body is not a block).
     """
     lines = content.splitlines()
     i = 0
@@ -252,11 +275,27 @@ def _find_contract_block(content: str) -> tuple[int | None, int | None, str | No
             i += 1
             continue
         break
+    after_title = False
+    if i < len(lines) and re.match(r"^#\s+\S", lines[i].strip()):
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j < len(lines) and lines[j].strip() == "---":
+            i = j
+            after_title = True
     if i >= len(lines) or lines[i].strip() != "---":
         return None, None, None
     for j in range(i + 1, len(lines)):
         if lines[j].strip() == "---":
+            if after_title and not _yaml_body_is_contract(lines[i + 1 : j]):
+                return None, None, None
             return i, j, None
+    if after_title:
+        # F16 (TODO-0244): an ``---`` under the title with no closing rule is
+        # a markdown horizontal rule, not a broken contract — the baseline
+        # answered "no block", and the title-following leniency exists only
+        # for a REAL body between two rules.
+        return None, None, None
     return i, None, (
         "contract block opened with `---` at the top but no closing `---` "
         "found — close the block (one `---` line after the last key)"
@@ -556,6 +595,31 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         check_pipeline_name(data["pipeline"])
     if "replan_for" in data:
         check_replan_for(data["replan_for"])
+    if "checklist_classes" in data:
+        value = data["checklist_classes"]
+        if not isinstance(value, list) or not value:
+            raise ValueError(
+                "'checklist_classes' must be a non-empty list of class names — "
+                "drop the key when the unit declares no classes"
+            )
+        bad = [c for c in value if not isinstance(c, str) or not c.strip()]
+        if bad:
+            raise ValueError(
+                f"'checklist_classes' has a non-string or empty entry: {bad!r}"
+            )
+        data["checklist_classes"] = [c.strip() for c in value]
+    if "wave" in data:
+        value = data["wave"]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "'wave' must be a non-empty wave name (a slug) — drop the key "
+                "when the unit belongs to no wave"
+            )
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", value.strip()):
+            raise ValueError(
+                f"'wave' must be a slug (letters, digits, '.', '_', '-'), got {value!r}"
+            )
+        data["wave"] = value.strip()
     return data, unknown
 
 

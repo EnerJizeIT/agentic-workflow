@@ -111,6 +111,16 @@ def roles_dir(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "roles"
 
 
+def checklists_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/checklists/ — the project's DoD waves (TODO-0244)."""
+    return agentic_dir(project_dir) / "checklists"
+
+
+def waves_dir(project_dir: str | Path = ".") -> Path:
+    """Return .agentic/checklists/waves/ — one file per DoD wave."""
+    return checklists_dir(project_dir) / "waves"
+
+
 def logs_dir(project_dir: str | Path = ".") -> Path:
     """Return .agentic/logs/."""
     return agentic_dir(project_dir) / "logs"

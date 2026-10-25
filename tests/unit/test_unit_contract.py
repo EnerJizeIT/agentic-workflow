@@ -38,6 +38,22 @@ class TestParseTodoContract:
         assert contract == {"verify": ["pytest tests/ -q"]}
         assert unknown == []
 
+    def test_block_after_the_title_heading(self):
+        """A TODO usually opens with ``# TODO — <title>``; the block below it counts."""
+        content = (
+            "# TODO — task\n\n"
+            "---\nwave: w1\n---\n\n"
+            "## Приёмка\n- one\n"
+        )
+        contract, unknown = parse_todo_contract(content)
+        assert contract == {"wave": "w1"}
+        assert unknown == []
+
+    def test_a_horizontal_rule_below_the_body_is_not_a_block(self):
+        content = "# TODO — task\n\nIntro text.\n\n---\n\nMore.\n"
+        contract, _ = parse_todo_contract(content)
+        assert contract is None
+
     def test_valid_block_all_keys(self):
         content = (
             "---\n"

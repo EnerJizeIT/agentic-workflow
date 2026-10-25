@@ -17,6 +17,15 @@ from pathlib import Path
 
 from .. import git_utils, paths
 from .._atomic import MODE_OWNER_EDITABLE
+from .._markdown import (
+    append_block,
+    fence_flags,
+    find_headings,
+    first_heading_index,
+    lines_below,
+    section_body,
+    skip_leading_trivia,
+)
 from ..dispatch_policy import (
     ISOLATE,
     REQUIRE_CLEAN,
@@ -31,14 +40,6 @@ from ..infra import managed_fs
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
 from ._helpers import refuse_unsafe_surfaces, require_awf_project
-from ._markdown import (
-    fence_flags,
-    find_headings,
-    first_heading_index,
-    lines_below,
-    section_body,
-    skip_leading_trivia,
-)
 from ._results import DispatchTodoResult
 from .pipeline import create_baseline
 
@@ -365,7 +366,7 @@ def _extract_source_section(
     Only an EXACT heading text (case-insensitive) matches — no first-word
     fallback. Several headings carrying the same exact text are ambiguous:
     the caller gets a refusal naming the line numbers instead of a silent
-    first hit. The heading walker lives in :mod:`._markdown`; the body runs
+    first hit. The heading walker lives in :mod:`awf._markdown`; the body runs
     until the next heading of the same or a higher level, so nested
     sub-sections stay inside. An unknown section is a refusal (no TODO, no
     baseline).
@@ -398,7 +399,7 @@ def _source_ref_block(section: str, body: list[str]) -> str:
     a multi-line item's continuation lines follow their box untouched, and
     a fenced code block keeps its fences — a ``- key: value`` line inside
     it is an example, not a requirement. The fence rule is the same shared
-    predicate the section reader uses (``_markdown.fence_flags``), so the
+    predicate the section reader uses (``awf._markdown.fence_flags``), so the
     two cannot drift apart. Nothing from the section is dropped silently.
     A section without list items still reaches the worker verbatim.
     """
@@ -479,7 +480,7 @@ def unit_size_warning(content: str) -> str:
     hold all of it. Count the two cheap structural signals — numbered
     requirements (``## Требования``) and named files (``## Границы``).
     """
-    # The section reader is the shared walker (``_markdown.section_body``):
+    # The section reader is the shared walker (``awf._markdown.section_body``):
     # a body heading inside a fence is an example, and a nested ``###``
     # stays inside the section — the same rules the other section readers
     # use. A second, regex-only reader here would answer differently.
@@ -733,6 +734,58 @@ def dispatch_todo(
         content = _insert_after_title(
             content, _source_ref_block(_src_section, _body)
         )
+
+    # TODO-0244: the Definition-of-done block. Composed ONCE, here, from the
+    # base set + the classes the unit DECLARES + its wave + its acceptance
+    # items; frozen into the TODO so a wave edited mid-unit cannot change a
+    # live unit. Boundary hints are printed, never merged. An unknown class,
+    # a missing wave, a duplicate id or a bad probe refuses the dispatch
+    # BEFORE any side effect.
+    checklist_suggested: list[str] = []
+    from ..checklists import (
+        ChecklistError,
+        block_has_items,
+        block_of,
+        compose_block,
+        validate_carried_block,
+        validate_readable_block,
+    )
+
+    if not block_has_items(content):
+        # A heading-only block is not a frozen block (Q2/Q3 on the WRITER
+        # surface): composing would append a second heading and leave the
+        # empty one authoritative, so the unit would be born failing. Refuse
+        # before any side effect instead.
+        if block_of(content) is not None:
+            raise AwfApiError(
+                "checklist: the carried '## Чек-лист завершения' block carries "
+                "no items — a heading is not a block; remove it or let "
+                "dispatch compose the real block"
+            )
+        try:
+            _composition, block = compose_block(project_dir, content, _contract)
+        except ChecklistError as e:
+            raise AwfApiError(f"checklist: {e}") from None
+        checklist_suggested = _composition.suggested
+        content = append_block(content, block)
+    else:
+        # A carried TODO (a replan copy) brings its own frozen block — it is
+        # NOT recomposed, but the contract's declaration is still validated:
+        # an unknown class, a missing wave file or a declared class whose
+        # items the block lacks refuses the dispatch (never a silent drop).
+        try:
+            validate_carried_block(project_dir, content, _contract)
+        except ChecklistError as e:
+            raise AwfApiError(f"checklist: {e}") from None
+
+    # F14/F15 (TODO-0244): the block is only good if the FINAL text reads it
+    # back — a block appended after an unterminated code fence is invisible
+    # to the gate, and two level-2 blocks let the gate execute the first
+    # while a human reads two. Refuse BEFORE any side effect.
+    try:
+        validate_readable_block(content)
+    except ChecklistError as e:
+        raise AwfApiError(f"checklist: {e}") from None
 
     # R2.2 (roadmap R2): the explicit dirty-source-tree policy. Resolved from
     # config.yaml; a legacy project (no config_version) keeps the pre-R2.2
@@ -1031,6 +1084,15 @@ def dispatch_todo(
         pre_check_warnings.append(
             f"contract block: unknown key '{key}' — known keys: "
             + ", ".join(_CONTRACT_KEYS)
+        )
+
+    # TODO-0244: boundary hints are printed as `checklist_suggested:` and are
+    # NEVER merged on their own — the unit declares its classes explicitly.
+    if checklist_suggested:
+        pre_check_warnings.append(
+            "checklist_suggested: "
+            + ", ".join(checklist_suggested)
+            + " — declare in checklist_classes to merge (hints are not merged)"
         )
 
     # TODO-0186: surface the missing verify paths as one warning line (the

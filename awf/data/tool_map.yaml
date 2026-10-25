@@ -177,3 +177,5 @@ groups:
     tools:
       - cli: config-get
         when: "read one config.yaml value"
+      - cli: checklist
+        when: "DoD: show/check/apply/hash"

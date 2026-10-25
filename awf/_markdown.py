@@ -1,10 +1,17 @@
-"""Markdown section helpers shared by the API submodules.
+"""Markdown section helpers shared by the API submodules and ``checklists``.
 
 M5 introduced two readers of the same shape: ``dispatch`` takes a named
 section from a source-of-truth file, ``hygiene`` takes the findings and
 fix directions from a BLOCKED note. Both delimit a section by headings, so
 the heading primitives live here instead of next to either caller; turning
 list items into checkboxes stays with ``dispatch`` (its only consumer).
+
+TODO-0244: the checklist package reads the unit's ``Границы``/``Приёмка``
+sections and counts the frozen heading with the same walker. The module is
+dependency-free, so it lives at the package root — importing it through
+``awf.api`` would execute the whole application layer (dispatch, hygiene,
+verify_pack) just to read a heading, and make the data package depend on
+its consumer.
 
 One fence-aware line walker serves all of them: a ``#``-line inside a
 fenced code block is a comment, not a heading, and a ``- key: value`` line
@@ -149,6 +156,19 @@ def lines_below(text: str, index: int, level: int) -> list[str]:
     return body
 
 
+def append_block(text: str, block: str) -> str:
+    """Put a markdown block at the END of a text: one blank line, one newline.
+
+    ONE spelling for every writer of a block — the DoD block at dispatch,
+    ``checklist apply`` and the reword carry, and a REVIEW/BLOCKED section.
+    Before this helper each writer joined the strings itself, and one of
+    them dropped the trailing newline: the same file ended differently
+    depending on who wrote it last. Only the outer edges are normalised;
+    the block's own lines stay byte-for-byte what the caller produced.
+    """
+    return text.rstrip("\n") + "\n\n" + block.strip("\n") + "\n"
+
+
 def section_body(text: str, name: str, *, level: int = 2) -> str:
     """Body of the ``## <name>`` section, up to the next heading of the
     same or a higher level.
@@ -174,6 +194,7 @@ def section_body(text: str, name: str, *, level: int = 2) -> str:
 
 __all__ = [
     "HEADING_RE",
+    "append_block",
     "fence_flags",
     "find_headings",
     "first_heading_index",

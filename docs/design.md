@@ -102,7 +102,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
 | `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
-| `api/_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref) и `blocked_draft` |
+| `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
 | `api/workflow_commit.py` | `commit_workflow` + dry-run `uncommitted_workflow_files`: workflow-определения `.agentic/` в git изолированным индексом (REPORTS26 F6) |
 | `run_state.py` | `.agentic/state/run.yaml`: лок read→merge→write, shape-проверка (AUD02-06) |
 | `run_plan_read.py` | Единый reader записи забега (ORCH M1.2): одна запись — два представления (brief-карточка / полный контекст) |
@@ -131,6 +131,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `candidate_verify.py` | R2.4: материализация candidate, обязательная проверка в throwaway-worktree, привязка evidence (tree/контракт/среда/поколение/ревизия) и отказ при инвалидации |
 | `verify.py` | Test/lint execution, auto-DONE synthesis |
 | `verify_pack.py` | Verify-отчёт `GATES-{todo}.md` (U5): гейты, diff-минимальность, facts |
+| `checklist_gate.py` | DoD-гейт (TODO-0244): прогон структурных проб чек-листа, кэш `CHECKLIST-<todo>.json` по отпечатку дерева; секция verify-pack |
+| `checklists/` | DoD-данные и композиция (TODO-0244): `base.yaml` + `classes.yaml` в пакете, волны проекта в `.agentic/checklists/waves/`; `_data` (схема, строгая загрузка), `_allowlist` (закрытый список флагов `command_rc`), `_compose` (base + объявленные классы + волна + приёмка), `_render` (рендер/разбор блока `## Чек-лист завершения`), `_boundaries` (чтение секций TODO) |
 | `prove_red.py` | Prove-red в temp-worktree на baseline (U4) |
 | `plan_checkpoint.py` | BD-36 checkpoint: one-shot HTTP-форма + одноразовый токен (A-03) |
 | `plan_progress.py` | Прогресс плана по стадиям |

@@ -1077,6 +1077,83 @@ def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
     )
 
 
+def _checklist_section(project: Path, todo_id: str) -> Section:
+    """TODO-0244: the Definition-of-done gate as a pack section.
+
+    Present block → run/reuse the gate (sha-pinned); a missing item fails
+    the section. No block → ``checklist: none`` and skipped — old units
+    without the block keep working exactly as before.
+    """
+    from .checklist_gate import ChecklistGateError
+    from .checklist_gate import run as run_gate
+    from .checklists import ChecklistError
+
+    try:
+        result = run_gate(project, todo_id)
+    except ChecklistGateError as e:
+        # Not the same fact as "the unit carries no block": the gate could
+        # not read the unit at all. Keep it visibly distinct — a silent
+        # `none` here would read as "nothing to check".
+        return Section(
+            name="checklist",
+            status="skipped",
+            lines=[f"checklist: unavailable — {e}"],
+            detail="unavailable",
+        )
+    except ChecklistError as e:
+        # The unit HAS a block and the block is broken (a hand-edited line,
+        # a refused probe argv). That is a failed check, not "nothing to
+        # check" — and it must be a SECTION verdict, never a pack traceback.
+        # ``measured`` follows every other failing section: a failure was
+        # actually observed, so the report counts it as measured.
+        return Section(
+            name="checklist",
+            status="fail",
+            lines=[f"checklist: fail — {e}"],
+            measured=True,
+            detail="fail",
+        )
+    except (OSError, RuntimeError) as e:
+        # A filesystem error on a probe target (an unreadable file, a
+        # symlink loop) is the same kind of fact as a broken block: the
+        # check FAILED to run. It must stay a section verdict — a traceback
+        # out of the pack hides every other section.
+        return Section(
+            name="checklist",
+            status="fail",
+            lines=[f"checklist: fail — {type(e).__name__}: {e}"],
+            measured=True,
+            detail="fail",
+        )
+    if result["status"] == "none":
+        return Section(
+            name="checklist",
+            status="skipped",
+            lines=["checklist: none — the TODO carries no `## Чек-лист завершения` block"],
+            detail="none",
+        )
+    s = Section(name="checklist", status="pass", measured=True)
+    for item in result["items"]:
+        mark = {"ok": "[x]", "missing": "[ ]", "manual": "[~]"}[item["status"]]
+        line = f"- {mark} {item['id']}: {item['text']}"
+        if item["detail"]:
+            line += f" — {item['detail']}"
+        s.lines.append(line)
+    if result.get("cached"):
+        s.lines.append(f"cache: reused for tree {result['tree_sha'][:12]}")
+    for warning in result.get("warnings", []):
+        s.lines.append(f"warning: {warning}")
+    if result["missing"]:
+        s.status = "fail"
+        s.detail = "missing: " + ", ".join(result["missing"])
+        s.lines.append("missing: " + ", ".join(result["missing"]))
+    elif result["manual"]:
+        s.detail = f"{len(result['manual'])} manual item(s), probes ok"
+    else:
+        s.detail = "all probes ok"
+    return s
+
+
 def _lint_section(project: Path, timeout: int) -> Section:
     rc, out = _run_lint(project, timeout)
     if rc is None:
@@ -1296,6 +1373,7 @@ def verify_pack(
         _prove_red_section(project, todo_id, contract, tmp_base),
         _candidate_section(project, todo_id),
         _done_json_section(project, todo_id, logs_dir),
+        _checklist_section(project, todo_id),
         _lint_section(project, lint_timeout),
     ]
 
