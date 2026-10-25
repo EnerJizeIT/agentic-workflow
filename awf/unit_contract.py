@@ -132,6 +132,7 @@ _CONTRACT_KEYS: tuple[str, ...] = (
     "prove_red_kind", "prove_red_note",
     "files", "pipeline", "replan_for",
     "checklist_classes", "wave",
+    "spec_package", "source_refs",
 )
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
@@ -175,6 +176,104 @@ def check_replan_for(value: object) -> str:
             f"e.g. replan_for: TODO-0204 — got {value!r}"
         )
     return value.strip()
+
+
+def check_spec_package(value: object) -> str:
+    """K4: validate the contract's ``spec_package`` value.
+
+    The package is a directory INSIDE the project — an absolute path or a
+    ``..`` component would let a unit read the norm outside the project,
+    so it is refused here (the actual containment check needs the project
+    root and runs at dispatch/start).
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "'spec_package' must be a non-empty project-relative package "
+            "directory, e.g. spec_package: docs/spec/spec-pipeline"
+        )
+    text = value.strip()
+    if Path(text).is_absolute() or ".." in Path(text).parts:
+        raise ValueError(
+            f"'spec_package' must stay inside the project (no absolute "
+            f"path, no '..'), got {text!r}"
+        )
+    return text
+
+
+def check_source_refs(value: object) -> list[str]:
+    """K4: validate the contract's ``source_refs`` list (at least one link)."""
+    if not isinstance(value, list) or not value:
+        raise ValueError(
+            "'source_refs' must be a non-empty list of '<file>#<section>' "
+            "links into the package"
+        )
+    refs: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"'source_refs[{index}]' must be a non-empty "
+                "'<file>#<section>' link"
+            )
+        refs.append(item.strip())
+    return refs
+
+
+def resolve_spec_package(
+    project_dir: str | Path, package: str
+) -> tuple[Path, str]:
+    """K4: resolve ``spec_package`` to a real directory inside the project.
+
+    Returns ``(absolute_dir, project-relative_posix)``. A missing directory
+    or one that escapes the project is refused with a locator, before any
+    side effect.
+    """
+    project = Path(project_dir).resolve()
+    candidate = Path(package)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(
+            f"spec_package {package!r}: the package must stay inside the "
+            "project (no absolute path, no '..')"
+        )
+    resolved = (project / candidate).resolve()
+    try:
+        label = resolved.relative_to(project).as_posix()
+    except ValueError:
+        raise ValueError(
+            f"spec_package {package!r}: the package is outside the project"
+        ) from None
+    if not resolved.is_dir():
+        raise ValueError(
+            f"spec_package {package!r}: no such directory ({label})"
+        )
+    return resolved, label
+
+
+def spec_package_gate(
+    project_dir: str | Path, contract: dict | None
+) -> str:
+    """K3: the one readiness predicate, shared by the three call points.
+
+    Returns ``""`` when the TODO declares no package (the legacy path) or
+    the package is READY; otherwise the deterministic refusal text naming
+    the document, both revisions and — for BLOCKED — the question and its
+    owner. The same tree gives the same text on every call.
+    """
+    if not contract:
+        return ""
+    package = contract.get("spec_package")
+    if not package:
+        return ""
+    from .spec_package import spec_gate
+
+    try:
+        package_dir, _label = resolve_spec_package(project_dir, str(package))
+    except ValueError as e:
+        return str(e)
+    gate = spec_gate(project_dir, package_dir)
+    if gate.ok:
+        return ""
+    lines = [gate.reason, *gate.details]
+    return "\n".join(line for line in lines if line)
 
 
 def inject_replan_for(content: str, target: str) -> str:
@@ -315,6 +414,29 @@ def _find_contract_lines(content: str) -> tuple[list[str] | None, str | None]:
         return None, None
     lines = content.splitlines()
     return lines[open_i + 1 : close_j], None
+
+
+_SPEC_PACKAGE_LINE = re.compile(r"^\s*spec_package\s*:")
+
+
+def declares_spec_package(content: str) -> bool:
+    """Does the TODO's contract DECLARE ``spec_package``? (tolerant read)
+
+    AUD3 (TODO-0256): the launch gate must start only for a unit that opts
+    into the readiness package. A broken LEGACY contract (a bad ``gates``
+    value, say) kept the pre-unit behavior; parsing it eagerly turned the
+    typo into a "spec gate" refusal that also blamed the wrong thing. Here
+    only the KEY's presence matters — the full parse (and its errors)
+    belongs to the gate that the key asks for. A broken block is scanned
+    line by line, so a unit that does declare the package still gets the
+    real parse error.
+    """
+    lines, error = _find_contract_lines(content)
+    if lines is not None:
+        return any(_SPEC_PACKAGE_LINE.match(line) for line in lines)
+    if error:
+        return any(_SPEC_PACKAGE_LINE.match(line) for line in content.splitlines())
+    return False
 
 
 def inject_pipeline_key(content: str, pipeline: str) -> str:
@@ -595,6 +717,21 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         check_pipeline_name(data["pipeline"])
     if "replan_for" in data:
         check_replan_for(data["replan_for"])
+    if "spec_package" in data:
+        data["spec_package"] = check_spec_package(data["spec_package"])
+    if "source_refs" in data:
+        data["source_refs"] = check_source_refs(data["source_refs"])
+    if "spec_package" in data and "source_refs" not in data:
+        raise ValueError(
+            "'spec_package' requires 'source_refs' — a unit that runs under "
+            "a package must name at least one '<file>#<section>' link into it"
+        )
+    if "source_refs" in data and "spec_package" not in data:
+        raise ValueError(
+            "'source_refs' requires 'spec_package' — the links are resolved "
+            "inside the declared package; use 'source_ref' for a single "
+            "file outside a package"
+        )
     if "checklist_classes" in data:
         value = data["checklist_classes"]
         if not isinstance(value, list) or not value:

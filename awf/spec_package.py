@@ -488,17 +488,29 @@ def _headings(text: str) -> list[tuple[int, str]]:
     return headings
 
 
+def section_token_matches(title: str, token: str) -> bool:
+    """``title`` names ``token``: equal, or the token as a whole word prefix.
+
+    The ONE home of the matrix-token rule (K1/D8). ``spec_gate`` counts the
+    headings a token matches; the TODO transfer asks whether a link's exact
+    heading is the one a matrix row names. Two copies of this rule is how
+    "which section belongs to which ID" drifts apart.
+    """
+    if not token:
+        return False
+    if title == token:
+        return True
+    if not title.startswith(token):
+        return False
+    rest = title[len(token):]
+    return bool(rest) and not rest[0].isalnum() and rest[0] != "_"
+
+
 def _section_count(text: str, token: str) -> int:
-    """Headings that are ``token`` or start with it as a whole word."""
-    count = 0
-    for _level, title in _headings(text):
-        if title == token:
-            count += 1
-        elif title.startswith(token):
-            rest = title[len(token):]
-            if rest and not rest[0].isalnum() and rest[0] != "_":
-                count += 1
-    return count
+    """Headings that name ``token`` (see :func:`section_token_matches`)."""
+    return sum(
+        1 for _level, title in _headings(text) if section_token_matches(title, token)
+    )
 
 
 def _matrix_lines(text: str, path: str) -> list[str]:

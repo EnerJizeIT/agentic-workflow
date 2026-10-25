@@ -232,6 +232,15 @@ def test_service_pipeline_declares_candidate_output(tmp_git_repo: Path, monkeypa
     outputs = {s.name: s.output for s in stages}
     assert outputs["agent-implementer"] == CAND
     assert outputs["agent-qa-review"] == ""
+    # TODO-0256 (K5): the service worker writes the candidate AND project
+    # files, so the generated pipeline carries the EXPLICIT, named opt-out —
+    # not a silent engine bypass. The supervisor stages keep the fence.
+    assert {s.name: s.write_check for s in stages} == {
+        "plan": "on",
+        "agent-implementer": "off",
+        "agent-qa-review": "off",
+        "verify": "on",
+    }
     verify = stages[-1]
     assert verify.kind == "verify"
     assert verify.on_approved == "next", "the service run never commits"
