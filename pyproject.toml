@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "awf"
-version = "1.9.0"
+version = "2.0.0"
 description = "Agentic Workflow Framework — declarative multi-agent pipeline orchestrator for opencode"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -53,6 +53,11 @@ include = ["awf*"]
 # AUD13-02: data/ holds role_zones.yaml (BD-31 zone inference) — without it
 # a PyPI install silently degrades to the 5-key fallback table.
 awf = ["templates/**/*", "data/**", "checklists/**/*"]
+
+[tool.setuptools.exclude-package-data]
+# Byte-code caches are build artifacts, not package data: a stale
+# __pycache__ under awf/ must never enter a wheel.
+awf = ["**/__pycache__/*", "**/*.pyc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
