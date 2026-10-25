@@ -45,10 +45,31 @@ def _project(tmp_git_repo: Path) -> Path:
 
 
 def _untracked_snapshot(proj: Path) -> list[str]:
-    f = paths.context_dir(proj) / f"BASELINE-{TODO}.untracked"
-    if not f.is_file():
-        return []
-    return [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    from awf.infra.git_model import read_untracked_snapshot
+
+    return sorted(read_untracked_snapshot(proj, TODO) or set())
+
+
+def _strip_checklist(proj: Path) -> None:
+    """Start the update/remove suites from the UNIT BODY.
+
+    Dispatch composes the DoD block (TODO-0244) and freezes it into the
+    TODO; that block has its own suite. These tests assert byte-exact
+    update semantics on the body, so the block is stripped after dispatch
+    (it is ignored by git, so the baseline snapshot is unaffected).
+    """
+    from awf.checklists import block_of
+
+    path = paths.inbox(proj) / f"{TODO}.md"
+    text = path.read_text(encoding="utf-8")
+    block = block_of(text)
+    assert block is not None, "dispatch must compose the DoD block"
+    path.write_text(text.replace(block, "").rstrip() + "\n", encoding="utf-8")
+
+
+def _dispatch(proj: Path, content: str, **kwargs) -> None:
+    api.dispatch_todo(proj, content, todo_id=TODO, **kwargs)
+    _strip_checklist(proj)
 
 
 class TestRemoveDispatchedUnit:
@@ -57,7 +78,7 @@ class TestRemoveDispatchedUnit:
 
     def test_dispatched_ready_is_artifact_removed(self, tmp_git_repo: Path):
         proj = _project(tmp_git_repo)
-        api.dispatch_todo(proj, "# task\nbody\n", todo_id=TODO)
+        _dispatch(proj, "# task\nbody\n")
         inbox = paths.inbox(proj)
         context = paths.context_dir(proj)
         baseline_before = sorted(p.name for p in context.glob(f"BASELINE-{TODO}.*"))
@@ -98,14 +119,14 @@ class TestRemoveStillRefusesStarted:
     before, and nothing is moved."""
 
     def _dispatched(self, proj: Path) -> None:
-        api.dispatch_todo(proj, "# task\nbody\n", todo_id=TODO)
+        _dispatch(proj, "# task\nbody\n")
 
     def test_refused_with_progress(self, tmp_git_repo: Path):
         proj = _project(tmp_git_repo)
         self._dispatched(proj)
         (paths.outbox(proj) / f"PROGRESS-{TODO}.md").write_text("half done")
 
-        with pytest.raises(api.AwfApiError, match="signals"):
+        with pytest.raises(api.AwfApiError, match="PROGRESS"):
             api.remove_todo(proj, TODO)
 
         inbox = paths.inbox(proj)
@@ -144,7 +165,7 @@ class TestUpdateIncludeUntracked:
 
     def _dispatched_with_notes(self, proj: Path) -> None:
         (proj / "notes.txt").write_text("keep me\n")
-        api.dispatch_todo(proj, "# task\nbody\n", todo_id=TODO)
+        _dispatch(proj, "# task\nbody\n")
         assert "notes.txt" in _untracked_snapshot(proj)
 
     def test_include_reclaims_pre_existing_file(self, tmp_git_repo: Path):
@@ -204,9 +225,7 @@ class TestUpdateIncludeUntracked:
     def test_empty_list_clears_include(self, tmp_git_repo: Path):
         proj = _project(tmp_git_repo)
         (proj / "notes.txt").write_text("keep me\n")
-        api.dispatch_todo(
-            proj, "# task\nbody\n", todo_id=TODO, include_untracked=["notes.txt"]
-        )
+        _dispatch(proj, "# task\nbody\n", include_untracked=["notes.txt"])
         assert "notes.txt" not in _untracked_snapshot(proj)
         assert include_untracked.read_include_list(proj, TODO) == ["notes.txt"]
 
@@ -247,7 +266,7 @@ class TestUpdateIncludeUntracked:
 
     def test_nothing_to_update_is_refused(self, tmp_git_repo: Path):
         proj = _project(tmp_git_repo)
-        api.dispatch_todo(proj, "# task\nbody\n", todo_id=TODO)
+        _dispatch(proj, "# task\nbody\n")
 
         with pytest.raises(api.AwfApiError, match="nothing to update"):
             api.update_todo(proj, TODO)

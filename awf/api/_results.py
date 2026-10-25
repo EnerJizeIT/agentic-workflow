@@ -64,12 +64,22 @@ class StatusResult:
     # in every status until someone resumes it. The hint text (with the
     # exact awf_continue call) when detected; None otherwise.
     zombie_state: str | None = None
+    # TODO-0241: state says a stage runs, but the engine PID is dead or its
+    # heartbeat is stale. The line is "stage=..., todo=..., <reason>";
+    # None when the engine is alive (or no stage is on disk). Read-only —
+    # state is never mutated by a status call.
+    engine_dead: str | None = None
+    engine_dead_todo: str | None = None
     # RUN3 #1: named pipelines — active (config default_pipeline, "default"
     # when undeclared) + number of pipeline files in .agentic/pipelines/
     active_pipeline: str | None = None
     pipeline_count: int = 0
     # SPEC A-run: autonomous run state (active run only; None otherwise)
     run_state: dict[str, Any] | None = None
+    # TODO-0242 REVIEW (F8): whether a run is ACTIVE. The status surface
+    # needs the fact to decide resume advice — a closed run with a stale
+    # stage state must hear "start a new one", not "awf_continue".
+    run_active: bool = False
     # REPORTS26 F6 (TODO-0166): workflow definitions not yet in git
     # (.agentic/config.yaml, roles/, pipelines/, phases/, doctrine/ —
     # changed tracked + untracked non-gitignored). [] = nothing to commit.
@@ -206,6 +216,12 @@ class AddRoleResult:
     # config.yaml ("models.<role>.model"); "" when nothing was written
     # (no model, or the draft path, which never touches the config).
     model_config: str = ""
+    # TODO-0230 (M6): refresh mode report. "" (create), "updated",
+    # "unchanged", "skipped" (not skill-sourced / skill gone / no managed
+    # markers without --force) or "conflict" (role file missing or
+    # unreadable). ``refresh_reason`` explains a skip/conflict.
+    refresh_status: str = ""
+    refresh_reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -360,10 +376,14 @@ class DispatchTodoResult:
     pre_existing_untracked: list[str] = field(default_factory=list)
     untracked_warning: str = ""  # capped one-line warning; "" when the list is empty
     # REPORTS26 F5: True when the auto-issued number replaced a foreign
-    # TODO-NNNN in the first line's heading (a copied template kept its
+    # TODO-NNNN in the title heading (a copied template kept its
     # old title). Always False for an explicit todo_id (mismatch is
     # refused, or written as-is via allow_mismatch).
     renumbered: bool = False
+    # TODO-0242 (B.13): the soft unit-size lock — one line when the text
+    # looks like a mega-unit (>6 numbered requirements or >12 files in the
+    # boundaries block). Not a refusal: the supervisor decides.
+    size_warning: str = ""
     # TODO-0186: verify-path validation at dispatch — the contract's
     # verify: path tokens that do not exist relative to the project.
     # Warning only (the dispatch never refuses); [] when the verify
@@ -391,6 +411,23 @@ class DispatchTodoResult:
     # changes were claimed and the claimed display paths ([] when no claim).
     claim_from: str | None = None
     claimed_files: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class BlockedDraftResult:
+    """Result of :func:`awf.api.blocked_draft` (TODO-0229, M5)."""
+
+    todo_id: str
+    #: The ready ``## REVIEW-фикс`` text: the BLOCKED note's findings and fix
+    #: directions plus the supervisor's empty decision slots. The supervisor
+    #: pastes it into the TODO — this tool never writes the TODO itself.
+    review_text: str
+    #: Where the BLOCKED note was read from (absolute path).
+    note_path: str
+    message: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -448,6 +485,11 @@ class SupervisorContextResult:
     # prove_red) + file hash (the same entry the brief card renders
     # compactly). None when nothing was launched.
     run_evidence_plan: dict | None = None
+    # TODO-0242 (A.3): the engine-death fact reaches the supervisor
+    # bootstrap too — a state that outlived the engine must not read as a
+    # calm phase hint. "" when the engine is alive (or no stage is on disk).
+    engine_dead: str = ""
+    engine_dead_todo: str = ""
     # the nearest permitted action (run-aware after a reject: awf_run_next)
     next_action: str = ""
 
@@ -496,6 +538,11 @@ class WaitEventResult:
     # (no signal, a fresh signal, or a valid pre-existing one the engine
     # will consume).
     stale_decision_hint: str = ""
+    # TODO-0242 (A.3): the concrete next command for actionable events —
+    # on ``engine_dead`` exactly ``awf_continue(todo_id=...)``. "" for the
+    # passive events (timeout/idle/done/stage_changed), which keep their
+    # instruction in ``message``.
+    next_action: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -562,6 +609,19 @@ class RunStatusResult:
     # Requirement 4: commit / receipt / archive are separate facts, not
     # one inferred from another.
     publication: dict[str, Any] = field(default_factory=dict)
+    # TODO-0241: the engine-death line ("stage=..., todo=..., <reason>").
+    # "" when the engine is alive or no stage state is on disk.
+    engine_dead: str = ""
+    engine_dead_todo: str = ""
+    # TODO-0241 (REVIEW E1): the BLOCKED closures of the same read — the
+    # run surface must keep the shared advice order (blocked above
+    # engine_dead) instead of building its own branch.
+    blocked_ids: list[str] = field(default_factory=list)
+    # The shared liveness answer of the same read: True = a live pipeline
+    # owns the project (the stage state is merely not rewritten yet). The
+    # run surface publishes the fact instead of letting its consumer
+    # rebuild it to tell a live run from a dead one.
+    pipeline_running: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -648,6 +708,25 @@ class UpdateTodoResult:
 
 
 @dataclass
+class ReviewAppendResult:
+    """Result of :func:`awf.api.review_append` (TODO-0240).
+
+    ``section`` is the heading written (``## REVIEW-фикс (супервизор,
+    виток N)``); ``round`` is N. The append works on a STARTED unit (the
+    plain reword refuses one), but never while the pipeline is live on it.
+    """
+
+    todo_id: str
+    section: str
+    round: int
+    backup: str  # project-relative context/TODO-<id>.md.bak-<ts>
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class WritePipelineResult:
     """Result of :func:`awf.api.write_pipeline` (RUN3 #1 named pipelines)."""
 
@@ -692,15 +771,17 @@ class RunReviseResult:
 
     ``action`` is one of:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
-    - ``applied`` — the not-started elements' pipelines changed and/or new
-      elements joined the queue (``changes`` entries carry
-      ``class: "appended"`` / ``"inserted"``), the revision is recorded
+    - ``applied`` — the not-started elements' pipelines changed, elements
+      were replaced (``changes`` entries carry ``class: "replaced"`` with
+      ``from`` / ``to``), and/or new elements joined the queue
+      (``class: "appended"`` / ``"inserted"``), the revision is recorded
       (``revision`` = the stored entry);
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
     - ``refused`` — no active run / live engine / conflicts (current /
-      started / completed / TODO file missing) / missing key / invalid
-      ``position`` / CAS mismatch / a failed stop (M4.1);
+      started / completed / TODO file missing / duplicate target /
+      replace source not queued) / missing key / invalid ``position`` /
+      CAS mismatch / a failed stop (M4.1);
       ``current_queue`` + ``generation`` carry the current state (the
       previous plan stays in force).
 
@@ -844,5 +925,6 @@ __all__ = [
     "UnblockResult",
     "RemoveTodoResult",
     "RetireTodoResult",
+    "ReviewAppendResult",
     "UpdateTodoResult",
 ]

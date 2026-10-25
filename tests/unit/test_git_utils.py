@@ -1,4 +1,4 @@
-"""Unit tests for awf.git_utils — current_sha, has_diff, untracked_files, commit_all, is_git_repo."""
+"""Unit tests for awf.git_utils — current_sha, has_diff, commit_all, is_git_repo."""
 import subprocess
 from pathlib import Path
 
@@ -23,25 +23,6 @@ class TestHasDiff:
         sha = git_utils.current_sha(tmp_git_repo)
         (tmp_git_repo / "README.md").write_text("modified\n")
         assert git_utils.has_diff(tmp_git_repo, sha) is True
-
-
-class TestUntrackedFiles:
-
-    def test_clean_repo_empty(self, tmp_git_repo: Path) -> None:
-        assert git_utils.untracked_files(tmp_git_repo) == []
-
-    def test_new_file(self, tmp_git_repo: Path) -> None:
-        (tmp_git_repo / "newfile.txt").write_text("hello\n")
-        result = git_utils.untracked_files(tmp_git_repo)
-        assert "newfile.txt" in result
-
-    def test_gitignored_file_excluded(self, tmp_git_repo: Path) -> None:
-        (tmp_git_repo / ".gitignore").write_text("ignored.txt\n")
-        (tmp_git_repo / "ignored.txt").write_text("x\n")
-        (tmp_git_repo / "notignored.txt").write_text("y\n")
-        result = git_utils.untracked_files(tmp_git_repo)
-        assert "ignored.txt" not in result
-        assert "notignored.txt" in result
 
 
 class TestCommitAll:

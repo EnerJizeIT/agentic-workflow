@@ -6,9 +6,10 @@ keeps the old number while dispatch issues a new one — the inbox holds a
 unit whose title names someone else's number.
 
 Four invariants:
-(a) auto number + a foreign number in the first line's heading → the
-    heading is renumbered to the issued id, the result carries
-    ``renumbered: true``, the rest of the text is untouched;
+(a) auto number + a foreign number in the TITLE heading (the first H1 heading
+    after leading comments and front matter) → the heading is renumbered to
+    the issued id, the result carries ``renumbered: true``, the rest of the
+    text is untouched;
 (b) explicit ``todo_id`` + a heading with a DIFFERENT number → refused
     before any side effect (the message names both numbers and points to
     ``allow_mismatch``); nothing lands in the inbox;
@@ -70,6 +71,30 @@ class TestAutoRenumberForeignHeading:
         assert lines[0] == "<!-- role_hint: agent-implementer -->"
         assert lines[1] == "# TODO-0001 x"
 
+    def test_leading_comment_does_not_hide_the_foreign_number(self, project):
+        """The title is the first heading, not line 0: a copied unit that
+        starts with an HTML comment still gets its foreign number caught."""
+        result = api.dispatch_todo(
+            project, "<!-- note -->\n# TODO-9999 x\n\nbody\n"
+        )
+        assert result.renumbered is True
+        lines = (_inbox(project) / "TODO-0001.md").read_text().splitlines()
+        assert lines[0] == "<!-- note -->"
+        assert lines[1] == "# TODO-0001 x"
+        assert "TODO-9999" not in "\n".join(lines)
+
+    def test_front_matter_does_not_hide_the_foreign_number(self, project):
+        """A unit with a contract block carries the title after it; the
+        guard resolves the same line the source-ref insert uses."""
+        result = api.dispatch_todo(
+            project, '---\nverify: ["true"]\n---\n# TODO-9999 x\n\nbody\n'
+        )
+        assert result.renumbered is True
+        md = (_inbox(project) / "TODO-0001.md").read_text()
+        assert md.startswith("---\nverify")
+        assert "# TODO-0001 x" in md
+        assert "TODO-9999" not in md
+
 
 class TestExplicitIdForeignHeadingRefused:
     """(b) explicit id + a foreign heading number: refusal, zero side effects."""
@@ -120,6 +145,15 @@ class TestNoHeadingOrMatchingNumber:
         assert result.renumbered is False
         md = (_inbox(project) / "TODO-0001.md").read_text()
         assert md.splitlines()[0] == "# Task"
+
+    def test_a_deeper_heading_is_a_body_section_not_the_title(self, project):
+        """The title is the first H1 — the same line ``commit_gate`` reads
+        for the commit subject. A ``##`` section is body text: renumbering
+        it would rewrite the unit's content and split the two notions."""
+        result = api.dispatch_todo(project, "## TODO-9999 — раздел\n\nтело\n")
+        assert result.renumbered is False
+        md = (_inbox(project) / "TODO-0001.md").read_text()
+        assert "## TODO-9999 — раздел" in md
 
     def test_heading_without_number(self, project):
         result = api.dispatch_todo(project, "# TODO — some title\n\nbody\n")

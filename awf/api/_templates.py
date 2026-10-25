@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import paths
+from ._helpers import is_slug_name
 
 _CONFIG_TEMPLATE = '''project:
   name: '{project_name}'
@@ -43,6 +44,16 @@ verification:
   lint_cmd: '{lint_cmd}'
   typecheck_cmd: '{typecheck_cmd}'
   build_cmd: '{build_cmd}'
+
+engine:
+  # Engine liveness (TODO-0241/0242; docs/design.md, USAGE.md). The interval
+  # is clamped to at most 30s (a larger value warns); the staleness threshold
+  # defaults to max(3 x heartbeat_seconds, 120) unless set explicitly.
+  heartbeat_seconds: 30
+  heartbeat_stale_seconds: 120
+  # true = the engine dies with its launcher. false is the durable-run
+  # default: an opencode/MCP restart must not kill a running stage.
+  kill_with_parent: false
 
 phases:
   current: ".agentic/phases/plan.md"
@@ -128,4 +139,43 @@ def update_gitignore(project_dir: Path) -> None:
         )
 
 
-__all__ = ["_CONFIG_TEMPLATE", "_ROLE_TEMPLATE", "update_gitignore"]
+def awf_templates_dir() -> Path:
+    """Root of the templates the awf package ships — the ONLY source.
+
+    REVIEW architect: role templates, pipeline starters and the init
+    skeleton's fallback each spelled this path themselves. A layout change
+    had to find every copy; now the copies call this.
+
+    TODO-0230 (Y2): the repo-root ``templates/`` symlink is gone. A
+    checkout and a wheel both read ``<awf package>/templates`` next to
+    ``__file__``; there is no second tree to keep in sync.
+    """
+    return Path(__file__).resolve().parent.parent / "templates"
+
+
+def package_role_template(role_name: str) -> Path | None:
+    """The role file the awf package ships for *role_name*, or None.
+
+    One spelling of the package templates path for every caller: add_role's
+    built-in fallback (which narrows the names it accepts) and the setup
+    flow-variant materialization (any stage role). The file is package data
+    (``pyproject`` ``templates/**/*``), so a wheel and a checkout agree.
+
+    REVIEW W4: ``role_name`` is fail-closed — a name that is not a slug
+    (absolute path, ``..``) yields None instead of resolving outside the
+    templates dir. Callers are trusted today; the guard keeps a future one
+    from turning a repo-controlled name into a read primitive.
+    """
+    if not is_slug_name(role_name):
+        return None
+    candidate = awf_templates_dir() / "roles" / f"{role_name}.md"
+    return candidate if candidate.is_file() else None
+
+
+__all__ = [
+    "_CONFIG_TEMPLATE",
+    "_ROLE_TEMPLATE",
+    "package_role_template",
+    "awf_templates_dir",
+    "update_gitignore",
+]

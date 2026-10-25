@@ -12,10 +12,17 @@ from pathlib import Path
 from . import paths
 from ._atomic import atomic_write_text
 from ._log import log as _log
+from ._worker_exit import worker_exit_line, worker_log_tail
 from .doctrine import materialize_doctrine
+from .infra import managed_fs
 from .pipeline import Stage
 from .pipeline_state import write_state
-from .signals import clean_stage_signals, expected_signal_prefixes, read_signal_for_todo
+from .signals import (
+    clean_stage_signals,
+    expected_signal_prefixes,
+    read_signal_for_todo,
+    stage_signal_paths,
+)
 from .supervisor import (
     build_prompt,
     get_agent_name,
@@ -140,13 +147,21 @@ def run_agent_stage(
     # Clean stale signals this kind could produce
     prefixes = expected_signal_prefixes(kind)
     outbox = paths.outbox(project_dir)
+    stale_progress = outbox / f"PROGRESS-{todo_id}.md"
+    # TODO-0235 (M3d, architect-review): this function removes two sets of
+    # files — the stale signals and the stale PROGRESS note. Both are
+    # preflighted as ONE set before the FIRST unlink: a symlinked surface or
+    # leaf must refuse with nothing consumed, not after the signals are gone.
+    managed_fs.require_posix("start agent stage")
+    managed_root = managed_fs.agentic_root_for(outbox)
+    for leaf in (*stage_signal_paths(outbox, todo_id, *prefixes), stale_progress):
+        managed_fs.assert_no_symlink_escape(leaf, root=managed_root)
     clean_stage_signals(outbox, todo_id, *prefixes)
 
     # DF5-5: clean stale PROGRESS from previous stage so collect_handoff
     # doesn't pick up the previous worker's notes as this stage's output.
     # PROGRESS is per-stage running notes, not cumulative. Previous stage's
     # PROGRESS is already captured in its handoff .md file (BD-19).
-    stale_progress = outbox / f"PROGRESS-{todo_id}.md"
     if stale_progress.exists():
         stale_progress.unlink()
         _log(logs_dir, f"DF5-5: cleaned stale PROGRESS-{todo_id}.md from previous stage")
@@ -230,6 +245,9 @@ def run_agent_stage(
             agent_name=agent_name,
             restrict_control_tools=(kind == "execute"),
             tools_profile=stage.tools or None,
+            # TODO-0242 (P0-3): an execute worker sees the configured MCP
+            # servers only (default: the control server).
+            isolate_mcp=(kind == "execute"),
         ),
         hard_timeout=hard_timeout,
         log_holder=log_holder,
@@ -246,12 +264,21 @@ def run_agent_stage(
     )
     agent_elapsed = time.monotonic() - agent_start
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
+    # TODO-0226: a silent death must leave a trace in the stage log — exit
+    # code, signal, duration and class are the only evidence of why the
+    # session ended without a signal (three such deaths in 0224 were blind).
+    present = read_signal_for_todo(outbox, todo_id, *prefixes)
+    exit_line = worker_exit_line(
+        result.returncode, agent_elapsed, worker_log_tail(log_holder),
+        signal_present=bool(present),
+    )
+    if exit_line:
+        _log(logs_dir, exit_line)
     if result.returncode != 0:
         # U6b: a signal is the stage's contract — the worker's exit code AFTER
         # a signal is noise (context compaction + tool timeouts can flip rc
         # without touching the work; observed on TODO-0014: DONE written, rc=1,
         # pipeline stopped). No signal + rc!=0 stays a failure.
-        present = read_signal_for_todo(outbox, todo_id, *prefixes)
         if present:
             _log(
                 logs_dir,
@@ -271,6 +298,31 @@ def run_agent_stage(
         stage_id=stage.id or stage.name,
         model=role_model,
     )
+
+
+def _latest_commit_line(project_dir: Path) -> str:
+    """The newest commit as ``<sha> <subject>`` — lossless decode.
+
+    A commit subject is arbitrary bytes (a non-UTF-8 file name echoed into
+    it is legal). Strict UTF-8 raised ``UnicodeDecodeError`` (a ``ValueError``)
+    past every salvage boundary and the handoff was never written (TODO-0239);
+    ``surrogateescape`` keeps the bytes without a second codec.
+    """
+    try:
+        last = subprocess.run(
+            ["git", "log", "-1", "--pretty=%h %s"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            check=False,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return ""
+    # ``subprocess.run`` is monkeypatched to ``None`` by the handoff tests —
+    # the read stays defensive on purpose.
+    return (getattr(last, "stdout", "") or "").strip()
 
 
 def collect_handoff(
@@ -338,6 +390,7 @@ def collect_handoff(
                 cwd=str(project_dir),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 check=False,
                 timeout=10,
             )
@@ -346,21 +399,12 @@ def collect_handoff(
         except (subprocess.TimeoutExpired, OSError) as e:
             _log(logs_dir, f"handoff git-diff failed: {e}")
         try:
-            names = subprocess.run(
-                ["git", "diff", "--name-only", base_sha],
-                cwd=str(project_dir),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-            if names is not None:
-                changed_files = [
-                    line.strip()
-                    for line in (getattr(names, "stdout", "") or "").splitlines()
-                    if line.strip()
-                ]
-        except (subprocess.TimeoutExpired, OSError):
+            from .infra.git_model import GitModelError, GitRepository, display_path
+
+            changed_files = [
+                display_path(p) for p in GitRepository(project_dir).changed_paths(base_sha)
+            ]
+        except (GitModelError, OSError):
             pass
 
     if not base_sha:
@@ -450,19 +494,9 @@ def collect_handoff(
     if diff_stat_text:
         parts += ["## Git diff summary (vs baseline)", "", "```", diff_stat_text, "```", ""]
 
-    try:
-        last = subprocess.run(
-            ["git", "log", "-1", "--pretty=%h %s"],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-        if last is not None and (getattr(last, "stdout", "") or "").strip():
-            parts += ["## Latest commit", "", f"`{last.stdout.strip()}`", ""]
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    latest_commit = _latest_commit_line(project_dir)
+    if latest_commit:
+        parts += ["## Latest commit", "", f"`{latest_commit}`", ""]
 
     parts += [
         "## What the next role should know",
@@ -483,7 +517,11 @@ def collect_handoff(
     out_file = handoff_dir / f"{stage_name or role}-{todo_id}.md"
     # QA-C: handoff write atomic (was direct write_text — inconsistent with
     # rest of codebase which uses atomic_write_text for crash safety).
-    atomic_write_text(out_file, "\n".join(parts))
+    # The facts block carries RAW display identities (``display_path``):
+    # a non-UTF-8 name arrives as a surrogate and a strict UTF-8 write used
+    # to abort the handoff. Human-readable artifact only — the backslash
+    # escape keeps the name visible and the file writable.
+    atomic_write_text(out_file, "\n".join(parts), errors="backslashreplace")
     print(f"Handoff out: {out_file}")
     _log(logs_dir, f"Handoff written: {out_file}")
     return out_file

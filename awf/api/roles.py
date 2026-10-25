@@ -18,10 +18,14 @@ import yaml
 
 from .. import config as cfg_mod
 from .. import paths
-from .._atomic import atomic_write_text
 from ..xdg import xdg_config_home
 from ._errors import AwfApiError
-from ._helpers import require_agentic
+from ._helpers import (
+    is_slug_name,
+    managed_write_api_text,
+    refuse_unsafe_surfaces,
+    require_agentic,
+)
 from ._results import (
     AddRoleResult,
     AdoptRoleDraftResult,
@@ -30,7 +34,7 @@ from ._results import (
     RoleDraftsResult,
     SeedRolesResult,
 )
-from ._templates import _ROLE_TEMPLATE
+from ._templates import _ROLE_TEMPLATE, package_role_template
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +138,39 @@ def _inject_model_line(content: str, line: str) -> str:
     lines[pos:pos] = [line, ""]
     return "\n".join(lines)
 
+
+# REVIEW R4 (TODO-0230): the description is public input on add_role. The
+# create path renders it into the placeholder template; a refresh rebuilds
+# the body from the skill, so an explicit description must be written (and a
+# value already in the file kept when none is passed) — otherwise the input
+# is silently lost.
+ROLE_DESC_RE = re.compile(r"^\*\*Role:\*\*[ \t]*(?P<value>.*)$", re.MULTILINE)
+
+
+def parse_role_description_line(content: str) -> str:
+    """The description carried by the role file, "" when there is no line."""
+    m = ROLE_DESC_RE.search(content)
+    return m.group("value").strip() if m else ""
+
+
+def _inject_role_description(content: str, description: str) -> str:
+    """Set (or add) the ``**Role:**`` line — an empty description is a no-op."""
+    if not description.strip():
+        return content
+    line = f"**Role:** {description.strip()}"
+    if ROLE_DESC_RE.search(content):
+        return ROLE_DESC_RE.sub(lambda _m: line, content, count=1)
+    lines = content.split("\n")
+    pos = 1 if lines and lines[0].startswith("<!-- copied from skill") else 0
+    for i, existing in enumerate(lines):
+        if MODEL_LINE_RE.match(existing):
+            pos = i + 1
+            if pos < len(lines) and lines[pos] == "":
+                pos += 1
+            break
+    lines[pos:pos] = [line, ""]
+    return "\n".join(lines)
+
 # TODO-0208 (REPORTS33): a skill-sourced role carries the awf override
 # block. The SKILL.md body is a STANDALONE protocol — it ships its own
 # "Commit. Stage only the needed files" instructions that contradict the
@@ -188,6 +225,343 @@ def apply_awf_overrides(content: str) -> str:
     return content.rstrip() + _AWF_OVERRIDES_BLOCK
 
 
+# TODO-0230 (M6): the delivery discipline is a DEFAULT of the materialization,
+# not a hand-written addendum of this repo. Every skill-sourced role (and so
+# every preset role) carries it — marker-delimited, idempotent, appended after
+# the skill body and before a later BD-31 addendum (analyze_roles appends).
+_DISCIPLINE_HEADING = (
+    "## Дисциплина доставки инвариантов (added by awf add_role)"
+)
+_DISCIPLINE_START = "<!-- awf-discipline:start -->"
+_DISCIPLINE_END = "<!-- awf-discipline:end -->"
+_DISCIPLINE_BLOCK = (
+    "\n---\n\n"
+    f"{_DISCIPLINE_START}\n"
+    f"{_DISCIPLINE_HEADING}\n"
+    "\n"
+    "Для изменений класса «байты/пути/идентичность/замки» инвариант "
+    "считается доставленным только с таблицей «поверхность × исход»: все "
+    "писатели, читатели и ветки (например logs+dispatch+verify, "
+    "manifest+changes, reset+force-init+rollback, start+refused start), и по "
+    "каждой строке — переведено / исключено-с-причиной / явный отказ. "
+    "Строки «и так сойдёт» не бывает.\n"
+    "\n"
+    "- **implementer:** таблица идёт в DONE вместе с кодом; пропущенная "
+    "клетка — неготовый юнит.\n"
+    "- **architect-review:** обязательный вопрос «где ЕЩЁ должен держаться "
+    "этот же инвариант» — пройди соседние поверхности и подтверди или найди "
+    "разрыв.\n"
+    "- **qa-review:** сначала спустись в каждую клетку таблицы (код+тест), "
+    "потом ищи пробелы вне неё.\n"
+    "- **project-auditor:** сверь таблицу с реальным деревом (анти-вакуум: "
+    "grep по соседям, а не доверие тексту).\n"
+    f"{_DISCIPLINE_END}\n"
+)
+
+# TODO-0230 (M6, добор M1): the canonical-suite rule used to live only in the
+# gitignored ``.agentic/roles/*`` of this repo — a regenerated role lost it.
+# Materialization appends it to every skill-sourced role, so the rule reaches
+# any project (the script ships with ``awf init``).
+_SUITE_CANON_HEADING = "## Канон полного прогона (added by awf add_role)"
+_SUITE_CANON_START = "<!-- awf-suite-canon:start -->"
+_SUITE_CANON_END = "<!-- awf-suite-canon:end -->"
+_SUITE_CANON_BLOCK = (
+    "\n---\n\n"
+    f"{_SUITE_CANON_START}\n"
+    f"{_SUITE_CANON_HEADING}\n"
+    "\n"
+    "Полный сьют — ОДИН канонический прогон на attempt: "
+    "`scripts/suite-canonical.sh`. Команда по умолчанию — "
+    "`verification.test_cmd` из `.agentic/config.yaml`; переопределяется "
+    "`AWF_SUITE_CMD` (узкий прогон — своя команда). Артефакт — "
+    "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json`; повторный прогон на том "
+    "же дереве и той же команде — только с `--force`. Целевые и контрактные "
+    "проверки роль делает сама; `scripts/run-all.sh` целиком — только при "
+    "сомнении в воротах.\n"
+    f"{_SUITE_CANON_END}\n"
+)
+
+
+def _marker_block_pattern(start: str, end: str) -> re.Pattern[str]:
+    """The one spelling of a managed block, separators included.
+
+    REVIEW architect (M6): the apply helper and the tail stripper
+    each built this pattern — two owners of one layout, free to drift apart.
+    """
+    # ``^`` (MULTILINE) is zero-width: the newline BEFORE the separator
+    # stays in place, so removing a block cannot glue the lines around it
+    # together.
+    return re.compile(
+        rf"(?:^---[ \t]*\n(?:\n)*)?\n*"
+        rf"{re.escape(start)}.*?{re.escape(end)}[ \t]*\n?",
+        re.DOTALL | re.MULTILINE,
+    )
+
+
+def _orphan_marker_pattern(start: str) -> re.Pattern[str]:
+    """A start marker whose end marker is gone — the marker + its heading."""
+    return re.compile(
+        rf"(?:^---[ \t]*\n(?:\n)*)?\n*{re.escape(start)}[ \t]*\n"
+        rf"(?:#{{2,3}}[^\n]*\n)?",
+        re.MULTILINE,
+    )
+
+
+def _drop_marker_blocks(text: str, *, start: str, end: str) -> str:
+    """Remove every managed copy of a block — complete pairs and orphans.
+
+    The block brings its own ``---`` separator on re-append, so the old one
+    goes with it; otherwise every re-apply leaves one more horizontal rule.
+
+    An ORPHAN start marker (the end marker was hand-deleted) cannot be
+    bounded: only the marker line and the managed heading right below it
+    go, the body survives as unowned text. Dropping to EOF would be the
+    other guess — and it would eat the owner's notes that happen to follow
+    the broken block (the QA F5 class). No managed copy survives either
+    way, so a re-apply never appends a SECOND start marker (X1).
+    """
+    pair = _marker_block_pattern(start, end)
+    while pair.search(text):
+        text = pair.sub("", text, count=1)
+    return _orphan_marker_pattern(start).sub("", text)
+
+
+def _apply_marker_block(content: str, *, start: str, end: str, block: str) -> str:
+    """Insert ``block`` once: drop an existing marker-delimited copy first."""
+    return _drop_marker_blocks(content, start=start, end=end).rstrip() + block
+
+
+def apply_discipline_block(content: str) -> str:
+    """Append (or refresh) the delivery-discipline block — idempotent."""
+    return _apply_marker_block(
+        content,
+        start=_DISCIPLINE_START,
+        end=_DISCIPLINE_END,
+        block=_DISCIPLINE_BLOCK,
+    )
+
+
+def apply_suite_canon_block(content: str) -> str:
+    """Append (or refresh) the canonical-suite rule — idempotent."""
+    return _apply_marker_block(
+        content,
+        start=_SUITE_CANON_START,
+        end=_SUITE_CANON_END,
+        block=_SUITE_CANON_BLOCK,
+    )
+
+
+def _strip_managed_role_blocks(text: str) -> str:
+    """Drop marker-delimited managed blocks from a preserved tail (X1).
+
+    The tail keeps the owner's lines verbatim, but the two managed rules are
+    regenerated above it: a stale copy in the tail would either duplicate the
+    block or (worse) shadow the refreshed text. Only managed spans go;
+    anything outside the markers is the owner's and stays.
+    """
+    for start, end in (
+        (_DISCIPLINE_START, _DISCIPLINE_END),
+        (_SUITE_CANON_START, _SUITE_CANON_END),
+    ):
+        text = _drop_marker_blocks(text, start=start, end=end)
+    return text.strip("\n")
+
+
+def _apply_managed_role_blocks(content: str) -> str:
+    """Every managed default a materialized role carries — one list.
+
+    Two paths materialize a role: ``add_role`` (create) and the setup
+    flow-variant (``_materialize_variant_roles``). A new managed block
+    added here reaches both; a block appended at one call site only would
+    silently split the two owners (REVIEW architect).
+    """
+    return apply_suite_canon_block(apply_discipline_block(content))
+
+
+#: Wrappers of the pre-M6 canonical-suite copy (the M1 task shipped it with
+#: markers but without the managed discipline/suite wording).
+_LEGACY_SUITE_START = "<!-- M1-canonical-suite:start -->"
+_LEGACY_SUITE_END = "<!-- M1-canonical-suite:end -->"
+
+#: The hand-written discipline section (REVIEW V7): recognised by its exact
+#: intro line plus the known role bullets, so an edited section is kept
+#: whole instead of leaving orphan bullet lines behind.
+_LEGACY_DISCIPLINE_INTRO_PREFIX = (
+    "Для изменений класса «байты/пути/идентичность/замки»"
+)
+_LEGACY_DISCIPLINE_BULLETS = (
+    "- implementer:",
+    "- architect-review:",
+    "- qa-review:",
+    "- project-auditor:",
+)
+
+
+def _drop_trailing_separator(out: list[str]) -> None:
+    """Drop the blank lines / ``---`` separator that introduced a legacy block."""
+    while out and not out[-1].strip():
+        out.pop()
+    if out and out[-1].strip() == "---":
+        out.pop()
+        while out and not out[-1].strip():
+            out.pop()
+
+
+def _strip_legacy_sections(text: str) -> str:
+    """Drop pre-marker copies of the managed rules from a preserved tail.
+
+    Only a KNOWN legacy block is dropped, never «the heading and whatever
+    follows» (REVIEW T1 / QA F5): a note appended after the block is the
+    owner's text and stays. The hand-written discipline block is recognised
+    by its exact intro line and its known bullet lines — a blank line
+    between the intro and the list does not leave orphan bullets behind
+    (REVIEW V7 / A4); any other shape is left untouched. The canonical-suite
+    copy is bounded by its M1 markers (or, without them, by the contiguous
+    block under the heading).
+    """
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == _LEGACY_SUITE_START:
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j < len(lines) and _is_legacy_canon_heading(lines[j]):
+                i = j  # drop the marker, keep processing its heading below
+                continue
+            out.append(line)
+            i += 1
+            continue
+        if _is_legacy_discipline_heading(line):
+            end = _legacy_discipline_block_end(lines, i)
+            _drop_trailing_separator(out)
+            i = end
+            continue
+        if _is_legacy_canon_heading(line):
+            _drop_trailing_separator(out)
+            i += 1
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            while (
+                i < len(lines)
+                and lines[i].strip()
+                and lines[i].strip() != _LEGACY_SUITE_END
+            ):
+                i += 1
+            if i < len(lines) and lines[i].strip() == _LEGACY_SUITE_END:
+                i += 1
+                while i < len(lines) and not lines[i].strip():
+                    i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "".join(out).strip("\n")
+
+
+def _is_legacy_discipline_heading(line: str) -> bool:
+    return line.strip().startswith(
+        "## Дисциплина доставки инвариантов (супервизор"
+    )
+
+
+def _is_legacy_canon_heading(line: str) -> bool:
+    return line.strip().startswith("## Канонический полный сьют")
+
+
+def _legacy_discipline_block_end(
+    lines: list[str], start: int
+) -> int:
+    """End index of a hand-written discipline block.
+
+    Two accepted shapes. The KNOWN block (exact intro line + the known role
+    bullets, blank lines allowed anywhere) is dropped whole — a blank line
+    between the intro and the list must not leave orphan bullets (REVIEW V7
+    / A4). An unrecognised body is dropped only up to the next blank line:
+    the block is then heading + one contiguous paragraph, exactly what the
+    pre-M6 copy looked like — free text after the blank is the owner's note
+    (QA F5).
+    """
+    j = start + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    if j < len(lines) and lines[j].strip().startswith(
+        _LEGACY_DISCIPLINE_INTRO_PREFIX
+    ):
+        # the intro paragraph (usually one long line)
+        while j < len(lines) and lines[j].strip():
+            if lines[j].lstrip().startswith("## "):
+                break
+            j += 1
+        # the known role bullets, blank lines between them allowed
+        while True:
+            k = j
+            while k < len(lines) and not lines[k].strip():
+                k += 1
+            if k >= len(lines) or not lines[k].lstrip().startswith(
+                _LEGACY_DISCIPLINE_BULLETS
+            ):
+                return k
+            j = k + 1
+            while j < len(lines) and lines[j].strip():
+                j += 1
+    # unknown body: heading + the contiguous paragraph, stop at a blank
+    j = start + 1
+    while (
+        j < len(lines)
+        and lines[j].strip()
+        and not lines[j].lstrip().startswith("## ")
+        and lines[j].strip() != _LEGACY_SUITE_END
+    ):
+        j += 1
+    if j < len(lines) and lines[j].strip() == _LEGACY_SUITE_END:
+        j += 1
+    return j
+
+
+_PROVENANCE_DATE_RE = re.compile(r" on \d{4}-\d{2}-\d{2} -->", re.MULTILINE)
+
+
+def _without_provenance_date(content: str) -> str:
+    """Content without the provenance date — refresh's no-op comparison.
+
+    The date records the last real re-materialization, so it must not turn
+    an otherwise identical refresh into a rewrite on the next calendar day.
+    """
+    return _PROVENANCE_DATE_RE.sub(" -->", content)
+
+
+#: Headings that start the "local additions" tail of a materialized role.
+#: A refresh rebuilds the skill body above them and keeps this tail verbatim
+#: (AWF-OVERRIDE, BD-31, discipline, suite canon and the user's own lines).
+_LOCAL_TAIL_HEADINGS = (
+    _AWF_OVERRIDES_HEADING,
+    "## BD-31: Pipeline-specific disambiguation",
+    _DISCIPLINE_HEADING,
+    _SUITE_CANON_HEADING,
+)
+
+
+def _split_local_tail(content: str) -> str:
+    """Everything from the earliest awf marker heading to EOF (verbatim)."""
+    anchors = _LOCAL_TAIL_HEADINGS + (
+        _DISCIPLINE_START,
+        _SUITE_CANON_START,
+    )
+    positions = [
+        content.find(anchor) for anchor in anchors if anchor in content
+    ]
+    if not positions:
+        return ""
+    start = min(positions)
+    # Include the ``---`` separator line right above the heading when present.
+    head = content[:start].rstrip("\n")
+    if head.endswith("---"):
+        start = content.rfind("---", 0, start)
+    return content[start:].strip("\n")
+
+
 # ORCH M5.1: draft area — role candidates isolated from live roles until
 # checked. A candidate is ``roles/draft/<slug>.md``; the first line is a
 # machine marker that records its source (``skill:<name>`` / ``builtin`` /
@@ -240,9 +614,16 @@ def _list_available_skills(project_dir: Path) -> list[str]:
 def _find_skill_file(skill_name: str, project_dir: Path) -> Path:
     """Locate ``<root>/<skill_name>/SKILL.md`` or raise with the listing.
 
-    ``skill_name`` must already be slug-validated by the caller (public
-    input — see add_role).
+    ``skill_name`` is validated here as well (defense in depth): callers
+    pass public input (``from_skill``) or repo-controlled provenance data,
+    and ``root / skill_name`` with an absolute name silently replaces the
+    root — the same escape class as a ``..`` segment.
     """
+    if not is_slug_name(skill_name):
+        raise AwfApiError(
+            f"Invalid skill name {skill_name!r}: use lowercase letters, "
+            "digits, '-' or '_', starting with a letter or digit."
+        )
     roots = _skill_roots(project_dir)
     for root in roots:
         candidate = root / skill_name / _SKILL_FILENAME
@@ -260,7 +641,16 @@ def _find_skill_file(skill_name: str, project_dir: Path) -> Path:
 # awf/templates/roles/). Only these names take the built-in template;
 # every other name (including "supervisor" — that template belongs to
 # awf init) keeps the placeholder behavior.
-_BUILTIN_ROLE_NAMES = ("agent-qa-review", "agent-implementer")
+# REVIEW W2: every shipped role template is reachable through add_role —
+# a variant can materialize the same file, so a hand-written add_role must
+# not fall back to an empty "new role" placeholder.
+_BUILTIN_ROLE_NAMES = (
+    "agent-qa-review",
+    "agent-implementer",
+    "agent-architect-review",
+    "agent-project-auditor",
+    "agent-refactoring-specialist",
+)
 
 
 def _builtin_role_template(role_name: str) -> Path | None:
@@ -274,11 +664,7 @@ def _builtin_role_template(role_name: str) -> Path | None:
     """
     if role_name not in _BUILTIN_ROLE_NAMES:
         return None
-    candidate = (
-        Path(__file__).resolve().parent.parent / "templates" / "roles"
-        / f"{role_name}.md"
-    )
-    return candidate if candidate.is_file() else None
+    return package_role_template(role_name)
 
 
 def _strip_yaml_frontmatter(content: str) -> str:
@@ -522,6 +908,253 @@ def _compute_config_update(
     return new_text, desc
 
 
+#: The provenance line add_role writes for a skill-sourced role. Refresh reads
+#: it to find the source skill; a role without it is not refreshable.
+_SKILL_PROVENANCE_RE = re.compile(r"<!-- copied from skill `(?P<skill>[^`]+)`")
+
+
+def _skill_role_content(skill_name: str, skill_file: Path, raw: str) -> str:
+    """Provenance line + the skill body — the create/refresh shared core.
+
+    ONE format for both paths: a refresh compares its rebuilt content with
+    the file, so a second, slightly different header would report a
+    perpetual ``updated``.
+    """
+    body = _strip_yaml_frontmatter(raw).strip("\n")
+    return (
+        f"<!-- copied from skill `{skill_name}` ({skill_file}) "
+        f"on {date.today().isoformat()} -->\n{body}\n"
+    )
+
+
+def materialize_builtin_role_content(
+    project_dir: Path, role_name: str, raw: str
+) -> str:
+    """The exact content ``add_role`` produces from a package role template.
+
+    The setup flow-variant copies package roles too; it must not grow a
+    second copy of the rule set (model line + managed blocks), or the same
+    role differs depending on the path that created it (REVIEW architect —
+    the variant path was missing the uniform model line).
+    """
+    resolved_model = _resolve_role_model(project_dir, role_name, "")
+    content = _inject_model_line(raw, model_line(resolved_model))
+    return _apply_managed_role_blocks(content)
+
+
+def _plan_model_config_update(
+    project_dir: Path, role_name: str, model: str
+) -> tuple[tuple[str, str] | None, str]:
+    """The config edit for an explicit ``model=`` — computed and validated.
+
+    Returns ``(None, "")`` for an empty model. The create and refresh paths
+    share this: the edit must be validated before the role file is written
+    (the REPORTS32 invariant), or a failed edit leaves an orphaned role file.
+    """
+    if not model.strip():
+        return None, ""
+    config_path = paths.config_file(project_dir)
+    raw_cfg = (
+        config_path.read_text(encoding="utf-8")
+        if config_path.is_file()
+        else ""
+    )
+    return _compute_config_update(raw_cfg, role_name, model.strip()), (
+        f"models.{role_name}.model"
+    )
+
+
+def _refresh_skill_role(
+    project_dir: Path,
+    role_name: str,
+    model: str = "",
+    description: str = "",
+    force: bool = False,
+) -> AddRoleResult:
+    """Re-materialize an existing role from its skill, keeping local blocks.
+
+    The skill body and the model line are rebuilt; everything from the first
+    awf marker heading to EOF (AWF-OVERRIDE, BD-31, the discipline and suite
+    canon blocks, the user's own lines) is kept. The one exception is a
+    pre-marker (hand-written) copy of a managed rule: it is replaced by the
+    managed block, never kept next to it. A role that is not skill-sourced,
+    or whose skill is gone, is a ``skipped`` row with a reason — not an
+    error and not a rewrite. A repeated call on an unchanged skill returns
+    ``unchanged`` without touching the file, even on a later day.
+
+    REVIEW N1 (TODO-0230): the model is NOT re-resolved from the config
+    alone — a value that lives only in the role file (a draft created with
+    ``model=`` and then adopted: neither path writes the config) survives
+    the refresh. Priority: explicit ``model=`` → ``models.<role>.model`` →
+    the model line of the existing file. An explicit ``model=`` is also
+    merged into the config, exactly like the create path.
+
+    REVIEW R4 (TODO-0230): the same rule for ``description`` — an explicit
+    value updates the ``**Role:**`` line, an absent one keeps the file's
+    value. ``force=True`` writes an otherwise unchanged file anyway (the
+    caller asked for a rewrite); the status still reflects what happened.
+    """
+    role_file = project_dir / ".agentic" / "roles" / f"{role_name}.md"
+    if not role_file.is_file():
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="conflict",
+            refresh_reason=(
+                "role file not found — create it with add_role first"
+            ),
+        )
+    try:
+        existing = role_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="conflict",
+            refresh_reason=f"cannot read the role file: {e}",
+        )
+
+    m = _SKILL_PROVENANCE_RE.search(existing)
+    if not m:
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="skipped",
+            refresh_reason=(
+                "not skill-sourced (built-in/template or hand-written) — "
+                "nothing to re-materialize"
+            ),
+        )
+    skill_name = m.group("skill")
+
+    # REVIEW W1 (QA F7): the provenance comment is repo-controlled data —
+    # a crafted role file could name an absolute path or ``..`` segments and
+    # make refresh copy ANY readable file into .agentic/roles/. Validate the
+    # name as a slug BEFORE it reaches ``_find_skill_file`` (pathlib would
+    # let an absolute name replace the search root).
+    if not is_slug_name(skill_name):
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="skipped",
+            refresh_reason=(
+                f"provenance skill name {skill_name!r} is not a valid slug "
+                "— the role file was not rebuilt"
+            ),
+        )
+
+    # REVIEW V2 (QA Q2): a pre-M6 role has neither managed markers nor
+    # managed headings. Its whole tail cannot be told apart from the skill
+    # body, so rebuilding would silently drop the owner's lines. Refuse
+    # without --force; --force is the explicit "replace it" answer.
+    if not _split_local_tail(existing) and not force:
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="skipped",
+            refresh_reason=(
+                "role has no managed markers; pass --force to replace it "
+                "or edit manually"
+            ),
+        )
+
+    try:
+        skill_file = _find_skill_file(skill_name, project_dir)
+    except AwfApiError as e:
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="skipped",
+            refresh_reason=str(e),
+        )
+    try:
+        raw = skill_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return AddRoleResult(
+            role_name=role_name,
+            role_file=str(role_file),
+            model="",
+            refresh_status="skipped",
+            refresh_reason=f"cannot read skill file {skill_file}: {e}",
+        )
+
+    resolved_model = _resolve_role_model(project_dir, role_name, model)
+    if not resolved_model:
+        # N1: the config has no say — keep the value the file carries
+        # (e.g. an adopted draft whose model was never merged into config).
+        resolved_model = parse_role_model_line(existing) or ""
+    # R4: an explicit description wins; otherwise the file's line survives.
+    resolved_description = description.strip() or parse_role_description_line(
+        existing
+    )
+    content = _skill_role_content(skill_name, skill_file, raw)
+    content = _inject_model_line(content, model_line(resolved_model))
+    content = _inject_role_description(content, resolved_description)
+
+    # Defaults the existing file may predate: add them above the preserved
+    # tail, so the AWF-OVERRIDE block (part of the tail) stays last. X1: the
+    # helpers are marker-idempotent, so calling them always also refreshes a
+    # stale or hand-broken managed block; lines outside it stay untouched.
+    # The one managed list, not a second copy of it (REVIEW architect): a
+    # block added to ``_apply_managed_role_blocks`` must reach refresh too.
+    content = _apply_managed_role_blocks(content)
+
+    # The preserved tail may still carry the pre-marker (hand-written) copy
+    # of a rule the block above now manages — replace it, never keep both.
+    tail = _strip_managed_role_blocks(
+        _strip_legacy_sections(_split_local_tail(existing))
+    )
+    if tail:
+        # Keep the exact spacing the create path produced: a ``---``
+        # separator follows the body with one newline, a bare marker block
+        # with a blank line.
+        gap = "\n" if tail.startswith("---") else "\n\n"
+        content = content.rstrip() + gap + tail + "\n"
+    if _AWF_OVERRIDES_HEADING not in content:
+        content = apply_awf_overrides(content)
+
+    status = (
+        "updated"
+        if _without_provenance_date(content) != _without_provenance_date(existing)
+        else "unchanged"
+    )
+    # R4: force is an explicit "rewrite it" — do not let a byte-identical
+    # rebuild swallow the request.
+    write_body = status == "updated" or force
+    if force and status == "unchanged":
+        status = "updated"
+
+    # N1 (create parity): an explicit model= is merged into config.yaml.
+    # Compute AND validate the edit before any write, exactly like create.
+    config_update, model_config = _plan_model_config_update(
+        project_dir, role_name, model
+    )
+
+    if write_body:
+        managed_write_api_text(
+            role_file, content, operation="refresh role from skill"
+        )
+    if config_update is not None:
+        managed_write_api_text(
+            paths.config_file(project_dir),
+            config_update[0],
+            operation="update config.yaml",
+        )
+    return AddRoleResult(
+        role_name=role_name,
+        role_file=str(role_file),
+        model=resolved_model,
+        model_config=model_config,
+        refresh_status=status,
+    )
+
+
 def add_role(
     project_dir: Path,
     role_name: str,
@@ -531,6 +1164,7 @@ def add_role(
     from_skill: str = "",
     force: bool = False,
     draft: bool = False,
+    refresh: bool = False,
 ) -> AddRoleResult:
     """Generate a new role at ``.agentic/roles/{role_name}.md``.
 
@@ -597,13 +1231,23 @@ def add_role(
     draft path (ORCH M5.1) never touches the config.
     ``AddRoleResult.model_config`` names the written locus
     (``models.<role_name>.model``) when the config was set, "" otherwise.
+
+    TODO-0230 (M6): ``refresh=True`` re-materializes an existing role from
+    its provenance skill instead of creating one. The skill body and the
+    model line are rebuilt; everything from the first awf marker heading to
+    EOF (AWF-OVERRIDE, BD-31, discipline, suite canon and the user's own
+    lines) is kept. Pre-marker copies of the managed rules are replaced by
+    the managed blocks, never duplicated. ``refresh_status`` reports
+    ``updated`` / ``unchanged`` / ``skipped`` (not skill-sourced, or the
+    skill is gone) / ``conflict`` (no role file); a repeated call on an
+    unchanged skill is a no-op even on a later calendar day.
     """
     # RUN3 #3: from_skill is public input — slug-validated first, because
     # it also supplies the default role name.
     skill_name = ""
     if from_skill:
         skill_name = from_skill.strip().lower()
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", skill_name):
+        if not is_slug_name(skill_name):
             raise AwfApiError(
                 f"Invalid skill name {from_skill!r}: use lowercase letters, "
                 "digits, '-' or '_', starting with a letter or digit."
@@ -619,7 +1263,7 @@ def add_role(
         # "../../x", "a/b" or an absolute path must not be able to write
         # outside .agentic/roles/.
         role_name = role_name.strip().lower()
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", role_name):
+        if not is_slug_name(role_name):
             raise AwfApiError(
                 f"Invalid role name {role_name!r}: use lowercase letters, digits, "
                 "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
@@ -627,6 +1271,34 @@ def add_role(
 
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # TODO-0230 (M6): refresh re-materializes an existing skill-sourced role.
+    # It shares the slug validation above but not the create path: the file
+    # already exists, so "exists → refuse" does not apply.
+    if refresh:
+        # REVIEW N2: refresh rewrites the LIVE role, so pairing it with the
+        # draft invitation ("live roles are NOT touched") is contradictory.
+        # Refuse before any write — the MCP/CLI wrappers answer the same.
+        if draft:
+            raise AwfApiError(
+                "Pick ONE of draft / refresh — they are mutually exclusive."
+            )
+        # The provenance skill is the refresh source. ``from_skill`` is
+        # accepted by the create path; here it would be silently ignored —
+        # refuse instead of letting the caller believe it was used.
+        if from_skill:
+            raise AwfApiError(
+                "refresh re-materializes from the provenance skill recorded "
+                "in the role file — drop from_skill (create mode is the "
+                "only one that takes a source)."
+            )
+        return _refresh_skill_role(
+            project_dir,
+            role_name,
+            model,
+            description=description,
+            force=force,
+        )
 
     # TODO-0175: one model resolution for every source — explicit model=
     # beats the project config; empty = unassigned (config default applies).
@@ -636,7 +1308,10 @@ def add_role(
     # ORCH M5.1: draft candidates live in roles/draft/ — live roles,
     # config and the pipeline are not touched by the draft path.
     target_dir = roles_dir / _DRAFT_DIRNAME if draft else roles_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
+    # REVIEW (architect): the managed writer creates the directory through
+    # the verified parent. A bare ``mkdir`` here walked a symlinked
+    # ``roles``/``roles/draft`` — the same leftover removed from the
+    # pipeline, plan and inbox writers in this unit.
     role_file = target_dir / f"{role_name}.md"
     # AUD06-06: defense in depth — even a slug that passed validation must
     # resolve back inside the target dir (guards against future
@@ -652,11 +1327,7 @@ def add_role(
             raw = skill_file.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
             raise AwfApiError(f"Cannot read skill file {skill_file}: {e}") from e
-        body = _strip_yaml_frontmatter(raw).strip("\n")
-        content = (
-            f"<!-- copied from skill `{skill_name}` ({skill_file}) "
-            f"on {date.today().isoformat()} -->\n{body}\n"
-        )
+        content = _skill_role_content(skill_name, skill_file, raw)
         source = f"skill:{skill_name}"
     else:
         builtin = _builtin_role_template(role_name)
@@ -686,6 +1357,10 @@ def add_role(
     # Idempotent via the AWF-OVERRIDE marker; a repeated materialization
     # (force) refreshes the block, never duplicates it. Existing role
     # files are never touched (add_role only creates).
+    # TODO-0230 (M6): discipline + suite canon are defaults of every role —
+    # skill-sourced, preset and built-in alike. They sit before the
+    # AWF-OVERRIDE block (skill-only), which stays the file's last section.
+    content = _apply_managed_role_blocks(content)
     if skill_name:
         content = apply_awf_overrides(content)
 
@@ -713,27 +1388,24 @@ def add_role(
     # edit before the role file is written, so a failed edit never leaves
     # an orphaned role file. ``draft`` never touches the config (ORCH M5.1);
     # a model already resolved from the config is a no-op.
-    config_path = paths.config_file(project_dir)
-    config_update = None
+    config_update: tuple[str, str] | None = None
     model_config = ""
-    if model.strip() and not draft:
-        raw_cfg = (
-            config_path.read_text(encoding="utf-8")
-            if config_path.is_file()
-            else ""
+    if not draft:
+        config_update, model_config = _plan_model_config_update(
+            project_dir, role_name, model
         )
-        config_update = _compute_config_update(
-            raw_cfg, role_name, model.strip()
-        )
-        # The model is (or already is) the config's — name the locus so the
-        # caller knows where it lives, whether this call wrote it or a
-        # previous one did (idempotent no-op).
-        model_config = f"models.{role_name}.model"
+    config_path = paths.config_file(project_dir)
 
-    atomic_write_text(role_file, content)
+    managed_write_api_text(
+        role_file, content, operation="write role"
+    )
 
     if config_update is not None:
-        atomic_write_text(config_path, config_update[0])
+        managed_write_api_text(
+            config_path,
+            config_update[0],
+            operation="update config.yaml",
+        )
 
     return AddRoleResult(
         role_name=role_name,
@@ -904,7 +1576,11 @@ def seed_roles(
                 action = "unchanged"
             else:
                 raw_cfg = update[0]
-                atomic_write_text(config_path, raw_cfg)
+                managed_write_api_text(
+                    config_path,
+                    raw_cfg,
+                    operation="update config.yaml",
+                )
                 action = "written"
         models_rows.append(
             {
@@ -996,7 +1672,7 @@ def _validate_draft_slug(role_name: str) -> str:
     future role name, so it must be one already.
     """
     slug = role_name.strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", slug):
+    if not is_slug_name(slug):
         raise AwfApiError(
             f"Invalid role name {role_name!r}: use lowercase letters, digits, "
             "'-' or '_', starting with a letter or digit (e.g. 'my-role')."
@@ -1092,15 +1768,18 @@ def adopt_role_draft(project_dir: Path, role_name: str) -> AdoptRoleDraftResult:
     require_agentic(project_dir)
 
     draft = _draft_path(project_dir, slug)
+    roles_dir = project_dir / ".agentic" / "roles"
+    target = roles_dir / f"{slug}.md"
+    # REVIEW (architect): adopt reads the candidate and then UNLINKS it — a
+    # symlinked ``roles``/``roles/draft`` used to delete an outside file.
+    # The preflight runs before the read, so no component is followed.
+    refuse_unsafe_surfaces(project_dir, "adopt role draft", draft, target)
     if not draft.is_file():
         available = ", ".join(_available_draft_names(project_dir)) or "(none)"
         raise AwfApiError(
             f"Draft role {slug!r} not found in .agentic/roles/draft/. "
             f"Available drafts: {available}."
         )
-
-    roles_dir = project_dir / ".agentic" / "roles"
-    target = roles_dir / f"{slug}.md"
     if target.exists():
         raise AwfApiError(
             f"Adopt refused: live role {slug!r} already exists at {target}. "
@@ -1121,7 +1800,9 @@ def adopt_role_draft(project_dir: Path, role_name: str) -> AdoptRoleDraftResult:
             "candidate or discard it, then adopt again."
         )
     content = _strip_draft_marker(raw)
-    atomic_write_text(target, content)
+    managed_write_api_text(
+        target, content, operation="adopt role draft"
+    )
     draft.unlink()
 
     # ORCH M5.3: normalization — see the docstring. analyze_roles_core
@@ -1164,6 +1845,9 @@ def discard_role_draft(project_dir: Path, role_name: str) -> DiscardRoleDraftRes
     require_agentic(project_dir)
 
     draft = _draft_path(project_dir, slug)
+    # REVIEW (architect): the candidate is unlinked after the trace write —
+    # the same preflight as adopt, before anything is read or followed.
+    refuse_unsafe_surfaces(project_dir, "discard role draft", draft)
     if not draft.is_file():
         available = ", ".join(_available_draft_names(project_dir)) or "(none)"
         raise AwfApiError(
@@ -1179,7 +1863,11 @@ def discard_role_draft(project_dir: Path, role_name: str) -> DiscardRoleDraftRes
         trace = context_dir / f"{stem}-{counter}.md"
         counter += 1
 
-    atomic_write_text(trace, draft.read_text(encoding="utf-8"))
+    managed_write_api_text(
+        trace,
+        draft.read_text(encoding="utf-8"),
+        operation="discard role draft",
+    )
     draft.unlink()
     return DiscardRoleDraftResult(
         role_name=slug,
@@ -1539,8 +2227,17 @@ def analyze_roles_core(
                 )
                 current = pattern.sub("", current).rstrip()
             new_content = current.rstrip() + "\n" + addendum
-            atomic_write_text(path, new_content)
-        except OSError:
+            managed_write_api_text(
+                path,
+                new_content,
+                operation="analyze roles",
+            )
+        except (OSError, AwfApiError):
+            # The structured result exists to report PER-ROLE failures: one
+            # role file whose write is refused (a symlinked leaf) must not
+            # abort the patches of the others. A refusal still writes
+            # nothing outside the project — the barrier runs before the
+            # first byte.
             failed.append(role)
 
     if failed:

@@ -658,9 +658,10 @@ class TestSalvageEscalation:
         assert rc == 1, "verify commit-gate timeout must stop the pipeline"
 
     def test_work_present_continue_push_then_salvage(self, tmp_path, monkeypatch):
-        """Worker left changes (diff) but no signal → one continue-push
-        retry ("the work is in the tree — do not redo it"), then salvage
-        after the budget (TODO-0196, retry.silent_work_attempts=1).
+        """Worker left changes (diff) but no signal → continue-push retries
+        ("the work is in the tree — do not redo it"), then salvage after
+        the budget (TODO-0226, retry.silent_work_attempts=2: the 2nd retry
+        reduces the pass).
 
         NEG-4: the work check is stage-scoped — a fingerprint taken at
         stage entry vs after the run.
@@ -699,14 +700,16 @@ class TestSalvageEscalation:
             pipeline_name=None,
         )
 
-        assert calls["n"] == 2  # one continue-push retry, then salvage
+        assert calls["n"] == 3  # two continue-push retries, then salvage
         assert calls["notes"][0] is None
         assert "left WORK in the tree but NO signal" in calls["notes"][1]
         assert "Do NOT redo" in calls["notes"][1]
+        assert "reduce this pass" not in calls["notes"][1]
+        assert "reduce this pass" in calls["notes"][2]
         from awf.pipeline_state import read_state
         state = read_state(project)
         assert state.get("salvage_count") == 1
-        assert state.get("sw_retry_count") == 1
+        assert state.get("sw_retry_count") == 2
 
     def test_silent_retry_note_content(self):
         note = pipeline_engine._silent_retry_note(2, "TODO-0042")

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ... import paths
-from ..._atomic import atomic_write_text
+from .. import managed_fs
 
 SCHEMA_VERSION = 2
 CONTROL_FILE_NAME = "control.json"
@@ -34,18 +34,40 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def atomic_write_json(path: Path, data: Any) -> None:
-    """Publish ``data`` as JSON atomically and durably.
+def json_text(data: Any) -> str:
+    """The published JSON form: sorted keys, ``indent=2``, trailing newline.
 
-    The temp+rename+fsync mechanics live in the shared
-    :func:`awf._atomic.atomic_write_text` (``durable=True``) — one atomic
-    writer in the codebase, not a second copy next to it. Supported on POSIX
-    local filesystems; on Windows the dir-fsync branch is a no-op
-    (``os.O_DIRECTORY`` absent) and durability degrades to
-    process-crash-only.
+    One spelling of the on-disk bytes for every Store writer — callers that
+    must produce the same text (the operation-journal schema) import this
+    instead of repeating the ``json.dumps`` arguments next to it.
     """
-    payload = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
-    atomic_write_text(path, payload, durable=True)
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Publish ``data`` as JSON atomically, durably and under the managed bar.
+
+    TODO-0227 REVIEW F1: this used to call
+    :func:`awf._atomic.atomic_write_text` directly, so every Store JSON
+    writer (control.json, records, the operation journal, the migration
+    manifest) could follow a symlinked ``.agentic`` / ``state`` out of the
+    project. It now goes through
+    :func:`awf.infra.managed_fs.managed_write_text`: every component from
+    the project root down to the leaf is opened ``O_NOFOLLOW`` and the temp
+    file is created inside the verified directory, then ``renameat``-ed.
+    A symlinked component is refused before a single byte lands; on a
+    platform without the no-follow primitives the write is refused
+    (fail-closed) instead of silently degrading.
+
+    ``durable=True`` keeps the host-crash guarantee: the file is fsynced
+    before the rename and the verified directory fd after it.
+    """
+    managed_fs.managed_write_text(
+        path,
+        json_text(data),
+        root=managed_fs.agentic_root_for(path),
+        durable=True,
+    )
 
 
 def canonical_json(data: Any) -> str:
@@ -70,6 +92,7 @@ __all__ = [
     "operations_dir",
     "manifest_path",
     "timestamp",
+    "json_text",
     "atomic_write_json",
     "canonical_json",
     "sha256",

@@ -378,8 +378,8 @@ def test_preview_shows_appended_and_inserted_without_side_effects(
 
 
 def test_repeat_with_same_key_is_noop_for_append(tmp_git_repo: Path, monkeypatch) -> None:
-    """(e) повтор с тем же key — no-op: второй (другой) append с этим
-    key не применяется, запись ревизии одна."""
+    """(e) тот же key + тот же запрос — no-op; другой append под тем же
+    key — отказ ``different payload`` (TODO-0240 review v7, AA1)."""
     proj = _project(tmp_git_repo)
     for t in (T1, T2, T3, NEW, NEW2):
         _write_todo(proj, t)
@@ -391,8 +391,8 @@ def test_repeat_with_same_key_is_noop_for_append(tmp_git_repo: Path, monkeypatch
     again = api.run_revise(
         proj, queue=[{"todo_id": NEW2, "pipeline": ALT}], reason="why", key="k9"
     )
-    assert again.action == "noop"
-    assert again.revision is not None and again.revision["key"] == "k9"
+    assert again.action == "refused"
+    assert "different payload" in again.message
     state = run_state.read_run(proj)
     assert _queue_ids(state) == [T1, T2, T3, NEW], "the repeat must not append NEW2"
     assert len(state.get("revisions") or []) == 1

@@ -39,12 +39,24 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import _proc, commit_delta, paths, run_state
+from . import _proc, commit_delta, paths, run_state, todos
 from . import config as cfg_mod
-from ._atomic import atomic_write_text
+from .infra import managed_fs
 from .infra.git_model import GIT_TIMEOUT
 from .unit_contract import parse_todo_contract
-from .verify import _verify_cmd_timeout, candidate_check_commands, verify_command_keys
+from .verify import (
+    _verify_cmd_timeout,
+    candidate_check_commands,
+    parse_argv,
+    verify_command_keys,
+)
+
+#: SPEC-2/PA-2: candidate temporaries (the throwaway worktree and the
+#: isolated index) sit in the awf temp base like every other temporary —
+#: ``paths.temp_base`` is the ONE owner of that path and its fallback, so
+#: there is deliberately no per-module spelling of it here (architect
+#: TODO-0231: the alias was a second name for one policy).
+
 
 #: The evidence file the supervisor's verifier writes and the commit gate
 #: reads: ``.agentic/context/CANDIDATE-<todo>.json``.
@@ -84,33 +96,27 @@ def current_head(project_dir: Path) -> str:
     return commit_delta.head_sha(project_dir)
 
 
-def read_todo_text(project_dir: Path, todo_id: str) -> str:
-    """The TODO source (inbox, or the archive) — "" when neither exists."""
-    for f in (
-        paths.inbox(project_dir) / f"{todo_id}.md",
-        paths.done_dir(project_dir) / todo_id / "TODO.md",
-    ):
-        if f.is_file():
-            try:
-                return f.read_text(encoding="utf-8")
-            except OSError:
-                return ""
-    return ""
-
-
 def contract_digest(project_dir: Path, todo_id: str) -> str:
     """Digest of the TODO's contract block (verify/gates/prove_red/files).
 
     The block is what tells the candidate check WHAT to run and what the
     unit declared — a change to it invalidates evidence even when the code
     did not move. No block → the digest of an empty contract (a fixed,
-    deterministic marker).
+    deterministic marker). A block that EXISTS but does not parse gets its
+    OWN marker (I2, REVIEW виток 6) — the same class as verify_pack's
+    ``_BrokenContract``: a broken block is not "no block", and folding it
+    into the empty-contract digest would let restore of an archived unit
+    silently lose its declared commands.
     """
-    text = read_todo_text(project_dir, todo_id)
+    text = todos.read_todo_text(project_dir, todo_id)
     try:
         contract, unknown = parse_todo_contract(text)
-    except ValueError:
-        contract, unknown = None, []
+    except ValueError as e:
+        # architect-review M8: the digest is the evidence-invalidation key,
+        # so ANY change to the broken block must move it — hash the WHOLE
+        # parse reason (it quotes the offending key/command and is
+        # deterministic for the same bytes), not just its first line.
+        return _sha256_text(f"invalid-contract\0{e}")
     if contract is None:
         return _sha256_text("")
     canonical = json.dumps(
@@ -134,7 +140,7 @@ def environment_digest(project_dir: Path) -> str:
 
 def unit_revision(project_dir: Path, todo_id: str, baseline_sha: str) -> str:
     """The revision identity of the unit: TODO bytes + baseline sha."""
-    text = read_todo_text(project_dir, todo_id)
+    text = todos.read_todo_text(project_dir, todo_id)
     return _sha256_text(f"{todo_id}\0{baseline_sha}\0{text}")
 
 
@@ -146,17 +152,29 @@ def _config(project_dir: Path) -> dict:
         return {}
 
 
+class BrokenContractError(Exception):
+    """The TODO HAS a contract block, but it does not parse (M3).
+
+    The same class as verify_pack's ``_BrokenContract``: a broken block is
+    NOT "no block". Folding it into ``None`` silently fell back to the
+    project's ``test_cmd`` — the unit's own declared verification vanished
+    without a word.
+    """
+
+
 def candidate_commands(project_dir: Path, todo_id: str) -> list[str]:
     """The commands the mandatory candidate check runs — contract first.
 
     Delegates to :func:`awf.verify.candidate_check_commands` (one home for
-    the contract/config resolution). No source → ``[]``.
+    the contract/config resolution). No source → ``[]``. A block that
+    exists but does not parse is a REFUSAL (:class:`BrokenContractError`),
+    never a silent fallback to the config command (M3).
     """
-    text = read_todo_text(project_dir, todo_id)
+    text = todos.read_todo_text(project_dir, todo_id)
     try:
         contract, _unknown = parse_todo_contract(text)
-    except ValueError:
-        contract = None
+    except ValueError as e:
+        raise BrokenContractError(str(e)) from None
     return candidate_check_commands(_config(project_dir), contract)
 
 
@@ -223,7 +241,8 @@ def materialize_candidate(
     index — the candidate is inert.
 
     ``worktree_dir`` — an explicit destination (tests pass ``tmp_path``);
-    otherwise a fresh ``tempfile.mkdtemp`` under the system temp. The
+    otherwise a fresh ``tempfile.mkdtemp`` under ``/tmp/opencode`` (PA-2;
+    the system temp when that base cannot be created). The
     caller owns cleanup when it passes a dir; a self-made dir is removed on
     every outcome by the caller that owns the mkdtemp — :func:`build_evidence`
     (``try/finally``).
@@ -258,7 +277,7 @@ def materialize_candidate(
         return Materialization(plan, tree, None, "", tuple(plan.degraded))
     self_made = worktree_dir is None
     dest = worktree_dir if worktree_dir is not None else Path(
-        tempfile.mkdtemp(prefix=f"awf-candidate-wt-{todo_id}-")
+        tempfile.mkdtemp(prefix=f"awf-candidate-wt-{todo_id}-", dir=paths.temp_base())
     )
     err = _checkout_tree(project_dir, tree, dest)
     if err:
@@ -290,7 +309,9 @@ def _checkout_tree(project_dir: Path, tree_oid: str, dest: Path) -> str:
     lays the files down, and the file is removed in ``finally``.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    fd, index_path = tempfile.mkstemp(prefix="awf-candidate-co-", suffix=".idx")
+    fd, index_path = tempfile.mkstemp(
+        prefix="awf-candidate-co-", suffix=".idx", dir=paths.temp_base()
+    )
     os.close(fd)
     os.unlink(index_path)  # git read-tree creates the index itself
     env = {**os.environ, "GIT_INDEX_FILE": index_path}
@@ -333,6 +354,14 @@ def run_check(
     ``AWF_VERIFY_TIMEOUT``, RE-1) so a raised or disabled verify timeout
     reaches the mandatory candidate check too, not a hardcoded 600. ``0``
     disables the timeout.
+
+    PA-B (M8, добор 0223): the launcher is the SAME mechanism verify.py
+    uses for the config commands (:func:`awf.verify.run_verify_commands`) —
+    one command→argv rule (:func:`awf.verify.parse_argv`), no shell. The
+    check the pipeline gates the unit on is then the verification the unit
+    was gated on (a redirect in a contract command is a literal argument for
+    BOTH surfaces, not shell magic for one and a syntax argument for the
+    other). Bad quoting fails typed with the AUD14-02 text, not a traceback.
     """
     if not commands:
         return CHECK_UNAVAILABLE, ""
@@ -340,15 +369,18 @@ def run_check(
         timeout = _verify_cmd_timeout()
     chunks: list[str] = []
     for cmd in commands:
+        parts, problem = parse_argv(cmd)
+        if problem:
+            chunks.append(f"$ {cmd}\nABORTED: {problem}\n")
+            return CHECK_FAILED, "".join(chunks)
         try:
-            # One home for timed shell runs (_proc rule AUD04-06/AUD14-03):
-            # ``subprocess.run(timeout=...)`` kills only the direct shell and
+            # One home for timed process runs (_proc rule AUD04-06/AUD14-03):
+            # ``subprocess.run(timeout=...)`` kills only the direct child and
             # leaks pytest-xdist / node descendants as orphans. ``run_tree``
             # starts the child in its own session and kills the whole group on
             # timeout — the same runner verify.py / verify_pack.py use.
             result = _proc.run_tree(
-                cmd,
-                shell=True,
+                parts,
                 cwd=str(worktree),
                 capture_output=True,
                 text=True,
@@ -569,7 +601,29 @@ def read_evidence(project_dir: Path, todo_id: str) -> CandidateEvidence | None:
 
 
 def write_evidence(project_dir: Path, ev: CandidateEvidence) -> None:
-    atomic_write_text(evidence_path(project_dir, ev.todo_id), ev.to_json())
+    """Write the evidence through the managed no-follow barrier.
+
+    TODO-0234 (M3c): the evidence lives under ``.agentic/context`` — a
+    symlinked component must refuse the write instead of sending it outside
+    the project. The callers' contract is ``OSError`` on a failed write, so
+    the barrier's refusal is translated to it.
+
+    C4 (REVIEW): ``evidence_path`` resolves the project through
+    ``paths.context_dir``, so the root passed to the barrier is resolved
+    too — a relative ``project_dir`` is a normal project, not a false
+    "escapes managed root" refusal.
+    """
+    project_dir = Path(project_dir).resolve()
+    try:
+        managed_fs.managed_write_text(
+            evidence_path(project_dir, ev.todo_id),
+            ev.to_json(),
+            root=project_dir,
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise OSError(
+            f"candidate evidence refused — unsafe managed path: {exc}"
+        ) from exc
 
 
 def _generation(project_dir: Path) -> int:
@@ -656,9 +710,23 @@ def build_evidence(
                 ),
             )
 
-        cmds = (
-            commands if commands is not None else candidate_commands(project_dir, todo_id)
-        )
+        try:
+            cmds = (
+                commands
+                if commands is not None
+                else candidate_commands(project_dir, todo_id)
+            )
+        except BrokenContractError as e:
+            reason = str(e).splitlines()[0] if str(e) else str(e)
+            return BuiltEvidence(
+                materialization=materialization,
+                refusal=(
+                    f"the TODO contract block exists but does not parse: "
+                    f"{reason} — fix the block (front-matter YAML/`verify:` "
+                    "keys) and re-run the candidate check; a broken block is "
+                    "not «no block» (M3)"
+                ),
+            )
         if materialization.worktree is not None:
             check_status, output = run_check(
                 cmds, materialization.worktree, timeout=timeout
@@ -815,6 +883,7 @@ __all__ = [
     "CHECK_UNAVAILABLE",
     "BuiltEvidence",
     "CandidateEvidence",
+    "BrokenContractError",
     "EVIDENCE_PREFIX",
     "Materialization",
     "build_evidence",

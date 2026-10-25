@@ -24,6 +24,8 @@ import shutil
 from collections.abc import Iterable
 from pathlib import Path
 
+from .. import managed_fs
+
 
 def delete_state_tree(state_dir: Path, *, preserve: Iterable[str] = ()) -> None:
     """Remove the CONTENTS of ``state_dir``, keeping ``preserve`` names.
@@ -32,7 +34,19 @@ def delete_state_tree(state_dir: Path, *, preserve: Iterable[str] = ()) -> None:
     symlinked entry is unlinked itself, never followed; a directory is
     removed recursively. A name in ``preserve`` is skipped entirely (no
     descent into it).
+
+    TODO-0227 (M3): the destructive walk has a no-follow PREFLIGHT. A
+    symlinked ``.agentic`` or ``state`` would otherwise send ``iterdir`` /
+    ``unlink`` / ``rmtree`` outside the project (the same escape class as
+    R1.1, on the last destructive surface). The whole path from the project
+    root down to ``state`` — every component AND the leaf — is checked
+    before the first unlink, so a refusal leaves the tree (and any canary
+    outside) untouched.
     """
+    managed_fs.require_posix("wipe state tree")
+    managed_fs.assert_managed_dir(
+        state_dir, root=managed_fs.agentic_root_for(state_dir)
+    )
     keep = set(preserve)
     for entry in state_dir.iterdir():
         if entry.name in keep:

@@ -23,14 +23,13 @@ import yaml
 
 from .. import config as cfg_mod
 from .. import paths
-from .._atomic import atomic_write_text
 from ..pipeline import (
     active_pipeline_name,
     list_pipeline_names,
     validate_pipeline_stages,
 )
 from ._errors import AwfApiError
-from ._helpers import require_agentic, slugify_role
+from ._helpers import managed_write_api_text, require_agentic, slugify_role
 from ._results import ListPipelinesResult, WritePipelineResult
 
 # A-06: stage schema (allowed keys, types, policies, budgets) is validated
@@ -78,12 +77,38 @@ def _validate_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     return result
 
 
+def dump_pipeline_document(
+    name: str,
+    stages: list[dict[str, Any]],
+    description: str = "",
+) -> str:
+    """The pipeline YAML text — ONE renderer for every write path.
+
+    REVIEW architect: the setup preview (``_dump_pipeline`` in
+    :mod:`awf.api.setup`) and this writer each assembled the document and
+    called ``safe_dump`` with its own key rules — two owners of one format.
+    The preview promises "what you see is what is written"; that promise is
+    only true while there is one renderer.
+    """
+    doc: dict[str, Any] = {"name": name}
+    if description:
+        doc["description"] = description
+    doc["stages"] = stages
+    return yaml.safe_dump(
+        doc,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+    )
+
+
 def write_pipeline(
     project_dir: Path,
     name: str,
     stages: list[dict[str, Any]],
     *,
     force: bool = False,
+    description: str = "",
 ) -> WritePipelineResult:
     """Write ``.agentic/pipelines/<name>.yaml`` — and nothing else.
 
@@ -101,6 +126,8 @@ def write_pipeline(
             short stage assignment; ``name`` defaults to the id, then to
             the role slug). Unknown keys are refused.
         force: overwrite an existing pipeline file (default: False).
+        description: pipeline ``description`` (the built-in flow variants
+            pass their template description; empty = no description key).
 
     Raises:
         AwfApiError: no .agentic/, invalid name, invalid stages, or an
@@ -112,7 +139,6 @@ def write_pipeline(
     stages = _validate_stages(stages, f"pipeline {name!r}")
 
     pipelines_dir = paths.pipelines_dir(project_dir)
-    pipelines_dir.mkdir(parents=True, exist_ok=True)
     target = pipelines_dir / f"{name}.yaml"
 
     overwritten = False
@@ -124,13 +150,10 @@ def write_pipeline(
             )
         overwritten = True
 
-    content = yaml.safe_dump(
-        {"name": name, "stages": stages},
-        default_flow_style=False,
-        allow_unicode=True,
-        sort_keys=False,
+    content = dump_pipeline_document(name, stages, description)
+    managed_write_api_text(
+        target, content, operation="write pipeline"
     )
-    atomic_write_text(target, content)
     return WritePipelineResult(
         name=name, file=str(target), stages=len(stages), overwritten=overwritten
     )

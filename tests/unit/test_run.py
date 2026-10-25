@@ -1205,7 +1205,9 @@ class TestRunNextCarryOver:
         result = api.run_next(proj)
         assert result.action == "started"
 
-        lines = untracked_file.read_text(encoding="utf-8").splitlines()
+        from awf.infra.git_model import read_untracked_snapshot
+
+        lines = read_untracked_snapshot(proj, "TODO-0002") or set()
         assert "src/a.py" not in lines, (
             "RUN5 #1: run_next re-baseline wiped the carry-over exclusion — "
             "the rejected attempt's file drops out of the retry commit"
@@ -1225,8 +1227,8 @@ class TestRunNextCarryOver:
         result = api.run_next(proj)
         assert result.action == "started"
 
-        lines = (
-            proj / ".agentic" / "context" / "BASELINE-TODO-0001.untracked"
-        ).read_text(encoding="utf-8").splitlines()
+        from awf.infra.git_model import read_untracked_snapshot
+
+        lines = read_untracked_snapshot(proj, "TODO-0001") or set()
         assert "stale.txt" in lines
         assert not (proj / ".agentic" / "context" / "BASELINE-TODO-0001.carry_over").exists()

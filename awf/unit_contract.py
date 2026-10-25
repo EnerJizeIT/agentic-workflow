@@ -5,6 +5,7 @@ TODO front-matter (optional, at the very top of the TODO file, between two
 skipped when locating the block)::
 
     verify: ["python3 -m pytest tests/unit/test_x.py -q"]
+    flake: off
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
     prove_red_pin: ["tests/unit/test_x.py::test_y"]
@@ -32,28 +33,40 @@ the marker into the block; a hand-written line works the same way.
 the name from here. Validated as a plain name (letters, digits, ``_``,
 ``.``, ``-``); an empty pipeline = the config default.
 
+``flake`` (M1): the contract's flake-probe switch. ``off`` runs every
+``verify:`` command once (the probe is skipped); ``on`` (the default) keeps
+the probe for test-like commands — ``pytest``/``py.test``/``python -m
+pytest`` run twice, everything else once. Only ``on``/``off`` are valid.
+
 ``prove_red_pin`` (REPORTS29): a list of regression shields of EXISTING
 behavior — on the baseline they must be GREEN, the teeth are proven by
 mutation outside the tool. It is mutually exclusive with ``prove_red``:
 declaring both is a contract error (one TODO either proves a fix or pins a
 behavior).
 
-``prove_red_kind`` + ``prove_red_note`` (TODO-0201): the declared kind of
-the prove-red check. The only kind is ``coverage`` — a
-coverage/validation unit whose tests check behavior implemented EARLIER
-(other units), so on this unit's baseline they are green by construction
-and prove-red honestly returns ``not-red``. With the kind declared, a
-``not-red`` verdict is a PASS of the verify-pack ``prove_red`` section
-(annotated "coverage unit — not-red is expected (declared)", with the
-note in the report) instead of a failure; every other verdict and every
-other section are unaffected by the declaration. The kind requires
-``prove_red`` (the kind modifies that check) and ``prove_red_note`` (a
-one-line justification); the two keys are a pair — either both or
-neither is a contract error. The kind is mutually exclusive with
-``prove_red_pin`` (both expect green on the baseline, for different
-reasons). An UNdeclared ``not-red`` on a tests-only diff gets a hint line
-in the GATES report suggesting the declaration — the verdict itself is
-never auto-substituted.
+``prove_red_kind`` + ``prove_red_note`` (TODO-0201, TODO-0231): the
+declared kind of the prove-red check. Kinds:
+
+- ``coverage`` — a coverage/validation unit whose tests check behavior
+  implemented EARLIER (other units), so on this unit's baseline they are
+  green by construction and prove-red honestly returns ``not-red``. With
+  the kind declared, a ``not-red`` verdict is a PASS of the verify-pack
+  ``prove_red`` section (annotated, with the note in the report) instead
+  of a failure.
+- ``new-api`` — a new module/symbol unit: the test falls on the baseline
+  only because the symbol does not exist yet (prove-red reports that as
+  its ``new_code_acceptable`` fact). With the kind declared that verdict
+  is ``new-api-ok`` — a PASS with a warning section; a real broken runner
+  (collection error outside the project, no tests, timeout) stays a fail.
+
+Every other verdict and every other section are unaffected by the
+declaration. The kind requires ``prove_red`` (the kind modifies that
+check) and ``prove_red_note`` (a one-line justification); the two keys are
+a pair — either both or neither is a contract error. The kind is mutually
+exclusive with ``prove_red_pin`` (both expect green on the baseline, for
+different reasons). An UNdeclared ``not-red`` on a tests-only diff gets a
+hint line in the GATES report suggesting the declaration — the verdict
+itself is never auto-substituted.
 
 DONE.json (optional, written by the worker to ``.agentic/outbox/``)::
 
@@ -104,17 +117,21 @@ KNOWN_GATES: frozenset[str] = frozenset(
 #: of EXISTING behavior that must be GREEN on the baseline (mutually
 #: exclusive with ``prove_red``); the teeth are proven by mutation, outside
 #: the tool.
-#: ``prove_red_kind`` / ``prove_red_note`` (TODO-0201): the declared
-#: coverage kind (only ``coverage``) + its one-line justification — a pair:
-#: either both or neither; the kind requires a ``prove_red`` list and is
-#: mutually exclusive with ``prove_red_pin``.
+#: ``prove_red_kind`` / ``prove_red_note`` (TODO-0201, TODO-0231): the
+#: declared kind (``coverage`` or ``new-api``) + its one-line
+#: justification — a pair: either both or neither; the kind requires a
+#: ``prove_red`` list and is mutually exclusive with ``prove_red_pin``.
 #: ``replan_for`` (TODO-0213): the replan marker — the id of the unit this
 #: TODO replaces (a string, not a list); the interactive replan wait picks
 #: the TODO up only when the marker names the escalated unit.
+#: ``checklist_classes`` / ``wave`` (TODO-0244): the DoD composition the
+#: unit DECLARES — classes are merged only when named here (boundary hints
+#: are printed, never merged); a wave names a project wave file.
 _CONTRACT_KEYS: tuple[str, ...] = (
-    "verify", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
+    "verify", "flake", "gates", "prove_red", "prove_red_pin", "prove_red_cmd",
     "prove_red_kind", "prove_red_note",
     "files", "pipeline", "replan_for",
+    "checklist_classes", "wave",
 )
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
@@ -224,12 +241,31 @@ def replan_for_of(content: str | None) -> str | None:
         return None
 
 
+def _yaml_body_is_contract(body: list[str]) -> bool:
+    """The title-following leniency is only for a real contract body.
+
+    A markdown horizontal rule after the title also starts with ``---``; its
+    body is prose, not a YAML mapping. Treating it as a broken contract would
+    refuse a TODO the baseline dispatched.
+    """
+    try:
+        data = yaml.safe_load("\n".join(body))
+    except yaml.YAMLError:
+        return False
+    return data is None or isinstance(data, dict)
+
+
 def _find_contract_block(content: str) -> tuple[int | None, int | None, str | None]:
     """Locate the contract block. Returns (open_line, close_line, error).
 
     (None, None, None) — no block; (i, j, None) — the block spans lines
     ``i`` (``---``) and ``j`` (``---``) with YAML between; (i, None, error)
     — block opened but broken.
+
+    The title may precede the block: a TODO usually opens with
+    ``# TODO — <title>``, and a contract written just below it is still the
+    contract (one heading only, and only when ``---`` follows it directly;
+    a horizontal rule deeper in the body is not a block).
     """
     lines = content.splitlines()
     i = 0
@@ -239,11 +275,27 @@ def _find_contract_block(content: str) -> tuple[int | None, int | None, str | No
             i += 1
             continue
         break
+    after_title = False
+    if i < len(lines) and re.match(r"^#\s+\S", lines[i].strip()):
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j < len(lines) and lines[j].strip() == "---":
+            i = j
+            after_title = True
     if i >= len(lines) or lines[i].strip() != "---":
         return None, None, None
     for j in range(i + 1, len(lines)):
         if lines[j].strip() == "---":
+            if after_title and not _yaml_body_is_contract(lines[i + 1 : j]):
+                return None, None, None
             return i, j, None
+    if after_title:
+        # F16 (TODO-0244): an ``---`` under the title with no closing rule is
+        # a markdown horizontal rule, not a broken contract — the baseline
+        # answered "no block", and the title-following leniency exists only
+        # for a REAL body between two rules.
+        return None, None, None
     return i, None, (
         "contract block opened with `---` at the top but no closing `---` "
         "found — close the block (one `---` line after the last key)"
@@ -319,6 +371,115 @@ def _check_str_list(value: object, field: str) -> None:
             raise ValueError(f"'{field}[{k}]' must be a non-empty string, got {item!r}")
 
 
+#: A4 (REVIEW виток 2): shell operator characters that a ``verify:`` command
+#: must not carry OUTSIDE quotes. The declared commands run as argv
+#: (``shlex.split``, no shell — one launch mechanism shared by
+#: candidate_verify and verify_pack), so an operator would silently become a
+#: literal argument — a command that means something else than people expect.
+#: F3 (REVIEW виток 3) adds command substitution — ``$(`` and backticks — and
+#: the background ``&``: the same silent-literal class, and unlike ``VAR=val``
+#: or globbing (both pass through argv as plain arguments) they promise
+#: execution semantics the argv runner does not deliver.
+_SHELL_OPS = ("&&", "||", ";", "|", ">", "<", "$(", "&", "`")
+
+
+def _first_shell_op_outside_quotes(cmd: str) -> str | None:
+    """The first shell operator at a quoted-agnostic position, or ``None``.
+
+    A single pass tracks single- and double-quote (with ``\\`` escapes in
+    double quotes); operators only count OUTSIDE any quote — a command like
+    ``grep -n "pid > 1" f.py`` stays legal, and so does any operator inside
+    quotes (an ``$(...)`` in a quoted text is a literal argument for shlex
+    too). A backslash-escaped operator outside quotes (``a\\;b``) is a
+    literal argument for ``shlex`` too, so it is not reported.
+    ``&&``/``||`` are checked before the single-char forms so ``&&`` is
+    not reported as its ``&``-less neighbour.
+    """
+    quote = ""
+    escaped = False
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif quote == '"' and ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch == "\\":
+            # Outside quotes a backslash escapes the next character: shlex
+            # keeps ``a\;b`` as ONE argument, so the escaped operator is not
+            # a shell operator here either.
+            i += 2
+            continue
+        if ch in {"'", '"'}:
+            quote = ch
+            i += 1
+            continue
+        for op in _SHELL_OPS:
+            if cmd.startswith(op, i):
+                return op
+        i += 1
+    return None
+
+
+def shell_operator_refusal(cmd: str) -> str:
+    """The A4 refusal text for a command carrying an unquoted shell operator.
+
+    The ONE wording of the shell-operator policy (REVIEW виток 6, I1): the
+    contract validation renders it with the ``verify[k]`` address, and every
+    argv runner (config ``verification.*`` commands, candidate check,
+    verify-pack) renders it as its own typed refusal — one predicate, one
+    message. An empty string means the command is clean.
+
+    K1 (REVIEW виток 8): the SAME predicate owns the H1 newline rule, so a
+    config ``test_cmd``/``baseline_cmd`` cannot smuggle a second command past
+    the argv runner either. A trailing ``\\r\\n``/``\\n`` (a YAML block scalar
+    always appends one) is normalized away — one command; an INTERIOR newline
+    means multiple commands on one surface and is refused.
+    """
+    text = str(cmd).rstrip("\r\n")
+    if "\n" in text or "\r" in text:
+        return (
+            "multi-line verify — one command per entry: verify runs argv "
+            "without a shell; use a script or separate commands"
+        )
+    op = _first_shell_op_outside_quotes(text)
+    if not op:
+        return ""
+    return (
+        f"contains a shell operator ({op!r}) outside quotes — commands run as "
+        "argv without a shell, so use a script or separate commands (or quote "
+        'the operator into a `sh -c "..."` argument)'
+    )
+
+
+def _check_verify_shell_operators(value: list) -> None:
+    """A4 (REVIEW виток 2) + F3 (REVIEW виток 3) + H1 (REVIEW виток 5):
+    ``verify:`` commands are argv, not shell lines.
+
+    An unquoted ``&&``/``||``/``;``/``|``/``>``/``<``/``&``/backtick/
+    ``$(``  would pass through the argv runner as a literal argument — a
+    silent behavior change the writer did not declare. ``VAR=val`` and
+    globbing stay legal: argv passes them through as plain arguments. The
+    contract refuses the command up front; a pipeline step is a script
+    file or separate commands.
+
+    H1: a trailing ``\\r\\n``/``\\n`` (a YAML block scalar always appends
+    one) is normalized away; INTERIOR newlines make the command
+    multi-line — refused, for the same reason. K1 (виток 8): both the
+    operator and the newline rule live in :func:`shell_operator_refusal`
+    so the contract and every config runner give the same verdict.
+    """
+    for k, raw in enumerate(value):
+        refusal = shell_operator_refusal(raw)
+        if refusal:
+            raise ValueError(f"'verify[{k}]' ({raw!r}) {refusal}")
+
+
 def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
     """Parse + validate the optional contract block at the top of a TODO.
 
@@ -347,6 +508,19 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
     unknown = [k for k in data if k not in _CONTRACT_KEYS]
     if "verify" in data:
         _check_str_list(data["verify"], "verify")
+        _check_verify_shell_operators(data["verify"])
+    if "flake" in data:
+        value = data["flake"]
+        if isinstance(value, bool):
+            # YAML 1.1 reads ``off``/``on`` as booleans.
+            data["flake"] = "on" if value else "off"
+        elif isinstance(value, str) and value.strip().lower() in {"on", "off"}:
+            data["flake"] = value.strip().lower()
+        else:
+            raise ValueError(
+                "'flake' must be 'on' or 'off' — 'off' runs every `verify:` "
+                "command once (the flake probe is skipped)"
+            )
     if "gates" in data:
         _check_str_list(data["gates"], "gates")
         for g in data["gates"]:
@@ -381,11 +555,12 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
                 "e.g. prove_red_kind: coverage"
             )
         kind = v.strip()
-        if kind != "coverage":
+        if kind not in ("coverage", "new-api"):
             raise ValueError(
-                f"unknown prove_red_kind {kind!r} — the only declared kind "
-                "is 'coverage' (a coverage/validation unit: its tests check "
-                "already-implemented behavior, so not-red is expected)"
+                f"unknown prove_red_kind {kind!r} — the declared kinds are "
+                "'coverage' (tests check already-implemented behavior, so "
+                "not-red is expected) and 'new-api' (the test falls on the "
+                "baseline only because the new symbol does not exist yet)"
             )
         if "prove_red_pin" in data:
             raise ValueError(
@@ -398,9 +573,9 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         if not isinstance(note, str) or not note.strip():
             raise ValueError(
                 "'prove_red_kind' requires 'prove_red_note' — a one-line "
-                "justification of why this unit is coverage (not-red on "
-                "the baseline is expected); the note goes into the GATES "
-                "report"
+                "justification of the declared kind (why not-red is "
+                "expected for `coverage`, or which symbol is new for "
+                "`new-api`); the note goes into the GATES report"
             )
         pr = data.get("prove_red")
         if not isinstance(pr, list) or not pr:
@@ -420,6 +595,31 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
         check_pipeline_name(data["pipeline"])
     if "replan_for" in data:
         check_replan_for(data["replan_for"])
+    if "checklist_classes" in data:
+        value = data["checklist_classes"]
+        if not isinstance(value, list) or not value:
+            raise ValueError(
+                "'checklist_classes' must be a non-empty list of class names — "
+                "drop the key when the unit declares no classes"
+            )
+        bad = [c for c in value if not isinstance(c, str) or not c.strip()]
+        if bad:
+            raise ValueError(
+                f"'checklist_classes' has a non-string or empty entry: {bad!r}"
+            )
+        data["checklist_classes"] = [c.strip() for c in value]
+    if "wave" in data:
+        value = data["wave"]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "'wave' must be a non-empty wave name (a slug) — drop the key "
+                "when the unit belongs to no wave"
+            )
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", value.strip()):
+            raise ValueError(
+                f"'wave' must be a slug (letters, digits, '.', '_', '-'), got {value!r}"
+            )
+        data["wave"] = value.strip()
     return data, unknown
 
 

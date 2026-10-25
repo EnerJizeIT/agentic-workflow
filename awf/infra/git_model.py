@@ -42,6 +42,8 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from .._path_link import decode_path_link
+
 SCHEMA_VERSION = 1
 
 GIT_TIMEOUT = 30
@@ -127,6 +129,48 @@ def display_path(path: bytes) -> str:
     return path.decode("utf-8", "surrogateescape")
 
 
+def raw_identity(printed: str) -> str:
+    """Bridge a PRINTED ``git`` path to the raw display identity.
+
+    A baseline snapshot written before the raw format keeps git's printed
+    form; under the default ``core.quotePath=true`` a non-ASCII name arrives
+    C-quoted (``"\\321\\204..."``) while the model hands back the RAW path.
+    Comparing raw to printed silently loses the match, so the legacy reader
+    decodes the C-quote back to the string :func:`display_path` would produce
+    for the same bytes. A line that is not quoted (ASCII, or an already-raw
+    name under ``core.quotePath=false``) is returned unchanged.
+    """
+    if len(printed) < 2 or printed[0] != '"' or printed[-1] != '"':
+        return printed
+    body = printed[1:-1]
+    out = bytearray()
+    simple = {
+        "a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A,
+        "v": 0x0B, "f": 0x0C, "r": 0x0D, '"': 0x22, "\\": 0x5C,
+    }
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = body[i + 1]
+            if "0" <= nxt <= "7":
+                j = i + 1
+                digits = ""
+                while j < n and len(digits) < 3 and "0" <= body[j] <= "7":
+                    digits += body[j]
+                    j += 1
+                out.append(int(digits, 8) & 0xFF)
+                i = j
+                continue
+            out.append(simple.get(nxt, ord(nxt)))
+            i += 2
+            continue
+        out.extend(ch.encode("utf-8", "surrogateescape"))
+        i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
 def escape_for_ui(path: bytes) -> str:
     """UI escaping — a SEPARATE concern from the stored bytes.
 
@@ -169,6 +213,40 @@ def escape_str_for_ui(text: str) -> str:
     ownership decision — those stay on the raw bytes.
     """
     return escape_for_ui(text.encode("utf-8", "surrogateescape"))
+
+
+def read_untracked_snapshot(
+    project_dir: Path | str, todo_id: str
+) -> set[str] | None:
+    """The ``BASELINE-{todo_id}.untracked`` paths in RAW display identity.
+
+    One reader for the fact (M4 review, TODO-0228): the writer stores the
+    paths NUL-terminated (``_path_link`` — a name may contain a newline or an
+    edge space, and ``splitlines``/``strip`` rewrote it). Files written before
+    the migration keep git's PRINTED form and are decoded lazily
+    (:func:`raw_identity`), so an old snapshot compares equal to the model's
+    raw paths too. ``None`` when the file is missing or unreadable — the
+    caller's documented "no snapshot" fallback.
+    """
+    if not todo_id:
+        return None
+    snapshot = Path(project_dir) / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
+    if not snapshot.is_file():
+        return None
+    try:
+        data = snapshot.read_bytes()
+    except OSError:
+        return None
+    while data.endswith((b"\n", b"\r")):
+        data = data[:-1]
+    if b"\x00" in data:
+        decoded = decode_path_link(data)
+        return None if decoded is None else set(decoded)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return {raw_identity(line) for line in text.split("\n") if line}
 
 
 def _render_command(args: tuple[str, ...]) -> str:
@@ -221,6 +299,12 @@ class ChangeRecord:
     index_blob: str | None = None
     work_blob: str | None = None
     provenance: str = "index"
+    #: The raw two-letter ``XY`` status of the machine protocol: X is the
+    #: index side vs HEAD, Y the worktree side vs the index, ``?`` untracked.
+    #: Kept so a consumer asking "did the user already stage this?" does not
+    #: have to infer staging from blob equality (a staged rename of an
+    #: unchanged file has equal blobs but a non-blank X).
+    xy: str = ""
 
     @property
     def new_path(self) -> bytes:
@@ -432,11 +516,14 @@ def tree_fingerprint(root: Path | str) -> str:
     """Content-addressed fingerprint of the exact working-tree state.
 
     Read through the model's OWN NUL protocol — never the string-based
-    ``git_utils.tree_fingerprint`` (H1). That legacy version listed
-    untracked names with ``ls-files`` and ``splitlines()``: a newline in a
-    name shredded the list, so the file never entered the content hash and
-    a change to its bytes left the fingerprint identical — the tree could
-    be called "stable" while it moved.
+    ``git_utils.tree_fingerprint`` (H1). That legacy reader took untracked
+    names from a printed ``ls-files``: a non-ASCII name arrived C-quoted (a
+    hash key no other reader uses) and under ``core.quotePath=false`` a
+    non-UTF-8 name raised ``UnicodeDecodeError`` and aborted the whole
+    fingerprint. The two functions still produce DIFFERENT digests; keeping
+    the legacy value for ``awf tree-sha``/``VERIFIED-*.sha`` is recorded as
+    debt in ``docs/design/single-owners.md`` (a digest change needs its own
+    migration unit, not a refactor).
 
     Covers HEAD, the staged and unstaged tracked content (binary-safe
     ``git diff --binary``), and every untracked non-ignored file with its
@@ -678,14 +765,52 @@ class GitRepository:
             return ""
         return result.stdout.decode("ascii").strip()
 
-    def untracked_paths(self) -> list[bytes]:
-        result = self._run("ls-files", "--others", "--exclude-standard", "-z")
+    def untracked_paths(self, paths: tuple[str, ...] = ()) -> list[bytes]:
+        """Untracked paths, optionally limited to ``paths`` (pathspec).
+
+        ``-z`` keeps the NUL protocol; a pathspec never widens the read, so
+        a caller that only cares about ``.agentic/roles`` still gets the
+        byte-faithful identity instead of opening a second printed reader.
+        """
+        args = ["ls-files", "--others", "--exclude-standard", "-z"]
+        if paths:
+            args += ["--", *paths]
+        result = self._run(*args)
         return [p for p in result.stdout.split(b"\0") if p]
 
     def ignored_paths(self) -> list[bytes]:
         result = self._run(
             "ls-files", "--others", "--ignored", "--exclude-standard", "-z"
         )
+        return [p for p in result.stdout.split(b"\0") if p]
+
+    # -- path sets vs a revision (NUL protocol) --------------------------
+
+    def changed_paths(self, rev: str, paths: tuple[str, ...] = ()) -> list[bytes]:
+        """Paths whose tracked content differs between ``rev`` and the
+        working tree (``git diff --name-only -z rev``) — the byte-faithful
+        replacement for the printed ``--name-only`` listing.
+
+        Both staged and unstaged edits against ``rev`` are included, exactly
+        like the printed command. Rename detection follows git's own
+        ``diff.renames`` (on by default), so a rename is listed as its
+        DESTINATION path only — the same command the legacy parser ran, so
+        the file set does not drift; the ownership pair itself comes from
+        :meth:`changes` (porcelain v2 carries both paths). ``paths`` limits
+        the read by pathspec without leaving the NUL protocol.
+        """
+        args = ["diff", "--name-only", "-z", rev]
+        if paths:
+            args += ["--", *paths]
+        result = self._run(*args)
+        return [p for p in result.stdout.split(b"\0") if p]
+
+    def staged_paths(self, rev: str = "") -> list[bytes]:
+        """Paths staged against ``rev`` (default HEAD): the index side of the
+        working tree, ``git diff --cached --name-only -z``. Byte-faithful
+        for the same reason as :meth:`changed_paths`."""
+        args = ("diff", "--cached", "--name-only", "-z") + ((rev,) if rev else ())
+        result = self._run(*args)
         return [p for p in result.stdout.split(b"\0") if p]
 
     # -- changes ---------------------------------------------------------
@@ -823,7 +948,12 @@ class GitRepository:
                 )
             elif tag == b"?":
                 records.append(
-                    ChangeRecord(path=field[2:], kind="untracked", provenance="worktree")
+                    ChangeRecord(
+                        path=field[2:],
+                        kind="untracked",
+                        provenance="worktree",
+                        xy="??",
+                    )
                 )
             # '!' (ignored) records are not requested and skipped here
             i += 1
@@ -877,6 +1007,7 @@ class GitRepository:
             base_blob=meta[5].decode("ascii"),
             index_blob=meta[6].decode("ascii"),
             provenance="index",
+            xy=meta[0].decode("ascii"),
         )
 
     @staticmethod

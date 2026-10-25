@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from .. import git_utils, paths
+from ..infra import managed_fs
 from ._errors import AwfApiError
 
 # Cyrillic transliteration for role slugs. Canonical home (FU-14): the
@@ -38,6 +39,25 @@ def slugify(name: str) -> str:
     lower = name.strip().lower()
     transliterated = "".join(_CYRILLIC_MAP.get(c, c) for c in lower)
     return re.sub(r"[^a-z0-9_-]", "-", transliterated).strip("-")
+
+
+#: A role/skill/draft slug — lowercase letters, digits, ``-``/``_``, starting
+#: with a letter or digit. One pattern for every caller: a role name, a skill
+#: name and a draft slug all name a file under a managed directory, so the
+#: escape classes (absolute path, ``..``) are the same.
+_SLUG_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def is_slug_name(value: str) -> bool:
+    """True when *value* is a role/skill slug — the ONE spelling of the rule.
+
+    REVIEW architect (M6): add_role, its ``from_skill`` and provenance
+    guards, ``_find_skill_file``, the draft slug validator and the package
+    role template each spelled the same pattern by hand — five owners of one
+    rule, free to drift apart. They now ask this predicate; the messages stay
+    with the callers (they name the input the user gave).
+    """
+    return bool(_SLUG_NAME_RE.fullmatch(value))
 
 
 def slugify_role(name: str) -> str:
@@ -103,6 +123,171 @@ def require_git_repo(project_dir: Path) -> None:
         )
 
 
+def _surface_on_root_basis(surface: Path) -> Path:
+    """Place a surface on the root's basis without resolving its leaf.
+
+    ``refuse_unsafe_surfaces`` compares a RESOLVED root with the caller's
+    own spelling of the surface. A relative project (``Path("proj")``) or an
+    absolute one reached through a symlinked parent (``/…/link/proj``,
+    ``link -> real``) used to read as "escapes managed root" — a false
+    refusal on a project the baseline wrote (Q4/Q4b).
+
+    Resolving the PARENT gives the canonical basis the root lives on.
+    Resolving the leaf would follow the very symlink the walk must refuse,
+    so the leaf stays as spelled and the no-follow ``lstat`` sees it.
+
+    Q6 (виток 7): ``resolve()`` raises ``RuntimeError`` on a symlink loop
+    (``pipelines -> pipelines``). That is the same unsafe path, not an
+    unexpected traceback — it becomes the barrier's own refusal type.
+    """
+    absolute = surface if surface.is_absolute() else Path.cwd() / surface
+    try:
+        parent = absolute.parent.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise managed_fs.ManagedPathError(
+            f"cannot resolve managed path parent {absolute.parent}: {exc}"
+        ) from exc
+    return parent / absolute.name
+
+
+def _raw_root_for(project_dir: Path) -> Path:
+    """Project root exactly as the caller spelled it — no ``resolve()``."""
+    raw = managed_fs.agentic_root_for(Path(project_dir) / ".agentic")
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def _surface_on_raw_basis(surface: Path, *, raw_root: Path) -> Path:
+    """Re-anchor the surface's OWN components on the raw project root.
+
+    Q5 (виток 7): the containment check above resolves the surface's
+    parent, so a symlink component INSIDE the project
+    (``roles/draft -> roles``) resolves into the root and passes. That is
+    fine for a writer (``managed_write_text`` walks the raw leaf), but
+    ``refuse_unsafe_surfaces`` also guards DESTRUCTIVE ops that then work
+    on the raw path (``unlink``/``shutil.move``) — the internal link sent
+    them at a live file.
+
+    The chain is taken from the surface's own spelling (no resolve) and
+    re-anchored at the raw root, so the walk is purely lexical and every
+    component the caller named — leaf included — is ``lstat``-ed. The
+    project root's own spelling stays outside the walk (a symlinked parent
+    above the project is not an escape — Q4b).
+    """
+    absolute = surface if surface.is_absolute() else Path.cwd() / surface
+    anchor = managed_fs.agentic_root_for(absolute)
+    try:
+        chain = absolute.relative_to(anchor)
+    except ValueError:
+        chain = Path(absolute.name)
+    return raw_root / chain
+
+
+def refuse_unsafe_surfaces(
+    project_dir: Path, operation: str, *surfaces: Path
+) -> None:
+    """No-follow preflight over the managed surfaces ONE operation touches.
+
+    TODO-0233 (M3b): the same S9-01 class ``archive_todo`` closed in
+    TODO-0227 — a symlinked ``.agentic``/``inbox``/``outbox``/``done``/
+    ``context`` used to send ``shutil.move`` / ``unlink`` outside the
+    project. The barrier runs before the first effect.
+
+    The caller passes its OWN surface paths — the ones it reads, creates or
+    moves into, LEAVES included (``done/<id>``, ``context/<trace>``,
+    ``done/<id>/RETIRED-<ts>.md``). There is deliberately no union list
+    here: REVIEW G1 — ``clear_stale_closures`` never touches ``done``, so
+    checking it refused on a foreign surface and reported a misleading
+    "unsafe done" for an operation that would not have gone near it. A
+    mover that starts touching another surface must pass it in, otherwise
+    the barrier does not cover it.
+
+    One barrier for the whole API layer: ``dispatch_todo`` and the
+    ``hygiene`` movers call THIS helper — a private copy in ``hygiene``
+    imported by ``dispatch`` was a second implementation of the same
+    invariant (REVIEW architect-review).
+
+    TWO checks, both required (REVIEW виток 7):
+
+    1. Containment on the root's canonical basis (Q4): the surface's
+       PARENT resolves, the LEAF does not. A relative project or one
+       reached through a symlinked parent stops reading as an escape.
+    2. No-follow on the caller's RAW components from the RAW root (Q5):
+       any symlink component — an internal one like
+       ``roles/draft -> roles`` included — refuses. Writers would refuse
+       anyway, but the destructive ops this helper guards work on the raw
+       path after the preflight, so resolution alone is not enough.
+    """
+    raw_root = _raw_root_for(project_dir)
+    root = managed_fs.agentic_root_for(paths.agentic_dir(project_dir))
+    try:
+        # H1 (TODO-0233, виток 4): the no-follow guarantee does not exist
+        # off POSIX — the policy other managed barriers already follow
+        # (``_wipe``/``_lease``). Refuse BEFORE any surface walk, so a
+        # platform without lstat/O_NOFOLLOW never gets a weaker barrier.
+        managed_fs.require_posix(operation)
+        for surface in surfaces:
+            # Raw first: an internal symlink (Q5) and a symlink loop (Q6)
+            # are caught by ``lstat`` before any ``resolve()`` runs.
+            managed_fs.assert_no_symlink_escape(
+                _surface_on_raw_basis(surface, raw_root=raw_root), root=raw_root
+            )
+            managed_fs.assert_no_symlink_escape(
+                _surface_on_root_basis(surface), root=root
+            )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"{operation} refused — unsafe managed path: {exc}"
+        ) from exc
+
+
+def managed_write_api_text(
+    path: Path,
+    content: str,
+    *,
+    operation: str,
+    mode: int = 0o600,
+    encoding: str = "utf-8",
+    errors: str = "strict",
+) -> None:
+    """Write a project file through the managed no-follow barrier.
+
+    TODO-0234 (M3c): the API writers under ``.agentic`` (config,
+    supervisor, roles, pipelines, plan, evidence, TODO edits) used the bare
+    ``atomic_write_text`` — a symlinked ``.agentic`` or component sent the
+    write outside the project. The barrier runs from the project root; its
+    ``ManagedPathError`` becomes the API's own refusal type, like
+    :func:`refuse_unsafe_surfaces`.
+
+    The root is derived from the LEAF (:func:`managed_fs.agentic_root_for`)
+    — ONE convention for the whole API layer, the same one
+    :func:`refuse_unsafe_surfaces` uses. A separate ``project_dir`` argument
+    was a second spelling of one root: ``paths.*`` resolves the project while
+    a caller's own spelling may stay relative, so a correct path read as
+    "escapes managed root" (the C4 class). Deriving both from the leaf makes
+    the pair agree by construction; resolving the leaf instead is not an
+    option — that would follow the very symlinks the walk must refuse.
+
+    ``mode`` defaults to 0600 — generated state (config, supervisor, roles,
+    pipelines, evidence, caches) is owner-only; REVIEW K4 accepted the flip
+    over an existing 0644. The two artifacts the owner edits by hand — the
+    task file and the plan — pass ``_atomic.MODE_OWNER_EDITABLE`` at their
+    call sites, so every writer of the same artifact agrees on its mode.
+    """
+    try:
+        managed_fs.managed_write_text(
+            path,
+            content,
+            root=managed_fs.agentic_root_for(path),
+            mode=mode,
+            encoding=encoding,
+            errors=errors,
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"{operation} refused — unsafe managed path: {exc}"
+        ) from exc
+
+
 def read_file_text(path: Path, max_chars: int | None = None) -> str:
     """Read file as text, optionally truncated to ``max_chars``.
 
@@ -151,6 +336,8 @@ __all__ = [
     "require_agentic",
     "require_awf_project",
     "require_git_repo",
+    "refuse_unsafe_surfaces",
+    "managed_write_api_text",
     "read_file_text",
     "read_log_tail",
 ]

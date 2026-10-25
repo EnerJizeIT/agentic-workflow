@@ -155,16 +155,17 @@ class TestRunNextUsesHelper:
     ) -> None:
         proj = _project(tmp_git_repo)
         self._setup_include(proj)
-        untracked_file = proj / ".agentic" / "context" / "BASELINE-TODO-0001.untracked"
+        from awf.infra.git_model import read_untracked_snapshot
+
         # dispatch already applied the inclusion
-        assert "x.md" not in untracked_file.read_text(encoding="utf-8").splitlines()
+        assert "x.md" not in (read_untracked_snapshot(proj, "TODO-0001") or set())
 
         api.run_start(proj, queue=["TODO-0001"])
         _fake_start(monkeypatch, proj)
         result = api.run_next(proj)
         assert result.action == "started"
 
-        lines = untracked_file.read_text(encoding="utf-8").splitlines()
+        lines = read_untracked_snapshot(proj, "TODO-0001") or set()
         assert "x.md" not in lines, (
             "D-01: run_next re-baseline dropped the inclusion — the "
             "re-claimed file would fall out of the unit commit"

@@ -1,0 +1,27 @@
+name: code-health
+stages:
+- description: Supervisor defines the health scope and dispatches the audit unit
+  name: plan
+  role: supervisor
+- max_retries: 3
+  name: agent-architect-review
+  on_blocked: escalate
+  on_failed: escalate
+  on_rejected: escalate
+  role: agent-architect-review
+  task: 'Read the WHOLE codebase (not a diff): design drift, dead code, god-files,
+    duplicated ownership; produce a findings list with verdicts and a proposed refactor
+    plan; findings only - do NOT edit code in this stage.'
+- max_retries: 3
+  name: agent-refactoring-specialist
+  on_blocked: escalate
+  on_failed: escalate
+  on_rejected: escalate
+  role: agent-refactoring-specialist
+  task: 'Apply the agreed structural refactors from the architect''s findings: behavior
+    preserved, ownership moved (old path removed), no new functionality.'
+- name: verify
+  on_approved: commit_and_next
+  on_rejected: replan
+  role: supervisor
+  description: Supervisor verifies the health run result

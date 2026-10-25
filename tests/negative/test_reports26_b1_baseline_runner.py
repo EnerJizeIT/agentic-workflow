@@ -93,6 +93,25 @@ class TestMissingCommandIsFailureNotException:
         assert f"test_cmd не найдена в PATH: {MISSING_CMD}" in text
         assert "Поправьте verification.baseline_cmd/test_cmd" in text
 
+    def test_create_baseline_types_oserror(
+        self, js_project: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """architect-review M8: the argv launcher raises for a command it
+        cannot exec (PermissionError / bad interpreter), where the old shell
+        reported rc 126. It must be the same recorded failure as a missing
+        binary — dispatch keeps going, no traceback."""
+        import awf.api.pipeline as pipeline_mod
+
+        def _denied(*_args, **_kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(pipeline_mod, "run_tree", _denied)
+        result = create_baseline(js_project, "TODO-9001")
+        assert result.test_status == "failed"
+        assert "test_cmd не запускается" in result.test_log_excerpt
+        log = js_project / ".agentic" / "context" / "BASELINE-TODO-9001.tests.log"
+        assert "Permission denied" in log.read_text(encoding="utf-8")
+
     def test_dispatch_todo_completes(self, js_project: Path):
         result = dispatch_todo(js_project, "# b1 missing cmd\n\nbody.\n")
         assert result.todo_id == "TODO-0001"

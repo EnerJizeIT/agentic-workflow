@@ -12,10 +12,15 @@ individually-durable steps and makes the whole sequence restartable:
      (``write-tree``) and the commit object is created (``commit-tree``).
      The object exists in the odb, but **the ref has not moved yet**.
      ``commit-tree`` bypasses porcelain, so the hooks are run explicitly
-     through ``git hook run`` (git >= 2.36): ``pre-commit``, ``commit-msg``
-     (a rejection aborts before the object; a rewrite IS the committed
-     message) and ``post-commit`` (after the ref and the index are in step;
-     its exit code is ignored, as git does).
+     through the ONE hook entry point (:func:`_run_hook`): ``pre-commit``,
+     ``prepare-commit-msg`` and ``commit-msg`` (a rejection aborts before
+     the object; a rewrite IS the committed message, in git's order —
+     prepare-commit-msg then commit-msg on the same buffer) and
+     ``post-commit`` (after the ref and the index are in step; its exit
+     code is ignored, as git does). The entry point uses ``git hook run``
+     on git >= 2.36 and runs the hook file directly on an older git; the
+     hook policy is the same on both, so a commit never depends on the
+     installed git's porcelain features.
   3. **intent** — right here, before the ref update, the operation intent
      is written to ``context/PUBLISH-INTENT-<todo>.json`` carrying the new
      commit OID. A crash after this point is recognizable by a **specific
@@ -46,6 +51,7 @@ never deletes an existing ``done/<todo>``.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -56,6 +62,7 @@ from pathlib import Path
 
 from . import commit_delta, commit_plan, paths
 from ._log import log as _log
+from ._proc import run_tree
 from .infra import managed_fs
 from .infra.git_model import GitModelError, GitRepository, escape_str_for_ui
 from .signals import short_id
@@ -316,11 +323,224 @@ def _read_head(project_dir: Path) -> tuple[bool, str]:
 def _run_hook(
     project_dir: Path, name: str, env: dict[str, str], args: list[str] | None = None
 ) -> subprocess.CompletedProcess:
-    """Run one git hook through the ONE runner (R2.5 REVIEW, iter 9, A1)."""
+    """Run one git hook through the ONE hook entry point (R2.5 REVIEW, iter 9, A1).
+
+    One entry point, two backends chosen by the installed git (below): no
+    caller learns which one ran, and every hook policy stays in this module.
+
+    M8 (добор 0224-а): ``git hook run`` exists since git 2.36 — that is the
+    declared minimum. On an older tree the hook is run DIRECTLY from the
+    hooks directory (``core.hooksPath`` honored) with the same env / argv /
+    cwd git itself passes: a pre-2.36 git keeps the same hook policy instead
+    of every commit dying with «git: 'hook' is not a git command» (the
+    portability regression against the old ``git commit`` path). A missing
+    hook file stays the ``--ignore-missing`` noop; a hook that exists but
+    is not executable is SKIPPED with the backend's hint (rc 0), exactly
+    like ``git hook run`` — the commit proceeds, not every commit dying
+    on an inert hook file.
+    """
+    if not _hook_run_supported(project_dir):
+        return _run_hook_direct(project_dir, name, env, args)
     argv = ["hook", "run", "--ignore-missing", name]
     if args:
         argv += ["--", *args]
     return _git(project_dir, argv, env=env)
+
+
+#: The minimum git that knows ``hook run`` (the subcommand landed in 2.36).
+_HOOK_RUN_MIN = (2, 36, 0)
+
+
+def _git_version(project_dir: Path) -> tuple[int, ...] | None:
+    """The installed git's ``(major, minor, …)`` version, or ``None`` when
+    the banner is unreadable (an unknown version keeps the old posture)."""
+    r = _git(project_dir, ["--version"])
+    if r.returncode != 0:
+        return None
+    m = re.search(r"git version (\d+(?:\.\d+)*)", r.stdout)
+    if not m:
+        return None
+    try:
+        return tuple(int(part) for part in m.group(1).split("."))
+    except ValueError:
+        return None
+
+
+def _hook_run_supported(project_dir: Path) -> bool:
+    """True when the installed git knows ``git hook run`` (>= 2.36).
+
+    An unreadable version banner returns True — the old ``git hook run``
+    posture whose failure text the module already renders precisely;
+    guessing a fallback for an unreadable banner would hide real breakage.
+    """
+    version = _git_version(project_dir)
+    if version is None:
+        return True
+    version = version + (0,) * max(0, 3 - len(version))
+    return version >= _HOOK_RUN_MIN
+
+
+def _hooks_dir(project_dir: Path) -> Path | None:
+    """The hooks directory git itself would use — ASKED from git.
+
+    ``git rev-parse --git-path hooks`` (git >= 2.5) is the ONE source of
+    truth: it honors ``core.hooksPath`` (absolute, relative, or a ``~/``
+    pathname git expands itself), the COMMON dir of a linked worktree and
+    the plain ``$GIT_DIR/hooks`` default. Rebuilding that precedence here
+    (core.hooksPath + ``--git-dir``, architect-review M8) got the linked
+    worktree wrong — its hooks live in the common dir, so the direct
+    runner would silently skip a hook that the backend executes.
+
+    ``None`` means git cannot name the directory (a pre-2.5 git, or not a
+    repository): the direct runner REFUSES with that diagnosis instead of
+    silently bypassing the hook policy.
+    """
+    r = _git(project_dir, ["rev-parse", "--git-path", "hooks"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    hooks = Path(r.stdout.strip())
+    return hooks if hooks.is_absolute() else (project_dir / hooks)
+
+
+def _complete_message_line(message: str) -> str:
+    """G1 (REVIEW виток 4): git completes the message line BEFORE the
+    ``prepare-commit-msg``/``commit-msg`` hooks (``strbuf_complete_line``).
+    The throwaway buffer both hooks share here ends with ``\\n`` exactly
+    like the file ``git commit`` hands over, so an appending hook's
+    trailer lands on its own line instead of gluing onto the body.
+    Commit bytes without hooks do not change: ``git commit-tree`` folds a
+    trailing ``\\n`` into the same message block.
+    """
+    return message if message.endswith("\n") else message + "\n"
+
+
+def _run_hook_direct(
+    project_dir: Path, name: str, env: dict[str, str], args: list[str] | None = None
+) -> subprocess.CompletedProcess:
+    """The pre-2.36 fallback: run the hook file the way ``git commit`` does.
+
+    The hook is an executable invoked with the hook's argv (the message file
+    and its source for prepare-commit-msg / commit-msg), the caller's env
+    (the isolated index rides in with ``GIT_INDEX_FILE``, exactly like
+    ``git hook run`` inherits it), the project as cwd, and the caller's
+    stdin — ``git hook run`` passes stdin through, and the background
+    pipeline already starts with ``stdin=/dev/null``, so both backends see
+    the same input. The result
+    keeps the ``CompletedProcess`` shape the run/_proc_detail contract uses;
+    a launch failure maps to rc 127/126 with the diagnosis in ``stderr`` so
+    the caller's typed outcome mentions the hook, not a mystery rc. A
+    TIMEOUT is not a launch failure: it propagates as ``TimeoutExpired``,
+    exactly as the ``git hook run`` backend does, so the publication entry
+    points keep one typed timeout outcome for both backends.
+    """
+    argv = ["hook", "run", "--ignore-missing", name]
+    synthetic_rc0 = subprocess.CompletedProcess(argv, 0, "", "")
+    hooks = _hooks_dir(project_dir)
+    if hooks is None:
+        # No silent bypass: when git cannot name the hooks directory, the
+        # hook policy cannot be applied — refuse with the precise diagnosis
+        # (the one thing a fallback must never do is skip a hook it was
+        # meant to run).
+        return subprocess.CompletedProcess(
+            argv,
+            127,
+            "",
+            (
+                f"awf hook fallback: cannot resolve the hooks directory for "
+                f"the '{name}' hook (`git rev-parse --git-path hooks` failed) "
+                "— the direct runner needs git >= 2.5; refusing instead of "
+                "silently skipping the hook"
+            ),
+        )
+    hook = hooks / name
+    if not hook.exists():
+        # J1 (REVIEW виток 7): a missing path — including a DANGLING symlink
+        # — is «no hook»: git skips it, and so does the fallback.
+        return synthetic_rc0
+    if not os.access(hook, os.X_OK):
+        # A2 (REVIEW виток 2): ``git hook run`` — and ``git commit`` itself —
+        # SKIPS a non-executable hook with a hint and proceeds (rc 0), it
+        # does not refuse. The fallback mirrors that backend behavior on the
+        # same tree: the commit goes through, the hint lands in ``stderr``
+        # exactly where the backend's hint lands (rc=126 was the old
+        # refusal-shaped result — kept in the text as the diagnosis).
+        return subprocess.CompletedProcess(
+            [str(hook), *(args or [])],
+            0,
+            "",
+            (
+                f"hint: The '{hook}' hook was ignored because it's not set as "
+                "executable (rc=126 ignored; chmod +x it to run — `git hook "
+                "run` skips it the same way)"
+            ),
+        )
+    command = [str(hook), *(args or [])]
+
+    def _spawn(argv: list[str]) -> subprocess.CompletedProcess:
+        # The project's ONE timed runner (``_proc.run_tree``): a hook is an
+        # arbitrary external tool that may spawn its own children — on a
+        # timeout the whole group must die, not just the direct child
+        # (AUD04-06; the module's other git calls already go through it).
+        return run_tree(
+            argv,
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            errors="surrogateescape",
+            timeout=commit_delta.GIT_TIMEOUT,
+            env=env,
+        )
+
+    try:
+        return _spawn(command)
+    except subprocess.TimeoutExpired:
+        # Backend parity for a HUNG hook: ``git hook run`` goes through
+        # ``subprocess.run(timeout=GIT_TIMEOUT)``, so a timeout leaves
+        # ``_run_hook`` as ``TimeoutExpired`` — the publication entry points
+        # already turn it into a typed error. The direct backend must not
+        # invent a different outcome ("launch failed", rc 127) for the same
+        # tree; ``run_tree`` has already killed the hook's process group.
+        raise
+    except OSError as e:
+        if e.errno == errno.EACCES:
+            # J1 (REVIEW виток 7): the path EXISTS and passes the exec bit
+            # check but is not something exec(2) accepts — a directory, a
+            # FIFO, a symlink to one. git does not skip it: `git commit`
+            # dies with «cannot exec …: Permission denied» (rc=1), and
+            # `git hook run` fails too. The fallback refuses with git's own
+            # wording instead of the old silent noop, so a broken hook
+            # cannot be bypassed by installing an older git.
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                f"cannot exec '{hook}': Permission denied",
+            )
+        if e.errno != errno.ENOEXEC:
+            return subprocess.CompletedProcess(
+                command, 127, "", f"awf hook fallback: launch failed: {e}"
+            )
+        # F1 (REVIEW виток 3): an executable hook WITHOUT a shebang —
+        # exec(2) fails with ENOEXEC, and git's run-command.c falls back
+        # to the shell (``sh <hook> <args>``) and RUNS it: ``git hook run``
+        # (and ``git commit``) rc 0 on the same tree, side effects included.
+        # The direct runner repeats exactly that with the same
+        # env/cwd/stdin — turning ENOEXEC into rc 127 "launch failed"
+        # refused a commit the backend allows (portability parity, the same
+        # class as A2: the outcome must not depend on the installed git).
+        sh_command = ["sh", str(hook), *(args or [])]
+        try:
+            return _spawn(sh_command)
+        except subprocess.TimeoutExpired:
+            raise  # same backend parity as the direct spawn above
+        except (subprocess.SubprocessError, OSError) as e2:
+            return subprocess.CompletedProcess(
+                sh_command, 127, "", f"awf hook fallback: launch failed: {e2}"
+            )
+    except subprocess.SubprocessError as e:
+        return subprocess.CompletedProcess(
+            command, 127, "", f"awf hook fallback: launch failed: {e}"
+        )
 
 
 def _proc_detail(proc: subprocess.CompletedProcess) -> str:
@@ -500,9 +720,21 @@ def _read_json(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _owned_by(data: dict, todo_id: str) -> bool:
+    """The identity rule every publication fact obeys (R2.5 REVIEW F1/F2).
+
+    A fact is addressed by FILE NAME, so its body must name the SAME unit:
+    a copy/restore under this name describes ANOTHER unit's operation and
+    must not resume, authorize an archive, or report a commit for this one.
+    One home for the rule — the typed readers (intent, receipt) and the
+    status reader (``publication_facts``) all ask it here.
+    """
+    return str(data.get("todo_id", "")) == todo_id
+
+
 def read_intent(project_dir: Path, todo_id: str) -> PublishIntent | None:
     data = _read_json(intent_file(project_dir, todo_id))
-    if not data:
+    if not data or not _owned_by(data, todo_id):
         return None
     try:
         intent = PublishIntent.from_dict(data)
@@ -511,13 +743,6 @@ def read_intent(project_dir: Path, todo_id: str) -> PublishIntent | None:
         # operation (see ``_read_json``) — the caller runs fresh instead of
         # dying on a schema mismatch. The quiet-diff / own-commit guard still
         # refuses a second commit when the ref already carries the work.
-        return None
-    if intent.todo_id != todo_id:
-        # The fact is addressed by FILE NAME but its body names the unit too.
-        # A copy/restore under another name describes ANOTHER operation: it
-        # used to resume under this id, write a receipt under the body's id
-        # and never drop this id's intent — a permanent pending (R2.5 REVIEW,
-        # iter 10, F1). A foreign fact is not a fact of this unit.
         return None
     if not _is_oid_form(intent.commit_oid):
         # The intent's whole point is «I am about to move the ref to THIS
@@ -539,20 +764,15 @@ def read_intent(project_dir: Path, todo_id: str) -> PublishIntent | None:
 
 def read_receipt(project_dir: Path, todo_id: str) -> UnitReceipt | None:
     data = _read_json(receipt_file(project_dir, todo_id))
-    if not data:
+    if not data or not _owned_by(data, todo_id):
+        # A receipt under this file name whose body names another unit is
+        # not this unit's evidence (the identity rule, ``_owned_by``).
         return None
     try:
         receipt = UnitReceipt.from_dict(data)
     except (KeyError, TypeError, ValueError):
         # A malformed receipt authorizes nothing: no archive, no "already
         # published" short-circuit — fail closed by treating it as absent.
-        return None
-    if receipt.todo_id != todo_id:
-        # Same identity rule as the intent reader (R2.5 REVIEW, iter 10,
-        # F2): a receipt under this file name whose body names another unit
-        # proves nothing about THIS unit's work — it must not authorize its
-        # archive or report its commit (requirement 3: archived only behind a
-        # committed receipt OF THIS UNIT).
         return None
     if (
         receipt.disposition in (DISPOSITION_COMMITTED, DISPOSITION_RECONCILIATION)
@@ -734,7 +954,30 @@ def publish_from_env(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as f:
-            f.write(message)
+            # G1: both hooks see the buffer git itself would hand over —
+            # the message line completed (see _complete_message_line).
+            f.write(_complete_message_line(message))
+        # M8 (б): git's own order — build the message BEFORE judging it.
+        # ``prepare-commit-msg`` runs on the SAME throwaway message buffer,
+        # BEFORE commit-msg (so the rewritten text is what commit-msg sees
+        # and what commit-tree finally commits), with the stage placement of
+        # commit-msg (nothing but the hook side effect exists in the odb —
+        # the object, the intent and the ref all come later). ``git commit
+        # -m`` passes source "message"; a rejecting hook aborts the unit
+        # with its own text, before any object exists.
+        hook = _run_hook(
+            project_dir, "prepare-commit-msg", env, [msg_path, "message"]
+        )
+        if hook.returncode == 0:
+            message = Path(msg_path).read_text(
+                encoding="utf-8", errors="surrogateescape"
+            )
+        else:
+            return commit_plan.CommitOutcome(
+                commit_plan.OUTCOME_ERROR,
+                f"prepare-commit-msg hook failed (rc={hook.returncode}): "
+                f"{_proc_detail(hook)}",
+            )
         hook = _run_hook(project_dir, "commit-msg", env, [msg_path])
         if hook.returncode == 0:
             message = Path(msg_path).read_text(
@@ -847,12 +1090,15 @@ def _advance_publication(
             "safely.",
         )
 
-    # Skip the CAS when the ref ALREADY carries the object — HEAD is the
-    # intent's commit OR a DESCENDANT of it (a crash after ``update-ref`` plus
-    # a later commit on top). Only a ref that does not yet reach the object
-    # needs the update (R2.5 REVIEW, iter 5, D1). Moving HEAD back onto the
-    # intent's commit when it is already an ancestor would DROP the commits
-    # that landed on top.
+    # post-commit semantics (M8, low 0224-д): git runs post-commit ONCE per
+    # commit creation — when the ref MOVED. This invocation moves the ref
+    # exactly in the CAS branch below; a resume that finds the ref already
+    # landed skips it, so a crash between the ref move and the receipt does
+    # NOT run post-commit a second time (at-least-once duplicated notes /
+    # CI runs). The trade-off is the same as git's own: a kill right after
+    # the ref move loses that one post-commit run — git has exactly the
+    # same window.
+    ref_moved = False
     if not _commit_landed(project_dir, intent.commit_oid, head):
         ref = ["update-ref", "-m", f"awf publish {todo_id}",
                "HEAD", intent.commit_oid]
@@ -905,22 +1151,24 @@ def _advance_publication(
                 "The commit object exists but the ref did not move; no "
                 "second commit was created.",
             )
+        ref_moved = True
     _maybe_crash(CRASH_UPDATE_REF, crash_at)
 
     conflicts = _sync_owned_index(project_dir, intent)
     _maybe_crash(CRASH_INDEX_SYNC, crash_at)
 
     # ``commit-tree`` + ``update-ref`` do not run ``post-commit`` (iter 9,
-    # A1). Run it once the ref carries the commit and the index is in step;
-    # a hook failure is logged, not turned into a commit failure — git
-    # itself ignores the exit code of post-commit.
-    post = _run_hook(project_dir, "post-commit", os.environ.copy())
-    if post.returncode != 0:
-        _log(
-            logs_dir or paths.logs_dir(project_dir),
-            f"R2.5: post-commit hook failed for {todo_id} "
-            f"(rc={post.returncode}): {_proc_detail(post)}",
-        )
+    # A1). Run it only when THIS invocation moved the ref (see the semantics
+    # note above); a hook failure is logged, not turned into a commit
+    # failure — git itself ignores the exit code of post-commit.
+    if ref_moved:
+        post = _run_hook(project_dir, "post-commit", os.environ.copy())
+        if post.returncode != 0:
+            _log(
+                logs_dir or paths.logs_dir(project_dir),
+                f"R2.5: post-commit hook failed for {todo_id} "
+                f"(rc={post.returncode}): {_proc_detail(post)}",
+            )
 
     disposition = DISPOSITION_RECONCILIATION if conflicts else DISPOSITION_COMMITTED
     index_sync = "reconciliation_required" if conflicts else "synced"
@@ -1046,7 +1294,7 @@ def _committed_entry(project_dir: Path, commit_oid: str, path: str) -> str:
     tree (``""`` when the path is absent — a deletion, or an unborn commit)."""
     if not commit_oid:
         return ""
-    r = _git(project_dir, ["ls-tree", commit_oid, "--", path])
+    r = _git(project_dir, ["ls-tree", "-z", commit_oid, "--", path])
     if r.returncode != 0:
         return ""
     line = r.stdout.strip()
@@ -1398,12 +1646,20 @@ def publication_facts(project_dir: Path, todo_id: str) -> dict:
     """
     receipt = read_receipt(project_dir, todo_id)
     fact = _read_json(archive_fact_file(project_dir, todo_id)) or {}
+    # M8 (д, добор 0224-г): the identity rule (``_owned_by``) — the fact is
+    # addressed by FILE NAME, so its body must name THIS unit too. A
+    # copy/restore under this name describes ANOTHER unit's archive and must
+    # not report it here (the same posture read_intent/read_receipt enforce).
+    if not _owned_by(fact, todo_id):
+        fact = {}
     archived = str(fact.get("archived") or "")
     if not archived:
         dest = paths.done_dir(project_dir) / todo_id
         if dest.is_dir():
             archived = _relative(project_dir, dest)
     superseded = _read_json(superseded_file(project_dir, todo_id)) or {}
+    if not _owned_by(superseded, todo_id):
+        superseded = {}  # a foreign fact is not a fact of this unit
     return {
         "commit": (receipt.commit_oid[:12] if receipt else ""),
         "receipt": (receipt.disposition if receipt else ""),

@@ -16,6 +16,16 @@ import shlex
 from pathlib import Path
 
 from .. import git_utils, paths
+from .._atomic import MODE_OWNER_EDITABLE
+from .._markdown import (
+    append_block,
+    fence_flags,
+    find_headings,
+    first_heading_index,
+    lines_below,
+    section_body,
+    skip_leading_trivia,
+)
 from ..dispatch_policy import (
     ISOLATE,
     REQUIRE_CLEAN,
@@ -29,7 +39,7 @@ from ..dispatch_policy import (
 from ..infra import managed_fs
 from ..todo_ids import is_valid_todo_id
 from ._errors import AwfApiError
-from ._helpers import require_awf_project
+from ._helpers import refuse_unsafe_surfaces, require_awf_project
 from ._results import DispatchTodoResult
 from .pipeline import create_baseline
 
@@ -37,29 +47,39 @@ from .pipeline import create_baseline
 #: (the rest as "…N more") — the same cap convention as the untracked one.
 _DIRTY_WARNING_CAP = 10
 
-# REPORTS26 F5: a TODO number in the FIRST line's heading (a copied
-# template keeps its old title). Only the first line counts — a
-# TODO-NNNN deeper in the body is ordinary text about another unit.
+# REPORTS26 F5: a TODO number in the TITLE heading (a copied template keeps
+# its old title). The title is the first H1 heading after the leading comments
+# and the front matter — the same notion the source-ref insert resolves
+# through ``_title_line_index`` and the commit subject reads in
+# ``commit_gate._todo_title``. A TODO-NNNN after the title is ordinary
+# text about another unit.
 _HEADING_TODO_NUM_RE = re.compile(r"^#{1,6}\s+TODO-(\d+)")
 
 
 def _heading_todo_number(content: str) -> int | None:
-    """The number from a ``TODO-NNNN`` heading on the first line, else None."""
+    """The number from the title heading, else None."""
     if not content:
         return None
-    m = _HEADING_TODO_NUM_RE.match(content.splitlines()[0])
+    lines = content.splitlines()
+    index = _title_line_index(lines)
+    if index is None:
+        return None
+    m = _HEADING_TODO_NUM_RE.match(lines[index])
     return int(m.group(1)) if m else None
 
 
 def _renumber_heading(content: str, todo_id: str) -> str:
-    """Replace the number in the first line's heading with ``todo_id``'s.
+    """Replace the number in the title heading with ``todo_id``'s.
 
-    Only the first line is touched; the rest of the content stays byte-
+    Only the title line is touched; the rest of the content stays byte-
     for-byte. The regex matched ``#... TODO-<digits>`` at the start of the
     line, so the first ``TODO-<digits>`` occurrence in it IS the heading's.
     """
     lines = content.splitlines(keepends=True)
-    lines[0] = re.sub(r"TODO-\d+", todo_id, lines[0], count=1)
+    index = _title_line_index(lines)
+    if index is None:
+        return content
+    lines[index] = re.sub(r"TODO-\d+", todo_id, lines[index], count=1)
     return "".join(lines)
 
 
@@ -288,6 +308,208 @@ def _format_dirty_warning(
     )
 
 
+# TODO-0229 (M5): the source-ref section extractor. A list item is a
+# bullet or a numbered item; headings come from the shared markdown helper.
+_MD_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
+#: An item that is already a task-list checkbox — boxing it again would
+#: render ``- [ ] [x] …`` and turn the original mark into literal text.
+_MD_CHECKBOX_RE = re.compile(r"^\[[ xX]\]\s")
+
+
+def _resolve_source_file(project_dir: Path, source_ref: str) -> tuple[Path, str]:
+    """Resolve ``<file>#<section>`` to an existing file + the section name.
+
+    A relative path is joined onto the project root and must stay inside
+    it; an absolute path is taken as-is (explicitly passed — never guessed).
+    Refuses BEFORE any side effect: a missing/unreadable file or an empty
+    half of the reference is an error, not a silent no-op.
+    """
+    ref = str(source_ref or "").strip()
+    if "#" not in ref:
+        raise AwfApiError(
+            f"source_ref {source_ref!r}: expected '<file>#<section>' "
+            "(e.g. 'R2-GIT-OWNERSHIP.md#R2.5')"
+        )
+    file_part, section = ref.rsplit("#", 1)
+    file_part, section = file_part.strip(), section.strip()
+    if not file_part or not section:
+        raise AwfApiError(
+            f"source_ref {source_ref!r}: both the file and the section are "
+            "required ('<file>#<section>')"
+        )
+
+    candidate = Path(file_part)
+    if candidate.is_absolute():
+        path = candidate.resolve()
+    else:
+        path = (project_dir / candidate).resolve()
+        try:
+            path.relative_to(project_dir.resolve())
+        except ValueError:
+            raise AwfApiError(
+                f"source_ref {source_ref!r}: the file must stay inside the "
+                f"project (got '{file_part}')"
+            ) from None
+    if not path.is_file():
+        raise AwfApiError(
+            f"source_ref {source_ref!r}: no such file '{file_part}' "
+            f"(resolved to {path})"
+        )
+    return path, section
+
+
+def _extract_source_section(
+    path: Path, section: str, source_ref: str
+) -> list[str]:
+    """Body lines of ``section`` in ``path``.
+
+    Only an EXACT heading text (case-insensitive) matches — no first-word
+    fallback. Several headings carrying the same exact text are ambiguous:
+    the caller gets a refusal naming the line numbers instead of a silent
+    first hit. The heading walker lives in :mod:`awf._markdown`; the body runs
+    until the next heading of the same or a higher level, so nested
+    sub-sections stay inside. An unknown section is a refusal (no TODO, no
+    baseline).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise AwfApiError(f"source_ref {source_ref!r}: cannot read {path}: {e}") from e
+
+    hits = find_headings(text, section)
+    if not hits:
+        raise AwfApiError(
+            f"source_ref {source_ref!r}: section '{section}' not found in {path}"
+        )
+    if len(hits) > 1:
+        places = ", ".join(f"line {index + 1}" for index, _ in hits)
+        raise AwfApiError(
+            f"source_ref {source_ref!r}: section '{section}' is ambiguous — "
+            f"{len(hits)} headings match exactly ({places}) in {path}; make "
+            "the heading unique or reference another section"
+        )
+    index, level = hits[0]
+    return lines_below(text, index, level)
+
+
+def _source_ref_block(section: str, body: list[str]) -> str:
+    """The ``## Первоисточник`` block: one unchecked box per list item.
+
+    Everything that is not a list item keeps its bytes: prose stays prose,
+    a multi-line item's continuation lines follow their box untouched, and
+    a fenced code block keeps its fences — a ``- key: value`` line inside
+    it is an example, not a requirement. The fence rule is the same shared
+    predicate the section reader uses (``awf._markdown.fence_flags``), so the
+    two cannot drift apart. Nothing from the section is dropped silently.
+    A section without list items still reaches the worker verbatim.
+    """
+    out: list[str] = []
+    for line, in_fence in zip(body, fence_flags(body)):
+        if not in_fence:
+            m = _MD_LIST_ITEM_RE.match(line)
+            if m:
+                rest = m.group(1)
+                if not _MD_CHECKBOX_RE.match(rest):
+                    indent = line[: len(line) - len(line.lstrip())]
+                    line = f"{indent}- [ ] {rest}"
+                out.append(line)
+                continue
+        out.append(line)
+    payload = "\n".join(out).strip() or "_раздел пуст_"
+    return f"## Первоисточник ({section})\n\n{payload}\n"
+
+
+def _title_line_index(lines: list[str]) -> int | None:
+    """Index of the TODO title line, or None when the content has none.
+
+    The title is the first H1 heading after the leading comments / front
+    matter / blank lines — the SAME notion ``commit_gate._todo_title`` uses
+    for the commit subject, so a unit cannot have a title in the git log
+    that dispatch did not see (or the other way around). A deeper heading
+    is a body section, never the title: resolving one as the title would
+    let the REPORTS26 F5 guards renumber a section, and the source-ref
+    insert would land the block in the middle of the body. Fenced lines do
+    not count either — an example's ``#``-line is a comment.
+
+    The REPORTS26 F5 guards and the source-ref insert resolve the title
+    through this helper, so a leading comment cannot make one of them read
+    a different line.
+    """
+    start = skip_leading_trivia(lines)
+    return first_heading_index(lines, level=1, start=start)
+
+
+def _insert_at(content: str, index: int, block: str) -> str:
+    """Insert ``block`` (followed by a blank line) before line ``index``."""
+    lines = content.splitlines(keepends=True)
+    head = "".join(lines[:index])
+    tail = "".join(lines[index:])
+    if head and not head.endswith("\n"):
+        head += "\n"
+    return head + block + "\n" + tail
+
+
+def _insert_after_title(content: str, block: str) -> str:
+    """Insert ``block`` right after the TODO title heading.
+
+    The title must stay the first heading: the REPORTS26 F5 guards resolve
+    it through ``_title_line_index``, so a block placed before it would
+    blind them. The front matter and leading comments stay above the title;
+    content without a title keeps the old position (right after the
+    contract block — the contract must stay the first thing a parser sees).
+    """
+    lines = content.splitlines(keepends=True)
+    title = _title_line_index(lines)
+    if title is None:
+        return _insert_at(content, skip_leading_trivia(lines), block)
+    insert = title + 1
+    while insert < len(lines) and not lines[insert].strip():
+        insert += 1
+    return _insert_at(content, insert, block)
+
+
+_SIZE_REQUIREMENTS_LIMIT = 6
+_SIZE_FILES_LIMIT = 12
+
+
+def unit_size_warning(content: str) -> str:
+    """TODO-0242 (B.13): the soft mega-unit lock — a warning, not a refusal.
+
+    Size was never visible at dispatch time: a TODO with sixteen numbered
+    requirements and twenty files went into one unit and the worker had to
+    hold all of it. Count the two cheap structural signals — numbered
+    requirements (``## Требования``) and named files (``## Границы``).
+    """
+    # The section reader is the shared walker (``awf._markdown.section_body``):
+    # a body heading inside a fence is an example, and a nested ``###``
+    # stays inside the section — the same rules the other section readers
+    # use. A second, regex-only reader here would answer differently.
+    requirements = len(
+        re.findall(
+            r"^[ \t]*\d+[.)][ \t]+",
+            section_body(content, "Требования"),
+            re.MULTILINE,
+        )
+    )
+    boundaries = section_body(content, "Границы")
+    files = {
+        token
+        for token in re.findall(r"`([^`]+)`", boundaries)
+        if "/" in token or "." in token
+    }
+    if requirements > _SIZE_REQUIREMENTS_LIMIT:
+        return (
+            f"looks like a mega-unit: {requirements} numbered requirements "
+            f"(>{_SIZE_REQUIREMENTS_LIMIT}) — split it before dispatch"
+        )
+    if len(files) > _SIZE_FILES_LIMIT:
+        return (
+            f"looks like a mega-unit: {len(files)} files in the boundaries "
+            f"block (>{_SIZE_FILES_LIMIT}) — split it before dispatch"
+        )
+    return ""
+
+
 def _next_todo_id(project_dir: Path) -> str:
     """Pick next TODO-NNNN id (max existing + 1).
 
@@ -333,6 +555,7 @@ def dispatch_todo(
     allow_mismatch: bool = False,
     replan_for: str | None = None,
     claim_from: str | None = None,
+    source_ref: str | None = None,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -371,8 +594,8 @@ def dispatch_todo(
             answer always lists the files that STAY excluded
             (``pre_existing_untracked`` + ``untracked_warning``).
         allow_mismatch: REPORTS26 F5 — heading/title mismatch policy. The
-            first line of the content is a heading carrying a ``TODO-NNNN``
-            number:
+            title heading (the first heading after the leading comments and
+            the front matter) carries a ``TODO-NNNN`` number:
 
              - auto number (``todo_id`` is None) and the number differs from
                the issued one → the heading is renumbered to the issued id,
@@ -409,6 +632,18 @@ def dispatch_todo(
             ``carry_over_from`` / ``include_untracked``. Refused (before any
             side effect) when no claim record exists or a claimed change is no
             longer in the tree.
+        source_ref: TODO-0229 (M5) — the source of truth for this unit, as
+            ``<file>#<section>`` (e.g. ``R2-GIT-OWNERSHIP.md#R2.5 Ownership``).
+            The file is read, the section (its heading + body up to the next
+            heading of the same or a higher level) is inserted into the TODO
+            as a ``## Первоисточник (<section>)`` checklist built from the
+            section's list items; the heading must match the section text
+            EXACTLY (no first-word fallback), and several identical headings
+            are an explicit refusal. Prose, item continuations and fenced
+            code blocks stay as they are. A relative path is resolved
+            against the project root and must stay inside it; an absolute
+            path is used as passed. A missing/unreadable file or an unknown
+            section refuses BEFORE any side effect (no TODO, no baseline).
 
     The dirty-source-tree policy (R2.2) governs the dispatch: a project with
     ``config_version`` and ``dirty_policy=require_clean`` (the version
@@ -427,7 +662,7 @@ def dispatch_todo(
     Returns:
         DispatchTodoResult with todo_id, baseline_sha, files written,
         ``renumbered`` (REPORTS26 F5: True when the auto-issued
-        number replaced a foreign one in the first line's heading),
+        number replaced a foreign one in the title heading),
         ``verify_path_warnings`` (TODO-0186: the contract's verify: path
         tokens missing from the project — a warning, never a refusal) and
         ``dirty_files``/``dirty_warning`` (TODO-0195: the tracked-dirty /
@@ -443,7 +678,7 @@ def dispatch_todo(
             already archived in done/, a DONE closure for ``todo_id`` is
             still in the outbox, a ``carry_over_from`` origin cannot be
             validated, an ``include_untracked`` path is invalid, an
-            explicit ``todo_id`` disagrees with the first line's heading
+            explicit ``todo_id`` disagrees with the title heading's
             number without ``allow_mismatch`` (REPORTS26 F5),
             ``replan_for`` is not a TODO id / references a unit that does
             not exist or is closed as done (TODO-0213), the dirty-source-tree
@@ -488,6 +723,69 @@ def dispatch_todo(
     # config.yaml (stale directory) is refused before any side effect.
     # The resolved path lands in the result (resolved_project_dir).
     project_dir = require_awf_project(project_dir)
+
+    # TODO-0229 (M5): the source of truth for this unit. Read and validate
+    # BEFORE any side effect: a missing file or section refuses here, so no
+    # TODO / .ready / baseline appears. The section lands right AFTER the
+    # title heading (the REPORTS26 F5 guards resolve the same line).
+    if source_ref is not None and str(source_ref).strip():
+        _src_path, _src_section = _resolve_source_file(project_dir, str(source_ref))
+        _body = _extract_source_section(_src_path, _src_section, str(source_ref))
+        content = _insert_after_title(
+            content, _source_ref_block(_src_section, _body)
+        )
+
+    # TODO-0244: the Definition-of-done block. Composed ONCE, here, from the
+    # base set + the classes the unit DECLARES + its wave + its acceptance
+    # items; frozen into the TODO so a wave edited mid-unit cannot change a
+    # live unit. Boundary hints are printed, never merged. An unknown class,
+    # a missing wave, a duplicate id or a bad probe refuses the dispatch
+    # BEFORE any side effect.
+    checklist_suggested: list[str] = []
+    from ..checklists import (
+        ChecklistError,
+        block_has_items,
+        block_of,
+        compose_block,
+        validate_carried_block,
+        validate_readable_block,
+    )
+
+    if not block_has_items(content):
+        # A heading-only block is not a frozen block (Q2/Q3 on the WRITER
+        # surface): composing would append a second heading and leave the
+        # empty one authoritative, so the unit would be born failing. Refuse
+        # before any side effect instead.
+        if block_of(content) is not None:
+            raise AwfApiError(
+                "checklist: the carried '## Чек-лист завершения' block carries "
+                "no items — a heading is not a block; remove it or let "
+                "dispatch compose the real block"
+            )
+        try:
+            _composition, block = compose_block(project_dir, content, _contract)
+        except ChecklistError as e:
+            raise AwfApiError(f"checklist: {e}") from None
+        checklist_suggested = _composition.suggested
+        content = append_block(content, block)
+    else:
+        # A carried TODO (a replan copy) brings its own frozen block — it is
+        # NOT recomposed, but the contract's declaration is still validated:
+        # an unknown class, a missing wave file or a declared class whose
+        # items the block lacks refuses the dispatch (never a silent drop).
+        try:
+            validate_carried_block(project_dir, content, _contract)
+        except ChecklistError as e:
+            raise AwfApiError(f"checklist: {e}") from None
+
+    # F14/F15 (TODO-0244): the block is only good if the FINAL text reads it
+    # back — a block appended after an unterminated code fence is invisible
+    # to the gate, and two level-2 blocks let the gate execute the first
+    # while a human reads two. Refuse BEFORE any side effect.
+    try:
+        validate_readable_block(content)
+    except ChecklistError as e:
+        raise AwfApiError(f"checklist: {e}") from None
 
     # R2.2 (roadmap R2): the explicit dirty-source-tree policy. Resolved from
     # config.yaml; a legacy project (no config_version) keeps the pre-R2.2
@@ -606,8 +904,8 @@ def dispatch_todo(
             f"invalid todo_id '{todo_id}' — expected format 'TODO-NNNN' (4+ digits)"
         )
 
-    # REPORTS26 F5: an explicit id + a foreign number in the first line's
-    # heading would land a unit titled after someone else's number. Refuse
+    # REPORTS26 F5: an explicit id + a foreign number in the title heading
+    # would land a unit titled after someone else's number. Refuse
     # BEFORE any side effect (no reservation, no baseline); allow_mismatch
     # is the conscious opt-out (content written as-is).
     heading_num = _heading_todo_number(content)
@@ -640,10 +938,23 @@ def dispatch_todo(
     # ``.agentic``/``inbox`` used to send the unit file and its ``.ready``
     # signal OUTSIDE the project (S9-01 class). Refuse before the first side
     # effect; the writes below go through the no-follow managed helpers too.
-    try:
-        managed_fs.assert_no_symlink_escape(inbox, root=project_dir)
-    except managed_fs.ManagedPathError as e:
-        raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
+    #
+    # REVIEW G1: the barrier covers every managed surface the dispatch can
+    # reach — its own writes (inbox md/.ready, context baselines) and the
+    # helpers it calls (clear_stale_closures reads inbox/outbox and writes
+    # ``context/unblock-*``) — plus ``done``, the archive surface of the
+    # unit being created. It runs BEFORE the id reservation: with a
+    # symlinked ``done`` the old order wrote the md and five baseline files
+    # and only then refused in ``clear_stale_closures``, leaving a
+    # half-dispatch (md+baselines, no ``.ready``). Now nothing is written.
+    refuse_unsafe_surfaces(
+        project_dir,
+        f"dispatch {todo_id}",
+        inbox,
+        paths.outbox(project_dir),
+        paths.context_dir(project_dir),
+        paths.done_dir(project_dir),
+    )
     # F-0219-2: no ``inbox.mkdir`` here. A plain ``Path.mkdir(parents=True)``
     # after the preflight re-follows ``.agentic``: a swap to an outward
     # symlink between the check and the mkdir created an empty ``inbox``
@@ -666,7 +977,7 @@ def dispatch_todo(
             fd = managed_fs.open_managed(
                 candidate,
                 flags=os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                mode=0o644,
+                mode=MODE_OWNER_EDITABLE,
                 root=project_dir,
             )
         except FileExistsError:
@@ -692,8 +1003,8 @@ def dispatch_todo(
             f"last tried {todo_id}) — check .agentic/inbox for stray TODO files"
         )
 
-    # REPORTS26 F5: auto number + a foreign number in the first line's
-    # heading (a copied template kept its old title) — renumber the
+    # REPORTS26 F5: auto number + a foreign number in the title heading
+    # (a copied template kept its old title) — renumber the
     # heading to the ISSUED id (the reservation loop may have moved past
     # the first candidate on collisions, hence here, not earlier). The
     # rest of the content stays untouched; an explicit id never reaches
@@ -775,6 +1086,15 @@ def dispatch_todo(
             + ", ".join(_CONTRACT_KEYS)
         )
 
+    # TODO-0244: boundary hints are printed as `checklist_suggested:` and are
+    # NEVER merged on their own — the unit declares its classes explicitly.
+    if checklist_suggested:
+        pre_check_warnings.append(
+            "checklist_suggested: "
+            + ", ".join(checklist_suggested)
+            + " — declare in checklist_classes to merge (hints are not merged)"
+        )
+
     # TODO-0186: surface the missing verify paths as one warning line (the
     # structured field is verify_path_warnings on the result). The dispatch
     # still succeeds — a false positive would be worse than a missed typo.
@@ -788,7 +1108,7 @@ def dispatch_todo(
     # Step 1: fill the reserved TODO-NNNN.md (atomic temp+rename over the
     # placeholder — the id is already claimed, no one else can take it).
     # R1.5: no-follow write (same class as the reservation open above).
-    managed_fs.managed_write_text(md_path, body, root=project_dir, mode=0o644)
+    managed_fs.managed_write_text(md_path, body, root=project_dir, mode=MODE_OWNER_EDITABLE)
 
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status).
     # RUN10 #4: include files are excluded from the untracked snapshot by a
@@ -870,7 +1190,7 @@ def dispatch_todo(
     # R1.5: the `.ready` touch is a write under `.agentic` too — no-follow.
     ready_path = inbox / f"{todo_id}.ready"
     try:
-        managed_fs.managed_write_text(ready_path, "", root=project_dir, mode=0o644)
+        managed_fs.managed_write_text(ready_path, "", root=project_dir, mode=MODE_OWNER_EDITABLE)
     except managed_fs.ManagedPathError as e:
         raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
 
@@ -940,6 +1260,7 @@ def dispatch_todo(
             *baseline.files_created,
         ],
         pre_check_warnings=pre_check_warnings,
+        size_warning=unit_size_warning(content),
         carry_over_from=carry_over_from,
         carry_over_files=[escape_str_for_ui(p) for p in carry_over_files],
         pre_existing_untracked=[escape_str_for_ui(p) for p in pre_existing],

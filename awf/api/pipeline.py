@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import traceback
@@ -20,11 +19,19 @@ from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
+from ..infra import managed_fs
 from ..pipeline_state import read_state
+from ..signals import find_signal_file, short_id
+from ..verify import parse_argv
 from . import _lease, _liveness
-from ._background import PipelineArgs, start_in_background
+from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
 from ._errors import AwfApiError
-from ._helpers import require_agentic, require_awf_project
+from ._helpers import (
+    managed_write_api_text,
+    refuse_unsafe_surfaces,
+    require_agentic,
+    require_awf_project,
+)
 from ._results import (
     ApproveResult,
     BaselineResult,
@@ -106,7 +113,7 @@ def _verify_child_alive(pid: int, log_file: Path | None = None) -> bool:
     import os
     import time as _time
 
-    _time.sleep(1.0)
+    _time.sleep(CHILD_PROBE_SECONDS)
     try:
         os.kill(pid, 0)
         return True
@@ -158,13 +165,28 @@ def _reconcile(project_dir: Path) -> None:
             cleaned.append(f"cleared stale PID {pid_str}")
 
     # 2. Deduplicate ACK+APPROVE (keep APPROVE, remove ACK)
+    # TODO-0235 (M3d): the unlink below is destructive on the INBOX surface —
+    # a symlinked ``inbox`` used to delete an outside ACK. Barrier first,
+    # leaf included.
     if inbox.is_dir():
+        refuse_unsafe_surfaces(project_dir, "reconcile stale ACK", inbox)
         for ack in inbox.glob("ACK-*.ready"):
-            todo_id = ack.name.replace("ACK-", "").replace(".ready", "")
-            approve = inbox / f"APPROVE-{todo_id}.ready"
-            if approve.exists():
+            # The signal→unit mapping is the SHARED one (``_signal_todo_id``;
+            # architect-review M8), and the APPROVE lookup accepts the
+            # canonical AND legacy spelling (``find_signal_file``, the same
+            # rule every consumer uses). An inline name slice missed a
+            # canonical APPROVE when the ACK carried the legacy short name
+            # (``ACK-0009`` + ``APPROVE-TODO-0009``) and left a duplicate.
+            todo_id = _signal_todo_id(inbox, ack.stem)
+            if not todo_id:
+                # No TODO file to map the short name against — fall back to
+                # the name the signal carries (the old behavior for a junk ack).
+                todo_id = ack.name.replace("ACK-", "").replace(".ready", "")
+            approve = find_signal_file(inbox, "APPROVE", todo_id, ".ready")
+            if approve is not None:
+                refuse_unsafe_surfaces(project_dir, "reconcile stale ACK", ack)
                 ack.unlink()
-                cleaned.append(f"dedup: removed ACK-{todo_id} (APPROVE exists)")
+                cleaned.append(f"dedup: removed {ack.name} (APPROVE exists)")
 
     # 3. Multiple active TODOs → WARN ONLY (NEG-2026-09-19 R2).
     # Destructive cleanup is never right here: a run queue pre-readies all of
@@ -181,8 +203,6 @@ def _reconcile(project_dir: Path) -> None:
 
 def _newest_blocked_todo(project_dir: Path) -> str:
     """Day-2 B3: newest TODO closed by BLOCKED (no DONE). ``""`` if none."""
-    from ..signals import short_id
-
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     if not inbox.is_dir():
@@ -190,13 +210,15 @@ def _newest_blocked_todo(project_dir: Path) -> str:
     candidates: list[tuple[int, str]] = []
     for ready in inbox.glob("TODO-*.ready"):
         todo_id = ready.stem
-        md = inbox / f"{todo_id}.md"
-        if not md.is_file() or md.stat().st_size == 0:
+        # The «unit is live» halves are the SAME predicates the ACK/APPROVE
+        # consumer uses — an inline copy drifts (and crashes on a stat race
+        # the helpers already treat as «absent»). The blocked signal is this
+        # reader's own extra condition (architect-review M8).
+        if not _unit_file_present(inbox, todo_id):
             continue
         short = short_id(todo_id)
         blocked = any((outbox / f"BLOCKED-{cid}.ready").exists() for cid in (todo_id, short))
-        done = any((outbox / f"DONE-{cid}.ready").exists() for cid in (todo_id, short))
-        if blocked and not done:
+        if blocked and not _unit_cycle_done(outbox, todo_id):
             try:
                 num = int(short)
             except ValueError:
@@ -213,6 +235,134 @@ def _todo_closed(project_dir: Path, todo_id: str) -> bool:
     return todos.is_closed(paths.inbox(project_dir), paths.outbox(project_dir), todo_id)
 
 
+def _signal_todo_id(inbox: Path, stem: str) -> str:
+    """The TODO id an inbox signal file (``stem``, no ``.ready``) addresses.
+
+    One home for the decision-signal → TODO mapping (architect-review M8):
+    the full id passes through, a legacy short form (``ACK-0009.ready``)
+    maps by the short id of the ready TODO. The consumer
+    (:func:`_resolve_pending_closure`), the noop-hint reader
+    (:func:`_newest_armed_ack` / :func:`_armed_ack_file`) and the REVIEW
+    reader (:func:`_pending_review_todo`) all ask here, so they can never
+    disagree about which unit a signal belongs to.
+    """
+    candidate = stem.split("-", 1)[1] if "-" in stem else ""
+    if candidate.startswith("TODO-"):
+        return candidate
+    for ready in inbox.glob("TODO-*.ready"):
+        if short_id(ready.stem) == candidate:
+            return ready.stem
+    return ""
+
+
+def _unit_file_present(inbox: Path, target: str) -> bool:
+    """The unit behind a decision signal has its TODO file in the inbox.
+
+    The FIRST half of «a signal can be consumed» — one home for the three
+    callers that need it separately for their own diagnostics (the ACK
+    arming path answers «no TODO file», the consumer and the REVIEW reader
+    just skip). An unreadable surface is «absent» — a refusal there must
+    not crash the resume path.
+    """
+    md = inbox / f"{target}.md"
+    try:
+        return md.is_file() and md.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _unit_cycle_done(outbox: Path, target: str) -> bool:
+    """The unit behind a decision signal already finished its cycle.
+
+    The SECOND half of «a signal can be consumed» (architect-review M8,
+    A5): a ``DONE`` in the outbox (full or legacy short id) means nothing
+    is waiting for an answer — the signal stays on disk for the archive
+    flow. Shared by the ACK arming path's diagnostic and the consumer's
+    filter, so the two can never disagree about what counts as completed.
+    """
+    short = short_id(target)
+    return any(
+        (outbox / f"DONE-{cid}.ready").exists() for cid in (target, short)
+    )
+
+
+def _signal_is_consumable(inbox: Path, outbox: Path, target: str) -> bool:
+    """Whether a signal for ``target`` can still be consumed.
+
+    One home for the filter both the consumer and the noop-hint apply
+    (architect-review M8, A5): the unit needs a non-empty TODO file, and a
+    completed cycle (``DONE`` in the outbox) is not waiting for an answer.
+    Composed of the same two halves the ACK arming path reports separately.
+    """
+    return _unit_file_present(inbox, target) and not _unit_cycle_done(
+        outbox, target
+    )
+
+
+def _armed_ack_file(inbox: Path, target: str) -> Path | None:
+    """The ACK signal waiting for ``target`` in ``inbox``, or ``None``.
+
+    ARCHITECT-REVIEW M8: found through the SAME mapping the consumer uses
+    (:func:`_signal_todo_id`), not through the canonical file spelling — a
+    legacy short-name ack (``ACK-0009.ready``) is consumable for TODO-0009
+    too, so the noop hint must neither deny nor misname it. Without this
+    the extracted mapping would have a bypass and the two readers could
+    disagree.
+    """
+    try:
+        for p in inbox.glob("ACK-*.ready"):
+            if p.is_file() and _signal_todo_id(inbox, p.stem) == target:
+                return p
+    except OSError:
+        return None
+    return None
+
+
+def _arm_ack_file(inbox: Path, ack: str) -> Path:
+    """Write the ACK for ``ack`` — or reuse the one already waiting.
+
+    M2 (REVIEW виток 10): a legacy short-name signal (``ACK-0009.ready``)
+    maps to the same unit through the consumer's own reader; writing the
+    canonical spelling next to it would leave a duplicate the consumer
+    never eats (a second ACK can answer a FUTURE blocked cycle). The
+    returned path is the file the consumer will consume.
+    """
+    existing = _armed_ack_file(inbox, ack)
+    if existing is not None:
+        return existing
+    inbox.mkdir(parents=True, exist_ok=True)
+    path = inbox / f"ACK-{ack}.ready"
+    path.touch()
+    return path
+
+
+def _newest_armed_ack(project_dir: Path) -> str:
+    """M8 (UX-щель): the TODO id of the newest CONSUMABLE ``ACK-*.ready``
+    waiting in the inbox (the supervisor's pending answer) — ``""`` when
+    none.
+
+    A5 (REVIEW виток 2): the filter is the consumer's OWN
+    (:func:`_signal_todo_id` + :func:`_signal_is_consumable`) — only
+    ACTIVE/CURRENT units count. Advertising an ack whose TODO file is gone
+    or whose unit is already completed would tell the supervisor to kill a
+    live pipeline for an answer that can never be consumed.
+    """
+    inbox = paths.inbox(project_dir)
+    if not inbox.is_dir():
+        return ""
+    try:
+        ready = [p for p in inbox.glob("ACK-*.ready") if p.is_file()]
+        ready.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return ""
+    outbox = paths.outbox(project_dir)
+    for sig_path in ready:
+        target = _signal_todo_id(inbox, sig_path.stem)
+        if target and _signal_is_consumable(inbox, outbox, target):
+            return target
+    return ""
+
+
 def _pending_review_todo(project_dir: Path) -> str:
     """Day-2 review follow-up: newest TODO with a supervisor REVIEW and no DONE.
 
@@ -220,27 +370,24 @@ def _pending_review_todo(project_dir: Path) -> str:
     if the process died before it was consumed, the answer would otherwise be a
     silent dead-end. Returns ``""`` when there is no pending review.
     """
-    from ..signals import short_id
-
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     if not inbox.is_dir():
         return ""
     candidates: list[tuple[int, str]] = []
     for review in outbox.glob("REVIEW-*.md"):
-        candidate = review.stem.split("-", 1)[1] if "-" in review.stem else ""
-        todo_id = candidate if candidate.startswith("TODO-") else ""
-        if not todo_id:
-            for ready in inbox.glob("TODO-*.ready"):
-                if short_id(ready.stem) == candidate:
-                    todo_id = ready.stem
-                    break
-        if not todo_id:
+        # A REVIEW is a decision signal like ACK/APPROVE, so the mapping and
+        # the «TODO file present» half come from the SAME helpers the
+        # consumer and the noop hint use (``_signal_todo_id`` /
+        # ``_unit_file_present``) — a third private copy would drift.
+        todo_id = _signal_todo_id(inbox, review.stem)
+        if not todo_id or not _unit_file_present(inbox, todo_id):
             continue
-        md = inbox / f"{todo_id}.md"
-        if not md.is_file() or md.stat().st_size == 0:
-            continue
-        if (outbox / f"DONE-{todo_id}.ready").exists():
+        # The cycle-done half comes from the SAME helper the ACK/APPROVE
+        # consumer uses (``_unit_cycle_done``) — an inline ``DONE-<id>.ready``
+        # check would miss the legacy short form (``DONE-0009.ready``) and
+        # report a completed unit's review as pending (architect-review M8).
+        if _unit_cycle_done(outbox, todo_id):
             continue  # cycle completed — the review is stale
         try:
             num = int(short_id(todo_id))
@@ -268,36 +415,49 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
 
     Returns ``("", "")`` when there is nothing to resume.
     """
-    from ..signals import short_id
-
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
     if not inbox.is_dir():
         return "", ""
 
-    def _todo_for_signal(stem: str) -> str:
-        candidate = stem.split("-", 1)[1] if "-" in stem else ""
-        if candidate.startswith("TODO-"):
-            return candidate
-        # legacy short form: ACK-0009.ready → TODO-0009
-        for ready in inbox.glob("TODO-*.ready"):
-            if short_id(ready.stem) == candidate:
-                return ready.stem
-        return ""
-
     signals = sorted(inbox.glob("ACK-*.ready")) + sorted(inbox.glob("APPROVE-*.ready"))
     for sig_path in signals:
-        target = _todo_for_signal(sig_path.stem)
+        # The signal→unit mapping and the consumability filter are SHARED
+        # with the noop-hint reader (``_newest_armed_ack``) — architect-review
+        # M8: one home, so the hint can never advertise an answer this loop
+        # would skip.
+        target = _signal_todo_id(inbox, sig_path.stem)
         if not target:
             continue
         if todo_id and target != todo_id:
             continue
-        md = inbox / f"{target}.md"
-        if not md.is_file() or md.stat().st_size == 0:
-            continue
+        if not _signal_is_consumable(inbox, outbox, target):
+            continue  # no TODO file, or a completed cycle — not an answer
         short = short_id(target)
-        if any((outbox / f"DONE-{cid}.ready").exists() for cid in (target, short)):
-            continue  # completed cycle — leave the signal for the archive flow
+        # TODO-0235 (M3d): consuming the decision is an unlink on INBOX —
+        # a symlinked surface/leaf must refuse, not delete outside. REVIEW B2:
+        # the same call then moves BLOCKED leaves from OUTBOX into CONTEXT
+        # (``_unblock_todo``), so those surfaces and leaves belong to the
+        # same barrier — otherwise a symlinked outbox loses foreign files.
+        clears = (outbox / f"BLOCKED-{target}.ready").exists() or (
+            outbox / f"BLOCKED-{short}.ready"
+        ).exists()
+        closure_leaves: list[Path] = []
+        if clears:
+            ctx = paths.context_dir(project_dir)
+            for cid in (target, short):
+                for ext in (".ready", ".md"):
+                    closure_leaves.append(outbox / f"BLOCKED-{cid}{ext}")
+                    closure_leaves.append(ctx / f"BLOCKED-{cid}{ext}")
+        refuse_unsafe_surfaces(
+            project_dir,
+            "consume pending closure signal",
+            inbox,
+            sig_path,
+            outbox,
+            paths.context_dir(project_dir),
+            *closure_leaves,
+        )
         try:
             sig_path.unlink()
         except OSError:
@@ -306,8 +466,12 @@ def _resolve_pending_closure(project_dir: Path, todo_id: str = "") -> tuple[str,
         if any((outbox / f"BLOCKED-{cid}.ready").exists() for cid in (target, short)):
             from ..pipeline_engine import _unblock_todo
 
-            _unblock_todo(project_dir, target, paths.agentic_dir(project_dir) / "logs")
-            note += ", BLOCKED cleared"
+            if _unblock_todo(
+                project_dir, target, paths.agentic_dir(project_dir) / "logs"
+            ):
+                note += ", BLOCKED cleared"
+            else:
+                note += ", BLOCKED not cleared (unsafe path or move failed)"
         return target, note
     return "", ""
 
@@ -431,8 +595,18 @@ def approve_commit(
         # One home for the invariant: clean on ENTRY, before any precheck
         # (missing evidence= / missing verified_sha=) or verdict can refuse,
         # so no refusal branch can be forgotten (the M1 → PA-1 recurrence).
+        # REVIEW B3: it is still an unlink under ``.agentic/context`` — the
+        # surface and the leaf are checked BEFORE the delete, so a symlinked
+        # context refuses with the foreign file intact.
+        evidence = _candidate_verify.evidence_path(project_dir, todo_id)
+        refuse_unsafe_surfaces(
+            project_dir,
+            "discard candidate evidence",
+            paths.context_dir(project_dir),
+            evidence,
+        )
         try:
-            _candidate_verify.evidence_path(project_dir, todo_id).unlink()
+            evidence.unlink()
         except OSError:
             pass
 
@@ -466,11 +640,12 @@ def approve_commit(
         verified_fp = current_fp
 
     if evidence.strip():
-        atomic_write_text(
+        managed_write_api_text(
             evidence_file,
             f"# Run evidence — {todo_id}\n\n"
             f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
             f"{evidence.strip()}\n",
+            operation="write run evidence",
         )
     elif run_active and not evidence_file.is_file():
         raise AwfApiError(
@@ -609,11 +784,19 @@ def approve_commit(
     # rename); the old order left a window where the gate could start on
     # the bare signal and skip the re-check.
     if verified_fp:
-        paths.context_dir(project_dir).mkdir(parents=True, exist_ok=True)
-        atomic_write_text(verified_file, f"{verified_fp}\n")
+        managed_write_api_text(
+            verified_file,
+            f"{verified_fp}\n",
+            operation="write verified fingerprint",
+        )
 
     inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
+    try:
+        managed_fs.managed_mkdir(inbox)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"approve {todo_id} refused — unsafe managed path: {exc}"
+        ) from exc
     signal = inbox / f"APPROVE-{todo_id}.ready"
     if run_active:
         # M2.1: the approval is bound to the cycle it was made for — the
@@ -810,46 +993,52 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
 
 def _untracked_snapshot(project_dir: Path, excluded: set[str]) -> str:
     """The ``BASELINE-<todo>.untracked`` body: git's untracked listing minus
-    the adopted paths, matched by their RAW identity.
+    the adopted paths, in the RAW identity of the R2.1 model.
 
-    The snapshot predates the R2.1 model: its readers (commit gate, verify,
-    reject) compare against the PRINTED ``git ls-files`` lines, so the file
-    must keep that form (R2.3 migrates both sides together). The printed
-    listing C-quotes a non-ASCII name (``"\\321\\204..."``) while the adopted
-    paths are raw (``файл.txt``), so dropping them by the raw comparison
-    silently missed the exclusion (TODO-0221 architect: the writer surface of
-    the R2.2 invariant). The raw and printed listings come from the same git
-    scan in the same byte order, so they are paired positionally and the
-    printed line of an adopted path is dropped — the file keeps its format,
-    the exclusion finally bites. Any mismatch degrades to the legacy compare
-    (never worse than before the bridge).
+    The format is the NUL machine protocol (``_path_link``): the paths are
+    written with git's own bytes, so a name holding a newline, a control byte,
+    an edge space or a non-UTF-8 byte is ONE path, not two lines. The adopted
+    paths (``carry_over`` / ``include`` / ``claim``) are compared in the same
+    raw identity, so the exclusion finally bites for a non-ASCII name.
 
-    The printed read carries the same triple guard as the raw read below and
-    ``reject_files._untracked_view`` (M3): a hung/missing git
-    (``SubprocessError``/``OSError``) or a non-UTF-8 name emitted raw under
-    ``core.quotepath=false`` (``UnicodeDecodeError``) must degrade the snapshot,
-    not crash the baseline write (``awf dispatch`` / ``awf run_next``).
+    Migration (TODO-0228 review): files written before this change keep git's
+    PRINTED form and the readers decode them lazily
+    (``git_model.read_untracked_snapshot``). The model read carries the same
+    triple guard as its siblings (M3): a hung/missing git
+    (``SubprocessError``/``OSError``) or an unrepresentable tree degrades the
+    snapshot to the legacy printed read, and any failure there to "" — the
+    baseline write never crashes ``awf dispatch`` / ``awf run_next``.
     """
+    from .._path_link import encode_path_link
+    from ..infra.git_model import (
+        GitModelError,
+        GitRepository,
+        display_path,
+        raw_identity,
+    )
+
+    try:
+        raw_paths = GitRepository(project_dir).untracked_paths()
+    except (GitModelError, OSError):
+        raw_paths = None
+    if raw_paths is not None:
+        return encode_path_link(
+            [p for p in (display_path(p) for p in raw_paths) if p not in excluded]
+        )
     try:
         printed = git_utils.git_stdout(
             project_dir, "ls-files", "--others", "--exclude-standard", check=False
         )
     except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-        printed = ""
-    if not excluded:
-        return printed
-    from ..infra.git_model import GitModelError, GitRepository, display_path
-
-    try:
-        raw = GitRepository(project_dir).untracked_paths()
-    except (GitModelError, OSError):
-        raw = []
-    lines = printed.splitlines()
-    if raw and len(lines) == len(raw):
-        return "\n".join(
-            ln for ln, p in zip(lines, raw) if display_path(p) not in excluded
-        )
-    return "\n".join(ln for ln in lines if ln.strip() not in excluded)
+        return ""
+    # The printed listing is newline-delimited — split on ``\n`` ONLY, as the
+    # canonical legacy reader does: ``splitlines()`` would also cut on
+    # U+2028/U+2029, so a raw name under ``core.quotePath=false`` would become
+    # two fake paths (the T2 class, held here on the writer surface too).
+    lines = [ln for ln in printed.split("\n") if ln]
+    if excluded:
+        lines = [ln for ln in lines if raw_identity(ln) not in excluded]
+    return "\n".join(lines)
 
 
 def create_baseline(
@@ -906,6 +1095,10 @@ def create_baseline(
     project_dir = require_awf_project(project_dir)
 
     context_dir = paths.context_dir(project_dir)
+    # TODO-0235 (REVIEW B4): the baseline writes and removes files under
+    # ``context/`` — one barrier for the surface before the first write, so a
+    # symlinked context neither overwrites nor deletes outside the project.
+    refuse_unsafe_surfaces(project_dir, "create baseline", context_dir)
     context_dir.mkdir(parents=True, exist_ok=True)
 
     # REPORTS26 B1: track the files THIS call writes — an unexpected
@@ -915,7 +1108,11 @@ def create_baseline(
     written: list[Path] = []
 
     def _write_baseline_file(path: Path, content: str) -> None:
-        atomic_write_text(path, content)
+        # The untracked snapshot carries RAW path bytes (surrogateescape);
+        # the other baseline files are ASCII. One writer, one codec — a
+        # non-UTF-8 name must not crash the dispatch after the TODO is
+        # reserved.
+        atomic_write_text(path, content, errors="surrogateescape")
         written.append(path)
 
     try:
@@ -936,14 +1133,25 @@ def create_baseline(
             # M3: the printed read decodes strictly (``text=True``); a
             # non-UTF-8 name under ``core.quotepath=false`` raises a
             # ``UnicodeDecodeError`` and a hung/missing git raises
-            # ``SubprocessError``/``OSError``. Degrade the status snapshot to
-            # empty (the commit gate's documented legacy fallback) instead of
-            # crashing the dispatch / re-baseline.
+            # ``SubprocessError``/``OSError``. U2 (TODO-0228): an EMPTY
+            # snapshot would read as "the index was clean" and let a
+            # pre-staged non-UTF-8 file enter the unit plan — a lie. Write
+            # no file instead (the reader's documented legacy fallback:
+            # ``staged_at_baseline`` → None, the whole staged-vs-baseline
+            # set is treated as foreign), and drop any earlier dispatch's
+            # file so a re-dispatch never reads it.
             try:
                 status = git_utils.git_stdout(project_dir, "status", "--short", check=False)
             except (subprocess.SubprocessError, OSError, UnicodeDecodeError):
-                status = ""
-            _write_baseline_file(context_dir / f"BASELINE-{todo_id}.status", status)
+                status = None
+            status_path = context_dir / f"BASELINE-{todo_id}.status"
+            if status is None:
+                refuse_unsafe_surfaces(
+                    project_dir, "create baseline", context_dir, status_path
+                )
+                status_path.unlink(missing_ok=True)
+            else:
+                _write_baseline_file(status_path, status)
             # REPORTS33 (TODO-0204): snapshot of the dirty worktree — the
             # commit gate's delta mechanism: a tracked-dirty file enters
             # the unit commit only as the unit's own edit (worktree vs
@@ -973,6 +1181,9 @@ def create_baseline(
             if worktree_snap:
                 _write_baseline_file(snap_path, worktree_snap + "\n")
             else:
+                refuse_unsafe_surfaces(
+                    project_dir, "create baseline", context_dir, snap_path
+                )
                 snap_path.unlink(missing_ok=True)
             # QA-1: snapshot untracked files at baseline time so commit_gate
             # can distinguish worker-created files from pre-existing untracked.
@@ -1005,52 +1216,68 @@ def create_baseline(
             test_cmd = cfg_mod.get(config_data, "verification.test_cmd", "") or ""
             run_cmd = baseline_cmd or test_cmd
             cmd_key = "baseline_cmd" if baseline_cmd else "test_cmd"
-            if run_cmd:
-                try:
-                    parts = shlex.split(run_cmd)
-                except ValueError as e:
-                    # AUD14-02: bad quoting in test_cmd must not traceback baseline
+            if run_cmd.strip():
+                # I1 (REVIEW виток 6) + architect-review M8: the config
+                # commands are the SAME argv class as the contract's
+                # `verify:` — one parse rule (`verify.parse_argv`: shlex +
+                # the A4 operator refusal), so `test_cmd` means the same
+                # thing here, in verify and in the candidate check. A blank
+                # command stays "not configured" (the legacy skip), never
+                # an "empty command" refusal.
+                parts, problem = parse_argv(run_cmd)
+                if problem:
+                    # AUD14-02: bad quoting must not traceback baseline
                     raise AwfApiError(
-                        f"verification.{cmd_key} не парсится: {e} (cmd: {run_cmd!r})"
-                    ) from e
-                if parts:
-                    try:
-                        result = run_tree(
-                            parts,
-                            cwd=str(project_dir),
-                            capture_output=True,
-                            text=True,
-                            timeout=300,
-                        )
-                    except subprocess.TimeoutExpired:
-                        # cmd hung (watcher / stdin prompt / infinite loop).
-                        # Don't block baseline creation — record failure, continue.
-                        _write_baseline_file(
-                            tests_log_path,
-                            f"{cmd_key} timed out after 300s: {run_cmd}\n",
-                        )
-                        test_status = "failed"
-                        test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
-                    except FileNotFoundError:
-                        # REPORTS26 B1: bare binary not in PATH (e.g. `vitest`
-                        # stored from package.json scripts). Same contract as
-                        # the timeout: record failure, continue — dispatch
-                        # must not die on a broken command.
-                        _write_baseline_file(
-                            tests_log_path,
-                            f"{cmd_key} не найдена в PATH: {run_cmd}. "
-                            "Поправьте verification.baseline_cmd/test_cmd\n",
-                        )
-                        test_status = "failed"
-                        test_log_excerpt = f"{cmd_key} не найдена в PATH: {run_cmd}"
-                    else:
-                        log_content = result.stdout + result.stderr
-                        _write_baseline_file(tests_log_path, log_content)
-                        test_status = "passed" if result.returncode == 0 else "failed"
-                        test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
+                        f"verification.{cmd_key}: {problem} (cmd: {run_cmd!r})"
+                    )
+                try:
+                    result = run_tree(
+                        parts,
+                        cwd=str(project_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+                except subprocess.TimeoutExpired:
+                    # cmd hung (watcher / stdin prompt / infinite loop).
+                    # Don't block baseline creation — record failure, continue.
+                    _write_baseline_file(
+                        tests_log_path,
+                        f"{cmd_key} timed out after 300s: {run_cmd}\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
+                except FileNotFoundError:
+                    # REPORTS26 B1: bare binary not in PATH (e.g. `vitest`
+                    # stored from package.json scripts). Same contract as
+                    # the timeout: record failure, continue — dispatch
+                    # must not die on a broken command.
+                    _write_baseline_file(
+                        tests_log_path,
+                        f"{cmd_key} не найдена в PATH: {run_cmd}. "
+                        "Поправьте verification.baseline_cmd/test_cmd\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"{cmd_key} не найдена в PATH: {run_cmd}"
+                except OSError as e:
+                    # architect-review M8: the argv launcher (no shell) raises
+                    # for a non-executable command / bad interpreter, where the
+                    # old shell reported rc 126. Same contract as the missing
+                    # binary — one typed "record failure, keep going" outcome,
+                    # never a traceback out of dispatch. The other argv
+                    # surfaces (verify.run_verify_commands, verify_pack._run_cmd,
+                    # candidate_verify.run_check) already catch OSError.
+                    _write_baseline_file(
+                        tests_log_path,
+                        f"{cmd_key} не запускается: {e}\n",
+                    )
+                    test_status = "failed"
+                    test_log_excerpt = f"{cmd_key} не запускается: {e}"
                 else:
-                    _write_baseline_file(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
-                    test_status = "no_test_cmd"
+                    log_content = result.stdout + result.stderr
+                    _write_baseline_file(tests_log_path, log_content)
+                    test_status = "passed" if result.returncode == 0 else "failed"
+                    test_log_excerpt = "\n".join(log_content.splitlines()[-5:])
             else:
                 _write_baseline_file(tests_log_path, "No test_cmd configured, skipping test baseline.\n")
                 test_status = "no_test_cmd"
@@ -1089,8 +1316,11 @@ def create_baseline(
     except Exception:
         for path in written:
             try:
+                refuse_unsafe_surfaces(
+                    project_dir, "create baseline cleanup", context_dir, path
+                )
                 path.unlink(missing_ok=True)
-            except OSError:
+            except (OSError, AwfApiError):
                 pass
         raise
 
@@ -1135,6 +1365,40 @@ def rollback(
         return _rollback_impl(
             resolved, todo_id, mode=mode, confirm_digest=confirm_digest
         )
+
+
+def _rollback_diff_stat(project_dir: Path, baseline_sha: str) -> str:
+    """``git diff --stat`` for the rollback summary — decoded STRICTLY.
+
+    The summary is display text, so a raw non-UTF-8 name (``core.quotePath``
+    off) must surface as a refusal, never as a silently aliased path
+    (``single-owners.md``). Both failures below are translated into the
+    API's refusal type — a decode error escaping as a traceback was the
+    remaining gap from the M4 audit.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", baseline_sha, "--stat"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            # FU-19 (AUD01-02 tail): the last unbounded git call — contract
+            # docs/contracts/subprocess-timeouts.md.
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AwfApiError(
+            f"git diff timed out after {e.timeout}s — a hung git call blocks "
+            "the rollback. Check the repo state (index.lock, huge diff) and retry."
+        ) from e
+    except UnicodeDecodeError as e:
+        raise AwfApiError(
+            "git diff --stat output is not valid UTF-8 — the rollback summary "
+            "cannot be rendered. Nothing was reset; rename the offending "
+            "path or commit it and retry."
+        ) from e
+    return result.stdout
 
 
 def _rollback_impl(
@@ -1213,23 +1477,7 @@ def _rollback_impl(
             todo_id=todo_id,
         )
 
-    try:
-        diff_result = subprocess.run(
-            ["git", "diff", baseline_sha, "--stat"],
-            cwd=str(project_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            # FU-19 (AUD01-02 tail): the last unbounded git call — contract
-            # docs/contracts/subprocess-timeouts.md.
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise AwfApiError(
-            f"git diff timed out after {e.timeout}s — a hung git call blocks "
-            "the rollback. Check the repo state (index.lock, huge diff) and retry."
-        ) from e
-    diff_stat = diff_result.stdout
+    diff_stat = _rollback_diff_stat(project_dir, baseline_sha)
 
     if mode == "dry-run":
         return RollbackResult(
@@ -1633,8 +1881,11 @@ def continue_pipeline(
             # signal is skipped and the answer says so.
             ack_note = f"(ack {ack} not applied — the explicit pin {explicit_pin} wins)"
         else:
-            ack_md = paths.inbox(project_dir) / f"{ack}.md"
-            if not ack_md.is_file() or ack_md.stat().st_size == 0:
+            # The SAME two predicates the consumer and the noop hint use
+            # (``_unit_file_present`` / ``_unit_cycle_done``) — kept apart
+            # only because each refusal owns its own diagnostic text.
+            ack_inbox = paths.inbox(project_dir)
+            if not _unit_file_present(ack_inbox, ack):
                 return StartResult(
                     run_mode="noop",
                     run_id=None,
@@ -1646,12 +1897,7 @@ def continue_pipeline(
                         f"unit comes back via awf_restore."
                     ),
                 )
-            from ..signals import short_id
-
-            outbox = paths.outbox(project_dir)
-            if any(
-                (outbox / f"DONE-{cid}.ready").exists() for cid in (ack, short_id(ack))
-            ):
+            if _unit_cycle_done(paths.outbox(project_dir), ack):
                 return StartResult(
                     run_mode="noop",
                     run_id=None,
@@ -1662,10 +1908,12 @@ def continue_pipeline(
                         f"nothing to accept."
                     ),
                 )
-            ack_inbox = paths.inbox(project_dir)
             ack_inbox.mkdir(parents=True, exist_ok=True)
-            (ack_inbox / f"ACK-{ack}.ready").touch()
+            _arm_ack_file(ack_inbox, ack)
 
+    # M2 (REVIEW виток 10): a pin that won over the ack means the ack was
+    # never written — the post-reconcile re-arm must skip it.
+    pin_overridden = bool(ack) and bool(explicit_pin) and explicit_pin != ack
     # A-02: launch lease (same as start_pipeline) — one owner of the
     # window "liveness check → spawn → PID file write". Acquired AFTER the
     # ack block on purpose: an ack that gets refused by a concurrent
@@ -1699,9 +1947,98 @@ def continue_pipeline(
     try:
         # DF6-2: reconcile state before continuing
         _reconcile(project_dir)
+        # M2 (REVIEW виток 10): reconcile may drop the ACK this call just
+        # wrote (it dedupes an ACK against an APPROVE it keeps). The answer
+        # below reports the state ON DISK — re-arm the requested signal so
+        # «ACK is armed» stays a fact, never a leftover claim.
+        if ack and not pin_overridden:
+            _arm_ack_file(paths.inbox(project_dir), ack)
         # AUD04-07: shared liveness resolver (PID file + state), same as start.
         live_pid = _liveness.resolve(project_dir)[1]
         if live_pid:
+            # M8 (UX-щель 0230-а): a written ACK (the one this call just
+            # armed, or a pre-existing one waiting for consumption) must not
+            # be silently stranded by the noop answer — the supervisor
+            # reads «running» again and never applies the decision. The
+            # answer names the arming and the exact recipe.
+            # A1 (REVIEW виток 2): when an explicit ``todo_id`` pin won over
+            # the ack, the ack was NOT written — the armed wording would
+            # lie. F4 (REVIEW виток 3): the answer names the pin's own
+            # situation, not "nothing is armed". Architect-review M8: the
+            # «no ACK for X» half is asserted only when the inbox agrees —
+            # a consumable ACK already waiting for the pinned unit is
+            # NAMED instead of denied (the old text claimed a fact the code
+            # never checked).
+            inbox = paths.inbox(project_dir)
+            outbox = paths.outbox(project_dir)
+            # I3 (REVIEW виток 6): with a pin the hint reports the PIN's own
+            # ACK state — a consumable ACK waiting for ANOTHER unit must not
+            # be advertised, or the recipe sends the supervisor to kill a
+            # live pipeline for an answer the pinned unit cannot consume.
+            pin_ack = (
+                _armed_ack_file(inbox, explicit_pin)
+                if explicit_pin
+                and _signal_is_consumable(inbox, outbox, explicit_pin)
+                else None
+            )
+            if pin_overridden:
+                if pin_ack is not None:
+                    hint = (
+                        f" ACK not applied (todo_id pin wins); "
+                        f"{pin_ack.name} is already waiting — kill "
+                        f"the pipeline, then run awf continue with the pin "
+                        f'and its ack: continue(todo_id="{explicit_pin}", '
+                        f'ack="{explicit_pin}") to apply it.'
+                    )
+                else:
+                    hint = (
+                        f" ACK not applied (todo_id pin wins); no ACK for "
+                        f"{explicit_pin} is waiting — kill the pipeline, then "
+                        "run awf continue with the ack (no pin) to apply it."
+                    )
+            else:
+                armed = (ack or "").strip()
+                # M2 (REVIEW виток 10): «armed» is a fact on disk, checked
+                # AFTER reconcile — the old text reported the requested id
+                # even when reconcile had just removed its signal.
+                if armed and _armed_ack_file(inbox, armed) is None:
+                    armed = ""
+                if not armed:
+                    if explicit_pin:
+                        armed = explicit_pin if pin_ack is not None else ""
+                    else:
+                        armed = _newest_armed_ack(project_dir)
+                if armed:
+                    # L1 (REVIEW виток 9): the recipe must PIN the ACK it
+                    # names. A bare ``continue`` resolves the explicit
+                    # todo_id pin, then the state unit, BEFORE the pending
+                    # ACK — the named answer would stay stranded in the
+                    # inbox, exactly the UX gap 4a closes.
+                    # M2: name the REAL file when it carries the legacy short
+                    # spelling (``ACK-0001.ready``), so the supervisor can
+                    # recognise the signal the consumer will eat.
+                    armed_file = _armed_ack_file(inbox, armed)
+                    where = ""
+                    if (
+                        armed_file is not None
+                        and armed_file.name != f"ACK-{armed}.ready"
+                    ):
+                        where = f" ({armed_file.name})"
+                    hint = (
+                        f" ACK is armed for {armed}{where}; to apply it, kill the pipeline "
+                        f"(PID {live_pid}), then run awf_continue("
+                        f'todo_id="{armed}", ack="{armed}").'
+                    )
+                elif explicit_pin:
+                    # The pin's own state is empty: the recipe drops the pin
+                    # instead of naming an answer the pinned unit refuses.
+                    hint = (
+                        f" No ACK is waiting for {explicit_pin}; drop the "
+                        "todo_id pin and run awf continue without the pin to "
+                        "apply an armed ACK."
+                    )
+                else:
+                    hint = ""
             return StartResult(
                 run_mode="noop",
                 run_id=None,
@@ -1710,6 +2047,7 @@ def continue_pipeline(
                 message=(
                     f"Pipeline already running (PID {live_pid}). "
                     f"Use awf_status to check progress. If stuck, kill PID {live_pid} first."
+                    + hint
                 ),
             )
 
@@ -2330,13 +2668,23 @@ def retry_stage(
     if not salvage_todo:
         salvage_todo = _salvage_todo_from_inbox(project_dir)
 
+    # TODO-0235 (M3d): the salvage cleanup below unlinks INBOX files. Check
+    # the surface AND every leaf BEFORE the kill, so an unsafe path refuses
+    # with no effect (REVIEW N2: the leaf check used to run after the kill).
+    # One call, like the B2 closure barrier: the leaf check already walks the
+    # surface, and a separate call was a second spelling of the same rule.
+    inbox = paths.inbox(project_dir)
+    salvage_notes = list(inbox.glob("SALVAGE-*.md"))
+    refuse_unsafe_surfaces(
+        project_dir, "clean salvage signals", inbox, *salvage_notes
+    )
+
     # Kill if running
     kill_pipeline(project_dir)
 
     # Clean salvage signals (AUD04-08: they are written to the INBOX — the
     # old outbox glob was a no-op that left every note behind)
-    inbox = paths.inbox(project_dir)
-    for p in inbox.glob("SALVAGE-*.md"):
+    for p in salvage_notes:
         try:
             p.unlink()
         except OSError:

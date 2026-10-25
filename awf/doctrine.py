@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import paths
 from ._atomic import atomic_write_text
+from .infra import managed_fs
 
 DOCTRINE_DIRNAME = "doctrine"
 DOCTRINE_ASSEMBLED_NAME = "DOCTRINE.md"
@@ -74,19 +75,32 @@ def seed_doctrine(project_dir: str | Path) -> list[str]:
     data (same rule as add_role refusing to replace a role file).
     Returns the copied file names (sorted); [] when nothing was missing
     or the built-in catalog does not exist (old installs).
-    """
-    import shutil
 
+    M2 (REVIEW виток 4): the copy goes through ``managed_write_text`` — a
+    symlinked ``.agentic``/``doctrine`` used to send ``mkdir``+``copy2`` out
+    of the project while init reported success. The seed is part of the
+    init bootstrap, so a non-POSIX platform keeps the plain atomic writer
+    (same policy as ``lifecycle._bootstrap_write``, docs/design.md).
+    """
     if not BUILTIN_DOCTRINE_DIR.is_dir():
         return []
     dst = doctrine_dir(project_dir)
-    dst.mkdir(parents=True, exist_ok=True)
+    root = Path(project_dir).resolve()
     copied: list[str] = []
     for src in sorted(BUILTIN_DOCTRINE_DIR.glob("*.md")):
         target = dst / src.name
-        if not target.exists():
-            shutil.copy2(src, target)
-            copied.append(src.name)
+        if target.exists():
+            continue
+        text = src.read_text(encoding="utf-8")
+        mode = src.stat().st_mode & 0o777
+        if managed_fs.is_posix():
+            managed_fs.managed_write_text(
+                target, text, root=root, mode=mode
+            )
+        else:
+            dst.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(target, text, mode=mode)
+        copied.append(src.name)
     return copied
 
 

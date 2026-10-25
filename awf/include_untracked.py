@@ -145,16 +145,10 @@ def resolve_include_untracked(project_dir: Path, raw_paths: list[str]) -> list[s
 
 def pre_existing_untracked(project_dir: Path, todo_id: str) -> list[str]:
     """The baseline's pre-existing untracked list (what the commit gate will
-    exclude); sorted; ``[]`` when the snapshot is absent or empty."""
-    f = paths.context_dir(Path(project_dir)) / f"BASELINE-{todo_id}.untracked"
-    if not f.is_file():
-        return []
-    try:
-        return sorted(
-            ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip()
-        )
-    except OSError:
-        return []
+    exclude), RAW; sorted; ``[]`` when the snapshot is absent or empty."""
+    from .infra.git_model import read_untracked_snapshot
+
+    return sorted(read_untracked_snapshot(project_dir, todo_id) or set())
 
 
 def format_untracked_warning(
@@ -164,7 +158,9 @@ def format_untracked_warning(
     ``""`` when the list is empty (nothing to say)."""
     if not files:
         return ""
-    shown = files[:cap]
+    from .infra.git_model import escape_str_for_ui
+
+    shown = [escape_str_for_ui(p) for p in files[:cap]]
     more = len(files) - len(shown)
     tail = f" (…{more} more)" if more else ""
     return (

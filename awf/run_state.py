@@ -15,6 +15,8 @@ Crash-safe: the file survives process death; the supervisor re-reads it via
 """
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -176,7 +178,20 @@ def _normalize_evidence_plan(e: dict) -> dict:
         "gates": _str_list(e.get("gates")),
         "prove_red": _str_list(e.get("prove_red")),
         "note": str(e.get("note") or ""),
+        **_contract_marker(e),
     }
+
+
+def _contract_marker(e: dict) -> dict:
+    """I2 (REVIEW виток 6): keep the ``contract: "broken"`` marker.
+
+    The marker is what tells the release surfaces "the block exists but
+    does not parse" apart from "no block" — dropped on read it would
+    silently collapse back into the absent case. Absent marker → no key,
+    so a healthy plan keeps the historical shape.
+    """
+    marker = str(e.get("contract") or "").strip()
+    return {"contract": marker} if marker else {}
 
 
 def _revision_entry_ok(e: object) -> bool:
@@ -188,13 +203,16 @@ def _revision_entry_ok(e: object) -> bool:
 
 def _normalize_revision(e: dict) -> dict:
     """ORCH M3.4/M4.1/REPORTS32: the canonical revision shape
-    ``{ts, key, kind, reason, changes, generation, resume_from}``; absent
-    or mistyped fields degrade to empty (a partial entry survives as far
-    as its key allows). ``resume_from`` (ORCH M4.1) — the stage the
-    stopped unit resumes from; absent in v1 (M3.4) records → ``""``.
-    A change's ``class`` (REPORTS32, TODO-0198: ``appended`` /
-    ``inserted``) survives the normalization; absent (a plain pipeline
-    change) the key is not added — legacy records stay as-is."""
+    ``{ts, key, kind, args_digest, reason, changes, generation,
+    resume_from}``; absent or mistyped fields degrade to empty (a partial
+    entry survives as far as its key allows). ``resume_from`` (ORCH M4.1) —
+    the stage the stopped unit resumes from; absent in v1 (M3.4) records →
+    ``""``. ``args_digest`` (AA1, TODO-0240 review v7) — the request
+    payload the key names; absent in older records → ``""`` (replayable,
+    no comparison possible). A change's ``class`` (REPORTS32, TODO-0198:
+    ``appended`` / ``inserted``) survives the normalization; absent (a
+    plain pipeline change) the key is not added — legacy records stay
+    as-is."""
 
     def _norm_change(c: dict) -> dict:
         norm = {
@@ -221,6 +239,7 @@ def _normalize_revision(e: dict) -> dict:
         "ts": str(e.get("ts") or ""),
         "key": str(e.get("key") or "").strip(),
         "kind": "revision",
+        "args_digest": str(e.get("args_digest") or ""),
         "reason": str(e.get("reason") or ""),
         "changes": norm_changes,
         "generation": generation,
@@ -397,27 +416,87 @@ def read_run(
     return data
 
 
+def active_runs(project_dir: Path) -> Iterator[tuple[str, dict]]:
+    """The ACTIVE run slots as ``(slot, state)`` — ONE traversal.
+
+    Reads every slot the registry names (:data:`_RUN_SLOT_FILES`), so a
+    third slot is one entry here instead of a second loop in each reader.
+    The registry and the slot files belong to this module; callers outside
+    it must not reach for :data:`_RUN_SLOT_FILES` themselves (TODO-0240
+    review: a private cross-module import grew in ``awf.api.hygiene``).
+
+    A corrupt or absent slot file reads as "no run" (:func:`read_run`),
+    so a broken file never hides the other slot.
+    """
+    for name in _RUN_SLOT_FILES:
+        state = read_run(project_dir, slot=name) or {}
+        if state.get("active"):
+            yield name, state
+
+
+def queued_todo_slot(project_dir: Path, todo_id: str) -> str:
+    """The active run slot still PLANNING to launch ``todo_id`` (``""`` = none).
+
+    One predicate for every writer that moves or deletes a TODO file
+    (``remove_todo``, ``retire_todo``, ``remove_orphans``): the run slot is
+    a reference, and a file moved under it leaves the queue naming a unit
+    that cannot launch.
+
+    Only the NOT-STARTED region counts (queue positions from ``index`` on,
+    minus ``current``): retiring a rejected/current unit is the documented
+    recovery path, and a completed element is history
+    (``test_launch_unblocks_after_retire`` /
+    ``test_completed_queue_element_does_not_block_remove``).
+    """
+    for name, run in active_runs(project_dir):
+        try:
+            index = int(run.get("index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        queue_ids = [q["todo_id"] for q in normalize_queue(run.get("queue"))]
+        current = str(run.get("current") or "")
+        if todo_id in queue_ids[index:] and todo_id != current:
+            return name
+    return ""
+
+
 def _ensure_lock_file(project_dir: Path) -> None:
     """AUD05-05 (QA): the .lock must hold at least one byte before first use.
 
     ``locked()`` creates the lock file empty via ``open(..., "a+b")`` on
-    first use; msvcrt.locking (Windows) locks by byte offset, and locking
-    byte 0 of an empty file is unstable. Writing one byte up front — only
-    when the file is absent — makes the Windows path stable. The Linux path
-    is unchanged: flock does not depend on file contents.
+    first use. The one byte is written for stable on-disk content — POSIX
+    ``flock`` locks the whole file and does not depend on it. Historically
+    the reason was ``msvcrt.locking`` (byte-offset on Windows), but that
+    path cannot reach this code any more: :func:`managed_fs.open_managed`
+    refuses on a non-POSIX platform (fail-closed, see ``docs/design.md``),
+    so the byte is parity/legacy, not a Windows requirement.
+
+    TODO-0227 (M3): creation goes through the managed no-follow opener — a
+    symlinked ``.agentic`` / ``state`` / ``.lock`` is refused instead of
+    followed. The old ``is_file()`` shortcut accepted a symlinked leaf as a
+    ready lock (it follows the link) and returned without touching the
+    barrier; the opener now checks every component and the leaf before the
+    byte lands.
     """
     from ._lock import LOCK_NAME
+    from .infra import managed_fs
 
     state_dir = paths.agentic_dir(project_dir) / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
     lock_file = state_dir / LOCK_NAME
-    if lock_file.is_file():
-        return
     try:
-        with open(lock_file, "xb") as f:
-            f.write(b"\0")
+        fd = managed_fs.open_managed(
+            lock_file,
+            flags=os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            mode=0o600,
+            root=managed_fs.agentic_root_for(state_dir),
+            create=True,
+        )
     except FileExistsError:
-        pass  # a concurrent caller created it first
+        return  # a concurrent caller created it first
+    try:
+        os.write(fd, b"\0")
+    finally:
+        os.close(fd)
 
 
 def write_run(project_dir: Path, *, slot: str = "main", **fields) -> dict:
@@ -635,9 +714,11 @@ def append_evidence_plan(state: dict, todo_id: str, plan: dict) -> None:
     replaced: a retry that re-launches the same item appends a fresh
     snapshot; the surfaces read the current element's (last) entry.
 
-    ``plan`` carries ``{todo_sha, verify, gates, prove_red, note}`` —
-    the launch-time snapshot of the TODO's contract + file hash
-    (``awf/api/run.py::_todo_evidence_plan``).
+    ``plan`` carries ``{todo_sha, contract, verify, gates, prove_red,
+    note}`` — the launch-time snapshot of the TODO's contract + file hash
+    (``awf/api/run.py::_todo_evidence_plan``). ``contract`` is the I2
+    marker (``"broken"``) and is kept only when set, so a healthy snapshot
+    keeps the historical shape.
     """
     plans = state.get("evidence_plans")
     if not isinstance(plans, list):
@@ -648,17 +729,19 @@ def append_evidence_plan(state: dict, todo_id: str, plan: dict) -> None:
             return []
         return [x for x in v if isinstance(x, str) and x.strip()]
 
-    plans.append(
-        {
-            "ts": now_iso(),
-            "todo_id": str(todo_id or "").strip(),
-            "todo_sha": str(plan.get("todo_sha") or ""),
-            "verify": _str_items(plan.get("verify")),
-            "gates": _str_items(plan.get("gates")),
-            "prove_red": _str_items(plan.get("prove_red")),
-            "note": str(plan.get("note") or ""),
-        }
-    )
+    entry = {
+        "ts": now_iso(),
+        "todo_id": str(todo_id or "").strip(),
+        "todo_sha": str(plan.get("todo_sha") or ""),
+        "verify": _str_items(plan.get("verify")),
+        "gates": _str_items(plan.get("gates")),
+        "prove_red": _str_items(plan.get("prove_red")),
+        "note": str(plan.get("note") or ""),
+    }
+    # One home for the marker shape on BOTH sides of the state file
+    # (``_normalize_evidence_plan`` reads, this writes).
+    entry.update(_contract_marker(plan))
+    plans.append(entry)
 
 
 def find_revision(state: dict, key: str) -> dict | None:
@@ -682,6 +765,7 @@ def append_revision(
     changes: list[dict],
     generation: int,
     resume_from: str = "",
+    args_digest: str = "",
 ) -> None:
     """ORCH M3.4 / REPORTS32 (TODO-0198): append an applied revision to the
     state dict IN PLACE.
@@ -691,8 +775,10 @@ def append_revision(
     atomic write as the queue change it records (the decisions' path, M1:
     one lock hold, one write). The entry is
     ``{ts, key, kind: "revision", reason, changes, generation,
-    resume_from}``. ``resume_from`` (ORCH M4.1) names the stage the
-    stopped unit resumes from (``""`` when the stop was a no-op). A change's
+    resume_from, args_digest}``. ``resume_from`` (ORCH M4.1) names the stage
+    the stopped unit resumes from (``""`` when the stop was a no-op);
+    ``args_digest`` (AA1, TODO-0240 review v7) pins the request payload to
+    the key — a repeat with a different queue is not a repeat. A change's
     ``class`` (REPORTS32: ``appended`` / ``inserted`` — the element joined
     the queue rather than changing a pipeline) is kept; a plain pipeline
     change has no key, so legacy records stay as-is. The caller checks
@@ -720,6 +806,7 @@ def append_revision(
             "ts": now_iso(),
             "key": str(key or "").strip(),
             "kind": "revision",
+            "args_digest": str(args_digest or ""),
             "reason": str(reason or "").strip(),
             "changes": [
                 _norm_change(c)

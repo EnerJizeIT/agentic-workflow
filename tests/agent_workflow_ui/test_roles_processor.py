@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from agent_workflow_ui.opencode_config import _slugify
 from agent_workflow_ui.roles_processor import (
+    RoleOpReport,
     _delete_from_project,
     process_role_deletions,
     process_role_saves,
@@ -1118,3 +1119,36 @@ def test_bd32_collect_opencode_models_invalid_json(tmp_path, monkeypatch):
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: type("R",(),{"returncode":1,"stdout":"","stderr":""})())
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     assert _collect_opencode_models() == []
+
+
+# ── flow variant without a team (REVIEW S1) ──────────────────────────────────
+
+
+def test_flow_variant_without_team_materializes_the_pipeline(
+    isolated_roles_dir, reset_project_dir, tmp_git_repo
+):
+    """REVIEW S1: the form allows a variant with an empty team — the guard must not drop it.
+
+    ``apply_project_setup`` already accepts "variant + empty team" (R2), but
+    the plugin guard used to require a team, context message or instructions.
+    The user's only input (the composition choice) vanished silently.
+    """
+    from awf import api
+
+    api.init_project(tmp_git_repo, project_name="VariantOnly")
+    report = RoleOpReport()
+
+    process_role_saves(
+        {"team_config": "[]", "flow_variant": "full"},
+        project_dir=tmp_git_repo,
+        report=report,
+    )
+
+    pipeline = tmp_git_repo / ".agentic" / "pipelines" / "default.yaml"
+    assert pipeline.is_file(), (
+        f"flow variant dropped (applied={report.applied!r}, "
+        f"warnings={report.warnings!r})"
+    )
+    text = pipeline.read_text(encoding="utf-8")
+    assert "role: agent-implementer" in text
+    assert "pipeline: default.yaml" in report.applied

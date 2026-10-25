@@ -16,9 +16,15 @@ from typing import Any
 
 import yaml
 
-from .._atomic import atomic_write_text
-from ._helpers import require_agentic, slugify_role
-from ._results import ApplyProjectSetupResult
+from .. import config as cfg_mod
+from ..pipeline import active_pipeline_name, validate_pipeline_document
+from ._errors import AwfApiError
+from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic, slugify_role
+from ._results import ApplyProjectSetupResult, WritePipelineResult
+from ._templates import awf_templates_dir, package_role_template
+from .pipelines import dump_pipeline_document
+from .pipelines import write_pipeline as _write_named_pipeline
+from .roles import materialize_builtin_role_content
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +66,209 @@ def _stage_yaml(name: str, role: str, **extra: Any) -> dict[str, Any]:
 # stages, config.yaml models keys, and role-file lookups must all agree on
 # the same slug. Kept as an alias for existing importers.
 _slugify_role = slugify_role
+
+#: TODO-0230 (M6): built-in pipeline starters shipped with awf. The form's
+#: "flow variant" choice picks one instead of the generated team pipeline.
+#: REVIEW W5: this mapping is the ONE registry — the CLI ``--variant``
+#: choices and the form radio (through ``flow_variants``) read it, so a new
+#: starter appears everywhere without a second hardcoded list. The value is
+#: the human label the form shows.
+BUILTIN_PIPELINES = {
+    "full": "Полная проверка: implementer → architect → QA → auditor",
+    "code-health": "Оздоровление кода: architect → refactoring → verify",
+}
+
+
+def _builtin_pipeline_path(name: str) -> Path:
+    """Where a shipped pipeline starter lives (one layout fact, one place)."""
+    return awf_templates_dir() / "pipelines" / f"{name}.yaml"
+
+
+def _builtin_pipeline_template(name: str) -> Path | None:
+    """Ship-with-awf pipeline starter, or None for an unknown name."""
+    if name not in BUILTIN_PIPELINES:
+        return None
+    path = _builtin_pipeline_path(name)
+    return path if path.is_file() else None
+
+
+def _require_builtin_pipeline(name: str) -> Path:
+    """The template file of a known variant — ValueError otherwise.
+
+    REVIEW R3 (TODO-0230): "there is no such variant" and "the variant is
+    known but its installed template is missing" are different problems
+    for the user — a typo versus a broken installation. One message for
+    both sent people looking for a name that was already right.
+    """
+    if name not in BUILTIN_PIPELINES:
+        raise ValueError(
+            f"Unknown flow variant {name!r}; available: "
+            + ", ".join(BUILTIN_PIPELINES)
+        )
+    template = _builtin_pipeline_template(name)
+    if template is None:
+        expected = _builtin_pipeline_path(name)
+        raise ValueError(
+            f"Flow variant {name!r} is known but its template is not "
+            f"installed ({expected}) — reinstall awf or pick one of: "
+            + ", ".join(BUILTIN_PIPELINES)
+        )
+    return template
+
+
+def _builtin_pipeline_stages(template: Path) -> list[dict[str, Any]]:
+    """Stages of a shipped template — checked by the SHARED document validator.
+
+    ``validate_pipeline_document`` is the same rule set the loader and every
+    other write path use (A-06: unknown keys, empty ids, bad policies).
+    A second, softer check here would let a malformed template reach disk and
+    fail only when the pipeline starts. The error type stays ``ValueError``:
+    ``apply_project_setup`` reports it as a warning.
+    """
+    try:
+        data = yaml.safe_load(template.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        raise ValueError(f"Cannot read pipeline template {template}: {e}") from e
+    try:
+        return validate_pipeline_document(data, template.name)
+    except AwfApiError as e:
+        raise ValueError(str(e)) from e
+
+
+def _builtin_pipeline_source(name: str, template: Path) -> str:
+    """The ``description`` line an applied variant carries."""
+    return f"Built-in flow variant {name!r} ({template.name})"
+
+
+def _builtin_role_template(role: str) -> Path | None:
+    """Role file the awf package ships for *role* (or None).
+
+    U1: a starter pipeline is only "ready to run" when its
+    stage roles resolve. The package ships short, skill-free role
+    templates so setup can materialize the missing ones instead of
+    writing a pipeline that dies on stage 2. The lookup itself lives in
+    ``_templates.package_role_template`` — the same one add_role uses.
+    """
+    return package_role_template(role)
+
+
+def _stage_roles(stages: list[dict[str, Any]]) -> list[str]:
+    """Distinct non-supervisor roles named by a pipeline's stages."""
+    roles = {
+        str(stage.get("role") or "").strip()
+        for stage in stages
+        if isinstance(stage, dict)
+    }
+    return sorted(r for r in roles if r and r not in _SKIP_ROLE_MAPPING)
+
+
+def _roles_without_source(roles: list[str], project_dir: Path) -> list[str]:
+    """Roles with neither a resolving file nor a package template.
+
+    The one rule behind both "hide the variant in the form" and "refuse the
+    write" — two hand-written list comprehensions would be free to drift.
+    """
+    return [
+        role
+        for role in roles
+        if not _role_resolves(role, project_dir)
+        and _builtin_role_template(role) is None
+    ]
+
+
+def _variant_roles_error(variant: str, missing: list[str]) -> ValueError:
+    """The refusal for a variant whose stage roles cannot be materialized."""
+    return ValueError(
+        f"flow variant {variant!r} needs role files that are not "
+        f"installed: {', '.join(missing)} — create them or pick "
+        "another composition"
+    )
+
+
+def variant_unavailable_roles(variant: str, project_dir: Path) -> list[str]:
+    """Stage roles of *variant* unattainable even after materialization.
+
+    A role is available when its file resolves (project → global, the
+    runtime order) or the package ships a template for it. A non-empty
+    answer means the variant is a dead end: its stage would fail at
+    runtime, so the form hides it and the write path refuses.
+    """
+    roles = _stage_roles(_variant_composition(variant)[0])
+    return _roles_without_source(roles, project_dir)
+
+
+def _materialize_variant_roles(variant: str, project_dir: Path) -> bool:
+    """Create the missing role files of a shipped variant, then verify.
+
+    U1: copy from the package templates through the managed
+    writer, never overwriting an existing file. If a role still does not
+    resolve (no template, unreadable project, monkeypatched resolution),
+    refuse with the roles named — a pipeline that cannot start is worse
+    than an explicit "not available".
+
+    REVIEW V4/V5/V6: the project copy is what makes the project portable —
+    a global role that happens to resolve on this machine is not enough.
+    The written file carries the managed blocks and the model line through
+    :func:`awf.api.roles.materialize_builtin_role_content` (the create path's
+    OWN transformation — never a second copy of that rule set) and gets its
+    ``models.<role>.agent_name`` mapping, like an add_role-created role.
+
+    REVIEW architect: every source is read and every write TARGET is
+    preflighted before the first write. A missing or unreadable template, or
+    a symlinked role path, is a refusal with NO partial materialization —
+    the preflight and the mutation are not interleaved.
+    """
+    roles = _stage_roles(_variant_composition(variant)[0])
+    pending: list[tuple[Path, str]] = []
+    for role in roles:
+        role_path = project_dir / ".agentic" / "roles" / f"{role}.md"
+        if role_path.exists():
+            continue
+        source = _builtin_role_template(role)
+        if source is None:
+            continue
+        try:
+            raw = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise ValueError(
+                f"flow variant {variant!r}: cannot read the role template "
+                f"for '{role}' ({source}): {e}"
+            ) from e
+        pending.append(
+            (
+                role_path,
+                materialize_builtin_role_content(project_dir, role, raw),
+            )
+        )
+    missing = _roles_without_source(roles, project_dir)
+    if missing:
+        raise _variant_roles_error(variant, missing)
+    if pending:
+        # The write targets go through the same no-follow barrier as the
+        # pipeline file: a symlinked role path must refuse BEFORE the first
+        # write, or a multi-role variant lands half-materialized.
+        refuse_unsafe_surfaces(
+            project_dir,
+            f"materialize roles for flow variant {variant!r}",
+            *[path for path, _ in pending],
+        )
+    for role_path, body in pending:
+        managed_write_api_text(
+            role_path, body, operation=f"materialize role {role_path.stem}"
+        )
+    config_updated = update_config_role_mapping(
+        [{"role": role} for role in roles], project_dir
+    )
+    missing = [
+        role for role in roles if not _role_resolves(role, project_dir)
+    ]
+    if missing:
+        raise _variant_roles_error(variant, missing)
+    # REVIEW W3: the caller (apply_project_setup) reports "config: role
+    # mapping" from this flag — the mapping is written here, not in its
+    # team-path call, so the variant must say whether it changed anything.
+    return config_updated
+
 
 
 def build_pipeline_stages(
@@ -218,14 +427,7 @@ def build_pipeline_stages(
 
 def _dump_pipeline(name: str, description: str, stages: list[dict[str, Any]]) -> str:
     """The pipeline document as YAML text (the write path's exact dump)."""
-    doc: dict[str, Any] = {
-        "name": name,
-        "description": description,
-        "stages": stages,
-    }
-    return yaml.safe_dump(
-        doc, default_flow_style=False, allow_unicode=True, sort_keys=False
-    )
+    return dump_pipeline_document(name, stages, description)
 
 
 def pipeline_yaml_text(
@@ -254,30 +456,101 @@ def pipeline_yaml_text(
     return _dump_pipeline(name, description, stages)
 
 
+def _variant_composition(variant: str) -> tuple[list[dict[str, Any]], str]:
+    """Stages + description of a built-in variant — the ONE composition.
+
+    The preview builder, the setup write and the CLI write all get the
+    variant from here; a second ``_require_builtin_pipeline`` +
+    ``_builtin_pipeline_stages`` pair at a call site would be the "written
+    next to" copy that drifts (REVIEW architect).
+    """
+    template = _require_builtin_pipeline(variant)
+    return (
+        _builtin_pipeline_stages(template),
+        _builtin_pipeline_source(variant, template),
+    )
+
+
+def pipeline_variant_yaml_text(
+    variant: str,
+    *,
+    name: str = "default",
+) -> str:
+    """The exact YAML text ``write_pipeline(flow_variant=...)`` writes.
+
+    The project-setup preview and the write path must agree — what the
+    user sees is what will be written. One builder for the variant whose
+    text reaches the form, never a second rendering of the template.
+    """
+    stages, description = _variant_composition(variant)
+    return _dump_pipeline(name, description, stages)
+
+
+def write_variant_pipeline(
+    project_dir: Path,
+    name: str,
+    variant: str,
+    *,
+    force: bool = False,
+) -> tuple[WritePipelineResult, list[str]]:
+    """Write a built-in starter as a standalone named pipeline.
+
+    The CLI (``awf pipeline-write --variant``) and the setup form must
+    compose a variant the same way — template lookup, stage validation and
+    the description all live in :func:`_variant_composition`, never in a
+    second caller that reaches into this module's helpers. The side-effect
+    contract is the named pipeline writer's: only
+    ``.agentic/pipelines/<name>.yaml`` is touched; role files are NOT
+    materialized (that belongs to the setup flow) and a role that resolves
+    nowhere comes back in the warning list.
+
+    Returns:
+        ``(write_result, unresolved_roles)``.
+
+    Raises:
+        ValueError: unknown variant, or a known one whose template is gone.
+        AwfApiError: invalid name/stages, no .agentic/, or an existing
+            pipeline without ``force``.
+    """
+    stages, description = _variant_composition(variant)
+    result = _write_named_pipeline(
+        project_dir,
+        name,
+        stages,
+        force=force,
+        description=description,
+    )
+    unresolved = [
+        role for role in _stage_roles(stages)
+        if not _role_resolves(role, project_dir)
+    ]
+    return result, unresolved
+
+
 def _active_pipeline_name(project_dir: Path, *, warnings: list[str] | None = None) -> str:
     """AUD06-04: pipeline name the runtime will actually use.
 
-    Mirrors ``resolve_pipeline_file``: ``default_pipeline`` from
-    config.yaml wins over "default". The value becomes a file path, so it
-    is validated the same way (AUD14-05) — an invalid name falls back to
-    "default" with a warning instead of escaping .agentic/pipelines/.
+    The value itself comes from :func:`awf.pipeline.active_pipeline_name` —
+    the resolver the runtime and the setup preview use — so the written
+    file and the preview cannot disagree on the name. This wrapper only
+    adds the form's warning for an invalid ``default_pipeline``.
     """
-    from .. import config as cfg_mod
-
+    config = cfg_mod.load(project_dir)
+    name = active_pipeline_name(project_dir, config)
     declared = str(
-        cfg_mod.get(cfg_mod.load(project_dir), "default_pipeline", "default")
-        or "default"
+        cfg_mod.get(config, "default_pipeline", "default") or "default"
     ).strip()
-    if not declared or declared == "default":
-        return "default"
-    if declared in {".", ".."} or not re.fullmatch(r"[\w.-]+", declared):
-        if warnings is not None:
-            warnings.append(
-                f"default_pipeline {declared!r} in config.yaml is not a valid "
-                "pipeline name — the pipeline was written to default.yaml instead"
-            )
-        return "default"
-    return declared
+    if (
+        warnings is not None
+        and declared
+        and declared != "default"
+        and name == "default"
+    ):
+        warnings.append(
+            f"default_pipeline {declared!r} in config.yaml is not a valid "
+            "pipeline name — the pipeline was written to default.yaml instead"
+        )
+    return name
 
 
 def write_pipeline(
@@ -287,7 +560,9 @@ def write_pipeline(
     stage_mode: str = "chain",
     primary_role: str = "",
     include_qa: bool = False,
+    flow_variant: str = "",
     warnings: list[str] | None = None,
+    config_updates: list[bool] | None = None,
 ) -> Path | None:
     """Write the active pipeline file from team selection.
 
@@ -307,36 +582,66 @@ def write_pipeline(
         stage_mode: ``"chain"`` (default) or ``"single"``.
         primary_role: ``"single"`` mode — the primary role (name/slug).
         include_qa: ``"single"`` mode — add the team's QA role.
+        flow_variant: built-in starter pipeline (``full`` / ``code-health``);
+            replaces the team composition. Missing role files are copied
+            from the package templates; a role with neither a file nor a
+            template refuses the write (ValueError, roles named) — the
+            alternative is an opaque runtime failure.
         warnings: optional list to collect config problems (invalid
-            default_pipeline name) and composition degradations.
+            default_pipeline name), composition degradations and template
+            roles that do not resolve.
 
     Returns:
         Path to written file. Backups the existing file to .bak.
     """
     pipelines_dir = project_dir / ".agentic" / "pipelines"
-    pipelines_dir.mkdir(parents=True, exist_ok=True)
 
-    stages = build_pipeline_stages(
-        team_order,
-        stage_mode=stage_mode,
-        primary_role=primary_role,
-        include_qa=include_qa,
-        warnings=warnings,
-    )
+    # REVIEW architect: the preflight runs BEFORE the variant
+    # materialization below. A refused write (unsafe/symlinked target) must
+    # not leave freshly written role files and config mapping behind —
+    # preflight and mutation are not interleaved.
     name = _active_pipeline_name(project_dir, warnings=warnings)
-
     target = pipelines_dir / f"{name}.yaml"
+    backup = target.with_name(f"{target.name}.bak")
+    # Q3 class (REVIEW architect): the preflight covers exactly what this
+    # branch touches — the target always, the backup only when an existing
+    # file is moved aside. A stray symlinked ``.bak`` with no target is not
+    # an escape this write would perform.
+    surfaces = [target]
     if target.exists():
-        backup = target.with_name(f"{target.name}.bak")
+        surfaces.append(backup)
+    refuse_unsafe_surfaces(project_dir, "write pipeline", *surfaces)
+
+    source = "Generated by awf.api from project-setup form"
+    if flow_variant:
+        # TODO-0230 (M6): a starter template replaces the generated team
+        # composition. The raw stage order is validated by the loader; the
+        # template's own ``name:`` is rewritten to the project's active one.
+        stages, source = _variant_composition(flow_variant)
+        # U1: materialize missing role files from the package;
+        # anything still unresolved refuses the write (ValueError, named
+        # roles) instead of producing a pipeline that dies at stage 2.
+        changed = _materialize_variant_roles(flow_variant, project_dir)
+        if config_updates is not None:
+            config_updates.append(changed)
+    else:
+        stages = build_pipeline_stages(
+            team_order,
+            stage_mode=stage_mode,
+            primary_role=primary_role,
+            include_qa=include_qa,
+            warnings=warnings,
+        )
+    if target.exists():
         try:
             target.rename(backup)
             log.info("Backed up existing pipeline to %s", backup)
         except OSError:
             pass
 
-    content = _dump_pipeline(name, "Generated by awf.api from project-setup form", stages)
-    atomic_write_text(target, content)
-    log.info("Wrote pipeline with %d team stages to %s", len(stages) - 2, target)
+    content = _dump_pipeline(name, source, stages)
+    managed_write_api_text(target, content, operation="write pipeline")
+    log.info("Wrote pipeline with %d stages to %s", len(stages), target)
     return target
 
 
@@ -384,11 +689,15 @@ def write_quick_pipeline(
             warnings.append(f"quick pipeline: {reason} — quick.yaml not written")
         return None
 
-    pipelines_dir.mkdir(parents=True, exist_ok=True)
-
     target = pipelines_dir / f"{_QUICK_PIPELINE_NAME}.yaml"
+    backup = target.with_name(f"{target.name}.bak")
+    # Same branch rule as ``write_pipeline``: the backup is a surface only
+    # when there is something to move aside.
+    surfaces = [target]
     if target.exists():
-        backup = target.with_name(f"{target.name}.bak")
+        surfaces.append(backup)
+    refuse_unsafe_surfaces(project_dir, "write quick pipeline", *surfaces)
+    if target.exists():
         try:
             target.rename(backup)
             log.info("Backed up existing quick pipeline to %s", backup)
@@ -400,7 +709,9 @@ def write_quick_pipeline(
         "Quick tier (S-class units): the team without the QA stage",
         stages,
     )
-    atomic_write_text(target, content)
+    managed_write_api_text(
+        target, content, operation="write quick pipeline"
+    )
     log.info("Wrote quick pipeline with %d team stages to %s", len(stages) - 2, target)
     return target
 
@@ -500,23 +811,28 @@ def update_config_role_mapping(
     try:
         old_content = config_path.read_text(encoding="utf-8")
         # AUD14-06: backups hold the full config (may contain keys) —
-        # atomic_write_text creates them 0600; write_text left them 0644.
-        atomic_write_text(backup, old_content)
+        # the managed writer creates them 0600; write_text left them 0644.
+        managed_write_api_text(
+            backup, old_content, operation="config backup"
+        )
         # Also write timestamped backup (keep last 3)
         from datetime import datetime as _dt
         ts_backup = config_path.with_name(
             f"config.yaml.{_dt.now().strftime('%Y%m%d%H%M%S')}.bak"
         )
-        atomic_write_text(ts_backup, old_content)
+        managed_write_api_text(
+            ts_backup, old_content, operation="config backup"
+        )
         old_baks = sorted(config_path.parent.glob("config.yaml.*.bak"))
         for old in old_baks[:-3]:
             old.unlink(missing_ok=True)
-    except OSError as e:
+    except (OSError, AwfApiError) as e:
         log.warning("BD-12: backup failed: %s", e)
 
-    atomic_write_text(
+    managed_write_api_text(
         config_path,
         yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
+        operation="update config.yaml",
     )
     log.info("BD-12: config.yaml updated with role mappings")
     return True
@@ -638,9 +954,10 @@ def save_context_and_instructions(
         log.info("UI-3: saved supervisor.instructions to config.yaml (%d chars)", len(supervisor_instructions))
 
     if config_changed:
-        atomic_write_text(
+        managed_write_api_text(
             config_path,
             yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+            operation="save context/instructions",
         )
 
     # 2. Patch supervisor.md (idempotent via UI-2/UI-3 marker sections)
@@ -682,9 +999,32 @@ def save_context_and_instructions(
 
     if sections_to_add:
         new_content = current + "".join(sections_to_add)
-        atomic_write_text(supervisor_md, new_content)
+        managed_write_api_text(
+            supervisor_md,
+            new_content,
+            operation="save supervisor.md",
+        )
         log.info("UI-2/UI-3: appended %d section(s) to supervisor.md", len(sections_to_add))
 
+    return True
+
+
+def _role_resolves(role: str, project_dir: Path) -> bool:
+    """True when the runtime would find a role file for *role*.
+
+    Delegates to :func:`awf.supervisor.resolve_role_file` — the runtime's
+    OWN resolution (project → global) — instead of spelling the lookup
+    order a second time: setup deciding "the role is missing" on rules
+    the engine does not use is the AUD06-15 class of bug.
+    """
+    # Runtime dependency: imported here (not at module load) so that
+    # importing awf.api.setup does not pull the supervisor/doctrine stack.
+    from ..supervisor import resolve_role_file
+
+    try:
+        resolve_role_file(role, project_dir)
+    except RuntimeError:
+        return False
     return True
 
 
@@ -695,10 +1035,6 @@ def _unresolved_team_roles(team: list[dict[str, Any]], project_dir: Path) -> lis
     the check agrees with the runtime. A role that resolves nowhere would
     otherwise crash its first stage with RuntimeError from resolve_role_file.
     """
-    from ..supervisor import global_roles_dir  # lazy — avoids import cycle
-
-    roles_dir = project_dir / ".agentic" / "roles"
-    gdir = global_roles_dir()
     seen: set[str] = set()
     missing: list[str] = []
     for member in team:
@@ -711,9 +1047,8 @@ def _unresolved_team_roles(team: list[dict[str, Any]], project_dir: Path) -> lis
         if role in seen:
             continue
         seen.add(role)
-        if (roles_dir / f"{role}.md").is_file() or (gdir / f"{role}.md").is_file():
-            continue
-        missing.append(role)
+        if not _role_resolves(role, project_dir):
+            missing.append(role)
     return missing
 
 
@@ -729,6 +1064,7 @@ def apply_project_setup(
     stage_mode: str = "chain",
     primary_role: str = "",
     include_qa: bool = False,
+    flow_variant: str = "",
 ) -> ApplyProjectSetupResult:
     """Apply a project-setup form submit to awf project files.
 
@@ -771,6 +1107,10 @@ def apply_project_setup(
         stage_mode: ``"chain"`` (default) or ``"single"``.
         primary_role: ``"single"`` mode — the primary role (name/slug).
         include_qa: ``"single"`` mode — add the team's QA role.
+        flow_variant: built-in starter pipeline (``full`` / ``code-health``);
+            replaces the team composition. An unknown name is a warning, not
+            a crash — and it is named even when the team is empty (the write
+            below is skipped then, so nothing else would report it).
 
     Returns:
         ApplyProjectSetupResult with paths written + flags.
@@ -781,8 +1121,30 @@ def apply_project_setup(
     warnings: list[str] = []
     pipeline_path: Path | None = None
 
+    if flow_variant:
+        # The team guard below skips write_pipeline entirely — validate the
+        # variant here, or an empty team turns a typo into silence.
+        try:
+            _require_builtin_pipeline(flow_variant)
+        except ValueError as e:
+            warnings.append(f"pipeline: {e}")
+            flow_variant = ""
+
+    # REVIEW R2 (TODO-0230): a flow variant is a complete composition — it
+    # needs no team to be written. The old ``if team:`` guard silently
+    # dropped a valid variant submit with an empty team.
     quick_path: Path | None = None
-    if team:
+    if flow_variant and (stage_mode != "chain" or primary_role or include_qa):
+        # The variant replaces the team composition: those knobs cannot
+        # shape it. Name the loss instead of ignoring the input silently.
+        warnings.append(
+            f"pipeline: flow variant {flow_variant!r} replaces the team "
+            "composition — stage_mode/primary_role/include_qa are not applied"
+        )
+    # REVIEW W3: the variant branch writes models.<role>.agent_name inside
+    # write_pipeline; the out-list carries that fact to the report flag.
+    variant_config_updates: list[bool] = []
+    if team or flow_variant:
         try:
             pipeline_path = write_pipeline(
                 team,
@@ -790,7 +1152,9 @@ def apply_project_setup(
                 stage_mode=stage_mode,
                 primary_role=primary_role,
                 include_qa=include_qa,
+                flow_variant=flow_variant,
                 warnings=warnings,
+                config_updates=variant_config_updates,
             )
         except ValueError as e:
             warnings.append(f"pipeline: {e}")
@@ -801,16 +1165,26 @@ def apply_project_setup(
             # — the QA role stages removed. Best-effort: the variant is
             # non-essential, so neither a skip nor a hard write failure
             # may fail the submit — both are named warnings.
-            try:
-                quick_path = write_quick_pipeline(team, project_dir, warnings=warnings)
-            except Exception as e:  # noqa: BLE001 — the quick variant must not fail setup
-                quick_path = None
-                warnings.append(f"quick pipeline: {e}")
-                log.warning("apply_project_setup: %s", e)
+            # REVIEW R2 (TODO-0230): quick is built from the team, so an
+            # empty team (flow variant only) is a named skip, not a crash.
+            if team:
+                try:
+                    quick_path = write_quick_pipeline(
+                        team, project_dir, warnings=warnings
+                    )
+                except Exception as e:  # noqa: BLE001 — the quick variant must not fail setup
+                    quick_path = None
+                    warnings.append(f"quick pipeline: {e}")
+                    log.warning("apply_project_setup: %s", e)
+            else:
+                warnings.append(
+                    "quick pipeline: team is empty — quick.yaml not written "
+                    "(a flow variant carries no team to derive it from)"
+                )
 
         config_updated = update_config_role_mapping(
             team, project_dir, warnings=warnings
-        )
+        ) or any(variant_config_updates)
         # AUD06-15: report team roles that resolve to no role file — a typo
         # used to surface only at runtime (RuntimeError from
         # resolve_role_file at stage spawn: retries, salvage, crash).
@@ -873,11 +1247,15 @@ def apply_project_setup(
 
 
 __all__ = [
+    "BUILTIN_PIPELINES",
     "apply_project_setup",
     "write_pipeline",
     "write_quick_pipeline",
     "build_pipeline_stages",
     "pipeline_yaml_text",
+    "pipeline_variant_yaml_text",
     "update_config_role_mapping",
     "save_context_and_instructions",
+    "variant_unavailable_roles",
+    "write_variant_pipeline",
 ]

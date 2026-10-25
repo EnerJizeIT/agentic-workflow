@@ -369,6 +369,7 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         cwd=str(project_dir),
         capture_output=True,
         text=True,
+        errors="replace",
         check=False,
         timeout=30,
     )
@@ -411,6 +412,21 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
     step = run_step_after_done(run_record.state)
     if step:
         run_next_action = step
+
+    # TODO-0242 (A.3): the engine-death fact is part of the bootstrap. The
+    # advice ORDER has one owner (``next_action_from_status`` ranks
+    # expected_action / salvage / BLOCKED above the resume); asking it —
+    # rather than re-reading those three fields here — means a future
+    # higher-priority fact the owner learns is not silently outranked.
+    engine_dead = str(status.engine_dead or "")
+    engine_dead_todo = str(status.engine_dead_todo or "")
+    if engine_dead:
+        from .._engine_liveness import engine_dead_hint
+        from ..brief import next_action_from_status
+
+        resume = engine_dead_hint(engine_dead, engine_dead_todo)
+        if next_action_from_status(status) == resume:
+            run_next_action = resume
 
     # Dogfood-9: structural triggers for increment planning + commit visibility
     pipeline_configured = _pipeline_exists(project_dir)
@@ -461,6 +477,8 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         run_evidence_plan=(
             dict(run_record.evidence_plan) if run_record.evidence_plan else None
         ),
+        engine_dead=engine_dead,
+        engine_dead_todo=engine_dead_todo,
         next_action=run_next_action,
     )
 

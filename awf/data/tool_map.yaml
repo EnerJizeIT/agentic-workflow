@@ -18,12 +18,14 @@ groups:
         when: "start the active unit"
       - mcp: awf_continue
         cli: continue
-        when: "resume dead pipeline (--ack BLOCKED)"
+        when: "resume dead pipeline (--ack)"
       - mcp: awf_retry_stage
         when: "retry the salvage stage"
       - mcp: awf_kill
         cli: kill
         when: "stop a stuck pipeline"
+      - cli: supervise
+        when: "restart a dead engine"
   - title: check
     tools:
       - mcp: awf_status
@@ -33,16 +35,16 @@ groups:
         cli: commit-workflow
         when: "workflow files → git"
       - mcp: awf_current_step
-        when: "phase + its full prompt"
+        when: "phase + full prompt"
       - mcp: awf_load_supervisor_context
         when: "full context, one call"
       - mcp: awf_wait_for_event
-        when: "block for the next event"
+        when: "block until an event"
       - mcp: awf_pipelines
         cli: pipelines
         when: "list pipelines + active"
       - mcp: awf_check_model_config
-        when: "models vs providers (pre-start)"
+        when: "models vs providers"
   - title: run
     tools:
       - mcp: awf_run_start
@@ -54,17 +56,17 @@ groups:
       - mcp: awf_run_note
         when: "owner's live status line"
       - mcp: awf_run_revise
-        when: "revise queue (not-started, by key)"
+        when: "revise not-started queue"
       - mcp: awf_run_finish
-        when: "close the run (report)"
+        when: "close the run"
       - mcp: awf_run_service_start
-        when: "create role during main run"
+        when: "create role mid-run"
       - mcp: awf_run_service_status
         when: "service + main snapshot"
       - mcp: awf_run_service_finish
-        when: "close service run (report)"
+        when: "close service run"
       - mcp: awf_run_service_approve
-        when: "approve service unit (evidence)"
+        when: "approve service unit"
       - mcp: awf_approve
         cli: approve
         when: "approve (evidence, sha)"
@@ -74,19 +76,25 @@ groups:
     tools:
       - mcp: awf_unblock
         cli: unblock
-        when: "clear stale BLOCKED/ACK signals"
+        when: "clear stale closures"
       - mcp: awf_todo_remove
         cli: todo-remove
-        when: "remove a never-started unit"
+        when: "remove never-started unit"
       - mcp: awf_todo_retire
         cli: todo-retire
-        when: "retire a stuck rejected unit"
+        when: "retire rejected unit"
       - mcp: awf_todo_update
         cli: todo-update
-        when: "reword a not-started unit"
+        when: "reword not-started unit"
+      - mcp: awf_review_append
+        cli: review-append
+        when: "append REVIEW fix"
+      - mcp: awf_blocked_draft
+        cli: blocked-draft
+        when: "draft from BLOCKED"
       - mcp: awf_restore
         cli: restore
-        when: "restore an archived unit"
+        when: "restore archived unit"
       - mcp: awf_reset
         cli: reset
         when: "clean runtime (confirm first)"
@@ -118,8 +126,9 @@ groups:
     tools:
       - mcp: awf_brief
         cli: brief
-        when: "this card (new session)"
+        when: "this card"
       - mcp: awf_dispatch_todo
+        cli: dispatch
         when: "unit + baseline + signal"
       - mcp: awf_write_pipeline
         cli: pipeline-write
@@ -145,7 +154,7 @@ groups:
         when: "reset to baseline sha"
       - mcp: awf_prove_red
         cli: prove-red
-        when: "prove tests red at baseline"
+        when: "prove red at baseline"
       - mcp: awf_verify_pack
         cli: verify-pack
         when: "deterministic verify report"
@@ -153,7 +162,7 @@ groups:
         cli: report
         when: "statuses, diff, test log"
       - mcp: awf_open_pipeline_dashboard
-        when: "open the live dashboard"
+        when: "open live dashboard"
       - mcp: awf_tree_sha
         cli: tree-sha
         when: "tree fingerprint (verified-sha)"
@@ -162,4 +171,11 @@ groups:
       - cli: mutations
         when: "mutation smoke"
       - cli: todo-draft
-        when: "task skeleton from AUDIT-INDEX.md"
+        when: "skeleton from AUDIT-INDEX.md"
+  - title: helpers
+    hidden: true
+    tools:
+      - cli: config-get
+        when: "read one config.yaml value"
+      - cli: checklist
+        when: "DoD: show/check/apply/hash"

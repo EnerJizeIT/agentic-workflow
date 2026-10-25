@@ -244,6 +244,77 @@ class TestApproveEntrypoint:
         assert rc == 1
 
 
+class TestReviewAppendEntrypoint:
+    """TODO-0240: ``awf review-append`` — the CLI half of the MCP tool.
+
+    The unit added the command next to the API; without this the entry point
+    an owner actually types is never exercised (the same class of gap
+    NEG-2026-09-19 was about).
+    """
+
+    def test_appends_to_a_started_unit(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliReviewAppend")
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0001.md").write_text("# t\n", encoding="utf-8")
+        outbox = repo / ".agentic" / "outbox"
+        outbox.mkdir(parents=True, exist_ok=True)
+        (outbox / "PROGRESS-TODO-0001.md").write_text(
+            "stage: dev\n", encoding="utf-8"
+        )
+        capsys.readouterr()
+
+        rc = cli.main(
+            [
+                "review-append",
+                "TODO-0001",
+                "--text",
+                "фикс: пустой вход",
+                "--project-dir",
+                str(repo),
+            ]
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        text = (inbox / "TODO-0001.md").read_text(encoding="utf-8")
+        assert "## REVIEW-фикс (супервизор, виток 1)" in text
+        assert "фикс: пустой вход" in text
+
+    def test_recovery_outcome_is_exit_code_2(self, tmp_path, capsys, monkeypatch):
+        """REVIEW (architect): the durable branch must answer like
+        ``awf todo-update`` — an unknown outcome prints ``outcome=…`` and
+        exits 2, a plain refusal exits 1. The command was written next to
+        its sibling and had dropped that branch, so a script would retry a
+        ``recovery_required`` blindly."""
+        from awf._errors import OperationRecoveryRequired
+
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliReviewRecovery")
+        capsys.readouterr()
+
+        def _unknown(_project_dir, _todo_id, _text, **_kw):
+            raise OperationRecoveryRequired("ra-op")
+
+        monkeypatch.setattr(api, "review_append", _unknown)
+        rc = cli.main(
+            [
+                "review-append",
+                "TODO-0001",
+                "--text",
+                "fix",
+                "--operation-id",
+                "ra-op",
+                "--project-dir",
+                str(repo),
+            ]
+        )
+
+        out = capsys.readouterr().out
+        assert rc == 2, out
+        assert "outcome=recovery_required" in out
+
+
 class TestRollbackEntrypoint:
     def test_dry_run_after_baseline(self, tmp_path, capsys):
         repo = _git_repo(tmp_path)
@@ -1466,3 +1537,97 @@ class TestFeedbackEntrypoint:
         ):
             assert heading in out
         assert not desk.exists() or not list(desk.glob("*.md"))
+
+
+class TestDispatchEntrypoint:
+    """TODO-0229: `awf dispatch` — CLI parity for the MCP dispatch (source_ref)."""
+
+    def test_dispatch_with_source_ref_inserts_checklist(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliDispatch")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "source.md").write_text(
+            "## R1 Ownership\n\n- owner one\n- owner two\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "docs"], cwd=repo, check=True)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "dispatch",
+            "--content", "# TODO-0001 — cli unit\n\nbody\n",
+            "--source-ref", "docs/source.md#R1 Ownership",
+            "--project-dir", str(repo),
+        ])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        inbox = repo / ".agentic" / "inbox"
+        todo = (inbox / "TODO-0001.md").read_text(encoding="utf-8")
+        assert "## Первоисточник (R1 Ownership)" in todo
+        assert "- [ ] owner one" in todo
+        assert "- [ ] owner two" in todo
+        assert (inbox / "TODO-0001.ready").is_file()
+        assert (repo / ".agentic" / "context" / "BASELINE-TODO-0001.sha").is_file()
+
+    def test_dispatch_missing_source_file_returns_1_without_todo(self, tmp_path, capsys):
+        """A refused source_ref must exit 1 and leave no TODO/.ready/baseline."""
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliDispatchBad")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "bootstrap"], cwd=repo, check=True)
+        capsys.readouterr()
+
+        rc = cli.main([
+            "dispatch",
+            "--content", "# TODO-0001 — cli unit\n",
+            "--source-ref", "docs/nope.md#R1",
+            "--project-dir", str(repo),
+        ])
+
+        captured = capsys.readouterr()
+        assert rc == 1, captured.out
+        assert "no such file" in captured.out + captured.err
+        inbox = repo / ".agentic" / "inbox"
+        assert not (inbox / "TODO-0001.md").exists()
+        assert not (inbox / "TODO-0001.ready").exists()
+        assert not list((repo / ".agentic" / "context").glob("BASELINE-TODO-0001.*"))
+
+
+class TestBlockedDraftEntrypoint:
+    """TODO-0229: `awf blocked-draft` — CLI parity, read-only for the TODO."""
+
+    def test_blocked_draft_prints_review_text_and_keeps_todo(self, tmp_path, capsys):
+        repo = _git_repo(tmp_path)
+        api.init_project(repo, project_name="CliDraft")
+        capsys.readouterr()
+        inbox = repo / ".agentic" / "inbox"
+        (inbox / "TODO-0002.md").write_text("# TODO-0002 — unit\nbody\n")
+        before = (inbox / "TODO-0002.md").read_bytes()
+        (repo / ".agentic" / "outbox" / "BLOCKED-TODO-0002.md").write_text(
+            "## ВЕРДИКТ\n\nblocked\n\n"
+            "## НАХОДКИ\n\n- bug a.py:10\n\n"
+            "## НАПРАВЛЕНИЯ-ФИКСА\n\n- fix a.py:10\n",
+            encoding="utf-8",
+        )
+
+        rc = cli.main(["blocked-draft", "TODO-0002", "--project-dir", str(repo)])
+
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "## REVIEW-фикс" in out
+        assert "bug a.py:10" in out and "fix a.py:10" in out
+        assert "Скоуп: …" in out and "Переносы: …" in out
+        assert (inbox / "TODO-0002.md").read_bytes() == before
+
+
+def test_add_role_mutual_exclusion_names_refresh(tmp_path, capsys):
+    """REVIEW S2: --refresh is a mode; the refusal text names it."""
+    rc = cli.main(
+        ["add-role", "x", "--draft", "--refresh", "--project-dir", str(tmp_path)]
+    )
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "--refresh" in out
+    assert "--draft" in out

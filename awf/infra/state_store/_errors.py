@@ -12,9 +12,6 @@ from typing import Literal
 from ..._errors import AwfApiError
 
 SnapshotStatus = Literal["valid", "missing", "corrupt", "unsupported"]
-OperationStatus = Literal[
-    "reserved", "running", "applied", "refused", "failed", "recovery_required"
-]
 
 
 class StateStoreError(AwfApiError):
@@ -68,7 +65,6 @@ class MigrationReconciliationRequired(StateStoreError):
 
 __all__ = [
     "SnapshotStatus",
-    "OperationStatus",
     "StateStoreError",
     "StateCorrupt",
     "StateUnsupported",

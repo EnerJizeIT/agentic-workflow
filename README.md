@@ -47,7 +47,7 @@ pip install awf agent-workflow-ui
 | **opencode** | any recent version with MCP support |
 | **OS** | Linux (tested), macOS (should work), Windows (untested) |
 | **Models** | Model-agnostic. Tested with Qwen vLLM. Should work with Claude, GPT, or any opencode-supported provider. |
-| **Git** | Required (commit gate, baselines, rollback) |
+| **Git** | 2.36+ (`git hook run`); git 2.5–2.35 works via a direct hook fallback with the same semantics |
 
 > **Timeouts:** agent stages time out after 1 hour. Extend with
 > `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200`
@@ -56,7 +56,7 @@ pip install awf agent-workflow-ui
 ## Features
 
 - 🎯 **State-Machine Orchestration (SMO)** — awf guides the supervisor through phases: `init → goal → form → normalize → brief → run → verify → done`. Every tool returns a `next_action` hint — even weak models follow the full flow without getting lost.
-- 🔧 **53 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation, run-queue revision, service run, commit-workflow. No bash, no manual file editing.
+- 🔧 **55 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation, run-queue revision, service run, commit-workflow. No bash, no manual file editing.
 - 📊 **Live Dashboard** — HTTP server with real-time polling. Chat-style agent handoffs, TODO content, TODO timeline, worker status, browser notifications. No page reloads.
 - 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. You choose in the setup form.
 - ✅ **Approve / Reject** — symmetric verify tools. Approve commits and archives. Reject kills the pipeline and asks for fixes.
@@ -90,7 +90,7 @@ Phase-by-phase: [USAGE.md → SMO phases](USAGE.md#smo-phases).
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 53 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 55 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf orchestrator]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]

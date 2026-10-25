@@ -447,10 +447,11 @@ class TestGenerationSingleSource:
         _revise(proj, "TODO-0002")
         assert run_state.generation_of(run_state.read_run(proj)) == 2
 
-        # Тот же ключ, но другой запрос: изменения непусты, ключ найден →
-        # no-op, однако Store-поколение уже выделено (gap в счётчике).
+        # Тот же ключ с ТЕМ ЖЕ запросом (AA1: ключ называет одно
+        # содержимое): no-op, однако Store-поколение уже выделено (gap в
+        # счётчике).
         replay = api.run_revise(
-            proj, queue=["TODO-0003"], key="rev-TODO-0002", reason="replay"
+            proj, queue=["TODO-0002"], key="rev-TODO-0002", reason="add"
         )
         assert replay.action == "noop", replay.message
         assert state_store.current_run_generation(proj) == 3, (

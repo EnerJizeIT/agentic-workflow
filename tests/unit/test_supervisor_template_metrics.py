@@ -19,11 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 SUPERVISOR_MD = [
     REPO_ROOT / "awf" / "templates" / "roles" / "supervisor.md",
-    REPO_ROOT / "templates" / "roles" / "supervisor.md",
 ]
 PHASE_VERIFY_MD = [
     REPO_ROOT / "awf" / "templates" / "roles" / "supervisor" / "phase-verify.md",
-    REPO_ROOT / "templates" / "roles" / "supervisor" / "phase-verify.md",
 ]
 
 

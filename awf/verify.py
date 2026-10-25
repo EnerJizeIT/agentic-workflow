@@ -10,7 +10,15 @@ from pathlib import Path
 from . import _proc, git_utils
 from . import config as cfg_mod
 from ._atomic import atomic_write_text
+from .infra.git_model import (
+    GitModelError,
+    GitRepository,
+    display_path,
+    escape_str_for_ui,
+    read_untracked_snapshot,
+)
 from .infra.managed_fs import ManagedPathError, managed_write_text
+from .unit_contract import shell_operator_refusal
 
 
 def _write_test_results(
@@ -52,6 +60,35 @@ def _verify_cmd_timeout() -> int:
         return DEFAULT_VERIFY_TIMEOUT
 
 
+def parse_argv(cmd: str) -> tuple[list[str], str]:
+    """One configured command line → argv for the no-shell runners.
+
+    The ONE home for the command→argv rule of every awf verification
+    surface (this module, candidate_verify, verify_pack): a configured
+    command is an argv line, not a shell line, so it means the same thing
+    wherever it is gated. I1 (REVIEW виток 6): a shell operator outside
+    quotes is a typed refusal here too — otherwise a config ``test_cmd``
+    like ``pytest | tee log`` would silently run as ``pytest`` with a
+    literal ``| tee log`` argument (a false green on the surface that
+    gates the unit). K1 (REVIEW виток 8): the same predicate owns the
+    newline rule, so an interior newline in a config command is refused
+    instead of running as one command with an extra literal argument; a
+    trailing newline is normalized. Returns ``(parts, "")`` on success and
+    ``([], reason)`` on failure — the caller renders the reason in its own
+    typed refusal; no surface grows a second quoting policy.
+    """
+    refusal = shell_operator_refusal(cmd)
+    if refusal:
+        return [], refusal
+    try:
+        parts = shlex.split(cmd)
+    except ValueError as e:
+        return [], f"bad quoting: {e}"
+    if not parts:
+        return [], "empty command"
+    return parts, ""
+
+
 def detect_work_evidence(
     project_dir: str | Path,
     baseline_sha: str,
@@ -67,22 +104,22 @@ def detect_work_evidence(
     cwd = Path(project_dir)
     if not git_utils.is_git_repo(cwd):
         return False
-    if git_utils.has_diff(cwd, baseline_sha):
-        return True
-
-    untracked = git_utils.untracked_files(cwd)
+    try:
+        if git_utils.has_diff(cwd, baseline_sha):
+            return True
+        # M4 (TODO-0228, добор 0221): the model's untracked listing is
+        # byte-faithful, so a non-UTF-8 name (raw under
+        # ``core.quotePath=false``) is still WORK — the old printed listing
+        # decoded strictly and raised ``UnicodeDecodeError`` here.
+        untracked = [display_path(p) for p in GitRepository(cwd).untracked_paths()]
+    except (subprocess.SubprocessError, OSError, UnicodeDecodeError, GitModelError):
+        # A hung/missing git or an unreadable tree is "no evidence" (fail
+        # closed), never a crash of the stage's auto-DONE check.
+        return False
     if todo_id:
-        snapshot = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
-        if snapshot.exists():
-            try:
-                pre_existing = {
-                    line.strip()
-                    for line in snapshot.read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                }
-                untracked = [f for f in untracked if f not in pre_existing]
-            except OSError:
-                pass
+        pre_existing = read_untracked_snapshot(cwd, todo_id)
+        if pre_existing is not None:
+            untracked = [f for f in untracked if f not in pre_existing]
 
     return bool(untracked)
 
@@ -141,28 +178,22 @@ def work_fingerprint(
         return ""
     try:
         diff_text = git_utils.git_stdout(cwd, "diff", "--binary", baseline_sha, check=False)
-        untracked = git_utils.untracked_files(cwd)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        untracked = [display_path(p) for p in GitRepository(cwd).untracked_paths()]
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, UnicodeDecodeError, GitModelError):
         return ""
 
     if todo_id:
-        snapshot = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
-        if snapshot.exists():
-            try:
-                pre_existing = {
-                    line.strip()
-                    for line in snapshot.read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                }
-                untracked = [f for f in untracked if f not in pre_existing]
-            except OSError:
-                pass
+        pre_existing = read_untracked_snapshot(cwd, todo_id)
+        if pre_existing is not None:
+            untracked = [f for f in untracked if f not in pre_existing]
 
     h = hashlib.sha256()
     h.update(diff_text.encode("utf-8", errors="replace"))
     h.update(b"\n--untracked--\n")
     for name in sorted(untracked):
-        h.update(name.encode("utf-8") + b"\0")
+        # Raw identity carries a surrogate for a non-UTF-8 byte; encode it
+        # back to the same bytes (a strict UTF-8 encode would raise).
+        h.update(name.encode("utf-8", "surrogateescape") + b"\0")
         h.update(_untracked_content_digest(cwd / name))
     return h.hexdigest()
 
@@ -225,15 +256,12 @@ def run_verify_commands(
     log_chunks: list[str] = []
     cmd_timeout = _verify_cmd_timeout()
     for cmd in cmds:
-        try:
-            parts = shlex.split(cmd)
-        except ValueError as e:
+        parts, problem = parse_argv(cmd)
+        if problem:
             # AUD14-02: bad quoting in test_cmd must not traceback the pipeline
             if log_path is not None:
-                log_chunks.append(f"$ {cmd}\nABORTED: bad quoting: {e}\n")
+                log_chunks.append(f"$ {cmd}\nABORTED: {problem}\n")
                 _write_test_results(log_path, log_root, log_chunks)
-            return False
-        if not parts:
             return False
         try:
             result = _proc.run_tree(
@@ -350,25 +378,21 @@ def diff_stat_for_todo(project_dir: str | Path, todo_id: str) -> str:
         return ""
     try:
         base_text = git_utils.diff_stat(cwd, sha).strip()
-        untracked = git_utils.untracked_files(cwd)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        untracked = [display_path(p) for p in GitRepository(cwd).untracked_paths()]
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, UnicodeDecodeError, GitModelError):
         return ""
 
     # Day-4 live fix: `git diff` is blind to NEW files — a verify supervisor
     # saw "README.md +3" while scripts/ and tests/test_smoke_c3.py existed.
-    snapshot = cwd / ".agentic" / "context" / f"BASELINE-{todo_id}.untracked"
-    if snapshot.is_file():
-        try:
-            pre_existing = {
-                line.strip()
-                for line in snapshot.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            }
-            untracked = [f for f in untracked if f not in pre_existing]
-        except OSError:
-            pass
+    pre_existing = read_untracked_snapshot(cwd, todo_id)
+    if pre_existing is not None:
+        untracked = [f for f in untracked if f not in pre_existing]
     if untracked:
-        listed = "\n".join(f"  {f}" for f in sorted(untracked)[:20])
+        # A raw identity may hold a surrogate; this text goes to JSON/HTTP,
+        # so escape for display as every other UI surface does.
+        listed = "\n".join(
+            f"  {escape_str_for_ui(f)}" for f in sorted(untracked)[:20]
+        )
         extra = f"new (untracked) files:\n{listed}"
         return f"{base_text}\n\n{extra}" if base_text else extra
     return base_text

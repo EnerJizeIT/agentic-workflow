@@ -21,14 +21,23 @@ from . import commit_plan as _commit_plan
 from . import config as cfg_mod
 from . import paths, todos, verify
 from ._log import log as _log
+from ._worker_exit import worker_log_tail
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
 from .agent_stage import run_agent_stage as _run_agent_stage
 from .commit_gate import maybe_commit as _maybe_commit
+from .infra import managed_fs
 from .pipeline import Stage
 from .pipeline_state import read_state
 from .pipeline_state import write_state as _write_state
 from .plan_progress import mark_plan_step_done as _mark_plan_step_done
-from .signals import expected_signal_prefixes, read_signal_for_todo, signal_type, wait_for_signal
+from .signals import (
+    clean_stage_signals,
+    expected_signal_prefixes,
+    find_signal_file,
+    read_signal_for_todo,
+    signal_type,
+    wait_for_signal,
+)
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
 from .verify_pack import verify_pack as _verify_pack_fn
@@ -89,30 +98,79 @@ def _replan_answer(sup_signal: object, current_todo: str, project_dir: Path) -> 
     return ""
 
 
-def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> None:
+def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> bool:
     """Day-2 B2: clear the BLOCKED closure so the TODO counts as active again.
 
     Moves ``BLOCKED-{todo}.{ready,md}`` (canonical + legacy short form) from
     outbox to ``.agentic/context/`` as evidence — mirrors the manual recovery
     the user had to perform before this existed.
+
+    Returns True only when the closure was actually cleared — no
+    ``BLOCKED-<id>.ready`` marker (canonical or short) left in outbox: the
+    caller's note must not claim "BLOCKED cleared" after a refusal or a
+    partial move (TODO-0239 A3, REVIEW-фикс F1).
     """
     from .signals import short_id
 
+    # Canonical first, legacy short form second — one list, so the leaf
+    # collection, the preflight and the closure check cannot disagree.
+    candidate_ids = list(dict.fromkeys((todo_id, short_id(todo_id))))
     outbox = paths.outbox(project_dir)
     ctx = paths.context_dir(project_dir)
-    ctx.mkdir(parents=True, exist_ok=True)
-    moved = False
-    for candidate_id in {todo_id, short_id(todo_id)}:
+    root = managed_fs.agentic_root_for(outbox)
+    # TODO-0235 (REVIEW B2): the same no-follow rule as the API barrier —
+    # this mover reads OUTBOX and writes CONTEXT, so both surfaces and both
+    # leaves of every candidate are checked before the first move. Best
+    # effort: a refusal leaves the closure in place and is logged.
+    #
+    # TODO-0235 (REVIEW F6): collect every leaf first and check them as ONE
+    # set before the first move — a refusal must leave the closure untouched,
+    # not half-moved. A broken symlink counts as a leaf too (``exists()`` is
+    # False for it), so the rule is ``is_symlink() or exists()``. Surfaces and
+    # leaves share ONE refusal branch: the outcome is the same, said once.
+    pairs: list[tuple[Path, Path]] = []
+    for candidate_id in candidate_ids:
         for ext in (".ready", ".md"):
             src = outbox / f"BLOCKED-{candidate_id}{ext}"
-            if src.exists():
-                try:
-                    src.replace(ctx / src.name)
-                    moved = True
-                except OSError:
-                    pass
-    if moved:
+            if not (src.is_symlink() or src.exists()):
+                continue
+            pairs.append((src, ctx / src.name))
+    try:
+        managed_fs.require_posix("unblock todo")
+        for path in (outbox, ctx, *(p for pair in pairs for p in pair)):
+            managed_fs.assert_no_symlink_escape(path, root=root)
+        managed_fs.managed_mkdir(ctx, root=root)
+    except managed_fs.ManagedPathError as e:
+        _log(
+            logs_dir,
+            f"Day-2 B2: BLOCKED closure not moved for {todo_id} — "
+            f"unsafe managed path: {e}",
+        )
+        return False
+    moved = False
+    for src, dst in pairs:
+        try:
+            src.replace(dst)
+            moved = True
+        except OSError:
+            pass
+    # REVIEW-фикс F1: the closure is defined by the .ready marker, not by
+    # "something moved". A partial move (the .md left outbox, the .ready
+    # stayed) is not cleared — say so, so the note cannot lie.
+    closure_left = any(
+        (outbox / f"BLOCKED-{cid}.ready").is_symlink()
+        or (outbox / f"BLOCKED-{cid}.ready").exists()
+        for cid in candidate_ids
+    )
+    if moved and not closure_left:
         _log(logs_dir, f"Day-2 B2: BLOCKED closure moved to context/ for {todo_id}")
+    elif closure_left:
+        _log(
+            logs_dir,
+            f"Day-2 B2: BLOCKED marker remains in outbox; "
+            f"closure not cleared for {todo_id}",
+        )
+    return moved and not closure_left
 
 
 def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
@@ -250,6 +308,17 @@ def _consume_verify_decision(
         candidates = [paths.inbox(project_dir) / f"{prefix}-{current_todo}.ready"]
     else:
         return
+    managed_fs.require_posix("consume verify decision")
+    # TODO-0235 (M3d): a symlinked OUTBOX (REVIEW) or INBOX (ACK/
+    # APPROVE) used to send this unlink out of the project. Fail
+    # closed — the run is untrustworthy anyway. The branch picks the
+    # surface; the root comes from each leaf, so both are covered without
+    # a union list. All leaves are checked BEFORE the first unlink: a
+    # refusal must not consume half the set (REVIEW F6's rule).
+    for p in candidates:
+        managed_fs.assert_no_symlink_escape(
+            p, root=managed_fs.agentic_root_for(p)
+        )
     for p in candidates:
         try:
             p.unlink()
@@ -265,6 +334,33 @@ def _consume_verify_decision(
         accepted_decision=None, accepted_decision_mtime=None,
         logs_dir=logs_dir,
     )
+
+
+def _consume_verify_decision_guarded(
+    project_dir: Path,
+    current_todo: str,
+    signal: str,
+    logs_dir: Path,
+    stage_name: str,
+) -> bool:
+    """TODO-0235 (REVIEW N1): consume the verify decision without a raw escape.
+
+    The barrier inside ``_consume_verify_decision`` raises on a symlinked
+    outbox/inbox; left uncaught it reached the CLI's last-resort handler with
+    no stage record. False means the refusal was recorded and the caller
+    should stop the pipeline.
+
+    B1 (REVIEW виток 3): ``stage_name`` is the caller's actual stage name
+    (``s_name``), not the literal "verify" — the last stage of a custom
+    pipeline may have any name, and ``retry_stage`` looks the salvage stage up
+    by that name in the pipeline.
+    """
+    try:
+        _consume_verify_decision(project_dir, current_todo, signal, logs_dir)
+    except managed_fs.ManagedPathError as e:
+        _unsafe_stage_stop(project_dir, current_todo, stage_name, logs_dir, e)
+        return False
+    return True
 
 
 def _record_verify_decision(
@@ -630,6 +726,28 @@ def _run_plan_checkpoint_gate(
     return 0
 
 
+def _write_salvage_note(note: Path, body: str, logs_dir: Path) -> bool:
+    """The ONE writer of ``SALVAGE-{todo}.md`` — under the managed barrier.
+
+    M3d (REVIEW architect-review): two call sites wrote the same file with a
+    bare ``atomic_write_text`` — the silent-exit prompt and the unsafe-path
+    stop. A write next to a second implementation is how the F-A hole came
+    back: ``atomic_write_text`` renames through the path, so a symlinked
+    ``inbox`` sent the note outside the project. The barrier runs from the
+    leaf (one root convention, see ``managed_write_text``); refusal is
+    logged, not raised — the note is best-effort, the stage record and the
+    salvage state already exist.
+    """
+    try:
+        managed_fs.managed_write_text(
+            note, body, root=managed_fs.agentic_root_for(note)
+        )
+    except (OSError, managed_fs.ManagedPathError) as e:
+        _log(logs_dir, f"salvage note not written ({note.name}): {e}")
+        return False
+    return True
+
+
 def _write_salvage_prompt(
     project_dir: Path,
     todo_id: str,
@@ -650,8 +768,6 @@ def _write_salvage_prompt(
       telling the supervisor not to retry the same scope, but to split the
       task / require incremental writes / change the stage model instead.
     """
-    from ._atomic import atomic_write_text
-
     inbox = paths.inbox(project_dir)
     salvage_file = inbox / f"SALVAGE-{todo_id}.md"
 
@@ -711,7 +827,8 @@ def _write_salvage_prompt(
             diff = subprocess.run(
                 ["git", "diff", "--stat", baseline_sha],
                 cwd=str(project_dir),
-                capture_output=True, text=True, check=False, timeout=10,
+                capture_output=True, text=True, errors="replace",
+                check=False, timeout=10,
             )
             diff_output = diff.stdout.strip() if diff.stdout else "(no changes)"
         except (subprocess.TimeoutExpired, OSError):
@@ -737,8 +854,8 @@ def _write_salvage_prompt(
         "",
     ]
 
-    atomic_write_text(salvage_file, "\n".join(parts))
-    _log(logs_dir, f"DF5-4: salvage prompt written to {salvage_file}")
+    if _write_salvage_note(salvage_file, "\n".join(parts), logs_dir):
+        _log(logs_dir, f"DF5-4: salvage prompt written to {salvage_file}")
 
 
 def _silent_retry_note(attempt: int, todo_id: str) -> str:
@@ -763,21 +880,70 @@ def _silent_retry_note(attempt: int, todo_id: str) -> str:
     )
 
 
-def _silent_work_retry_note(attempt: int, todo_id: str) -> str:
+def _progress_block(
+    project_dir: Path, log_holder: dict[str, str], current_todo: str, outbox: Path,
+) -> list[str]:
+    """TODO-0226: where the previous run stopped — paths, not prose.
+
+    The retried worker gets the stage's worker log and the latest DONE
+    draft (when one exists) instead of re-reading the whole task from
+    scratch. Paths are project-relative for a readable prompt.
+    """
+    def _rel(raw: str) -> str:
+        p = Path(raw)
+        try:
+            return str(p.relative_to(project_dir))
+        except ValueError:
+            return raw
+
+    lines = ["## Progress so far", ""]
+    log_path = log_holder.get("log_path", "")
+    if log_path:
+        lines.append(f"Last worker log: `{_rel(log_path)}`")
+    draft = find_signal_file(outbox, "DONE", current_todo, ".md")
+    if draft is not None:
+        lines.append(f"Last DONE draft: `{_rel(str(draft))}`")
+    lines.append(
+        "Continue from where you stopped — do NOT re-read everything from "
+        "scratch."
+    )
+    return lines
+
+
+def _silent_work_retry_note(
+    attempt: int, todo_id: str, *,
+    progress: list[str] | None = None,
+) -> str:
     """TODO-0196: push text for a stage retried after a silent exit that
     LEFT WORK in the tree. The previous run changed files but ended without
-    the signal — the retry continues the work instead of redoing it."""
-    return (
-        f"## ⚠️ RETRY {attempt}: previous attempt left WORK in the tree but NO signal\n"
-        f"The stage restarted because the previous run wrote file changes but did\n"
-        f"not create DONE-{todo_id}.ready — the work exists, only the finish is missing.\n"
-        f"Do NOT redo or rewrite what is already in the tree: check git status / git\n"
-        f"diff, continue from where the previous run stopped, and finish the work.\n"
-        f"Finish by creating the signal file:\n"
-        f"  touch .agentic/outbox/DONE-{todo_id}.ready\n"
-        f"If you truly cannot proceed, create the BLOCKED signal instead of ending\n"
-        f"with plain text.\n"
-    )
+    the signal — the retry continues the work instead of redoing it.
+
+    TODO-0226: the 2nd retry also reduces the pass (no full suite /
+    run-all — targeted checks only) and every retry names the partial
+    artifacts (worker log + DONE draft) so the worker resumes instead of
+    re-researching.
+    """
+    parts = [
+        f"## ⚠️ RETRY {attempt}: previous attempt left WORK in the tree but NO signal",
+        "The stage restarted because the previous run wrote file changes but did",
+        f"not create DONE-{todo_id}.ready — the work exists, only the finish is missing.",
+        "Do NOT redo or rewrite what is already in the tree: check git status / git",
+        "diff, continue from where the previous run stopped, and finish the work.",
+        "Finish by creating the signal file:",
+        f"  touch .agentic/outbox/DONE-{todo_id}.ready",
+        "If you truly cannot proceed, create the BLOCKED signal instead of ending",
+        "with plain text.",
+    ]
+    if attempt >= 2:
+        parts += [
+            "",
+            "## ⚠️ RETRY 2: reduce this pass",
+            "Do NOT run the full suite or scripts/run-all.sh in this pass — run only",
+            "the targeted checks and the gates, then write the DONE report.",
+        ]
+    if progress:
+        parts += ["", *progress]
+    return "\n".join(parts) + "\n"
 
 
 def _declared_output_problem(
@@ -902,7 +1068,9 @@ def execute_supervisor_stage(
                 )
             except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
-                _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
+                _consume_verify_decision_guarded(
+                    project_dir, rejected_todo, sup_signal, logs_dir, s_name
+                )
                 return current_todo, 0, 1
             # TODO-0213 (REVIEW fix): the replan answer is the marked TODO's
             # id in the signal — the pre-fix "_find_active_todo" could
@@ -918,7 +1086,9 @@ def execute_supervisor_stage(
             # a re-run of the same TODO must not re-trigger replan on it. The
             # file is keyed to the REJECTED todo (current_todo may have moved
             # to the replanned one by now).
-            _consume_verify_decision(project_dir, rejected_todo, sup_signal, logs_dir)
+            _consume_verify_decision_guarded(
+                project_dir, rejected_todo, sup_signal, logs_dir, s_name
+            )
             print("Pipeline stopped: supervisor rejected.", file=sys.stderr)
             return current_todo, 0, 1
 
@@ -941,7 +1111,12 @@ def execute_supervisor_stage(
         # has acted on it — success OR failure. A commit-fail leaves the TODO
         # active; a re-verify of the same TODO must get a FRESH approval, not
         # re-open the gate on this cycle's stale one.
-        _consume_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
+        if not _consume_verify_decision_guarded(
+            project_dir, current_todo, sup_signal, logs_dir, s_name
+        ):
+            # Unsafe managed path — the decision file could not be consumed
+            # and the refusal is recorded: stop instead of archiving silently.
+            return current_todo, 0, 1
         # R-03: the typed result is handled exactly like on the execute stage.
         if not _commit_outcome_ok(outcome, s_name, current_todo, logs_dir):
             print(
@@ -989,23 +1164,6 @@ def execute_supervisor_stage(
     return current_todo, 1, 0
 
 
-def _death_tail(log_holder: dict[str, str]) -> str:
-    """U6b/U6c: this run's worker-log tail (from its start offset).
-
-    Append-mode log (dogfood-11): without the offset an earlier run's
-    network marker would leak into this run's death classification
-    (QA TODO-0017). '' when the run never got a log (the preflight died
-    before the file was created).
-    """
-    from . import _net
-
-    log_path_str = log_holder.get("log_path", "")
-    if not log_path_str:
-        return ""
-    start_offset = int(log_holder.get("log_start_offset") or 0)
-    return _net.read_log_tail(Path(log_path_str), start_offset=start_offset)
-
-
 def _handle_net_death(
     *,
     s_name: str,
@@ -1032,13 +1190,23 @@ def _handle_net_death(
 
     from . import _net
     from .pipeline_state import write_state as _ws
-    from .signals import clean_stage_signals
 
     if net_retries < net_limit:
-        net_retries += 1
         backoff = _net.NET_RETRY_BACKOFFS[
-            min(net_retries - 1, len(_net.NET_RETRY_BACKOFFS) - 1)
+            min(net_retries, len(_net.NET_RETRY_BACKOFFS) - 1)
         ]
+        # TODO-0235 (REVIEW F7): cleanup first — a refusal cancels the retry,
+        # so it must not spend the budget, write state or print "retrying".
+        refusal = _clean_signals_guarded(outbox, todo_id, prefixes)
+        if refusal is not None:
+            # TODO-0235 (REVIEW N1): a refusal here is not a network death —
+            # stop the retry budget and let the failure/salvage path run.
+            _log(
+                logs_dir,
+                f"U6b: stale-signal cleanup refused — unsafe managed path: {refusal}",
+            )
+            return net_retries, False
+        net_retries += 1
         _ws(
             project_dir,
             net_retry_count=net_retries, net_retry_key=net_key,
@@ -1055,7 +1223,6 @@ def _handle_net_death(
             f"U6b: network failure on {s_name} — backoff "
             f"{backoff:.0f}s (net retry {net_retries}/{net_limit})",
         )
-        clean_stage_signals(outbox, todo_id, *prefixes)
         # B2: the backoff pause is downtime — the endpoint is down, no work
         # can happen until it recovers.
         backoff_start = _time.monotonic()
@@ -1080,6 +1247,116 @@ def _handle_net_death(
         f"(limit {net_limit}) — proceeding to failure path",
     )
     return net_retries, False
+
+
+def _salvage_attempt(
+    project_dir: Path, todo_id: str, stage_name: str
+) -> tuple[int, str]:
+    """The per-(TODO, stage) salvage counter and its identity key.
+
+    AUD02-07: a different stage or TODO starts at 1 instead of inheriting a
+    stale count (no "ATTEMPT 2" on a brand-new stage). TWO places write
+    ``salvage_count``/``salvage_count_key`` — the salvage path and the typed
+    unsafe-path stop — so the arithmetic lives here once; a second copy is
+    how the two counters drift apart.
+    """
+    state = read_state(project_dir) or {}
+    try:
+        prev_count = int(state.get("salvage_count", 0) or 0)
+    except (TypeError, ValueError):
+        prev_count = 0
+    key = f"{todo_id}:{stage_name}"
+    return (prev_count + 1 if state.get("salvage_count_key") == key else 1), key
+
+
+def _unsafe_stage_stop(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    logs_dir: Path,
+    exc: Exception,
+) -> None:
+    """TODO-0235 (M3d, REVIEW N1): typed stage stop for a managed refusal.
+
+    A ``ManagedPathError`` from a barrier is not a worker death: retrying
+    cannot fix a symlinked ``.agentic`` surface. Left uncaught it escaped to
+    the CLI's last-resort handler — one line, no stage record, no salvage
+    state, so the supervisor saw a silent pipeline. Record the stage line,
+    mark salvage and leave a note; the caller stops the pipeline.
+    """
+    msg = f"stage {stage_name} refused — unsafe managed path: {exc}"
+    print(f"ERROR: {msg}. Pipeline stopped.", file=sys.stderr)
+    _log(logs_dir, msg)
+
+    attempt, key = _salvage_attempt(project_dir, todo_id, stage_name)
+    _write_state(
+        project_dir,
+        salvage_needed=True, salvage_stage=stage_name,
+        salvage_count=attempt, salvage_count_key=key,
+        last_signal=None,
+        logs_dir=logs_dir,
+    )
+
+    note = paths.inbox(project_dir) / f"SALVAGE-{todo_id}.md"
+    body = "\n".join([
+        f"# Salvage needed: {stage_name} refused an unsafe managed path",
+        "",
+        f"**TODO:** {todo_id}",
+        f"**Stage:** {stage_name}",
+        "",
+        "## What happened",
+        "",
+        "A managed-filesystem barrier refused a destructive operation on a",
+        "path under `.agentic`: a component is a symlink (or the platform",
+        "has no no-follow primitives). The stage never touched the unsafe",
+        "path. Fix the symlink, then retry the stage.",
+        "",
+        "```",
+        str(exc),
+        "```",
+        "",
+    ])
+    # The tempting write is the same file the silent-exit prompt writes — one
+    # managed writer, never a bare rename onto a possibly symlinked inbox.
+    _write_salvage_note(note, body, logs_dir)
+
+
+def _clean_signals_guarded(
+    outbox: Path, todo_id: str, prefixes: tuple[str, ...]
+) -> managed_fs.ManagedPathError | None:
+    """Run the destructive stale-signal cleanup; return the refusal, if any.
+
+    The retry branches, the net-death handler and the transition consume all
+    owe an answer to a barrier refusal, but answer differently (typed stop vs
+    spent retry budget). ONE mechanism here, policy at the call site — two
+    copies of the same try/except is how the branches drift apart.
+    """
+    try:
+        clean_stage_signals(outbox, todo_id, *prefixes)
+    except managed_fs.ManagedPathError as e:
+        return e
+    return None
+
+
+def _clean_signals_or_stop(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    logs_dir: Path,
+    outbox: Path,
+    prefixes: tuple[str, ...],
+) -> bool:
+    """M3d (REVIEW architect-review): stale-signal cleanup with a typed stop.
+
+    The retry branches of ``execute_agent_stage`` all call the same destructive
+    cleanup, so they all owe the same answer to a barrier refusal. Written
+    once: a refusal is a stage stop, never a raw traceback. False = stop.
+    """
+    refusal = _clean_signals_guarded(outbox, todo_id, prefixes)
+    if refusal is None:
+        return True
+    _unsafe_stage_stop(project_dir, todo_id, stage_name, logs_dir, refusal)
+    return False
 
 
 def execute_agent_stage(
@@ -1170,7 +1447,11 @@ def execute_agent_stage(
     # salvage. Separate from the no-work silent budget above; persisted in
     # state like the net counter (keyed by (TODO, stage)) so a kill+continue
     # does not hand out a fresh budget. The attempt loop stays the hard cap.
-    SILENT_WORK_LIMIT = _cfg_int(config, "retry.silent_work_attempts", 1)
+    # TODO-0226: default 2 — the 1st retry is a plain continue-push, the
+    # 2nd carries the reduce-pass line (no full suite / run-all), then
+    # salvage. One retry was not enough to tell "finish it" from "the
+    # worker keeps dying the same way".
+    SILENT_WORK_LIMIT = _cfg_int(config, "retry.silent_work_attempts", 2)
     if _prev_net_state.get("sw_retry_key") != net_key:
         sw_retries = 0
     else:
@@ -1204,6 +1485,11 @@ def execute_agent_stage(
                                  prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
                                  retry_note=retry_note, attempt=worker_run,
                                  log_holder=log_holder)
+            except managed_fs.ManagedPathError as e:
+                # TODO-0235 (REVIEW N1): a barrier refusal stops the stage
+                # with a record and a salvage note — never a raw escape.
+                _unsafe_stage_stop(project_dir, current_todo, s_name, logs_dir, e)
+                return current_todo, stage_idx, 1
             except (RuntimeError, TimeoutError) as e:
                 # U6c: a crash is not automatically a non-network death —
                 # U6b turns "no signal + rc!=0" into a RuntimeError, so the
@@ -1213,7 +1499,7 @@ def execute_agent_stage(
                 # run's log tail, plus the preflight-timeout marker in the
                 # exception text (the endpoint was down before the worker
                 # even started — no log to read yet).
-                tail = _death_tail(log_holder)
+                tail = worker_log_tail(log_holder)
                 # QA (U6c): the preflight text check applies ONLY to
                 # TimeoutError — preflight is the only network death with no
                 # worker log. U6b's RuntimeError embeds the full Cmd (stage
@@ -1265,7 +1551,7 @@ def execute_agent_stage(
             # U6b: worker died without a signal — classify the death BEFORE
             # the silent retry: a dead model endpoint is not fixed by a
             # continue-push, it gets its own backoff-retry budget (30/60/120s).
-            tail = _death_tail(log_holder)
+            tail = worker_log_tail(log_holder)
             if _net.is_network_failure(tail):
                 net_retries, net_retry_scheduled = _handle_net_death(
                     s_name=s_name, net_retries=net_retries,
@@ -1303,9 +1589,17 @@ def execute_agent_stage(
                     f"(elapsed={agent_elapsed:.0f}s, diff in tree, no signal)")
                 _ws(project_dir, sw_retry_count=sw_retries, sw_retry_key=net_key,
                     logs_dir=logs_dir)
-                pending_note = _silent_work_retry_note(sw_retries, current_todo)
-                from .signals import clean_stage_signals
-                clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                pending_note = _silent_work_retry_note(
+                    sw_retries, current_todo,
+                    progress=_progress_block(
+                        project_dir, log_holder, current_todo, outbox,
+                    ),
+                )
+                if not _clean_signals_or_stop(
+                    project_dir, current_todo, s_name, logs_dir, outbox,
+                    expected_signal_prefixes(s_kind),
+                ):
+                    return current_todo, stage_idx, 1
                 continue
 
             # dogfood-11: no signal — retry only when the worker left NO work
@@ -1328,8 +1622,11 @@ def execute_agent_stage(
                 )
                 _log(logs_dir, f"F4/F7: auto-retry {attempt_no + 1}/{MAX_SILENT_RETRIES} "
                     f"for {s_name} (elapsed={agent_elapsed:.0f}s, no signal, no work)")
-                from .signals import clean_stage_signals
-                clean_stage_signals(outbox, current_todo, *expected_signal_prefixes(s_kind))
+                if not _clean_signals_or_stop(
+                    project_dir, current_todo, s_name, logs_dir, outbox,
+                    expected_signal_prefixes(s_kind),
+                ):
+                    return current_todo, stage_idx, 1
                 pending_note = _silent_retry_note(attempt_no + 1, current_todo)
                 continue
 
@@ -1358,14 +1655,9 @@ def execute_agent_stage(
         # escalates to task splitting / incremental writes instead.
         # AUD02-07: the count is per (TODO, stage) — a different stage or TODO
         # starts fresh at 1 instead of inheriting a stale counter ("ATTEMPT 2"
-        # on the first failure of a brand-new stage).
-        prev_state = read_state(project_dir) or {}
-        try:
-            prev_count = int(prev_state.get("salvage_count", 0) or 0)
-        except (TypeError, ValueError):
-            prev_count = 0
-        salvage_key = f"{current_todo}:{s_name}"
-        attempt = prev_count + 1 if prev_state.get("salvage_count_key") == salvage_key else 1
+        # on the first failure of a brand-new stage). The arithmetic is shared
+        # with the typed unsafe-path stop (``_salvage_attempt``).
+        attempt, salvage_key = _salvage_attempt(project_dir, current_todo, s_name)
 
         _write_salvage_prompt(
             project_dir, current_todo, s_name, baseline_sha, logs_dir,
@@ -1440,9 +1732,24 @@ def execute_agent_stage(
     # resolved. The same filename used to stay valid for every later stage —
     # a stale DONE could satisfy the next transition. Keep the .md report as
     # evidence for the handoff.
-    for consumed_suffix in (".ready", ".md.ready"):
+    outbox_root = managed_fs.agentic_root_for(outbox)
+    consumed_leaves = [
+        outbox / f"{signal}{suffix}" for suffix in (".ready", ".md.ready")
+    ]
+    # REVIEW N2's rule applied here (architect-review): EVERY leaf is checked
+    # before the FIRST unlink, so a refusal leaves both files untouched instead
+    # of consuming .ready and then stopping on .md.ready. A barrier refusal is
+    # a typed stage stop, never a raw escape (REVIEW N1).
+    try:
+        managed_fs.require_posix("consume stage signal")
+        for consumed in consumed_leaves:
+            managed_fs.assert_no_symlink_escape(consumed, root=outbox_root)
+    except managed_fs.ManagedPathError as e:
+        _unsafe_stage_stop(project_dir, current_todo, s_name, logs_dir, e)
+        return current_todo, stage_idx, 1
+    for consumed in consumed_leaves:
         try:
-            (outbox / f"{signal}{consumed_suffix}").unlink()
+            consumed.unlink()
         except FileNotFoundError:
             pass
 

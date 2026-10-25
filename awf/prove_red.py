@@ -80,9 +80,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import paths
+from . import paths, todos
 from ._errors import AwfApiError
 from ._proc import run_tree
+from .infra.git_model import GitModelError, GitRepository, display_path
 from .unit_contract import parse_todo_contract
 
 #: CLI exit codes, one per verdict family.
@@ -99,9 +100,6 @@ VERDICT_GREEN_AFTER = "green-after"
 #: did not run), but a separate verdict line so the cause is honest.
 VERDICT_RUNNER_UNSUPPORTED = "runner-unsupported"
 EXIT_RUNNER_UNSUPPORTED = EXIT_BROKEN
-
-#: Default base directory for temporary worktrees (SPEC-2: /tmp/opencode/**).
-DEFAULT_TMP_BASE = "/tmp/opencode"
 
 #: Filename of the hermeticity bootstrap injected into the baseline worktree.
 _BOOTSTRAP_NAME = "_awf_prove_red_bootstrap.py"
@@ -139,6 +137,11 @@ class ProveRedResult:
     current_output: str
     message: str
     warnings: list[str] = field(default_factory=list)
+    #: True only when the baseline failure is the NEW symbol's absence (the
+    #: "acceptable for NEW code" warning). This is the typed fact the
+    #: verify-pack `new-api` kind reads — the warning TEXT is prose, not an
+    #: interface.
+    new_code_acceptable: bool = False
     worktree: str = ""
 
     def as_dict(self) -> dict[str, Any]:
@@ -161,7 +164,8 @@ def prove_red(
         tests: Test files and/or ``file::test`` ids. Default: the
             ``prove_red`` block of the TODO contract (U3).
         tmp_base: Base directory for the temporary worktree. Default
-            ``/tmp/opencode`` (SPEC-2); tests pass their tmp_path.
+            ``paths.TMP_BASE`` (/tmp/opencode, SPEC-2, falling back to the
+            system temp); tests pass their tmp_path.
         command: REPORTS26-B6 — a shell command to run instead of pytest
             (shell semantics, cwd = the tree), in the baseline worktree and
             in the current tree. Default: the contract's ``prove_red_cmd``
@@ -241,6 +245,7 @@ def prove_red(
 
     tests = list(tests or [])
     warnings: list[str] = []
+    new_code_acceptable = False
     # REPORTS32: the pipe guard — a pipe/redirect in the command masks
     # the shell rc; warn, and run a pipe under `bash -o pipefail` when
     # bash is available, so the rc is honest.
@@ -327,6 +332,7 @@ def prove_red(
                     )
             elif classification == "symbol-missing-red":
                 verdict, code = VERDICT_BROKEN, EXIT_BROKEN
+                new_code_acceptable = True
                 message = (
                     f"BROKEN-RUNNER: the baseline failure is only a missing-symbol "
                     f"import — on {baseline_sha[:12]} the tested code does not "
@@ -354,6 +360,7 @@ def prove_red(
                 if classification == "collection-error" and _mentions_project_symbol(
                     baseline_output, project_dir
                 ):
+                    new_code_acceptable = True
                     warnings.append(
                         "acceptable for NEW code: the collection error is a "
                         "project module/symbol missing on the baseline; verify "
@@ -380,6 +387,7 @@ def prove_red(
         current_output=current_output,
         message=message,
         warnings=warnings,
+        new_code_acceptable=new_code_acceptable,
         worktree=str(worktree),
     )
 
@@ -432,50 +440,45 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
 # ─── Tests resolution ───────────────────────────────────────────────────
 
 
-def _find_todo_file(project_dir: Path, todo_id: str) -> Path | None:
-    candidates = (
-        paths.inbox(project_dir) / f"{todo_id}.md",
-        paths.done_dir(project_dir) / todo_id / "TODO.md",
-    )
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
+def _contract_from_todo(project_dir: Path, todo_id: str) -> dict | None:
+    """The TODO's contract block (inbox, else archive) — None when absent.
+
+    The TEXT comes from ``todos.read_todo_text`` — the one reader of the
+    unit's declaration — so the contract keys here and the candidate
+    evidence can never disagree on which file the unit lives in.
+
+    M3 (REVIEW виток 10): a block that EXISTS but does not parse is a
+    refusal, not "no block" — the old ``None`` made ``awf prove-red`` say
+    "no prove_red in the contract" and let a restored unit silently fall
+    back to the pytest default.
+    """
+    text = todos.read_todo_text(project_dir, todo_id)
+    if not text:
+        return None
+    try:
+        contract, _ = parse_todo_contract(text)
+    except ValueError as e:
+        reason = str(e).splitlines()[0] if str(e) else str(e)
+        raise AwfApiError(
+            f"the contract block in {todo_id} exists but does not parse: "
+            f"{reason} — fix the block (front-matter YAML/`verify:` keys); "
+            "a broken block is not «no block»"
+        ) from None
+    return contract
 
 
 def _tests_from_contract(project_dir: Path, todo_id: str) -> list[str] | None:
-    todo_file = _find_todo_file(project_dir, todo_id)
-    if todo_file is None:
+    contract = _contract_from_todo(project_dir, todo_id) or {}
+    tests = contract.get("prove_red")
+    if not isinstance(tests, list) or not tests:
         return None
-    try:
-        content = todo_file.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        contract, _ = parse_todo_contract(content)
-    except ValueError:
-        return None
-    if contract and contract.get("prove_red"):
-        return [str(t) for t in contract["prove_red"]]
-    return None
+    return [str(t) for t in tests]
 
 
 def _command_from_contract(project_dir: Path, todo_id: str) -> str | None:
     """The TODO contract's ``prove_red_cmd`` key (REPORTS26-B6), if any."""
-    todo_file = _find_todo_file(project_dir, todo_id)
-    if todo_file is None:
-        return None
-    try:
-        content = todo_file.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        contract, _ = parse_todo_contract(content)
-    except ValueError:
-        return None
-    if contract and contract.get("prove_red_cmd"):
-        return str(contract["prove_red_cmd"])
-    return None
+    command = (_contract_from_todo(project_dir, todo_id) or {}).get("prove_red_cmd")
+    return str(command) if command else None
 
 
 # ─── Runner detection (REPORTS26-B6) ─────────────────────────────────────
@@ -636,20 +639,20 @@ def _diff_test_files(project_dir: Path, baseline_sha: str) -> list[str]:
     filtered to paths that look like tests. Deleted files are skipped:
     they cannot be copied, and the baseline checkout already holds its
     own copy.
+
+    M4 (TODO-0228): the paths come from the R2.1 model, not a ``-z``
+    subprocess decoded with ``text=True`` — a non-UTF-8 name under
+    ``core.quotepath=false`` raised ``UnicodeDecodeError`` here and aborted
+    the whole prove-red run.
     """
-    changed: set[str] = set()
-    for args in (
-        ["git", "diff", "--name-only", "-z", baseline_sha],
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
-    ):
-        r = run_tree(
-            args, cwd=project_dir, capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            raise AwfApiError(
-                f"{' '.join(args)} failed: {(r.stderr or r.stdout).strip()[:300]}"
-            )
-        changed.update(p for p in r.stdout.split("\0") if p)
+    try:
+        repo = GitRepository(project_dir)
+        changed = {
+            display_path(p)
+            for p in (*repo.changed_paths(baseline_sha), *repo.untracked_paths())
+        }
+    except (GitModelError, OSError) as exc:
+        raise AwfApiError(f"git path read failed: {exc}") from exc
     return [
         rel for rel in sorted(changed)
         if _looks_like_test_file(rel) and (project_dir / rel).is_file()
@@ -660,7 +663,7 @@ def _diff_test_files(project_dir: Path, baseline_sha: str) -> list[str]:
 
 
 def _new_worktree(project_dir: Path, sha: str, tmp_base: str | Path | None) -> Path:
-    base = Path(tmp_base) if tmp_base else Path(DEFAULT_TMP_BASE)
+    base = Path(tmp_base) if tmp_base else paths.temp_base()
     base.mkdir(parents=True, exist_ok=True)
     worktree = Path(tempfile.mkdtemp(prefix=f"prove-red-{sha[:8]}-", dir=base))
     worktree.rmdir()  # `git worktree add` creates the directory itself

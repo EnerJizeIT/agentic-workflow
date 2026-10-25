@@ -9,6 +9,12 @@ import os
 import tempfile
 from pathlib import Path
 
+#: Mode of an artifact the owner edits by hand — a task file, the plan.
+#: Every writer of such a file uses this constant: the same artifact must not
+#: change its mode depending on which code path wrote it last. Generated
+#: state (config, roles, pipelines, caches) stays 0600.
+MODE_OWNER_EDITABLE = 0o644
+
 
 def _fsync_dir(directory: Path) -> None:
     """A rename is only durable once the PARENT directory entry is fsynced.

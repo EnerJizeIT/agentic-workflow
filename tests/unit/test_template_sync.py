@@ -1,47 +1,53 @@
-"""AUD11-12: the repo-root templates/roles/ copy must stay in sync.
+"""TODO-0230 (Y3): templates live in the package only.
 
-``get_phase_prompt`` resolves prompts from ``<project>/templates/roles/
-supervisor/`` BEFORE the package templates (awf/phase.py). For the awf
-repo itself (dogfood) that means the git-tracked root ``templates/roles/``
-copy wins over ``awf/templates/roles/`` — the source of truth. Without
-this test a future edit to only one tree silently desyncs dogfood
-behavior from what a PyPI install receives.
+The repo-root ``templates/`` directory (a symlink to ``awf/templates/``)
+is gone: the engine stages changed paths one by one, and a path behind a
+symlink fails with ``fatal: pathspec ... is beyond a symbolic link``.
+``awf/phase.py`` still checks a project's own ``templates/`` first (a
+project may override prompts); for the awf repo itself there is no such
+directory and the package is the only source.
+
+Guarded here:
+- the root copy/symlink does not exist and must not come back;
+- the package ships the supervisor prompt tree;
+- the dogfood ``scripts/suite-canonical.sh`` matches the shipped template.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-PKG_ROLES = REPO_ROOT / "awf" / "templates" / "roles"
-REPO_ROLES = REPO_ROOT / "templates" / "roles"
+PKG_TEMPLATES = REPO_ROOT / "awf" / "templates"
+PKG_ROLES = PKG_TEMPLATES / "roles"
+PKG_SCRIPTS = PKG_TEMPLATES / "scripts"
+REPO_TEMPLATES = REPO_ROOT / "templates"
+LIVE_SCRIPTS = REPO_ROOT / "scripts"
 
 
-def _files(root: Path) -> dict[str, bytes]:
-    # *.edtz are Obsidian edit-history backups (gitignored): their random
-    # entry names can never match between the two trees, so they are
-    # editor noise, not template drift.
-    return {
-        str(p.relative_to(root)): p.read_bytes()
-        for p in sorted(root.rglob("*"))
-        if p.is_file() and p.suffix != ".edtz"
-    }
-
-
-def test_both_copies_exist():
-    assert PKG_ROLES.is_dir(), f"missing package templates: {PKG_ROLES}"
-    assert REPO_ROLES.is_dir(), f"missing repo-root templates: {REPO_ROLES}"
-
-
-def test_role_template_trees_are_identical():
-    pkg = _files(PKG_ROLES)
-    repo = _files(REPO_ROLES)
-    missing_in_repo = set(pkg) - set(repo)
-    extra_in_repo = set(repo) - set(pkg)
-    assert not missing_in_repo, (
-        f"files in awf/templates/roles/ absent from templates/roles/: {sorted(missing_in_repo)}"
+def test_root_template_copy_is_gone():
+    assert not REPO_TEMPLATES.exists(), (
+        f"repo-root templates/ is back: {REPO_TEMPLATES}. The package "
+        "directory is the single source (TODO-0230 Y1)."
     )
-    assert not extra_in_repo, (
-        f"files in templates/roles/ absent from awf/templates/roles/: {sorted(extra_in_repo)}"
+    assert not REPO_TEMPLATES.is_symlink(), (
+        f"repo-root templates/ symlink is back: {REPO_TEMPLATES}"
     )
-    diffs = [name for name in pkg if pkg[name] != repo[name]]
-    assert not diffs, f"content drift between template copies: {sorted(diffs)}"
+
+
+def test_package_templates_exist():
+    assert PKG_ROLES.is_dir(), f"package templates missing: {PKG_ROLES}"
+    assert (PKG_ROLES / "supervisor.md").is_file()
+    assert (PKG_ROLES / "supervisor" / "_core.md").is_file()
+
+
+def test_live_canonical_suite_script_matches_the_shipped_template():
+    """`awf init` copies awf/templates/scripts/suite-canonical.sh: the
+    dogfood copy in scripts/ must not drift from what new projects
+    receive."""
+    name = "suite-canonical.sh"
+    live = LIVE_SCRIPTS / name
+    shipped = PKG_SCRIPTS / name
+    assert live.is_file() and shipped.is_file()
+    assert live.read_bytes() == shipped.read_bytes(), (
+        f"{live} differs from the shipped template {shipped}"
+    )

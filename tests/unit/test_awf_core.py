@@ -8,7 +8,7 @@
 - ``StatusResult`` несёт поле ``uncommitted_workflow_files`` (dry-run);
 - CLI-сабкоманда ``commit-workflow`` зарегистрирована и диспатчится;
 - сообщение коммита: subject ``awf(workflow):`` без TODO-id, body — файлы;
-- MCP-реестр несёт ``awf_commit_workflow`` (53 = 5 UI + 48 workflow).
+- MCP-реестр несёт ``awf_commit_workflow`` (55 = 5 UI + 50 workflow).
 """
 from __future__ import annotations
 
@@ -84,4 +84,4 @@ def test_registry_lists_commit_workflow():
     names = [s.name for s in _registry.TOOLS]
     assert "awf_commit_workflow" in names
     counts = _registry.tool_counts()
-    assert counts == {"total": 53, "awf": 48, "ui": 5}
+    assert counts == {"total": 55, "awf": 50, "ui": 5}

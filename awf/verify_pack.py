@@ -27,9 +27,21 @@ Sections (each: status + details + denominator):
    will exclude from this unit's commit. Informational (status "pass"):
    the exclusion is the default commit isolation, nothing is lost — no
    fix advice.
-6. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
-   each with a timeout (``run_tree``).
-  7. ``prove_red`` — the contract's ``prove_red`` list through
+6. ``qa_findings`` — TODO-0240: ``context/QA-<NNNN>-findings-test.py`` (the
+   full ``QA-TODO-<NNNN>-…`` name is accepted too), when present, runs once
+   as a pytest module; a green file passes, a red one fails the pack (the
+   same weight as a contract test). No file → ``none`` (skipped); no pytest
+   → an explicit section error.
+7. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
+   each with a timeout (``run_tree``). Test-like commands (``pytest`` /
+   ``py.test`` / ``python -m pytest``, including a venv path) are run twice:
+   ``flake: ok (2/2)`` when both outcomes agree, ``flake: unstable`` +
+   WARNING when they differ. The FIRST outcome decides the gate: pass then
+   fail stays a pass (with the warning), fail then pass stays a FAIL — the
+   red is never hidden. Every other command (``run-all``, coverage, mutation
+   smoke, arbitrary shell) runs ONCE, as before; a timeout is not retried.
+   The contract's ``flake: off`` disables the probe for the whole unit.
+8. ``prove_red`` — the contract's ``prove_red`` list through
     :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
     mutually exclusive ``prove_red_pin`` list runs the same baseline check
     but for regression shields of EXISTING behavior: green on the baseline
@@ -40,13 +52,17 @@ Sections (each: status + details + denominator):
     ``not-red`` verdict a pass (annotated, with the note in the report);
     an UNdeclared ``not-red`` on a tests-only diff gets a hint line
     suggesting the declaration — the verdict is never auto-substituted.
-8. ``candidate`` — R2.4: reads ``context/CANDIDATE-<todo>.json`` (written by
+    The ``new-api`` kind (TODO-0231) makes a ``broken-runner`` whose typed
+    cause is the missing new symbol (prove-red's ``new_code_acceptable``
+    fact) a ``new-api-ok`` pass — a warning does not colour the exit code;
+    a real broken runner keeps its fail.
+9. ``candidate`` — R2.4: reads ``context/CANDIDATE-<todo>.json`` (written by
    the approve) and re-derives the bound facts (HEAD, contract, environment,
    candidate tree, degradation set) with the SAME validator the commit gate
    runs; ``skipped`` when the unit was not approved through the R2.4 path.
-9. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
-   explicitly marked as executor data (unverified).
-10. ``lint`` — ``ruff check .``.
+10. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
+    explicitly marked as executor data (unverified).
+11. ``lint`` — ``ruff check .``.
 
 Verdict / exit code: 0 = every measured check passed, 1 = at least one
 failure, 2 = nothing was measured at all (no baseline, no contract, no
@@ -56,10 +72,14 @@ it notes the problem in the report instead.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +88,12 @@ from . import paths
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._proc import run_tree
+from .infra.git_model import (
+    GitModelError,
+    GitRepository,
+    display_path,
+    read_untracked_snapshot,
+)
 from .infra.managed_fs import ManagedPathError, managed_write_text
 from .prove_red import (
     VERDICT_BROKEN,
@@ -77,7 +103,9 @@ from .prove_red import (
     _looks_like_test_file,
     prove_red,
 )
+from .signals import short_id
 from .unit_contract import parse_done_json, parse_todo_contract, render_done_json
+from .verify import parse_argv
 
 #: Per-gate subprocess timeout (seconds).
 GATE_TIMEOUT = 300
@@ -148,19 +176,37 @@ def _run_cmd(
     cmd: str,
     cwd: Path,
     timeout: int,
+    env: dict[str, str] | None = None,
 ) -> tuple[int | None, str, bool]:
-    """Run a shell command. Returns (rc, output, timed_out)."""
+    """Run a command as argv (``shlex.split``), no shell.
+
+    A4 (REVIEW виток 2): the same launch mechanism as the candidate check
+    (:func:`awf.candidate_verify.run_check`) and verify.py — one command→
+    argv rule (:func:`awf.verify.parse_argv`), so a command means the same
+    thing on every surface it is gated by. An env prefix
+    (``PYTHONPATH=... python -m pytest``) is SHELL syntax — pass the
+    environment through ``env`` instead. Bad quoting and a launch failure
+    (missing executable, permission denied — the old ``shell=True`` turned
+    those into rc 127) fail typed (rc 127 + ``ABORTED`` text), never a
+    traceback.
+
+    Returns (rc, output, timed_out)."""
+    parts, problem = parse_argv(cmd)
+    if problem:
+        return 127, f"ABORTED: {problem}", False
     try:
         cp = run_tree(
-            cmd,
+            parts,
             timeout=timeout,
             capture_output=True,
             text=True,
             cwd=str(cwd),
-            shell=True,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return None, "", True
+    except (subprocess.SubprocessError, OSError) as e:
+        return 127, f"ABORTED: {e}", False
     out = (cp.stdout or "") + (("\n" + cp.stderr) if cp.stderr else "")
     return cp.returncode, out, False
 
@@ -258,6 +304,7 @@ def _git_lines(project: Path, *args: str) -> tuple[int, str]:
             cwd=str(project),
             capture_output=True,
             text=True,
+            errors="surrogateescape",
             check=False,
             timeout=30,
         )
@@ -269,6 +316,27 @@ def _git_lines(project: Path, *args: str) -> tuple[int, str]:
         # section, so hand it the timeout text.
         return 124, f"git {' '.join(args)} timed out after {e.timeout}s"
     return cp.returncode, (cp.stdout or "").strip()
+
+
+def _git_paths(project: Path, rev: str) -> tuple[int, str, list[str], list[str]]:
+    """Tracked-changed and untracked paths vs ``rev`` from the R2.1 model.
+
+    M4 (TODO-0228, добор 0221): the printed ``--name-only`` /
+    ``ls-files --others`` reads crashed the whole verify pack with a
+    ``UnicodeDecodeError`` under ``core.quotePath=false`` + a non-UTF-8 name
+    (text=True decodes strictly) and with ``OSError``/``SubprocessError`` on
+    a hung git. The model reads the NUL protocol and hands back raw bytes,
+    so a non-UTF-8 name is displayed, never fatal. A git refusal degrades
+    to ``rc=1`` + its text — every caller already turns that into a failed
+    or skipped section.
+    """
+    try:
+        repo = GitRepository(project)
+        tracked = [display_path(p) for p in repo.changed_paths(rev)]
+        untracked = [display_path(p) for p in repo.untracked_paths()]
+    except (GitModelError, OSError) as exc:
+        return 1, str(exc), [], []
+    return 0, "", tracked, untracked
 
 
 def _diff_section(project: Path, todo_id: str, contract: dict | None) -> Section:
@@ -295,28 +363,23 @@ def _diff_section(project: Path, todo_id: str, contract: dict | None) -> Section
             status="skipped",
             lines=[f"skipped — no BASELINE-{todo_id}.sha, diff not measured"],
         )
-    rc, names = _git_lines(project, "diff", "--name-only", sha)
+    rc, err, tracked_names, untracked_names = _git_paths(project, sha)
     if rc != 0:
         return Section(
             name="diff",
             status="fail",
-            lines=[f"git diff vs {sha[:12]} failed: {names[:200]}"],
+            lines=[f"git diff vs {sha[:12]} failed: {err[:200]}"],
             measured=True,
             detail="git error",
         )
-    rc, untracked = _git_lines(project, "ls-files", "--others", "--exclude-standard")
-    untracked_set = set(untracked.splitlines()) if rc == 0 and untracked else set()
+    untracked_set = set(untracked_names)
     # Files that were ALREADY untracked at the baseline are not this unit's work.
-    old_untracked_file = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
-    old_untracked: set[str] = set()
-    if old_untracked_file.is_file():
-        old_untracked = {
-            ln.strip() for ln in old_untracked_file.read_text(encoding="utf-8").splitlines() if ln.strip()
-        }
+    # One reader for the fact: raw NUL form or the legacy printed form.
+    old_untracked = read_untracked_snapshot(project, todo_id) or set()
     new_untracked = sorted(
         f for f in untracked_set - old_untracked if not _is_noise(f)
     )
-    tracked_names = [f for f in names.splitlines() if not _is_noise(f)]
+    tracked_names = [f for f in tracked_names if not _is_noise(f)]
     changed = sorted(set(tracked_names) | set(new_untracked))
 
     rc, shortstat = _git_lines(project, "diff", "--shortstat", sha)
@@ -432,21 +495,14 @@ def _untracked_excluded_section(project: Path, todo_id: str) -> Section:
     only), so the status is always "pass" (or "skipped" when there is no
     baseline snapshot to measure against). Never a verdict failure.
     """
-    baseline_listing = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
-    if not baseline_listing.is_file():
+    baseline_set = read_untracked_snapshot(project, todo_id)
+    if baseline_set is None:
         return Section(
             name="untracked_excluded",
             status="skipped",
             lines=[f"skipped — no BASELINE-{todo_id}.untracked snapshot"],
         )
-    try:
-        excluded = sorted(
-            ln.strip()
-            for ln in baseline_listing.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        )
-    except OSError:
-        excluded = []
+    excluded = sorted(baseline_set)
     if not excluded:
         return Section(
             name="untracked_excluded",
@@ -473,7 +529,221 @@ def _untracked_excluded_section(project: Path, todo_id: str) -> Section:
     )
 
 
+#: M1 (2б): a test-like contract command runs twice. The first run is the
+#: canonical result; a differing second run marks the command as flaky.
+FLAKE_RUNS = 2
+
+#: A command is "test-like" when a shell segment *invokes* pytest —
+#: directly (`pytest`, `py.test`, possibly via an absolute venv path), as
+#: `python -m pytest`, or through a runner prefix (`uv run pytest`,
+#: `poetry run pytest`, `env python -m pytest`). The check is structural,
+#: not a substring search, and splits on shell operators with or without
+#: surrounding spaces (`pytest; echo`, `pytest&&echo`, `cd tests;pytest .`).
+#: A wrapper (`coverage run -m pytest`, `bash scripts/run-all.sh`, arbitrary
+#: shell) is NOT test-like and keeps its single run (R1).
+_TEST_PROGRAMS = frozenset({"pytest", "py.test"})
+_PYTHON_RE = re.compile(r"^python\d*(?:\.\d+)*$")
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_SHELL_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
+
+
+def _shell_segments(tokens: list[str]) -> list[list[str]]:
+    """Split a token list into shell segments on `&&`, `||`, `;`, `|`, `&`."""
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in _SHELL_OPERATORS:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return [seg for seg in segments if seg]
+
+
+def _strip_runner_prefixes(args: list[str]) -> list[str]:
+    """Drop `env`, `uv run`, `poetry run` and env assignments before a program."""
+    while args:
+        program = args[0].rsplit("/", 1)[-1]
+        if program == "env":
+            args = args[1:]
+            while args and _ENV_ASSIGN_RE.match(args[0]):
+                args.pop(0)
+            continue
+        if program in {"uv", "poetry"} and len(args) >= 2 and args[1] == "run":
+            args = args[2:]
+            while args and _ENV_ASSIGN_RE.match(args[0]):
+                args.pop(0)
+            continue
+        break
+    return args
+
+
+def _is_test_like(cmd: str) -> bool:
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    for segment in _shell_segments(tokens):
+        args = _strip_runner_prefixes(list(segment))
+        if not args:
+            continue
+        program = args[0].rsplit("/", 1)[-1]
+        if program in _TEST_PROGRAMS:
+            return True
+        if (
+            _PYTHON_RE.match(program)
+            and len(args) >= 3
+            and args[1] == "-m"
+            and args[2].rsplit("/", 1)[-1] in _TEST_PROGRAMS
+        ):
+            return True
+    return False
+
+
+def _qa_findings_path(project: Path, todo_id: str) -> Path | None:
+    """The QA-finding test file, both accepted names (TODO-0240 review V1).
+
+    The canonical name drops the ``TODO-`` prefix (``QA-0228-…`` — the form
+    every live file uses, :func:`awf.signals.short_id` is the one prefix
+    rule); the full id (``QA-TODO-0228-…``) stays accepted for callers that
+    pass it verbatim. The canonical name wins when both exist.
+    """
+    short = short_id(todo_id)
+    names = [f"QA-{short}-findings-test.py"]
+    full = f"QA-{todo_id}-findings-test.py"
+    if full not in names:
+        names.append(full)
+    context_dir = paths.context_dir(project)
+    for name in names:
+        path = context_dir / name
+        if path.is_file():
+            return path
+    return None
+
+
+_QA_PASSED_RE = re.compile(r"\b(\d+)\s+passed\b")
+
+
+def _pytest_timeout_available() -> bool:
+    """True when the ``pytest-timeout`` plugin loads in this interpreter.
+
+    AA2 (TODO-0240 review v7): the plugin lives in the ``dev`` extra, but
+    the verify pack runs in the RUNTIME environment — a machine with pytest
+    and without the plugin would answer ``--timeout`` with rc=4
+    ("unrecognized arguments") and turn a GREEN QA file into a confirmed
+    finding. The per-command wall-clock timeout in ``_run_cmd``
+    (``run_tree`` kills the process group) stays in force either way, so
+    the flag is an optimisation, not the guard.
+    """
+    return importlib.util.find_spec("pytest_timeout") is not None
+
+
+def _pytest_reports_passed(output: str) -> bool:
+    """True when the pytest summary carries at least one passed test (X3)."""
+    return any(int(n) > 0 for n in _QA_PASSED_RE.findall(output))
+
+
+def _qa_findings_section(project: Path, todo_id: str, timeout: int) -> Section:
+    """TODO-0240: run ``context/QA-<NNNN>-findings-test.py`` when it exists.
+
+    The file is the supervisor's reproduction test for a QA finding — a
+    pytest MODULE (``test_*`` functions), not a bare script: it runs through
+    ``pytest`` ONCE (no flake probe), and its outcome carries the same
+    weight as a contract command — a red finding fails the pack. No file →
+    ``none`` (skipped, not measured); pytest itself being unavailable is an
+    explicit section error, never a pass.
+    """
+    path = _qa_findings_path(project, todo_id)
+    if path is None:
+        return Section(
+            name="qa_findings",
+            status="skipped",
+            lines=["none — no QA-<NNNN>-findings-test.py"],
+            detail="none",
+        )
+    py = shlex.quote(sys.executable)
+    # Z1: the QA file lives outside ``tests/``, so the suite's conftest (and
+    # its session-kill tripwire) is not loaded for it. Load the packaged
+    # tripwire as a plugin and make that package importable regardless of
+    # where awf was installed — an unguarded natural repro such as
+    # ``os.killpg(1, 15)`` would signal the whole user session.
+    pkg_parent = Path(__file__).resolve().parent.parent
+    # A4 (REVIEW виток 2): the env prefix (``PYTHONPATH=... ${PYTHONPATH:…}``)
+    # is shell syntax — with the argv launcher it moves into the explicit
+    # environment, appended after any inherited value exactly like the old
+    # ``${PYTHONPATH:+:$PYTHONPATH}`` expansion did.
+    qa_env = dict(os.environ)
+    inherited = os.environ.get("PYTHONPATH")
+    qa_env["PYTHONPATH"] = (
+        f"{pkg_parent}{':' + inherited if inherited else ''}"
+    )
+    timeout_arg = (
+        f"--timeout={int(timeout)} " if _pytest_timeout_available() else ""
+    )
+    cmd = (
+        f"{py} -m pytest {shlex.quote(str(path))} -q "
+        f"{timeout_arg}-p no:cacheprovider "
+        "-p awf._safety_tripwire"
+    )
+    rc, out, timed_out = _run_cmd(cmd, project, timeout, env=qa_env)
+    if "No module named pytest" in out:
+        return Section(
+            name="qa_findings",
+            status="fail",
+            lines=[f"- `{path.name}`: ERROR — pytest is not available in {sys.executable}"],
+            measured=True,
+            detail="pytest-missing",
+        )
+    if timed_out:
+        return Section(
+            name="qa_findings",
+            status="fail",
+            lines=[f"- `{path.name}`: FAIL — timeout after {timeout}s"],
+            measured=True,
+            detail="timeout",
+        )
+    ok = rc == 0
+    if ok and not _pytest_reports_passed(out):
+        # An all-skip/xfail module exits 0 without proving anything — a
+        # finding is only disproved by a test that actually ran (X3).
+        return Section(
+            name="qa_findings",
+            status="fail",
+            lines=[
+                f"- `{path.name}`: FAIL — no tests executed "
+                f"(no 'passed' in the pytest output) — {_tail(out)}"
+            ],
+            measured=True,
+            detail="no tests executed",
+        )
+    return Section(
+        name="qa_findings",
+        status="pass" if ok else "fail",
+        lines=[
+            f"- `{path.name}`: {'pass' if ok else f'FAIL (rc={rc})'} — {_tail(out)}"
+        ],
+        measured=True,
+        detail="pass" if ok else f"fail (rc={rc})",
+    )
+
+
 def _contract_tests_section(project: Path, contract: dict | None, timeout: int) -> Section:
+    if isinstance(contract, _BrokenContract):
+        # F2 (REVIEW виток 3): the block exists but does not parse — the
+        # gate FAILS with the reason ("skipped — no block" would hide a
+        # declared verification entirely; "broken runner" is what the
+        # supervisor would need to see to re-materialize the contract).
+        return Section(
+            name="contract_tests",
+            status="fail",
+            lines=[
+                f"- the TODO has a contract block, but it does not parse: "
+                f"{contract.reason} — fix the block (front-matter YAML/"
+                "`verify:` keys) and rerun the pack"
+            ],
+            detail=f"fail — broken contract block: {contract.reason}",
+        )
     cmds = (contract or {}).get("verify")
     if not isinstance(cmds, list) or not cmds:
         return Section(
@@ -481,21 +751,86 @@ def _contract_tests_section(project: Path, contract: dict | None, timeout: int) 
             status="skipped",
             lines=["skipped — no `verify:` block in the TODO contract"],
         )
+    flake_value = (contract or {}).get("flake", "on")
+    flake_off = flake_value is False or str(flake_value).strip().lower() == "off"
     s = Section(name="contract_tests", status="pass")
     ok = 0
+    unstable = 0
     for cmd in cmds:
-        rc, out, timed_out = _run_cmd(str(cmd), project, timeout)
+        command = str(cmd)
+        probe = not flake_off and _is_test_like(command)
+        rc, out, timed_out = _run_cmd(command, project, timeout)
         if timed_out:
+            # A timeout is never retried: the first run already failed.
             s.status = "fail"
             s.lines.append(f"- `{cmd}`: FAIL — timeout after {timeout}s")
-        elif rc == 0:
+            continue
+        if not probe:
+            if rc == 0:
+                ok += 1
+                s.lines.append(f"- `{cmd}`: pass")
+            else:
+                s.status = "fail"
+                s.lines.append(f"- `{cmd}`: FAIL (rc={rc}) — {_tail(out)}")
+            continue
+        first_rc = rc
+        repeats = [
+            _run_cmd(command, project, timeout)
+            for _ in range(FLAKE_RUNS - 1)
+        ]
+        same_outcome = all(
+            not repeat_timeout and repeat_rc == first_rc
+            for repeat_rc, _repeat_out, repeat_timeout in repeats
+        )
+        # FLAKE_RUNS == 2 → exactly one repeat; the wording below calls it
+        # "the second run". The constant stays the source of the count.
+        second_rc, _second_out, second_timeout = (
+            repeats[0] if repeats else (first_rc, "", False)
+        )
+        seen = "timeout" if second_timeout else f"rc={second_rc}"
+        if first_rc == 0:
             ok += 1
-            s.lines.append(f"- `{cmd}`: pass")
+            if same_outcome:
+                s.lines.append(
+                    f"- `{cmd}`: pass; flake: ok ({FLAKE_RUNS}/{FLAKE_RUNS})"
+                )
+            else:
+                # The first (canonical) outcome passed: the gate stays green,
+                # the differing second run is a visible WARNING.
+                unstable += 1
+                s.lines.append(
+                    f"- `{cmd}`: pass (first outcome used); flake: unstable — "
+                    f"WARNING: first rc=0, second {seen} — flakiness alone "
+                    f"does not fail the gate"
+                )
+            continue
+        s.status = "fail"
+        if same_outcome:
+            s.lines.append(
+                f"- `{cmd}`: FAIL (rc={first_rc}) — {_tail(out)}; "
+                f"flake: ok ({FLAKE_RUNS}/{FLAKE_RUNS})"
+            )
+        elif second_rc == 0 and not second_timeout:
+            unstable += 1
+            s.lines.append(
+                f"- `{cmd}`: FAIL (rc={first_rc}) — {_tail(out)}; "
+                f"flake: unstable — WARNING: second run passed "
+                f"(rc=0); first outcome used, the red is not hidden"
+            )
         else:
-            s.status = "fail"
-            s.lines.append(f"- `{cmd}`: FAIL (rc={rc}) — {_tail(out)}")
+            unstable += 1
+            s.lines.append(
+                f"- `{cmd}`: FAIL (rc={first_rc}) — {_tail(out)}; "
+                f"flake: unstable — WARNING: second run {seen}; "
+                f"first outcome used"
+            )
     s.measured = True
     s.detail = f"{ok} of {len(cmds)} commands passed"
+    if unstable:
+        s.detail += (
+            f", {unstable} unstable (WARNING; the first outcome decided "
+            f"each gate)"
+        )
     return s
 
 
@@ -515,23 +850,12 @@ def _changed_paths(project: Path, todo_id: str) -> list[str] | None:
         sha = raw.splitlines()[0] if raw else ""
     if not sha:
         return None
-    rc, names = _git_lines(project, "diff", "--name-only", sha)
+    rc, _err, names, untracked_names = _git_paths(project, sha)
     if rc != 0:
         return None
-    rc, untracked = _git_lines(project, "ls-files", "--others", "--exclude-standard")
-    untracked_set = set(untracked.splitlines()) if rc == 0 and untracked else set()
-    old_untracked_file = paths.context_dir(project) / f"BASELINE-{todo_id}.untracked"
-    old_untracked: set[str] = set()
-    if old_untracked_file.is_file():
-        try:
-            old_untracked = {
-                ln.strip()
-                for ln in old_untracked_file.read_text(encoding="utf-8").splitlines()
-                if ln.strip()
-            }
-        except OSError:
-            old_untracked = set()
-    changed = {f for f in names.splitlines() if f and not _is_noise(f)}
+    untracked_set = set(untracked_names)
+    old_untracked = read_untracked_snapshot(project, todo_id) or set()
+    changed = {f for f in names if f and not _is_noise(f)}
     changed |= {f for f in untracked_set - old_untracked if not _is_noise(f)}
     return sorted(changed)
 
@@ -589,18 +913,35 @@ def _prove_red_section(
     for w in res.warnings:
         lines.append(f"warning: {w}")
     kind = contract.get("prove_red_kind")
-    # TODO-0201: a declared coverage unit — not-red is expected by
-    # construction (the tests guard already-implemented behavior), so it
-    # is a pass with the justification; every other verdict is unchanged
-    # (the declaration exempts nothing else).
-    if kind == "coverage" and res.verdict == VERDICT_NOT_RED:
-        note = contract.get("prove_red_note")
-        lines.append(
+    # TODO-0201/TODO-0231: a declared kind turns EXACTLY ONE verdict into a
+    # pass with its justification; every other verdict stays a fail (the
+    # declaration exempts nothing else). ``new-api`` passes a broken-runner
+    # whose typed cause is the missing new symbol (prove-red's
+    # ``new_code_acceptable`` fact — never the warning's prose); a broken
+    # runner WITHOUT that fact (collection error outside the project, 0
+    # tests, timeout) keeps its fail. ``coverage`` passes a not-red: the
+    # tests guard already-implemented behavior, so they are green on this
+    # unit's baseline by construction.
+    declared: tuple[str, str] | None = None
+    if kind == "new-api" and res.verdict == VERDICT_BROKEN and res.new_code_acceptable:
+        declared = (
+            "new-api-ok — the test falls on the baseline only because the "
+            "new symbol does not exist yet (declared `prove_red_kind: "
+            "new-api`). This is a pass with a warning, not a red.",
+            "new-api-ok",
+        )
+    elif kind == "coverage" and res.verdict == VERDICT_NOT_RED:
+        declared = (
             "coverage unit — not-red is expected (declared "
             "`prove_red_kind: coverage`): the tests guard "
             "already-implemented behavior, so they are green on this "
-            "unit's baseline by construction."
+            "unit's baseline by construction.",
+            "coverage-ok (declared not-red)",
         )
+    if declared is not None:
+        annotation, detail = declared
+        lines.append(annotation)
+        note = contract.get("prove_red_note")
         if isinstance(note, str) and note.strip():
             lines.append(f"note: {note.strip()}")
         return Section(
@@ -608,7 +949,7 @@ def _prove_red_section(
             status="pass",
             lines=lines,
             measured=True,
-            detail="coverage-ok (declared not-red)",
+            detail=detail,
         )
     # An undeclared not-red keeps its fail; a tests-only diff suggests the
     # unit is coverage (a hint line only, the verdict is untouched).
@@ -736,6 +1077,83 @@ def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
     )
 
 
+def _checklist_section(project: Path, todo_id: str) -> Section:
+    """TODO-0244: the Definition-of-done gate as a pack section.
+
+    Present block → run/reuse the gate (sha-pinned); a missing item fails
+    the section. No block → ``checklist: none`` and skipped — old units
+    without the block keep working exactly as before.
+    """
+    from .checklist_gate import ChecklistGateError
+    from .checklist_gate import run as run_gate
+    from .checklists import ChecklistError
+
+    try:
+        result = run_gate(project, todo_id)
+    except ChecklistGateError as e:
+        # Not the same fact as "the unit carries no block": the gate could
+        # not read the unit at all. Keep it visibly distinct — a silent
+        # `none` here would read as "nothing to check".
+        return Section(
+            name="checklist",
+            status="skipped",
+            lines=[f"checklist: unavailable — {e}"],
+            detail="unavailable",
+        )
+    except ChecklistError as e:
+        # The unit HAS a block and the block is broken (a hand-edited line,
+        # a refused probe argv). That is a failed check, not "nothing to
+        # check" — and it must be a SECTION verdict, never a pack traceback.
+        # ``measured`` follows every other failing section: a failure was
+        # actually observed, so the report counts it as measured.
+        return Section(
+            name="checklist",
+            status="fail",
+            lines=[f"checklist: fail — {e}"],
+            measured=True,
+            detail="fail",
+        )
+    except (OSError, RuntimeError) as e:
+        # A filesystem error on a probe target (an unreadable file, a
+        # symlink loop) is the same kind of fact as a broken block: the
+        # check FAILED to run. It must stay a section verdict — a traceback
+        # out of the pack hides every other section.
+        return Section(
+            name="checklist",
+            status="fail",
+            lines=[f"checklist: fail — {type(e).__name__}: {e}"],
+            measured=True,
+            detail="fail",
+        )
+    if result["status"] == "none":
+        return Section(
+            name="checklist",
+            status="skipped",
+            lines=["checklist: none — the TODO carries no `## Чек-лист завершения` block"],
+            detail="none",
+        )
+    s = Section(name="checklist", status="pass", measured=True)
+    for item in result["items"]:
+        mark = {"ok": "[x]", "missing": "[ ]", "manual": "[~]"}[item["status"]]
+        line = f"- {mark} {item['id']}: {item['text']}"
+        if item["detail"]:
+            line += f" — {item['detail']}"
+        s.lines.append(line)
+    if result.get("cached"):
+        s.lines.append(f"cache: reused for tree {result['tree_sha'][:12]}")
+    for warning in result.get("warnings", []):
+        s.lines.append(f"warning: {warning}")
+    if result["missing"]:
+        s.status = "fail"
+        s.detail = "missing: " + ", ".join(result["missing"])
+        s.lines.append("missing: " + ", ".join(result["missing"]))
+    elif result["manual"]:
+        s.detail = f"{len(result['manual'])} manual item(s), probes ok"
+    else:
+        s.detail = "all probes ok"
+    return s
+
+
 def _lint_section(project: Path, timeout: int) -> Section:
     rc, out = _run_lint(project, timeout)
     if rc is None:
@@ -811,11 +1229,31 @@ def _candidate_section(project: Path, todo_id: str) -> Section:
 
 # ─── TODO contract loading ───────────────────────────────────────────────
 
+
+class _BrokenContract(dict):
+    """F2 (REVIEW виток 3): the TODO HAS a contract block, but it does not
+    parse — the opposite of "no block", it must not be rendered as one.
+
+    Behaves as an empty contract for every ``.get()`` reader (diff/prove-red
+    skip their declared keys, the same as for a missing block); only
+    ``_contract_tests_section`` checks the type and FAILS the gate with the
+    parse reason instead of skipping it with "no block".
+    """
+
+    reason: str
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+
 def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | None:
     """Read the TODO (inbox, or the archive) and parse its contract block.
 
-    Returns None when there is no block; a broken block is noted in the log
-    and treated as absent — the pack must not crash on it.
+    Returns None when there is NO block at all (the pack must not crash on
+    it); a block that does not parse returns :class:`_BrokenContract`
+    (F2) so the gate still reports the TODO's own declared commands — the
+    fact it exists and refuses to parse is never silently "skipped".
     """
     candidates = (
         paths.inbox(project) / f"{todo_id}.md",
@@ -824,15 +1262,20 @@ def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | N
     for f in candidates:
         if f.is_file():
             try:
-                text = f.read_text(encoding="utf-8")
+                # T1: surrogateescape — a non-UTF-8 TODO is legitimate input
+                # (byte-faithful text, the same tolerance as the unified
+                # reader ``todos.read_todo_text``); a strict decode crashed
+                # the whole pack before any section or report was written.
+                text = f.read_text(encoding="utf-8", errors="surrogateescape")
             except OSError as e:
                 _log(logs_dir, f"U5: {f} unreadable ({e}) — no contract")
                 return None
             try:
                 contract, unknown = parse_todo_contract(text)
             except ValueError as e:
-                _log(logs_dir, f"U5: contract block in {f} is broken: {e}")
-                return None
+                reason = f"contract block in {f} is broken: {e}"
+                _log(logs_dir, f"U5: {reason}")
+                return _BrokenContract(reason)
             if unknown:
                 _log(logs_dir, f"U5: unknown contract keys in {f}: {', '.join(unknown)}")
             return contract
@@ -925,10 +1368,12 @@ def verify_pack(
         _diff_section(project, todo_id, contract),
         _reject_leak_section(project, todo_id),
         _untracked_excluded_section(project, todo_id),
+        _qa_findings_section(project, todo_id, cmd_timeout),
         _contract_tests_section(project, contract, cmd_timeout),
         _prove_red_section(project, todo_id, contract, tmp_base),
         _candidate_section(project, todo_id),
         _done_json_section(project, todo_id, logs_dir),
+        _checklist_section(project, todo_id),
         _lint_section(project, lint_timeout),
     ]
 
@@ -954,10 +1399,17 @@ def verify_pack(
             report_path.relative_to(project)
         except ValueError:
             report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(report_str, encoding="utf-8")
+            report_path.write_text(
+                report_str, encoding="utf-8", errors="backslashreplace"
+            )
         else:
             try:
-                managed_write_text(report_path, report_str, root=project)
+                managed_write_text(
+                    report_path,
+                    report_str,
+                    root=project,
+                    errors="backslashreplace",
+                )
             except (ManagedPathError, OSError):
                 # Reporting is best-effort: an unsafe runtime path must not
                 # crash the verify pack (the verdict is already computed).

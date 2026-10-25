@@ -137,7 +137,6 @@ def _mutate_state_locked(
     transitions from losing each other's fields.
     """
     state_path = _state_file(project_dir)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
 
     from ._lock import locked
 

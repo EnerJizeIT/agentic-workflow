@@ -1,0 +1,87 @@
+# Классы проверок: пункт подключается, только когда юнит объявил класс
+# в `checklist_classes:` своего контракта. Класс без объявления не мержится.
+#
+# Классы: fs-writer, encoding, cli-parity, scripts, roles, packaging.
+classes:
+  fs-writer:
+    - id: fs-atomic-helper
+      text: Атомарная запись идёт через общий помощник awf/_atomic.py
+      probe:
+        type: file_exists
+        path: awf/_atomic.py
+
+    - id: fs-managed-fs
+      text: Запись в управляемые пути идёт через awf/infra/managed_fs.py
+      probe:
+        type: file_exists
+        path: awf/infra/managed_fs.py
+
+  encoding:
+    - id: encoding-surrogateescape
+      text: Чтение TODO терпит не-UTF-8 байты (surrogateescape)
+      probe:
+        type: grep_present
+        file: awf/verify_pack.py
+        pattern: surrogateescape
+
+    - id: encoding-managed-write
+      text: Общий писатель путей задаёт кодировку явно
+      probe:
+        type: grep_present
+        file: awf/infra/managed_fs.py
+        pattern: encoding=
+
+  cli-parity:
+    - id: cli-help-command
+      text: Справка строится из живых сабпарсеров, а не из ручного списка
+      probe:
+        type: grep_present
+        file: awf/cli.py
+        pattern: def _print_top_level_help
+
+    - id: cli-dispatch-fallback
+      text: Неизвестная команда завершается кодом возврата 1
+      probe:
+        type: grep_present
+        file: awf/cli.py
+        pattern: return 1
+
+  scripts:
+    - id: scripts-run-all
+      text: Ворота качества запускаются одним скриптом
+      probe:
+        type: file_exists
+        path: scripts/run-all.sh
+
+    - id: scripts-suite-canonical
+      text: Канонический полный сьют запускается своим скриптом (M1)
+      probe:
+        type: file_exists
+        path: scripts/suite-canonical.sh
+
+  roles:
+    - id: roles-implementer
+      text: Роль исполнителя лежит в каталоге шаблонов
+      probe:
+        type: file_exists
+        path: awf/templates/roles/agent-implementer.md
+
+    - id: roles-catalog
+      text: Каталог ролей на месте
+      probe:
+        type: file_exists
+        path: awf/templates/roles
+
+  packaging:
+    - id: packaging-pyproject
+      text: Метаданные пакета на месте
+      probe:
+        type: file_exists
+        path: pyproject.toml
+
+    - id: packaging-data
+      text: Данные пакета объявлены в package-data (wheel не теряет файлы)
+      probe:
+        type: grep_present
+        file: pyproject.toml
+        pattern: package-data

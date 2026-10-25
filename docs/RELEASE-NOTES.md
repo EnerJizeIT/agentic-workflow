@@ -4,6 +4,46 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [2.0.0] — 2026-10-25
+
+Agents lie by accident; the engine now asks for evidence. This release is the
+result of two quality waves: the filesystem and state layers got one owner, the
+worker lifecycle became durable, verification became honest, and a unit can
+carry a frozen definition-of-done checklist that the engine re-runs itself.
+
+### Highlights
+
+- **One owner per surface.** State, archives, locks, todo edits and engine
+  writes go through managed no-follow barriers; symlinked surfaces are refused
+  before any effect. Non-UTF-8 paths are first-class.
+- **A dead engine is no longer a mystery.** The engine is detached, restarted
+  by `awf supervise`, writes heartbeat and exit records, and status reports
+  `engine_dead` with a resume action instead of silence.
+- **Verification with receipts.** One canonical suite artifact per tree sha, a
+  flake probe, `qa_findings` running the QA red tests under a tripwire, and a
+  prove-red contract with explicit verdicts.
+- **A definition of done you can execute.** Checklists are data; probes are
+  read-only and allowlisted; the gate reruns them and reports missing items with
+  evidence. Frozen at dispatch, editable only through a review.
+- **Contracts that travel.** `source_ref` brings the source section into the
+  unit; blocked notes have a schema; markdown parsing understands code fences;
+  the queue can be revised without losing its shape.
+
+### Breaking
+
+- `verify:` commands with shell operators are refused; put the logic in a
+  script.
+- A broken contract block is an error, not an absent block.
+- The engine is detached from the MCP host; use `awf supervise` for unattended
+  work.
+- The queue refuses to remove its last element.
+
+### Upgrade
+
+- `pip install -U awf agent-workflow-ui` (plugin requires `awf>=2.0.0`).
+- Units without a checklist keep the legacy path (`checklist: none`).
+- Templates now live in `awf/templates`; `awf init` installs them.
+
 ## [1.9.0] — 2026-10-13
 
 Commits keep their word, and now they prove it. A demanding day of

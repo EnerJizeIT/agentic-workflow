@@ -28,8 +28,11 @@ def _stub_git(monkeypatch, changed_files: list[str], stat: str = ""):
     def fake_run(cmd, *a, **kw):
         if isinstance(cmd, list) and cmd[:2] == ["git", "diff"]:
             if "--name-only" in cmd:
-                return SimpleNamespace(stdout="\n".join(changed_files) + "\n")
-            return SimpleNamespace(stdout=stat)
+                # M4 (TODO-0228): the handoff reads paths through the R2.1
+                # model (NUL protocol), not the printed listing.
+                payload = b"".join(p.encode() + b"\0" for p in changed_files)
+                return SimpleNamespace(stdout=payload, returncode=0, stderr=b"")
+            return SimpleNamespace(stdout=stat, returncode=0, stderr=b"")
         return None
 
     monkeypatch.setattr("awf.signal_watch.subprocess.run", fake_run)

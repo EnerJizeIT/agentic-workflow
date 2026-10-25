@@ -4,9 +4,9 @@
 и доков разъезжались (A-08). Здесь закреплено:
 
 - ``tools/registry.py::TOOLS`` — единственный источник регистрации: его
-  набор имён == ``create_server().list_tools()``, 53 tools, у каждого
+  набор имён == ``create_server().list_tools()``, 55 tools, у каждого
   непустое описание (сверка супервизора 26.09; +awf_run_revise — ORCH M3.4;
-  +awf_commit_workflow — REPORTS26 F6);
+  +awf_commit_workflow — REPORTS26 F6; +awf_blocked_draft — TODO-0229);
 - сигнатуры и docstrings обёрток не изменились (внешний MCP-контракт) —
   выборка 10 инструментов;
 - прямых блокирующих вызовов публичного awf API (``awf.api.*``) из
@@ -60,10 +60,11 @@ def test_registry_equals_list_tools():
 
     TOOLS = registry.TOOLS
     names = [spec.name for spec in TOOLS]
-    # 53 tools (сверка супервизора 26.09: 47; +awf_run_revise — ORCH M3.4;
-    # +4 awf_run_service_* — ORCH M5.2; +awf_commit_workflow — REPORTS26 F6)
-    # и без дублей имён.
-    assert len(names) == 53, f"registry has {len(names)} tools, expected 53"
+    # 55 tools (сверка супервизора 26.09: 47; +awf_run_revise — ORCH M3.4;
+    # +4 awf_run_service_* — ORCH M5.2; +awf_commit_workflow — REPORTS26 F6;
+    # +awf_review_append — TODO-0240; +awf_blocked_draft — TODO-0229) и без
+    # дублей имён.
+    assert len(names) == 55, f"registry has {len(names)} tools, expected 55"
     assert len(set(names)) == len(names), "duplicate tool names in the registry"
 
     live = asyncio.run(create_server().list_tools())
@@ -73,7 +74,7 @@ def test_registry_equals_list_tools():
         f"registry-only={sorted(set(names) - set(live_names))}, "
         f"server-only={sorted(set(live_names) - set(names))}"
     )
-    assert len(live_names) == 53
+    assert len(live_names) == 55
 
     # У каждого инструмента непустое описание (и у сервера, и в метаданных).
     empty_live = [t.name for t in live if not (t.description or "").strip()]
@@ -83,7 +84,7 @@ def test_registry_equals_list_tools():
 
     # Счётчик для docs-проверки A-08 сходится с составом.
     counts = registry.tool_counts()
-    assert counts["total"] == 53 and counts["total"] == counts["awf"] + counts["ui"]
+    assert counts["total"] == 55 and counts["total"] == counts["awf"] + counts["ui"]
 
 
 # ─── 2. Сигнатуры и docstrings не изменились ─────────────────────────────
@@ -129,7 +130,7 @@ def test_registry_equals_list_tools():
             "awf_dispatch_todo",
             ["content", "project_dir", "role", "todo_id",
              "pipeline", "carry_over_from", "include_untracked",
-             "allow_mismatch"],  # REPORTS26 F5 (TODO-0165): heading mismatch opt-out
+             "allow_mismatch", "source_ref"],  # REPORTS26 F5 (TODO-0165): heading mismatch opt-out; TODO-0229: source_ref
             "Create a unit atomically: TODO file + baseline + .ready signal in one call.",
         ),
         (

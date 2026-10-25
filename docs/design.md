@@ -38,7 +38,8 @@ init → goal → form → normalize → brief → run → verify → done
 Механика фаз:
 
 - `awf/phase.py` — `detect_phase()`, `get_phase_prompt()`, `advance_phase()`; `ALL_PHASES = [init, goal, form, normalize, brief, run, verify, done]`.
-- Phase templates: `templates/roles/supervisor/phase-{init,goal,form,normalize,brief,run,verify}.md` + общий `_core.md` (у `done` шаблона нет — фаза терминальная).
+- Phase templates: `awf/templates/roles/supervisor/phase-{init,goal,form,normalize,brief,run,verify}.md` + общий `_core.md` (у `done` шаблона нет — фаза терминальная).
+- Шаблоны живут в одном месте: пакетный каталог `awf/templates/` (рядом с `__file__` пакета). Корневого `templates/` в репозитории нет — движок стейджит изменённые пути поштучно, а путь за симлинком (`fatal: pathspec ... is beyond a symbolic link`) ломал approve. Проект может переопределить промпты своим `templates/` — `awf/phase.py` проверяет его первым; иначе источник пакетный.
 - Каждый tool возвращает `next_action` — компактную инструкцию для следующего шага.
 - `awf_init` и `awf_load_supervisor_context` возвращают compact phase prompt (не полный supervisor.md).
 - Потерянный контекст или новая сессия → `awf_brief` (MCP/CLI): карточка, собранная из живого состояния — фаза, что дальше, run, активные TODO, карта инструментов, ритуалы, recovery-рецепты.
@@ -100,7 +101,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
-| `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update |
+| `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
+| `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
 | `api/workflow_commit.py` | `commit_workflow` + dry-run `uncommitted_workflow_files`: workflow-определения `.agentic/` в git изолированным индексом (REPORTS26 F6) |
 | `run_state.py` | `.agentic/state/run.yaml`: лок read→merge→write, shape-проверка (AUD02-06) |
 | `run_plan_read.py` | Единый reader записи забега (ORCH M1.2): одна запись — два представления (brief-карточка / полный контекст) |
@@ -113,6 +115,10 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |
 | `signal_watch.py` | File-based signal detection (`run_subprocess_until_signal`) |
+| `_worker_exit.py` | Единый диагностический билдер `worker-exit:` для тихих смертей (нормальный выход и kill-пути) |
+| `_engine_liveness.py` | Живучесть движка (TODO-0241/0242): `engine.heartbeat` (старт/смена стадии/тик, клэмп `engine.heartbeat_seconds` ≤30, порог `max(3×interval, 120)`), `ENGINE-EXIT-<ts>-<pid>.md` (rc/сигнал/стадия/трейсбек + ретеншн), parent-death ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН (`engine.kill_with_parent: true` — опция), детектор `engine_dead` для статуса |
+| `_libc.py` | Один libc-хелпер `CDLL(None)` для prctl-вызовов (`_env.py`, `_engine_liveness.py`); кэш грузится в родителе, musl-совместим (TODO-0242 A.5) |
+| `api/supervise.py` | `awf supervise` (TODO-0242 P0-2): сторож активного забега — `engine_dead` → `awf continue` с бюджетом рестартов, лог `supervise: restart #k`, стоп с отчётом при исчерпании |
 | `signals.py` | Signal classification, file detection, expected prefixes |
 | `transitions.py` | Signal → action resolution (`resolve_transition`) |
 | `todos.py` | TODO lifecycle: archive, restore, retire, reconcile |
@@ -125,6 +131,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `candidate_verify.py` | R2.4: материализация candidate, обязательная проверка в throwaway-worktree, привязка evidence (tree/контракт/среда/поколение/ревизия) и отказ при инвалидации |
 | `verify.py` | Test/lint execution, auto-DONE synthesis |
 | `verify_pack.py` | Verify-отчёт `GATES-{todo}.md` (U5): гейты, diff-минимальность, facts |
+| `checklist_gate.py` | DoD-гейт (TODO-0244): прогон структурных проб чек-листа, кэш `CHECKLIST-<todo>.json` по отпечатку дерева; секция verify-pack |
+| `checklists/` | DoD-данные и композиция (TODO-0244): `base.yaml` + `classes.yaml` в пакете, волны проекта в `.agentic/checklists/waves/`; `_data` (схема, строгая загрузка), `_allowlist` (закрытый список флагов `command_rc`), `_compose` (base + объявленные классы + волна + приёмка), `_render` (рендер/разбор блока `## Чек-лист завершения`), `_boundaries` (чтение секций TODO) |
 | `prove_red.py` | Prove-red в temp-worktree на baseline (U4) |
 | `plan_checkpoint.py` | BD-36 checkpoint: one-shot HTTP-форма + одноразовый токен (A-03) |
 | `plan_progress.py` | Прогресс плана по стадиям |
@@ -143,6 +151,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `paths.py` | Пути `.agentic/` |
 | `git_utils.py` | Git-операции: tree fingerprint (`awf tree-sha`), diff, reset |
 | `_proc.py` | `kill_process_tree` (guard `proc.pid > 1` — safety invariant) |
+| `_safety_tripwire.py` | Pytest-плагин tripwire сессии для QA-файлов `context/` (Z1) |
 | `_env.py` | Worker-окружение: `OPENCODE_CONFIG_CONTENT`, `automation.readonly_roles`, реестр permission-ключей и мерж профиля tools стадии (ORCH M7.2) |
 | `_atomic.py`, `_lock.py` | Атомарные записи, file lock (read→merge→write) |
 | `cli.py`, `cmd_*.py` | CLI: `awf start`, `awf baseline`, `awf brief`, `awf metrics`, ... |
@@ -200,7 +209,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 - **Lease:** `.agentic/logs/awf-launch.lease` — заявка публикуется атомарно через `os.link` (владелец сначала пишется в скрытый временный файл, где и стоит `O_EXCL`), поэтому читатель никогда не видит пустой заявки; stale определяется по живости процесса, не по возрасту файла (`api/_lease.py`). Публикация идёт через `dir_fd` (обе стороны ссылки — внутри уже проверенного каталога, симлинк `.agentic`/`logs` не прослеживается). Прочие вызовы получают `run_mode="noop"` с текстом — не исключение. На ФС без жёстких ссылок `awf start` отказывает (fail-closed). Рядом лежит метка идентичности запуска `.agentic/logs/awf-launch.execution` (ExecutionId): ребёнок старого запуска, чью метку переписал новый запуск, работу не выполняет. Метка — не runtime-данные: `reset`/`force-init` её не удаляют, а ПЕРЕЗАПИСЫВАЮТ свежим id (иначе orphan последнего запуска прошёл бы handshake по совпадению или по правилу «метки нет = работай»).
 - **Резолвер живости:** PID из state проверяется по argv — совпадение «это наш orchestrator» (защита от PID-реюза), одинаково для foreground и background (`api/_liveness.py`).
 - **Background-ребёнок — двойной маркер:** env `AWF_BACKGROUND_CHILD=1` + свой argv (`python -m awf start/continue ...`), чтобы резолвер живости и kill находили именно ребёнка (`api/_background.py`).
-- **Платформа:** запуск и разрушение (reset/rollback/force-init) требуют POSIX-семантики файлов — `flock` плюс no-follow-пути, без которых живой запуск не защищён. На не-POSIX эти операции ОТКАЗЫВАЮТ с человеческим текстом (fail-closed), а не запускают ослабленную реализацию. В `_lock.py` Windows-ветка (`msvcrt`) и раньше закрывала только счётчик read→merge→write. После R1-переноса запись состояния идёт через managed-писатель, а он на не-POSIX отказывает ДО счётчика: read→merge→write на Windows не выполняется (fail-closed), ветка `msvcrt` остаётся мёртвым резервом. Это осознанно: интерлок без `flock` интерлоком не считается.
+- **Платформа:** запуск и разрушение (reset/rollback/force-init) требуют POSIX-семантики файлов — `flock` плюс no-follow-пути, без которых живой запуск не защищён. На не-POSIX эти операции ОТКАЗЫВАЮТ с человеческим текстом (fail-closed), а не запускают ослабленную реализацию. В `_lock.py` Windows-ветка (`msvcrt`) и раньше закрывала только счётчик read→merge→write. После R1-переноса запись состояния идёт через managed-писатель, а он на не-POSIX отказывает ДО счётчика: read→merge→write на Windows не выполняется (fail-closed), ветка `msvcrt` в этом пути остаётся мёртвым резервом. Это осознанно: интерлок без `flock` интерлоком не считается. Прямые вызовы `locked()` вне записи состояния (`api/hygiene.py`, `infra/state_store/_lock.py`) до ветки доходят — это живой сайт с вердиктом `unit-0239` в инвентаре, fail-closed там ещё не держится.
+- **Запись состояния — fail-closed:** перечень сайтов под `.agentic` и их статусов — [`docs/design/agentic-writers.md`](design/agentic-writers.md); новый сайт записи в Python-модулях `awf/` обязан попасть в этот инвентарь до кода (shell-хелперы и записи через managed-открыватели держит примитив, граница названа в инвентаре). Переведённые сайты (config, supervisor, роли, pipelines, plan, evidence, правки TODO) идут через managed-писатель с no-follow и на не-POSIX ОТКАЗЫВАЮТ до первого байта; остальные несут в инвентаре вердикт `unit-0239`. Исключений два: bootstrap-запись `awf init` — она заводит скелет проекта и на слабой платформе проходит обычным атомарным писателем, чтобы установка не ломалась; housekeeping-уборка stale pid (`api/_liveness.py`), которая молча пропускает отказ и продолжает (A4). Следующий за `init` шаг (project-setup form) уже отказывает с внятным текстом про POSIX — ослабленная реализация молча не включается.
 
 ## Verify-гейты
 
@@ -251,6 +261,7 @@ HTTP server (daemon thread in orchestrator, `127.0.0.1`):
 13. **Salvage-сценарий.** Worker умер без сигнала → `SALVAGE-{todo}.md` + рестарт стадии (`awf_retry_stage`); сценарий зафиксирован в brief-карточке (`awf/data/scenarios.yaml`) и в recovery-разделе USAGE.
 14. **Профили tools по стадии (ORCH M2.2, V-03 27.09).** Агент execute-стадии получает в `OPENCODE_CONFIG_CONTENT` блок `agent.<имя>.permission`, запрещающий управляющие MCP-tools (22: approve/reject, start/continue/kill/retry, reset/rollback/restore/unblock, init/baseline/dispatch/todo-*, run-*, set-goal/confirm-normalized) — модель не видит их в своём списке. `bash` остаётся; plan/verify сохраняют полный набор. Снижение случайных ошибок, не граница безопасности; строгая изоляция — отдельный этап.
 15. **Профиль tools по поручению (ORCH M7.2, 29.09).** Стадия может объявить `tools: {allow: [...], deny: [...]}` по permission-ключам opencode (bash/edit/write/webfetch + MCP `<server>_<tool>`). Профиль мержится при спавне поверх базовых правил (host-конфиг → awf-оверрайд → M2.2/readonly): deny сильнее allow; базовые управляющие запреты (контрольные tools M2.2 на execute, edit/write readonly-роли) — locked и профилем не отменяются. Единый реестр ключей: неизвестный ключ — ошибка загрузки пайплайна (один ruleset load/write, как M3.1). Профиль сужает случайные возможности стадии — не граница безопасности (`bash` остаётся, если профиль его явно не запретил); supervisor-стадии по умолчанию без ограничений, объявленный профиль действует на любую стадию.
+16. **Один факт — один владелец (M4, TODO-0228).** Каждый git-факт читает один модуль: реестр «факт → владелец → маркер», пробы и исключения — [docs/design/single-owners.md](design/single-owners.md); новый путь читается через `GitRepository`, вторая реализация ловится `tests/negative/test_miniwave_m4_guards.py`.
 
 ## Связанные документы
 

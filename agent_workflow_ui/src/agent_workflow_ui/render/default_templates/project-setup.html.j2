@@ -466,6 +466,22 @@ optional_data_keys: []
 
       <div class="field">
         <label class="radio-line">
+          <input type="radio" name="flow_variant" value="" checked>
+          Собрать из команды (вариант ниже)
+        </label>
+        {% for variant in (flow_variants or {}) %}
+        <label class="radio-line">
+          <input type="radio" name="flow_variant" value="{{ variant }}">
+          {{ (flow_variant_labels or {}).get(variant, variant) }}
+        </label>
+        {% endfor %}
+      </div>
+      {% if flow_variants %}
+      <p class="hint">«Полная проверка» берёт готовый шаблон awf: каждый юнит проходит реализацию, арх-ревью, QA и широкий аудит проекта.</p>
+      {% endif %}
+
+      <div class="field">
+        <label class="radio-line">
           <input type="radio" name="stage_mode" value="single" checked>
           Одна рабочая роль на юнит (+ verify)
         </label>
@@ -532,6 +548,11 @@ optional_data_keys: []
       // form itself — the DOM team rows are the source of truth.
       var pipelinePreview = {{ (pipeline_preview or {}) | tojson }};
       var previewName = (pipelinePreview && pipelinePreview.name) || 'default';
+
+      // The exact text a built-in flow variant writes. A variant replaces
+      // the team composition, so the preview must switch to it — the same
+      // builder as the write path produces this text.
+      var flowVariants = {{ (flow_variants or {}) | tojson }};
 
       function slugify(name) {
         var m = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'h','ц':'ts','ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya'};
@@ -733,11 +754,25 @@ optional_data_keys: []
         };
       }
 
+      // "" = build from the team, else a built-in variant.
+      function selectedFlowVariant() {
+        var picked = document.querySelector('input[name="flow_variant"]:checked');
+        return picked ? picked.value : '';
+      }
+
       function syncModeOptions() {
+        var variant = selectedFlowVariant();
         var opts = document.getElementById('single-mode-opts');
         if (opts) {
-          opts.style.display = composition().mode === 'single' ? '' : 'none';
+          opts.style.display = (!variant && composition().mode === 'single') ? '' : 'none';
         }
+        // REVIEW R2: a built-in variant replaces the team composition, so
+        // the composition knobs cannot shape it. Disable them (and the
+        // team rows stay editable for the quick variant) — a control that
+        // looks active but is dropped would be a silent loss.
+        document.querySelectorAll(
+          'input[name="stage_mode"], #primary-role, #include-qa'
+        ).forEach(function (el) { el.disabled = !!variant; });
       }
 
       // Rebuild the primary-role select from the team rows, keeping the
@@ -816,8 +851,13 @@ optional_data_keys: []
       function updatePipelinePreview() {
         var pre = document.getElementById('pipeline-preview');
         if (!pre) return;
+        var variant = selectedFlowVariant();
+        // A built-in variant wins over the team composition (the write path
+        // replaces the stages), so the preview shows the template text.
+        var variantText = (variant && flowVariants[variant]) || '';
         var c = composition();
-        var text = buildPreviewText(c.mode, collectTeam(), c.primary, c.includeQa);
+        var text = variantText ||
+          buildPreviewText(c.mode, collectTeam(), c.primary, c.includeQa);
         if (text) {
           pre.textContent = text;
           pre.classList.remove('empty');
@@ -843,7 +883,10 @@ optional_data_keys: []
           }
         });
 
-        document.getElementById('submit-btn').disabled = !(hasTeam && customOk);
+        // REVIEW R2: a chosen built-in variant is a complete composition —
+        // it needs no team rows, so it must not leave Submit disabled.
+        document.getElementById('submit-btn').disabled =
+          !((hasTeam && customOk) || !!selectedFlowVariant());
 
         var addBtn = document.getElementById('add-agent-btn');
         addBtn.disabled = hasIncomplete;

@@ -140,6 +140,13 @@ task, awf-repo git sha best-effort, date), the skeleton «Что пытался 
 `--stdout` prints the report without writing a file. The supervisor does
 not stay silent: silence does not fix the tool.
 
+**`awf config-get <dotted.key> [--project-dir DIR]`** — prints one
+`config.yaml` value for scripts: strings raw, other values as YAML. Exit
+codes: 0 — value printed, 1 — key absent, 3 — YAML `null`, 4 — a
+whitespace-only string. That is how the canonical suite helper tells "not
+configured" from a command: it maps 3/4 to its own rc 2 instead of
+running a command named `null`.
+
 ## Workflow commit
 
 **`awf commit-workflow`** (MCP: `awf_commit_workflow`) — commits the
@@ -223,7 +230,7 @@ The supervisor batches BACKLOG tasks based on pipeline depth:
 
 | Situation | What happens |
 |---|---|
-| Worker didn't signal, but work is in the tree | Continue-push retry with the note "the work is already in the tree — do not redo it, finish it and signal" — budget `retry.silent_work_attempts` (config.yaml, default 1), counted per (TODO, stage), survives kill+continue. After the budget — the salvage path |
+| Worker didn't signal, but work is in the tree | Continue-push retry with the note "the work is already in the tree — do not redo it, finish it and signal" — budget `retry.silent_work_attempts` (config.yaml, default 2), counted per (TODO, stage), survives kill+continue. The first retry is plain; the second also reduces the pass to targeted checks and gates, then the salvage path. Each retry names the last worker log and DONE draft so the worker resumes instead of re-reading the task |
 | Worker didn't signal, no work | Two auto continue-push retries, then the salvage path — awf writes SALVAGE prompt, supervisor decides |
 | Pipeline process died | `awf_continue` — resumes from last checkpoint |
 | Stage state lingers after the engine died, no signal | Zombie-state: `awf_status`/`awf_brief` show the hint with `awf_continue(todo_id=…)`. When the unit is already archived, `awf_run_finish` clears the stale state itself and records the reset in the RUN-REPORT |
@@ -313,6 +320,35 @@ the `AWF_MCP_LOG` env var. It rotates once to `.1` past 1 MB.
 ├── state/run.yaml           # Autonomous run (забег) state, if one is active
 └── state/dashboard_port     # Dashboard HTTP server port
 ```
+
+## Engine liveness and worker isolation
+
+Two optional `config.yaml` blocks (defaults shown — an old config without
+them keeps the documented behaviour):
+
+```yaml
+engine:
+  heartbeat_seconds: 30          # clamped to <= 30 (a larger value warns)
+  heartbeat_stale_seconds: 120   # default max(3 x heartbeat_seconds, 120)
+  kill_with_parent: false        # true = the engine dies with its launcher
+worker:
+  mcp_servers: [agent-workflow-ui]  # MCP servers an EXECUTE worker keeps
+```
+
+`kill_with_parent: false` is the durable-run default (TODO-0242): a restart
+of opencode or the MCP server must not take a running pipeline with it. The
+heartbeat drives `engine_dead`; the ceiling keeps the verdict within the
+status surfaces' patience. `worker.mcp_servers` trims the execute worker's
+tool context to the control server; every other configured MCP server is
+switched off for that subprocess (a name the config does not define is a
+warning, never a failure). An explicit empty list (`mcp_servers: []`) is a
+value, not an absence: it turns every MCP server off for the worker.
+
+`awf supervise` is the watchdog for the leftover case: while the run has an
+active unit it restarts a dead engine (`awf continue`) up to
+`--max-restarts` (default 5) with `--pause` seconds between checks (default
+30), logging `supervise: restart #k` into `logs/awf-supervise.log`. When the
+budget is exhausted it stops and reports instead of looping forever.
 
 ## Custom pipelines
 
@@ -427,6 +463,11 @@ $ awf start --pipeline audit-llm
   `awf_write_pipeline`) writes ONLY `.agentic/pipelines/<name>.yaml` —
   stages are generated like in the setup form (plan → roles → verify);
   config.yaml and supervisor.md are not touched.
+- `awf pipeline-write <name> --variant full|code-health` writes one of the
+  built-in starter pipelines — byte-identical to what the project-setup
+  form offers. Role files are the project's responsibility here: the
+  command warns about a missing role instead of materializing it (that is
+  the setup flow's job).
 - `awf pipelines` (MCP `awf_pipelines`) lists the files and marks the
   active one (`default_pipeline` from config.yaml).
 - An unknown `--pipeline` name (or `awf_start(pipeline=...)`) is a clear
@@ -490,6 +531,15 @@ the pipeline are untouched, the setup phase is not re-run. MCP:
 `awf_add_role(list_drafts=True)`, `awf_add_role(adopt=...)`,
 `awf_add_role(discard=...)` — one action per call.
 
+**Refresh a role from its skill** — `awf add-role <name> --refresh` (MCP
+`awf_add_role(name, refresh=True)`) re-materializes an existing
+skill-sourced role: the skill body and model line are rebuilt, while
+AWF-OVERRIDE, BD-31, the discipline/suite-canon blocks and the owner's
+own lines are kept. Pre-marker copies of the managed rules are replaced,
+never duplicated. A role without managed markers is refused (nothing is
+written) unless `--force` is passed; a role whose provenance skill is
+gone reports `skipped` with the reason. A repeated call is a no-op.
+
 **Role model line** — every role file created by `awf add-role`
 names its model in a uniform line near the top
 (`**Модель:** \`vllm/llm\``), resolved as: explicit `--model`/`model=`
@@ -530,7 +580,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-53 tools: 48 `awf_*` workflow + 5 UI (forms).
+55 tools: 50 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -627,6 +677,8 @@ applies to any stage kind.
 | `awf_todo_remove` | Remove a never-started TODO (trace in `done/<id>/removed-<ts>.md`) |
 | `awf_todo_retire` | Retire a rejected/abandoned TODO that stays "active" (RETIRED note in `done/<id>/`) |
 | `awf_todo_update` | Reword a not-started TODO, keeping the number (backup in `context/`, `.ready` + baseline untouched) |
+| `awf_review_append` | Append a supervisor `## REVIEW-фикс (супервизор, виток N)` section to a started TODO (numbered, backup in `context/`) |
+| `awf_blocked_draft` | Build a ready `## REVIEW-фикс` draft from a standard BLOCKED note (findings + fix directions + empty decision slots; the TODO is not touched) |
 
 **`awf_unblock`** (CLI `awf unblock`). A re-issued TODO stays hidden while an old
 `BLOCKED-<id>.ready` / `ACK-<id>.ready` is still around — `awf_status` shows an empty
@@ -638,9 +690,22 @@ closures on its own when re-issuing the same number, and refuses to re-issue a n
 whose DONE closure is still in the outbox.
 
 **`awf_todo_remove`** (CLI `awf todo-remove`). Removes a TODO that never started — no
-dispatch `.ready`, no signals, no progress. The file moves to
-`done/<id>/removed-<timestamp>.md`, the trace stays. A `.ready` or any signal/progress
-refuses the removal and points to `awf unblock` / `awf reset --orphans`.
+signals, no progress. The dispatch `.ready` is an artifact and does not block (it moves
+beside the file). The file moves to
+`done/<id>/removed-<timestamp>.md`, the trace stays. A signal or progress refuses
+the removal: stale closures point to `awf unblock`, a started unit to
+`awf todo-retire`. The removal is
+also refused while the active run queue (main or service slot) still names the TODO —
+replace it in the queue first (`awf_run_revise` with `{"from": …, "to": …}`) or finish
+the run; otherwise the queue would keep a dangling reference.
+
+**`awf_review_append`** (CLI `awf review-append TODO-NNNN --text "…" |
+--text-file <path>`). Appends a numbered `## REVIEW-фикс (супервизор, виток N)`
+section to a STARTED unit (PROGRESS, an outbox signal, or an inbox ACK/APPROVE),
+backing the previous content up to `context/TODO-<id>.md.bak-<ts>`; the number, the
+dispatch `.ready` and the baseline stay untouched. Refusals: empty text; no TODO file
+in the inbox; a unit that never started (a queued TODO takes `awf todo-update`); an
+archived unit (`awf restore` first); a live pipeline on this id (`awf kill` first).
 
 **`awf_todo_retire`** (CLI `awf todo-retire TODO-NNNN --reason "…"`). The reject path
 writes `DONE-<id>.{md,json}` to the outbox but NOT the `DONE-<id>.ready` signal — so a
@@ -649,7 +714,9 @@ moves the TODO's files (`TODO-<id>.md`, `.ready`, `PROGRESS-*`, `DONE-*.md/.json
 without `.ready`, `REVIEW-*`) to `done/<id>/` and writes
 `done/<id>/RETIRED-<timestamp>.md` with the reason, who and time — no fake DONE signal.
 Refusals: no TODO file in inbox or `done/`; already archived (`done/<id>/TODO.md`);
-a live pipeline on this id (`awf kill` or wait first); empty `--reason` (required).
+a live pipeline on this id (`awf kill` or wait first); an active run slot still
+planning to launch the TODO in its not-started queue region (replace it there
+first); empty `--reason` (required).
 `awf restore` still brings a retired TODO back.
 
 **`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |
@@ -742,7 +809,8 @@ not-started queue elements only — the current and completed elements are
 never touched. `preview=true` shows the current queue, the elements that
 would change and the conflicts (current/started/completed/not in the queue)
 without writing anything. The apply is atomic (a conflict refuses the whole
-request) and is idempotent by `key`: a repeat with the same key is a no-op.
+request) and is idempotent by `key`: a repeat with the same key AND the
+same payload is a no-op (a different payload under the same key is refused).
 By default it is refused while a stage is running (stop the unit first).
 `stop_running=true` authorizes the stop: the unit is stopped by the
 engine's standard kill path (`kill_pipeline`: the pipeline's TERM → grace →
@@ -759,6 +827,17 @@ stage, `stop_running=true` is a no-op stop, not an error. The applied
 revision is recorded in `state/run.yaml` (`revisions`, the decisions' path)
 in the same CAS write as the queue change (A-13 generation condition); the
 revised pipelines take effect at each element's launch (`awf_run_next`).
+
+**Queue shapes and the idempotency key (TODO-0242).** A revision item is
+one of three shapes: `{"todo_id": "TODO-NNNN", "pipeline": "<name>"}`
+(re-pipeline), `{"from": "TODO-A", "to": "TODO-B"}` (replace an element in
+place), or `{"remove": "TODO-NNNN"}` (drop a NOT-STARTED element). New
+elements land at the end by default; `position` names the slot, and
+`after="TODO-A"` / `before="TODO-A"` anchor them to an existing element
+(mutually exclusive with `position` and with each other). The key is the
+identity of ONE request: the same key with the same payload is a no-op,
+the same key with a DIFFERENT payload is refused as recovery-required —
+a different revision needs a new key.
 
 **Service run (ORCH M5.2): role creation during the main run.**
 `awf_run_service_start(project_dir, slug, description)` starts a SERVICE
@@ -879,7 +958,7 @@ for every replan/split goes into the run report/note.
 ### Roles & Config
 | Tool | What it does |
 |---|---|
-| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); draft area: `draft` / `adopt` / `discard` / `list_drafts` |
+| `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); `refresh=True` re-materializes an existing skill-sourced role; draft area: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
 | `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop |

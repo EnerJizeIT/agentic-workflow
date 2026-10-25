@@ -82,9 +82,9 @@ def _pipelines(state: dict) -> dict[str, str]:
 
 
 def test_revise_is_idempotent_by_key(tmp_git_repo: Path, monkeypatch) -> None:
-    """(1) a repeat with the same key is a no-op: no second queue change,
-    no second revision record. Red before the fix: api.run_revise does not
-    exist (AttributeError)."""
+    """(1) a repeat with the same key AND the same request is a no-op: no
+    second queue change, no second revision record. A different queue under
+    the same key is refused (TODO-0240 review v7, AA1)."""
     proj = _project(tmp_git_repo)
     for t in (T1, T2, T3):
         _write_todo(proj, t)
@@ -98,15 +98,21 @@ def test_revise_is_idempotent_by_key(tmp_git_repo: Path, monkeypatch) -> None:
     assert _pipelines(state)[T2] == ALT
     assert len(state.get("revisions") or []) == 1
 
-    # the repeat: same key, a DIFFERENT queue — it must not re-apply
+    same = api.run_revise(
+        proj, queue=[{"todo_id": T2, "pipeline": ALT}], reason="why", key="k1"
+    )
+    assert same.action == "noop"
+    assert same.revision is not None and same.revision["key"] == "k1"
+
+    # the same key with a DIFFERENT queue must not re-apply OR replay
     again = api.run_revise(
         proj, queue=[{"todo_id": T3, "pipeline": "other"}], reason="why", key="k1"
     )
-    assert again.action == "noop"
-    assert again.revision is not None and again.revision["key"] == "k1"
+    assert again.action == "refused"
+    assert "different payload" in again.message
     state = run_state.read_run(proj)
     assert _pipelines(state) == {T1: "", T2: ALT, T3: ""}, (
-        "the repeat must not touch the queue"
+        "the refused repeat must not touch the queue"
     )
     assert len(state.get("revisions") or []) == 1, "no second revision record"
 

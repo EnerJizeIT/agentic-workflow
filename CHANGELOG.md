@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] — 2026-10-25
+
+Two demanding quality waves turned awf from a launcher into a durable
+orchestrator with an evidence-based definition of done. Commits, state and
+worker lifecycle now have single owners; verification is stricter and honest
+about what it actually ran.
+
+### Added
+
+- **Managed filesystem barriers.** State, archives, locks, todo edits, init and
+  the engine write through one no-follow managed layer; every writer checks the
+  surface and the leaf. Symlinked surfaces are refused before any effect.
+- **Durable state and cancellation.** CAS snapshots, a cancellation journal with
+  reservations, a single interlock section, one generation allocator, and
+  preview-only destructive plans.
+- **Raw git identity.** Unit commits, candidate plans and resumed publication use
+  NUL/raw paths with a legacy fallback; non-UTF-8 names no longer break approve.
+- **Verification you can trust.** A canonical suite artifact keyed by tree sha
+  (reused across attempts), a flake probe for test-like commands, a
+  `qa_findings` section that runs the QA red tests under a safety tripwire,
+  prove-red verdicts (`coverage`, `new-api`), and one git codec with
+  `surrogateescape`.
+- **Engine liveness.** The engine runs detached from the MCP host, `awf
+  supervise` restarts it with a budget, heartbeat and engine-exit records make
+  silent deaths visible, and execute workers are isolated from heavyweight MCP
+  servers.
+- **Definition-of-done checklist (core).** Declarative base/class/wave
+  checklists, structured read-only probes, a gate that re-runs evidence instead
+  of trusting reports, `awf checklist show/check/apply/hash`, and a verify-pack
+  section. The block is frozen at dispatch; edits after the start are refused.
+- **Work contracts.** `source_ref` copies a source section into the unit,
+  a standard BLOCKED schema is documented, `blocked-draft` produces a review
+  draft, markdown parsing is fence-aware, and the run queue supports anchors,
+  replacement and removal.
+- **Roles and pipelines.** Roles are materialized with discipline and suite
+  canon blocks, `add-role --refresh` updates managed blocks while keeping local
+  lines, packaged `full` and `code-health` variants exist, the supervisor
+  template carries the canon, and `docs/practices.md` records the practices.
+- **Hygiene.** The ratchet counts real debt labels, `--update` rewrites numbers
+  in place, an iteration counter and checkpoint template exist, and stage tests
+  live in packages.
+
+### Changed
+
+- Unit commits carry only the unit's own edit; the candidate check is mandatory
+  and verifies the same tree the supervisor verifies.
+- `verify` commands are argv-based; a command that needs shell syntax belongs in
+  a script.
+- The dashboard/read-model advice is derived from one status snapshot, and
+  `awf status`, `awf brief` and `awf run-status` tell the same story.
+
+### Breaking
+
+- `verify:` commands containing `&&`, `||`, `;`, `|`, `>`, `<`, `$(`, backticks,
+  a bare `&` or internal newlines are refused at dispatch. Wrap the logic in a
+  script.
+- A contract block that exists but cannot be parsed is now an error, not "no
+  contract". The parser reports `invalid` and the gate fails.
+- The engine runs detached from the MCP host; killing the CLI no longer kills a
+  worker. Use `awf supervise` for unattended runs.
+- Queue revision refuses to empty the last element; finish the run instead.
+
+### Upgrade notes
+
+- `pip install -U awf agent-workflow-ui`; the plugin requires `awf>=2.0.0`.
+- Existing projects keep working: a unit without a checklist block reports
+  `checklist: none`, and only contracts with shell operators must be rewritten.
+- The source tree no longer carries a root `templates/` directory; packaged
+  templates live in `awf/templates` and `awf init` installs them.
+
 ## [1.9.0] — 2026-10-13
 
 A hard, honest day on the commit gate: unit commits now carry only the

@@ -3,7 +3,27 @@
 # materialisation + evidence binding) is >400 lines and its docstrings
 # legitimately use the word TODO; the new acceptance test file carries
 # one TODO-0001 id. Same class as the already-counted mentions.
-files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs wc -l | awk '$1>400 && $2!="total"' | wc -l
+# M7 (TODO-0231): a rename leaves the old path in the index until the unit
+# commit, so `wc` must see only files present in the worktree; missing cached
+# paths are skipped instead of breaking the counter (xargs fed them to wc).
+# T4 (TODO-0231, REVIEW-виток 4): real @lines annotations now exist — the four
+# file-length mentions below carry `@lines <path> (...)`; --update rewrites
+# their right side from wc -l. The fifth "(8 lines)" mention (RUN10-2026-09-24,
+# #3) counts DEBT-MARKER lines inside tests/unit/test_metrics.py, not the
+# file's length — an @lines annotation would rewrite it to the file's wc and
+# lie; it stays a hand-written number. The "(3/8 lines)" pair in the same
+# entry follows it.
+# T4 (TODO-0231, REVIEW-виток 4): baseline raised files_over_400 108 -> 109 —
+# the vitok-4 acceptance tests extend test_miniwave_m7_hygiene.py beyond the
+# 400-line bar it sat on exactly; the dwarf file test_miniwave_m7_hygiene_
+# vitok4.py stays under it. Same class as the earlier test-in-test raises.
+# M8 (TODO-0232, стадия agent-implementer): baseline raised files_over_400
+# 109 -> 110 — новый приёмочный tests/negative/test_miniwave_m8_carries.py
+# (git-хуки, PA-A/PA-B, UX-щели, добор фактов публикации) перешагнул планку
+# 400 строк. Дробить нельзя: verify-контракт юнита запускает ровно этот
+# файл. Класс прежний — тест-файл, не прод-долг; TODO-иды в нём это ссылки
+# на юнит, а не маркеры долга.
+files_over_400	git ls-files --cached --others --exclude-standard '*.py' | while IFS= read -r f; do [ -f "$f" ] && wc -l < "$f"; done | awk '$1>400' | wc -l
 # FU-21 D1: BACKLOG.md is excluded — it carries intentional TODO-NNNN
 # identifiers (backlog item references), and every docs reword there
 # shifted the count (see "reword to keep the todos ratchet at baseline").
@@ -878,9 +898,9 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # REPORTS26 B6 (TODO-0159, review fix: baseline timeout / rc 126-127 ->
 # broken-runner): baseline raised 4598 -> 4600, files_over_400 raised
 # 67 -> 68 — the two new TestCommandNotRunOnBaseline tests add 2
-# TODO-0001 fixture use-sites, and
-# tests/negative/test_reports26_b6_prove_red_runner.py crosses the bar
-# (361 -> 425 lines). Same class as above: test identifiers, not debt.
+# TODO-0001 fixture use-sites, and the runner test file crosses the bar
+# (@lines tests/negative/test_reports26_b6_prove_red_runner.py (361 -> 425 lines)).
+# Same class as above: test identifiers, not debt.
 # REPORTS26 B5 (TODO-0160, restart-recovery doctrine + regression test):
 # baseline raised 4600 -> 4617 — the unit adds 17 TODO-bearing lines: 9
 # in the new tests/negative/test_reports26_b5_restart_recovery.py (the
@@ -1118,7 +1138,32 @@ files_over_400	git ls-files --cached --others --exclude-standard '*.py' | xargs 
 # one above the implementer's last measurement). All five are test fixture
 # identifiers, never debt — same class as every earlier R2.5 entry.
 # files_over_400 stays 95 (no new file crossed the bar).
-todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cI TODO 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
+# TODO-0230 (M6, роли/пайплайны, 22.10): baseline todos raised 6692 -> 6708
+# (+16). The unit writes TODO-0230 identifiers on new comment/docstring
+# lines: the discipline/suite blocks in awf/api/roles.py, refresh report
+# fields in _results.py, the built-in-pipeline helper in setup.py, the
+# suite helper in lifecycle.py, the new acceptance test/docstring and the
+# practices catalog — plus +1 from architect-review's refresh docstring
+# line in awf/api/roles.py. All are unit identifiers, not debt — same
+# class as every earlier entry.
+# M7 (TODO-0231): the todos counter used to match every right-lined "TODO",
+# including TODO-NNNN unit ids and test fixture ids — so each test-heavy unit
+# raised the baseline by hand. It now counts ONLY real debt markers: TODO:,
+# FIXME and XXX introduced by a comment prefix (#, //, /*, *, --), or a bare
+# marker at the start of a line. Unit ids in code, strings and docs are not
+# debt. Documented recalculation: 6633 -> 0 (the repo carries no real debt
+# marker; every counted line was an identifier).
+# Z2 (REVIEW виток 6): `TODO(owner):` is debt too — the parenthesised scope
+# between the marker and the colon does not change the meaning, so the
+# counter reads an optional `(…)` group there (same for FIXME/XXX).
+# ARCH (TODO-0231): the marker alternation lives ONCE (`DEBT=` in the
+# command); the three prefix branches only decide WHERE a marker may start
+# (line-start comment, inline comment, bare line start). Z2 had to edit three
+# copies — that is the drift this collapse removes.
+# Line-count numbers in the comments below are refreshed by
+# `sh scripts/ratchet.sh --update` from `@lines <path> (<count> lines)`
+# annotations — no manual doc drift.
+todos	DEBT='TODO[[:space:]]*(\([^)]*\))?[[:space:]]*:|FIXME[[:space:]]*(\([^)]*\))?[[:space:]]*([^A-Za-z0-9_]|$)|XXX[[:space:]]*(\([^)]*\))?[[:space:]]*([^A-Za-z0-9_]|$)'; git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' | grep -v '^BACKLOG\.md$' | grep -v '^BACKLOG-archive\.md$' | grep -v '^docs/audit-' | xargs grep -cIE "(^[[:space:]]*(#|//|/\*|\*|--)[[:space:]]*|[[:space:]](#|//)[[:space:]]*|^[[:space:]]*)($DEBT)" 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'
 # REPORTS33 (TODO-0209, форма project-setup: состав стадий + превью):
 # baseline raised 5517 -> 5532 (+15) — the 15 TODO-bearing lines: 2 in the
 # new tests/negative/test_reports33_setup_form.py (the module docstring's
@@ -1485,7 +1530,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # added before the fix pass) adds 3 TODO-bearing lines (the same 3-per-test
 # shape: the {TODO} f-string in the BASELINE assert, the
 # build_commit_plan/maybe_commit calls) and pushes the file past the
-# 400-line bar (399 -> 445 lines). Same class as the already-counted test
+# 400-line bar (@lines tests/negative/test_reports33_dirty_delta.py (399 -> 586 lines)). Same class as the already-counted test
 # identifiers in tests/ — not debt. The fix pass itself only REMOVED lines
 # from awf/commit_gate.py (the window scan + _find_seq + _DELTA_ANCHOR_WINDOW
 # are dead after F1/F3/iter 4 and are gone).
@@ -1900,7 +1945,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # carries no TODO token. Negative-test catalogue, same class as the
 # test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.
 # R2.1 (TODO-0220, git-модель без печатных строк): files_over_400 raised
-# 85 -> 86 — the new awf/infra/git_model.py (1217 lines) is the one git
+# 85 -> 86 — the new awf/infra/git_model.py (@lines awf/infra/git_model.py (1217 -> 1373 lines)) is the one git
 # parser the R2 model is built on: the NUL-protocol reader (GitRepository,
 # ChangeRecord), the immutable/versioned BaselineManifest with its
 # stability-checked capture, and the rename-pair ownership attribution
@@ -2297,7 +2342,7 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # lines of the new red file tests/negative/test_roadmap_r2_publish_arch.py
 # (the TODO-0001 fixture id and unit-id docstrings) — test identifiers, never
 # debt. The file also keeps files_over_400 at 95: the three new probes were
-# split out of test_roadmap_r2_publish_audit6.py (335 lines) instead of
+# split out of tests/negative/roadmap_r2/test_roadmap_r2_publish_audit6.py (@lines tests/negative/roadmap_r2/test_roadmap_r2_publish_audit6.py (335 -> 336 lines)) instead of
 # pushing it past the 400-line bar (172 lines in the new file). No production
 # module gained a TODO/FIXME marker.
 
@@ -2331,3 +2376,594 @@ todos	git ls-files --cached --others --exclude-standard | grep -v '^\.ratchet' |
 # state catch-list names the precise LockUnavailable instead of the
 # AwfApiError base (OperationRecoveryRequired must propagate). No production
 # module gained a TODO/FIXME marker; files_over_400 stays 95.
+
+# M2 REVIEW-фикс (TODO-0226, стадия agent-implementer, 20.10): baseline
+# todos raised 6315 -> 6332 (+17). Unit-id ссылки, не долг; сужение счётчика
+# — в M7. The count is a net figure: the first attempt added +12 tracked and
+# +3 untracked lines and removed 5 (net +10, the raise the supervisor found
+# undocumented), and this REVIEW pass added +7 — one fix comment in
+# awf/_worker_exit.py (F1) and one in awf/signal_watch.py (_late_signal, F2),
+# plus the F1/F2 tests: tests/unit/test_worker_exit.py (1 docstring) and the
+# two new probes in tests/unit/test_signal_watch.py (2 docstrings + 2
+# DONE-TODO-0001 fixture ids). Nothing here is a TODO/FIXME debt marker:
+# every added line names the unit (TODO-0226), an earlier unit or a test
+# fixture. files_over_400 stays 95 (no new file crossed the bar; the
+# largest additions are tests/unit/test_signal_watch.py 715 -> 848 and
+# awf/signal_watch.py, already over the bar).
+
+# M2 архитектурное ревью (TODO-0226, стадия agent-architect-review, 20.10):
+# baseline todos raised 6332 -> 6336 (+4). Все четыре строки — unit-id
+# ссылки и тестовый идентификатор, не долг: docstring общего хелпера
+# _late_signal_done и комментарий третьей kill-поверхности в
+# awf/signal_watch.py (по одной строке с TODO-0226), docstring нового
+# теста hard-timeout и его fixture-путь DONE-TODO-0001.ready в
+# tests/unit/test_signal_watch.py. Сужение счётчика (перестать считать
+# упоминания unit-id) — в M7. files_over_400 stays 95.
+
+# M2 QA-ревью (TODO-0226, стадия agent-qa-review, 20.10): baseline todos
+# raised 6336 -> 6338 (+2). Обе строки — unit-id ссылка и fixture-путь
+# DONE-TODO-0001.ready нового теста
+# TestWorkerExitDiagnostic::test_cpu_frozen_watchdog_rereads_the_signal_too
+# в tests/unit/test_signal_watch.py: третья kill-поверхность (CPU-заморозка)
+# для F2-инварианта не имела своего теста; тест доказан мутацией (снял
+# перечитывание outbox в CPU-frozen ветке — красный, вернул — зелёный).
+# Ни одна строка не является TODO/FIXME-долгом. files_over_400 stays 95.
+
+# M3 (TODO-0227, стадия agent-implementer, 20.10): baseline todos raised
+# 6338 -> 6349 (+11). Все одиннадцать строк — unit-id ссылки и тестовые
+# идентификаторы, не долг: 2 в новом tests/negative/test_miniwave_m3_managedfs.py
+# (модульный docstring с TODO-0227 и fixture-ид TODO-0001) и 9 в
+# прод-комментариях/docstring'ах правок юнита (awf/run_state.py — lock-файл,
+# awf/todos.py — preflight архива, awf/api/hygiene.py — два места схемы
+# журнала, awf/infra/state_store/__init__.py — описание журнала,
+# awf/infra/state_store/_wipe.py — preflight wipe,
+# awf/infra/state_store/_ops.py — два места схемы, новый
+# awf/infra/state_store/_journal.py — заголовок модуля). Ни одного
+# TODO/FIXME-маркера долга не добавлено. files_over_400 stays 95
+# (новый тест — под 400 строк).
+
+# M3 виток 2 (TODO-0227 REVIEW, стадия agent-implementer, 20.10): baseline
+# todos 6349 -> 6355 (+6). Шесть строк — unit-id ссылки в docstring'ах
+# правок F1/F2/F3, не долг: awf/infra/state_store/_io.py (managed-барьер
+# JSON-писателя), awf/infra/managed_fs.py (durable у managed_write_text),
+# awf/infra/state_store/_ops.py (preflight чтения журнала),
+# awf/infra/state_store/_journal.py (владелец OperationStatus) и новый
+# tests/negative/test_miniwave_m3_managedfs_round2.py (модульный docstring).
+# Ни одного TODO/FIXME-маркера долга не добавлено. files_over_400 stays 95
+# (новый тест — 174 строки).
+
+# M3b (TODO-0233, стадия agent-implementer, 20.10): baseline todos
+# 6355 -> 6360 (+5). Пять строк — unit-id ссылки и тестовые
+# идентификаторы, не долг: 2 в awf/api/hygiene.py (docstring общего
+# барьера _refuse_unsafe_surfaces: TODO-0233 и TODO-0227), 1 в
+# awf/infra/state_store/_records.py (комментарий preflight GC) и 2 в
+# новом tests/negative/test_miniwave_m3b_movers.py (модульный docstring
+# с TODO-0233 и fixture-ид TODO-0001). Ни одного TODO/FIXME-маркера
+# долга не добавлено. files_over_400 stays 95 (правка managed_fs.py
+# уложилась в 399 строк — под планкой; новый тест 229 строк).
+
+# M3b (TODO-0233, виток REVIEW-фикса 2, 20.10): files_over_400
+# 95 -> 96 (+1). Причина датирована: контрактный файл
+# tests/negative/test_miniwave_m3b_movers.py вырос до 509 строк —
+# в него добавлены кейсы (g)-(j) витка: барьер по поверхностям
+# операции, порядок «не найдено → барьер», лист RETIRED-заметки,
+# dry_run GC. Дробить файл нельзя: verify-контракт юнита запускает
+# ровно этот путь, второй файл выпал бы из контрактного прогона.
+# todos остаётся 6360: новых TODO/FIXME-маркеров долга не добавлено
+# (bare-слово в docstring переформулировано).
+
+# M3b QA (TODO-0233, стадия agent-qa-review, 20.10): baseline todos
+# 6360 -> 6361 (+1). Единственная новая строка с токеном «TODO» — заголовок
+# раздела (k) с детектором `test_remove_todo_refuses_symlinked_trace_leaf`
+# в tests/negative/test_miniwave_m3b_movers.py. Это unit-id ссылка в
+# комментарии, не долг: ни одного TODO/FIXME-маркера не добавлено.
+# files_over_400 stays 96 (файл уже был над планкой, новых файлов нет).
+
+# M3b REVIEW-4 (TODO-0233, стадия agent-implementer, 20.10): baseline
+# todos 6361 -> 6369 (+8). Все восемь — unit-id ссылки и имена архивных
+# файлов в новом коде/тестах, не долг: 2 в awf/api/_helpers.py
+# (комментарий H1), 1 в awf/infra/state_store/_records.py (комментарий H1),
+# 2 в awf/todos.py (комментарий H2 про REVIEW-TODO-0006), 3 в
+# tests/negative/test_miniwave_m3b_movers.py (строки ожидаемых имён
+# BLOCKED-/REVIEW-/TODO.md и комментарий H2). Ни одного TODO/FIXME-маркера
+# долга не добавлено. files_over_400 stays 96 (новых файлов нет).
+# M3b REVIEW-4, доп. (TODO-0233, 20.10): todos 6369 -> 6370 (+1) после
+# правки tests/unit/test_todo_lifecycle.py — docstring обновлённого теста
+# `test_archives_review_signal_with_the_unit` ссылается на unit-id (H2).
+# Это ссылка на юнит, не долг. files_over_400 stays 96.
+
+# M3b (TODO-0233, стадия agent-architect-review, 20.10): baseline todos
+# 6370 -> 6375 (+5). Все пять — не долг: 3 строки с реальными именами
+# архивных листов (BLOCKED-/REVIEW-/DONE-TODO-0001.md) в параметризации
+# нового кейса (n) tests/negative/test_miniwave_m3b_movers.py, 1 упоминание
+# TODO.md в комментарии (n) и 1 unit-id в комментарии к preflight листьев
+# в awf/todos.py. Ни одного TODO/FIXME-маркера долга не добавлено.
+# files_over_400 stays 96 (правка todos.py уложилась; новых файлов нет).
+
+# M3c (TODO-0234, стадия agent-implementer, 20.10): baseline todos
+# 6375 -> 6382 (+7). Семь строк — unit-id ссылки и тестовые
+# идентификаторы нового tests/negative/test_miniwave_m3c_writers.py
+# (модульный docstring с TODO-0234, fixture-ид TODO-0001 и строки кейсов),
+# не долг: ни одного TODO/FIXME-маркера не добавлено. files_over_400
+# stays 96 (новый тест — под 400 строк).
+
+# M3c (TODO-0234, стадия agent-architect-review, 20.10): baseline todos
+# 6382 -> 6388 (+6). Шесть строк — unit-id ссылки в комментариях правок
+# ревью (три в awf/api/lifecycle.py, одна в awf/api/hygiene.py, одна в
+# комментарии тестового seam'а tests/negative/test_roadmap_r1_cancel.py)
+# и одна строка docstring нового кейса
+# test_todo_edit_backup_refuses_symlinked_context, не долг: ни одного
+# TODO/FIXME-маркера не добавлено. files_over_400 stays 96 (новых файлов
+# нет).
+
+# M3c REVIEW (TODO-0234, стадия agent-implementer, 20.10): files_over_400
+# 96 -> 97 и todos 6388 -> 6393 (+5). Файл перешагнул 400 строк — это
+# контрактный tests/negative/test_miniwave_m3c_writers.py: пять новых
+# кейсов ревью K1-K5 (checkpoint-правка TODO, RUN-EVIDENCE/VERIFIED,
+# ветка бэкапа config, mode 0600, отказ на не-POSIX). Пять строк todos —
+# комментарии и docstring'и этих же кейсов со словом TODO, не долг: ни
+# одного TODO/FIXME-маркера не добавлено.
+
+# M3c (TODO-0234, стадия agent-architect-review, 20.10, виток 2): планка
+# НЕ поднималась — files_over_400 97 и todos 6393 без изменений. Правки
+# ревью (preflight в adopt/discard, helper кэша checkpoint, два новых
+# кейса) не добавили ни одной строки со словом TODO: комментарии
+# переписаны без него. Оба новых кейса лежат в уже >400-строчном
+# контрактном файле, новых файлов нет.
+
+# M3d (TODO-0235, стадия agent-implementer, 20.10): todos 6393 -> 6403
+# (+10). Все десять строк — unit-id ссылки в комментариях правок и
+# тестовый идентификатор, не долг: 3 в awf/api/pipeline.py (барьеры
+# reconcile / pending-closure / retry_stage), 2 в awf/pipeline_engine.py
+# (потребление verify-решения и сигнала перехода), 1 в awf/agent_stage.py,
+# 1 в awf/api/_liveness.py, 1 в awf/plan_checkpoint.py (исключение для
+# системного temp) и 2 в новом tests/negative/test_miniwave_m3d_unlinks.py
+# (модульный docstring с TODO-0235 и fixture-ид TODO-0001). Ни одного
+# TODO/FIXME-маркера долга не добавлено. files_over_400 stays 97 (новый
+# тест — 330 строк, под планкой).
+
+# M3d (TODO-0235, REVIEW виток 2, 20.10): todos 6403 -> 6412 (+9) и
+# files_over_400 97 -> 98 (+1). Причина: три новых кейса в контрактном
+# файле tests/negative/test_miniwave_m3d_unlinks.py (N1 — типизированная
+# остановка стадии на барьере, N2 — preflight листа SALVAGE до kill, N3 —
+# единое правило листа для clean_stage_signals); файл вырос с 330 до 457
+# строк, перешагнув планку 400. Строки со словом TODO — unit-id ссылки в
+# docstring/комментариях и fixture-ид, долговых TODO/FIXME-маркеров нет.
+# Правки кода: helper _unsafe_stage_stop + guarded consume в
+# awf/pipeline_engine.py, preflight до kill в awf/api/pipeline.py,
+# leaf-барьер в awf/signals.py.
+
+# M3d (REVIEW architect-review, 20.10): todos 6412 -> 6408 (-4), планка
+# опущена `--update`. Причина: три одинаковых ветки «чистка сигналов →
+# typed stop» свёрнуты в один helper `_clean_signals_or_stop`, а SALVAGE-
+# заметку пишет один `_write_salvage_note` — строки с unit-id в логах
+# дублей исчезли. Долга не добавлено: новых TODO/FIXME-маркеров нет.
+
+# M3d (TODO-0235, REVIEW виток 3 — B1–B5, 20.10): todos 6408 -> 6411 (+3).
+# Три строки — unit-id ссылки в docstring'ах новых тестов контрактного
+# файла (B1 имя стадии, B2 outbox в барьере закрытия, B5 checkpoint-replace).
+# Долговых TODO/FIXME-маркеров не добавлено; files_over_400 не менялась
+# (файл был выше планки с витка 2). Код: s_name в
+# _consume_verify_decision_guarded, preflight outbox/context в
+# _unblock_todo и в барьере закрытия, барьеры evidence/baseline/checkpoint.
+
+# M3d (REVIEW architect-review, виток 4, 20.10): todos 6411 -> 6414 (+3).
+# Три строки — unit-id ссылки (TODO-0235) в новых docstring'ах/комментариях
+# к общим примитивам: stage_signal_paths в awf/signals.py, единый preflight
+# двух чисток в awf/agent_stage.py, _salvage_attempt и _clean_signals_guarded
+# в awf/pipeline_engine.py. Долговых TODO/FIXME-маркеров не добавлено;
+# files_over_400 не менялась: контрактный файл перешагнул планку 400 ещё на
+# витке 2 (тогда 457 строк), новых файлов нет.
+
+# M3d (TODO-0235, REVIEW виток 4 — F6/F7, стадия agent-implementer, 20.10):
+# todos 6414 -> 6416 (+2). Две строки — unit-id ссылки (TODO-0235, F6/F7)
+# в docstring'ах двух новых кейсов контрактного файла: порядок переноса
+# BLOCKED-закрытия и бюджет сетевого ретрая при отказе чистки. Долговых
+# TODO/FIXME-маркеров не добавлено; files_over_400 не менялась.
+
+# DESIGN 0238 (REVIEW виток 5, H1/H2/H3, стадия agent-implementer, 20.10):
+# files_over_400 98 -> 99. Один новый файл перешагнул планку 400 строк —
+# контрактный тест tests/negative/test_design_agentic_writers.py (две
+# машинные проверки: outside-surface против дефолтов под .agentic и
+# multi-match-проба с site-токеном). Прод-кода юнит не добавил.
+# Долговых TODO/FIXME-маркеров не добавлено.
+
+# M4 (TODO-0228, стадия agent-implementer, 20.10): baseline todos raised
+# 6416 -> 6430 (+14). Все четырнадцать — unit-id ссылки и тестовые
+# идентификаторы, не долг: 6 строк нового контрактного теста
+# tests/negative/test_miniwave_m4_guards.py (модульный docstring с
+# TODO-0228, fixture-иды TODO-0001), 2 в awf/commit_delta.py (docstring
+# model-backed набора файлов), по одному в awf/git_utils.py, awf/verify.py,
+# awf/verify_pack.py (ссылка на M4/добор 0221 в объяснении guard'а),
+# docs/design.md (принцип 16 со ссылкой на реестр),
+# tests/unit/test_handoff_v2.py (объяснение NUL-заглушки) и
+# scripts/instruction-gates.conf (обоснование лимита). Ни одного TODO/FIXME-маркера долга не
+# добавлено. files_over_400 stays 99 (новый тест — 343 строки).
+
+# M4 (TODO-0228, REVIEW-фикс, стадия agent-implementer, 20.10): baseline
+# files_over_400 99 -> 100 и todos 6430 -> 6434. Планку перешагнул
+# контрактный tests/negative/test_miniwave_m4_guards.py (343 -> 422): сканер
+# стал белым списком (голые ls-files/status, --stat, log/show --name-only) и
+# вырос на комментарии и кейсы. Дробить нельзя — verify-контракт юнита
+# запускает ровно этот файл. Четыре новых строки со словом TODO — ссылки
+# unit-id в миграционных docstring'ах (pipeline, git_model) и в
+# тестовых-хелперах, переведённых на канонический читатель снимка; это
+# идентификаторы, не долговые TODO/FIXME-маркеры.
+
+# M4 QA (TODO-0228, стадия agent-qa-review, 20.10): todos 6434 -> 6444 (+10).
+# Все десять — ссылки unit-id и fixture-иды новых тестов QA-витка в
+# tests/negative/test_miniwave_m4_guards.py (legacy-снимок с ведущим
+# пробелом: `TODO-0001` в путях BASELINE-*, вызовах verify/commit_plan и
+# двух docstring'ах) плюс одна ссылка (M4, TODO-0228 review) в комментарии
+# awf/verify_pack.py. Долговых TODO/FIXME-маркеров не добавлено.
+# Причина: два найденных бага — (1) legacy-читатель снимка делал strip и
+# терял ведущий пробел пути (F1b на старом снимке), (2) запись отчёта
+# verify-pack падала UnicodeEncodeError на не-UTF-8 имени. files_over_400
+# не менялась (контрактный файл уже был выше планки: 422 -> ~497).
+# M4 QA iter 2 (TODO-0228, стадия agent-qa-review, 20.10): todos 6444 -> 6447
+# (+3). Один — новая строка этого QA-прохода
+# (test_legacy_snapshot_does_not_split_on_a_unicode_line_separator,
+# unit-id в вызове _legacy_snapshot). Два — TODO-bearing строки тестов/доков,
+# пришедшие после прошлого подъёма (стадия architect-review и правка
+# scripts/instruction-gates.conf; её DONE утверждает «within baseline», но
+# ratchet после последних правок не перезапускался). Долговых TODO/FIXME-
+# маркеров в прод-коде не добавлено. files_over_400 без изменений (100).
+
+# M4 (TODO-0228, REVIEW-фикс виток 5, стадия agent-implementer): todos
+# 6447 -> 6453 (+6). Четыре — unit-id ссылки нового теста U2
+# (create_baseline/_.status/staged_at_baseline/_plan_split с "TODO-0001");
+# две — строки, пришедшие после прошлого подъёма (долговых TODO/FIXME-маркеров
+# не добавлено, все шесть — идентификаторы юнита в тесте). files_over_400
+# без изменений (100): тест вырос 440 -> ~517 строк, но уже был выше планки.
+
+# TODO-0240 (процессные ворота, стадия agent-implementer, 21.10): baseline
+# todos raised 6453 -> 6508 (+55). Все строки — unit-id ссылки в новых
+# docstring'ах/комментариях (run.py, hygiene.py, verify_pack.py, cli.py,
+# api/_results.py, MCP awf.py, check-contracts.sh, docs/unit-contract.md),
+# тестовые идентификаторы нового контрактного файла
+# tests/unit/test_process_gates.py (T1..T4 = "TODO-0001".."TODO-0004",
+# fixture-пути done/<id>/TODO.md) и обновлённые счётчики в доках. Ни одного
+# TODO/FIXME-маркера долга не добавлено: это идентификаторы юнита и тестов.
+# files_over_400 stays 100: новый тест — 283 строки, под планкой; правки
+# прод-модулей новых файлов не создали.
+
+# TODO-0240 (процессные ворота, стадия agent-architect-review, 21.10):
+# baseline todos raised 6508 -> 6512 (+4). Две строки — поздние правки
+# стадии implementer после её прогона ratchet (docstrings, не вошедшие в
+# тот замер), две — docstring'и нового общего предиката запуска
+# (_launchable_todo_reason) и стража обоих слотов рана
+# (_active_run_slot_holding). Всё — идентификаторы юнита, долговых
+# TODO/FIXME-маркеров не добавлено. files_over_400 не изменился.
+
+# TODO-0240 (процессные ворота, стадия agent-qa-review, 21.10): baseline
+# todos raised 6512 -> 6517 (+5). QA добавил три теста к
+# tests/unit/test_process_gates.py: «review_append не трогает .ready и
+# baseline, контракт парсится», «replace сохраняет pipeline элемента»,
+# «архивный юнит (done/<id>/TODO.md) не сканируется замком матрицы».
+# Пять новых строк содержат слово TODO — это docstring-описание контракта
+# юнита и пути done/<id>/TODO.md в фикстуре архива, долговых TODO/FIXME-
+# маркеров не добавлено. files_over_400 не изменился: тест 395 строк
+# (было 329), всё ещё под планкой 400.
+
+# TODO-0240 (процессные ворота, REVIEW-фикс виток 2, стадия
+# agent-implementer, 21.10): files_over_400 100 -> 101, todos 6517 -> 6536
+# (+19). files_over_400: контрактный tests/unit/test_process_gates.py
+# перешагнул планку 400 (QA оставил 395 строк). Новые кейсы: V1 — обе формы
+# имени QA-файла, V6 — проза не триггерит замок матрицы, V7 — отказ
+# не-стартовавшему юниту. Дробить файл нельзя: verify-контракт юнита
+# запускает ровно этот путь. todos +19 — unit-id ссылки и docstring'и правок
+# (awf/verify_pack.py, awf/api/hygiene.py, MCP tools/awf.py, USAGE.md,
+# docs/unit-contract.md, тест) ПЛЮС секция «REVIEW-фикс (виток 2)», которую
+# супервизор дописал в inbox/TODO-0240.md уже после замера QA. Ни одного
+# TODO/FIXME-маркера долга не добавлено: все строки — идентификаторы юнита,
+# имена QA-файлов и пути done/<id>/TODO.md.
+
+# TODO-0240 (арх-ревью, 21.10): todos 6536 -> 6537 (+1). Новый кейс
+# test_round_number_never_repeats описывает, как считается номер витка, и
+# несёт один идентификатор TODO-0240. Долговых TODO/FIXME-маркеров не
+# добавлено. Заодно исправлен сам счётчик витков: len(секций)+1 повторил бы
+# уже стоящий в файле номер («виток 2 — заметка»), теперь max(номер)+1.
+
+# TODO-0240 (QA виток 3, 21.10): todos 6537 -> 6539 (+2). Две строки —
+# docstring-описание и `md.rename(archived / "TODO.md")` нового красного
+# теста test_archived_unit_refused_as_closed (W1, архивный юнит). Это
+# тестовые идентификаторы и путь архива, не долг: ни одного TODO/FIXME-
+# маркера не добавлено. files_over_400 не изменился (101).
+
+# TODO-0240 (процессные ворота, стадия agent-architect-review виток 3,
+# 21.10): todos 6539 -> 6544 (+5). Строки с идентификатором юнита в
+# docstring'ах общих помощников (implementer'а после прошлого замера:
+# `_active_run_slot_holding`, `_started_signal_names`, `_discard_backup`;
+# арх-ревью: `_live_pipeline_on`, `_backup_and_write_todo`,
+# `_replay_revision_result`); одна строка с `TODO-0234` ушла вместе с
+# переехавшим в помощник комментарием. Ни одного долгового
+# TODO/FIXME-маркера не добавлено: это идентификаторы юнита.
+# files_over_400 не изменился (101): тест вырос 440 -> 557 строк, но уже
+# был выше планки.
+
+# TODO-0240 (QA-ревью, стадия agent-qa-review, 21.10): todos 6544 -> 6549
+# (+5). Красный тест на дыру liveness (service-run в окне запуска) и
+# зелёный CLI-тест `awf review-append` несут идентификаторы юнита в
+# docstring'ах и фикстурах (TODO-0001 / TODO-0240). Ни одного долгового
+# TODO/FIXME-маркера не добавлено: это тестовые id. files_over_400 не
+# изменился (101): contract-тест уже был выше планки.
+
+# TODO-0240 (арх-ревью виток 4, 21.10): todos 6549 -> 6551 (+2). Обе строки —
+# идентификатор юнита в docstring'ах: новый общий помощник _replace_pairs
+# (одна формулировка списка замен для preview и applied) и обновлённый
+# контракт _revision_items (класс replaced, конфликты duplicate/not queued).
+# Долговых TODO/FIXME-маркеров не добавлено. files_over_400 не изменился:
+# hygiene.py и run.py уже были выше планки, новых файлов нет.
+
+# TODO-0240 (REVIEW виток 5 — Y1/Y2, agent-implementer, 21.10):
+# todos 6551 -> 6558 (+7). Шесть строк — docstrings нового класса
+# TestQueueReferencesOnEveryRemover и помощника _service_slot_holding
+# (идентификаторы юнита в именах тестов/фикстур); седьмая — комментарий
+# Y2 в _remove_orphans_impl (lifecycle.py). В hygiene.py строки не
+# выросли: подсказка PROGRESS заменена той же длины. Долговых
+# TODO/FIXME-маркеров не добавлено. files_over_400 не изменился (101):
+# tests/unit/test_process_gates.py уже был выше планки.
+# Уточнение к записи выше: 6558 -> 6559 (+1) — docstring
+# test_retire_of_the_current_unit_is_the_recovery_path (идентификатор юнита
+# в тексте ссылки на test_launch_unblocks_after_retire). Тот же класс
+# тестов, долговых маркеров нет.
+
+# TODO-0240 (арх-ревью, agent-architect-review, 21.10): todos 6559 -> 6566
+# (+7). Все семь строк — идентификатор TODO в ПРОЗЕ доков и docstring'ов,
+# ни одного долгового TODO/FIXME-маркера:
+#   * USAGE.ru.md (+6): новый абзац `awf_review_append` — канон имени
+#     (`TODO-NNNN`), путь бэкапа `context/TODO-<id>.md.bak-<ts>`, «нет файла
+#     TODO в inbox», «очередной TODO правит awf todo-update»; плюс строка
+#     про отказ удаления, пока TODO числится в очереди активного рана
+#     (паритет с английским USAGE).
+#   * tools/awf.py (+1): в docstring `awf_todo_retire` добавлен отказ
+#     «активный слот рана всё ещё планирует запуск TODO» — тот же отказ,
+#     что уже описан в USAGE EN/RU и в docstring `retire_todo`.
+# files_over_400 не изменился (101): правки только в уже длинных файлах.
+
+# TODO-0240 (виток 6, agent-implementer, 21.10): todos 6566 -> 6568
+# (+2). Оба — идентификатор TODO-0240 в ПРОЗЕ нового кода, долговых
+# TODO/FIXME-маркеров нет:
+#   * awf/_safety_tripwire.py (+1): docstring плагина (Z1).
+#   * awf/api/hygiene.py (+1): docstring durable-обёртки review_append
+#     (Z2) — «TODO-0240 Z2» одной строкой.
+# files_over_400 не изменился (101).
+# Плюс 6568 -> 6570 (+2): та же секция «QA-файл находки» синхронно
+# скопирована в пакетный шаблон awf/templates/roles/agent-qa-review.md
+# (канон имени и полная форма — два идентификатора в прозе).
+
+# TODO-0240 (арх-ревью, доп. виток, agent-architect-review, 21.10):
+# todos 6570 -> 6577 (+7). Три строки — этой стадии: docstring общего
+# слотового помощника run_state.active_runs (unit-id в ссылке), docstring
+# общего durable-протокола hygiene._durable_operation и комментарий
+# ветки recovery_required в cmd_review_append.py. Остальные четыре —
+# поздние правки стадии implementer после её замера ratchet (docstring'и
+# витка 6), тот же класс: идентификаторы юнита в прозе, не долг.
+# Ни одного TODO/FIXME-маркера долга не добавлено.
+# files_over_400 не изменился (101): новых файлов нет, правки — в уже
+# длинных модулях.
+
+# TODO-0240 (виток 7, agent-implementer, 21.10): todos 6577 -> 6585 (+8).
+# Виток 7 (AA1-AA3): идентификатор юнита в прозе нового кода и тестов —
+# docstring/комментарии hygiene._durable_operation и payload-отказа,
+# run.py (_revision_payload_mismatch, _revise_payload_refusal,
+# request_digest), run_state (append_revision, _normalize_revision),
+# verify_pack._pytest_timeout_available и docstring'и четырёх новых
+# тестов test_process_gates.py. Долговых TODO/FIXME-маркеров нет.
+# files_over_400 не изменился (101).
+# Уточнение по тому же витку: 6585 -> 6586 (+1) — ещё один идентификатор
+# юнита в прозе новых правок (отказ ``different payload`` в тестах).
+# files_over_400 остался 101: test_reports32_revise_append.py ужат до 398
+# строк вместо повышения храповика.
+
+# TODO-0241 (живучесть движка, стадия agent-implementer, 21.10):
+# files_over_400 101 -> 103, todos 6586 -> 6597 (+11). Два новых файла
+# перешагнули планку: awf/_engine_liveness.py (464 строки — единственный
+# владелец heartbeat/engine-exit/parent-death, инвариант один, дробление
+# его рассыплет) и awf/orchestrator.py (388 -> 420 строк после обёртки
+# движка записью exit). Строки «todos» — unit-id ссылки в docstring'ах
+# нового модуля, контрактного теста и подписи кейсов (a)-(e), не долг:
+# ни одного TODO/FIXME-маркера не добавлено.
+# TODO-0241 (доп. замер, agent-implementer, 21.10): todos 6597 -> 6599 (+2).
+# Оба — unit-id в прозе: строка компонента awf/_engine_liveness.py в
+# docs/design.md и подпись причины в этом файле счётчиков. Не долг.
+# files_over_400 без изменений (103).
+# TODO-0241 (agent-architect-review, 21.10): правки ревью — RLock под
+# сигнал-хендлер, сверка pid heartbeat со state, единая константа задержки
+# пробы спавна. files_over_400 (103) и todos (6599) без изменений: модуль
+# вырос 475 -> 492 строки, но планку перешагнул раньше и уже посчитан.
+
+# TODO-0241 (REVIEW виток 3 — D1, agent-implementer, 21.10): baseline
+# files_over_400 103 -> 104 и todos 6599 -> 6600. Причина files: контрактный
+# tests/negative/test_engine_liveness.py перешагнул планку 400 (QA-виток
+# довёл файл до 406 строк, D1 добавил кейс согласованности трёх поверхностей
+# -> 433). Дробить нельзя: verify-контракт юнита запускает ровно этот путь.
+# Причина todos (+1): net-прирост QA-файла находок
+# (.agentic/context/QA-0241-findings-test.py, unit-id и fixture-иды в прозе)
+# минус строки, ушедшие из правок. Долговых TODO/FIXME-маркеров не добавлено:
+# правки D1 (lifecycle.py, brief.py, тест) не несут токена TODO.
+
+# TODO-0241 (REVIEW виток 4 — E1/E2, agent-implementer, 21.10): baseline
+# todos 6600 -> 6604. Причина: четыре строки прозы с unit-id в правках
+# витка — поле blocked_ids в RunStatusResult (_results.py), счётчик
+# закрытий в run_status (run.py), маршрут совета на MCP-поверхности
+# (tools/awf.py) и actionable-гейт карточки (brief.py). Долговых
+# TODO/FIXME-маркеров не добавлено; files_over_400 без изменений (104).
+
+# TODO-0239 (инвентарь, батч 1, стадия agent-implementer, 21.10):
+# files_over_400 104 -> 105 и todos 6604 -> 6612 (+8).
+# Причина files: awf/infra/managed_fs.py перешагнул планку 400
+# (399 -> 447) — в него добавлен примитив managed_mkdir (no-follow
+# компонентов, mkdirat + проверка листа), он обязан жить рядом с
+# managed_write_text/open_managed: тот же walk, тот же отказ, дробление
+# рассыпало бы инвариант. Причина todos: unit-id ссылки и fixture-иды в
+# прозе нового контрактного tests/negative/test_inventory_batch1.py
+# (TODO-0001/TODO-0239), в docstring'ах правок (managed_mkdir, git-log
+# кодек, U3-граница digest) и в доке agentic-writers. Долговых
+# TODO/FIXME-маркеров не добавлено: все строки — идентификаторы юнита,
+# тестовые иды и имена файлов.
+
+# TODO-0239 (инвентарь, батч 1, стадия agent-architect-review, 22.10):
+# files_over_400 105 -> 106. Причина: контрактный
+# tests/negative/test_inventory_batch1.py перешагнул планку (399 -> 423) —
+# добавлен кейс листа: существующий `.ready`-маркер, который является
+# симлинком на чужой файл, не считается «уже опубликованным» и отказывает
+# по правилу листа, тогда как обычный существующий маркер остаётся
+# нетронутым. Дробить нельзя: verify-контракт юнита запускает ровно этот
+# путь. todos не изменился (6612): новых строк со словом TODO нет — правка
+# ревью (условие + docstring) и тест говорят именами, не unit-id.
+
+# TODO-0229 (M5: source_ref + BLOCKED-схема + REVIEW-драфт, стадия
+# agent-implementer, 22.10): todos 6612 -> 6658 (+46). Все строки —
+# unit-id ссылки и тестовые идентификаторы, не долг: модульный docstring и
+# fixture-иды (TODO-0001 / TODO-0002) нового контрактного
+# tests/negative/test_miniwave_m5_sourceref.py, проза правок
+# awf/api/dispatch.py (source_ref/blocked_draft), awf/api/_results.py,
+# agent_workflow_ui/tools/awf.py, docs/unit-contract.md (разделы
+# «Первоисточник» и «BLOCKED-заметка»), схема в двух ролях
+# (.agentic/roles + пакетный шаблон agent-qa-review), строки таблиц
+# USAGE EN/RU и обновлённые счётчики инструментов. Ни одного долгового
+# TODO/FIXME-маркера не добавлено. files_over_400 не изменился (106):
+# новый тест — 180 строк, прод-правки в уже длинных модулях.
+
+# TODO-0229 REVIEW-фикс, виток 2 (K1–K7, стадия agent-implementer, 22.10):
+# todos 6658 -> 6665 (+7). Все семь строк — unit-id ссылки и тестовые
+# имена, не долг: docstring'и awf/api/dispatch.py и awf/api/_markdown.py
+# (K1/K2/K6), три новых кейса в tests/negative/test_miniwave_m5_sourceref.py
+# (K2/K4/K6), строка инвентаря docs/design/agentic-writers.md (K4) и
+# проза docs/unit-contract.md (K1/K6). Прод-правка K4 в
+# awf/cmd_blocked_draft.py и сокращённые подсказки awf/data/tool_map.yaml
+# (K3) новых TODO-строк не добавили. Долговых TODO/FIXME-маркеров нет.
+# files_over_400 не изменился (106): правки уложились в существующие файлы,
+# контрактный тест остался ниже 400 строк.
+
+# TODO-0229 (стадия agent-architect-review, 22.10): todos 6666 -> 6672 (+6).
+# Дерево до правок стадии дало 6665 (implementer записал 6665; baseline 6666
+# стоял на единицу выше — в пределах SLACK). Правки стадии: +8 строк с
+# литералами-идентификаторами в двух новых кейсах
+# tests/negative/test_reports26_f5_dispatch_heading.py (ведущий HTML-комментарий
+# и front matter не скрывают чужой номер от защиты F5) минус одна строка со
+# словом TODO, ушедшая из docstring `_heading_todo_number`. Итог 6672 —
+# тестовые идентификаторы (TODO-9999 / TODO-0001), не долг; TODO/FIXME-
+# маркеров не добавлено. files_over_400 без изменений (106).
+
+# TODO-0229 (стадия agent-architect-review, 22.10, виток 2): todos
+# 6672 -> 6676 (+4). Две строки — литералы-идентификаторы нового кейса
+# test_a_deeper_heading_is_a_body_section_not_the_title в
+# tests/negative/test_reports26_f5_dispatch_heading.py (``## TODO-9999`` в
+# контенте и в assert: заголовок второго уровня — тело, не титул юнита).
+# Ещё две строки пришли на дерево с прошлого замера стадии (baseline 6672
+# стоял на два ниже фактического счёта; источник — поздние правки прозы
+# после замера). Ни одного долгового TODO/FIXME-маркера не добавлено:
+# правки ревью (_markdown.py — общий обходчик, dispatch.py — одно понятие
+# титула) написаны без токена TODO. files_over_400 без изменений (106):
+# новых файлов нет, контрактный тест остался ниже 400 строк.
+# TODO-0229 (QA review): baseline raised 6676 -> 6692 (+16). The CLI-parity
+# tests for the unit's own `awf dispatch --source-ref` and `awf blocked-draft`
+# subcommands live in tests/integration/test_cli_entrypoints.py and carry
+# TODO-NNNN fixtures/asserts (16 TODO-bearing lines). Same class as the
+# counted test identifiers above — test ids, not debt. No TODO/FIXME marker
+# was added; files_over_400 unchanged (the target file was already counted).
+
+# TODO-0230 M6 REVIEW-фикс (N1/N2, стадия agent-implementer, 22.10):
+# files_over_400 106 -> 107 и todos 6708 -> 6709 (+1).
+# files_over_400: контрактный tests/negative/test_miniwave_m6_roles.py
+# перешагнул планку (363 -> 419) — три кейса ревью (модель живёт только в
+# файле роли, явный model= пишется в конфиг, refresh+draft отвергается до
+# записи). Дробить нельзя: verify-контракт юнита запускает ровно этот путь,
+# второй файл выпал бы из контрактного прогона.
+# todos +1: строка «REVIEW N1 (TODO-0230)» в docstring _refresh_skill_role —
+# ссылка на юнит в прозе, не долговой TODO/FIXME-маркер.
+
+# TODO-0230 M6 REVIEW-фикс, виток 3 (R1-R6, стадия agent-implementer,
+# 22.10): todos 6709 -> 6715 (+6). Все шесть строк — unit-id ссылки в прозе
+# правок ревью, не долг: три комментария/докстринга в awf/api/setup.py
+# (R2 — вариант без команды, R3 — разные сообщения), два в
+# awf/api/roles.py (R4 — description/force при refresh) и один в
+# tests/unit/test_template_sync.py (R6 — сообщения про symlink/пакет).
+# Ни одного TODO/FIXME-маркера долга не добавлено. files_over_400 без
+# изменений (107): контрактный тест уже был выше планки, новых файлов нет.
+
+# TODO-0230 M6 REVIEW-фикс, виток 8 (W1-W5, стадия agent-implementer,
+# 22.10): todos 6715 -> 6716 (+1). Единственная новая TODO-bearing строка —
+# docstring теста tests/negative/test_audit25_w7_protocol_ship.py
+# («V5: add_role now appends the managed defaults») — unit-id в прозе, не
+# долговой маркер. Правки W1/W2/W3 в roles.py/setup.py/_templates.py и
+# W5-тест новых TODO-строк не добавили. files_over_400 без изменений (108).
+
+# TODO-0242 (24.10): files_over_400 110 -> 111 (+1). Новый файл —
+# tests/negative/test_carry_batch_engine_queue.py: приёмочный файл
+# контракта (кейсы a-j + P0a-d) по требованию юнита назван одним файлом,
+# поэтому не дробится. Долговых TODO/FIXME-маркеров не добавлено:
+# docstring «TODO-0242» — id юнита, не маркер. todos без изменений.
+
+# TODO-0242 REVIEW-фикс, виток 7 (G1-G4, стадия agent-implementer,
+# 24.10): files_over_400 111 -> 112 (+1). Планку перешагнул awf/_env.py
+# (286 -> 451 строк): G3 «изоляция MCP видит проектный конфиг» добавил
+# толерантный к комментариям загрузчик opencode.json(c) и сборщик
+# объявленных серверов (глобальный + проектный) — модуль env-сборки уже
+# был на 286 строках, дробить его ради счётчика не стал. Второй новый
+# файл юнита (awf/api/supervise.py, 159 строк) под планкой. Долговых
+# TODO/FIXME-маркеров не добавлено: «TODO-0242» — id юнита, не маркер.
+
+# TODO-0244 (agent-architect-review, 24.10): files_over_400 112 -> 113 (+1).
+# Планку перешагнул тестовый файл юнита tests/negative/test_dod_checklist_core.py
+# (606 строк): он держит весь контракт DoD-гейта по пунктам (a)-(h) и
+# регрессии review-витков, включая три теста архитектора — замороженный
+# блок проходит тот же allowlist, что и YAML (иначе `bash -c` в TODO
+# исполнился бы на verify), кэш гейта перечитывает DONE-предложения на том
+# же дереве, нестандартный таймаут пробы переживает заморозку. Файл один,
+# поэтому счётчик файлов не растёт. Долговых TODO/FIXME-маркеров не
+# добавлено: «TODO-0244» — id юнита, не маркер.
+
+# TODO-0244 (REVIEW-виток 3 — S1–S4, стадия agent-implementer, 24.10):
+# files_over_400 113 -> 114 (+1). Планку перешагнул awf/checklist_gate.py
+# (391 -> 468 строк): S1 добавил в ключ кэша отпечаток целей проб (их
+# содержимое для читающих проб и факт наличия для file_*) — иначе
+# gitignored `.agentic/`-правки маскировались отпечатком дерева. Дробить
+# модуль ради счётчика не стал: гейт и его кэш — одна поверхность.
+# Второй изменённый файл (_render.py, 250) под планкой. Долговых
+# TODO/FIXME-маркеров не добавлено: «TODO-0244» — id юнита, не маркер.
+
+# TODO-0244 (REVIEW-виток 4 — Q1–Q6, стадия agent-implementer, 24.10):
+# files_over_400 без изменений (114). Правки Q1–Q6 легли в файлы, уже
+# перешагнувшие планку (awf/checklist_gate.py, тестовый файл юнита), или
+# под ней (awf/checklists/_data.py 319, _render.py 318, _allowlist.py 299);
+# новых файлов сверх 400 нет. Долговых TODO/FIXME-маркеров не добавлено.
+
+# TODO-0244 (стадия agent-architect-review, 25.10): files_over_400 без
+# изменений (114). Рефакторинг витка — в файлах под планкой
+# (awf/checklists/_boundaries.py, awf/checklists/_data.py,
+# awf/cmd_checklist.py) и в уже перешагнувшем awf/verify_pack.py (1130);
+# в тестовый файл юнита добавлены два теста, но он и так был сверх 400.
+# Новых файлов сверх 400 нет. Долговых TODO/FIXME-маркеров не добавлено.
+
+# TODO-0244 (agent-architect-review, виток 7 — после F11, 25.10):
+# files_over_400 без изменений (114) и todos без изменений. Правки — в уже
+# длинных файлах (awf/api/hygiene.py, awf/cmd_checklist.py под планкой,
+# тестовый файл юнита уже был сверх 400): заморозка DoD-блока закрыта на
+# двух соседних поверхностях записи — section_updates сравнивает заголовок
+# по тому же правилу, что и читатель (casefold), append не принимает второй
+# блок; плюс порядок проверок в checklist apply и снятая мёртвая ветка
+# возврата в check. Два новых теста. Долговых TODO/FIXME-маркеров нет:
+# «TODO-0244» — id юнита, не маркер.
+
+# TODO-0244 (agent-architect-review, 25.10): files_over_400 без изменений
+# (114) и todos 0. Рефакторинг стадии: awf/api/_markdown.py ->
+# awf/_markdown.py (новый модуль 183 строки, под планкой) — снята
+# зависимость awf.checklists от awf.api (долг G5 из DONE исполнителя);
+# guard F14/F15 доведён до ветки, где полный reword приносит СВОЙ блок
+# (awf/api/hygiene.py уже сверх планки); два новых теста в файле юнита
+# (он и так был сверх 400). Долговых TODO/FIXME-маркеров нет: «TODO-0244»
+# — id юнита, не маркер.
+
+# TODO-0244 (agent-architect-review, 25.10, виток после F17–F19):
+# files_over_400 без изменений (114), todos 0. Рефакторинг без новой
+# функциональности: одно соединение блока — append_block в awf/_markdown
+# (было четыре копии, у переноса блока при полном reword терялся финальный
+# перевод строки); в гейте снят мёртвый фильтр derived-warning (кэш хранит
+# только пересчитываемые предупреждения); section_updates доведён до того
+# же инварианта F14/F15, что замена и append (тело секции не может спрятать
+# блок за незакрытым фенсом, добавить второй заголовок или принести блок
+# юниту без него). Три новых теста в файле юнита (он уже сверх 400).
+# Долговых TODO/FIXME-маркеров нет: «TODO-0244» — id юнита, не маркер.

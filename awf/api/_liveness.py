@@ -34,10 +34,15 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .. import paths
+from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ._errors import AwfApiError
+
+if TYPE_CHECKING:
+    from .._engine_liveness import EngineDead
 
 _OUR_SUBCOMMANDS = ("start", "continue")
 PID_FILE_NAME = "awf-start.pid"
@@ -187,10 +192,17 @@ def resolve(project_dir: Path) -> tuple[bool, int | None, str | None]:
             project_dir=project_dir,
         ):
             return True, pid, "pid_file"
-        # dead or foreign (another project) → clean up the stale file
+        # dead or foreign (another project) → clean up the stale file.
+        # TODO-0235 (M3d): the cleanup is best-effort, so an unsafe LOGS
+        # surface (symlinked) skips it instead of deleting outside; the
+        # liveness answer below is unaffected.
         try:
+            managed_fs.require_posix("clean stale pid file")
+            managed_fs.assert_no_symlink_escape(
+                pid_file, root=managed_fs.agentic_root_for(pid_file)
+            )
             pid_file.unlink()
-        except OSError:
+        except (OSError, managed_fs.ManagedPathError):
             pass
 
     state = read_state(project_dir)
@@ -205,6 +217,25 @@ def resolve(project_dir: Path) -> tuple[bool, int | None, str | None]:
             return True, spid, "state"
 
     return False, None, None
+
+
+def engine_dead_now(
+    project_dir: Path, state: dict | None, config: dict | None = None
+) -> EngineDead | None:
+    """TODO-0242 (A.3): the engine-death fact for a caller holding only state.
+
+    The pair ``resolve()`` → ``status_engine_dead(pipeline_running=...)``
+    was copied next to every surface that needed the fact; a surface that
+    skips the resolver passes ``pipeline_running=False`` and invents a
+    death in the launch window. Asking the resolver HERE keeps the pairing
+    in one place while the fact and its guards stay with their owners.
+    """
+    from .._engine_liveness import status_engine_dead
+
+    running, _pid, _source = resolve(project_dir)
+    return status_engine_dead(
+        project_dir, state, config, pipeline_running=running
+    )
 
 
 def destructive_blockers(project_dir: Path, *, action: str = "reset") -> list[str]:
@@ -294,6 +325,7 @@ __all__ = [
     "probe_alive",
     "pid_is_ours",
     "resolve",
+    "engine_dead_now",
     "destructive_blockers",
     "refuse_if_in_use",
 ]

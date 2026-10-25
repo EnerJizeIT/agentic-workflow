@@ -115,6 +115,10 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_todo_retire", awf.awf_todo_retire),
     # RUN6 #4: reword a not-started TODO (number/.ready/baseline preserved)
     _spec("awf_todo_update", awf.awf_todo_update),
+    # TODO-0240: append a supervisor REVIEW-fix section to a started unit
+    _spec("awf_review_append", awf.awf_review_append),
+    # TODO-0229: ready REVIEW-fix draft from a standard BLOCKED note
+    _spec("awf_blocked_draft", awf.awf_blocked_draft),
     # RUN6 #4: working-tree fingerprint (MCP parity for the CLI tree-sha)
     _spec("awf_tree_sha", awf.awf_tree_sha),
     # U4: machine proof that tests are red on the baseline sha

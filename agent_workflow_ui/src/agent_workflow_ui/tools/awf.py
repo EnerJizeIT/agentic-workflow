@@ -707,8 +707,14 @@ async def awf_todo_remove(
     the dispatch ``.ready`` is an artifact, not a start marker — it no
     longer blocks the removal and moves to the trace dir; the unit's
     ``context/BASELINE-<id>.*`` is deleted (reported in ``removed_files``).
-    Refused when PROGRESS, any outbox signal, or an inbox ACK/APPROVE
-    exists (hints: ``awf_unblock`` / ``awf_reset(orphans=True)``).
+    Refused when a signal or PROGRESS exists: stale closures point to
+    ``awf_unblock`` (or ``awf_reset(orphans=True)``), a started unit to
+    ``awf_todo_retire``. Also refused while the active run queue (main or
+    service slot) still names the TODO: replace it in the queue first
+    (``run_revise`` with ``{"from": ..., "to": ...}``) or finish the run —
+    a service slot has no ``run_revise``, close it with
+    ``awf_run_service_finish`` — otherwise the queue would keep a dangling
+    reference.
     """
     result = await _exec(
         api.remove_todo,
@@ -742,6 +748,8 @@ async def awf_todo_retire(
 
     Refusals: no TODO file in inbox or done/; already archived
     (``done/<id>/TODO.md``); a live pipeline on this id (kill/wait first);
+    an active run slot (main or service) still planning to launch the TODO
+    in its not-started queue region (replace it in the queue first);
     empty ``reason`` (required — it is the RETIRED note body).
     """
     result = await _exec(
@@ -755,6 +763,87 @@ async def awf_todo_retire(
             f"Unit {result.get('todo_id', '?')} retired (RETIRED note: "
             f"{result.get('retired_note', 'done/<id>/')}). Still needed — "
             "re-dispatch via awf_dispatch_todo; bring this one back — awf_restore."
+        )
+    return result
+
+
+@_mutating
+async def awf_review_append(
+    todo_id: str,
+    text: str,
+    reason: str = "",
+    project_dir: str | None = None,
+    operation_id: str | None = None,
+) -> dict[str, Any]:
+    """Append a supervisor REVIEW-fix section to a STARTED TODO (TODO-0240).
+
+    The plain ``awf_todo_update`` refuses a unit that already started; a
+    review round needs the opposite. This appends exactly one section
+    ``## REVIEW-фикс (супервизор, виток N)`` — N is one past the highest
+    round number already in the file (``max(existing) + 1``, so a gap or a
+    hand-written suffix never repeats a number) — and backs the previous
+    content up to
+    ``context/TODO-<id>.md.bak-<timestamp>``. The number, ``.ready`` and
+    the baseline stay untouched.
+
+    Refusals: empty ``text``; no TODO file in the inbox; the unit never
+    started (no PROGRESS/signals — a queued TODO takes ``awf_todo_update``);
+    the unit is archived (``done/<id>/TODO.md`` — use ``awf_restore``); a
+    live pipeline on this id (``awf_kill`` first, then append).
+
+    ``operation_id`` is durable like ``awf_todo_update``: a retry after a
+    transport cut returns the recorded outcome, it does not append a second
+    section.
+    """
+    result = await _exec(
+        api.review_append,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+        text=text,
+        reason=reason,
+        operation_id=operation_id,
+    )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id', 'TODO')}: '{result.get('section', '')}' "
+            f"appended (backup: {result.get('backup', '')}). Re-run the unit "
+            "with awf_continue (a run) or awf_start. A DONE closure left by "
+            "the previous attempt is NOT cleared by awf_unblock — clear the "
+            "outbox/DONE-<id>.* signals by hand before the re-run."
+        )
+    return result
+
+
+async def awf_blocked_draft(
+    todo_id: str,
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Build a ready ``## REVIEW-фикс`` draft from a BLOCKED note (TODO-0229).
+
+    Reads ``outbox/BLOCKED-<id>.md``, takes its standard ``## НАХОДКИ`` and
+    ``## НАПРАВЛЕНИЯ-ФИКСА`` sections and returns a paste-ready text with the
+    supervisor's empty decision slots (``Скоуп: …`` / ``Переносы: …``).
+
+    Read-only for the TODO: it is NOT written — the supervisor pastes the
+    draft and fills the slots. Refuses when the note is missing or does not
+    follow the BLOCKED schema (``docs/unit-contract.md``). CLI parity:
+    ``awf blocked-draft TODO-NNNN``.
+
+    Args:
+        todo_id: The blocked unit (e.g. "TODO-0204").
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+    """
+    result = await _exec(
+        api.blocked_draft,
+        project_dir=_resolve_project_dir(project_dir),
+        todo_id=todo_id,
+    )
+    if isinstance(result, dict) and result.get("status") == "ok":
+        result["next_action"] = (
+            f"{result.get('todo_id') or 'the unit'}: paste the returned review_text "
+            "into the TODO, fill the Скоуп / Переносы slots, then re-run the "
+            "unit with awf_continue (a run) or awf_start."
         )
     return result
 
@@ -874,7 +963,31 @@ async def awf_run_status(project_dir: str | None = None) -> dict[str, Any]:
     ("" when the warning is off)."""
     result = await _exec(api.run_status, project_dir=_resolve_project_dir(project_dir))
     if isinstance(result, dict) and result.get("status") == "ok":
-        if result.get("active"):
+        # TODO-0241 (REVIEW E1): actionable facts (a BLOCKED closure, a
+        # dead engine) go through the single advice owner — the same
+        # function awf_status and the brief use. A local engine_dead
+        # branch here ranked the resume above the unanswered question.
+        #
+        # A LIVE pipeline keeps this surface's own run-loop advice: the
+        # owner ranks ``expected_action`` first on awf_status (a running
+        # stage is "do not intervene"), and the run payload carries no
+        # such fact, so a stale BLOCKED closure would otherwise answer a
+        # question awf_status does not ask. The order between blocked and
+        # engine_dead is untouched — it still lives in the owner.
+        # TODO-0242 (A.6): resume advice only for an ACTIVE run. An inactive
+        # run with a stale stage state is closed history — its message says
+        # "Run finished", so the next action must start a new run, not
+        # resurrect the old one.
+        # A BLOCKED closure needs an answer even when the run record is
+        # gone — the closure itself is the fact. The engine-dead resume,
+        # however, belongs to an ACTIVE run only (A.6).
+        if (
+            result.get("blocked_ids") and not result.get("pipeline_running")
+        ) or (result.get("active") and result.get("engine_dead")):
+            from awf.brief import next_action_from_status
+
+            result["next_action"] = next_action_from_status(result)
+        elif result.get("active"):
             result["next_action"] = (
                 f"Run active (position {result.get('position', '?')}) — "
                 "awf_run_next(project_dir) launches the next queued unit."
@@ -992,9 +1105,11 @@ async def awf_run_revise(
     preview: bool = False,
     stop_running: bool = False,
     position: int | None = None,
+    after: str | None = None,
+    before: str | None = None,
 ) -> dict[str, Any]:
     """Revise the not-started queue elements of the active run (ORCH M3.4);
-    add new elements to it (REPORTS32).
+    add new elements to it (REPORTS32); remove or anchor (TODO-0242).
 
     One typed operation with a preview and an idempotency key.
     ``preview=True`` shows the current queue, the elements that would
@@ -1002,8 +1117,10 @@ async def awf_run_revise(
     (current/started/completed/TODO file missing) with NO side effects.
     The apply changes the pipeline of the NOT-STARTED elements only —
     completed and current are never touched — and records the revision in
-    the run state (state/run.yaml, the decisions' path). A repeat with the
-    same ``key`` is a no-op.
+    the run state (state/run.yaml, the decisions' path). The key names ONE
+    request: a repeat with the same ``key`` AND the same payload is a
+    no-op; the same ``key`` with a DIFFERENT payload is refused
+    (recovery-required) — a different revision needs a new key.
 
     APPEND/INSERT (REPORTS32): a ``queue`` item whose todo_id is NOT in
     the run queue joins it — appended at the queue END (``changes`` carry
@@ -1019,6 +1136,22 @@ async def awf_run_revise(
     same as append), never before a started/current/completed element.
     Invalid (non-int, out of range) → refusal. Without ``position`` new
     elements are appended.
+
+    ANCHORS (TODO-0242): ``after="TODO-NNNN"`` / ``before="TODO-NNNN"``
+    place the new elements relative to an existing queue element; each is
+    mutually exclusive with ``position`` (and with the other anchor). The
+    resulting position goes through the same NOT-STARTED zone check.
+
+    REMOVE (TODO-0242): an item ``{"remove": "TODO-NNNN"}`` removes a
+    NOT-STARTED element (class ``"removed"``); a current/started/completed
+    element is a conflict and refuses the whole request.
+
+    REPLACE (TODO-0240): an item ``{"from": "TODO-A", "to": "TODO-B"}``
+    replaces the NOT-STARTED element A with B in place (position and
+    pipeline kept, class ``"replaced"``). B needs a launchable TODO
+    (``inbox/<B>.md`` non-empty — the engine's launch precondition; a
+    ``.ready`` alone cannot launch) and must not duplicate a queued id;
+    a conflict refuses the whole request.
 
     Refusals (each returns the current state; the previous plan stays in
     force): no active run; a stage is running without ``stop_running``
@@ -1041,7 +1174,8 @@ async def awf_run_revise(
         queue: Items to revise — a list of {"todo_id": "TODO-NNNN",
             "pipeline": "<name>"}; an empty pipeline reverts the element to
             the config default. An id not in the run queue is appended /
-            inserted (needs its inbox TODO file).
+            inserted (needs its inbox TODO file). A replace item is
+            {"from": "TODO-A", "to": "TODO-B"}.
         reason: Why the composition changes (stored in the revision record).
         key: Idempotency key — required for the apply; a repeat with the
             same key is a no-op (no second revision).
@@ -1052,6 +1186,10 @@ async def awf_run_revise(
         position: Queue position for NEW (not-in-queue) elements — an int
             in [index, len(queue)]; None (default) = append at the end.
             Invalid → refusal.
+        after: Anchor for NEW elements — insert right after this queued
+            element (mutually exclusive with position/before).
+        before: Anchor for NEW elements — insert right before this queued
+            element (mutually exclusive with position/after).
 
     Returns:
         Dict with: action (preview/applied/noop/refused), key, generation,
@@ -1068,6 +1206,8 @@ async def awf_run_revise(
         preview=preview,
         stop_running=stop_running,
         position=position,
+        after=after,
+        before=before,
     )
     if isinstance(result, dict) and result.get("status") == "ok":
         action = result.get("action")
@@ -1874,6 +2014,7 @@ async def awf_add_role(
     from_skill: str = "",
     force: bool = False,
     draft: bool = False,
+    refresh: bool = False,
     adopt: str = "",
     discard: str = "",
     list_drafts: bool = False,
@@ -1949,6 +2090,13 @@ async def awf_add_role(
             the candidate only.
         draft: Write the candidate to .agentic/roles/draft/ (default:
             False — live role file, original behavior).
+        refresh: Re-materialize an existing skill-sourced role from its
+            provenance skill, keeping AWF-OVERRIDE / BD-31 / discipline /
+            suite-canon blocks and the user's own lines; pre-marker copies
+            of the managed rules are replaced, never duplicated. Reports
+            refresh_status: ``updated`` / ``unchanged`` / ``skipped`` (not
+            skill-sourced, or the skill is gone) / ``conflict`` (no role
+            file). A repeated call is a no-op (default: False).
         adopt: Slug of a draft candidate to move to the live roles
             (default: "" — not an adopt call).
         discard: Slug of a draft candidate to remove (default: "" —
@@ -1985,6 +2133,7 @@ async def awf_add_role(
                 ("from_skill", from_skill),
                 ("force", force),
                 ("draft", draft),
+                ("refresh", refresh),
                 ("adopt", adopt),
                 ("discard", discard),
                 ("list_drafts", list_drafts),
@@ -2007,13 +2156,13 @@ async def awf_add_role(
             preset=preset,
             models=models,
         )
-    modes = sum(1 for m in (draft, adopt, discard, list_drafts) if m)
+    modes = sum(1 for m in (draft, refresh, adopt, discard, list_drafts) if m)
     if modes > 1:
         return {
             "status": "error",
             "error": (
-                "Pick ONE of draft / adopt / discard / list_drafts — "
-                "they are mutually exclusive."
+                "Pick ONE of draft / refresh / adopt / discard / "
+                "list_drafts — they are mutually exclusive."
             ),
         }
     resolved = _resolve_project_dir(project_dir)
@@ -2036,6 +2185,7 @@ async def awf_add_role(
         from_skill=from_skill,
         force=force,
         draft=draft,
+        refresh=refresh,
     )
 
 
@@ -2192,6 +2342,7 @@ async def awf_dispatch_todo(
     carry_over_from: str | None = None,
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
+    source_ref: str | None = None,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -2233,13 +2384,20 @@ async def awf_dispatch_todo(
             lists the files that stay excluded (``pre_existing_untracked``
             + ``untracked_warning``).
         allow_mismatch: REPORTS26 F5 — heading/title mismatch policy. When
-            the first line of the content is a heading carrying a TODO
-            number different from the one being issued: with an explicit
+            the title heading (the first heading after leading comments and
+            front matter) carries a TODO number different from the one being
+            issued: with an explicit
             ``todo_id`` the dispatch is refused (no side effects, the
             message names both numbers); ``allow_mismatch=True`` accepts
             the mismatch and writes the content as-is. With the auto
             number the heading is renumbered instead — the answer then
             carries ``renumbered: true``.
+        source_ref: TODO-0229 (M5) — the source of truth for the unit as
+            ``<file>#<section>`` (e.g. ``R2-GIT-OWNERSHIP.md#R2.5``). Its
+            bullets land in the TODO as a ``## Первоисточник (<section>)``
+            checklist. A missing file/section refuses before any side
+            effect. A relative path must stay inside the project; an
+            absolute one is used as passed.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
@@ -2247,7 +2405,7 @@ async def awf_dispatch_todo(
         pre_existing_untracked (list, excluded from the commit),
         untracked_warning (one line, "" when nothing is excluded),
         renumbered (True when the auto-issued number replaced a foreign
-        one in the first line's heading).
+        one in the title heading).
     """
     response = await _exec(
         api.dispatch_todo,
@@ -2259,6 +2417,7 @@ async def awf_dispatch_todo(
         carry_over_from=carry_over_from,
         include_untracked=include_untracked,
         allow_mismatch=allow_mismatch,
+        source_ref=source_ref,
     )
     if response.get("status") != "ok":
         return response
@@ -2297,6 +2456,13 @@ async def awf_dispatch_todo(
             f"{response['next_action']} Note: the heading was renumbered "
             f"to {response.get('todo_id')} (the template carried a foreign "
             "TODO number)."
+        )
+    # TODO-0242 (B.13): the soft size lock is a warning, not a refusal —
+    # the supervisor still decides whether to split.
+    if response.get("size_warning"):
+        response["next_action"] = (
+            f"{response['next_action']} Size warning: "
+            f"{response['size_warning']}."
         )
     return response
 
@@ -2811,6 +2977,8 @@ async def awf_wait_for_event(
       ``awf_dispatch_todo`` outside
     - ``timeout`` — no event within timeout
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
+    - ``engine_dead`` — the state outlived the engine; the answer carries
+      ``next_action=awf_continue(todo_id=...)`` (A.3) — resume, do not wait
 
     R3 (NEG-2026-09-19): the MCP transport cuts long tool calls (JSON-RPC
     -32001) — the default client timeout is ~60s, so a single wait works
@@ -2842,7 +3010,7 @@ async def awf_wait_for_event(
 
     Returns:
         Dict with: event_type (verify/blocked/salvage/checkpoint/done/
-        timeout/stage_changed/idle), message (instruction for supervisor),
+        timeout/stage_changed/idle/engine_dead), message (instruction for supervisor),
         state_snapshot, suggested_timeout (recommended wait size for the
         next call, never above the project's wait cap), next_action
         (instruction + the actual single-wait cap), timeout_clamped (true
@@ -2908,7 +3076,7 @@ async def awf_wait_for_event(
         if run_active:
             _EVENT_ACTIONS = {
                 "verify": "Pipeline at verify. Run your own probes → awf_approve(evidence=...) or awf_reject.",
-                "blocked": "Worker blocked. Read BLOCKED note → fix context and awf_retry_stage, or stop with awf_run_finish.",
+                "blocked": "Worker blocked. Read BLOCKED note → replan: awf kill → awf_unblock(todo_id) → awf_continue(todo_id=…, from_stage=…), or stop with awf_run_finish.",
                 "checkpoint": "Checkpoint form opened. Tell the user (the run is paused until they submit).",
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage / ACK / split the TODO.",
                 "done": (
@@ -2925,6 +3093,10 @@ async def awf_wait_for_event(
                     f"awf_wait_for_event(timeout={suggested}, actionable_only=True)."
                 ),
                 "idle": "Pipeline not running. Check awf_status → awf_run_next or awf_run_finish.",
+                "engine_dead": (
+                    "Engine is dead — resume the run: awf_continue(todo_id=…) "
+                    "(the event message names the exact id). Do NOT keep waiting."
+                ),
             }
         else:
             _EVENT_ACTIONS = {
@@ -2937,6 +3109,10 @@ async def awf_wait_for_event(
                 ),
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage or ACK.",
                 "timeout": "No event. DO NOT call awf_wait_for_event again. Wait for user.",
+                "engine_dead": (
+                    "Engine is dead but the run is not active — start a new "
+                    "run with awf_run_start, do not resume a closed one."
+                ),
             }
         # RUN10 #1: an UNKNOWN event type inside a run must not advise
         # "wait for user" either — the run loop keeps waiting.
@@ -2946,7 +3122,14 @@ async def awf_wait_for_event(
             if run_active
             else "Check awf_status, then wait for user."
         )
-        response["next_action"] = _EVENT_ACTIONS.get(et, default_action)
+        # TODO-0242 REVIEW (F9): the API is the owner of a concrete next
+        # command for actionable events — ``engine_dead`` carries
+        # ``awf_continue(todo_id=...)`` (A.3). The table is only a FALLBACK:
+        # overwriting the API advice told the supervisor to keep waiting on
+        # a dead engine, so the run was never resumed.
+        response["next_action"] = response.get("next_action") or _EVENT_ACTIONS.get(
+            et, default_action
+        )
         # B3 / RUN6 #3: every response carries the actual single-wait cap
         # (project-aware: config/env, default ~55s transport cap); clamped
         # requests say so explicitly.
@@ -3138,8 +3321,10 @@ async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
         salvage_stage, last_signal, pipeline_running, stall (the
         stalled-stage line, "" when off), office (list of {role, model,
         source} — the team's roles with their model and where it comes
-        from: "config" / "md" / "none"), tool_map (groups),
-        rituals, recovery, doctrine, what_new, text (the rendered card).
+        from: "config" / "md" / "none"), tool_map (groups; a group whose
+        source entry sets ``hidden`` stays in the JSON but the card does
+        not render it), rituals, recovery, doctrine, what_new, text (the
+        rendered card).
         On error: {status: "error", error: "..."}.
     """
     return await _exec(api.brief, project_dir=_resolve_project_dir(project_dir))

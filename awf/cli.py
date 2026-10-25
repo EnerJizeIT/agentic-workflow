@@ -109,6 +109,10 @@ def _build_parser():
     AUD07-08: the subparsers action is returned so `awf help` can generate
     its command list from the same source that dispatches the commands.
     """
+    # REVIEW W5: the variant names are the one registry in awf.api.setup —
+    # a new starter must appear here without a second hardcoded list.
+    from .api.setup import BUILTIN_PIPELINES
+
     parser = argparse.ArgumentParser(
         prog="awf",
         description="Agentic Workflow Framework",
@@ -244,6 +248,87 @@ def _build_parser():
         help="Project root (default: current directory)",
     )
 
+    # TODO-0240: append a supervisor REVIEW-fix section to a STARTED unit
+    # (the plain todo-update refuses started TODOs; no section numbering by
+    # hand, a backup lands in context/).
+    p_review_append = sub.add_parser(
+        "review-append",
+        help="Append a supervisor REVIEW-fix section to a started TODO",
+    )
+    p_review_append.add_argument("todo_id", help="TODO id (e.g. TODO-0001)")
+    _review_group = p_review_append.add_mutually_exclusive_group(required=True)
+    _review_group.add_argument("--text", help="Review fix text (short)")
+    _review_group.add_argument(
+        "--text-file",
+        dest="text_file",
+        help="Review fix text read from a file",
+    )
+    p_review_append.add_argument(
+        "--reason",
+        default="",
+        help="Why the review fix is appended (written to the log)",
+    )
+    p_review_append.add_argument(
+        "--operation-id",
+        dest="operation_id",
+        default=None,
+        help=(
+            "Durable operation id: a repeat after a transport cut returns "
+            "the recorded outcome instead of appending a second section"
+        ),
+    )
+    p_review_append.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
+    # TODO-0229 (M5): CLI parity for the dispatch + the REVIEW draft.
+    p_dispatch = sub.add_parser(
+        "dispatch",
+        help="Create a unit atomically: TODO file + baseline + .ready signal",
+    )
+    _dispatch_content = p_dispatch.add_mutually_exclusive_group(required=True)
+    _dispatch_content.add_argument("--content", help="TODO body (short)")
+    _dispatch_content.add_argument(
+        "--content-file",
+        dest="content_file",
+        help="TODO body read from a file",
+    )
+    p_dispatch.add_argument(
+        "--source-ref",
+        dest="source_ref",
+        default=None,
+        help="Source of truth as '<file>#<section>' — inserted as a checklist",
+    )
+    p_dispatch.add_argument("--role", default=None, help="Optional role hint")
+    p_dispatch.add_argument("--todo-id", dest="todo_id", default=None)
+    p_dispatch.add_argument("--pipeline", default=None)
+    p_dispatch.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
+    p_blocked_draft = sub.add_parser(
+        "blocked-draft",
+        help="Print a ready REVIEW-fix draft built from a BLOCKED note",
+    )
+    p_blocked_draft.add_argument("todo_id", help="TODO id (e.g. TODO-0204)")
+    p_blocked_draft.add_argument(
+        "--out",
+        default="",
+        help="Write the draft to this file instead of stdout",
+    )
+    p_blocked_draft.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_continue.add_argument(
         "--ack",
         default="",
@@ -360,6 +445,26 @@ def _build_parser():
         help="List draft candidates: name, source, created, file",
     )
     p_add_role.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-materialize an existing skill-sourced role from its skill, "
+        "keeping AWF-OVERRIDE / BD-31 / discipline blocks and local lines",
+    )
+    p_add_role.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_config_get = sub.add_parser(
+        "config-get",
+        help=(
+            "Print one config.yaml value (dotted key): strings raw, other "
+            "values YAML; exit 1 when the key is absent"
+        ),
+    )
+    p_config_get.add_argument("key", help="Dotted key, e.g. verification.test_cmd")
+    p_config_get.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
@@ -407,6 +512,19 @@ def _build_parser():
         "--json", action="store_true", help="Machine-readable output"
     )
     p_verify_pack.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
+    p_checklist = sub.add_parser(
+        "checklist",
+        help="DoD: show/check/apply/hash the unit's completion checklist",
+    )
+    p_checklist.add_argument("action", choices=["show", "check", "apply", "hash"])
+    p_checklist.add_argument("todo_id", help="TODO id (e.g. TODO-0244)")
+    p_checklist.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_checklist.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
@@ -484,6 +602,30 @@ def _build_parser():
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
+    )
+
+    p_supervise = sub.add_parser(
+        "supervise",
+        help="Watchdog: restart a dead engine up to a bounded budget",
+    )
+    p_supervise.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    p_supervise.add_argument(
+        "--max-restarts",
+        dest="max_restarts",
+        type=int,
+        default=5,
+        help="Restarts allowed for this run (default: 5)",
+    )
+    p_supervise.add_argument(
+        "--pause",
+        dest="pause_seconds",
+        type=float,
+        default=30.0,
+        help="Seconds between checks (default: 30)",
     )
 
     p_metrics = sub.add_parser(
@@ -669,12 +811,20 @@ def _build_parser():
         "name",
         help="Pipeline name (letters, digits, '_', '.', '-' — no path separators)",
     )
-    p_pipeline_write.add_argument(
+    role_or_variant = p_pipeline_write.add_mutually_exclusive_group(
+        required=True
+    )
+    role_or_variant.add_argument(
         "--role",
         action="append",
-        required=True,
         help="Worker role for a stage (repeatable; supervisor plan/verify "
              "stages are added automatically, as in the setup form)",
+    )
+    role_or_variant.add_argument(
+        "--variant",
+        choices=list(BUILTIN_PIPELINES),
+        help="Write a built-in starter pipeline (same text the setup form "
+             "offers) instead of a role composition",
     )
     p_pipeline_write.add_argument(
         "--force",
@@ -790,6 +940,15 @@ def _run_command(args) -> int:
         if args.command == "todo-update":
             from . import cmd_todo_update
             return cmd_todo_update.run(args)
+        if args.command == "review-append":
+            from . import cmd_review_append
+            return cmd_review_append.run(args)
+        if args.command == "dispatch":
+            from . import cmd_dispatch
+            return cmd_dispatch.run(args)
+        if args.command == "blocked-draft":
+            from . import cmd_blocked_draft
+            return cmd_blocked_draft.run(args)
         if args.command == "status":
             return cmd_status.run(args)
         if args.command in ("start", "continue"):
@@ -803,6 +962,9 @@ def _run_command(args) -> int:
         if args.command == "add-role":
             from . import cmd_add_role
             return cmd_add_role.run(args)
+        if args.command == "config-get":
+            from . import cmd_config_get
+            return cmd_config_get.run(args)
         if args.command == "baseline":
             from . import cmd_baseline
             return cmd_baseline.run(args)
@@ -812,6 +974,9 @@ def _run_command(args) -> int:
         if args.command == "verify-pack":
             from . import cmd_verify_pack
             return cmd_verify_pack.run(args)
+        if args.command == "checklist":
+            from . import cmd_checklist
+            return cmd_checklist.run(args)
         if args.command == "rollback":
             from . import cmd_rollback
             return cmd_rollback.run(args)
@@ -824,6 +989,9 @@ def _run_command(args) -> int:
         if args.command == "kill":
             from . import cmd_kill
             return cmd_kill.run(args)
+        if args.command == "supervise":
+            from . import cmd_supervise
+            return cmd_supervise.run(args)
         if args.command == "pipeline-write":
             from . import cmd_pipeline_write
             return cmd_pipeline_write.run(args)

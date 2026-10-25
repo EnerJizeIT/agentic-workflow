@@ -32,8 +32,6 @@ PlanSplit = commit_delta.PlanSplit
 staged_at_baseline = commit_delta.staged_at_baseline
 worktree_dirty_at_baseline = commit_delta.worktree_dirty_at_baseline
 read_worktree_snapshot = commit_delta.read_worktree_snapshot
-_legacy_plan_split = commit_delta._legacy_plan_split
-_all_changed_files = commit_delta._all_changed_files
 
 OUTCOME_COMMITTED = "committed"
 OUTCOME_SKIPPED = "skipped"
@@ -197,11 +195,11 @@ def _candidate_plan(
 def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> PlanSplit:
     """R2.3: the unit's commit file set + exclusions — now ONE assembly.
 
-    The legacy baseline-diff pass (:func:`_legacy_plan_split`) supplies the
-    raw set; the :class:`~awf.commit_delta.DeltaAssembler` adds the TYPED
-    rename-pair ownership on top, re-admits the explicit claim channel
-    (:func:`_claimed_paths`, R2.2) as full files, and records any model
-    refusal. A model refusal (unsupported gitlink / unmerged / sparse / split
+    The model-backed raw pass (:func:`awf.commit_delta._raw_file_set`)
+    supplies the raw set; the :class:`~awf.commit_delta.DeltaAssembler` adds
+    the TYPED rename-pair ownership on top, re-admits the explicit claim
+    channel (:func:`_claimed_paths`, R2.2) as full files, and records any
+    model refusal. A model refusal (unsupported gitlink / unmerged / sparse / split
     index, or a mixed-ownership rename pair) BLOCKS the plan — the gate turns
     it into a refusal, never a silent legacy commit.
 
@@ -283,28 +281,34 @@ def plan_files(
     """
     if baseline_sha:
         return _plan_split(project_dir, baseline_sha, todo_id=todo_id).files
-    return _all_changed_files(project_dir)
+    return commit_delta.worktree_file_set(project_dir)
 
 
 def files_digest(files: list[str] | tuple[str, ...]) -> str:
     """M2.1: stable digest of the exact commit file set.
 
     sha256 over the NUL-joined sorted paths — order-insensitive, empty set
-    has its own (deterministic) digest.
+    has its own (deterministic) digest. The plan carries RAW path identities
+    (surrogateescape), so the encoding must round-trip them — a non-UTF-8
+    name must not crash approve/commit.
     """
     h = hashlib.sha256()
     for name in sorted(files):
-        h.update(name.encode("utf-8"))
+        h.update(name.encode("utf-8", errors="surrogateescape"))
         h.update(b"\0")
     return h.hexdigest()
 
 
-def _read_verified_sha(project_dir: Path, todo_id: str) -> str | None:
+def read_verified_sha(project_dir: Path, todo_id: str) -> str | None:
     """The stored VERIFIED-{todo_id}.sha fingerprint.
 
     "" when the approve carried no fingerprint (file absent — nothing to
     re-check), None when the file exists but could not be read (fail
     closed), the fingerprint otherwise.
+
+    Public (architect-review M8): the verify wait keys its stale-APPROVE
+    cache on this value, so it must read the SAME fingerprint the binding
+    validator reads — not reach into a private helper of this module.
     """
     verified: str | None = ""
     if todo_id:
@@ -327,7 +331,7 @@ def refresh_verified_sha(plan: CommitPlan, project_dir: Path) -> CommitPlan:
     itself stays in :func:`fingerprint_refusal` (one mechanism, no
     duplicate check).
     """
-    return replace(plan, verified_sha=_read_verified_sha(project_dir, plan.todo_id))
+    return replace(plan, verified_sha=read_verified_sha(project_dir, plan.todo_id))
 
 
 def build_commit_plan(
@@ -358,7 +362,7 @@ def build_commit_plan(
     if state and state.get("active"):
         generation = run_state.generation_of(state)
 
-    verified = _read_verified_sha(project_dir, todo_id)
+    verified = read_verified_sha(project_dir, todo_id)
 
     if baseline_sha:
         candidate, refusal = _candidate_plan(project_dir, baseline_sha, todo_id)
@@ -387,7 +391,7 @@ def build_commit_plan(
         todo_id=todo_id,
         generation=generation,
         verified_sha=verified,
-        files=tuple(_all_changed_files(project_dir)),
+        files=tuple(commit_delta.worktree_file_set(project_dir)),
     )
 
 
@@ -700,7 +704,12 @@ def preexisting_approval_status(
     (the pipeline died between the approval and its consumption — the
     restart-recovery case) drops the file by mtime (AUD04-04). This helper
     answers whether that drop is right, using the same fields and the same
-    validator the commit gate enforces (M2.1, :func:`binding_refusal`):
+    validator the commit gate enforces — M2.1 (:func:`binding_refusal`) AND
+    the R2.4 candidate binding (:func:`candidate_refusal`, M8/PA-A: the
+    docstring promises «the same validator the gate enforces», and the gate
+    refuses on an invalidated candidate too — an approval whose candidate
+    moved (HEAD, contract, content, environment) must not be consumed
+    downstream by wait_event/supervisor as valid either:
 
     - ``("valid", "")`` — the signal carries a binding and it matches the
       current attempt: the ACTIVE run's generation, the stored verified
@@ -737,7 +746,19 @@ def preexisting_approval_status(
             "active run — no run is active now"
         )
     plan = build_commit_plan(project_dir, todo_id, baseline_sha)
+    if plan.refusal:
+        # M5 (REVIEW виток 10): report the build refusal FIRST — passing
+        # the empty ``candidate_tree`` of a refused plan to the validator
+        # produced a misleading "candidate content changed" instead of the
+        # real reason (gitlink/sparse/mixed rename).
+        return "stale", plan.refusal
     reason = binding_refusal(plan, project_dir, "APPROVE")
+    if reason:
+        return "stale", reason
+    # PA-A (M8): the candidate binding is part of «the same validator» —
+    # an approved candidate that moved (HEAD, contract, content, env) is
+    # stale for the wait consumers exactly as it is refused by the gate.
+    reason = candidate_refusal(plan, project_dir)
     if reason:
         return "stale", reason
     return "valid", ""

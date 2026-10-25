@@ -323,6 +323,52 @@ def open_managed(
             os.close(f)
 
 
+def managed_mkdir(path: Path, *, root: Path | None = None) -> None:
+    """Create a managed directory — no-follow on every component.
+
+    Replaces a bare ``Path.mkdir(parents=True, exist_ok=True)`` at a writer
+    whose directory lives under a symlink-reachable ``.agentic`` (audit
+    0239): a symlinked component sends the new directory outside the
+    project, and ``mkdir`` happily follows it. Components are opened
+    ``O_DIRECTORY|O_NOFOLLOW`` from the project root, the leaf is created
+    with ``mkdirat`` on the verified parent and then re-opened with
+    ``O_NOFOLLOW`` — a link swapped in on any component aborts before the
+    target directory appears; an existing leaf that is not a real directory
+    is refused too.
+
+    ``root`` defaults to :func:`agentic_root_for` of the target — never
+    "skip the check".
+    """
+    require_posix("create managed directory")
+    if root is None:
+        root = agentic_root_for(path)
+    assert_no_symlink_escape(path, root=root)
+    if path == root:
+        return
+    dir_fd, dir_fds = _open_dir_chain(root, path, create=True)
+    try:
+        try:
+            os.mkdir(path.name, 0o700, dir_fd=dir_fd)
+        except FileExistsError:
+            pass
+        try:
+            leaf = os.open(
+                path.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise ManagedPathError(
+                    f"managed path component is not a directory: {path.name}"
+                ) from exc
+            raise
+        os.close(leaf)
+    finally:
+        for f in dir_fds:
+            os.close(f)
+
+
 def managed_write_text(
     path: Path,
     content: str,
@@ -330,6 +376,8 @@ def managed_write_text(
     root: Path,
     mode: int = 0o600,
     encoding: str = "utf-8",
+    durable: bool = False,
+    errors: str = "strict",
 ) -> None:
     """Atomically write ``content`` to a managed path — no-follow all along.
 
@@ -341,6 +389,13 @@ def managed_write_text(
     before a single byte lands. Missing directories are created through
     ``mkdirat`` on the already-verified parent — never a path ``mkdir``
     that could follow a link outward.
+
+    ``durable`` (TODO-0227 REVIEW F1): fsync the file before the rename and
+    the already-verified directory fd after it, so the write survives a
+    HOST crash, not merely a process crash. Off by default — the historical
+    bar for log/report writers stays as it was; the state-store JSON
+    publisher opts in (it used to get this from
+    ``_atomic.atomic_write_text(durable=True)``).
     """
     require_posix("write managed file")
     assert_no_symlink_escape(path, root=root)
@@ -355,13 +410,23 @@ def managed_write_text(
         )
         try:
             os.fchmod(fd, mode)
-            with os.fdopen(fd, "w", encoding=encoding) as f:
+            with os.fdopen(fd, "w", encoding=encoding, errors=errors) as f:
+                fd = -1  # fdopen owns it now
                 f.write(content)
+                if durable:
+                    f.flush()
+                    os.fsync(f.fileno())
+            os.replace(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         except Exception:
+            with contextlib.suppress(OSError):
+                os.close(fd)
             with contextlib.suppress(OSError):
                 os.unlink(tmp_name, dir_fd=dir_fd)
             raise
-        os.replace(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        if durable:
+            # The rename is durable only once the directory entry is fsynced.
+            with contextlib.suppress(OSError):
+                os.fsync(dir_fd)
     finally:
         for f in dir_fds:
             os.close(f)
@@ -377,5 +442,6 @@ __all__ = [
     "assert_managed_dir",
     "open_append_log",
     "open_managed",
+    "managed_mkdir",
     "managed_write_text",
 ]

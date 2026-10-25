@@ -380,7 +380,7 @@ class TestDispatchCarryOverParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -420,7 +420,7 @@ class TestDispatchCarryOverParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -431,7 +431,7 @@ class TestDispatchCarryOverParam:
     def test_error_propagates(self, mcp_project, monkeypatch):
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             raise api.AwfApiError("REJECT-TODO-0001.files not found")
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
@@ -475,7 +475,7 @@ class TestDispatchIncludeUntrackedParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -516,7 +516,7 @@ class TestDispatchIncludeUntrackedParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -554,7 +554,7 @@ class TestDispatchAllowMismatchParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["allow_mismatch"] = allow_mismatch
             return _R()
 
@@ -595,7 +595,7 @@ class TestDispatchAllowMismatchParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None):
+                          allow_mismatch=None, source_ref=None):
             captured["allow_mismatch"] = allow_mismatch
             return _R()
 
@@ -1153,6 +1153,42 @@ class TestWaitForEventClamp:
         assert result["event_type"] == "done"
         assert "awf_dispatch_todo" in result["next_action"]
         assert "awf_run_next" not in result["next_action"]
+
+    def test_engine_dead_keeps_api_next_action(self, monkeypatch):
+        """TODO-0242 REVIEW (F9): ``engine_dead`` carries the resume command
+        from the API (A.3). The wrapper used to overwrite it with the generic
+        run-loop text, so the supervisor kept waiting on a dead engine."""
+        advice = "awf_continue(todo_id='TODO-0001')"
+
+        def fake_wait(project_dir, *, timeout, actionable_only=False):
+            class _R:
+                def as_dict(self):
+                    return {"event_type": "engine_dead", "message": "engine is dead",
+                            "state_snapshot": {}, "suggested_timeout": 60,
+                            "next_action": advice}
+
+            return _R()
+
+        monkeypatch.setattr(api, "wait_for_event", fake_wait)
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "engine_dead"
+        assert advice in result["next_action"]
+        assert "Continue the run loop" not in result["next_action"]
+
+    def test_engine_dead_without_api_advice_falls_back_to_resume(self, monkeypatch):
+        """F9 fallback: an engine_dead result with no next_action still must
+        not advise waiting — the table names awf_continue."""
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("engine_dead"))
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
+
+        assert result["event_type"] == "engine_dead"
+        assert "awf_continue" in result["next_action"]
+        assert "Continue the run loop" not in result["next_action"]
 
 
 class TestWaitForEventCapNote:

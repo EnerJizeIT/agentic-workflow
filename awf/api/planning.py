@@ -19,9 +19,9 @@ from typing import Any
 
 import yaml
 
-from .._atomic import atomic_write_text
+from .._atomic import MODE_OWNER_EDITABLE
 from ._errors import AwfApiError
-from ._helpers import require_agentic
+from ._helpers import managed_write_api_text, require_agentic
 from ._results import ApplyIncrementPlanResult
 
 
@@ -82,7 +82,12 @@ def apply_increment_plan(
         frontmatter_data, default_flow_style=False, allow_unicode=True, sort_keys=False
     ) + "---\n\n"
 
-    atomic_write_text(plan_path, frontmatter + plan_markdown.lstrip() + "\n")
+    managed_write_api_text(
+        plan_path,
+        frontmatter + plan_markdown.lstrip() + "\n",
+        operation="apply increment plan",
+        mode=MODE_OWNER_EDITABLE,
+    )
 
     return ApplyIncrementPlanResult(
         plan_path=str(plan_path),

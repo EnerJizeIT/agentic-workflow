@@ -144,6 +144,76 @@ def _populate_pipeline_compose(
     return result
 
 
+def _preview_pipeline_name(project_dir: Path | None) -> str:
+    """The pipeline name a submit writes to (config default, else default)."""
+    if project_dir is None:
+        return "default"
+    try:
+        from awf.pipeline import active_pipeline_name
+
+        return active_pipeline_name(project_dir)
+    except Exception as e:  # a broken config must not break opening the form
+        log.warning("project-setup preview: active pipeline name: %s", e)
+        return "default"
+
+
+def _populate_flow_variant_previews(project_dir: Path | None) -> dict[str, str]:
+    """The exact text each built-in flow variant writes.
+
+    The form's radio for "Полная проверка" must show the template that will
+    actually land in ``.agentic/pipelines/`` — the same builder as the write
+    path (``pipeline_variant_yaml_text``), never a second rendering.
+    """
+    result: dict[str, str] = {}
+    try:
+        from awf.api.setup import (
+            BUILTIN_PIPELINES,
+            pipeline_variant_yaml_text,
+            variant_unavailable_roles,
+        )
+    except ImportError as e:
+        log.warning("flow variant previews unavailable: %s", e)
+        return result
+    name = _preview_pipeline_name(project_dir)
+    for variant in BUILTIN_PIPELINES:
+        try:
+            # U1: a variant whose stage roles cannot be resolved
+            # (no role file, no package template to materialize) is hidden —
+            # offering it would write a pipeline that dies at runtime.
+            if project_dir is not None and variant_unavailable_roles(
+                variant, project_dir
+            ):
+                log.info(
+                    "flow variant %r hidden: unavailable role(s)", variant
+                )
+                continue
+            result[variant] = pipeline_variant_yaml_text(variant, name=name)
+        except (ValueError, OSError) as e:
+            log.warning("flow variant preview %r: %s", variant, e)
+    return result
+
+
+def _populate_flow_variant_labels(
+    flow_variants: dict[str, str],
+) -> dict[str, str]:
+    """Human labels for the variants the form can actually offer.
+
+    REVIEW W5: labels come from the same registry as the previews
+    (``BUILTIN_PIPELINES``), narrowed to the variants present in
+    ``flow_variants`` — the radio never carries a second hardcoded list.
+    """
+    try:
+        from awf.api.setup import BUILTIN_PIPELINES
+    except ImportError as e:
+        log.warning("flow variant labels unavailable: %s", e)
+        return {}
+    return {
+        variant: BUILTIN_PIPELINES[variant]
+        for variant in flow_variants
+        if variant in BUILTIN_PIPELINES
+    }
+
+
 def _populate_project_setup_preview(
     data: dict[str, Any],
     project_dir: Path | None,
@@ -172,14 +242,7 @@ def _populate_project_setup_preview(
     if not isinstance(team, list) or not team:
         return result
 
-    name = "default"
-    if project_dir is not None:
-        try:
-            from awf.pipeline import active_pipeline_name
-
-            name = active_pipeline_name(project_dir)
-        except Exception as e:  # a broken config must not break opening the form
-            log.warning("project-setup preview: active pipeline name: %s", e)
+    name = _preview_pipeline_name(project_dir)
 
     try:
         from awf.api.setup import pipeline_yaml_text
@@ -348,6 +411,15 @@ async def open_form(
     if template == "project-setup":
         pipeline_preview = _populate_project_setup_preview(data, project_dir_resolved)
 
+    # The built-in flow variants the form offers ("Полная проверка"). Their
+    # text is independent of the team — a variant replaces the team
+    # composition, so the preview must switch to it.
+    flow_variants: dict[str, str] = {}
+    flow_variant_labels: dict[str, str] = {}
+    if template == "project-setup":
+        flow_variants = _populate_flow_variant_previews(project_dir_resolved)
+        flow_variant_labels = _populate_flow_variant_labels(flow_variants)
+
     try:
         rendered = render_template(env, template, {
             **data,
@@ -366,6 +438,9 @@ async def open_form(
             **pipeline_compose,
             # REPORTS33 (TODO-0209): the composition preview (project-setup).
             "pipeline_preview": pipeline_preview,
+            # Built-in flow variant previews (project-setup).
+            "flow_variants": flow_variants,
+            "flow_variant_labels": flow_variant_labels,
         })
     except TemplateNotFound:
         return {

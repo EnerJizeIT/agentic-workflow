@@ -1,0 +1,43 @@
+# Базовый набор проверок завершения (DoD) — одинаковый для каждого юнита.
+#
+# Схема пункта: id / text / probe / expect (необязателен) / classes (необязателен).
+# Пробы — только структурные и дешёвые: они не доказывают работу, но ловят
+# порванный процесс (нет файла юнита, нет бейзлайна, не git-репозиторий).
+# Плейсхолдер {todo_id} подставляется в аргументы пробы.
+items:
+  - id: base-todo-file
+    text: Юнит задиспатчен — его TODO лежит в inbox
+    probe:
+      type: file_exists
+      path: .agentic/inbox/{todo_id}.md
+
+  - id: base-baseline-sha
+    text: Бейзлайн снят до работы — есть SHA для prove-red и диффа
+    probe:
+      type: file_exists
+      path: .agentic/context/BASELINE-{todo_id}.sha
+
+  - id: base-agentic-config
+    text: Конфиг проекта на месте
+    probe:
+      type: file_exists
+      path: .agentic/config.yaml
+
+  - id: base-context-dir
+    text: Каталог артефактов контекста на месте
+    probe:
+      type: file_exists
+      path: .agentic/context
+
+  - id: base-inbox-dir
+    text: Каталог входящих юнитов на месте
+    probe:
+      type: file_exists
+      path: .agentic/inbox
+
+  - id: base-git-repo
+    text: Проект — рабочий git-репозиторий (дифф и коммит возможны)
+    probe:
+      type: command_rc
+      argv: ["git", "status", "--porcelain"]
+    expect: 0

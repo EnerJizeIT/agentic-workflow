@@ -1,16 +1,16 @@
-"""ORCH M1.4 (TODO-0131): шиппящийся шаблон супервизора и корневое зеркало.
+"""ORCH M1.4 (TODO-0131): шиппящийся шаблон супервизора.
 
 До: копия, шиппящаяся с пакетом (``awf/templates/roles/supervisor/**``),
-и корневое зеркало (``templates/roles/supervisor/**`` — его читает
-собственный догфуд проекта первым) не имели механической проверки
-синхронности: расхождение между двумя копиями замечалось вручную
-(противоречие «do not run tests manually» в ``_core.md`` против
-требования запустить проверки на verify — повторная проверка 27.09,
-16-supervisor.md п.3).
+и корневое зеркало не имели механической проверки синхронности:
+расхождение между двумя копиями замечалось вручную (противоречие «do not
+run tests manually» в ``_core.md`` против требования запустить проверки на
+verify — повторная проверка 27.09, 16-supervisor.md п.3).
 
-Покрывают:
-- test_shipped_supervisor_templates_match_root_mirror — файл в файл
-  идентичны (включая полный supervisor.md)
+TODO-0230 (Y1): корневое зеркало и симлинк удалены — источник один,
+пакетный. Тест синхронности копий больше не нужен.
+
+Покрывает:
+- test_shipped_supervisor_templates_present — пакетный набор на месте
 - test_full_supervisor_does_not_contradict_compact_verify — полный
   supervisor.md несёт требование независимой verify, а компактный
   ``_core.md`` не несёт запрета ручных проверок (иначе полный и
@@ -23,7 +23,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 TEMPLATES = REPO_ROOT / "awf" / "templates"
-MIRROR = REPO_ROOT / "templates"
 
 # Те же детекторы, что в
 # tests/negative/test_verify_prompt_no_contradiction.py
@@ -42,17 +41,13 @@ def _dir_files(base: Path) -> dict[str, str]:
     return {p.name: p.read_text(encoding="utf-8") for p in sorted(base.glob("*.md"))}
 
 
-def test_shipped_supervisor_templates_match_root_mirror():
-    """Шиппящаяся копия и корневое зеркало идентичны файл в файл."""
+def test_shipped_supervisor_templates_present():
     shipped = _dir_files(TEMPLATES / "roles" / "supervisor")
-    mirrored = _dir_files(MIRROR / "roles" / "supervisor")
-    assert shipped == mirrored, (
-        "shipped/root mirror drift: "
-        f"shipped={sorted(shipped)} mirrored={sorted(mirrored)}"
+    assert "phase-verify.md" in shipped
+    assert (TEMPLATES / "roles" / "supervisor.md").is_file()
+    assert not (REPO_ROOT / "templates").exists(), (
+        "repo-root templates/ copy is back — the package is the only source"
     )
-    full_shipped = (TEMPLATES / "roles" / "supervisor.md").read_text(encoding="utf-8")
-    full_mirror = (MIRROR / "roles" / "supervisor.md").read_text(encoding="utf-8")
-    assert full_shipped == full_mirror, "supervisor.md shipped/root copies differ"
 
 
 def test_full_supervisor_does_not_contradict_compact_verify():

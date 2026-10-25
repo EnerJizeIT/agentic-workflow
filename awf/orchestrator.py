@@ -128,6 +128,36 @@ def _apply_pipeline_snapshot(
 
 
 def run_pipeline(args: Any) -> int:
+    """TODO-0241: wrap the loop with the engine-liveness record.
+
+    A run of the engine is visible even when it dies without a signal:
+    ``engine.heartbeat`` is refreshed by the loop/watchdog and
+    ``ENGINE-EXIT-<ts>-<pid>[-n].md`` is written on every exit path (normal,
+    rc, exception, SIGTERM/SIGINT, parent death). Diagnostics never stop the
+    pipeline: a failed write degrades to a log line.
+    """
+    from ._engine_liveness import EngineLiveness
+
+    project_dir = Path(getattr(args, "project_dir", ".")).resolve()
+    # Construction is side-effect free; START is the implementation's call,
+    # after the project check and the pipeline definition validated. A
+    # refused launch (no .agentic, bad YAML, missing file) therefore leaves
+    # no engine artifacts: ``finish`` on a never-started record is a no-op.
+    # This used to be a second ".agentic exists?" precondition here — one
+    # owner (the implementation) is enough.
+    liveness = EngineLiveness(project_dir, cfg_mod.load(project_dir))
+    rc = 1
+    try:
+        rc = _run_pipeline_impl(args, liveness)
+    except BaseException:
+        liveness.note_exception()
+        raise
+    finally:
+        liveness.finish(rc)
+    return rc
+
+
+def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
     """Execute the pipeline and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
     agentic = paths.agentic_dir(project_dir)
@@ -192,6 +222,12 @@ def run_pipeline(args: Any) -> int:
     if not stages:
         print(f"ERROR: No stages found in {pipeline_file}")
         return 1
+
+    # TODO-0241: the engine is live from here — heartbeat + exit record.
+    # Everything above is definition validation and must stay side-effect
+    # free (the "mistyped YAML → no side effects" acceptance test).
+    if liveness is not None:
+        liveness.start()
 
     # ORCH M3.3: the unit runs on the pipeline definition it started with.
     # Every launch path (awf_start / awf_run_next / awf_continue, foreground
@@ -301,6 +337,8 @@ def run_pipeline(args: Any) -> int:
                 checkpoint_pending=False, checkpoint_port=None,
                 checkpoint_form_url=None,
             )
+            if liveness is not None:
+                liveness.on_stage(s_name, current_todo)
             from .api.dashboard import generate_dashboard
             generate_dashboard(project_dir)
 

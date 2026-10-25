@@ -50,11 +50,11 @@ from awf.api._errors import AwfApiError
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # TODO-0153 (PR #28 CI): a clean CI checkout has NO project `.agentic/`
-# (gitignored) — only the SHIPPED files (template + its mirror) are
-# mandatory; the project's own role file is checked only when present.
+# (gitignored) — only the SHIPPED file is mandatory; the project's own role
+# file is checked only when present. TODO-0230 (Y1): the package template is
+# the single shipped copy (the repo-root mirror is gone).
 SHIPPED_QA_ROLE_FILES = (
     REPO_ROOT / "awf" / "templates" / "roles" / "agent-qa-review.md",
-    REPO_ROOT / "templates" / "roles" / "agent-qa-review.md",
 )
 PROJECT_QA_ROLE_FILE = REPO_ROOT / ".agentic" / "roles" / "agent-qa-review.md"
 

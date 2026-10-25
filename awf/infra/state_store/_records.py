@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .. import managed_fs
 from ._errors import StateStoreError
 from ._io import atomic_write_json, payload_digest, records_dir
 from ._lock import project_lock
@@ -77,22 +78,51 @@ def gc_records(project_dir: str | Path, *, dry_run: bool = True) -> list[str]:
     is only reachable once that transaction commits, so a GC that read the
     snapshot outside the lock could delete a record the same instant it was
     published. Never call this while already holding the lock.
+
+    ``dry_run=True`` (the default) only LISTS the garbage: it has no effect,
+    so the managed-path barrier is skipped and a symlinked ``records``
+    yields a list instead of ``ManagedPathError`` (REVIEW G4). The barrier
+    runs on the real pass, BEFORE the first ``unlink``; it also requires
+    POSIX (H1) — a platform without the no-follow primitives is refused.
     """
     with project_lock(project_dir):
         snap = read_snapshot(project_dir)
         if not snap.valid:
             return []
+        # TODO-0233 (M3b): the GC is a destructive walk over ``state/records``
+        # — a symlinked ``.agentic``/``state``/``records`` used to send the
+        # ``unlink`` outside the project (same S9-01 class). The no-follow
+        # check runs BEFORE the glob, so a refusal leaves the tree (and any
+        # canary outside) untouched. REVIEW G4: a dry run has no effect —
+        # the barrier belongs to the destructive pass only.
+        records = records_dir(project_dir)
+        root = managed_fs.agentic_root_for(records)
+        if not dry_run:
+            # H1 (TODO-0233, виток 4): the no-follow preflight needs POSIX —
+            # refuse the destructive pass on a weaker platform instead of
+            # silently losing the symlink guarantee (same policy as
+            # ``_wipe``/``_lease``). Still only on the real pass: a dry run
+            # has no effect and keeps listing (REVIEW G4).
+            managed_fs.require_posix("gc records")
+            managed_fs.assert_managed_dir(records, root=root)
         reachable = {
             ref.get("digest")
             for ref in snap.data.get("records", [])
             if isinstance(ref, dict)
         }
-        removed: list[str] = []
-        for path in records_dir(project_dir).glob("*/*.json"):
-            if path.stem in reachable:
-                continue
-            removed.append(str(path))
-            if not dry_run:
+        # M3b (architect-review): ``records/<kind>`` is the component the
+        # glob descends INTO — a symlinked kind directory sends the unlink
+        # outside exactly like a symlinked ``records`` leaf. Collect the
+        # garbage first, verify every parent, and only then remove: a
+        # refusal leaves the tree untouched (no half-run GC).
+        garbage = [
+            path for path in records.glob("*/*.json") if path.stem not in reachable
+        ]
+        removed = [str(path) for path in garbage]
+        if not dry_run:
+            for parent in {path.parent for path in garbage}:
+                managed_fs.assert_no_symlink_escape(parent, root=root)
+            for path in garbage:
                 with contextlib.suppress(OSError):
                     path.unlink()
         return removed

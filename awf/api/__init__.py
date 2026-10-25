@@ -58,6 +58,7 @@ from ._results import (
     ApplyProjectSetupResult,
     ApproveResult,
     BaselineResult,
+    BlockedDraftResult,
     DiscardRoleDraftResult,
     DispatchTodoResult,
     InitResult,
@@ -68,6 +69,7 @@ from ._results import (
     ResetResult,
     RestoreResult,
     RetireTodoResult,
+    ReviewAppendResult,
     RoleDraftsResult,
     RollbackResult,
     RunFinishResult,
@@ -91,7 +93,14 @@ from ._stack import derive_project_name, detect_stack
 from .brief import brief
 from .context import load_supervisor_context
 from .dispatch import dispatch_todo
-from .hygiene import remove_todo, retire_todo, unblock_todo, update_todo
+from .hygiene import (
+    blocked_draft,
+    remove_todo,
+    retire_todo,
+    review_append,
+    unblock_todo,
+    update_todo,
+)
 from .lifecycle import (
     get_report,
     get_status,
@@ -139,6 +148,7 @@ from .run import (
     supervisor_beat,
 )
 from .setup import apply_project_setup
+from .supervise import supervise_run
 from .wait_event import (
     TRANSPORT_CAP,
     WAIT_CAP_MARGIN,
@@ -176,6 +186,7 @@ __all__ = [
     "StartResult",
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
+    "BlockedDraftResult",
     "DispatchTodoResult",
     "SupervisorContextResult",
     "ApplyIncrementPlanResult",
@@ -192,6 +203,7 @@ __all__ = [
     "UpdateTodoResult",
     "RemoveTodoResult",
     "RetireTodoResult",
+    "ReviewAppendResult",
     "WritePipelineResult",
     "ListPipelinesResult",
     "FeedbackResult",
@@ -230,6 +242,8 @@ __all__ = [
     "unblock_todo",
     "remove_todo",
     "retire_todo",
+    "review_append",
+    "blocked_draft",
     "update_todo",
     # Autonomous run (забег)
     "run_start",
@@ -239,6 +253,8 @@ __all__ = [
     "run_brief",
     "run_note",
     "run_revise",
+    # TODO-0242 (P0-2): restart a dead engine within a bounded budget
+    "supervise_run",
     # TODO-0178: the supervisor heartbeat (owner-idle → downtime)
     "supervisor_beat",
     # ORCH M5.2: service run (role creation during the main run)

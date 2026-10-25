@@ -22,7 +22,6 @@ Source: awf-feature-20261007-workflow-fayly-pipelines-roles-dobavlennye-v-hode-p
 """
 from __future__ import annotations
 
-import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -67,25 +66,26 @@ def uncommitted_workflow_files(project_dir: str | Path) -> list[str]:
     project_dir = Path(project_dir).resolve()
     if not git_utils.is_git_repo(project_dir):
         return []
+    from ..infra.git_model import GitModelError, GitRepository, display_path
+
+    repo = GitRepository(project_dir)
     files: set[str] = set()
     # Каждый git-вызов деградирует отдельно: статус не должен падать из-за
-    # git (зависший git — timeout, битое репо — rc 128).
+    # git (зависший git — timeout, битое репо — rc 128). Пути читает модель
+    # (NUL-протокол + pathspec): прежний ``-z`` через ``git_stdout``
+    # декодировался строгим UTF-8, и имя не в UTF-8 молча терялось вместе
+    # со всей пачкой.
     try:
-        changed = git_utils.git_stdout(
-            project_dir, "diff", "--name-only", "-z", "HEAD", "--", *WORKFLOW_PATHS,
-            check=False,
+        files.update(
+            display_path(p) for p in repo.changed_paths("HEAD", WORKFLOW_PATHS)
         )
-        files.update(p for p in changed.split("\0") if p)
-    except (subprocess.SubprocessError, OSError):
+    except (GitModelError, OSError):
         pass
     try:
-        untracked = git_utils.git_stdout(
-            project_dir, "ls-files", "--others", "--exclude-standard", "-z", "--",
-            *WORKFLOW_PATHS,
-            check=False,
+        files.update(
+            display_path(p) for p in repo.untracked_paths(WORKFLOW_PATHS)
         )
-        files.update(p for p in untracked.split("\0") if p)
-    except (subprocess.SubprocessError, OSError):
+    except (GitModelError, OSError):
         pass
     return sorted(files)
 

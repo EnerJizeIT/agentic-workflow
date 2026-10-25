@@ -94,6 +94,18 @@ class TestReconcileDedupSignals:
         assert not (inbox / "ACK-TODO-0001.ready").exists()
         assert (inbox / "APPROVE-TODO-0001.ready").exists()
 
+    def test_legacy_ack_is_noticed_next_to_a_canonical_approve(self, project):
+        """Один дом маппинга сигналов (architect-review M8): ACK в короткой
+        легаси-форме + APPROVE в канонической — это дубль одного решения."""
+        inbox = project / ".agentic/inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        _make_todo(project, "TODO-0009")
+        (inbox / "ACK-0009.ready").write_text("")
+        (inbox / "APPROVE-TODO-0009.ready").write_text("")
+        _reconcile(project)
+        assert not (inbox / "ACK-0009.ready").exists()
+        assert (inbox / "APPROVE-TODO-0009.ready").exists()
+
     def test_preserves_ack_without_approve(self, project):
         inbox = project / ".agentic/inbox"
         inbox.mkdir(parents=True, exist_ok=True)

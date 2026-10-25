@@ -38,6 +38,22 @@ class TestParseTodoContract:
         assert contract == {"verify": ["pytest tests/ -q"]}
         assert unknown == []
 
+    def test_block_after_the_title_heading(self):
+        """A TODO usually opens with ``# TODO — <title>``; the block below it counts."""
+        content = (
+            "# TODO — task\n\n"
+            "---\nwave: w1\n---\n\n"
+            "## Приёмка\n- one\n"
+        )
+        contract, unknown = parse_todo_contract(content)
+        assert contract == {"wave": "w1"}
+        assert unknown == []
+
+    def test_a_horizontal_rule_below_the_body_is_not_a_block(self):
+        content = "# TODO — task\n\nIntro text.\n\n---\n\nMore.\n"
+        contract, _ = parse_todo_contract(content)
+        assert contract is None
+
     def test_valid_block_all_keys(self):
         content = (
             "---\n"
@@ -88,6 +104,21 @@ class TestParseTodoContract:
             raise AssertionError("expected ValueError for non-mapping block")
         except ValueError as e:
             assert "mapping" in str(e)
+
+    def test_flake_accepts_on_and_off(self):
+        for raw, expected in (("on", "on"), ("off", "off"), ("ON", "on")):
+            content = f'---\nverify: ["pytest -q"]\nflake: {raw}\n---\nbody\n'
+            contract, unknown = parse_todo_contract(content)
+            assert contract["flake"] == expected
+            assert unknown == []
+
+    def test_flake_invalid_value_raises(self):
+        content = '---\nverify: ["pytest -q"]\nflake: maybe\n---\nbody\n'
+        try:
+            parse_todo_contract(content)
+            raise AssertionError("expected ValueError for an invalid flake value")
+        except ValueError as e:
+            assert "'flake' must be 'on' or 'off'" in str(e)
 
     def test_verify_not_a_list_raises(self):
         content = '---\nverify: "pytest -q"\n---\nbody\n'

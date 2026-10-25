@@ -170,11 +170,12 @@ class TestRunVerifyCommands:
         cfg = {"verification": {"test_cmd": "/bin/true; /bin/false"}}
         assert verify.run_verify_commands(cfg) is False
 
-    def test_shell_injection_semicolon_as_argument(self) -> None:
-        """echo hello; /bin/true → shlex splits to ['echo', 'hello;', '/bin/true'].
-        echo succeeds with those args; /bin/true is NOT run as separate command."""
+    def test_shell_operator_semicolon_refused(self) -> None:
+        """I1 (REVIEW виток 6): a shell operator outside quotes in a config
+        command is a typed refusal — the command never runs (no literal-arg
+        false green). The old behavior treated ``;`` as a plain argument."""
         cfg = {"verification": {"test_cmd": "echo hello; /bin/true"}}
-        assert verify.run_verify_commands(cfg) is True
+        assert verify.run_verify_commands(cfg) is False
 
     def test_empty_cmd_after_split(self) -> None:
         """Command that is only whitespace → shlex.split returns [] → False."""

@@ -900,7 +900,13 @@ def _verify_commit_shas(project_dir: Path) -> dict[str, str]:
 
     try:
         out = git_utils.git_stdout(
-            project_dir, "log", "--format=%h %s", "-n", "300", check=False
+            project_dir,
+            "log",
+            "--format=%h %s",
+            "-n",
+            "300",
+            check=False,
+            errors="surrogateescape",
         )
     except (OSError, RuntimeError, subprocess.TimeoutExpired):
         return {}

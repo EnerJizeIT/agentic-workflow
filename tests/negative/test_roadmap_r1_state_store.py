@@ -551,16 +551,19 @@ def test_state_publish_path_is_durable(tmp_path, monkeypatch):
     fix. A regression that silently drops the flag reverts the bar, so this
     pins it. RED if any state write publishes non-durable."""
     ss = _store()
-    from awf.infra.state_store import _io
+    from awf.infra import managed_fs
 
     seen: list[bool] = []
-    real = _io.atomic_write_text
+    real = managed_fs.managed_write_text
 
-    def spy(path, content, encoding="utf-8", mode=None, *, durable=False):
+    def spy(path, content, *, root, mode=0o600, encoding="utf-8", durable=False):
         seen.append(durable)
-        return real(path, content, encoding=encoding, mode=mode, durable=durable)
+        return real(
+            path, content, root=root, mode=mode, encoding=encoding,
+            durable=durable,
+        )
 
-    monkeypatch.setattr(_io, "atomic_write_text", spy)
+    monkeypatch.setattr(managed_fs, "managed_write_text", spy)
     proj = _project(tmp_path)
     ss.put_record(proj, "evidence", {"a": 1})
     ss.transact(proj, expected_revision=0, operation_id="op-durable",
