@@ -539,6 +539,69 @@ def test_queue_remove_of_a_started_element_is_a_conflict(tmp_path):
     assert any(c["todo_id"] == T1 for c in result.conflicts)
 
 
+def test_queue_remove_of_an_unknown_id_is_a_conflict(tmp_path):
+    """A remove must name an element that exists; the answer says so."""
+    from awf import api
+
+    project = _project(tmp_path)
+    _run_with_queue(project, [T1, T2])
+    result = api.run_revise(project, queue=[{"remove": T4}], key="rm-unknown")
+    assert result.action == "refused"
+    assert any("not in the run queue" in c["reason"] for c in result.conflicts)
+
+
+def test_queue_remove_twice_in_one_request_is_a_conflict(tmp_path):
+    from awf import api
+
+    project = _project(tmp_path)
+    _run_with_queue(project, [T1, T2])
+    result = api.run_revise(
+        project, queue=[{"remove": T1}, {"remove": T1}], key="rm-twice"
+    )
+    assert result.action == "refused"
+    assert any("removed twice" in c["reason"] for c in result.conflicts)
+
+
+def test_queue_replace_into_the_current_element_is_a_conflict(tmp_path):
+    from awf import api, run_state
+
+    project = _project(tmp_path)
+    _run_with_queue(project, [T1, T2])
+    state = run_state.read_run(project)
+    run_state.write_run(
+        project,
+        active=True,
+        queue=state["queue"],
+        index=1,
+        current=T1,
+        generation=state.get("generation", 1),
+    )
+    result = api.run_revise(
+        project, queue=[{"from": T2, "to": T1}], key="rep-current"
+    )
+    assert result.action == "refused"
+    assert any("current (in-flight)" in c["reason"] for c in result.conflicts)
+
+
+def test_queue_append_of_the_current_element_is_a_conflict(tmp_path):
+    from awf import api, run_state
+
+    project = _project(tmp_path)
+    _run_with_queue(project, [T1, T2])
+    state = run_state.read_run(project)
+    run_state.write_run(
+        project,
+        active=True,
+        queue=state["queue"],
+        index=1,
+        current=T1,
+        generation=state.get("generation", 1),
+    )
+    result = api.run_revise(project, queue=[{"todo_id": T1}], key="app-current")
+    assert result.action == "refused"
+    assert any("current (in-flight)" in c["reason"] for c in result.conflicts)
+
+
 # ─── (j) dispatch size warning ──────────────────────────────────────────
 
 
