@@ -22,6 +22,7 @@ from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tre
 from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ..signals import find_signal_file, short_id
+from ..todo_ids import is_valid_todo_id
 from ..verify import parse_argv
 from . import _lease, _liveness
 from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
@@ -316,6 +317,92 @@ def _armed_ack_file(inbox: Path, target: str) -> Path | None:
     except OSError:
         return None
     return None
+
+
+def _resume_target(project_dir: Path, pin: str = "", ack: str = "") -> str:
+    """The unit a launch resumes: explicit pin > ack > state > newest active.
+
+    ONE home for the priority (KAUD-8, RUN8 #1). Both the readiness gate and
+    the launch itself resolve through it: a second copy is how the gate ends
+    up checking a different unit than the one that starts.
+    """
+    if pin.strip():
+        return pin.strip()
+    if ack.strip():
+        return ack.strip()
+    state = read_state(project_dir) or {}
+    return str(state.get("todo_id") or "") or (todos.newest_active(project_dir) or "")
+
+
+def _spec_gate_for_launch(project_dir: Path, todo_id: str) -> str:
+    """SPEC IMP3 (K3): the readiness refusal for a launch, or ``""``.
+
+    The SAME predicate dispatch uses (``unit_contract.spec_package_gate``)
+    reads the unit's contract from its inbox TODO. A unit without
+    ``spec_package`` is untouched (legacy path) — AUD3: the key's presence
+    decides, so a legacy contract with an unrelated parse error keeps the
+    pre-unit behavior instead of a "spec gate" refusal. Once the unit
+    declares the package, any read/parse failure IS a readiness refusal: a
+    launch must never pass a unit whose package claims cannot be read.
+    Called BEFORE the lease, the PID and the stage.
+    """
+    if not todo_id:
+        return ""
+    path = paths.inbox(project_dir) / f"{todo_id}.md"
+    if not path.is_file():
+        return ""
+    from ..unit_contract import (
+        declares_spec_package,
+        parse_todo_contract,
+        spec_package_gate,
+    )
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return f"TODO {todo_id}: {e}"
+    if not declares_spec_package(content):
+        return ""
+    try:
+        contract, _unknown = parse_todo_contract(content)
+    except ValueError as e:
+        return f"TODO {todo_id}: {e}"
+    return spec_package_gate(project_dir, contract)
+
+
+def _spec_gate_refusal(gate_message: str) -> StartResult:
+    """The shared no-op answer for a readiness refusal (K3, D2).
+
+    Start and continue are the same refusal surface: one text, one shape.
+    """
+    return StartResult(
+        run_mode="noop",
+        run_id=None,
+        log_file=None,
+        exit_code=0,
+        message=f"Launch refused by the spec gate: {gate_message}",
+    )
+
+
+def _invalid_todo_refusal(surface: str, todo_id: str) -> StartResult:
+    """P3 (TODO-0257 REVIEW): refuse a malformed unit id BEFORE any stage.
+
+    The id becomes a path component and a report/journal string as soon as
+    the engine runs. An inbox file name is not validated by ``newest_active``
+    (``TODO-*.ready`` glob), so a non-UTF-8 name would reach the fail-closed
+    writers raw. The writers still survive a corrupted name (defence in
+    depth); the launch itself is refused here, like dispatch/run do.
+    """
+    return StartResult(
+        run_mode="noop",
+        run_id=None,
+        log_file=None,
+        exit_code=1,
+        message=(
+            f"Invalid TODO id for {surface}: {todo_id!r} "
+            "(expected TODO-NNNN)."
+        ),
+    )
 
 
 def _arm_ack_file(inbox: Path, ack: str) -> Path:
@@ -1573,6 +1660,17 @@ def start_pipeline(
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
 
+    # SPEC IMP3 (K3): the readiness gate for the selected unit, BEFORE the
+    # lease, the PID file and the first stage. A READY package is required
+    # only when the unit declares ``spec_package``; everything else keeps
+    # the pre-unit behavior.
+    launch_todo = (todo_id or "").strip() or (todos.newest_active(project_dir) or "")
+    if launch_todo and not is_valid_todo_id(launch_todo):
+        return _invalid_todo_refusal("start", launch_todo)
+    gate_message = _spec_gate_for_launch(project_dir, launch_todo)
+    if gate_message:
+        return _spec_gate_refusal(gate_message)
+
     # DF6-2: reconcile state before starting — archive completed TODOs,
     # clear stale PIDs, deduplicate signals. Only for background mode
     # (MCP/supervisor path). Foreground/CI tests may pre-create APPROVE
@@ -1874,6 +1972,18 @@ def continue_pipeline(
     # (topic-trainer incident 2026-09-23).
     explicit_pin = (todo_id or "").strip()
     ack_note = ""
+
+    # SPEC IMP3 (K3): the same readiness gate BEFORE the ACK is armed, the
+    # lease is taken and a stage is started. The resumed unit is resolved by
+    # the SAME helper the launch below uses — the gate never checks another
+    # unit than the one that starts.
+    resume_target = _resume_target(project_dir, explicit_pin, ack or "")
+    if resume_target and not is_valid_todo_id(resume_target):
+        return _invalid_todo_refusal("continue", resume_target)
+    gate_message = _spec_gate_for_launch(project_dir, resume_target)
+    if gate_message:
+        return _spec_gate_refusal(gate_message)
+
     if ack:
         if explicit_pin and explicit_pin != ack:
             # The explicit pin wins — but the ack answers ANOTHER unit;
@@ -2062,15 +2172,9 @@ def continue_pipeline(
         # exactly the unit to restart, whatever "newest active" says.
         # RUN8 #1: an ack pins its OWN unit (the answer belongs to exactly that
         # TODO) — priority: explicit todo_id > ack > state > newest_active.
+        # The gate above resolves through the SAME helper (one priority list).
         state = read_state(project_dir)
-        state_todo_id = state.get("todo_id") if state else None
-
-        current_todo = (
-            (todo_id or "").strip()
-            or (ack or "").strip()
-            or state_todo_id
-            or todos.newest_active(project_dir)
-        )
+        current_todo = _resume_target(project_dir, todo_id or "", ack or "")
         resolution_note = ""
 
         # Day-2 review follow-up: a REVIEW left by the supervisor (the process died

@@ -259,3 +259,94 @@ class TestDelivery:
         args = parser.parse_args(["commit-workflow", "--project-dir", "."])
         assert args.command == "commit-workflow"
         assert args.project_dir == "."
+
+
+class TestOpenWriteViolation:
+    """K5 (TODO-0257 P1): открытое нарушение записи держит и workflow-коммит.
+
+    ``build_commit_plan`` отказывает юнит-коммиту (TODO-0256), но
+    ``commit_workflow`` собирает свой план и обходил забор. Проверка стоит
+    в общей точке ``_commit_via_isolated_index`` — регресс на оба пути.
+    """
+
+    def test_open_violation_refuses_the_workflow_commit(self, wf_repo: Path):
+        from awf import stage_manifest
+
+        role = wf_repo / ".agentic" / "roles" / "evil.md"
+        role.write_text("# забракованная запись\n", encoding="utf-8")
+        stage_manifest.record_violation(
+            wf_repo,
+            "TODO-0100",
+            "worker",
+            allowlist=(".agentic/config.yaml",),
+            paths_outside=[".agentic/roles/evil.md"],
+        )
+        _pipeline_file(wf_repo)
+        head_before = _git(wf_repo, "rev-parse", "HEAD")
+
+        with pytest.raises(AwfApiError, match="open write violation"):
+            api.commit_workflow(wf_repo)
+
+        assert _git(wf_repo, "rev-parse", "HEAD") == head_before
+        history = _git(wf_repo, "log", "--all", "--format=%H", "--", ".agentic/roles/evil.md")
+        assert history == "", "the rejected write must not reach history"
+
+    def test_violation_outside_the_workflow_set_also_refuses(self, wf_repo: Path):
+        """K5: the gate is not about the plan's files — ANY open violation."""
+        from awf import stage_manifest
+
+        (wf_repo / "src").mkdir()
+        (wf_repo / "src" / "evil.py").write_text("secret = 1\n", encoding="utf-8")
+        stage_manifest.record_violation(
+            wf_repo,
+            "TODO-0100",
+            "worker",
+            allowlist=(".agentic/config.yaml",),
+            paths_outside=["src/evil.py"],
+        )
+        _pipeline_file(wf_repo)
+        head_before = _git(wf_repo, "rev-parse", "HEAD")
+
+        with pytest.raises(AwfApiError, match="open write violation"):
+            api.commit_workflow(wf_repo)
+
+        assert _git(wf_repo, "rev-parse", "HEAD") == head_before, (
+            "a violation on a non-workflow path withholds the workflow commit too"
+        )
+
+    def test_a_spent_record_does_not_block_the_workflow_commit(self, wf_repo: Path):
+        """A record whose rejected write is gone is spent — the commit goes on."""
+        from awf import stage_manifest
+
+        (wf_repo / "src").mkdir()
+        bad = wf_repo / "src" / "evil.py"
+        bad.write_text("rejected\n", encoding="utf-8")
+        stage_manifest.record_violation(
+            wf_repo,
+            "TODO-0100",
+            "worker",
+            allowlist=(".agentic/config.yaml",),
+            paths_outside=["src/evil.py"],
+        )
+        bad.write_text("rolled back\n", encoding="utf-8")
+        pipeline = _pipeline_file(wf_repo)
+
+        result = api.commit_workflow(wf_repo)
+
+        assert result.sha
+        assert _committed_files(wf_repo) == [".agentic/pipelines/a.yaml"]
+        assert bad.read_text(encoding="utf-8") == "rolled back\n"
+        assert pipeline.is_file()
+
+    def test_an_unreadable_record_fails_closed(self, wf_repo: Path):
+        """A corrupted trace file must not unlock a commit."""
+        record = wf_repo / ".agentic" / "context" / "WRITE-VIOLATION-TODO-0100.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text("{not json", encoding="utf-8")
+        _pipeline_file(wf_repo)
+        head_before = _git(wf_repo, "rev-parse", "HEAD")
+
+        with pytest.raises(AwfApiError, match="open write violation"):
+            api.commit_workflow(wf_repo)
+
+        assert _git(wf_repo, "rev-parse", "HEAD") == head_before

@@ -3332,6 +3332,11 @@ def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
         is_worker = st.role.strip().lower() != "supervisor"
         if is_worker:
             entry["on_blocked"] = "stop"
+            # TODO-0256 (K5): the service worker writes the role candidate
+            # AND project files, so its declared output cannot hold the
+            # whole allowlist. The opt-out is explicit and named here — no
+            # silent bypass in the engine.
+            entry["write_check"] = "off"
         if st is worker_stage:
             cand = _draft_candidate_rel_path(slug)
             # The unit's contract (TODO-0144 invariant 3): the candidate

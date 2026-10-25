@@ -316,6 +316,29 @@ _MD_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
 _MD_CHECKBOX_RE = re.compile(r"^\[[ xX]\]\s")
 
 
+def _split_source_ref(ref: str, label: str) -> tuple[str, str]:
+    """Split ``<file>#<section>``; both halves are required.
+
+    ONE parser for the legacy ``source_ref`` and the package links (K4):
+    two copies would drift on the edges (a missing ``#``, an empty half),
+    and this refusal is the unit's public message. ``label`` is the text
+    the refusal shows (the caller's original value).
+    """
+    if "#" not in ref:
+        raise AwfApiError(
+            f"source_ref {label!r}: expected '<file>#<section>' "
+            "(e.g. 'R2-GIT-OWNERSHIP.md#R2.5')"
+        )
+    file_part, section = ref.rsplit("#", 1)
+    file_part, section = file_part.strip(), section.strip()
+    if not file_part or not section:
+        raise AwfApiError(
+            f"source_ref {label!r}: both the file and the section are "
+            "required ('<file>#<section>')"
+        )
+    return file_part, section
+
+
 def _resolve_source_file(project_dir: Path, source_ref: str) -> tuple[Path, str]:
     """Resolve ``<file>#<section>`` to an existing file + the section name.
 
@@ -325,18 +348,7 @@ def _resolve_source_file(project_dir: Path, source_ref: str) -> tuple[Path, str]
     half of the reference is an error, not a silent no-op.
     """
     ref = str(source_ref or "").strip()
-    if "#" not in ref:
-        raise AwfApiError(
-            f"source_ref {source_ref!r}: expected '<file>#<section>' "
-            "(e.g. 'R2-GIT-OWNERSHIP.md#R2.5')"
-        )
-    file_part, section = ref.rsplit("#", 1)
-    file_part, section = file_part.strip(), section.strip()
-    if not file_part or not section:
-        raise AwfApiError(
-            f"source_ref {source_ref!r}: both the file and the section are "
-            "required ('<file>#<section>')"
-        )
+    file_part, section = _split_source_ref(ref, str(source_ref))
 
     candidate = Path(file_part)
     if candidate.is_absolute():
@@ -358,38 +370,44 @@ def _resolve_source_file(project_dir: Path, source_ref: str) -> tuple[Path, str]
     return path, section
 
 
-def _extract_source_section(
-    path: Path, section: str, source_ref: str
+def _read_section_body(
+    path: Path, text: str, section: str, label: str
 ) -> list[str]:
-    """Body lines of ``section`` in ``path``.
+    """Body lines of the exact heading ``section`` in ``text``.
 
-    Only an EXACT heading text (case-insensitive) matches — no first-word
-    fallback. Several headings carrying the same exact text are ambiguous:
-    the caller gets a refusal naming the line numbers instead of a silent
-    first hit. The heading walker lives in :mod:`awf._markdown`; the body runs
-    until the next heading of the same or a higher level, so nested
-    sub-sections stay inside. An unknown section is a refusal (no TODO, no
-    baseline).
+    ONE rule for the legacy ``source_ref`` (INV2) and the package links
+    (K4). Only an EXACT heading text (case-insensitive) matches — no
+    first-word fallback. Several headings carrying the same exact text are
+    ambiguous: the caller gets a refusal naming the line numbers instead of
+    a silent first hit. The body runs until the next heading of the same or
+    a higher level, so nested sub-sections stay inside. An unknown section
+    is a refusal (no TODO, no baseline).
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        raise AwfApiError(f"source_ref {source_ref!r}: cannot read {path}: {e}") from e
-
     hits = find_headings(text, section)
     if not hits:
         raise AwfApiError(
-            f"source_ref {source_ref!r}: section '{section}' not found in {path}"
+            f"source_ref {label!r}: section '{section}' not found in {path}"
         )
     if len(hits) > 1:
         places = ", ".join(f"line {index + 1}" for index, _ in hits)
         raise AwfApiError(
-            f"source_ref {source_ref!r}: section '{section}' is ambiguous — "
+            f"source_ref {label!r}: section '{section}' is ambiguous — "
             f"{len(hits)} headings match exactly ({places}) in {path}; make "
             "the heading unique or reference another section"
         )
     index, level = hits[0]
     return lines_below(text, index, level)
+
+
+def _extract_source_section(
+    path: Path, section: str, source_ref: str
+) -> list[str]:
+    """Read ``path`` and return the body of its exact heading ``section``."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise AwfApiError(f"source_ref {source_ref!r}: cannot read {path}: {e}") from e
+    return _read_section_body(path, text, section, source_ref)
 
 
 def _source_ref_block(section: str, body: list[str]) -> str:
@@ -417,6 +435,184 @@ def _source_ref_block(section: str, body: list[str]) -> str:
         out.append(line)
     payload = "\n".join(out).strip() or "_раздел пуст_"
     return f"## Первоисточник ({section})\n\n{payload}\n"
+
+
+def _spec_package_transfer(
+    project_dir: Path, package: str, refs: list[str]
+) -> str:
+    """K4: the ``## Пакет спецификации`` + ``## Первоисточник`` blocks.
+
+    The norm is a SNAPSHOT: the package summary (path, ``Пакет-sha``, six
+    revisions, every ID, the residual risks) plus one verbatim body per
+    link, in the declared order. Every refusal happens here, before any
+    side effect, and names the link that failed.
+    """
+    from ..spec_package import (
+        ROLES,
+        SpecHeader,
+        parse_coverage_matrix,
+        parse_spec_header,
+    )
+    from ..unit_contract import resolve_spec_package
+
+    package_dir, label = resolve_spec_package(project_dir, package)
+
+    layout_docs = {
+        role: package_dir / name
+        for role, name in _spec_document_names(package_dir).items()
+    }
+    texts: dict[str, str] = {}
+    headers: dict[str, SpecHeader] = {}
+    for role in ROLES:
+        path = layout_docs.get(role)
+        if path is None or not path.is_file():
+            raise AwfApiError(
+                f"spec_package {package!r}: no {role} document in {label}"
+            )
+        try:
+            texts[role] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise AwfApiError(
+                f"spec_package {package!r}: cannot read {path}: {e}"
+            ) from None
+        try:
+            headers[role] = parse_spec_header(
+                texts[role], role, path.relative_to(package_dir).as_posix()
+            )
+        except ValueError as e:
+            raise AwfApiError(f"spec_package {package!r}: {e}") from None
+
+    try:
+        rows = parse_coverage_matrix(texts["readiness"], f"{label}/readiness")
+    except ValueError as e:
+        raise AwfApiError(f"spec_package {package!r}: {e}") from None
+
+    readiness = headers["readiness"]
+    revisions = ", ".join(
+        f"`{headers[role].path}`={headers[role].revision}" for role in ROLES
+    )
+    block_lines = [
+        "## Пакет спецификации",
+        "",
+        f"- Путь: `{label}`",
+        f"- Пакет-sha: `{readiness.package_sha}`",
+        f"- Ревизии: {revisions}",
+        f"- ID: {', '.join(row.id for row in rows)}",
+    ]
+    risks = _residual_risks(texts)
+    if risks:
+        block_lines.extend(["- Остаточные риски:", ""])
+        block_lines.extend(f"  {line}" for line in risks.splitlines())
+    else:
+        block_lines.append("- Остаточные риски: не заявлены")
+    blocks = ["\n".join(block_lines)]
+
+    for ref in refs:
+        path, section, body = _resolve_package_source(
+            project_dir, package_dir, label, ref
+        )
+        covered = _covered_ids(rows, package_dir, path, section)
+        if not covered:
+            raise AwfApiError(
+                f"source_ref {ref!r}: no coverage-matrix row names this "
+                f"source — the link passes no norm ID"
+            )
+        payload = "\n".join(body).strip("\n")
+        blocks.append(
+            f"## Первоисточник ({section})\n\n"
+            f"Покрытые ID: {', '.join(covered)}\n\n{payload}\n"
+        )
+    return "\n\n".join(blocks)
+
+
+def _spec_document_names(package_dir: Path) -> dict[str, str]:
+    from ..spec_package import discover_documents
+
+    layout = discover_documents(package_dir)
+    if layout.problems:
+        raise AwfApiError(
+            "spec_package: " + "; ".join(layout.problems)
+        )
+    return {
+        role: path.relative_to(layout.root).as_posix()
+        for role, path in layout.documents.items()
+    }
+
+
+def _resolve_package_source(
+    project_dir: Path, package_dir: Path, label: str, ref: str
+) -> tuple[Path, str, list[str]]:
+    """Resolve one package link; every failure is a locator-rich refusal."""
+    file_part, section = _split_source_ref(ref, ref)
+    candidate = Path(file_part)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise AwfApiError(
+            f"source_ref {ref!r}: the link must stay inside the package "
+            f"({label}) — no absolute path, no '..'"
+        )
+    path = (project_dir / candidate).resolve()
+    try:
+        path.relative_to(package_dir.resolve())
+    except ValueError:
+        raise AwfApiError(
+            f"source_ref {ref!r}: the file is outside the package ({label})"
+        ) from None
+    if not path.is_file():
+        raise AwfApiError(
+            f"source_ref {ref!r}: no such file '{file_part}' "
+            f"(resolved to {path})"
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise AwfApiError(f"source_ref {ref!r}: cannot read {path}: {e}") from None
+    body = _read_section_body(path, text, section, ref)
+    if not any(line.strip() for line in body):
+        raise AwfApiError(
+            f"source_ref {ref!r}: section '{section}' in {path} has an "
+            "empty body — nothing to transfer"
+        )
+    return path, section, body
+
+
+def _covered_ids(
+    rows: list, package_dir: Path, path: Path, section: str
+) -> list[str]:
+    """Matrix IDs whose ``Источник`` is exactly this file + section (K4/D8).
+
+    The matrix names a section TOKEN (``pkg.md#R1``) while a link names the
+    exact heading (``pkg.md#R1 — Первое правило``); the token matches the
+    heading as a whole word — the ONE rule lives in
+    :func:`spec_package.section_token_matches` (K1/D8), so the gate and the
+    transfer can never disagree about which section an ID names.
+    """
+    from ..spec_package import section_token_matches
+
+    covered: list[str] = []
+    for row in rows:
+        raw = str(row.source or "")
+        if "#" not in raw:
+            continue
+        rel, row_section = raw.rsplit("#", 1)
+        if not section_token_matches(section, row_section.strip()):
+            continue
+        try:
+            row_path = (package_dir / rel.strip()).resolve()
+        except (OSError, ValueError):
+            continue
+        if row_path == path.resolve():
+            covered.append(row.id)
+    return covered
+
+
+def _residual_risks(texts: dict[str, str]) -> str:
+    from ..spec_package import ROLES
+
+    for role in ROLES:
+        body = section_body(texts.get(role, ""), "Остаточные риски")
+        if body.strip():
+            return body.strip()
+    return ""
 
 
 def _title_line_index(lines: list[str]) -> int | None:
@@ -724,11 +920,44 @@ def dispatch_todo(
     # The resolved path lands in the result (resolved_project_dir).
     project_dir = require_awf_project(project_dir)
 
+    # SPEC IMP2/IMP4 (K3/K4): the readiness gate and the norm transfer, both
+    # BEFORE any side effect (no TODO, no baseline, no .ready). The gate is
+    # the single shared predicate — the start/continue points call the same
+    # one. Without ``spec_package`` the legacy path is untouched.
+    package = ""
+    if _contract:
+        from ..unit_contract import spec_package_gate
+
+        gate_message = spec_package_gate(project_dir, _contract)
+        if gate_message:
+            raise AwfApiError(
+                f"spec gate refused the dispatch: {gate_message}"
+            )
+        package = _contract.get("spec_package")
+        if package:
+            refs = list(_contract.get("source_refs") or [])
+            # K4: with a package declared, the legacy ``source_ref`` parameter
+            # is a package link too — resolved, checked and transferred by the
+            # same rules (inside the package, unique heading, matrix coverage),
+            # never as an arbitrary outside file. Without a package it keeps
+            # the old INV2 behavior (the branch below).
+            legacy_ref = str(source_ref).strip() if source_ref else ""
+            if legacy_ref and legacy_ref not in refs:
+                refs.append(legacy_ref)
+            content = _insert_after_title(
+                content,
+                _spec_package_transfer(
+                    project_dir,
+                    str(package),
+                    refs,
+                ),
+            )
+
     # TODO-0229 (M5): the source of truth for this unit. Read and validate
     # BEFORE any side effect: a missing file or section refuses here, so no
     # TODO / .ready / baseline appears. The section lands right AFTER the
     # title heading (the REPORTS26 F5 guards resolve the same line).
-    if source_ref is not None and str(source_ref).strip():
+    if source_ref is not None and str(source_ref).strip() and not package:
         _src_path, _src_section = _resolve_source_file(project_dir, str(source_ref))
         _body = _extract_source_section(_src_path, _src_section, str(source_ref))
         content = _insert_after_title(

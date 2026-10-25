@@ -62,6 +62,13 @@ class Stage:
     # stage advances; without one, behavior is unchanged (back-compat).
     input: str = ""
     output: str = ""
+    # SPEC IMP5 (K5): additional project paths the stage may write. The
+    # stage allowlist is ``output`` plus this list; a stage with an
+    # ``output`` only is fenced too (TODO-0256). ``write_check: off`` is
+    # the ONE explicit opt-out — it must be named in the pipeline, never
+    # implied (the awf-generated service run uses it).
+    write_allow: tuple[str, ...] = ()
+    write_check: str = "on"
     # ORCH M7.2: the stage's tools profile — a mapping with ``allow``
     # and/or ``deny`` lists of opencode permission keys (bash/edit/
     # write/webfetch + ``<server>_<tool>`` MCP). Merged onto the base
@@ -151,6 +158,10 @@ ALLOWED_STAGE_KEYS = frozenset(
         # ORCH M3.2: declared stage inputs/outputs (project-relative).
         "input",
         "output",
+        # SPEC IMP5 (K5): extra allowed write paths for the stage.
+        "write_allow",
+        # TODO-0256: the explicit, named opt-out from the stage write check.
+        "write_check",
         # ORCH M7.2: the stage's tools profile (allow/deny permission keys).
         "tools",
         "on_blocked",
@@ -195,6 +206,30 @@ def _is_project_relative(value: str) -> bool:
     if value.startswith("/") or value.startswith("~"):
         return False
     return ".." not in Path(value).parts
+
+
+def _reserved_surface(value: str, *, allow_draft: bool = False) -> str:
+    """K5: the engine surface a declared write lands on, or ``""``.
+
+    A nested ``.git`` component is refused at any depth: a git directory is a
+    repository boundary, not a place for a stage artifact. A root
+    ``.agentic/`` write is refused too — the engine's own state is not a
+    stage artifact, and an early write there could publish READY before the
+    pipeline says so. The ONE exception is the role-draft candidate area
+    (``.agentic/roles/draft/``), which the awf-generated service-run pipeline
+    declares as its output.
+
+    Both callers (``output`` and ``write_allow``) go through this ONE rule:
+    a second copy is how the two keys drift apart.
+    """
+    parts = Path(value).parts
+    if ".git" in parts:
+        return ".git/"
+    if parts[:1] == (".agentic",):
+        if allow_draft and parts[:3] == (".agentic", "roles", "draft"):
+            return ""
+        return ".agentic/"
+    return ""
 
 
 def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
@@ -278,6 +313,87 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                         f"Pipeline {source}: stage '{label}' has an invalid "
                         f"'{io_key}' (must be a project-relative path — "
                         f"no leading '/', no '..'), got {value!r}."
+                    )
+                # K5: a stage WRITE artifact is not the engine's own
+                # surface. The one exception is the service-run candidate
+                # (``.agentic/roles/draft/<slug>.md``), which the role-draft
+                # pipeline declares on purpose; every other ``.agentic``
+                # write would let an author stage publish READY early.
+                # P5 (TODO-0257): a declared ``input`` is only read — the
+                # ban is a write-fence rule, so it does not apply here.
+                if io_key != "output":
+                    continue
+                surface = _reserved_surface(value, allow_draft=True)
+                if surface:
+                    hint = (
+                        " — only the role-draft candidate area is allowed"
+                        if surface == ".agentic/"
+                        else ""
+                    )
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' has an invalid "
+                        f"'{io_key}' (a stage artifact cannot live under "
+                        f"'{surface}'{hint}), got {value!r}."
+                    )
+        # SPEC IMP5 (K5): the stage write allowlist. Extra paths must stay
+        # inside the declared output's directory and may not touch the
+        # engine's own surfaces — an allowlist that widens itself is no
+        # boundary at all.
+        if "write_check" in stage and stage["write_check"] is not None:
+            value = stage["write_check"]
+            if isinstance(value, bool) or value not in ("on", "off"):
+                # YAML 1.1 reads bare off/on as booleans — accept neither
+                # silently: a quoted "off" is the only spelling of the
+                # opt-out, so a typo cannot disable the fence by accident.
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'write_check' (must be the string 'on' or 'off'), "
+                    f"got {value!r}."
+                )
+        if "write_allow" in stage and stage["write_allow"] is not None:
+            value = stage["write_allow"]
+            if not isinstance(value, list) or not value:
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' 'write_allow' must "
+                    "be a non-empty list of project-relative paths."
+                )
+            output = stage.get("output")
+            if not isinstance(output, str) or not output.strip():
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' declares "
+                    "'write_allow' without 'output' — the allowlist is the "
+                    "output plus these paths, so the output must be named."
+                )
+            output_dir = Path(output).parent
+            for item in value:
+                if not isinstance(item, str) or not item.strip():
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' 'write_allow' "
+                        f"contains a non-string or empty path: {item!r}."
+                    )
+                if not _is_project_relative(item):
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' 'write_allow' "
+                        f"path must be project-relative (no leading '/', no "
+                        f"'..'), got {item!r}."
+                    )
+                surface = _reserved_surface(item)
+                if surface:
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' 'write_allow' "
+                        f"path cannot live under '{surface}', "
+                        f"got {item!r}."
+                    )
+                candidate = Path(item)
+                if (
+                    output_dir != Path(".")
+                    and candidate != output_dir
+                    and output_dir not in candidate.parents
+                ):
+                    raise AwfApiError(
+                        f"Pipeline {source}: stage '{label}' 'write_allow' "
+                        f"path {item!r} is outside its output directory "
+                        f"'{output_dir.as_posix()}'."
                     )
         # ORCH M7.2: the stage tools profile — a mapping with ``allow``
         # and/or ``deny`` lists of KNOWN permission keys (single registry,
@@ -437,6 +553,10 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         # ORCH M3.2: declared inputs/outputs (project-relative).
         kwargs["input"] = s.get("input") or ""
         kwargs["output"] = s.get("output") or ""
+        # SPEC IMP5 (K5): additional allowed write paths.
+        kwargs["write_allow"] = tuple(s.get("write_allow") or ())
+        # TODO-0256: the explicit write-check opt-out (default on).
+        kwargs["write_check"] = s.get("write_check") or "on"
         # ORCH M7.2: the stage's tools profile (empty → unchanged behavior).
         kwargs["tools"] = s.get("tools") or {}
         for pk in _POLICY_KEYS:
