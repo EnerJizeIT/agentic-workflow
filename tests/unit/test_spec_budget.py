@@ -117,3 +117,10 @@ def test_config_overrides_budget_limits(make_spec_package, tmp_path: Path) -> No
     assert "пакет" in gate.reason
     assert str(package_words) in gate.reason
     assert str(package_words - 1) in gate.reason
+
+
+def test_verify_pack_package_line_marks_major_over_limit() -> None:
+    from awf.verify_pack import _package_budget_line
+
+    assert "MAJOR" in _package_budget_line(12001, 11000)
+    assert "ok" in _package_budget_line(11000, 11000)
