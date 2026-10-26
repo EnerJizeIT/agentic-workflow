@@ -17,7 +17,7 @@ import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .. import git_utils, paths
+from .. import closer_stage, git_utils, paths
 from .._atomic import MODE_OWNER_EDITABLE
 from .._markdown import (
     append_block,
@@ -1445,7 +1445,7 @@ def dispatch_todo(
         # to ``stale_ready``: the branch's no-follow preflight covers
         # exactly the files it unlinks (the ``context`` directory itself is
         # already in the dispatch-wide preflight above).
-        closer_state = paths.context_dir(project_dir) / f"CLOSER-{todo_id}.json"
+        closer_state = closer_stage.state_path(project_dir, todo_id)
         refuse_unsafe_surfaces(
             project_dir, f"dispatch {todo_id}", inbox, stale_ready, closer_state
         )

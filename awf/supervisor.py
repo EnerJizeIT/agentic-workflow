@@ -50,7 +50,7 @@ def _snapshot_stage_names(project_dir: Path, todo_id: str) -> list[str] | None:
     """
     if not is_valid_todo_id(todo_id):
         return None
-    snap = paths.context_dir(project_dir) / f"PIPELINE-{todo_id}.yaml"
+    snap = paths.pipeline_snapshot_path(project_dir, todo_id)
     if not snap.is_file():
         return None
 

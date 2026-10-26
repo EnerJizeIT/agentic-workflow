@@ -34,7 +34,7 @@ from .plan_progress import (
 
 def _pipeline_snapshot_file(project_dir: Path, todo_id: str) -> Path:
     """ORCH M3.3: the per-TODO pipeline snapshot path in the context dir."""
-    return paths.context_dir(project_dir) / f"PIPELINE-{todo_id}.yaml"
+    return paths.pipeline_snapshot_path(project_dir, todo_id)
 
 
 def _write_pipeline_snapshot(

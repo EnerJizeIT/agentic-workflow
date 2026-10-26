@@ -10,6 +10,12 @@ still executes the probes and owns the cache. This module adds the single
 place where the answer becomes an action, the first verdict for the
 statistics (``context/CLOSER-<todo>.json``) and the stage-state fields the
 engine records for a skip.
+
+IMP4 adds the attempt budget around the same record: :func:`settle_run`
+recomputes the gate after a signal and answers green / retry / blocked. A
+completed run with a verdict charges one attempt; a salvaged signal is
+re-checked with ``charge=False`` — green advances, red blocks, no attempt
+is spent (a crash can never consume the budget).
 """
 from __future__ import annotations
 
@@ -25,8 +31,7 @@ from .checklists import ChecklistError
 from .infra import managed_fs
 from .unit_contract import parse_todo_contract
 
-#: The config key that caps closer runs (IMP4 owns the counter; IMP2 only
-#: refuses a value the key can never mean).
+#: The config key that caps COMPLETED closer runs per unit (IMP4).
 CLOSER_ATTEMPTS_KEY = "checklist.closer_attempts"
 DEFAULT_CLOSER_ATTEMPTS = 1
 MAX_CLOSER_ATTEMPTS = 2
@@ -51,6 +56,20 @@ class Decision:
     @property
     def skip_reason(self) -> str:
         return SKIP_REASON if self.kind == "skip" else ""
+
+
+@dataclass
+class RunOutcome:
+    """The answer after a completed closer run: green, retry or blocked.
+
+    The verdict itself is not carried back: the engine only needs the colour,
+    the counter (for the log line) and the note it may print. A red verdict
+    already reached the owner through the BLOCKED note written here.
+    """
+
+    kind: str
+    attempts: int = 0
+    log_line: str = ""
 
 
 def closer_attempts(config: dict) -> int:
@@ -94,7 +113,17 @@ def read_state(project_dir: str | Path, todo_id: str) -> dict | None:
         raise ValueError(f"{path.name} is unreadable: {e}") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} is not a JSON object")
+    attempts = data.get("attempts", 0)
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
+        raise ValueError(
+            f"{path.name} has an invalid attempts counter: {attempts!r}"
+        )
     return data
+
+
+def _attempts_of(record: dict) -> int:
+    """The counter of a record already validated by :func:`read_state`."""
+    return int(record.get("attempts", 0))
 
 
 def _verdict_facts(verdict: dict) -> dict:
@@ -218,6 +247,65 @@ def _blocked(
     return Decision(kind="blocked", verdict=verdict, log_line=log_line, note=reason)
 
 
+def _config_refusal(e: CloserConfigError) -> tuple[str, list[str], list[str]]:
+    """The shared "bad config key" verdict: reason, findings, directions."""
+    reason = f"blocked — неверный ключ конфига: {e}"
+    return reason, [f"конфиг: `{e}`"], [
+        f"исправь `{CLOSER_ATTEMPTS_KEY}` (1 или 2) в `.agentic/config.yaml`"
+    ]
+
+
+def _state_refusal(e: ValueError) -> tuple[str, list[str], list[str]]:
+    """The shared corrupt-record verdict — fail closed, never overwrite."""
+    reason = f"blocked — состояние closer нечитаемо: {e}"
+    return reason, [str(e)], [
+        "разберись с `context/CLOSER-<todo>.json` вручную: "
+        "молча перезаписывать историю и счётчик запрещено",
+    ]
+
+
+def _cap_refusal(
+    verdict: dict, attempts: int, limit: int
+) -> tuple[str, list[str], list[str]]:
+    """The shared budget-exhausted verdict: red at the cap is the owner's call.
+
+    Both the entry (a restart at the cap) and :func:`settle_run` (a red run
+    landing on the cap) must produce the same note — one wording, one place.
+    """
+    reason = (
+        f"blocked — бюджет closer исчерпан: {attempts}/{limit}; "
+        "решение супервизора"
+    )
+    return reason, [
+        f"`missing`: {', '.join(verdict.get('missing') or [])}",
+        f"потрачено попыток closer: {attempts} из {limit}",
+    ], [
+        "решение супервизора: закрыть пункты вручную, переписать TODO "
+        "или перенести остаток в отдельный юнит",
+    ]
+
+
+def _salvage_refusal(verdict: dict) -> tuple[str, list[str], list[str]]:
+    """The red-after-salvage verdict: no new spawn, no attempt spent.
+
+    A salvaged signal is not a completed closer run (AC11), so the separate
+    wording names the crash instead of a spent budget — the shared
+    ``_cap_refusal`` text would claim a counter that never moved. The note
+    keeps the same ``missing`` / «решение супервизора» contract.
+    """
+    reason = (
+        "blocked — salvage после падения closer: гейт красный, "
+        "нового спавна нет; решение супервизора"
+    )
+    return reason, [
+        f"`missing`: {', '.join(verdict.get('missing') or [])}",
+        "сигнал дал salvage: попытка closer не потрачена",
+    ], [
+        "решение супервизора: разобрать причину падения closer и закрыть "
+        "пункты вручную или переписать TODO",
+    ]
+
+
 def _static_block_defect(verdict: dict) -> bool:
     """True when the gate produced no runnable item at all.
 
@@ -229,6 +317,17 @@ def _static_block_defect(verdict: dict) -> bool:
     second copy of the gate's internal wording.
     """
     return verdict.get("status") == "checked" and not (verdict.get("items") or [])
+
+
+def _is_green(verdict: dict) -> bool:
+    """Green means: no block at all, or every checkable item is closed.
+
+    ``manual`` items never block — the gate owns that rule already. ONE
+    spelling: the entry's skip and the post-run result check must not drift
+    apart, or a closer run would be routed by a different definition of
+    "done" than the one that spawned it.
+    """
+    return verdict.get("status") == "none" or bool(verdict.get("ok"))
 
 
 def decide(
@@ -273,17 +372,17 @@ def decide(
 
     # 2. Config key: validated before any gate run, no default substitution.
     try:
-        closer_attempts(config)
+        limit = closer_attempts(config)
     except CloserConfigError as e:
-        reason = f"blocked — неверный ключ конфига: {e}"
+        reason, findings, directions = _config_refusal(e)
         return _blocked(
             project,
             todo_id,
             log_line=reason,
             verdict={},
             reason=reason,
-            findings=[f"конфиг: `{e}`"],
-            directions=[f"исправь `{CLOSER_ATTEMPTS_KEY}` (1 или 2) в `.agentic/config.yaml`"],
+            findings=findings,
+            directions=directions,
         )
 
     # 3. The gate on the CURRENT tree. Its cache is the only cache.
@@ -328,18 +427,15 @@ def decide(
     try:
         record = read_state(project, todo_id)
     except ValueError as e:
-        reason = f"blocked — состояние closer нечитаемо: {e}"
+        reason, findings, directions = _state_refusal(e)
         return _blocked(
             project,
             todo_id,
             log_line=f"{dod_line(verdict)} | {reason}",
             verdict=verdict,
             reason=reason,
-            findings=[str(e)],
-            directions=[
-                "разберись с `context/CLOSER-<todo>.json` вручную: "
-                "молча перезаписывать историю запрещено",
-            ],
+            findings=findings,
+            directions=directions,
         )
     if record is None:
         record = {
@@ -384,22 +480,212 @@ def decide(
 
     # 7. Green (including "no block" and manual-only) skips without a worker.
     # ``manual`` items never launch the closer; ``ok`` ignores them already.
-    if verdict.get("status") == "none" or verdict.get("ok"):
+    if _is_green(verdict):
         return Decision(kind="skip", verdict=verdict, log_line=line)
 
-    # 8. Red — the closer runs. The attempt counter and its cap belong to
-    # IMP4; this entry only names the decision.
+    # 8. Red — the closer may run while the unit still has budget. The
+    # counter is spent by ``settle_run`` AFTER a completed run, never by the
+    # entry: a crash, a salvaged signal or a retry of a crashed spawn must
+    # not consume an attempt. A unit at the cap is the owner's decision.
+    attempts = _attempts_of(record)
+    if attempts >= limit:
+        reason, findings, directions = _cap_refusal(verdict, attempts, limit)
+        return _blocked(
+            project,
+            todo_id,
+            log_line=f"{line} | {reason}",
+            verdict=verdict,
+            reason=reason,
+            findings=findings,
+            directions=directions,
+        )
     return Decision(kind="run", verdict=verdict, log_line=line)
+
+
+def settle_run(
+    project_dir: str | Path,
+    todo_id: str,
+    config: dict,
+    *,
+    charge: bool = True,
+) -> RunOutcome:
+    """Re-check the gate after a signal and decide the colour — ONE path.
+
+    The order is fixed by the architecture (K4): the gate is recomputed on
+    the CURRENT tree first, then (for a completed run) one attempt is
+    charged, then the verdict decides where the unit goes.
+
+    ``charge=True`` — the worker left a signal (``DONE``, ``APPROVED`` or
+    ``BLOCKED``): a completed run with a verdict spends one attempt; red
+    below the cap returns to the same stage, red at the cap blocks.
+
+    ``charge=False`` — the signal came from salvage after the worker died:
+    the budget is NOT spent and no new spawn is made (AC11). Green advances
+    normally; red blocks through the same ``_blocked_note`` writer with
+    ``missing`` and the «решение супервизора» line.
+
+    A green verdict wins over the signal type: the verdict, not the signal,
+    decides the outcome.
+    """
+    project = Path(project_dir).resolve()
+
+    try:
+        limit = closer_attempts(config)
+    except CloserConfigError as e:
+        reason, findings, directions = _config_refusal(e)
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=reason,
+            reason=reason,
+            findings=findings,
+            directions=directions,
+        )
+
+    # 1. The gate on the tree the closer just produced (the result check —
+    # NOT a second decision point: no new first verdict, no new ``dod:``).
+    # The order matches the entry's K2: defects and the gate first, the
+    # stored counter after; the two paths must not answer the same pair of
+    # failures with different attribution.
+    try:
+        verdict = checklist_gate.run(project, todo_id)
+    except (checklist_gate.ChecklistGateError, ChecklistError) as e:
+        reason = f"blocked — чек-лист не выполнен после closer: {e}"
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=reason,
+            reason=reason,
+            findings=[f"гейт: {e}"],
+            directions=["проверь TODO юнита и блок `## Чек-лист завершения`"],
+        )
+
+    line = dod_line(verdict)
+
+    try:
+        record = read_state(project, todo_id)
+    except ValueError as e:
+        reason, findings, directions = _state_refusal(e)
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=f"{line} | {reason}",
+            reason=reason,
+            findings=findings,
+            directions=directions,
+        )
+    if record is None:
+        # The entry wrote the record before the spawn; a missing file means
+        # it was removed mid-run. Fail closed — a fresh counter would hand
+        # the unit a budget it already spent.
+        reason = (
+            f"blocked — нет `context/CLOSER-{todo_id}.json`: счётчик попыток "
+            "потерян, ближе не списываем"
+        )
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=f"{line} | {reason}",
+            reason=reason,
+            findings=["файл состояния юнита исчез во время прогона"],
+            directions=[
+                "решение супервизора: восстановить запись или выдать юнит "
+                "заново",
+            ],
+        )
+
+    # 2. A COMPLETED run with a verdict spends exactly one attempt. A
+    # salvaged signal (``charge=False``) never writes the counter — it is
+    # not a run the closer finished (AC11).
+    attempts = _attempts_of(record)
+    if charge:
+        attempts += 1
+        record["attempts"] = attempts
+        try:
+            _write_record(project, todo_id, record)
+        except (OSError, managed_fs.ManagedPathError) as e:
+            reason = f"blocked — не удалось записать CLOSER-{todo_id}.json: {e}"
+            return _settle_blocked(
+                project,
+                todo_id,
+                log_line=reason,
+                reason=reason,
+                findings=[str(e)],
+                directions=["проверь права на `.agentic/context/`"],
+            )
+
+    # 3. The colour decides, by the same definition the entry used.
+    if _is_green(verdict):
+        return RunOutcome(kind="green", attempts=attempts, log_line=line)
+
+    # 4. Red after salvage: blocked without a new spawn and without a spent
+    # attempt (AC11, K4).
+    if not charge:
+        reason, findings, directions = _salvage_refusal(verdict)
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=f"{line} | {reason}",
+            reason=reason,
+            attempts=attempts,
+            findings=findings,
+            directions=directions,
+        )
+
+    if attempts >= limit:
+        reason, findings, directions = _cap_refusal(verdict, attempts, limit)
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=f"{line} | {reason}",
+            reason=reason,
+            attempts=attempts,
+            findings=findings,
+            directions=directions,
+        )
+
+    return RunOutcome(
+        kind="retry",
+        attempts=attempts,
+        log_line=f"{line} | closer: попытка {attempts}/{limit}, ещё красный",
+    )
+
+
+def _settle_blocked(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    log_line: str,
+    reason: str,
+    findings: list[str],
+    directions: list[str],
+    attempts: int = 0,
+) -> RunOutcome:
+    """The blocked answer of :func:`settle_run` — the entry's note, re-typed.
+
+    Writes through :func:`_blocked_note` so the note shape and wording have
+    ONE writer; the engine gets only the attempt count and the log line.
+    """
+    _blocked_note(
+        project_dir,
+        todo_id,
+        verdict_line=reason,
+        findings=findings,
+        directions=directions,
+    )
+    return RunOutcome(kind="blocked", attempts=attempts, log_line=log_line)
 
 
 __all__ = [
     "CLOSER_ATTEMPTS_KEY",
     "CloserConfigError",
     "Decision",
+    "RunOutcome",
     "SKIP_REASON",
     "closer_attempts",
     "decide",
     "dod_line",
     "read_state",
+    "settle_run",
     "state_path",
 ]

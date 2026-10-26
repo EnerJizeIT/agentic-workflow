@@ -102,6 +102,21 @@ class TestWritePipeline:
             assert "action" not in stage
 
 
+# ─── config template (AU4) ──────────────────────────────────────────────
+
+
+def test_config_template_exposes_closer_attempts(awf_project):
+    """AU4: the closer budget is a visible knob, not a hidden reader.
+
+    The template is the only place an owner learns the key exists; a reader
+    with no template entry is configurability nobody finds.
+    """
+    data = yaml.safe_load(
+        (awf_project / ".agentic" / "config.yaml").read_text(encoding="utf-8")
+    )
+    assert data["checklist"]["closer_attempts"] == 1
+
+
 # ─── update_config_role_mapping ─────────────────────────────────────────
 
 

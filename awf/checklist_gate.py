@@ -381,7 +381,13 @@ def _probe_fingerprint(
     ).hexdigest()
 
 
-def _cache_path(project: Path, todo_id: str) -> Path:
+def state_path(project: Path, todo_id: str) -> Path:
+    """``.agentic/context/CHECKLIST-<todo>.json`` — the gate's verdict cache.
+
+    Public: the unit-history cleanup (``awf.unit_history``) must find the
+    same file the gate writes, or a re-issued unit id inherits a stale
+    verdict.
+    """
     return paths.context_dir(project) / f"CHECKLIST-{todo_id}.json"
 
 
@@ -551,7 +557,7 @@ def run(
 
     sha = tree_sha if tree_sha is not None else _tree_sha(project)
     bsha = block_hash(text)
-    cache_file = _cache_path(project, todo_id)
+    cache_file = state_path(project, todo_id)
     probe_sha = _probe_fingerprint(project, items, todo_id, cache_file)
     # DONE facts are re-read on EVERY call: they live outside the tree
     # fingerprint, so a cached probe answer must not freeze an older

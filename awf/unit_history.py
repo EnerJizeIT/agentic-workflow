@@ -18,16 +18,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import paths
-
-# The unit history files — keyed by the TODO id alone, never by content.
-UNIT_HISTORY_FILES = ("CLOSER-{todo_id}.json", "CHECKLIST-{todo_id}.json")
+from . import checklist_gate, closer_stage
 
 
 def unit_history_paths(project_dir: str | Path, todo_id: str) -> list[Path]:
-    """Paths of the unit-history artifacts for *todo_id*."""
-    ctx = paths.context_dir(Path(project_dir))
-    return [ctx / name.format(todo_id=todo_id) for name in UNIT_HISTORY_FILES]
+    """Paths of the unit-history artifacts for *todo_id*.
+
+    The filenames live in ONE place each — the module that writes them.
+    Re-spelling ``CLOSER-<id>.json`` / ``CHECKLIST-<id>.json`` here would
+    silently miss the file the moment either writer renames it, and the
+    next unit with the same id would inherit a spent counter.
+    """
+    return [
+        closer_stage.state_path(project_dir, todo_id),
+        checklist_gate.state_path(Path(project_dir), todo_id),
+    ]
 
 
 def forget_unit_history(project_dir: str | Path, todo_id: str) -> list[str]:
