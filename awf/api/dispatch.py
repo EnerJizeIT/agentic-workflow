@@ -228,7 +228,7 @@ def _write_ready(project_dir: Path, todo_id: str) -> None:
     """Publish the unit's ``.ready`` signal (no-follow), one refusal form."""
     ready_path = paths.inbox(project_dir) / f"{todo_id}.ready"
     try:
-        managed_fs.managed_write_text(
+        managed_fs.managed_write_text(  # .ready — no-follow
             ready_path, "", root=project_dir, mode=MODE_OWNER_EDITABLE
         )
     except managed_fs.ManagedPathError as e:
