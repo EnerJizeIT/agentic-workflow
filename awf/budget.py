@@ -113,7 +113,12 @@ def review_passes(project_dir: str | Path, todo_id: str) -> int:
     headings = todos.review_headings(
         todos.read_todo_text(project_dir, todo_id)
     )
-    return sum(1 for heading in headings if "аудит" not in heading.casefold())
+    return sum(
+        1
+        for heading in headings
+        if "аудит" not in heading.casefold()
+        and "spec" not in heading.casefold()
+    )
 
 
 def _at_cap(passes: int, cap: int) -> bool:
