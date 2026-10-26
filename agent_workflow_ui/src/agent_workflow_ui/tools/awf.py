@@ -3021,6 +3021,9 @@ async def awf_wait_for_event(
       ``awf_dispatch_todo`` outside
     - ``timeout`` — no event within timeout
     - ``stage_changed`` — stage transition (suppressed by actionable_only)
+    - ``budget`` — a unit reached ``limits.max_review_passes``; the answer
+      carries the BUDGET note facts — raise the limit, close the unit, or
+      carry the items, do not ``awf_continue``
     - ``engine_dead`` — the state outlived the engine; the answer carries
       ``next_action=awf_continue(todo_id=...)`` (A.3) — resume, do not wait
 
@@ -3123,6 +3126,7 @@ async def awf_wait_for_event(
                 "blocked": "Worker blocked. Read BLOCKED note → replan: awf kill → awf_unblock(todo_id) → awf_continue(todo_id=…, from_stage=…), or stop with awf_run_finish.",
                 "checkpoint": "Checkpoint form opened. Tell the user (the run is paused until they submit).",
                 "salvage": "Salvage needed. Read SALVAGE note → awf_retry_stage / ACK / split the TODO.",
+                "budget": "Budget exhausted. Read BUDGET note → raise limits.max_review_passes, close the unit, or carry the items; do not awf_continue.",
                 "done": (
                     "Cycle complete. Next step: awf_run_next(project_dir) — "
                     "launch the next queued TODO (or stop at a gate). If the "

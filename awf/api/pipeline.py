@@ -15,6 +15,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import budget as budget_mod
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
@@ -332,6 +333,61 @@ def _resume_target(project_dir: Path, pin: str = "", ack: str = "") -> str:
         return ack.strip()
     state = read_state(project_dir) or {}
     return str(state.get("todo_id") or "") or (todos.newest_active(project_dir) or "")
+
+
+def _resume_stage(from_stage: str | None, state: dict | None) -> str:
+    """The stage a resume starts from: the explicit parameter wins, else the
+    stage the state file recorded (DF5-2).
+
+    ONE rule for both the launch and the review-pass budget gate: reading
+    only the parameter let a state-recorded implementer resume slip past the
+    cap (the common ``awf continue`` call passes no stage).
+    """
+    if from_stage:
+        return from_stage
+    return str((state or {}).get("stage_name") or "")
+
+
+def _budget_refusal(project_dir: Path, todo_id: str, action: str) -> StartResult | None:
+    """The review-pass budget refusal of a launch, or ``None`` to go on.
+
+    ONE body for the start and continue gates (TODO-0262): a broken limit and
+    an unwritable note are loud refusals; an exhausted unit is a state noop
+    with the owner-facing advice. Only the refused action's name differs — a
+    second copy of the three branches would drift.
+    """
+    try:
+        reason = budget_mod.check_and_note(
+            project_dir, todo_id, cfg_mod.load(project_dir)
+        )
+    except budget_mod.BudgetConfigError as e:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=1,
+            message=f"limits.max_review_passes refused: {e}",
+        )
+    except OSError as e:
+        return StartResult(
+            run_mode="noop",
+            run_id=None,
+            log_file=None,
+            exit_code=1,
+            message=f"Cannot write the budget note: {e}",
+        )
+    if not reason:
+        return None
+    return StartResult(
+        run_mode="noop",
+        run_id=None,
+        log_file=None,
+        exit_code=0,
+        message=(
+            f"{reason} — {action} refused; the unit goes to the owner "
+            f"(see outbox/BUDGET-{todo_id}.md)."
+        ),
+    )
 
 
 def _spec_gate_for_launch(project_dir: Path, todo_id: str) -> str:
@@ -1691,6 +1747,16 @@ def start_pipeline(
     if gate_message:
         return _spec_gate_refusal(gate_message)
 
+    # TODO-0262 REVIEW (A1): the review-pass budget is a LAUNCH gate too.
+    # Without it ``awf start`` on an exhausted unit runs plan/implementer/
+    # arch/qa/audit and only then dies at verify — a full round paid for
+    # nothing. Check BEFORE the reconcile, the lease and the first stage:
+    # an exhausted unit leaves the BUDGET note and starts no stage.
+    if launch_todo:
+        refusal = _budget_refusal(project_dir, launch_todo, "start")
+        if refusal is not None:
+            return refusal
+
     # DF6-2: reconcile state before starting — archive completed TODOs,
     # clear stale PIDs, deduplicate signals. Only for background mode
     # (MCP/supervisor path). Foreground/CI tests may pre-create APPROVE
@@ -2004,6 +2070,18 @@ def continue_pipeline(
     if gate_message:
         return _spec_gate_refusal(gate_message)
 
+    # TODO-0262: resuming the implementer stage of a unit whose review-pass
+    # budget is exhausted would be another polish round — refuse, leave the
+    # BUDGET note and let the owner decide. The state noop (no launch, no
+    # signal, no lease) is the family of "another launch is in progress".
+    # The effective stage includes the state-recorded one: a bare ``awf
+    # continue`` names no stage yet resumes the interrupted implementer.
+    resume_stage = _resume_stage(from_stage, read_state(project_dir))
+    if "implement" in resume_stage.lower() and resume_target:
+        refusal = _budget_refusal(project_dir, resume_target, "continue")
+        if refusal is not None:
+            return refusal
+
     if ack:
         if explicit_pin and explicit_pin != ack:
             # The explicit pin wins — but the ack answers ANOTHER unit;
@@ -2259,9 +2337,8 @@ def continue_pipeline(
 
         # DF5-2: read pipeline state to determine resume point.
         # KAUD-8: state already read above for todo_id — reuse for from_stage.
-        if not from_stage and state:
-            if state.get("stage_name"):
-                from_stage = state["stage_name"]
+        # The same rule the budget gate used, so both see one resume point.
+        from_stage = _resume_stage(from_stage, state) or None
 
         if background:
             # A-02: the PID file is written inside start_in_background, so

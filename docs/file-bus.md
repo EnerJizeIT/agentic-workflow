@@ -29,6 +29,7 @@ Pipeline обменивается сигналами через файлы в `.
 | `DONE-{todo_id}.ready` (+`.md`) | Worker | outbox | Работа завершена (`.md` — резюме) |
 | `DONE-{todo_id}.json` | Worker | outbox | Machine facts (опционально, unit contract) |
 | `BLOCKED-{todo_id}.ready` (+`.md`) | Worker | outbox | Не может продолжать |
+| `BUDGET-{todo_id}.md` | verify / continue / run_next | outbox | Стоп по бюджету витков; архивируется в `done/<id>/` |
 | `REVIEW-APPROVED-{todo_id}.ready` | Worker | outbox | Работа одобрена (классификация: approved) |
 | `REVIEW-REJECTED-{todo_id}.ready` | Worker | outbox | Работа отклонена (классификация: rejected) |
 | `ACK-{todo_id}.ready` | Supervisor (verify) | inbox | Работа принята |

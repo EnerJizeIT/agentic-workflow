@@ -55,6 +55,14 @@ engine:
   # default: an opencode/MCP restart must not kill a running stage.
   kill_with_parent: false
 
+limits:
+  # TODO-0262: how many `## REVIEW-фикс` rounds a unit may take (the sections
+  # the supervisor appends). At the cap the engine stops the unit at verify
+  # entry, awf continue refuses the implementer stage and awf run_next stops
+  # the run; outbox/BUDGET-<id>.md names the price. 0 disables the limit.
+  # Valid range: 0..20.
+  max_review_passes: 3
+
 phases:
   current: ".agentic/phases/plan.md"
 

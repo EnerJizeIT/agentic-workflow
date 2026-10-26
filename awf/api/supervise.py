@@ -16,10 +16,16 @@ import os
 import time
 from pathlib import Path
 
+from .. import budget as budget_mod
 from .. import paths, run_state
 from .._log import log as _log
 from ..infra import managed_fs
 from ..pipeline_state import read_state
+
+#: TODO-0262 REVIEW (CTX2): consecutive no-op resumes before the watchdog
+#: gives up. A no-op (nothing to resume / another launch in progress) does
+#: not touch the engine — an endless trail of them would spin forever.
+NOOP_LIMIT = 3
 
 
 def supervise_run(
@@ -52,6 +58,7 @@ def supervise_run(
     log_file = logs / "awf-supervise.log"
     restarts = 0
     cycles = 0
+    noops = 0
     last_todo = ""
 
     while True:
@@ -68,6 +75,19 @@ def supervise_run(
             )
         current = str(state.get("current") or "")
         dead = engine_dead_now(resolved, read_state(resolved))
+        # TODO-0262 REVIEW (CTX2): a unit stopped for its review-pass budget
+        # must not be resumed — ``awf_continue`` refuses and the watchdog
+        # would count each refusal as a no-op and spin. The BUDGET note is
+        # the durable fact: stop the watchdog and leave the decision to the
+        # owner.
+        budget_todo = current or (dead.todo_id if dead is not None else "")
+        if budget_todo and budget_mod.stop_active(resolved, budget_todo):
+            return _answer(
+                "budget", restarts, budget_todo,
+                f"unit {budget_todo} used up limits.max_review_passes — "
+                f"owner decision, see outbox/BUDGET-{budget_todo}.md",
+                log_file,
+            )
         if dead is not None:
             if restarts >= max_restarts:
                 return _answer(
@@ -103,6 +123,7 @@ def supervise_run(
                 # exception path above already spends budget; the returned
                 # ``error`` mode must not loop forever.
                 restarts += 1
+                noops = 0
                 _append_log(
                     log_file, f"supervise: restart #{restarts} (error)"
                 )
@@ -115,12 +136,25 @@ def supervise_run(
                         log_file,
                     )
             elif mode not in {"background", "foreground"}:
+                # TODO-0262 REVIEW (CTX2): a no-op does not touch the engine
+                # — a long trail of them is a spin, not a crash-loop. Bound
+                # it so the watchdog stops and the human looks.
+                noops += 1
                 _append_log(
                     log_file,
-                    f"supervise: nothing to restart (run_mode={mode or '?'})",
+                    f"supervise: nothing to restart (run_mode={mode or '?'}, "
+                    f"no-op {noops}/{NOOP_LIMIT})",
                 )
+                if noops >= NOOP_LIMIT:
+                    return _answer(
+                        "stopped", restarts, last_todo or current,
+                        f"{noops} consecutive no-op resumes — the engine is not "
+                        "restartable; inspect the unit and the logs yourself",
+                        log_file,
+                    )
             else:
                 restarts += 1
+                noops = 0
                 _append_log(log_file, f"supervise: restart #{restarts} "
                                       f"({dead.line})")
         cycles += 1

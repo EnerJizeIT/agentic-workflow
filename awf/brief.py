@@ -144,6 +144,9 @@ class BriefResult:
     # stale. The State section names the resume.
     engine_dead: str = ""
     engine_dead_todo: str = ""
+    # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
+    # ("" when none) — the card names the owner's decision, not a resume.
+    budget_exhausted_todo: str = ""
     # TODO-0197 (REPORTS32 п.4): active inbox units OUTSIDE the active
     # run's queue (ready to start / closing a previous cycle) — rendered
     # as their own "outside run" line, never mixed into the "active:"
@@ -484,12 +487,34 @@ def _state_lines(r: BriefResult) -> list[str]:
         lines.append(f"- zombie-state: {r.zombie_state}")
     if r.engine_dead:
         lines.append(f"- engine_dead: {r.engine_dead}")
+    if r.budget_exhausted_todo:
+        lines.append(f"- budget: exhausted ({r.budget_exhausted_todo})")
     for t in r.active_todos:
         prog = t.get("progress")
+        passes = t.get("review_passes")
+        max_passes = t.get("review_passes_max")
+        suffix = ""
+        if passes is not None:
+            if max_passes:
+                suffix = f" · passes: {passes}/{max_passes}"
+            elif max_passes == 0:
+                # 0 disables the limit — show the count, not a hidden line.
+                suffix = f" · passes: {passes} (без лимита)"
         if prog:
-            lines.append(f"- active: {t['todo_id']} ({prog['done']}/{prog['total']} tasks)")
+            lines.append(
+                f"- active: {t['todo_id']} ({prog['done']}/{prog['total']} tasks){suffix}"
+            )
         else:
-            lines.append(f"- active: {t['todo_id']} (worker has not started)")
+            lines.append(f"- active: {t['todo_id']} (worker has not started){suffix}")
+        # TODO-0262: the unit reached limits.max_review_passes — it stays
+        # with the owner instead of another polish round. The State line
+        # above already names the active exhausted unit; do not print the
+        # same fact twice on one card.
+        if (
+            t.get("budget_exhausted")
+            and t["todo_id"] != r.budget_exhausted_todo
+        ):
+            lines.append(f"- budget: exhausted ({t['todo_id']})")
     if r.standalone_todos:
         # TODO-0197 (REPORTS32 п.4): foreign inbox units — their own line,
         # not mixed into the run's "active:" list.
@@ -610,7 +635,13 @@ def _status_get(s: Any, name: str, default: Any = None) -> Any:
 # states. ``next_action_from_status`` ranks exactly these before
 # pipeline_running/active/suggestion; ``_actionable_fact`` is the same list,
 # not a second copy — adding a fact here teaches both surfaces at once.
-_ACTIONABLE_FIELDS = ("expected_action", "salvage_needed", "blocked_ids", "engine_dead")
+_ACTIONABLE_FIELDS = (
+    "expected_action",
+    "salvage_needed",
+    "blocked_ids",
+    "budget_exhausted_todo",
+    "engine_dead",
+)
 
 
 def _actionable_fact(s: Any) -> bool:
@@ -656,6 +687,13 @@ def next_action_from_status(s: Any) -> str:
             f"Blocked: read `outbox/BLOCKED-{first}.md`, answer the question, "
             f"then `awf_continue(ack='{first}')`."
         )
+    budget_todo = _get("budget_exhausted_todo")
+    if budget_todo:
+        # TODO-0262 REVIEW (CTX1): an exhausted unit is the owner's
+        # decision — ``awf_continue`` would hit the same limit again.
+        from .budget import budget_hint
+
+        return budget_hint(str(budget_todo))
     if _get("engine_dead"):
         # TODO-0242 REVIEW (F8): resume advice belongs to an ACTIVE run
         # only — the same invariant A.6/Q2 hold on awf_run_status and
@@ -788,6 +826,7 @@ def build_brief(
     zombie_state = ""
     engine_dead = ""
     engine_dead_todo = ""
+    budget_exhausted_todo = ""
     if status is not None:
         active_todos = [dict(t) for t in status.active_todos]
         # TODO-0197: the outside-run units from the same status read.
@@ -820,6 +859,12 @@ def build_brief(
             status.get("engine_dead_todo") or ""
             if isinstance(status, dict)
             else getattr(status, "engine_dead_todo", "") or ""
+        )
+        # TODO-0262 REVIEW (CTX1): the exhausted-unit fact from the same read.
+        budget_exhausted_todo = str(
+            status.get("budget_exhausted_todo") or ""
+            if isinstance(status, dict)
+            else getattr(status, "budget_exhausted_todo", "") or ""
         )
 
     # ORCH M4.2: the stalled-stage warning — the active stage's quiet
@@ -907,6 +952,7 @@ def build_brief(
         zombie_state=zombie_state,
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
+        budget_exhausted_todo=budget_exhausted_todo,
     )
     result.text = render_brief(result)
     return result

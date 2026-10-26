@@ -178,6 +178,7 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     - outbox/TEST-RESULTS-{id}.log → done/{id}/TEST-RESULTS-{id}.log (AUD15-07)
     - outbox/BLOCKED-{id}.{md,json} → done/{id}/ (H2: dead-attempt report)
     - outbox/REVIEW-{id}.{md,json}  → done/{id}/ (H2: rejected-attempt report)
+    - outbox/BUDGET-{id}.{md,json}  → done/{id}/ (TODO-0262: budget stop note)
     - outbox/BLOCKED-{id}.ready     → deleted (signal consumed)
 
     Returns path to done/{todo_id}/ dir, or None if nothing to archive.
@@ -261,7 +262,10 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     # They belong to the archived unit — move them into done/<id>/ under
     # their own names; the BLOCKED .ready markers are signals, consumed
     # below like DONE/PROGRESS .ready.
-    for prefix in ("BLOCKED", "REVIEW"):
+    # TODO-0262 REVIEW (CTX3): a BUDGET note belongs to the unit it stopped —
+    # archive it with the BLOCKED/REVIEW reports instead of leaving it in the
+    # outbox after the unit closes.
+    for prefix in ("BLOCKED", "REVIEW", "BUDGET"):
         for tid_variant in (todo_id, _short_id(todo_id)):
             for ext in (".md", ".json"):
                 src = outbox_p / f"{prefix}-{tid_variant}{ext}"

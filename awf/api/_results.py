@@ -70,6 +70,10 @@ class StatusResult:
     # state is never mutated by a status call.
     engine_dead: str | None = None
     engine_dead_todo: str | None = None
+    # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
+    # (a BUDGET note on disk). The owner's decision outranks ``awf_continue``
+    # — an exhausted unit cannot be resumed into the same limit again.
+    budget_exhausted_todo: str | None = None
     # RUN3 #1: named pipelines — active (config default_pipeline, "default"
     # when undeclared) + number of pipeline files in .agentic/pipelines/
     active_pipeline: str | None = None
@@ -526,6 +530,7 @@ class WaitEventResult:
     event_type is one of:
     - ``verify`` — pipeline reached verify stage
     - ``blocked`` — worker wrote BLOCKED
+    - ``budget`` — the unit exhausted ``limits.max_review_passes`` (owner decides)
     - ``checkpoint`` — BD-36 checkpoint form open
     - ``done`` — pipeline exited
     - ``timeout`` — no event within timeout

@@ -126,6 +126,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `todos.py` | TODO lifecycle: archive, restore, retire, reconcile |
 | `todo_ids.py` | Единственный парсер TODO-ID (4+ цифры, явная правая граница) |
 | `unit_contract.py` | Контракт юнита: блок `verify/gates/prove_red` в TODO + `DONE.json` |
+| `budget.py` | Бюджет витков юнита (TODO-0262): счётчик секций `## REVIEW-фикс`, лимит `limits.max_review_passes` и `outbox/BUDGET-<id>.md`; экономика этапов для RUN-REPORT из `orchestrator.log` и `GATES-<id>.md` |
 | `commit_plan.py` | Commit-план: файлы vs baseline, verdict, чтение `VERIFIED-{id}.sha` |
 | `commit_delta.py` | R2.3: единый сборщик кандидата (`DeltaAssembler` / `CandidatePlan`) — типизированные операции, rename-пара, отказы; здесь же алгоритм дельта-слияния (F1–F8) |
 | `commit_gate.py` | Auto-commit изолированным `GIT_INDEX_FILE` (индекс пользователя не трогаем) |
