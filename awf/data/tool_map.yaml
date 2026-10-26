@@ -56,7 +56,7 @@ groups:
       - mcp: awf_run_note
         when: "owner's live status line"
       - mcp: awf_run_revise
-        when: "revise not-started queue"
+        when: "revise/retry queue"
       - mcp: awf_run_finish
         when: "close the run"
       - mcp: awf_run_service_start

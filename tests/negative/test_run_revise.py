@@ -4,11 +4,13 @@ NOT-STARTED elements of the active run's queue.
 One typed API (``awf.api.run_revise`` + MCP tool) with:
 - ``preview=True`` — no side effects: the current queue, the elements that
   would change, the conflicts (current/started/completed/not in queue), key;
-- apply — changes the pipeline of the not-started elements only (positions
+- apply — changes the pipeline of the not-started elements (positions
   >= index, never the current or completed element); a conflict in the
   request refuses the whole apply (atomic — the previous plan stays in
   force); a live engine (a stage is running) refuses with the stop-first
   hint (stopping is the next unit, ORCH M3.5);
+- RB-3 (retry replace of a REJECTED current element) lives in
+  ``test_run_revise_retry.py``;
 - idempotency by ``key``: a repeat with the same key is a no-op (the stored
   revision is returned, nothing is written twice);
 - the applied revision is recorded in the run state (state/run.yaml,
@@ -30,6 +32,7 @@ import awf.api.pipeline as api_pipeline
 from awf import api, run_state
 
 T1, T2, T3 = "TODO-0001", "TODO-0002", "TODO-0003"
+RETRY, RETRY2 = "TODO-0004", "TODO-0005"
 ALT = "alt"
 
 

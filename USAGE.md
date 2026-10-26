@@ -716,7 +716,9 @@ without `.ready`, `REVIEW-*`) to `done/<id>/` and writes
 Refusals: no TODO file in inbox or `done/`; already archived (`done/<id>/TODO.md`);
 a live pipeline on this id (`awf kill` or wait first); an active run slot still
 planning to launch the TODO in its not-started queue region (replace it there
-first); empty `--reason` (required).
+first); empty `--reason` (required). A rejected CURRENT element is not refused —
+retry-replace it first (`{"from", "to"}`): a retire first marks it completed and
+closes the retry slot.
 `awf restore` still brings a retired TODO back.
 
 **`awf_todo_update`** (CLI `awf todo-update TODO-NNNN --content-file <path> |
@@ -789,7 +791,7 @@ stays; dispatch a marked TODO and `awf continue`.
 | `awf_run_next` | Launch the next queue item, or stop on a gate |
 | `awf_run_finish` | Close the run (write RUN-REPORT) |
 | `awf_run_note` | Set the run's live description for the dashboard |
-| `awf_run_revise` | Revise the pipelines of the run's NOT-STARTED queue elements (preview + apply, idempotent by key; `stop_running` stops a live unit via the engine's kill path) |
+| `awf_run_revise` | Revise the run's NOT-STARTED queue elements, or replace a REJECTED current element with a retry TODO (preview + apply, idempotent by key; `stop_running` stops a live unit via the engine's kill path — not for the retry path, `awf_kill` first) |
 | `awf_run_service_start` | Start a SERVICE run — create a role candidate during the main run (separate state file; the main run is untouched) |
 | `awf_run_service_status` | One read, two snapshots — the service run and the main run |
 | `awf_run_service_finish` | Close the service run (SERVICE-RUN-REPORT) and name the main continuation |
@@ -805,10 +807,12 @@ pipelines (RUN3 #1).
 
 **Queue revision (ORCH M3.4).** `awf_run_revise(project_dir, queue,
 reason, key, preview, stop_running)` revises the pipeline of the run's
-not-started queue elements only — the current and completed elements are
-never touched. `preview=true` shows the current queue, the elements that
-would change and the conflicts (current/started/completed/not in the queue)
-without writing anything. The apply is atomic (a conflict refuses the whole
+not-started queue elements and, with RB-3, replaces a REJECTED current
+element with a retry TODO — a completed or approved current is never
+touched. `preview=true` shows the current queue, the elements that
+would change and the conflicts (current/started/approved/rejected/
+completed/not in the queue) without writing anything. The apply is atomic
+(a conflict refuses the whole
 request) and is idempotent by `key`: a repeat with the same key AND the
 same payload is a no-op (a different payload under the same key is refused).
 By default it is refused while a stage is running (stop the unit first).
@@ -828,10 +832,23 @@ revision is recorded in `state/run.yaml` (`revisions`, the decisions' path)
 in the same CAS write as the queue change (A-13 generation condition); the
 revised pipelines take effect at each element's launch (`awf_run_next`).
 
+**Retry a rejected element (RB-3).** When the current element is REJECTED,
+`awf_run_revise` takes `{"from": "TODO-OLD", "to": "TODO-NEW"}` as a retry:
+the fresh TODO takes the rejected element's slot (same position, same queue
+length), the run stays active, and the reject counter/verdict stay in
+`awf_run_status`. `awf_run_next` then launches the retry there and the rest
+of the queue follows. The retry target must be a fresh id (no earlier
+reject — approve would refuse it forever). The path applies only to a dead
+stage: `stop_running` does NOT stop a live unit for a retry — call
+`awf_kill` first. A live/approved/completed current is a conflict. After
+the retry is applied, retire the replaced TODO (`awf_todo_retire`): a
+retire first would mark it completed and close the retry slot.
+
 **Queue shapes and the idempotency key (TODO-0242).** A revision item is
 one of three shapes: `{"todo_id": "TODO-NNNN", "pipeline": "<name>"}`
 (re-pipeline), `{"from": "TODO-A", "to": "TODO-B"}` (replace an element in
-place), or `{"remove": "TODO-NNNN"}` (drop a NOT-STARTED element). New
+place — a NOT-STARTED one, or the REJECTED current one as a retry), or
+`{"remove": "TODO-NNNN"}` (drop a NOT-STARTED element). New
 elements land at the end by default; `position` names the slot, and
 `after="TODO-A"` / `before="TODO-A"` anchor them to an existing element
 (mutually exclusive with `position` and with each other). The key is the
@@ -894,10 +911,13 @@ the card shows the goal, position, budget, the last decision in one line
 and links to the sources (run.yaml, the last decision's REVIEW /
 RUN-EVIDENCE file, the RUN-REPORT); the full context adds all the
 decisions (which, why, when). After a reject in a run both surfaces show
-the decision and the ONE next step — closing it: re-plan the task (issue
-a new TODO) + `awf_todo_retire`, or `awf_run_finish` (the run gate
-refuses `awf_run_next` over an open reject). A corrupted run.yaml
-degrades both to "no run" with a warning — no traceback.
+the decision and the ONE next step — closing it: replace the rejected
+current element with a retry via `awf_run_revise({"from": "<id>", "to":
+"<retry-id>"})`, then retire the old TODO with `awf_todo_retire`; or
+`awf_run_finish` (the run gate refuses `awf_run_next` over an open
+reject). Retrying before retiring matters: retire moves the element to
+completed and closes the retry slot. A corrupted run.yaml degrades both
+to "no run" with a warning — no traceback.
 
 **Progress control + goal check (ORCH M4.2).** `run.stall_minutes` in
 `.agentic/config.yaml` turns on the stalled-stage warning: while the

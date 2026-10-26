@@ -774,15 +774,17 @@ class RunReviseResult:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
     - ``applied`` — the not-started elements' pipelines changed, elements
       were replaced (``changes`` entries carry ``class: "replaced"`` with
-      ``from`` / ``to``), and/or new elements joined the queue
+      ``from`` / ``to``; RB-3: a replace whose ``from`` is the REJECTED
+      current element is a retry — the run position moves back to that
+      slot, the reject diary stays), and/or new elements joined the queue
       (``class: "appended"`` / ``"inserted"``), the revision is recorded
       (``revision`` = the stored entry);
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
     - ``refused`` — no active run / live engine / conflicts (current /
-      started / completed / TODO file missing / duplicate target /
-      replace source not queued) / missing key / invalid ``position`` /
-      CAS mismatch / a failed stop (M4.1);
+      approved / rejected / started / completed / TODO file missing /
+      duplicate target / replace source not queued) / missing key /
+      invalid ``position`` / CAS mismatch / a failed stop (M4.1);
       ``current_queue`` + ``generation`` carry the current state (the
       previous plan stays in force).
 

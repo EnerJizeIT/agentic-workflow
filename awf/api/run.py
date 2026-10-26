@@ -68,10 +68,11 @@ def _validate_queue(
     (empty ``pipeline`` = the config default).
 
     TODO-0240: with ``allow_replace`` (``run_revise`` only) an item may also
-    be ``{"from": "TODO-A", "to": "TODO-B"}`` — replace the NOT-STARTED
-    element A of the active queue with B. It normalizes to
-    ``{"replace_from", "replace_to"}`` and keeps A's pipeline; a plain
-    ``run_start`` refuses this form (a new run has nothing to replace).
+    be ``{"from": "TODO-A", "to": "TODO-B"}`` — replace element A
+    (NOT-STARTED, or the REJECTED current one as an RB-3 retry) of the
+    active queue with B. It normalizes to ``{"replace_from",
+    "replace_to"}`` and keeps A's pipeline; a plain ``run_start`` refuses
+    this form (a new run has nothing to replace).
     """
     items: list[dict] = []
     for q in queue or []:
@@ -1538,10 +1539,14 @@ def run_next(
                         f"launch {next_id} over an unreviewed result."
                     ),
                     next_action=(
-                        f"Close the reject decision: re-plan the task (issue a "
-                        f"new TODO) and retire {prev} (`awf_todo_retire`), or "
-                        f"stop the run (`awf_run_finish`) if it needs the "
-                        f"owner. Reason: outbox/REVIEW-{prev}.md."
+                        f"Close the reject decision: replace the rejected "
+                        f"element in the run queue with a fresh retry TODO "
+                        f"— awf_run_revise(queue=[{{\"from\": \"{prev}\", "
+                        f"\"to\": \"<new id>\"}}]) — then retire {prev} "
+                        f"(`awf_todo_retire`) and awf_run_next launches the "
+                        f"retry at its slot; or stop the run "
+                        f"(`awf_run_finish`) if it needs the owner. Reason: "
+                        f"outbox/REVIEW-{prev}.md."
                     ),
                 )
             return RunNextResult(
@@ -2239,6 +2244,24 @@ def _queue_item_index(queue: list, todo_id: str) -> int | None:
     return None
 
 
+def _reject_count(state: dict, todo_id: str) -> int:
+    """The reject counter of ``todo_id`` in ONE place (RB-3).
+
+    Both the current element's verdict and the fresh-retry-target guard
+    read ``rejects[todo_id]``. A second inline parse let the two answers
+    drift on a corrupt value (one degrading to 0, the other raising); the
+    counter is authoritative for ``approved ⇒ rejects == 0``, so every
+    reader goes through here.
+    """
+    rejects = state.get("rejects")
+    if not isinstance(rejects, dict):
+        return 0
+    try:
+        return int(rejects.get(todo_id, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _revision_items(
     project_dir: Path,
     state: dict,
@@ -2265,17 +2288,25 @@ def _revision_items(
 
     TODO-0240: a ``{"replace_from", "replace_to"}`` item REPLACES a
     not-started element in place — same position and pipeline, only the id
-    changes. The target must be launchable and must not duplicate any id
-    the queue carries (or another change already claimed).
+    changes. RB-3: the CURRENT element is the other replace source when the
+    run diary marks it REJECTED (``retry`` in the change — an internal
+    marker :func:`run_revise` strips before the result); a live/approved/
+    completed current stays a conflict. The target must be launchable and
+    must not duplicate any id the queue carries (or another change already
+    claimed); the retry target must also carry no earlier reject (approve
+    would refuse it forever — issue a fresh TODO id).
 
     Returns ``(current_queue, changes, conflicts, unchanged)``:
     - ``current_queue`` — every queue item with its lifecycle state
-      (``completed`` | ``current`` | ``started`` | ``queued``);
+      (``completed`` | ``current`` | ``approved`` | ``rejected`` |
+      ``started`` | ``queued``);
     - ``changes`` — requested items that change a not-started element's
       pipeline (``{"todo_id", "from", "to"}``; ``""`` = config default),
       replace an element (``{"todo_id": <to>, "from": <from>, "to",
-      "class": "replaced"}``) OR add a new element (``{"todo_id", "from":
-      "", "to", "class"}`` with ``class`` = ``appended`` / ``inserted``);
+      "class": "replaced"}``; a retry replace ALSO carries ``retry: True``
+      until :func:`run_revise` consumes it) OR add a new element
+      (``{"todo_id", "from": "", "to", "class"}`` with ``class`` =
+      ``appended`` / ``inserted``);
     - ``conflicts`` — requested items that cannot be changed or added
       (current / started / completed / TODO file missing / duplicate
       target / replace source not queued);
@@ -2293,11 +2324,29 @@ def _revision_items(
     # NEXT launch; until then the raw list lags one cycle behind).
     completed = set(_completed_view(project_dir, state))
 
+    def _current_state(tid: str) -> str:
+        """RB-3: the current element's verdict, when the run diary has one.
+
+        ``rejected`` (the retry-replace candidate) and ``approved`` are
+        DIFFERENT answers from "still in flight": the caller must know
+        whether a retry is allowed or the unit is already successful.
+        A counter is authoritative (the ``approved ⇒ rejects == 0``
+        invariant); a legacy run without a diary stays ``current``. Both
+        maps are read defensively (a corrupt value degrades to the missing
+        one) — the reader must not be the weakest link in the state path."""
+        if _reject_count(state, tid) >= 1:
+            return "rejected"
+        outcomes = state.get("outcomes") or {}
+        outcome = outcomes.get(tid) if isinstance(outcomes, dict) else None
+        if isinstance(outcome, dict) and str(outcome.get("verdict") or "") == "approved":
+            return "approved"
+        return "current"
+
     def _lifecycle(tid: str, pos: int) -> str:
         if tid in completed:
             return "completed"
         if tid == current:
-            return "current"
+            return _current_state(tid)
         if pos < index:
             return "started"
         return "queued"
@@ -2314,6 +2363,14 @@ def _revision_items(
     conflicts: dict[str, str] = {
         "completed": "already completed",
         "current": "the current (in-flight) element",
+        "approved": (
+            "the current element is approved — finish it; a retry replace "
+            "applies only to a rejected element"
+        ),
+        "rejected": (
+            "the current element is rejected — replace it with a retry TODO "
+            "({'from', 'to'}), not re-pipeline it"
+        ),
         "started": "already started",
     }
     changes: list[dict] = []
@@ -2400,7 +2457,11 @@ def _revision_items(
                 continue
             pos, _pipe = entry
             lifecycle = _lifecycle(src, pos)
-            if lifecycle != "queued":
+            # RB-3: the CURRENT rejected element is the other replace
+            # candidate — the retry takes its slot and the run goes on.
+            # A live/approved/finished current is still a conflict.
+            retry = lifecycle == "rejected"
+            if lifecycle not in ("queued", "rejected"):
                 conflicts_list.append({"todo_id": src, "reason": conflicts[lifecycle]})
                 continue
             # The specific lifecycle reasons come FIRST: ``taken`` already
@@ -2412,7 +2473,7 @@ def _revision_items(
                 continue
             if dst == current:
                 conflicts_list.append(
-                    {"todo_id": dst, "reason": "the current (in-flight) element"}
+                    {"todo_id": dst, "reason": conflicts[_current_state(dst)]}
                 )
                 continue
             if dst in taken:
@@ -2431,9 +2492,37 @@ def _revision_items(
             if missing:
                 conflicts_list.append({"todo_id": dst, "reason": missing})
                 continue
-            changes.append(
-                {"todo_id": dst, "from": src, "to": dst, "class": "replaced"}
-            )
+            if retry:
+                # F3: the retry target must be a FRESH id — a target with a
+                # counted reject can never be approved (`approved ⇒
+                # rejects == 0`), so the retry would be unreviewable.
+                target_rejects = _reject_count(state, dst)
+                if target_rejects >= 1:
+                    conflicts_list.append(
+                        {
+                            "todo_id": dst,
+                            "reason": (
+                                f"target {dst} already carries "
+                                f"{target_rejects} reject(s) — approve would "
+                                "refuse it forever; issue a fresh TODO id"
+                            ),
+                        }
+                    )
+                    continue
+            change = {
+                "todo_id": dst,
+                "from": src,
+                "to": dst,
+                "class": "replaced",
+            }
+            if retry:
+                # Internal marker ONLY: run_revise reads it to move the run
+                # position back to the retry's slot, then strips it — the
+                # answer's ``changes`` and the stored revision keep the
+                # documented ``{todo_id, from, to, class}`` shape (the
+                # from→to pair is the retry evidence on disk).
+                change["retry"] = True
+            changes.append(change)
             taken.add(dst)
             continue
         tid = req["todo_id"]
@@ -2460,7 +2549,7 @@ def _revision_items(
             continue
         if tid == current:
             conflicts_list.append(
-                {"todo_id": tid, "reason": "the current (in-flight) element"}
+                {"todo_id": tid, "reason": conflicts[_current_state(tid)]}
             )
             continue
         if tid in taken:
@@ -2541,25 +2630,26 @@ def run_revise(
     after: str | None = None,
     before: str | None = None,
 ) -> RunReviseResult:
-    """ORCH M3.4 / REPORTS32 (TODO-0198): revise the NOT-STARTED elements
-    of the active run's queue — one typed operation with a preview and an
-    idempotency key.
+    """ORCH M3.4 / REPORTS32 (TODO-0198): revise the active run's queue —
+    the NOT-STARTED elements, and (RB-3) the REJECTED current element as a
+    retry replace — one typed operation with a preview and an idempotency
+    key.
 
     - ``preview=True`` — no side effects: the current queue (per-item
       lifecycle state), which elements would change, which would be
-      appended/inserted, the conflicts (current/started/completed/TODO
-      file missing), the key. The preview is not refused by a live engine
-      (it is read-only).
+      appended/inserted, the conflicts (current/started/approved/rejected/
+      completed/TODO file missing), the key. The preview is not refused by
+      a live engine (it is read-only).
     - apply (``preview=False``) — changes the pipeline of the not-started
-      elements only; the completed and the current element are never
-      touched. Refusals (each returns the current state, the previous plan
-      stays in force): no active run; the engine is alive and
-      ``stop_running`` is false (stop the unit first); ANY conflict in the
-      request (atomic — nothing is applied); a missing ``key``; an invalid
-      ``position``; a generation mismatch (CAS, A-13 — the run changed
-      between the read and the write); the stop failed (ORCH M4.1 — the
-      stage survived the kill, so the revision is NOT applied and the
-      retry is possible).
+      elements and, with RB-3, replaces a REJECTED current element; the
+      completed and approved elements are never touched. Refusals (each
+      returns the current state, the previous plan stays in force): no
+      active run; the engine is alive and ``stop_running`` is false (stop
+      the unit first); ANY conflict in the request (atomic — nothing is
+      applied); a missing ``key``; an invalid ``position``; a generation
+      mismatch (CAS, A-13 — the run changed between the read and the
+      write); the stop failed (ORCH M4.1 — the stage survived the kill, so
+      the revision is NOT applied and the retry is possible).
     - REPORTS32 (TODO-0198) — APPEND/INSERT: a requested id NOT in the
       queue joins it (the third outcome, instead of a blind conflict) when
       its TODO file is launchable (``inbox/<id>.md`` present, non-empty)
@@ -2598,6 +2688,14 @@ def run_revise(
       (missing target / duplicate / source not queued) refuses the WHOLE
       request atomically; the change is class ``"replaced"`` with
       ``from=A`` / ``to=B`` in the revision record.
+    - RB-3 — the CURRENT element may be replaced when it is REJECTED: a
+      retry TODO B takes the rejected element's slot (the queue length and
+      position are kept, ``index`` moves back to that slot, ``current`` is
+      cleared) so ``awf_run_next`` relaunches there; the reject counter,
+      the outcomes verdict and the completed list are untouched. Only a
+      dead stage qualifies (a live one is refused even with
+      ``stop_running`` — this path never kills), and a live/approved/
+      finished current stays a conflict.
     - the applied revision is recorded in the run state (state/run.yaml,
       ``revisions``: ``{ts, key, kind: "revision", reason, changes,
       generation, resume_from}`` — the decisions' path) in the SAME CAS
@@ -2702,6 +2800,20 @@ def run_revise(
     current_queue, changes, conflicts, unchanged = _revision_items(
         project_dir, state, requested, position=insert_at
     )
+    # RB-3: the replace of the CURRENT rejected element by a retry TODO —
+    # allowed only on a dead stage (the check below is stricter than the
+    # generic stop-first gate: this path never kills a live unit).
+    retry_changes = [
+        c for c in changes if c.get("class") == "replaced" and c.get("retry")
+    ]
+    retry_from = str(retry_changes[0].get("from") or "") if retry_changes else ""
+    retry_to = str(retry_changes[0].get("todo_id") or "") if retry_changes else ""
+    # F4: the marker is the classifier→mutator channel, not part of ANY
+    # answer — strip it BEFORE the first early return (anchor+remove,
+    # invalid position, preview, refusals), so every ``changes`` that
+    # leaves this function carries ONE documented shape.
+    for _c in retry_changes:
+        _c.pop("retry", None)
     # TODO-0242 REVIEW (Q1): the position the caller sees is the one the
     # queue will actually carry — removals before the base shift it.
     reported_position = _position_after_removals(
@@ -2826,6 +2938,23 @@ def run_revise(
     # The stop itself happens below the cheap state checks: a conflicted
     # or keyless request must not take down the running unit for nothing.
     running, _pid, source = _liveness.resolve(project_dir)
+    if running and retry_changes:
+        return RunReviseResult(
+            action="refused",
+            preview=False,
+            key=key_clean,
+            generation=gen,
+            current_queue=current_queue,
+            changes=changes,
+            conflicts=conflicts,
+            unchanged=unchanged,
+            message=(
+                f"Refused: {retry_from} is rejected but its stage is still "
+                f"running (source: {source or '?'}) — the retry replace "
+                "applies only to a dead stage. Stop the unit first (awf_kill); "
+                "the previous plan stays in force."
+            ),
+        )
     if running and not stop_running:
         return RunReviseResult(
             action="refused",
@@ -3049,6 +3178,20 @@ def run_revise(
                 place_at = base + 1
             else:  # "appended"
                 queue.append({"todo_id": ch["todo_id"], "pipeline": ch["to"]})
+        # RB-3: the retry took the rejected CURRENT element's slot — the
+        # run position moves back to that slot (no new element, the queue
+        # keeps its length) and the slot is free for ``run_next``. The
+        # ``completed`` list and the reject diary stay untouched: the
+        # rejected attempt is history, not a completion. The CAS tuple of
+        # this write already pins ``current == retry_from`` (the classifier
+        # only names a retry when the CURRENT element is rejected), so the
+        # slot move needs no second guard here.
+        if retry_from and retry_to:
+            retry_pos = _queue_item_index(queue, retry_to)
+            if retry_pos is not None:
+                st["index"] = retry_pos
+                st["current"] = ""
+                st.pop("reserved_by", None)
         st["queue"] = queue
         # ORCH M6.3 (seam: binding×revision): a revision changes the run's
         # PLAN — the queue the run continues with is new, so the run moves
@@ -3157,6 +3300,11 @@ def run_revise(
         parts.append(
             f"{n_replaced} element(s) replaced ({_replace_pairs(changes)})"
         )
+    if retry_to:
+        parts.append(
+            f"the rejected current element {retry_from} gave its slot to "
+            f"the retry {retry_to}"
+        )
     if n_appended:
         ids = ", ".join(
             c["todo_id"] for c in changes if c.get("class") == "appended"
@@ -3172,6 +3320,15 @@ def run_revise(
             f"Resume the stopped unit with awf_continue (it continues from "
             f"stage '{resume_from}'), then awf_run_next for the next "
             "element."
+        )
+    elif retry_to:
+        next_action = (
+            f"Continue the run with awf_run_next — it launches the retry "
+            f"{retry_to} at its queue position; the reject history of "
+            f"{retry_from} stays in awf_run_status. Retire the replaced "
+            f"TODO {retry_from} (awf_todo_retire) only AFTER the retry is "
+            "applied — a retire first marks it completed and closes the "
+            "retry slot."
         )
     elif n_inserted:
         next_action = (
