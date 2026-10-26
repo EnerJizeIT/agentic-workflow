@@ -19,6 +19,7 @@ is spent (a crash can never consume the budget).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +28,7 @@ from typing import Any
 from . import checklist_gate, paths, todos
 from . import config as cfg_mod
 from ._log import log as _log
-from .checklists import ChecklistError
+from .checklists import CHECKLIST_HEADING, ChecklistError, block_hash
 from .infra import managed_fs
 from .unit_contract import parse_todo_contract
 
@@ -35,6 +36,13 @@ from .unit_contract import parse_todo_contract
 CLOSER_ATTEMPTS_KEY = "checklist.closer_attempts"
 DEFAULT_CLOSER_ATTEMPTS = 1
 MAX_CLOSER_ATTEMPTS = 2
+
+#: The contract keys frozen before the first closer (IMP5, R5): the closer
+#: may not rewrite the check semantics; ``files`` is a report, not a norm.
+FROZEN_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red")
+
+#: The one wording AC12/AC13 require on a norm edit.
+NORM_EDIT_REASON = "closer edited the checklist/contract"
 
 #: The stage-state reason recorded on a green skip.
 SKIP_REASON = "checklist_green"
@@ -118,6 +126,9 @@ def read_state(project_dir: str | Path, todo_id: str) -> dict | None:
         raise ValueError(
             f"{path.name} has an invalid attempts counter: {attempts!r}"
         )
+    before = data.get("before")
+    if before is not None and not isinstance(before, dict):
+        raise ValueError(f"{path.name} has an invalid before snapshot: {before!r}")
     return data
 
 
@@ -139,6 +150,62 @@ def _verdict_facts(verdict: dict) -> dict:
         "probe_sha",
     )
     return {key: verdict.get(key) for key in keys}
+
+
+def contract_fingerprint(contract: dict | None) -> str:
+    """sha256 of the frozen contract keys (IMP5, R5).
+
+    ``verify``, ``gates`` and ``prove_red`` decide what the unit is checked
+    against; ``files`` and the other keys are a report, not a norm, and are
+    deliberately outside the hash (AC13). No contract at all and an empty
+    contract hash the same — an absent norm is a fixed value, not a crash.
+    """
+    frozen: dict[str, Any] = {}
+    if isinstance(contract, dict):
+        frozen = {k: contract[k] for k in FROZEN_CONTRACT_KEYS if k in contract}
+    blob = json.dumps(
+        frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def norm_fingerprints(todo_text: str, contract: dict | None) -> dict:
+    """The norm snapshot: the checklist block hash plus the contract hash."""
+    return {
+        "block_sha": block_hash(todo_text),
+        "contract_sha": contract_fingerprint(contract),
+    }
+
+
+def _norm_surfaces(before: dict, current: dict) -> list[str]:
+    """Names of the frozen surfaces whose fingerprint changed."""
+    changed: list[str] = []
+    if before.get("block_sha") != current.get("block_sha"):
+        changed.append(f"блок `{CHECKLIST_HEADING}`")
+    if before.get("contract_sha") != current.get("contract_sha"):
+        changed.append(
+            "контракт TODO (`" + "`, `".join(FROZEN_CONTRACT_KEYS) + "`)"
+        )
+    return changed
+
+
+def _norm_refusal(
+    before: dict, current: dict, changed: list[str]
+) -> tuple[str, list[str], list[str]]:
+    """The shared norm-edit verdict: reason, findings, directions (AC12)."""
+    reason = f"blocked — {NORM_EDIT_REASON}: {', '.join(changed)}"
+    findings = [
+        f"изменено: {', '.join(changed)}",
+        f"`block_sha`: {before.get('block_sha') or '—'} → "
+        f"{current.get('block_sha') or '—'}",
+        f"`contract_sha`: {before.get('contract_sha') or '—'} → "
+        f"{current.get('contract_sha') or '—'}",
+    ]
+    directions = [
+        "решение супервизора: верни блок/контракт в исходное состояние "
+        "вручную (файл не откатывается автоматически) или выдай юнит заново",
+    ]
+    return reason, findings, directions
 
 
 def _write_record(project_dir: Path, todo_id: str, record: dict) -> None:
@@ -262,6 +329,20 @@ def _state_refusal(e: ValueError) -> tuple[str, list[str], list[str]]:
         "разберись с `context/CLOSER-<todo>.json` вручную: "
         "молча перезаписывать историю и счётчик запрещено",
     ]
+
+
+def _record_refusal(
+    todo_id: str, e: Exception
+) -> tuple[str, list[str], list[str]]:
+    """The shared "record not written" verdict — three writers, one wording.
+
+    The first verdict, the ``before`` snapshot and the attempt counter all
+    land in the same file through :func:`_write_record`; a failure of any of
+    them is the same owner-facing refusal, so the text must not drift
+    between the entry and :func:`settle_run`.
+    """
+    reason = f"blocked — не удалось записать CLOSER-{todo_id}.json: {e}"
+    return reason, [str(e)], ["проверь права на `.agentic/context/`"]
 
 
 def _cap_refusal(
@@ -447,18 +528,40 @@ def decide(
         try:
             _write_record(project, todo_id, record)
         except (OSError, managed_fs.ManagedPathError) as e:
-            reason = f"blocked — не удалось записать CLOSER-{todo_id}.json: {e}"
+            reason, findings, directions = _record_refusal(todo_id, e)
             return _blocked(
                 project,
                 todo_id,
                 log_line=f"{dod_line(verdict)} | {reason}",
                 verdict=verdict,
                 reason=reason,
-                findings=[str(e)],
-                directions=["проверь права на `.agentic/context/`"],
+                findings=findings,
+                directions=directions,
             )
 
     line = dod_line(verdict)
+
+    # 5a. Norm snapshot (IMP5, K5): the CURRENT block and frozen contract are
+    # compared with the snapshot taken before the first spawn. The check runs
+    # on every entry — a restart may not launder an edit, and closed items
+    # never cancel the refusal (AC12–AC14). The file is not rolled back.
+    current_norm = norm_fingerprints(text, contract)
+    stored_before = record.get("before")
+    if isinstance(stored_before, dict) and stored_before:
+        changed = _norm_surfaces(stored_before, current_norm)
+        if changed:
+            reason, findings, directions = _norm_refusal(
+                stored_before, current_norm, changed
+            )
+            return _blocked(
+                project,
+                todo_id,
+                log_line=f"{line} | {reason}",
+                verdict=verdict,
+                reason=reason,
+                findings=findings,
+                directions=directions,
+            )
 
     # 6. A block that cannot be executed is the owner's fix, not a closer
     # run: no spawn, no budget.
@@ -487,6 +590,27 @@ def decide(
     # counter is spent by ``settle_run`` AFTER a completed run, never by the
     # entry: a crash, a salvaged signal or a retry of a crashed spawn must
     # not consume an attempt. A unit at the cap is the owner's decision.
+    #
+    # The first RED decision freezes the norm BEFORE the first spawn; later
+    # entries compare against this original snapshot, never the previous
+    # attempt. The write stays on this path: a green unit never had a closer
+    # that could edit the norm.
+    if not isinstance(stored_before, dict) or not stored_before:
+        record["before"] = current_norm
+        try:
+            _write_record(project, todo_id, record)
+        except (OSError, managed_fs.ManagedPathError) as e:
+            reason, findings, directions = _record_refusal(todo_id, e)
+            return _blocked(
+                project,
+                todo_id,
+                log_line=f"{line} | {reason}",
+                verdict=verdict,
+                reason=reason,
+                findings=findings,
+                directions=directions,
+            )
+
     attempts = _attempts_of(record)
     if attempts >= limit:
         reason, findings, directions = _cap_refusal(verdict, attempts, limit)
@@ -604,14 +728,60 @@ def settle_run(
         try:
             _write_record(project, todo_id, record)
         except (OSError, managed_fs.ManagedPathError) as e:
-            reason = f"blocked — не удалось записать CLOSER-{todo_id}.json: {e}"
+            reason, findings, directions = _record_refusal(todo_id, e)
             return _settle_blocked(
                 project,
                 todo_id,
                 log_line=reason,
                 reason=reason,
-                findings=[str(e)],
-                directions=["проверь права на `.agentic/context/`"],
+                findings=findings,
+                directions=directions,
+            )
+
+    # 2b. Norm snapshot (IMP5, K5): the snapshot taken before the first
+    # spawn is compared with the tree the closer produced — BEFORE the colour
+    # decision, so closed items cannot launder an edited block or contract
+    # (AC12/AC13). A contract that no longer parses after the run is the same
+    # refusal. The comparison is against the ORIGINAL snapshot, never the
+    # previous attempt (AC14).
+    try:
+        rule_text = todos.read_todo_text(project, todo_id)
+        current_contract, _unknown = parse_todo_contract(rule_text)
+    except ValueError as e:
+        reason = (
+            f"blocked — {NORM_EDIT_REASON}: контракт TODO (`"
+            + "`, `".join(FROZEN_CONTRACT_KEYS)
+            + f"`) нечитаем: {e}"
+        )
+        return _settle_blocked(
+            project,
+            todo_id,
+            log_line=f"{line} | {reason}",
+            reason=reason,
+            attempts=attempts,
+            findings=[f"контракт TODO после closer: {e}"],
+            directions=[
+                "решение супервизора: верни контракт в исходное состояние "
+                "вручную (файл не откатывается автоматически) или выдай юнит "
+                "заново",
+            ],
+        )
+    stored_before = record.get("before")
+    if isinstance(stored_before, dict) and stored_before:
+        current_norm = norm_fingerprints(rule_text, current_contract)
+        changed = _norm_surfaces(stored_before, current_norm)
+        if changed:
+            reason, findings, directions = _norm_refusal(
+                stored_before, current_norm, changed
+            )
+            return _settle_blocked(
+                project,
+                todo_id,
+                log_line=f"{line} | {reason}",
+                reason=reason,
+                attempts=attempts,
+                findings=findings,
+                directions=directions,
             )
 
     # 3. The colour decides, by the same definition the entry used.
@@ -680,11 +850,15 @@ __all__ = [
     "CLOSER_ATTEMPTS_KEY",
     "CloserConfigError",
     "Decision",
+    "FROZEN_CONTRACT_KEYS",
+    "NORM_EDIT_REASON",
     "RunOutcome",
     "SKIP_REASON",
     "closer_attempts",
+    "contract_fingerprint",
     "decide",
     "dod_line",
+    "norm_fingerprints",
     "read_state",
     "settle_run",
     "state_path",

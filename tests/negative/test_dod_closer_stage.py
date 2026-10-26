@@ -208,9 +208,12 @@ def _write_todo(
     block_items: list[str] | None = None,
     wave: str | None = None,
     raw_block: str | None = None,
+    contract: list[str] | None = None,
 ) -> None:
     parts = [f"# TODO — {todo_id}"]
-    if wave is not None:
+    if contract is not None:
+        parts += ["", "---", *contract, "---"]
+    elif wave is not None:
         parts += ["", "---", f"wave: {wave}", "---"]
     if raw_block is not None:
         parts += ["", raw_block]
@@ -1239,3 +1242,357 @@ def test_pipeline_snapshot_path_is_one_accessor(tmp_path, monkeypatch):
     assert supervisor._snapshot_stage_names(tmp_path, "TODO-0001") is None
     assert budget._unit_segments(tmp_path, "TODO-0001") == []
     assert seen == [(tmp_path, "TODO-0001")] * 3
+
+
+# ─── IMP5 (R5): block and contract immutability ────────────────────────
+
+
+_NORM_CONTRACT = (
+    'verify: ["python -m pytest -q"]',
+    'gates: ["contracts"]',
+    'prove_red: ["tests/x.py::test_y"]',
+    'files: ["src/x.py"]',
+)
+
+
+def _todo_path(proj: Path, todo_id: str) -> Path:
+    return proj / ".agentic" / "inbox" / f"{todo_id}.md"
+
+
+def _edit_todo(proj: Path, todo_id: str, *, old: str, new: str) -> None:
+    path = _todo_path(proj, todo_id)
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"edit target missing: {old!r}"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _read_blocked_note(proj: Path, todo_id: str) -> str:
+    return (
+        proj / ".agentic" / "outbox" / f"BLOCKED-{todo_id}.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_norm_snapshot_is_taken_once_and_survives_restart(tmp_git_repo):
+    """AC14: ``before`` is the original snapshot, not the previous attempt."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+        contract=list(_NORM_CONTRACT),
+    )
+    stage = _closer_stage()
+
+    first = closer_stage.decide(proj, "TODO-0001", stage, {})
+    assert first.kind == "run"
+    record = _record(proj, "TODO-0001")
+    before = record["before"]
+    assert before["block_sha"]
+    assert before["contract_sha"] == closer_stage.contract_fingerprint(
+        {
+            "verify": ["python -m pytest -q"],
+            "gates": ["contracts"],
+            "prove_red": ["tests/x.py::test_y"],
+            "files": ["src/x.py"],
+        }
+    )
+
+    # A restart is just another decide: the file is the only memory.
+    again = closer_stage.decide(proj, "TODO-0001", stage, {})
+    assert again.kind == "run"
+    assert _record(proj, "TODO-0001")["before"] == before
+
+    # ``files`` is a report, not a norm: its edit is not a violation.
+    _edit_todo(
+        proj,
+        "TODO-0001",
+        old='files: ["src/x.py"]',
+        new='files: ["src/y.py"]',
+    )
+    files_edit = closer_stage.decide(proj, "TODO-0001", stage, {})
+    assert files_edit.kind == "run"
+    assert _record(proj, "TODO-0001")["before"] == before
+
+    # A block edit is refused on the NEXT entry, before any spawn.
+    _edit_todo(
+        proj, "TODO-0001", old="- [ ] unit-01:", new="- [x] unit-01:"
+    )
+    blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+    assert blocked.kind == "blocked"
+    assert "closer edited the checklist/contract" in blocked.note
+    assert "Чек-лист завершения" in blocked.note
+    assert _record(proj, "TODO-0001")["before"] == before
+
+
+def test_norm_snapshot_survives_a_second_closer_run(tmp_git_repo, monkeypatch):
+    """AC14: a repeat closer compares with the ORIGINAL snapshot."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+        contract=list(_NORM_CONTRACT),
+    )
+    stages = _closer_stages()
+    stage = stages[1]
+    spawns: list = []
+
+    def spawn(stage, todo_id, project_dir, config, logs_dir, **kw):
+        spawns.append(todo_id)
+        root = Path(project_dir)
+        if len(spawns) == 2:
+            (root / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+            path = _todo_path(root, todo_id)
+            path.write_text(
+                path.read_text(encoding="utf-8")
+                + "\n"
+                + _manual("unit-99")
+                + "\n",
+                encoding="utf-8",
+            )
+        outbox = paths.outbox(root)
+        (outbox / f"DONE-{todo_id}.md").write_text("# signal\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    _patch_engine(monkeypatch, spawn)
+    config = {"checklist": {"closer_attempts": 2}}
+
+    _todo, idx, rc = _run_closer(proj, "TODO-0001", stage, stages, config)
+    assert (idx, rc) == (1, 0), "a red first run re-enters the stage"
+    after_first = _record(proj, "TODO-0001")["before"]
+    assert _record(proj, "TODO-0001")["attempts"] == 1
+
+    _todo, idx, rc = _run_closer(proj, "TODO-0001", stage, stages, config)
+    assert len(spawns) == 2, "the second (last) run happened"
+    assert (idx, rc) == (1, 1), "the edit in the second run still blocks"
+    record = _record(proj, "TODO-0001")
+    assert record["before"] == after_first, "the snapshot is the original one"
+    assert record["attempts"] == 2
+    note = _read_blocked_note(proj, "TODO-0001")
+    assert "closer edited the checklist/contract" in note
+    assert "Чек-лист завершения" in note
+
+
+def test_closer_block_edit_blocks_even_when_items_closed(
+    tmp_git_repo, monkeypatch
+):
+    """AC12: a green gate does not cancel an edited block."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+        contract=list(_NORM_CONTRACT),
+    )
+    stages = _closer_stages()
+    stage = stages[1]
+
+    def spawn(stage, todo_id, project_dir, config, logs_dir, **kw):
+        root = Path(project_dir)
+        (root / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+        path = _todo_path(root, todo_id)
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n" + _manual("unit-99") + "\n",
+            encoding="utf-8",
+        )
+        outbox = paths.outbox(root)
+        (outbox / f"DONE-{todo_id}.md").write_text("# signal\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    _patch_engine(monkeypatch, spawn)
+    _todo, _idx, rc = _run_closer(proj, "TODO-0001", stage, stages, {})
+
+    assert rc == 1
+    note = _read_blocked_note(proj, "TODO-0001")
+    assert "closer edited the checklist/contract" in note
+    assert "Чек-лист завершения" in note
+    # Doctrine 02: the edit stays in the tree; the attempt was charged
+    # before the colour decision, so a norm edit cannot buy a free retry.
+    assert "unit-99" in _todo_path(proj, "TODO-0001").read_text(encoding="utf-8")
+    assert _record(proj, "TODO-0001")["attempts"] == 1
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "blocked"),
+    [
+        (
+            'verify: ["python -m pytest -q"]',
+            'verify: ["python -m pytest -x"]',
+            True,
+        ),
+        ('gates: ["contracts"]', 'gates: ["ratchet"]', True),
+        (
+            'prove_red: ["tests/x.py::test_y"]',
+            'prove_red: ["tests/z.py::test_y"]',
+            True,
+        ),
+        ('files: ["src/x.py"]', 'files: ["src/y.py"]', False),
+    ],
+)
+def test_closer_contract_edit_blocks_and_files_edit_passes(
+    tmp_git_repo, monkeypatch, old, new, blocked
+):
+    """AC13: the frozen keys are a norm; ``files`` is a report."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+        contract=list(_NORM_CONTRACT),
+    )
+    stages = _closer_stages()
+    stage = stages[1]
+
+    def spawn(stage, todo_id, project_dir, config, logs_dir, **kw):
+        root = Path(project_dir)
+        (root / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+        _edit_todo(root, todo_id, old=old, new=new)
+        outbox = paths.outbox(root)
+        (outbox / f"DONE-{todo_id}.md").write_text("# signal\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    _patch_engine(monkeypatch, spawn)
+    _todo, idx, rc = _run_closer(proj, "TODO-0001", stage, stages, {})
+
+    if blocked:
+        assert (idx, rc) == (1, 1)
+        note = _read_blocked_note(proj, "TODO-0001")
+        assert "closer edited the checklist/contract" in note
+        assert "контракт TODO" in note
+    else:
+        assert (idx, rc) == (2, 0)
+        assert not (proj / ".agentic" / "outbox" / "BLOCKED-TODO-0001.md").exists()
+    assert _record(proj, "TODO-0001")["attempts"] == 1
+
+
+def test_unreadable_contract_after_closer_blocks(tmp_git_repo, monkeypatch):
+    """K5: a contract that no longer parses is the same refusal."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+        contract=list(_NORM_CONTRACT),
+    )
+    stages = _closer_stages()
+    stage = stages[1]
+
+    def spawn(stage, todo_id, project_dir, config, logs_dir, **kw):
+        root = Path(project_dir)
+        (root / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+        _edit_todo(
+            root,
+            todo_id,
+            old='verify: ["python -m pytest -q"]',
+            new='verify: ["python -m pytest -q"',
+        )
+        outbox = paths.outbox(root)
+        (outbox / f"DONE-{todo_id}.md").write_text("# signal\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    _patch_engine(monkeypatch, spawn)
+    _todo, _idx, rc = _run_closer(proj, "TODO-0001", stage, stages, {})
+
+    assert rc == 1
+    note = _read_blocked_note(proj, "TODO-0001")
+    assert "closer edited the checklist/contract" in note
+    assert "контракт TODO" in note
+
+
+def test_norm_compare_survives_absent_contract(tmp_git_repo):
+    """AC13/T6: no contract — the comparison does not crash; an edit is caught."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+    )
+    stage = _closer_stage()
+
+    assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+    before = _record(proj, "TODO-0001")["before"]
+    assert before["contract_sha"] == closer_stage.contract_fingerprint(None)
+
+    # Close the missing probe AND edit the block: the gate is green, the norm
+    # edit still refuses (closed items do not cancel the refusal).
+    (proj / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+    path = _todo_path(proj, "TODO-0001")
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\n" + _manual("unit-99") + "\n",
+        encoding="utf-8",
+    )
+    blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+    assert blocked.kind == "blocked"
+    assert "closer edited the checklist/contract" in blocked.note
+    assert "Чек-лист завершения" in blocked.note
+    assert _record(proj, "TODO-0001")["before"] == before
+
+
+def test_missing_record_after_run_fails_closed(tmp_git_repo, monkeypatch):
+    """CTX1 (audit IMP4): a deleted record cannot buy a fresh budget.
+
+    ``settle_run`` re-reads the record AFTER the run; a missing file is a
+    closed refusal, not a fresh ``attempts=0``. The residual threat — an
+    operator deleting the file and starting a new ``decide`` — is outside
+    the model (the record is the unit's only memory).
+    """
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+    )
+    stages = _closer_stages()
+    stage = stages[1]
+
+    def spawn(stage, todo_id, project_dir, config, logs_dir, **kw):
+        root = Path(project_dir)
+        (root / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+        closer_stage.state_path(root, todo_id).unlink()
+        outbox = paths.outbox(root)
+        (outbox / f"DONE-{todo_id}.md").write_text("# signal\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    _patch_engine(monkeypatch, spawn)
+    _todo, _idx, rc = _run_closer(proj, "TODO-0001", stage, stages, {})
+
+    assert rc == 1
+    note = _read_blocked_note(proj, "TODO-0001")
+    assert "CLOSER-TODO-0001.json" in note
+    assert "потерян" in note
+
+
+def test_salvaged_norm_edit_blocks_without_spending(tmp_git_repo, monkeypatch):
+    """K5 + AC11: an edit by a crashed closer is still a violation; free."""
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+    )
+    stages = _closer_stages()
+    stage = stages[1]
+
+    def crash(*args, **kwargs):
+        (proj / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+        path = _todo_path(proj, "TODO-0001")
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n" + _manual("unit-99") + "\n",
+            encoding="utf-8",
+        )
+
+    def salvage(stage, todo_id, auto=False, project_dir=".", logs_dir=None, **_kw):
+        outbox = paths.outbox(Path(project_dir))
+        (outbox / f"DONE-{todo_id}.md").write_text("# salvaged\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    _patch_engine(monkeypatch, crash)
+    monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", salvage)
+
+    _todo, _idx, rc = _run_closer(proj, "TODO-0001", stage, stages, {})
+
+    assert rc == 1
+    note = _read_blocked_note(proj, "TODO-0001")
+    assert "closer edited the checklist/contract" in note
+    assert "Чек-лист завершения" in note
+    assert _record(proj, "TODO-0001")["attempts"] == 0, "salvage spent an attempt"
