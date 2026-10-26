@@ -344,6 +344,31 @@ switched off for that subprocess (a name the config does not define is a
 warning, never a failure). An explicit empty list (`mcp_servers: []`) is a
 value, not an absence: it turns every MCP server off for the worker.
 
+A third block caps the unit's review rounds:
+
+```yaml
+limits:
+  max_review_passes: 3      # 0 disables; valid range 0..20
+```
+
+The counter is the number of `## REVIEW-фикс` sections in the unit's TODO —
+the rounds the supervisor appended. A silent retry, a salvage or another
+attempt does not change it. When the count reaches the cap, the unit does not
+continue: the verify entry stops the pipeline, `awf continue` refuses the
+implementer stage and `awf run_next` stops the run with `budget exhausted`.
+`outbox/BUDGET-<id>.md` carries the price (passes, the last BLOCKED findings,
+per-stage time, the round headings); no role switch or automatic retry
+follows — the owner decides. A value outside 0..20 is a config refusal, not a
+silent "no limit".
+
+`awf_status` and `awf_brief` show the active unit's `passes: N/max`; at the
+cap the State section adds `budget: exhausted`. The RUN-REPORT's
+`## Unit economics` section gives every unit in the run one line: `passes`,
+`wall`, `stages: plan a/impl b/arch c/qa d/audit e/verify f` (from
+`orchestrator.log`) and `gates: qa_fail K раз, contract_fail L` (from the
+unit's `context/GATES-<id>.md`). Missing data reads `n/a`, never a measured
+zero.
+
 `awf supervise` is the watchdog for the leftover case: while the run has an
 active unit it restarts a dead engine (`awf continue`) up to
 `--max-restarts` (default 5) with `--pause` seconds between checks (default

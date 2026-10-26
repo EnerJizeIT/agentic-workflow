@@ -56,6 +56,19 @@ def run(args: Any) -> int:
         else:
             print("  Progress: (none — worker has not started)")
 
+        # TODO-0262: the review-pass budget of the unit.
+        passes = entry.get("review_passes")
+        max_passes = entry.get("review_passes_max")
+        if passes is not None:
+            if max_passes:
+                print(f"  Passes:  {passes}/{max_passes}")
+            elif max_passes == 0:
+                # max_review_passes: 0 disables the limit — still show the
+                # count instead of hiding the line (TODO-0262 REVIEW A3).
+                print(f"  Passes:  {passes} (без лимита)")
+        if entry.get("budget_exhausted"):
+            print("  Budget:  exhausted")
+
     for bid in result.blocked_ids:
         print(f"Blocked: {bid}")
 

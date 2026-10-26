@@ -20,6 +20,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import budget as budget_mod
+from .. import config as cfg_mod
 from .. import git_utils, paths, pipeline_state, run_state, todos
 from .._atomic import atomic_write_text
 from ..infra import state_store
@@ -1021,6 +1023,7 @@ def _write_report(
     summary: str = "",
     forced: bool = False,
     stale_note: str = "",
+    focus_todo: str = "",
 ) -> Path | None:
     """Write RUN-REPORT-{ts}.md to outbox. Returns the path (or None on OSError).
 
@@ -1161,6 +1164,22 @@ def _write_report(
     lines += _iteration_lines(
         project_dir, [current_unit, *completed, *rejects.keys()]
     )
+    # TODO-0262: the unit economics — the review-pass count, the wall clock,
+    # the time each stage took (from the stage log) and how many times the QA
+    # and contract gates failed (from the unit's GATES report). Missing data
+    # reads ``n/a``, not a measured zero.
+    # TODO-0262 REVIEW (CTX4): the unit the run stopped ON (budget exhausted)
+    # is neither ``current`` nor ``completed`` — the caller hands it over so
+    # its economics line (the price of the failed rounds) is in the report.
+    economics = [
+        budget_mod.economics_line(project_dir, todo)
+        for todo in dict.fromkeys(
+            [current_unit, focus_todo, *completed, *rejects.keys()]
+        )
+        if todo
+    ]
+    if economics:
+        lines += ["## Unit economics", "", *economics, ""]
     # ORCH M1.1: the causal memory — WHY the supervisor approved/rejected,
     # so the owner can audit the run after the fact. The approve entries
     # carry the evidence excerpt (the full text stays in RUN-EVIDENCE).
@@ -1375,8 +1394,13 @@ def stop_run(
     state: dict,
     reason: str,
     summary: str = "",
+    focus_todo: str = "",
 ) -> RunNextResult:
     """Stop the run: write the report, mark inactive, guide the supervisor.
+
+    ``focus_todo`` (TODO-0262 REVIEW CTX4): the unit the stop decision is
+    about — it may be neither the run's ``current`` nor a completed one, so
+    the report's economics section would miss it without the explicit hand.
 
     R1.4 (S3-03): the close is conditional on the run generation the caller
     read (``state``). A stale stop — its state captured before a newer
@@ -1385,7 +1409,9 @@ def stop_run(
     """
     state = state or {}
     generation = run_state.generation_of(state)
-    report = _write_report(project_dir, state, reason, summary)
+    report = _write_report(
+        project_dir, state, reason, summary, focus_todo=focus_todo
+    )
     report_str = str(report) if report else ""
     if not _close_run_cas(
         project_dir, generation, reason=reason, report_file=report_str
@@ -1569,6 +1595,34 @@ def run_next(
                 f"Write .agentic/inbox/{next_id}.md (the task for this queue item), "
                 f"then call awf_run_next again."
             ),
+        )
+
+    # TODO-0262: the unit's review-pass budget — a unit that already used up
+    # its rounds is not launched again; the run stops with the BUDGET note
+    # and the economics report. The exhaustion policy (count → cap → note)
+    # lives in ``budget.check_and_note``, the same gate the verify entry and
+    # ``awf continue`` use — a copy here would drift. A broken limit stops
+    # too (the gate cannot be verified), the AUD02-09 direction.
+    try:
+        reason = budget_mod.check_and_note(
+            project_dir, next_id, cfg_mod.load(project_dir)
+        )
+    except budget_mod.BudgetConfigError as e:
+        return stop_run(
+            project_dir, state,
+            f"run state/config corrupted (limits.max_review_passes): {e}",
+            focus_todo=next_id,
+        )
+    except OSError:
+        # The note failed; the stop and the report matter more than the note.
+        reason = (
+            f"unit {next_id}: review budget reached "
+            "limits.max_review_passes (note not written)"
+        )
+    if reason:
+        return stop_run(
+            project_dir, state, f"budget-exhausted ({reason})",
+            focus_todo=next_id,
         )
 
     # ORCH M2.3: the evidence plan snapshot — the launched TODO's contract

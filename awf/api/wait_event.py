@@ -7,6 +7,8 @@ default 3), returns immediately when an interesting event happens:
 
 - ``verify`` — pipeline reached verify stage (supervisor must act)
 - ``blocked`` — worker wrote BLOCKED signal
+- ``budget`` — the unit used up ``limits.max_review_passes`` (BUDGET note);
+  the owner decides, never ``awf_continue`` (TODO-0262)
 - ``checkpoint`` — BD-36 checkpoint form opened (tell user)
 - ``done`` — pipeline cycle complete: stage state cleared and the cycle is
   confirmed (``done/<id>/`` archive or an awf commit) — the message names
@@ -855,6 +857,25 @@ def _check_for_event(state: dict[str, Any] | None, project_dir: Path | None = No
             ),
             state_snapshot=_state_to_dict(state),
         )
+
+    # TODO-0262 REVIEW (CTX1): a unit stopped for its review-pass budget is
+    # an actionable owner decision, not a dead engine to resume. The BUDGET
+    # note is the durable fact (the stage state may be stale or cleared), so
+    # it outranks the engine_dead advice — ``awf_continue`` would hit the
+    # same limit again.
+    if project_dir is not None:
+        budget_todo = str(state.get("todo_id") or "")
+        if budget_todo:
+            from ..budget import budget_hint, stop_active
+
+            if stop_active(project_dir, budget_todo):
+                hint = budget_hint(budget_todo)
+                return WaitEventResult(
+                    event_type="budget",
+                    message=hint,
+                    state_snapshot=_state_to_dict(state),
+                    next_action=hint,
+                )
 
     # TODO-0242 (A.3): a state that claims a running stage over a dead
     # engine is not "still working" — the wait must say so instead of

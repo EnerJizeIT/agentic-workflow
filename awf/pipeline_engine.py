@@ -17,6 +17,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import budget as _budget
 from . import commit_plan as _commit_plan
 from . import config as cfg_mod
 from . import paths, stage_manifest, todos, verify
@@ -993,6 +994,30 @@ def execute_supervisor_stage(
     """
     s_name = stage.name
     s_kind = stage.kind
+
+    # TODO-0262: a unit that used up its review-pass budget does not enter
+    # verify at all — the BUDGET note goes to the owner and the pipeline
+    # stops. A broken limit is a config refusal, not a silent pass-through.
+    if s_kind == "verify" and current_todo:
+        try:
+            reason = _budget.check_and_note(
+                project_dir,
+                current_todo,
+                config,
+                logs_dir=logs_dir,
+            )
+        except _budget.BudgetConfigError as e:
+            print(f"ERROR: invalid limits.max_review_passes: {e}", file=sys.stderr)
+            _log(logs_dir, f"verify: budget config refused for {current_todo}: {e}")
+            return current_todo, 0, 1
+        except OSError as e:
+            print(f"ERROR: cannot write the budget note: {e}", file=sys.stderr)
+            _log(logs_dir, f"verify: budget note failed for {current_todo}: {e}")
+            return current_todo, 0, 1
+        if reason:
+            print(f"STOP: {reason}. See outbox/BUDGET-{current_todo}.md.", file=sys.stderr)
+            _log(logs_dir, f"verify: {reason} — pipeline stopped")
+            return current_todo, 0, 1
 
     # U5: the verify pack must finish BEFORE the supervisor waits for its
     # signal — the GATES report is ready when the supervisor wakes.

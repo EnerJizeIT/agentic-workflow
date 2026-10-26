@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .. import budget as budget_mod
 from .. import config as cfg_mod
 from .. import paths, run_state, todos
 from .._atomic import MODE_OWNER_EDITABLE, atomic_write_text
@@ -1057,6 +1058,9 @@ def get_status(project_dir: Path) -> StatusResult:
             entry["ack"] = ack
         progress = _read_progress(outbox, todo_id)
         entry["progress"] = progress if progress else None
+        # TODO-0262: the review-pass budget of the unit — ``passes: N/max``
+        # on awf_status/awf_brief and the explicit exhaustion flag.
+        entry.update(budget_mod.status_fields(project_dir, todo_id, config_data))
         return entry
 
     active_todos_list: list[dict[str, Any]] = []
@@ -1224,14 +1228,45 @@ def get_status(project_dir: Path) -> StatusResult:
         engine_dead = _dead.line
         engine_dead_todo = _dead.todo_id or None
 
+    # TODO-0262 REVIEW (CTX1): an exhausted unit reads its BUDGET note, not
+    # a resume hint — the advice owner (next_action_from_status) ranks this
+    # fact above engine_dead, so the surfaces never send the owner to
+    # ``awf_continue`` for a unit that cannot continue. ONE computation for
+    # the flag and the zombie guard: the budget fact has a single owner here.
+    budget_exhausted_todo: str | None = None
+    _budget_candidates: list[str] = []
+    if _state:
+        _state_todo = str(_state.get("todo_id") or "")
+        if _state_todo:
+            _budget_candidates.append(_state_todo)
+    # The run-stop path (awf_run_next) stops BEFORE a launch, so no stage
+    # state names the unit — the BUDGET note in the outbox is the durable
+    # fact (budget.note_exists). Read it for the active units too, or the
+    # status/brief would send the owner to awf_start for an exhausted unit.
+    for _todo_id in active_ids:
+        if _todo_id not in _budget_candidates:
+            _budget_candidates.append(_todo_id)
+    for _todo_id in _budget_candidates:
+        if budget_mod.stop_active(project_dir, _todo_id, config_data):
+            budget_exhausted_todo = _todo_id
+            break
+
     # TODO-0196: zombie-state — the engine died with the stage state still
     # on disk and no signal for the unit: without the hint the run limps in
     # every status until someone notices. Salvage and a lying signal own
     # their own surfaces; the running pipeline is normal. The
     # engine-death line above names the same fact more precisely when it
     # has the pid, so this hint is the narrower fallback (single owner).
+    # TODO-0262 REVIEW (CTX1): a budget-stopped unit is not a zombie to
+    # resume — the budget flag above owns that answer.
     zombie_state: str | None = None
-    if _state and not pipeline_running and not salvage_needed and not engine_dead:
+    if (
+        _state
+        and not pipeline_running
+        and not salvage_needed
+        and not engine_dead
+        and not budget_exhausted_todo
+    ):
         zombie_state = _zombie_state_hint(project_dir, _state)
 
     # REPORTS32 (TODO-0202): the "office" — who is on the team and on which
@@ -1273,6 +1308,7 @@ def get_status(project_dir: Path) -> StatusResult:
         zombie_state=zombie_state,
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
+        budget_exhausted_todo=budget_exhausted_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
         run_state=run_brief_state,
