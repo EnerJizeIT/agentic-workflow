@@ -369,10 +369,10 @@ def test_claim_channel_failure_is_not_silent(
 
     monkeypatch.setattr(hygiene, "transfer_exclusions", _boom)
 
-    assert commit_plan._claimed_paths(proj, T) == []
+    assert commit_plan._adopted_paths(proj, T) == []
     log_file = proj / ".agentic" / "logs" / "orchestrator.log"
     assert log_file.exists(), "сбой обязан оставить строку в логе"
-    assert "claim-channel resolution failed" in log_file.read_text(encoding="utf-8")
+    assert "adopted-path resolution failed" in log_file.read_text(encoding="utf-8")
 
 
 def test_git_timeout_is_one_constant() -> None:

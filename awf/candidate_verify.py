@@ -212,9 +212,9 @@ def _build_plan(
     One home: delegates to :func:`awf.commit_plan._candidate_plan`, the same
     builder the commit gate uses. That keeps the approve-time candidate and
     the gate-time candidate identical by construction — in particular both
-    resolve the unit's claim channel (:func:`commit_plan._claimed_paths`) the
-    SAME way, so a claimed predecessor change is in both trees or neither.
-    An empty ``claim`` means "resolve the claim channel" (``None``).
+    resolve the unit's adopted paths (:func:`commit_plan._adopted_paths`) the
+    SAME way, so a predecessor change the unit adopts is in both trees or
+    neither. An empty ``claim`` means "resolve the adopted channels" (``None``).
     """
     from . import commit_plan
 

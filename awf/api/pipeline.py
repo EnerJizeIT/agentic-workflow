@@ -1003,9 +1003,10 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         review_file, f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n"
     )
 
-    # RUN5 #1 (Part A.1): record the attempt's untracked new files so a
-    # re-dispatch can carry them over (leak-gate). Best-effort by design —
-    # the snapshot never fails the reject, it logs and returns [].
+    # RUN5 #1 (Part A.1) + RB-2: record the attempt's files (new untracked
+    # AND its tracked delta) so a re-dispatch can carry them over (leak-gate).
+    # Best-effort by design — the snapshot never fails the reject, it logs
+    # and returns [].
     from ..reject_files import snapshot_rejected_files
 
     rejected_files = snapshot_rejected_files(

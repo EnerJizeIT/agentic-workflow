@@ -12,17 +12,20 @@ Both times the loss was repaired by a manual fix-up commit.
 This module is the mechanical fix, three parts:
 
 1. ``snapshot_rejected_files`` — on reject (``api.reject_commit`` and the
-   engine's REVIEW branch) the attempt's untracked NEW files (untracked now
-   minus ``BASELINE-<todo>.untracked``) are recorded to
-   ``.agentic/context/REJECT-<todo>.files`` (relative paths, sorted).
-   Best-effort: any failure is logged and swallowed — a broken snapshot must
-   never fail the reject itself.
+   engine's REVIEW branch) the attempt's files are recorded to
+   ``.agentic/context/REJECT-<todo>.files`` (relative paths, sorted):
+   the untracked NEW files (untracked now minus
+   ``BASELINE-<todo>.untracked``) plus the tracked paths the attempt
+   changed (current changes minus the baseline's dirty set — the
+   pre-dispatch work). Best-effort: any failure is logged and swallowed —
+   a broken snapshot must never fail the reject itself.
 
 2. ``resolve_carry_over`` — validation for
    ``api.dispatch_todo(carry_over_from="TODO-NNNN")``: the origin TODO must
    exist (inbox or the done archive) and its REJECT file must be present.
    The dispatch then excludes those paths from the new baseline's untracked
-   snapshot, so the retry's commit includes them.
+   snapshot and the commit plan adopts them (carry-over tracked paths are
+   owned by the retry), so the retry's candidate and commit include them.
 
 3. ``orphaned_reject_files`` — the failsafe (Part B): rejected-attempt files
    that are still untracked AND still listed in the CURRENT todo's
@@ -129,8 +132,125 @@ def _baseline_untracked_set(project_dir: Path, todo_id: str) -> set[str]:
     return read_untracked_snapshot(project_dir, todo_id) or set()
 
 
+def _adopted_paths(project_dir: Path, todo_id: str, logs_dir: Path) -> set[str]:
+    """The paths the unit OWNS although its baseline carried them dirty.
+
+    The transfer channels it adopted (carry-over / include / claim), resolved
+    through the ONE resolution home (:func:`api.hygiene.transfer_exclusions`)
+    so this reader cannot drift from the baseline and the commit plan.
+
+    Best-effort, like the snapshot itself: a link-read failure returns the
+    empty set (the pre-existing behaviour — the paths stay foreign) and logs.
+    The reject must never fail on it.
+    """
+    try:
+        from .api.hygiene import transfer_exclusions
+
+        carry_over, include, claim = transfer_exclusions(project_dir, todo_id)
+    except Exception as exc:
+        _log(
+            logs_dir,
+            f"leak-gate: cannot resolve the adopted paths of {todo_id} "
+            f"({type(exc).__name__}: {exc}) — they keep counting as foreign",
+        )
+        return set()
+    return set(carry_over) | set(include) | set(claim)
+
+
+def _tracked_attempt_paths(
+    project_dir: Path, todo_id: str, logs_dir: Path
+) -> list[str]:
+    """Tracked paths the attempt changed — current changes minus the
+    baseline's dirty set (the pre-dispatch work).
+
+    A rejected attempt's tracked edit stays in the worktree; the retry's
+    baseline (taken on that dirty tree) would record it as pre-existing and
+    the delta mechanism would drop it from the retry commit. Recording the
+    path here lets ``carry_over_from`` adopt it. Untracked paths keep their
+    own snapshot (``_raw_untracked``) and are NOT listed by this helper.
+
+    Only a RENAME owns both of its paths: a copy's source comes from a
+    similarity heuristic, never from the baseline facts, so it is not the
+    attempt's footprint (the same rule as
+    ``git_model.operations_from_changes``).
+
+    Best-effort: a git failure returns ``[]`` and logs — the reject must not
+    fail, but a silent loss of the tracked delta is the very leak this module
+    removes.
+
+    An UNKNOWN baseline (no ``BASELINE-<todo>.status`` — a legacy/ad-hoc
+    unit) is not the same fact as a clean one: without the dirty set every
+    current tracked change looks like the attempt's, so a foreign pre-dispatch
+    edit would be recorded and then committed by the retry (CTX1 audit 0259).
+    Distinguish ``None`` from the empty set: unknown baseline records NO
+    tracked delta, with a log.
+
+    A path the unit ADOPTED through a transfer channel (carry-over / include /
+    claim) is its own work even though the baseline carried it dirty — a
+    retry's baseline is taken on the rejected attempt's tree, so the
+    predecessor's paths sit in the retry's own dirty set. They stay in the
+    delta: without that a SECOND reject loses them and the next retry drops
+    them from its commit (the A → B → C chain).
+
+    The baseline's UNTRACKED snapshot is the second foreign source
+    (``DeltaAssembler._path_owned``): a pre-existing untracked file the
+    attempt staged is foreign — absent snapshot keeps the recorded rule.
+    """
+    from .commit_delta import baseline_dirty_paths
+    from .infra.git_model import GitModelError, GitRepository, display_path, read_untracked_snapshot
+
+    pre_existing = baseline_dirty_paths(project_dir, todo_id)
+    if pre_existing is None:
+        _log(
+            logs_dir,
+            f"leak-gate: BASELINE-{todo_id}.status missing — pre-dispatch "
+            "tracked changes unknown, tracked delta not recorded",
+        )
+        return []
+    adopted = _adopted_paths(project_dir, todo_id, logs_dir)
+    pre_existing -= adopted
+    pre_existing_untracked = read_untracked_snapshot(project_dir, todo_id)
+    if pre_existing_untracked is not None:
+        pre_existing_untracked -= adopted
+    try:
+        changes = GitRepository(project_dir).changes()
+    except (GitModelError, OSError) as exc:
+        _log(
+            logs_dir,
+            f"leak-gate: cannot list tracked changes for {todo_id} "
+            f"({type(exc).__name__}: {exc}) — tracked delta not recorded",
+        )
+        return []
+    tracked: set[str] = set()
+    for record in changes:
+        if record.kind == "untracked":
+            continue
+        raw_sides = (
+            (record.path, record.old_path)
+            if record.kind == "renamed"
+            else (record.path,)
+        )
+        for raw in raw_sides:
+            if raw is None:
+                continue
+            shown = display_path(raw)
+            foreign = shown in pre_existing or (
+                pre_existing_untracked is not None
+                and shown in pre_existing_untracked
+            )
+            if not foreign:
+                tracked.add(shown)
+    return sorted(tracked)
+
+
 def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> list[str]:
-    """Record the attempt's untracked new files to ``REJECT-<todo>.files``.
+    """Record the attempt's files to ``REJECT-<todo>.files``.
+
+    Entries are the untracked new files (current untracked minus
+    ``BASELINE-<todo>.untracked``) and the tracked paths the attempt
+    changed (current changes minus the baseline's dirty set) — the
+    requirement's "only the attempt's paths, not the whole dirty
+    worktree".
 
     Returns the recorded (sorted) paths; ``[]`` when nothing is new or the
     snapshot could not be taken. Never raises — the reject must not fail on
@@ -143,7 +263,9 @@ def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> 
                        f"(not a git repo or git failed) — REJECT files not recorded")
         return []
     baseline = _baseline_untracked_set(project_dir, todo_id)
-    new = sorted(p for p in raw_paths if p not in baseline)
+    new = set(raw_paths) - baseline
+    new.update(_tracked_attempt_paths(project_dir, todo_id, logs_dir))
+    new = sorted(new)
     try:
         # The paths are RAW (``display_path``: ``surrogateescape``); the shared
         # codec writes each entry NUL-terminated, so a name with a newline /
@@ -160,7 +282,7 @@ def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> 
         _log(logs_dir, f"leak-gate: could not write REJECT-{todo_id}.files: {e}")
         return []
     if new:
-        _log(logs_dir, f"leak-gate: REJECT-{todo_id}.files — {len(new)} untracked file(s) "
+        _log(logs_dir, f"leak-gate: REJECT-{todo_id}.files — {len(new)} file(s) "
                        f"of the rejected attempt recorded")
     return new
 

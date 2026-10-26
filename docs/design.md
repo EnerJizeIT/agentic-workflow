@@ -145,7 +145,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `include_untracked.py` | Включение pre-existing untracked в коммит юнита (RUN10 #4) |
 | `dispatch_policy.py` | R2.2: config-version и политика грязного source-tree (`require_clean` default / `isolate` / legacy `warn`) + проверка дерева через git-модель |
 | `claim_changes.py` | R2.2: перенос КОДА отклонённого юнита (`claim_changes`): план, digest, invalidation при изменении дерева |
-| `reject_files.py` | REJECT-файлы: списки untracked для carry-over |
+| `reject_files.py` | REJECT-файлы: пути отклонённой попытки (untracked + tracked-дельта) для carry-over |
 | `_path_link.py` | R2.2: байт-точный кодек переносных ссылок (`.include` / `REJECT-*.files`) — NUL-терминатор, legacy-чтение |
 | `todo_draft.py` | Черновики TODO для супервизора |
 | `opencode_agents.py` | Discovery агентов opencode |

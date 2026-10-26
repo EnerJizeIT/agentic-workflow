@@ -162,9 +162,10 @@ class RejectResult:
     run_stopped: bool = False
     report_file: str = ""
     message: str = ""
-    # RUN5 #1 (Part A.1): untracked NEW files of the rejected attempt,
-    # recorded to context/REJECT-{todo}.files (leak-gate). Empty when the
-    # attempt created no new files or the snapshot could not be taken.
+    # RUN5 #1 (Part A.1) + RB-2: the rejected attempt's files (its untracked
+    # NEW files and its tracked delta), recorded to
+    # context/REJECT-{todo}.files (leak-gate). Empty when the attempt left no
+    # new or changed path, or the snapshot could not be taken.
     reject_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:

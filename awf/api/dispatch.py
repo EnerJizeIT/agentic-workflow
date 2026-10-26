@@ -774,11 +774,13 @@ def dispatch_todo(
             created when absent). When an ``awf_run_next`` launch has no
             queue-level pipeline, it uses this one.
         carry_over_from: RUN5 #1 (leak-gate) — the id of a REJECTED TODO
-            whose untracked files this retry re-claims. The paths recorded
-            in ``.agentic/context/REJECT-<origin>.files`` are excluded from
-            the new baseline's untracked snapshot, so the retry's commit
-            includes them. Refused (before any side effect) when the origin
-            TODO or its REJECT file does not exist.
+            whose files this retry re-claims. The paths recorded in
+            ``.agentic/context/REJECT-<origin>.files`` (the attempt's new
+            untracked files AND its tracked delta) are excluded from the new
+            baseline's untracked snapshot and adopted by the retry's commit
+            plan, so the retry's candidate and commit include them. Refused
+            (before any side effect) when the origin TODO or its REJECT file
+            does not exist.
         include_untracked: RUN10 #4 (TODO-0074) — pre-existing untracked
             files to include in this unit's commit. Each path must exist,
             be untracked, be not gitignored, and stay inside the project;
@@ -1367,7 +1369,7 @@ def dispatch_todo(
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — carried over {len(carry_over_files)} "
-            f"untracked file(s) from rejected {carry_over_from} (leak-gate)",
+            f"file(s) from rejected {carry_over_from} (leak-gate)",
         )
     else:
         # RUN5 #1 (leak-gate): a non-carry-over (re-)dispatch rewrites the
