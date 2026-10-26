@@ -26,6 +26,7 @@ from .. import git_utils, paths, pipeline_state, run_state, todos
 from .._atomic import atomic_write_text
 from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
+from ..unit_history import forget_unit_history
 from . import _liveness
 from ._errors import AwfApiError
 from ._helpers import (
@@ -3634,19 +3635,16 @@ def _rollback_service_side_effects(
         f"BASELINE-{todo_id}.include",
         f"BASELINE-{todo_id}.carry_over",
         f"BASELINE-{todo_id}.claim",
-        # AU1 (audit IMP2): the unit's gate artifacts. ``CLOSER-<id>.json``
-        # is unkeyed unit history (first verdict, frozen wave, attempts) — a
-        # later unit that reuses the id must not inherit it.
-        # ``CHECKLIST-<id>.json`` is the gate's verdict cache; it goes with
-        # the unit too, so a reused id starts clean instead of trusting a
-        # file keyed only by tree/block/probe hashes.
-        f"CLOSER-{todo_id}.json",
-        f"CHECKLIST-{todo_id}.json",
     ):
         try:
             (ctx / name).unlink()
         except OSError:
             pass
+    # AU1 (audit IMP2): the unit's gate artifacts (CLOSER/CHECKLIST) are
+    # unkeyed unit history — a later unit that reuses the id must not
+    # inherit ``first_verdict``/``attempts``. CTX2: the SAME forget runs on
+    # the main rollback and on restore_todo — one home, no per-path lists.
+    forget_unit_history(project_dir, todo_id)
     try:
         (paths.agentic_dir(project_dir) / "pipelines" / f"{pipe_name}.yaml").unlink()
     except OSError:

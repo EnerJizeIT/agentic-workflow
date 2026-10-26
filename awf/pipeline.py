@@ -275,7 +275,11 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                 f"Pipeline {source}: stage #{i} must be a mapping, "
                 f"got {type(stage).__name__}."
             )
-        label = str(stage.get("name") or stage.get("id") or f"#{i}")
+        # CTX4: the loader addresses a stage by ``id or name`` (load_stages
+        # makes the id the stage name), so the label must use the SAME
+        # priority — otherwise a stage with ``name != id`` is reported
+        # under a name that does not identify it at run time.
+        label = str(stage.get("id") or stage.get("name") or f"#{i}")
         unknown = set(stage) - ALLOWED_STAGE_KEYS
         if unknown:
             raise AwfApiError(
