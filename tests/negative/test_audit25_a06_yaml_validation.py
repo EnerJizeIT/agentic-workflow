@@ -105,8 +105,12 @@ def test_repo_default_pipeline_loads_unchanged(tmp_path):
         # (owner decision 2026-10-15: architect-review after implementer,
         # project-auditor before verify) — not the minimal template.
         "plan", "agent-implementer", "agent-architect-review",
-        "agent-qa-review", "agent-project-auditor", "verify",
+        "agent-qa-review", "implementer-close", "agent-project-auditor",
+        "verify",
     ]
+    closer = next(s for s in stages if s.name == "implementer-close")
+    assert closer.skip_if == "checklist_green"
+    assert closer.write_check == "off"
     assert stages[-1].on_approved == "commit_and_next"
 
 

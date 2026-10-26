@@ -3634,6 +3634,14 @@ def _rollback_service_side_effects(
         f"BASELINE-{todo_id}.include",
         f"BASELINE-{todo_id}.carry_over",
         f"BASELINE-{todo_id}.claim",
+        # AU1 (audit IMP2): the unit's gate artifacts. ``CLOSER-<id>.json``
+        # is unkeyed unit history (first verdict, frozen wave, attempts) — a
+        # later unit that reuses the id must not inherit it.
+        # ``CHECKLIST-<id>.json`` is the gate's verdict cache; it goes with
+        # the unit too, so a reused id starts clean instead of trusting a
+        # file keyed only by tree/block/probe hashes.
+        f"CLOSER-{todo_id}.json",
+        f"CHECKLIST-{todo_id}.json",
     ):
         try:
             (ctx / name).unlink()

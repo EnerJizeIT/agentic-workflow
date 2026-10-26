@@ -1,5 +1,7 @@
-"""IMP1 (R1): ``skip_if`` in the stage schema, loader, write path and both
-pipeline snapshots.
+"""Closer-stage contract: IMP1 (``skip_if`` in the stage schema, loader,
+write path and both snapshots), IMP2 (the decision point, ``dod:``, skip and
+static defects) and IMP3 (the stage, its prompt, the snapshot fields and the
+rollback of the unit's gate artifacts).
 
 T1 of the closer-stage test spec: the key must survive the per-TODO snapshot
 and the service-run snapshot; an unknown value must be refused before any
@@ -701,3 +703,135 @@ def test_next_stage_start_clears_skip_flags(tmp_git_repo, monkeypatch):
 
     assert seen.get("stage_skipped") is False
     assert seen.get("stage_skip_reason") is None
+
+
+# ─── IMP3 (R3): the stage, its prompt and the snapshots ───────────────
+
+
+def test_closer_stage_position_and_prompt(tmp_path):
+    """T4: the local ``default`` carries the closer after ``qa-review``.
+
+    The template surfaces (``full`` / ``code-health``) are delivered by IMP7
+    (R7); this unit owns the local ``default.yaml`` and the stage contract.
+    """
+    from awf.agent_stage import _stage_assignment_block
+
+    repo_root = Path(__file__).resolve().parents[2]
+    source = repo_root / ".agentic" / "pipelines" / "default.yaml"
+    if not source.is_file():
+        pytest.skip("repo .agentic absent (gitignored in clean CI checkout)")
+    stages = load_stages(source)
+    names = [s.name for s in stages]
+
+    assert names == [
+        "plan",
+        "agent-implementer",
+        "agent-architect-review",
+        "agent-qa-review",
+        "implementer-close",
+        "agent-project-auditor",
+        "verify",
+    ]
+    idx = names.index("implementer-close")
+    assert 0 < idx < len(stages) - 1
+
+    closer = stages[idx]
+    assert closer.name == "implementer-close"
+    assert closer.id == "implementer-close"
+    assert closer.role == "agent-implementer"
+    assert closer.kind == "execute"
+    assert closer.skip_if == "checklist_green"
+    assert closer.write_check == "off"
+    assert closer.output == ""
+    assert closer.write_allow == ()
+
+    for phrase in (
+        "Закрой ТОЛЬКО пункты",
+        "`manual` вне scope",
+        "блок не править",
+        "`awf checklist check <todo>`",
+        "отчитайся пунктами",
+    ):
+        assert phrase in closer.task
+
+    prompt = _stage_assignment_block(closer)
+    assert f"Task: {closer.task}" in prompt
+    assert "Expected output:" not in prompt
+
+    snapshot = pipeline_snapshot_text(stages, "default", "TODO-0001")
+    reloaded = {s.name: s for s in load_stages(
+        _write_text(tmp_path / "PIPELINE-TODO-0001.yaml", snapshot)
+    )}
+    assert reloaded["implementer-close"].skip_if == "checklist_green"
+    assert reloaded["implementer-close"].write_check == "off"
+    assert reloaded["implementer-close"].output == ""
+    assert reloaded["implementer-close"].write_allow == ()
+    assert reloaded["implementer-close"].task == closer.task
+    assert "write_allow" not in yaml.safe_load(snapshot)["stages"][idx]
+    assert "output" not in yaml.safe_load(snapshot)["stages"][idx]
+
+    # The service-run snapshot keeps the closer's declared fields; the
+    # first worker (agent-implementer) becomes the candidate stage.
+    proj = _project(tmp_path)
+    (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+        source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    service_file = api_run._write_service_pipeline(proj, "sla")
+    service = {s.name: s for s in load_stages(service_file)}
+    assert service["implementer-close"].skip_if == "checklist_green"
+    assert service["implementer-close"].write_check == "off"
+    assert service["implementer-close"].output == ""
+    assert service["implementer-close"].write_allow == ()
+    assert service["agent-implementer"].output == (
+        ".agentic/roles/draft/sla.md"
+    )
+
+
+def _write_text(path: Path, text: str) -> Path:
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_stage_error_labels_use_id_when_name_absent(tmp_path):
+    """PA3 (audit TODO-0268): a loader error names the stage by its id.
+
+    The canonical closer declares ``name`` AND ``id``; a draft may declare
+    only ``id`` — the error must not degrade to a positional ``#1``.
+    """
+    proj = _project(tmp_path)
+    path = _write_pipeline(
+        proj,
+        "by-id",
+        [
+            {"name": "plan", "role": "supervisor"},
+            {"id": "implementer-close", "role": "worker", "skip_if": "typo"},
+            {"name": "verify", "role": "supervisor"},
+        ],
+    )
+    with pytest.raises(AwfApiError) as err:
+        load_stages(path)
+    assert "'implementer-close'" in str(err.value)
+
+
+def test_service_rollback_removes_closer_and_checklist_history(tmp_git_repo):
+    """AU1 (audit IMP2): a rolled-back service start leaves no unit history.
+
+    ``CLOSER-<id>.json`` and ``CHECKLIST-<id>.json`` belong to the unit id;
+    a later unit that reuses the number must not inherit them.
+    """
+    proj = _closer_project(tmp_git_repo)
+    ctx = proj / ".agentic" / "context"
+    for name in (
+        "CLOSER-TODO-0001.json",
+        "CHECKLIST-TODO-0001.json",
+        "CLOSER-TODO-0002.json",
+        "CHECKLIST-TODO-0002.json",
+    ):
+        (ctx / name).write_text("{}", encoding="utf-8")
+
+    api_run._rollback_service_side_effects(proj, "TODO-0001", "role-draft-sla")
+
+    assert not (ctx / "CLOSER-TODO-0001.json").exists()
+    assert not (ctx / "CHECKLIST-TODO-0001.json").exists()
+    assert (ctx / "CLOSER-TODO-0002.json").exists()
+    assert (ctx / "CHECKLIST-TODO-0002.json").exists()
