@@ -62,7 +62,11 @@ Sections (each: status + details + denominator):
    runs; ``skipped`` when the unit was not approved through the R2.4 path.
 10. ``done_json`` — executor-declared facts from ``DONE-<todo>.json`` (U3),
     explicitly marked as executor data (unverified).
-11. ``lint`` — ``ruff check .``.
+11. ``spec_budget`` — K6 reference: the six-document word table and the
+    package total for a unit that declares ``spec_package``. Always
+    ``pass`` and never a verdict failure: readiness lives in the three R3
+    points, and a late edit must not kill finished work (D6).
+12. ``lint`` — ``ruff check .``.
 
 Verdict / exit code: 0 = every measured check passed, 1 = at least one
 failure, 2 = nothing was measured at all (no baseline, no contract, no
@@ -1154,6 +1158,69 @@ def _checklist_section(project: Path, todo_id: str) -> Section:
     return s
 
 
+def _package_budget_line(total: int, limit: int) -> str:
+    """K6: the package total carries the same MAJOR marker as a document."""
+    mark = "MAJOR" if total > limit else "ok"
+    return f"- пакет: {total} слов (порог {limit}) — {mark}"
+
+
+def _spec_budget_section(project: Path, contract: dict | None) -> Section:
+    """SPEC IMP8 (D6): the package volume budget as a REFERENCE.
+
+    Prints the six-document word table and the package total. It never
+    fails the pack and never blocks a commit: the real readiness check
+    lives in the three R3 points (dispatch, start, continue). Calling
+    ``spec_gate`` here would re-check readiness on verify — exactly what
+    D6 forbids (a late edit would kill finished work).
+    """
+    if isinstance(contract, _BrokenContract):
+        return Section(
+            name="spec_budget",
+            status="skipped",
+            lines=[f"skipped — TODO contract block is broken: {contract.reason}"],
+            detail="broken contract",
+        )
+    if not isinstance(contract, dict):
+        return Section(
+            name="spec_budget",
+            status="skipped",
+            lines=["skipped — no TODO contract block"],
+        )
+    raw = contract.get("spec_package")
+    if not isinstance(raw, str) or not raw.strip():
+        return Section(
+            name="spec_budget",
+            status="skipped",
+            lines=["skipped — the unit declares no `spec_package`"],
+        )
+    from . import config as awf_config
+    from .spec_package import SpecError, budget_limits, budget_rows
+
+    package = Path(raw)
+    if not package.is_absolute():
+        package = project / package
+    try:
+        document_limit, package_limit = budget_limits(awf_config.load(project))
+        rows = budget_rows(package, document_limit=document_limit)
+    except (SpecError, OSError) as e:
+        return Section(
+            name="spec_budget",
+            status="skipped",
+            lines=[f"skipped — package unreadable: {e}"],
+            detail="unreadable",
+        )
+    total = sum(row.words for row in rows)
+    s = Section(name="spec_budget", status="pass")
+    for row in rows:
+        mark = "MAJOR" if row.over else "ok"
+        s.lines.append(
+            f"- {row.path}: {row.words} слов (порог {row.limit}) — {mark}"
+        )
+    s.lines.append(_package_budget_line(total, package_limit))
+    s.detail = f"{total} words, {len(rows)} docs"
+    return s
+
+
 def _lint_section(project: Path, timeout: int) -> Section:
     rc, out = _run_lint(project, timeout)
     if rc is None:
@@ -1374,6 +1441,7 @@ def verify_pack(
         _candidate_section(project, todo_id),
         _done_json_section(project, todo_id, logs_dir),
         _checklist_section(project, todo_id),
+        _spec_budget_section(project, contract),
         _lint_section(project, lint_timeout),
     ]
 

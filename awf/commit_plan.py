@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import commit_delta, git_utils, paths, run_state
+from . import commit_delta, git_utils, paths, run_state, stage_manifest
 from ._log import log as _log
 
 # R2.3: the baseline-fact readers, the file-set computation and the delta
@@ -363,6 +363,21 @@ def build_commit_plan(
         generation = run_state.generation_of(state)
 
     verified = read_verified_sha(project_dir, todo_id)
+
+    # TODO-0256 (K5, AUD2): an open write violation withholds EVERY unit
+    # commit. It outlives the attempt that found it (an ACK re-runs the
+    # stage with the rejected path already in the "before" snapshot), so the
+    # plan — not the gate's per-attempt check — is what keeps it out.
+    violation = stage_manifest.violation_refusal(project_dir)
+    if violation:
+        return CommitPlan(
+            todo_id=todo_id,
+            generation=generation,
+            verified_sha=verified,
+            files=(),
+            baseline_sha=baseline_sha,
+            refusal=violation,
+        )
 
     if baseline_sha:
         candidate, refusal = _candidate_plan(project_dir, baseline_sha, todo_id)

@@ -76,6 +76,7 @@ _slugify_role = slugify_role
 BUILTIN_PIPELINES = {
     "full": "Полная проверка: implementer → architect → QA → auditor",
     "code-health": "Оздоровление кода: architect → refactoring → verify",
+    "spec": "Пакет спецификации: шесть авторских стадий → готовность",
 }
 
 
@@ -582,7 +583,7 @@ def write_pipeline(
         stage_mode: ``"chain"`` (default) or ``"single"``.
         primary_role: ``"single"`` mode — the primary role (name/slug).
         include_qa: ``"single"`` mode — add the team's QA role.
-        flow_variant: built-in starter pipeline (``full`` / ``code-health``);
+        flow_variant: built-in starter pipeline (``full`` / ``code-health`` / ``spec``);
             replaces the team composition. Missing role files are copied
             from the package templates; a role with neither a file nor a
             template refuses the write (ValueError, roles named) — the
@@ -1107,7 +1108,7 @@ def apply_project_setup(
         stage_mode: ``"chain"`` (default) or ``"single"``.
         primary_role: ``"single"`` mode — the primary role (name/slug).
         include_qa: ``"single"`` mode — add the team's QA role.
-        flow_variant: built-in starter pipeline (``full`` / ``code-health``);
+        flow_variant: built-in starter pipeline (``full`` / ``code-health`` / ``spec``);
             replaces the team composition. An unknown name is a warning, not
             a crash — and it is named even when the team is empty (the write
             below is skipped then, so nothing else would report it).

@@ -1,0 +1,71 @@
+name: spec
+description: 'Specification package: six author stages, the requirements reviewer
+  authors both the requirements review and readiness; a rejected requirements
+  review rolls back to the author.'
+stages:
+- name: spec-context
+  role: agent-project-auditor
+  task: 'Spec stage 0. Read the request and the project. Write the context file named
+    in the contract: current paths, constraints, risks and baseline (commit plus
+    relevant dirty files). Do not change code or configuration.'
+  output: docs/spec/spec-pipeline/spec-pipeline.context.md
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: spec-requirements
+  role: agent-system-analyst
+  task: 'Spec stage 1. Write the requirements file named in the contract: goal, scope,
+    R#/AC#/C#/INV#, scenarios, open questions. Follow the shared specification protocol.
+    Do not design the solution and do not change code.'
+  output: docs/spec/spec-pipeline/spec-pipeline.md
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: spec-requirements-review
+  role: agent-requirements-reviewer
+  task: 'Spec stage 2. Review the requirements against their sources. Write the
+    requirements-review report with PASS or FAIL, findings with owners and evidence.
+    Do not edit the requirements.'
+  output: docs/spec/spec-pipeline/spec-pipeline.requirements-review.md
+  on_blocked: escalate
+  on_rejected: rollback_to:spec-requirements
+  on_failed: escalate
+  max_retries: 3
+  max_rollbacks: 3
+- name: spec-design
+  role: agent-architector
+  task: 'Spec stage 3. After requirements PASS, write the architecture file named in
+    the contract: change points, interface contracts, data and state, failure behavior,
+    compatibility, implementation plan. No code.'
+  output: docs/spec/spec-pipeline/spec-pipeline.architecture.md
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: spec-tests
+  role: agent-qa-review
+  task: 'Spec stage 4, specification mode. Write the test specification named in the
+    contract: T# cases with exact expectations and conditions, map every R#/AC#/INV#.
+    Do not implement tests or production code.'
+  output: docs/spec/spec-pipeline/spec-pipeline.test-spec.md
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: spec-readiness
+  role: agent-requirements-reviewer
+  task: 'Spec stage 5. Review the whole package at its current revisions. Write the
+    readiness report named in the contract with READY or BLOCKED and the coverage
+    matrix. Do not fix other authors files.'
+  output: docs/spec/spec-pipeline/spec-pipeline.readiness.md
+  on_blocked: escalate
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 3
+- name: verify
+  role: supervisor
+  description: Supervisor verifies the spec package and approves it
+  on_approved: commit_and_next
+  on_rejected: replan

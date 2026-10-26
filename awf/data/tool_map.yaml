@@ -175,6 +175,10 @@ groups:
   - title: helpers
     hidden: true
     tools:
+      - cli: spec
+        when: "check package"
+      - cli: spec-check
+        when: "same spelling"
       - cli: config-get
         when: "read one config.yaml value"
       - cli: checklist

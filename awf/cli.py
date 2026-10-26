@@ -847,6 +847,34 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    # SPEC IMP1/IMP6: readiness verdict of a specification package (K2).
+    p_spec = sub.add_parser(
+        "spec",
+        help="Specification package tools (readiness verdict)",
+    )
+    spec_sub = p_spec.add_subparsers(dest="spec_command", required=True)
+    p_spec_check = spec_sub.add_parser(
+        "check",
+        help="Check a specification package: rc 0 ready, 1 not ready, 2 bad path",
+    )
+    p_spec_check.add_argument("path", help="Package directory")
+    p_spec_check.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    # Architecture §3 names `awf spec-check`; keep both spellings on one code path.
+    p_spec_check_flat = sub.add_parser(
+        "spec-check",
+        help="Alias for `awf spec check` (package readiness verdict)",
+    )
+    p_spec_check_flat.add_argument("path", help="Package directory")
+    p_spec_check_flat.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     # RUN4 #1: supervisor onboarding/recovery card (live state + tool map)
     p_brief = sub.add_parser(
         "brief",
@@ -998,6 +1026,9 @@ def _run_command(args) -> int:
         if args.command == "pipelines":
             from . import cmd_pipelines
             return cmd_pipelines.run(args)
+        if args.command in ("spec", "spec-check"):
+            from . import cmd_spec_check
+            return cmd_spec_check.run(args)
         if args.command == "analyze-roles":
             from . import cmd_analyze_roles
             return cmd_analyze_roles.run(args)

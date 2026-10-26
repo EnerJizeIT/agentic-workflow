@@ -34,7 +34,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import commit_delta, commit_plan, git_utils, paths, publish
+from . import commit_delta, commit_plan, git_utils, paths, publish, stage_manifest
 from ._log import log as _log
 from .infra import managed_fs
 
@@ -230,6 +230,13 @@ def _commit_via_isolated_index(
     receipt records ``committed_with_reconciliation_required``. On refusal
     or error the index is byte-identical (nothing was ever staged into it).
     """
+    # K5 (TODO-0257 P1): the open write violation withholds EVERY commit.
+    # ``build_commit_plan`` refuses the unit path, but ``commit_workflow``
+    # builds its own plan and walked past it; the shared staging point is
+    # the one place both paths pass through.
+    violation = stage_manifest.violation_refusal(project_dir)
+    if violation:
+        return commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, violation)
     fd, index_path = tempfile.mkstemp(
         prefix=f"awf-commit-index-{plan.todo_id}-",
         suffix=".idx",

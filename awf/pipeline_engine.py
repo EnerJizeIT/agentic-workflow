@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import commit_plan as _commit_plan
 from . import config as cfg_mod
-from . import paths, todos, verify
+from . import paths, stage_manifest, todos, verify
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
@@ -1359,6 +1359,249 @@ def _clean_signals_or_stop(
     return False
 
 
+def _stage_allowlist(stage: Stage) -> tuple[str, ...]:
+    """SPEC IMP5 (K5): the stage's write allowlist = ``output`` ∪ ``write_allow``.
+
+    Enforcement starts whenever the stage names an ``output`` OR a
+    ``write_allow`` (QA-0254-1: an output-only stage was a silent bypass).
+    The ONE escape is an explicit, named opt-out declared in the pipeline —
+    ``write_check: off`` — carried by the awf-generated service run, whose
+    worker writes the role candidate AND project files (see
+    ``_write_service_pipeline``). There is no implicit bypass.
+    """
+    if str(stage.write_check or "").strip().lower() == "off":
+        return ()
+    if not stage.output and not stage.write_allow:
+        return ()
+    allowed: list[str] = []
+    if stage.output:
+        allowed.append(stage.output)
+    allowed.extend(stage.write_allow)
+    return tuple(allowed)
+
+
+def _stage_manifest_before(
+    project_dir: Path, stage: Stage
+) -> dict[str, str] | None:
+    """Snapshot the tree before the stage — ``None`` when unenforced.
+
+    AUD4: a snapshot failure is NOT swallowed. The caller turns it into a
+    ``BLOCKED`` stage (fail closed) instead of running unfenced.
+    """
+    if not _stage_allowlist(stage):
+        return None
+    return stage_manifest.snapshot(project_dir)
+
+
+def _stage_diff_path(project_dir: Path, todo_id: str, stage_name: str) -> Path:
+    """The K5 stage-diff report — ONE name for the writer and the BLOCKED link."""
+    return paths.context_dir(project_dir) / f"STAGE-DIFF-{todo_id}-{stage_name}.md"
+
+
+def _stage_write_violation(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    before: dict[str, str] | None,
+    stage: Stage,
+) -> list[str]:
+    """Paths the stage touched outside its allowlist (K5).
+
+    A violation is recorded in ``context/STAGE-DIFF-<todo>-<stage>.md`` and
+    returned; the caller routes the stage to ``BLOCKED`` regardless of the
+    worker's own signal. Nothing is rolled back and nothing is committed —
+    the file stays exactly where the worker put it. A failed AFTER-snapshot
+    raises (AUD4: the caller blocks the stage, never skips the check).
+
+    The report is the human trace; the persistent record the commit gate
+    reads is written by the caller. A failed report write therefore must
+    NOT escape as a crash: that used to skip ``record_violation`` and free
+    the rejected path for a later commit.
+    """
+    if before is None:
+        return []
+    allowlist = _stage_allowlist(stage)
+    after = stage_manifest.snapshot(project_dir)
+    touched = stage_manifest.diff(before, after)
+    bad = stage_manifest.violations(touched, allowlist)
+    if not bad:
+        return []
+    report = (
+        f"# STAGE-DIFF — {stage_manifest.display_path(todo_id)} / "
+        f"{stage_manifest.display_path(stage_name)}\n\n"
+        "Пути вне allowlist стадии:\n\n"
+        + "".join(f"- `{stage_manifest.display_path(path)}`\n" for path in bad)
+        + "\nAllowlist:\n\n"
+        + "".join(f"- `{stage_manifest.display_path(path)}`\n" for path in allowlist)
+        + "\nСтадия переведена в BLOCKED: файлы остаются, коммита нет.\n"
+    )
+    context = paths.context_dir(project_dir)
+    try:
+        context.mkdir(parents=True, exist_ok=True)
+        managed_fs.managed_write_text(
+            _stage_diff_path(project_dir, todo_id, stage_name),
+            report,
+            root=project_dir,
+        )
+    except (OSError, UnicodeError, managed_fs.ManagedPathError) as e:
+        # Fail-closed: the violation still returns and the caller writes the
+        # record. The report is best-effort; crashing here would drop the
+        # record and leave the rejected path committable.
+        _log(
+            paths.logs_dir(project_dir),
+            "STAGE-DIFF report not written: "
+            f"{stage_manifest.display_path(str(e))} — the violation is still recorded",
+        )
+    _log(
+        paths.logs_dir(project_dir),
+        f"STAGE-DIFF: {stage_name} wrote outside its allowlist: "
+        + ", ".join(stage_manifest.display_path(path) for path in bad),
+    )
+    return bad
+
+
+def _write_blocked_violation_note(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    paths_outside: list[str],
+    error: str,
+    stage_ran: bool,
+) -> None:
+    """AUD1: the BLOCKED note the supervisor's replan reads, not a DONE.
+
+    It follows the STANDARD BLOCKED schema (``docs/unit-contract.md``:
+    ``## ВЕРДИКТ`` / ``## НАХОДКИ`` / ``## НАПРАВЛЕНИЯ-ФИКСА`` /
+    ``## ПЕРЕНОСЫ``), so ``awf blocked-draft`` can build the REVIEW draft
+    from it. A free-form note under the same file name was invisible to
+    that reader.
+    """
+    outbox = paths.outbox(project_dir)
+    outbox.mkdir(parents=True, exist_ok=True)
+    # The note must name the files that really exist: both paths come from
+    # the SAME constructors the writers use (``violation_path`` for the
+    # record the commit gate reads, ``_stage_diff_path`` for the report).
+    # A copied literal is how the remedy drifts from the blocking file.
+    root = Path(project_dir).resolve()
+    report_file = _stage_diff_path(root, todo_id, stage_name)
+    diff_rel = report_file.relative_to(root).as_posix()
+    record_rel = (
+        stage_manifest.violation_path(root, todo_id).relative_to(root).as_posix()
+    )
+    display_todo = stage_manifest.display_path(todo_id)
+    display_stage = stage_manifest.display_path(stage_name)
+    if paths_outside:
+        verdict = (
+            f"blocked — стадия `{display_stage}` ({display_todo}) записала "
+            "пути вне allowlist; файлы остаются, коммита нет"
+        )
+    else:
+        verdict = (
+            f"blocked — стадия `{display_stage}` ({display_todo}): снимок "
+            f"манифеста недоступен ({error or 'причина не названа'})"
+        )
+    findings: list[str] = []
+    if paths_outside:
+        findings += [
+            f"- `{stage_manifest.display_path(path)}` — вне allowlist стадии"
+            for path in paths_outside
+        ]
+        report_status = "" if report_file.is_file() else " (не записан)"
+        findings.append(
+            f"- отчёт со списком и allowlist: "
+            f"`{stage_manifest.display_path(diff_rel)}`{report_status}"
+        )
+    else:
+        findings.append(
+            "- стадия прошла без забора — её записи считаются непроверенными"
+            if stage_ran
+            else "- стадия не запускалась: без манифеста забор невозможен"
+        )
+    lines = [
+        "## ВЕРДИКТ",
+        "",
+        verdict,
+        "",
+        "## НАХОДКИ",
+        "",
+        *findings,
+        "",
+        "## НАПРАВЛЕНИЯ-ФИКСА",
+        "",
+        "- откати или перепиши перечисленные пути (файлы автоматически не трогаются)",
+        f"- удали `{stage_manifest.display_path(record_rel)}`, чтобы снять нарушение явно",
+        "- пока запись открыта, commit-план отказывает любому коммиту",
+        "",
+        "## ПЕРЕНОСЫ",
+        "",
+        "- нет",
+        "",
+    ]
+    try:
+        managed_fs.managed_write_text(
+            outbox / f"BLOCKED-{todo_id}.md",
+            "\n".join(lines),
+            root=managed_fs.agentic_root_for(outbox),
+        )
+    except (OSError, managed_fs.ManagedPathError) as e:
+        _log(
+            paths.logs_dir(project_dir),
+            f"BLOCKED note not written: {stage_manifest.display_path(str(e))}",
+        )
+
+
+def _block_on_write_violation(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    stage: Stage,
+    paths_outside: list[str],
+    error: str,
+    logs_dir: Path,
+    before: dict[str, str] | None,
+    *,
+    stage_ran: bool = True,
+) -> bool:
+    """Open the violation for the commit gate and make it visible (AUD1/AUD2).
+
+    Writes, in this order: the persistent record (AUD2 — the gate reads it),
+    the BLOCKED note (AUD1 — the replan reads it), then the ``last_signal``
+    marker (AUD1 — wait_event and the dashboard read it). Returns False when
+    the record could not be written: then the stage must stop, because a
+    commit would no longer be withheld.
+    """
+    try:
+        stage_manifest.record_violation(
+            project_dir,
+            todo_id,
+            stage_name,
+            allowlist=_stage_allowlist(stage),
+            paths_outside=paths_outside,
+            before=before,
+            error=error,
+        )
+    except (OSError, managed_fs.ManagedPathError) as e:
+        print(
+            f"ERROR: cannot record the write violation for {todo_id}: {e}",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            "K5: violation record not written "
+            f"({stage_manifest.display_path(str(e))}) — stage stopped",
+        )
+        return False
+    _write_blocked_violation_note(
+        project_dir, todo_id, stage_name, paths_outside, error, stage_ran
+    )
+    _write_state(
+        project_dir,
+        last_signal=f"BLOCKED-{todo_id}",
+        logs_dir=logs_dir,
+    )
+    return True
+
+
 def execute_agent_stage(
     stage: Stage,
     current_todo: str,
@@ -1411,6 +1654,26 @@ def execute_agent_stage(
         if stage_baseline_sha
         else ""
     )
+
+    # SPEC IMP5 (K5): the write manifest for a stage that declares an
+    # allowlist (``output`` ∪ ``write_allow``). Stages without either keep
+    # the old behavior. AUD4: a snapshot failure is captured and the stage
+    # is BLOCKED, never run with the gate silently off.
+    stage_manifest_before: dict[str, str] | None = None
+    manifest_error = ""
+    # AUD4: the pre-stage snapshot failure is blocked HERE (the worker never
+    # runs); the post-stage block below must not repeat it with
+    # ``stage_ran=True`` — that note would claim the stage ran unfenced,
+    # which it did not.
+    manifest_blocked = False
+    try:
+        stage_manifest_before = _stage_manifest_before(project_dir, stage)
+    except RuntimeError as e:
+        manifest_error = str(e)
+        _log(
+            logs_dir,
+            f"STAGE-MANIFEST: snapshot unavailable ({e}) — the stage will be BLOCKED",
+        )
 
     # F4: auto-retry transient failures (vllm cold-start, empty output <30s).
     # F7 (dogfood-11): also retry SILENT EXITS — worker exited without a signal
@@ -1472,7 +1735,11 @@ def execute_agent_stage(
     # next iteration. Always None at loop breaks — a decision sets it
     # immediately before `continue`.
     pending_note: str | None = None
-    for _net_round in range(net_limit + 1):
+    # AUD4: without a pre-stage snapshot the stage must not run unfenced —
+    # an empty round list skips the worker and lands on the BLOCKED branch
+    # below (a signal is synthesized so the transition still dispatches).
+    net_rounds = range(0) if manifest_error else range(net_limit + 1)
+    for _net_round in net_rounds:
         net_retry_scheduled = False
         for attempt_no in range(MAX_SILENT_RETRIES + 1):
             import time as _time
@@ -1638,6 +1905,21 @@ def execute_agent_stage(
             continue  # next net round — the endpoint had a chance to recover
         break
 
+    if manifest_error:
+        # AUD4: no pre-stage snapshot — block instead of running unfenced.
+        if not _block_on_write_violation(
+            project_dir, current_todo, s_name, stage, [], manifest_error,
+            logs_dir, None, stage_ran=False,
+        ):
+            return current_todo, stage_idx, 1
+        manifest_blocked = True
+        print(
+            f"Stage '{s_name}': write manifest unavailable ({manifest_error}) "
+            "— routing as blocked.",
+            file=sys.stderr,
+        )
+        signal = f"BLOCKED-{current_todo}"
+
     if not signal:
         # Salvage path
         baseline_sha = stage_baseline_sha
@@ -1752,6 +2034,43 @@ def execute_agent_stage(
             consumed.unlink()
         except FileNotFoundError:
             pass
+
+    # SPEC IMP5 (K5): a stage that wrote outside its allowlist is BLOCKED,
+    # whatever signal it left. The report names the paths; the DONE signal
+    # cannot override it. AUD1: the cause must reach the supervisor — the
+    # BLOCKED note, the STAGE-DIFF link and the last_signal marker are
+    # written BEFORE the replan runs. AUD4: a failed after-snapshot is the
+    # same block, not a skipped check. AUD2: the persistent record makes
+    # the commit gate refuse until the path is rolled back or the record
+    # is removed explicitly.
+    write_violations: list[str] = []
+    if not manifest_error:
+        try:
+            write_violations = _stage_write_violation(
+                project_dir, current_todo, s_name, stage_manifest_before, stage
+            )
+        except RuntimeError as e:
+            manifest_error = str(e)
+            print(
+                f"Stage '{s_name}': write manifest unavailable ({e}) "
+                "— routing as blocked.",
+                file=sys.stderr,
+            )
+    if write_violations or (manifest_error and not manifest_blocked):
+        if manifest_error:
+            _log(logs_dir, f"STAGE-MANIFEST: after-snapshot unavailable ({manifest_error})")
+        if write_violations:
+            print(
+                f"Stage '{s_name}' wrote outside its allowlist: "
+                f"{', '.join(write_violations)} — routing as blocked.",
+                file=sys.stderr,
+            )
+        if not _block_on_write_violation(
+            project_dir, current_todo, s_name, stage, write_violations,
+            manifest_error, logs_dir, stage_manifest_before,
+        ):
+            return current_todo, stage_idx, 1
+        sig_type = "blocked"
 
     # ORCH M3.2: a DONE signal is not the stage's contract — its declared
     # output is. A declared output that is missing or stale means the

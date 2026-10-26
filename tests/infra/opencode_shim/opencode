@@ -156,21 +156,31 @@ EOF
 }
 
 do_step_work() {
-    mkdir -p src
-    echo "shim work for ${TODO_ID}" > "src/shim-${TODO_ID}-work.txt"
     # ORCH M4.4: the stage's declared output (from the prompt's "Expected
     # output:" line) is the stage's contract. Created (project-relative) only
     # when AWF_SHIM_CREATE_DECLARED_OUTPUT=1 — the e2e composition scenarios
     # opt in so the engine's output check (exists + fresh) passes. Off by
     # default: the negative scenarios (test_stage_assignment_outputs) rely on
     # the declared output being ABSENT to prove DONE alone does not advance.
+    #
+    # K5 (TODO-0256): the declared output IS this stage's work when the
+    # harness creates it — a second scratch file (`src/shim-*`) would be a
+    # write outside the stage allowlist. It stays only for stages without a
+    # declared output (the work-evidence scenarios).
+    local work_file=""
     if [[ -n "$DECLARED_OUTPUT" && "${AWF_SHIM_CREATE_DECLARED_OUTPUT:-0}" == "1" ]]; then
         mkdir -p "$(dirname "$DECLARED_OUTPUT")" 2>/dev/null || true
         printf 'shim output for stage "%s" (TODO %s)\n' "${STAGE_ID:-$TODO_ID}" "$TODO_ID" > "$DECLARED_OUTPUT"
+    else
+        mkdir -p src
+        work_file="src/shim-${TODO_ID}-work.txt"
+        echo "shim work for ${TODO_ID}" > "$work_file"
     fi
     {
         echo "## Task 1 · shim step — [x]"
-        echo "- Files changed: src/shim-${TODO_ID}-work.txt"
+        if [[ -n "$work_file" ]]; then
+            echo "- Files changed: ${work_file}"
+        fi
         if [[ -n "$DECLARED_OUTPUT" ]]; then
             echo "- Declared output: ${DECLARED_OUTPUT}"
         fi

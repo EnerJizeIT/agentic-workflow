@@ -76,6 +76,7 @@ MISSING_OUTPUT_PIPELINE = (
     '    role: "worker"\n'
     '    task: "Write the draft note"\n'
     '    output: "src/declared-output.txt"\n'
+    '    write_allow: ["src"]\n'
     '    on_blocked: "stop"\n'
     '  - name: "verify"\n'
     '    role: "supervisor"\n'
