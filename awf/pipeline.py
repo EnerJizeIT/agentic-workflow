@@ -69,6 +69,10 @@ class Stage:
     # implied (the awf-generated service run uses it).
     write_allow: tuple[str, ...] = ()
     write_check: str = "on"
+    # IMP1 (R1): the ONE conditional-run mechanism. Empty means "always
+    # run" — no gate is consulted at the stage boundary. The only allowed
+    # value is ``checklist_green`` (the gate verdict decides the skip).
+    skip_if: str = ""
     # ORCH M7.2: the stage's tools profile — a mapping with ``allow``
     # and/or ``deny`` lists of opencode permission keys (bash/edit/
     # write/webfetch + ``<server>_<tool>`` MCP). Merged onto the base
@@ -162,6 +166,8 @@ ALLOWED_STAGE_KEYS = frozenset(
         "write_allow",
         # TODO-0256: the explicit, named opt-out from the stage write check.
         "write_check",
+        # IMP1 (R1): the one conditional-run key (``checklist_green``).
+        "skip_if",
         # ORCH M7.2: the stage's tools profile (allow/deny permission keys).
         "tools",
         "on_blocked",
@@ -172,6 +178,12 @@ ALLOWED_STAGE_KEYS = frozenset(
         "max_rollbacks",
     }
 )
+
+
+# IMP1 (R1): the ONLY value ``skip_if`` accepts. The key names a gate
+# verdict, not a free-form condition — one value keeps the decision in ONE
+# place (the closer-stage point) instead of a second scripting language.
+SKIP_IF_ALLOWED = frozenset({"checklist_green"})
 
 
 def _compute_kind(position: int, total: int) -> str:
@@ -349,6 +361,17 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                     f"Pipeline {source}: stage '{label}' has an invalid "
                     f"'write_check' (must be the string 'on' or 'off'), "
                     f"got {value!r}."
+                )
+        # IMP1 (R1): ``skip_if`` names a gate verdict; absent/null means
+        # "always run". An empty string, a number or a bool is refused too
+        # (a typo must not degrade into "always run" silently).
+        if "skip_if" in stage and stage["skip_if"] is not None:
+            value = stage["skip_if"]
+            if not isinstance(value, str) or value not in SKIP_IF_ALLOWED:
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'skip_if' (allowed values: "
+                    f"{sorted(SKIP_IF_ALLOWED)}), got {value!r}."
                 )
         if "write_allow" in stage and stage["write_allow"] is not None:
             value = stage["write_allow"]
@@ -557,6 +580,8 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         kwargs["write_allow"] = tuple(s.get("write_allow") or ())
         # TODO-0256: the explicit write-check opt-out (default on).
         kwargs["write_check"] = s.get("write_check") or "on"
+        # IMP1 (R1): absent or null → always run (empty string).
+        kwargs["skip_if"] = s.get("skip_if") or ""
         # ORCH M7.2: the stage's tools profile (empty → unchanged behavior).
         kwargs["tools"] = s.get("tools") or {}
         for pk in _POLICY_KEYS:
@@ -625,6 +650,45 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     return result
 
 
+def stage_to_document(stage: Stage) -> dict[str, Any]:
+    """IMP1 (R1): ONE serializer for a stage in both pipeline snapshots.
+
+    The per-TODO snapshot and the service-run snapshot read the same
+    document form (``load_stages``), so they must build it the same way —
+    a second copy is how ``skip_if`` / ``write_allow`` / ``write_check``
+    drift apart. Only meaningful fields are written: empty ``write_allow``
+    is not emitted, ``write_check`` only when it is not the default "on".
+    """
+    entry: dict[str, Any] = {"name": stage.name, "role": stage.role}
+    if stage.description:
+        entry["description"] = stage.description
+    if stage.id:
+        entry["id"] = stage.id
+    if stage.task:
+        entry["task"] = stage.task
+    if stage.input:
+        entry["input"] = stage.input
+    if stage.output:
+        entry["output"] = stage.output
+    if stage.skip_if:
+        entry["skip_if"] = stage.skip_if
+    if stage.write_allow:
+        entry["write_allow"] = list(stage.write_allow)
+    if stage.write_check and stage.write_check != "on":
+        entry["write_check"] = stage.write_check
+    # ORCH M7.2: the tools profile round-trips through the snapshot
+    # (the snapshot is loaded with the same loader).
+    if stage.tools:
+        entry["tools"] = dict(stage.tools)
+    entry["on_blocked"] = stage.on_blocked
+    entry["on_approved"] = stage.on_approved
+    entry["on_rejected"] = stage.on_rejected
+    entry["on_failed"] = stage.on_failed
+    entry["max_retries"] = stage.max_retries
+    entry["max_rollbacks"] = stage.max_rollbacks
+    return entry
+
+
 def pipeline_snapshot_text(
     stages: list[Stage], source_name: str, todo_id: str
 ) -> str:
@@ -639,30 +703,7 @@ def pipeline_snapshot_text(
 
     import yaml
 
-    doc_stages: list[dict[str, Any]] = []
-    for st in stages:
-        entry: dict[str, Any] = {"name": st.name, "role": st.role}
-        if st.description:
-            entry["description"] = st.description
-        if st.id:
-            entry["id"] = st.id
-        if st.task:
-            entry["task"] = st.task
-        if st.input:
-            entry["input"] = st.input
-        if st.output:
-            entry["output"] = st.output
-        # ORCH M7.2: the tools profile round-trips through the snapshot
-        # (the snapshot is loaded with the same loader).
-        if st.tools:
-            entry["tools"] = dict(st.tools)
-        entry["on_blocked"] = st.on_blocked
-        entry["on_approved"] = st.on_approved
-        entry["on_rejected"] = st.on_rejected
-        entry["on_failed"] = st.on_failed
-        entry["max_retries"] = st.max_retries
-        entry["max_rollbacks"] = st.max_rollbacks
-        doc_stages.append(entry)
+    doc_stages = [stage_to_document(st) for st in stages]
     document = {"name": source_name, "stages": doc_stages}
     captured = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     header = (

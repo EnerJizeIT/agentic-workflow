@@ -3502,6 +3502,7 @@ def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
     from ..pipeline import (
         load_stages,
         resolve_pipeline_file,
+        stage_to_document,
         validate_pipeline_document,
     )
 
@@ -3523,23 +3524,10 @@ def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
         )
     doc_stages: list[dict] = []
     for st in stages:
-        entry: dict = {"name": st.name, "role": st.role}
-        if st.description:
-            entry["description"] = st.description
-        if st.id:
-            entry["id"] = st.id
-        if st.task:
-            entry["task"] = st.task
-        if st.input:
-            entry["input"] = st.input
-        if st.output:
-            entry["output"] = st.output
-        entry["on_blocked"] = st.on_blocked
-        entry["on_approved"] = st.on_approved
-        entry["on_rejected"] = st.on_rejected
-        entry["on_failed"] = st.on_failed
-        entry["max_retries"] = st.max_retries
-        entry["max_rollbacks"] = st.max_rollbacks
+        # IMP1 (R1): the same serializer the per-TODO snapshot uses — the
+        # service snapshot must carry ``skip_if`` and never lose the
+        # declared write fields.
+        entry = stage_to_document(st)
         is_worker = st.role.strip().lower() != "supervisor"
         if is_worker:
             entry["on_blocked"] = "stop"
@@ -3561,6 +3549,10 @@ def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
                 f"запиши файл в declared output `{cand}`."
             )
             entry["output"] = cand
+            # K1: the source ``write_allow`` belonged to the OLD output;
+            # the candidate is a different artifact, so the stale allowlist
+            # is dropped (the loader would refuse paths outside its dir).
+            entry.pop("write_allow", None)
         if st.kind == "verify" and entry["on_approved"] != "next":
             entry["on_approved"] = "next"
         doc_stages.append(entry)
