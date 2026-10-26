@@ -18,7 +18,8 @@ Layout:
                      rollback, approve_commit
 - ``roles``        — add_role (incl. draft area: adopt/discard/list), analyze_roles
 - ``setup``        — apply_project_setup (project-setup form materialization)
-- ``dispatch``     — dispatch_todo (atomic TODO + baseline + signal)
+- ``dispatch``     — dispatch_todo (atomic TODO + baseline + signal),
+                     resume_dispatch (finish a killed dispatch)
 - ``context``      — load_supervisor_context (aggregate bootstrap payload),
                      _extract_stage_info, _compute_expected_action
 - ``planning``     — apply_increment_plan (increment variant persistence)
@@ -92,7 +93,7 @@ from ._results import (
 from ._stack import derive_project_name, detect_stack
 from .brief import brief
 from .context import load_supervisor_context
-from .dispatch import dispatch_todo
+from .dispatch import dispatch_todo, resume_dispatch
 from .hygiene import (
     blocked_draft,
     remove_todo,
@@ -277,6 +278,7 @@ __all__ = [
     "apply_project_setup",
     # TODO dispatch + supervisor context (dogfood-2 automation)
     "dispatch_todo",
+    "resume_dispatch",
     "load_supervisor_context",
     # R2.2 (roadmap R2): the CODE transfer of a rejected unit
     "plan_claim_changes",

@@ -262,24 +262,101 @@ _DISCIPLINE_BLOCK = (
 # gitignored ``.agentic/roles/*`` of this repo — a regenerated role lost it.
 # Materialization appends it to every skill-sourced role, so the rule reaches
 # any project (the script ships with ``awf init``).
-_SUITE_CANON_HEADING = "## Канон полного прогона (added by awf add_role)"
+#
+# TODO-0258 (RB-1): the rule is not the same for every role. One suite run
+# belongs to QA; a reviewer reads the artifact instead of paying for a second
+# run. The marker pair stays one (existing tests and refresh migration key on
+# it) — only the body and the heading follow ``role_test_policy``.
+_SUITE_CANON_HEADING = "## Политика тестов (added by awf add_role)"
 _SUITE_CANON_START = "<!-- awf-suite-canon:start -->"
 _SUITE_CANON_END = "<!-- awf-suite-canon:end -->"
-_SUITE_CANON_BLOCK = (
-    "\n---\n\n"
-    f"{_SUITE_CANON_START}\n"
-    f"{_SUITE_CANON_HEADING}\n"
-    "\n"
-    "Полный сьют — ОДИН канонический прогон на attempt: "
-    "`scripts/suite-canonical.sh`. Команда по умолчанию — "
-    "`verification.test_cmd` из `.agentic/config.yaml`; переопределяется "
-    "`AWF_SUITE_CMD` (узкий прогон — своя команда). Артефакт — "
-    "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json`; повторный прогон на том "
-    "же дереве и той же команде — только с `--force`. Целевые и контрактные "
-    "проверки роль делает сама; `scripts/run-all.sh` целиком — только при "
-    "сомнении в воротах.\n"
-    f"{_SUITE_CANON_END}\n"
+
+#: Role-name tokens, checked in this order — the first hit wins.
+#: ``agent-qa-review`` carries both "qa" and "review", so QA must be first;
+#: the remaining token sets do not overlap.
+_TEST_POLICY_TOKENS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("qa", ("qa",)),
+    ("auditor", ("auditor",)),
+    ("implementer", ("implement",)),
+    ("code-reading", ("architect", "review")),
 )
+
+
+def role_test_policy(role_name: str) -> str:
+    """The test-run policy for a role: ``qa``/``implementer``/``code-reading``/``auditor``/``targeted``.
+
+    Classification is by name token, not by a role registry: roles are
+    created freely (skills, presets, templates), and an unknown name must
+    still get a safe default — ``targeted``, never an implicit full suite.
+    """
+    slug = (role_name or "").strip().lower().replace("_", "-")
+    if slug.startswith("agent-"):
+        slug = slug[len("agent-"):]
+    for policy, tokens in _TEST_POLICY_TOKENS:
+        if any(token in slug for token in tokens):
+            return policy
+    return "targeted"
+
+
+def _suite_canon_body(policy: str) -> str:
+    """The managed test-policy text for one policy id."""
+    if policy == "qa":
+        return (
+            "Полный сьют — ОДИН канонический прогон на attempt: "
+            "`scripts/suite-canonical.sh`. Команда по умолчанию — "
+            "`verification.test_cmd` из `.agentic/config.yaml`; переопределяется "
+            "`AWF_SUITE_CMD` (узкий прогон — своя команда). Артефакт — "
+            "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json`; повторный прогон на том "
+            "же дереве и той же команде — только с `--force`. Целевые и контрактные "
+            "проверки роль делает сама; `scripts/run-all.sh` целиком — только при "
+            "сомнении в воротах."
+        )
+    if policy == "implementer":
+        return (
+            "Тесты в этой роли — только целевые: файлы изменённого кода и "
+            "регрессия соседей. Полный сьют НЕ по умолчанию: без прямой строки "
+            "в контракте не запускай `pytest tests/`, `scripts/suite-canonical.sh` "
+            "и `run-all.sh`. Если контракт прямо требует полный сьют — ровно ОДИН "
+            "прогон `scripts/suite-canonical.sh` (он создаёт артефакт "
+            "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json`), не сырой "
+            "`pytest tests/`. Канонический прогон — зона QA; реализация не должна "
+            "оплачивать его дважды."
+        )
+    if policy == "code-reading":
+        return (
+            "Тесты в этой роли НЕ запускаются: ни `pytest tests/`, ни "
+            "`scripts/run-all.sh`, ни `scripts/suite-canonical.sh`. Факт состояния "
+            "проверок берёшь из готового артефакта "
+            "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json` на том же tree-sha "
+            "(его создала QA или реализация). Артефакта нет — это находка для "
+            "verify, а не повод гонять сьют самому."
+        )
+    if policy == "auditor":
+        return (
+            "Тесты: опирайся на артефакт QA "
+            "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json` на том же tree-sha и "
+            "запускай только целевые проверки под свои находки. Полный сьют "
+            "(`scripts/suite-canonical.sh`) сам не гоняй: дубль канонического "
+            "прогона даёт те же данные заново. Артефакта нет — назови это в "
+            "отчёте и ограничься целевыми."
+        )
+    return (
+        "Тесты: только целевые проверки изменённой поверхности. Полный сьют "
+        "(`pytest tests/`, `scripts/suite-canonical.sh`, `run-all.sh`) по умолчанию "
+        "не запускай — только по прямой строке контракта."
+    )
+
+
+def _suite_canon_block(role_name: str) -> str:
+    """The marker-delimited test-policy block for one role."""
+    return (
+        "\n---\n\n"
+        f"{_SUITE_CANON_START}\n"
+        f"{_SUITE_CANON_HEADING}\n"
+        "\n"
+        f"{_suite_canon_body(role_test_policy(role_name))}\n"
+        f"{_SUITE_CANON_END}\n"
+    )
 
 
 def _marker_block_pattern(start: str, end: str) -> re.Pattern[str]:
@@ -341,13 +418,17 @@ def apply_discipline_block(content: str) -> str:
     )
 
 
-def apply_suite_canon_block(content: str) -> str:
-    """Append (or refresh) the canonical-suite rule — idempotent."""
+def apply_suite_canon_block(content: str, role_name: str = "") -> str:
+    """Append (or refresh) the role's test-policy block — idempotent.
+
+    An empty ``role_name`` falls back to the ``targeted`` policy: the caller
+    that does not know the role must not silently hand out a full suite.
+    """
     return _apply_marker_block(
         content,
         start=_SUITE_CANON_START,
         end=_SUITE_CANON_END,
-        block=_SUITE_CANON_BLOCK,
+        block=_suite_canon_block(role_name),
     )
 
 
@@ -367,15 +448,20 @@ def _strip_managed_role_blocks(text: str) -> str:
     return text.strip("\n")
 
 
-def _apply_managed_role_blocks(content: str) -> str:
+def _apply_managed_role_blocks(content: str, role_name: str = "") -> str:
     """Every managed default a materialized role carries — one list.
 
     Two paths materialize a role: ``add_role`` (create) and the setup
     flow-variant (``_materialize_variant_roles``). A new managed block
     added here reaches both; a block appended at one call site only would
     silently split the two owners (REVIEW architect).
+
+    ``role_name`` picks the test policy (TODO-0258): the block's body is
+    owned by the role's kind, not by the call site.
     """
-    return apply_suite_canon_block(apply_discipline_block(content))
+    return apply_suite_canon_block(
+        apply_discipline_block(content), role_name=role_name
+    )
 
 
 #: Wrappers of the pre-M6 canonical-suite copy (the M1 task shipped it with
@@ -939,7 +1025,7 @@ def materialize_builtin_role_content(
     """
     resolved_model = _resolve_role_model(project_dir, role_name, "")
     content = _inject_model_line(raw, model_line(resolved_model))
-    return _apply_managed_role_blocks(content)
+    return _apply_managed_role_blocks(content, role_name=role_name)
 
 
 def _plan_model_config_update(
@@ -1103,7 +1189,7 @@ def _refresh_skill_role(
     # stale or hand-broken managed block; lines outside it stay untouched.
     # The one managed list, not a second copy of it (REVIEW architect): a
     # block added to ``_apply_managed_role_blocks`` must reach refresh too.
-    content = _apply_managed_role_blocks(content)
+    content = _apply_managed_role_blocks(content, role_name=role_name)
 
     # The preserved tail may still carry the pre-marker (hand-written) copy
     # of a rule the block above now manages — replace it, never keep both.
@@ -1360,7 +1446,7 @@ def add_role(
     # TODO-0230 (M6): discipline + suite canon are defaults of every role —
     # skill-sourced, preset and built-in alike. They sit before the
     # AWF-OVERRIDE block (skill-only), which stays the file's last section.
-    content = _apply_managed_role_blocks(content)
+    content = _apply_managed_role_blocks(content, role_name=role_name)
     if skill_name:
         content = apply_awf_overrides(content)
 

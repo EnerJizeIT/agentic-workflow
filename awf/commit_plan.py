@@ -119,38 +119,49 @@ class CommitOutcome:
     sha: str = ""
 
 
-def _claimed_paths(project_dir: Path, todo_id: str) -> list[str]:
-    """REVIEW-F1: the CODE-claim channel a unit adopted (R2.2), resolved from
+def _adopted_paths(project_dir: Path, todo_id: str) -> list[str]:
+    """The paths a unit adopted through its transfer channels, resolved from
     its audit links through the ONE transfer-exclusion mechanism (TODO-0221).
 
-    A dispatch with ``claim_from`` writes ``BASELINE-<todo>.claim`` and excludes
-    the claimed paths from ``BASELINE-<todo>.untracked``. The DeltaAssembler
-    must know the claim, or a claimed tracked predecessor change is treated as
-    pre-existing and silently dropped from the unit commit. Best-effort: a
-    missing / unreadable link, or an import failure, resolves to ``[]`` (the
-    caller then keeps the legacy behavior) — never an exception on the commit
-    path.
+    Three channels, one meaning — the unit's own work even when the baseline
+    carried the path dirty:
+
+    - ``claim_from`` writes ``BASELINE-<todo>.claim`` — the CODE channel;
+    - ``carry_over_from`` writes ``BASELINE-<todo>.carry_over`` — the FINDING
+      channel, whose REJECT file lists the rejected attempt's TRACKED paths
+      too (RB-2);
+    - ``include_untracked`` writes ``BASELINE-<todo>.include``.
+
+    The DeltaAssembler re-reads ``include`` itself; the union below is
+    idempotent and keeps the plan's ``claimed`` list the FULL adopted set
+    instead of a channel-dependent subset.
+
+    All of them must make the assembler own the path, or a tracked change the
+    predecessor made is treated as pre-existing and silently dropped from the
+    retry commit. Best-effort: a missing / unreadable link, or an import
+    failure, resolves to ``[]`` (the caller then keeps the legacy behavior) —
+    never an exception on the commit path.
     """
     if not todo_id:
         return []
     try:
         from .api.hygiene import transfer_exclusions
 
-        _carry_over, _include, claim = transfer_exclusions(project_dir, todo_id)
+        carry_over, include, claim = transfer_exclusions(project_dir, todo_id)
     except (ImportError, OSError, ValueError, RuntimeError) as exc:
-        # REVIEW-M1: never SILENT — a swallowed failure here drops the claim
-        # channel (the class F1 closed: a claimed predecessor change silently
-        # leaves the unit commit). Log the same warning shape as the legacy
-        # sibling, then degrade to the legacy behavior.
+        # REVIEW-M1: never SILENT — a swallowed failure here drops every
+        # adoption channel (the class F1 closed: a claimed predecessor change
+        # silently leaves the unit commit). Log the same warning shape as the
+        # legacy sibling, then degrade to the legacy behavior.
         logs_dir = project_dir / ".agentic" / "logs"
         if logs_dir.is_dir():
             _log(
                 logs_dir,
-                f"WARNING: claim-channel resolution failed for {todo_id} "
-                f"({type(exc).__name__}: {exc}) — claiming is degraded",
+                f"WARNING: adopted-path resolution failed for {todo_id} "
+                f"({type(exc).__name__}: {exc}) — adoption is degraded",
             )
         return []
-    return sorted(claim)
+    return sorted(set(carry_over) | set(include) | set(claim))
 
 
 def _candidate_plan(
@@ -170,8 +181,8 @@ def _candidate_plan(
     the assembler's).
 
     ``claim`` — an explicit adoption (R2.2). ``None`` resolves the unit's own
-    claim channel through :func:`_claimed_paths`, so the approve-time
-    candidate and the gate-time candidate are assembled from the SAME claim
+    adopted paths through :func:`_adopted_paths`, so the approve-time
+    candidate and the gate-time candidate are assembled from the SAME set
     (one home: :func:`candidate_verify._build_plan` delegates here).
 
     ``build_tree`` — materialise the candidate tree OID. ``False`` only
@@ -182,7 +193,7 @@ def _candidate_plan(
     result instead of calling :class:`DeltaAssembler` a second time.
     """
     if claim is None:
-        claim = _claimed_paths(project_dir, todo_id)
+        claim = _adopted_paths(project_dir, todo_id)
     try:
         plan = commit_delta.DeltaAssembler(
             project_dir, todo_id, baseline_sha, claim=claim
@@ -197,8 +208,8 @@ def _plan_split(project_dir: Path, baseline_sha: str, todo_id: str = "") -> Plan
 
     The model-backed raw pass (:func:`awf.commit_delta._raw_file_set`)
     supplies the raw set; the :class:`~awf.commit_delta.DeltaAssembler` adds
-    the TYPED rename-pair ownership on top, re-admits the explicit claim
-    channel (:func:`_claimed_paths`, R2.2) as full files, and records any
+    the TYPED rename-pair ownership on top, re-admits an adopted path
+    (:func:`_adopted_paths`, R2.2 / RB-2) as a full file, and records any
     model refusal. A model refusal (unsupported gitlink / unmerged / sparse / split
     index, or a mixed-ownership rename pair) BLOCKS the plan — the gate turns
     it into a refusal, never a silent legacy commit.

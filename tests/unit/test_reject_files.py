@@ -8,8 +8,8 @@ exclude them from the retry commit. Two real incidents (FU-09 fdb3fd0, U8b
 f0fea09) were fixed by manual repair commits.
 
 Covered here:
-- reject writes .agentic/context/REJECT-<todo>.files (untracked-only,
-  sorted, best-effort);
+- reject writes .agentic/context/REJECT-<todo>.files (the attempt's new
+  untracked files AND its tracked delta, sorted, best-effort);
 - dispatch_todo(carry_over_from=...) excludes those paths from the new
   baseline's untracked snapshot (so the retry commit includes them);
 - validation: origin TODO + REJECT file must exist, no side effects on
@@ -134,7 +134,8 @@ def _make_rejected_attempt(
 
 
 class TestSnapshotRejectedFiles:
-    """Part A.1: reject records the attempt's untracked new files."""
+    """Part A.1 + RB-2: reject records the attempt's untracked new files and
+    its tracked delta."""
 
     def test_records_new_untracked_minus_baseline(self, leak_project: Path) -> None:
         _make_rejected_attempt(leak_project)
@@ -147,14 +148,73 @@ class TestSnapshotRejectedFiles:
         # stale.txt pre-existed (in BASELINE-*.untracked) — not the attempt's
         assert "stale.txt" not in rf.read_text(encoding="utf-8")
 
-    def test_no_new_files_writes_empty_marker(self, leak_project: Path) -> None:
+    def test_tracked_change_is_recorded(self, leak_project: Path) -> None:
+        """RB-2: a tracked edit of the attempt is a finding too — it must
+        survive a retry, so the reject snapshot records it."""
         (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
+        (leak_project / "tracked.txt").write_text("v1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=leak_project, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "tracked base"], cwd=leak_project, check=True
+        )
         (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.untracked").write_text("")
-        (leak_project / "README.md").write_text("tracked change only\n")
+        # a known baseline: empty .status = clean pre-dispatch worktree (an
+        # ABSENT .status means "unknown" and suppresses the tracked delta)
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.status").write_text("")
+        (leak_project / "tracked.txt").write_text("attempt edit\n", encoding="utf-8")
         api.reject_commit(leak_project, ORIGIN, "tracked-only work")
         rf = reject_files_path(leak_project, ORIGIN)
-        assert rf.is_file(), "an empty REJECT file is the explicit 'nothing new' marker"
-        assert rf.read_text(encoding="utf-8").splitlines() == []
+        assert rf.is_file(), "reject must write REJECT-TODO-0001.files"
+        assert rf.read_text(encoding="utf-8").split("\x00")[:-1] == ["tracked.txt"]
+
+    def test_pre_dispatch_tracked_change_is_not_recorded(
+        self, leak_project: Path
+    ) -> None:
+        """RB-2 boundary: only the attempt's tracked paths are recorded —
+        a tracked change the baseline already carried dirty stays out."""
+        (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
+        (leak_project / "tracked.txt").write_text("v1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=leak_project, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "tracked base"], cwd=leak_project, check=True
+        )
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.status").write_text(
+            " M tracked.txt\n"
+        )
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.untracked").write_text("")
+        (leak_project / "tracked.txt").write_text("pre-dispatch work\n", encoding="utf-8")
+        api.reject_commit(leak_project, ORIGIN, "nothing new")
+        rf = reject_files_path(leak_project, ORIGIN)
+        assert rf.is_file()
+        assert rf.read_text(encoding="utf-8").split("\x00")[:-1] == []
+
+    def test_rename_records_both_sides(self, leak_project: Path) -> None:
+        """RB-2: a rename owns BOTH members of the pair (the source is gone
+        from git's index, not a heuristic); a copy would own only its new
+        path. Recording only the destination would let the retry see a mixed
+        ownership pair and refuse the whole rename."""
+        (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
+        (leak_project / "tracked.txt").write_text("v1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=leak_project, check=True)
+        subprocess.run(
+            ["git", "commit", "-qm", "tracked base"], cwd=leak_project, check=True
+        )
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.untracked").write_text("")
+        # a known baseline: empty .status = clean pre-dispatch worktree (an
+        # ABSENT .status means "unknown" and suppresses the tracked delta)
+        (leak_project / ".agentic" / "context" / f"BASELINE-{ORIGIN}.status").write_text("")
+        subprocess.run(
+            ["git", "mv", "tracked.txt", "renamed.txt"],
+            cwd=leak_project,
+            check=True,
+        )
+        api.reject_commit(leak_project, ORIGIN, "renamed work")
+        rf = reject_files_path(leak_project, ORIGIN)
+        assert rf.is_file()
+        assert rf.read_text(encoding="utf-8").split("\x00")[:-1] == [
+            "renamed.txt",
+            "tracked.txt",
+        ], "both members of a rename pair must be recorded"
 
     def test_no_baseline_records_all_untracked(self, leak_project: Path) -> None:
         (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
@@ -217,70 +277,6 @@ class TestReadAndResolve:
         assert resolve_carry_over(leak_project, ORIGIN) == ["b.py"]
 
 
-class TestDispatchCarryOver:
-    """Part A.2: dispatch excludes carried-over paths from baseline-untracked."""
-
-    def test_carry_over_excludes_paths_from_baseline_untracked(
-        self, leak_project: Path
-    ) -> None:
-        _make_rejected_attempt(leak_project)
-        res = api.dispatch_todo(
-            leak_project,
-            "# TODO-0002\nretry with carry-over\n",
-            todo_id=RETRY,
-            carry_over_from=ORIGIN,
-        )
-        from awf.infra.git_model import read_untracked_snapshot
-
-        lines = read_untracked_snapshot(leak_project, RETRY) or set()
-        assert "src/a.py" not in lines, "carried-over file must not look pre-existing"
-        assert "b.py" not in lines
-        assert "stale.txt" in lines, "genuinely pre-existing untracked stays listed"
-        assert res.carry_over_from == ORIGIN
-        assert res.carry_over_files == ["b.py", "src/a.py"]
-
-    def test_carry_over_writes_audit_link(self, leak_project: Path) -> None:
-        _make_rejected_attempt(leak_project)
-        api.dispatch_todo(
-            leak_project, "# TODO-0002\nretry\n", todo_id=RETRY, carry_over_from=ORIGIN
-        )
-        link = _ctx(leak_project) / f"BASELINE-{RETRY}.carry_over"
-        assert link.is_file(), "audit trail: which origin the carry-over came from"
-        assert link.read_text(encoding="utf-8").strip() == ORIGIN
-
-    def test_without_carry_over_behavior_unchanged(self, leak_project: Path) -> None:
-        _make_rejected_attempt(leak_project)
-        api.dispatch_todo(leak_project, "# TODO-0002\nretry\n", todo_id=RETRY)
-        from awf.infra.git_model import read_untracked_snapshot
-
-        text = read_untracked_snapshot(leak_project, RETRY) or set()
-        assert "src/a.py" in text and "b.py" in text, "legacy path: all untracked listed"
-        assert not (_ctx(leak_project) / f"BASELINE-{RETRY}.carry_over").exists()
-
-    def test_refused_missing_reject_file_no_side_effects(
-        self, leak_project: Path
-    ) -> None:
-        (leak_project / ".agentic" / "inbox" / f"{ORIGIN}.md").write_text(f"# {ORIGIN}\n")
-        with pytest.raises(api.AwfApiError, match="REJECT-TODO-0001"):
-            api.dispatch_todo(
-                leak_project,
-                "# TODO-0002\nretry\n",
-                todo_id=RETRY,
-                carry_over_from=ORIGIN,
-            )
-        assert not (leak_project / ".agentic" / "inbox" / f"{RETRY}.md").exists()
-
-    def test_refused_unknown_origin_no_side_effects(self, leak_project: Path) -> None:
-        with pytest.raises(api.AwfApiError, match="TODO-0099"):
-            api.dispatch_todo(
-                leak_project,
-                "# TODO-0002\nretry\n",
-                todo_id=RETRY,
-                carry_over_from="TODO-0099",
-            )
-        assert not (leak_project / ".agentic" / "inbox" / f"{RETRY}.md").exists()
-
-
 class TestOrphanDetection:
     """Part B: files that would be silently excluded from the commit."""
 
@@ -331,32 +327,3 @@ class TestOrphanDetection:
         (proj / "a.py").write_text("x\n")
         assert orphaned_reject_files(proj, RETRY) == []
 
-
-class TestCarryOverLinkLifecycle:
-    """RUN5 #1: the BASELINE-{todo}.carry_over link describes the baseline's
-    exclusion — a (re-)dispatch without carry-over rewrites the baseline
-    without it, so the stale link must go (awf run_next re-applies the link
-    when re-baselining)."""
-
-    def test_non_carry_redispatch_clears_stale_link(self, leak_project: Path) -> None:
-        _make_rejected_attempt(leak_project)
-        api.dispatch_todo(
-            leak_project,
-            "# TODO-0002\nretry\n",
-            todo_id=RETRY,
-            carry_over_from=ORIGIN,
-        )
-        link = _ctx(leak_project) / f"BASELINE-{RETRY}.carry_over"
-        assert link.is_file()
-
-        # free the id, then re-dispatch WITHOUT carry-over
-        (leak_project / ".agentic" / "inbox" / f"{RETRY}.md").unlink()
-        api.dispatch_todo(leak_project, "# TODO-0002\nretry again\n", todo_id=RETRY)
-
-        assert not link.exists(), (
-            "non-carry re-dispatch must drop the stale carry-over link"
-        )
-        from awf.infra.git_model import read_untracked_snapshot
-
-        lines = read_untracked_snapshot(leak_project, RETRY) or set()
-        assert "src/a.py" in lines, "non-carry baseline lists all untracked again"

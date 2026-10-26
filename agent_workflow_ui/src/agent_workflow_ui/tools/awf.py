@@ -1109,18 +1109,20 @@ async def awf_run_revise(
     before: str | None = None,
 ) -> dict[str, Any]:
     """Revise the not-started queue elements of the active run (ORCH M3.4);
-    add new elements to it (REPORTS32); remove or anchor (TODO-0242).
+    add new elements to it (REPORTS32); remove or anchor (TODO-0242);
+    replace the CURRENT rejected element with a retry TODO (RB-3).
 
     One typed operation with a preview and an idempotency key.
     ``preview=True`` shows the current queue, the elements that would
     change, the elements that would be appended/inserted and the conflicts
-    (current/started/completed/TODO file missing) with NO side effects.
-    The apply changes the pipeline of the NOT-STARTED elements only —
-    completed and current are never touched — and records the revision in
-    the run state (state/run.yaml, the decisions' path). The key names ONE
-    request: a repeat with the same ``key`` AND the same payload is a
-    no-op; the same ``key`` with a DIFFERENT payload is refused
-    (recovery-required) — a different revision needs a new key.
+    (current/started/approved/rejected/completed/TODO file missing) with
+    NO side effects. The apply changes the pipeline of the NOT-STARTED
+    elements and, with RB-3, replaces a REJECTED current element — a
+    completed or approved current is never touched. The revision is
+    recorded in the run state (state/run.yaml, the decisions' path). The
+    key names ONE request: a repeat with the same ``key`` AND the same
+    payload is a no-op; the same ``key`` with a DIFFERENT payload is
+    refused (recovery-required) — a different revision needs a new key.
 
     APPEND/INSERT (REPORTS32): a ``queue`` item whose todo_id is NOT in
     the run queue joins it — appended at the queue END (``changes`` carry
@@ -1152,6 +1154,17 @@ async def awf_run_revise(
     (``inbox/<B>.md`` non-empty — the engine's launch precondition; a
     ``.ready`` alone cannot launch) and must not duplicate a queued id;
     a conflict refuses the whole request.
+
+    RETRY REPLACE (RB-3): the same item may source the CURRENT element
+    when the run diary marks it REJECTED — B takes the rejected slot, the
+    run position moves back to it, and ``awf_run_next`` launches the
+    retry; the reject counter/verdict stay. Only a dead stage qualifies
+    (a live one is refused even with ``stop_running`` — this path never
+    kills, so ``awf_kill`` first); a live/approved/completed current is a
+    conflict. B must carry no earlier reject (approve would refuse it
+    forever) — issue a fresh TODO id. Retire the replaced TODO
+    (``awf_todo_retire``) only AFTER the retry is applied — a retire
+    first marks it completed and closes the retry slot.
 
     Refusals (each returns the current state; the previous plan stays in
     force): no active run; a stage is running without ``stop_running``
@@ -1904,11 +1917,15 @@ async def awf_reject(
     elif run_active:
         next_action = (
             f"{todo_id} rejected — the decision is recorded in the run. "
-            f"Close the reject decision: re-plan the task (issue a new "
-            f"TODO) and retire {todo_id} (awf_todo_retire), or stop the "
-            f"run (awf_run_finish) if it needs the owner. Then "
-            f"awf_run_next launches the next item (the run gate counts "
-            f"rejections — twice stops the run)."
+            f"Close the reject decision: replace the rejected element in "
+            f"the run queue with a fresh retry TODO "
+            f"(awf_run_revise queue=[{{\"from\": \"{todo_id}\", \"to\": "
+            f"\"<new id>\"}}]). Retire {todo_id} (awf_todo_retire) only "
+            f"AFTER the retry is applied — a retire first marks it "
+            f"completed and closes the retry slot. awf_run_next then "
+            f"launches the retry at its slot "
+            f"(the run gate counts rejections — twice stops the run); stop "
+            f"the run (awf_run_finish) if it needs the owner."
         )
     else:
         next_action = (
@@ -2343,6 +2360,8 @@ async def awf_dispatch_todo(
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
     source_ref: str | None = None,
+    no_baseline_tests: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -2398,6 +2417,19 @@ async def awf_dispatch_todo(
             checklist. A missing file/section refuses before any side
             effect. A relative path must stay inside the project; an
             absolute one is used as passed.
+        no_baseline_tests: TODO-0261 (RB-4) — skip the dispatch baseline
+            test command. sha/status/env are still snapshotted, the tests
+            log says ``skipped`` and ``.ready`` is written immediately.
+            Use when the project's baseline command is slow by design.
+        force: TODO-0261 (RB-4) — overwrite an existing inbox TODO for an
+            EXPLICIT ``todo_id`` (refused while a pipeline is live). Without
+            it a repeated id is refused, exactly as before.
+
+    The dispatch baseline gets its own timeout (``verification.baseline_timeout``
+    in config, default 60 s) and never blocks the unit: a timeout records
+    ``baseline_test_status="timeout"`` and the dispatch still completes. A
+    killed dispatch leaves ``context/DISPATCH-<id>.json``; finish it with the
+    CLI ``awf dispatch --resume TODO-NNNN``.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
@@ -2405,7 +2437,7 @@ async def awf_dispatch_todo(
         pre_existing_untracked (list, excluded from the commit),
         untracked_warning (one line, "" when nothing is excluded),
         renumbered (True when the auto-issued number replaced a foreign
-        one in the title heading).
+        one in the title heading), baseline_test_status, baseline_timeout.
     """
     response = await _exec(
         api.dispatch_todo,
@@ -2418,6 +2450,8 @@ async def awf_dispatch_todo(
         include_untracked=include_untracked,
         allow_mismatch=allow_mismatch,
         source_ref=source_ref,
+        no_baseline_tests=no_baseline_tests,
+        force=force,
     )
     if response.get("status") != "ok":
         return response
@@ -2441,6 +2475,16 @@ async def awf_dispatch_todo(
             f"{response.get('carry_over_from')}: {len(response.get('carry_over_files'))} "
             "file(s) of the rejected attempt will join the retry commit. "
             "Call awf_start(background=True) to launch pipeline."
+        )
+    # TODO-0261 (RB-4): a timed-out or skipped smoke baseline must be
+    # visible — the unit is still dispatched, but the supervisor knows the
+    # snapshot is not a green/red signal.
+    baseline_status = response.get("baseline_test_status") or ""
+    if baseline_status in ("timeout", "skipped"):
+        response["next_action"] = (
+            f"{response['next_action']} Baseline tests: {baseline_status} "
+            f"(timeout {response.get('baseline_timeout')}s) — the unit is "
+            "dispatched; do not read the snapshot as a test result."
         )
     # RUN10 #4 (TODO-0074): the excluded pre-existing untracked files
     # must not be invisible — the warning reaches next_action.

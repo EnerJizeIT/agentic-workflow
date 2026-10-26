@@ -1003,9 +1003,10 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         review_file, f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n"
     )
 
-    # RUN5 #1 (Part A.1): record the attempt's untracked new files so a
-    # re-dispatch can carry them over (leak-gate). Best-effort by design —
-    # the snapshot never fails the reject, it logs and returns [].
+    # RUN5 #1 (Part A.1) + RB-2: record the attempt's files (new untracked
+    # AND its tracked delta) so a re-dispatch can carry them over (leak-gate).
+    # Best-effort by design — the snapshot never fails the reject, it logs
+    # and returns [].
     from ..reject_files import snapshot_rejected_files
 
     rejected_files = snapshot_rejected_files(
@@ -1135,6 +1136,9 @@ def create_baseline(
     carry_over: set[str] | None = None,
     include: set[str] | None = None,
     claim: set[str] | None = None,
+    test_timeout: float | None = None,
+    run_tests: bool = True,
+    timeout_status: str = "failed",
 ) -> BaselineResult:
     """Create BASELINE-{todo_id}.{sha,status,worktree,tests.log,env.log}
     snapshot.
@@ -1172,6 +1176,14 @@ def create_baseline(
     ``claim_changes.write_claim_link`` at dispatch, re-applied by
     ``hygiene.transfer_exclusions``), kept parallel to the ``carry_over`` /
     ``include`` links above.
+
+    ``test_timeout`` (TODO-0261, dispatch path): how long the baseline test
+    command may run before its process group is killed. ``None`` keeps the
+    legacy 300 s of the unit baseline. ``timeout_status`` names the status a
+    timeout records — the dispatch passes ``"timeout"`` so the supervisor
+    sees WHY the smoke snapshot is absent; the legacy path keeps ``"failed"``.
+    ``run_tests=False`` skips the command entirely (``status="skipped"``) and
+    only snapshots sha/status — ``awf dispatch --no-baseline-tests``.
     """
     if not todo_id:
         raise AwfApiError("todo_id is required")
@@ -1292,8 +1304,15 @@ def create_baseline(
         tests_log_path = context_dir / f"BASELINE-{todo_id}.tests.log"
         test_status = "no_config"
         test_log_excerpt = ""
+        effective_timeout = 300 if test_timeout is None else max(0.0, float(test_timeout))
 
-        if config_file.exists():
+        if not run_tests:
+            _write_baseline_file(
+                tests_log_path,
+                "baseline tests skipped (run_tests=False)\n",
+            )
+            test_status = "skipped"
+        elif config_file.exists():
             config_data = cfg_mod.load(project_dir)
             # U1: dispatch-time baseline runs a fast smoke command (baseline_cmd)
             # instead of the full test_cmd. Absent/empty/blank → legacy test_cmd.
@@ -1323,16 +1342,17 @@ def create_baseline(
                         cwd=str(project_dir),
                         capture_output=True,
                         text=True,
-                        timeout=300,
+                        timeout=effective_timeout,
                     )
                 except subprocess.TimeoutExpired:
                     # cmd hung (watcher / stdin prompt / infinite loop).
                     # Don't block baseline creation — record failure, continue.
                     _write_baseline_file(
                         tests_log_path,
-                        f"{cmd_key} timed out after 300s: {run_cmd}\n",
+                        f"{cmd_key} timed out after {effective_timeout:g}s: "
+                        f"{run_cmd}\n",
                     )
-                    test_status = "failed"
+                    test_status = timeout_status
                     test_log_excerpt = f"{cmd_key} timed out: {run_cmd}"
                 except FileNotFoundError:
                     # REPORTS26 B1: bare binary not in PATH (e.g. `vitest`

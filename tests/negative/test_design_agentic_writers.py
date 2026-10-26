@@ -916,7 +916,7 @@ class TestSiteDiscrimination:
     def test_multi_match_probe_with_a_site_token_is_green(self) -> None:
         rows = validate_document(_doc(_row(
             "awf/api/dispatch.py",
-            'grep -n -A2 "^        md_path.unlink(missing_ok=True)" awf/api/dispatch.py',
+            'grep -n -A4 "^            md_path.unlink(missing_ok=True)" awf/api/dispatch.py',
             expect="outbox has a DONE closure")))
         assert multi_match_problems(rows) == []
 
@@ -924,10 +924,10 @@ class TestSiteDiscrimination:
         from dataclasses import replace
         rows = validate_document(_doc(
             _row("awf/api/dispatch.py",
-                 'grep -n -A2 "^        md_path.unlink(missing_ok=True)" awf/api/dispatch.py',
+                 'grep -n -A4 "^            md_path.unlink(missing_ok=True)" awf/api/dispatch.py',
                  expect="outbox has a DONE closure"),
             _row("awf/api/dispatch.py",
-                 'grep -n -B1 "^        md_path.unlink(missing_ok=True)" awf/api/dispatch.py',
+                 'grep -n -B1 "^            md_path.unlink(missing_ok=True)" awf/api/dispatch.py',
                  expect="if baseline fails (prevents orphan")))
         mutated = [replace(rows[0], expectation=rows[1].expectation), rows[1]]
         assert multi_match_problems(mutated)

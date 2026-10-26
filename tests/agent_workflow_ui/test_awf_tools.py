@@ -349,6 +349,92 @@ class TestAwfReject:
         assert "close the reject decision" not in result["next_action"]
 
 
+# ─── awf_dispatch_todo no_baseline_tests / force (TODO-0261 RB-4) ───────
+
+
+class TestDispatchBaselineFlags:
+    """RB-4: the MCP dispatch tool must proxy the two new flags and surface a
+    timed-out/skipped smoke baseline in next_action (the supervisor must not
+    read such a snapshot as a test result)."""
+
+    def test_flags_are_proxied_and_status_is_visible(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            baseline_test_status = "skipped"
+            baseline_timeout = 60.0
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "pre_check_warnings": self.pre_check_warnings,
+                    "baseline_test_status": self.baseline_test_status,
+                    "baseline_timeout": self.baseline_timeout,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
+            captured["no_baseline_tests"] = no_baseline_tests
+            captured["force"] = force
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(
+            content="# t",
+            project_dir=str(mcp_project),
+            no_baseline_tests=True,
+            force=True,
+        ))
+        assert result["status"] == "ok"
+        assert captured == {"no_baseline_tests": True, "force": True}
+        assert "Baseline tests: skipped" in result["next_action"]
+
+    def test_defaults_are_false(self, mcp_project, monkeypatch):
+        captured = {}
+
+        class _R:
+            todo_id = "TODO-0002"
+            baseline_sha = "0" * 40
+            role_hint = None
+            files_written = []
+            pre_check_warnings = []
+            baseline_test_status = "passed"
+            baseline_timeout = 60.0
+
+            def as_dict(self):
+                return {
+                    "todo_id": self.todo_id,
+                    "baseline_sha": self.baseline_sha,
+                    "role_hint": self.role_hint,
+                    "files_written": self.files_written,
+                    "pre_check_warnings": self.pre_check_warnings,
+                    "baseline_test_status": self.baseline_test_status,
+                    "baseline_timeout": self.baseline_timeout,
+                }
+
+        def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
+                          pipeline=None, carry_over_from=None, include_untracked=None,
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
+            captured["no_baseline_tests"] = no_baseline_tests
+            captured["force"] = force
+            return _R()
+
+        monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
+        result = run(awf.awf_dispatch_todo(content="# t", project_dir=str(mcp_project)))
+        assert captured == {"no_baseline_tests": False, "force": False}
+        assert "Baseline tests:" not in result["next_action"]
+
 # ─── awf_dispatch_todo carry_over_from (RUN5 #1, TODO-0052) ──────────────
 
 
@@ -380,7 +466,8 @@ class TestDispatchCarryOverParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -420,7 +507,8 @@ class TestDispatchCarryOverParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             captured["carry_over_from"] = carry_over_from
             return _R()
 
@@ -431,7 +519,8 @@ class TestDispatchCarryOverParam:
     def test_error_propagates(self, mcp_project, monkeypatch):
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             raise api.AwfApiError("REJECT-TODO-0001.files not found")
 
         monkeypatch.setattr(api, "dispatch_todo", fake_dispatch)
@@ -475,7 +564,8 @@ class TestDispatchIncludeUntrackedParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -516,7 +606,8 @@ class TestDispatchIncludeUntrackedParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             captured["include_untracked"] = include_untracked
             return _R()
 
@@ -554,7 +645,8 @@ class TestDispatchAllowMismatchParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             captured["allow_mismatch"] = allow_mismatch
             return _R()
 
@@ -595,7 +687,8 @@ class TestDispatchAllowMismatchParam:
 
         def fake_dispatch(project_dir, content, *, role=None, todo_id=None,
                           pipeline=None, carry_over_from=None, include_untracked=None,
-                          allow_mismatch=None, source_ref=None):
+                          allow_mismatch=None, source_ref=None,
+                          no_baseline_tests=False, force=False):
             captured["allow_mismatch"] = allow_mismatch
             return _R()
 

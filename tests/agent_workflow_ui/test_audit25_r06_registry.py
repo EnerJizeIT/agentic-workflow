@@ -130,7 +130,7 @@ def test_registry_equals_list_tools():
             "awf_dispatch_todo",
             ["content", "project_dir", "role", "todo_id",
              "pipeline", "carry_over_from", "include_untracked",
-             "allow_mismatch", "source_ref"],  # REPORTS26 F5 (TODO-0165): heading mismatch opt-out; TODO-0229: source_ref
+             "allow_mismatch", "source_ref", "no_baseline_tests", "force"],  # REPORTS26 F5; TODO-0229 source_ref; RB-4 dispatch flags
             "Create a unit atomically: TODO file + baseline + .ready signal in one call.",
         ),
         (

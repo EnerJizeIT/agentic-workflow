@@ -282,27 +282,41 @@ def next_action_for_record(record: RunRecord, fallback: str) -> str:
     Outside a run (or before the first decision) the fallback stands —
     the behavior is unchanged. Inside an active run after a REJECT the
     fallback is replaced: the decision is recorded, and the ONE next
-    step is to CLOSE it — re-plan the task (issue a new TODO) and retire
-    the rejected one, or stop the run (ORCH M2.3: the old wording told
-    the supervisor "fix the assignment, then awf_run_next", but the run
-    gate REFUSES that run_next until the rejected TODO is archived —
-    ``awf/api/run.py`` refuses over an open reject; the retire step was
-    missing from the text). ``awf_run_next`` stays named as the loop
-    step AFTER the closing (the queue position is owned by awf — not
-    the generic ``awf_start``).
+    step is to CLOSE it — replace the rejected element in the run queue
+    with a fresh retry TODO (``awf_run_revise`` ``from→to``), then
+    retire the rejected one, or stop the run. ORCH M2.3 / RB-3: the old
+    wording told the supervisor "re-plan, then retire"; the retry replace
+    comes FIRST — a retire first marks the element completed and the
+    retry replace refuses it. The retire is hygiene after the retry (an
+    unretired rejected TODO stays listed as active). ``awf_run_next``
+    stays named as the loop step AFTER the closing (the queue position is
+    owned by awf — not the generic ``awf_start``).
     """
     if not record.active or not record.last_decision:
         return fallback
     if str(record.last_decision.get("kind") or "") != "reject":
         return fallback
     todo = str(record.last_decision.get("todo_id") or "?")
+    # RB-3: once the retry replace took the rejected element's slot, the
+    # rejected id is no longer in the queue — the decision IS closed and
+    # the stale "replace it" command would now be refused ("source TODO
+    # is not in the run queue"). Fall back (the run moved on) instead.
+    queue_ids = {
+        str(q.get("todo_id") or "")
+        for q in run_state.normalize_queue((record.state or {}).get("queue"))
+    }
+    if queue_ids and todo not in queue_ids:
+        return fallback
     return (
         f"Decision recorded: reject {todo} (sources in the run record). "
-        f"Close the reject decision: re-plan the task (issue a new TODO) "
-        f"and retire {todo} (`awf_todo_retire`), or stop the run "
-        f"(`awf_run_finish`) if it needs the owner. Then `awf_run_next` "
-        f"launches the next item (the run gate counts rejections — twice "
-        f"stops the run)."
+        f"Close the reject decision: replace the rejected element in the "
+        f"run queue with a fresh retry TODO "
+        f"(`awf_run_revise` with {{\"from\": \"{todo}\", \"to\": "
+        f"\"<new id>\"}}). Retire {todo} (`awf_todo_retire`) only AFTER the "
+        f"retry is applied — a retire first marks it completed and closes "
+        f"the retry slot. `awf_run_next` then launches the retry at its "
+        f"slot (the run gate counts rejections — twice stops the run); stop "
+        f"the run (`awf_run_finish`) if it needs the owner."
     )
 
 

@@ -289,12 +289,29 @@ def _build_parser():
         "dispatch",
         help="Create a unit atomically: TODO file + baseline + .ready signal",
     )
-    _dispatch_content = p_dispatch.add_mutually_exclusive_group(required=True)
+    _dispatch_content = p_dispatch.add_mutually_exclusive_group(required=False)
     _dispatch_content.add_argument("--content", help="TODO body (short)")
     _dispatch_content.add_argument(
         "--content-file",
         dest="content_file",
         help="TODO body read from a file",
+    )
+    p_dispatch.add_argument(
+        "--resume",
+        default=None,
+        metavar="TODO-NNNN",
+        help="Finish a dispatch killed mid-baseline from its journal (no content)",
+    )
+    p_dispatch.add_argument(
+        "--no-baseline-tests",
+        dest="no_baseline_tests",
+        action="store_true",
+        help="Skip the dispatch baseline test command; write sha/status and .ready",
+    )
+    p_dispatch.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing inbox TODO (explicit --todo-id; refused while live)",
     )
     p_dispatch.add_argument(
         "--source-ref",

@@ -162,9 +162,10 @@ class RejectResult:
     run_stopped: bool = False
     report_file: str = ""
     message: str = ""
-    # RUN5 #1 (Part A.1): untracked NEW files of the rejected attempt,
-    # recorded to context/REJECT-{todo}.files (leak-gate). Empty when the
-    # attempt created no new files or the snapshot could not be taken.
+    # RUN5 #1 (Part A.1) + RB-2: the rejected attempt's files (its untracked
+    # NEW files and its tracked delta), recorded to
+    # context/REJECT-{todo}.files (leak-gate). Empty when the attempt left no
+    # new or changed path, or the snapshot could not be taken.
     reject_files: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -411,6 +412,14 @@ class DispatchTodoResult:
     # changes were claimed and the claimed display paths ([] when no claim).
     claim_from: str | None = None
     claimed_files: list[str] = field(default_factory=list)
+    # TODO-0261 (RB-4): the dispatch baseline is a smoke snapshot with its own
+    # timeout. The supervisor must SEE what it got: the status ("passed" /
+    # "timeout" / "skipped" / ...) and the timeout that was in force.
+    baseline_test_status: str = ""
+    baseline_timeout: float | None = None
+    #: True when the unit was finished from its write-ahead journal after a
+    #: killed dispatch (``resume_dispatch``), not created from scratch.
+    resumed: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -773,15 +782,17 @@ class RunReviseResult:
     - ``preview`` — nothing written; ``changes``/``conflicts`` are the plan;
     - ``applied`` — the not-started elements' pipelines changed, elements
       were replaced (``changes`` entries carry ``class: "replaced"`` with
-      ``from`` / ``to``), and/or new elements joined the queue
+      ``from`` / ``to``; RB-3: a replace whose ``from`` is the REJECTED
+      current element is a retry — the run position moves back to that
+      slot, the reject diary stays), and/or new elements joined the queue
       (``class: "appended"`` / ``"inserted"``), the revision is recorded
       (``revision`` = the stored entry);
     - ``noop`` — a repeat with the same ``key`` (``revision`` = the stored
       entry) or a request with no effective change;
     - ``refused`` — no active run / live engine / conflicts (current /
-      started / completed / TODO file missing / duplicate target /
-      replace source not queued) / missing key / invalid ``position`` /
-      CAS mismatch / a failed stop (M4.1);
+      approved / rejected / started / completed / TODO file missing /
+      duplicate target / replace source not queued) / missing key /
+      invalid ``position`` / CAS mismatch / a failed stop (M4.1);
       ``current_queue`` + ``generation`` carry the current state (the
       previous plan stays in force).
 
