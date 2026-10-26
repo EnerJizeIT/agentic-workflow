@@ -336,6 +336,11 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
                 # removed; readers compute the role from pipeline.yaml.)
                 checkpoint_pending=False, checkpoint_port=None,
                 checkpoint_form_url=None,
+                # PA2 (TODO-0269): the closer's skip flags describe THIS
+                # stage's entry only. Reset them at the single stage-start
+                # write, so the next stage (a supervisor one included)
+                # never inherits a green skip from a previous worker.
+                stage_skipped=False, stage_skip_reason=None,
             )
             if liveness is not None:
                 liveness.on_stage(s_name, current_todo)

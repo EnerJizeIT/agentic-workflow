@@ -3552,7 +3552,14 @@ def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
             # K1: the source ``write_allow`` belonged to the OLD output;
             # the candidate is a different artifact, so the stale allowlist
             # is dropped (the loader would refuse paths outside its dir).
+            # PA1 (TODO-0269): ``skip_if`` belongs to that same OLD output
+            # decision — the unit's contract here IS the candidate, so a
+            # green verdict must not silently skip the one stage that
+            # creates it. Taken together with ``write_allow``: the source
+            # stage may still carry it for its own pipeline, the snapshot
+            # must not.
             entry.pop("write_allow", None)
+            entry.pop("skip_if", None)
         if st.kind == "verify" and entry["on_approved"] != "next":
             entry["on_approved"] = "next"
         doc_stages.append(entry)

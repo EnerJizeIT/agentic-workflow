@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import budget as _budget
+from . import closer_stage, paths, stage_manifest, todos, verify
 from . import commit_plan as _commit_plan
 from . import config as cfg_mod
-from . import paths, stage_manifest, todos, verify
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
@@ -1748,6 +1748,33 @@ def execute_agent_stage(
         if not current_todo:
             print(f"No active TODO for agent stage '{s_name}'. Run supervisor stage first.")
             return current_todo, stage_idx, 1
+
+    # CLOSER IMP2 (K2): the ONE decision point of a stage that declares
+    # ``skip_if``. It runs before baseline and manifest: a green verdict must
+    # skip without spawning a worker and without leaving a PID; a blocked
+    # verdict must stop here with the owner-facing note. A stage without the
+    # key keeps the old path and never calls the gate at the boundary.
+    if stage.skip_if:
+        decision = closer_stage.decide(project_dir, current_todo, stage, config)
+        _log(logs_dir, decision.log_line)
+        if decision.kind == "blocked":
+            # PA2 (TODO-0269): the skip flags are reset at the orchestrator's
+            # stage-start write — this branch only records the signal.
+            _write_state(
+                project_dir,
+                last_signal=f"BLOCKED-{current_todo}",
+                logs_dir=logs_dir,
+            )
+            return current_todo, stage_idx, 1
+        if decision.kind == "skip":
+            _write_state(
+                project_dir,
+                stage_skipped=True,
+                stage_skip_reason=decision.skip_reason,
+                logs_dir=logs_dir,
+            )
+            _log(logs_dir, f"SKIPPED ({decision.skip_reason})")
+            return current_todo, stage_idx + 1, 0
 
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
     _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")

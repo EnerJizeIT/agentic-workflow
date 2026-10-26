@@ -1436,10 +1436,21 @@ def dispatch_todo(
                 "live — stop it first (awf kill), then retry."
             )
         stale_ready = inbox / f"{todo_id}.ready"
+        # PA4 (TODO-0269): a re-issued unit is a DIFFERENT unit. The closer's
+        # first verdict and attempt counter belong to the old one — keeping
+        # the file would report the old wave/attempts and (IMP4) refuse the
+        # retry for a budget it never spent. Nothing re-writes this file
+        # (unlike the baseline snapshot, which the dispatch re-creates), so
+        # the stale record is removed here. The leaf joins the barrier next
+        # to ``stale_ready``: the branch's no-follow preflight covers
+        # exactly the files it unlinks (the ``context`` directory itself is
+        # already in the dispatch-wide preflight above).
+        closer_state = paths.context_dir(project_dir) / f"CLOSER-{todo_id}.json"
         refuse_unsafe_surfaces(
-            project_dir, f"dispatch {todo_id}", inbox, stale_ready
+            project_dir, f"dispatch {todo_id}", inbox, stale_ready, closer_state
         )
         stale_ready.unlink(missing_ok=True)
+        closer_state.unlink(missing_ok=True)
 
     # A plain repeat of an explicit id is refused BEFORE the write-ahead
     # journal exists: writing ours first would overwrite the journal of a
