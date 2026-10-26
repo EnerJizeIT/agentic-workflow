@@ -177,6 +177,21 @@ class BudgetRow:
         return self.words > self.limit
 
 
+def declared_status(text: str) -> str:
+    """The header's ``Статус`` value (first token) — no full K1 parse.
+
+    The pipeline engine reads a stage verdict with this: a review report
+    that says ``Статус: FAIL`` must roll the stage back to its author even
+    when the rest of the strict header is incomplete. The readiness gate
+    keeps :func:`parse_spec_header` (the strict reader).
+    """
+    for line in _header_lines(text):
+        match = _KEY_LINE_RE.match(line)
+        if match and match.group(1).strip() == STATUS_KEY:
+            return _first_token(match.group(2))
+    return ""
+
+
 def _strip_value(value: str) -> str:
     """Trim backticks/spaces around a header value."""
     return value.strip().strip("`").strip()
@@ -946,6 +961,7 @@ __all__ = [
     "check_budgets",
     "count_words",
     "declared_requirement_ids",
+    "declared_status",
     "discover_documents",
     "fingerprint_documents",
     "package_fingerprint",

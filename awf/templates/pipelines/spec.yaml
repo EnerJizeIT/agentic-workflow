@@ -3,12 +3,21 @@ description: 'Specification package: six author stages, the requirements reviewe
   authors both the requirements review and readiness; a rejected requirements
   review rolls back to the author.'
 stages:
+- name: plan
+  role: supervisor
+  description: Supervisor studies the request and creates the spec unit
+  on_blocked: escalate
+  on_approved: next
+  on_rejected: escalate
+  on_failed: escalate
+  max_retries: 1
+  max_rollbacks: 3
 - name: spec-context
   role: agent-project-auditor
   task: 'Spec stage 0. Read the request and the project. Write the context file named
     in the contract: current paths, constraints, risks and baseline (commit plus
     relevant dirty files). Do not change code or configuration.'
-  output: docs/spec/spec-pipeline/spec-pipeline.context.md
+  output: docs/spec/{{spec_slug}}/{{spec_slug}}.context.md
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate
@@ -18,7 +27,7 @@ stages:
   task: 'Spec stage 1. Write the requirements file named in the contract: goal, scope,
     R#/AC#/C#/INV#, scenarios, open questions. Follow the shared specification protocol.
     Do not design the solution and do not change code.'
-  output: docs/spec/spec-pipeline/spec-pipeline.md
+  output: docs/spec/{{spec_slug}}/{{spec_slug}}.md
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate
@@ -28,7 +37,7 @@ stages:
   task: 'Spec stage 2. Review the requirements against their sources. Write the
     requirements-review report with PASS or FAIL, findings with owners and evidence.
     Do not edit the requirements.'
-  output: docs/spec/spec-pipeline/spec-pipeline.requirements-review.md
+  output: docs/spec/{{spec_slug}}/{{spec_slug}}.requirements-review.md
   on_blocked: escalate
   on_rejected: rollback_to:spec-requirements
   on_failed: escalate
@@ -39,7 +48,7 @@ stages:
   task: 'Spec stage 3. After requirements PASS, write the architecture file named in
     the contract: change points, interface contracts, data and state, failure behavior,
     compatibility, implementation plan. No code.'
-  output: docs/spec/spec-pipeline/spec-pipeline.architecture.md
+  output: docs/spec/{{spec_slug}}/{{spec_slug}}.architecture.md
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate
@@ -49,7 +58,7 @@ stages:
   task: 'Spec stage 4, specification mode. Write the test specification named in the
     contract: T# cases with exact expectations and conditions, map every R#/AC#/INV#.
     Do not implement tests or production code.'
-  output: docs/spec/spec-pipeline/spec-pipeline.test-spec.md
+  output: docs/spec/{{spec_slug}}/{{spec_slug}}.test-spec.md
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate
@@ -59,7 +68,7 @@ stages:
   task: 'Spec stage 5. Review the whole package at its current revisions. Write the
     readiness report named in the contract with READY or BLOCKED and the coverage
     matrix. Do not fix other authors files.'
-  output: docs/spec/spec-pipeline/spec-pipeline.readiness.md
+  output: docs/spec/{{spec_slug}}/{{spec_slug}}.readiness.md
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate

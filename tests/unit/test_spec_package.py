@@ -617,3 +617,22 @@ def test_gate_missing_row_for_criteria_prefixed_ac(
     assert not gate.ok
     assert "AC1" in gate.reason
     assert "нет строки" in gate.reason
+
+
+# --- S12 (TODO-0267): the pipeline engine's light status reader ---------
+
+
+def test_declared_status_reads_the_header_first_token() -> None:
+    """The review verdict is the header's ``Статус`` — with the reason
+    after it, backticks, CRLF and a BOM all still yield ``FAIL``."""
+    assert sp.declared_status("# R\n\nСтатус: FAIL\nРевизия: r1\n") == "FAIL"
+    assert sp.declared_status("Статус: FAIL — 7 MAJOR\n") == "FAIL"
+    assert sp.declared_status("\ufeffСтатус: `FAIL`\r\n") == "FAIL"
+    assert sp.declared_status("Статус: PASS\n") == "PASS"
+
+
+def test_declared_status_is_header_only_and_never_guesses() -> None:
+    """A status mentioned in the body or a missing key is not a verdict."""
+    assert sp.declared_status("# R\n\n## Находки\n\nСтатус: FAIL\n") == ""
+    assert sp.declared_status("Ревизия: r1\n") == ""
+    assert sp.declared_status("") == ""
