@@ -412,6 +412,14 @@ class DispatchTodoResult:
     # changes were claimed and the claimed display paths ([] when no claim).
     claim_from: str | None = None
     claimed_files: list[str] = field(default_factory=list)
+    # TODO-0261 (RB-4): the dispatch baseline is a smoke snapshot with its own
+    # timeout. The supervisor must SEE what it got: the status ("passed" /
+    # "timeout" / "skipped" / ...) and the timeout that was in force.
+    baseline_test_status: str = ""
+    baseline_timeout: float | None = None
+    #: True when the unit was finished from its write-ahead journal after a
+    #: killed dispatch (``resume_dispatch``), not created from scratch.
+    resumed: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

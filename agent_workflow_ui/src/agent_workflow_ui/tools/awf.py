@@ -2360,6 +2360,8 @@ async def awf_dispatch_todo(
     include_untracked: list[str] | None = None,
     allow_mismatch: bool = False,
     source_ref: str | None = None,
+    no_baseline_tests: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Create a unit atomically: TODO file + baseline + .ready signal in one call.
 
@@ -2415,6 +2417,19 @@ async def awf_dispatch_todo(
             checklist. A missing file/section refuses before any side
             effect. A relative path must stay inside the project; an
             absolute one is used as passed.
+        no_baseline_tests: TODO-0261 (RB-4) — skip the dispatch baseline
+            test command. sha/status/env are still snapshotted, the tests
+            log says ``skipped`` and ``.ready`` is written immediately.
+            Use when the project's baseline command is slow by design.
+        force: TODO-0261 (RB-4) — overwrite an existing inbox TODO for an
+            EXPLICIT ``todo_id`` (refused while a pipeline is live). Without
+            it a repeated id is refused, exactly as before.
+
+    The dispatch baseline gets its own timeout (``verification.baseline_timeout``
+    in config, default 60 s) and never blocks the unit: a timeout records
+    ``baseline_test_status="timeout"`` and the dispatch still completes. A
+    killed dispatch leaves ``context/DISPATCH-<id>.json``; finish it with the
+    CLI ``awf dispatch --resume TODO-NNNN``.
 
     Returns:
         Dict with: todo_id, baseline_sha, role_hint, files_written (list
@@ -2422,7 +2437,7 @@ async def awf_dispatch_todo(
         pre_existing_untracked (list, excluded from the commit),
         untracked_warning (one line, "" when nothing is excluded),
         renumbered (True when the auto-issued number replaced a foreign
-        one in the title heading).
+        one in the title heading), baseline_test_status, baseline_timeout.
     """
     response = await _exec(
         api.dispatch_todo,
@@ -2435,6 +2450,8 @@ async def awf_dispatch_todo(
         include_untracked=include_untracked,
         allow_mismatch=allow_mismatch,
         source_ref=source_ref,
+        no_baseline_tests=no_baseline_tests,
+        force=force,
     )
     if response.get("status") != "ok":
         return response
@@ -2458,6 +2475,16 @@ async def awf_dispatch_todo(
             f"{response.get('carry_over_from')}: {len(response.get('carry_over_files'))} "
             "file(s) of the rejected attempt will join the retry commit. "
             "Call awf_start(background=True) to launch pipeline."
+        )
+    # TODO-0261 (RB-4): a timed-out or skipped smoke baseline must be
+    # visible — the unit is still dispatched, but the supervisor knows the
+    # snapshot is not a green/red signal.
+    baseline_status = response.get("baseline_test_status") or ""
+    if baseline_status in ("timeout", "skipped"):
+        response["next_action"] = (
+            f"{response['next_action']} Baseline tests: {baseline_status} "
+            f"(timeout {response.get('baseline_timeout')}s) — the unit is "
+            "dispatched; do not read the snapshot as a test result."
         )
     # RUN10 #4 (TODO-0074): the excluded pre-existing untracked files
     # must not be invisible — the warning reaches next_action.

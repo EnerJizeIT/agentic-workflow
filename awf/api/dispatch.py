@@ -10,9 +10,11 @@ the signal. Supervisor gets back the todo_id + baseline_sha to track.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import git_utils, paths
@@ -38,14 +40,200 @@ from ..dispatch_policy import (
 )
 from ..infra import managed_fs
 from ..todo_ids import is_valid_todo_id
+from . import _liveness
 from ._errors import AwfApiError
 from ._helpers import refuse_unsafe_surfaces, require_awf_project
-from ._results import DispatchTodoResult
+from ._results import BaselineResult, DispatchTodoResult
 from .pipeline import create_baseline
 
 #: TODO-0195: the dirty-tree warning lists at most this many files
 #: (the rest as "…N more") — the same cap convention as the untracked one.
 _DIRTY_WARNING_CAP = 10
+
+#: TODO-0261 (RB-4): the dispatch-time baseline is a SMOKE snapshot, not a
+#: gate. It gets its own timeout so a hanging test command cannot hold the
+#: dispatch (the incident: a second dispatch hung on baseline tests, was
+#: killed by the caller and left TODO-0255 without ``.ready``). Overridable
+#: per project via ``verification.baseline_timeout`` (seconds).
+DEFAULT_BASELINE_TIMEOUT_SECONDS = 60.0
+BASELINE_TIMEOUT_CONFIG_KEY = "verification.baseline_timeout"
+
+#: The write-ahead journal of an in-flight dispatch. An ATTEMPT-UNIQUE temp is
+#: written before the id is reserved and promoted to ``DISPATCH-<id>.json``
+#: after the reservation is won; it is removed right after ``.ready`` — a
+#: crash/kill anywhere in between leaves a journal, so ``resume_dispatch`` can
+#: finish the unit instead of leaving a TODO without its signal. The unique
+#: temp is what keeps two parallel auto dispatches from overwriting each
+#: other's journal before either owns the id.
+_JOURNAL_PREFIX = "DISPATCH-"
+
+
+def _baseline_timeout_seconds(project_dir: Path) -> float:
+    """The dispatch-time baseline timeout: config value or the 60 s default."""
+    from .. import config as cfg_mod
+
+    raw = cfg_mod.get(cfg_mod.load(project_dir), BASELINE_TIMEOUT_CONFIG_KEY, "")
+    try:
+        value = float(str(raw).strip()) if str(raw).strip() else 0.0
+    except (TypeError, ValueError):
+        return DEFAULT_BASELINE_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_BASELINE_TIMEOUT_SECONDS
+
+
+def _journal_path(project_dir: Path, todo_id: str) -> Path:
+    return paths.context_dir(project_dir) / f"{_JOURNAL_PREFIX}{todo_id}.json"
+
+
+def _journal_tmp_path(project_dir: Path, todo_id: str) -> Path:
+    """An attempt-unique journal path (QA TODO-0261: collision ownership).
+
+    Concurrent dispatches racing for the same AUTO id both wrote the canonical
+    ``DISPATCH-<id>.json`` before the id was reserved, so the loser's body
+    replaced the winner's — a killed winner then resumed with a foreign body
+    (or with the loser's ``needs_manual_resume`` flag, silently dropping its
+    exclusions). The unique name makes the pre-reservation write harmless:
+    only the winner publishes it, the loser deletes its own file.
+    """
+    token = f"{os.getpid()}.{os.urandom(4).hex()}"
+    return paths.context_dir(project_dir) / f"{_JOURNAL_PREFIX}{todo_id}.{token}.json"
+
+
+def _write_journal(
+    project_dir: Path,
+    todo_id: str,
+    body: str,
+    *,
+    needs_manual_resume: bool = False,
+) -> Path:
+    """Write the attempt-unique write-ahead journal; return its path."""
+    payload = json.dumps(
+        {
+            "todo_id": todo_id,
+            "content": body,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "needs_manual_resume": needs_manual_resume,
+        },
+        ensure_ascii=False,
+    )
+    tmp_path = _journal_tmp_path(project_dir, todo_id)
+    managed_fs.managed_write_text(
+        tmp_path,
+        payload,
+        root=project_dir,
+        mode=MODE_OWNER_EDITABLE,
+    )
+    return tmp_path
+
+
+def _publish_journal(project_dir: Path, todo_id: str, tmp_path: Path) -> None:
+    """Promote the attempt-unique journal to the canonical resume path.
+
+    Called only AFTER the id reservation is won, so a loser can never clobber
+    the winner's journal. The temp file is removed once the canonical file is
+    in place; a kill before this point leaves the temp, which
+    ``_read_journal`` still finds.
+    """
+    try:
+        payload = tmp_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    managed_fs.managed_write_text(
+        _journal_path(project_dir, todo_id),
+        payload,
+        root=project_dir,
+        mode=MODE_OWNER_EDITABLE,
+    )
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _discard_journal_tmp(tmp_path: Path) -> None:
+    """Best-effort removal of a loser's own journal temp (never canonical)."""
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _journal_candidates(project_dir: Path, todo_id: str) -> list[Path]:
+    """Canonical journal first, then any attempt-unique leftovers."""
+    context_dir = paths.context_dir(project_dir)
+    candidates = [_journal_path(project_dir, todo_id)]
+    try:
+        candidates.extend(
+            sorted(
+                context_dir.glob(f"{_JOURNAL_PREFIX}{todo_id}.*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        )
+    except OSError:
+        pass
+    return candidates
+
+
+def _read_journal(project_dir: Path, todo_id: str) -> dict | None:
+    for path in _journal_candidates(project_dir, todo_id):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _remove_journal(project_dir: Path, todo_id: str) -> None:
+    for path in _journal_candidates(project_dir, todo_id):
+        try:
+            refuse_unsafe_surfaces(
+                project_dir, "dispatch journal cleanup", path.parent, path
+            )
+            path.unlink(missing_ok=True)
+        except (OSError, AwfApiError):
+            pass
+
+
+def _dispatch_baseline(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    baseline_timeout: float,
+    no_baseline_tests: bool,
+    carry_over: str | None = None,
+    include: set[str] | None = None,
+    claim: set[str] | None = None,
+) -> BaselineResult:
+    """The dispatch smoke snapshot — ONE home for its rules (TODO-0261, RB-4).
+
+    ``dispatch_todo`` and ``resume_dispatch`` both call this: the timeout, the
+    ``--no-baseline-tests`` skip and the ``timeout`` status must not drift
+    between a fresh dispatch and a resumed one.
+    """
+    return create_baseline(
+        project_dir,
+        todo_id,
+        carry_over=carry_over,
+        include=include,
+        claim=claim,
+        test_timeout=baseline_timeout,
+        run_tests=not no_baseline_tests,
+        timeout_status="timeout",
+    )
+
+
+def _write_ready(project_dir: Path, todo_id: str) -> None:
+    """Publish the unit's ``.ready`` signal (no-follow), one refusal form."""
+    ready_path = paths.inbox(project_dir) / f"{todo_id}.ready"
+    try:
+        managed_fs.managed_write_text(
+            ready_path, "", root=project_dir, mode=MODE_OWNER_EDITABLE
+        )
+    except managed_fs.ManagedPathError as e:
+        raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
+
 
 # REPORTS26 F5: a TODO number in the TITLE heading (a copied template keeps
 # its old title). The title is the first H1 heading after the leading comments
@@ -752,6 +940,8 @@ def dispatch_todo(
     replan_for: str | None = None,
     claim_from: str | None = None,
     source_ref: str | None = None,
+    no_baseline_tests: bool = False,
+    force: bool = False,
 ) -> DispatchTodoResult:
     """Atomically create a TODO, baseline it, dispatch the signal.
 
@@ -842,6 +1032,23 @@ def dispatch_todo(
             against the project root and must stay inside it; an absolute
             path is used as passed. A missing/unreadable file or an unknown
             section refuses BEFORE any side effect (no TODO, no baseline).
+        no_baseline_tests: TODO-0261 (RB-4) — skip the baseline test command
+            entirely. The snapshot still records sha/status/env; the tests
+            log says ``skipped`` and ``.ready`` is written immediately. For
+            projects whose baseline command is slow by design.
+        force: TODO-0261 (RB-4) — allow a re-dispatch to overwrite an
+            existing ``inbox/<id>.md`` for an EXPLICIT ``todo_id``. Refused
+            while a pipeline is live (the running unit must not be rewritten
+            under it) and still bound by the archive/DONE-closure checks.
+            Without it an existing TODO is never overwritten — the previous
+            refusal is unchanged.
+
+    The dispatch is journaled: ``context/DISPATCH-<id>.json`` carries the
+    TODO body and is written before the id is reserved. A crash or kill
+    during the baseline leaves that journal (and possibly the md) behind —
+    ``resume_dispatch(project_dir, todo_id)`` finishes the unit: restores a
+    missing/empty md, re-runs the smoke baseline under the same timeout and
+    writes ``.ready``. A normal failure cleans both — no orphan TODO.
 
     The dirty-source-tree policy (R2.2) governs the dispatch: a project with
     ``config_version`` and ``dirty_policy=require_clean`` (the version
@@ -1199,40 +1406,132 @@ def dispatch_todo(
     # TODO-NNNN and the second silently overwrote the first's content.
     # O_CREAT|O_EXCL makes the claim one syscall: the first writer wins,
     # concurrent callers get FileExistsError and retry with the next id.
-    md_path: Path | None = None
-    for _attempt in range(16):
-        candidate = inbox / f"{todo_id}.md"
-        try:
-            # R1.5: no-follow all along — a swapped intermediate component
-            # fails closed (ManagedPathError), never a write outside.
-            fd = managed_fs.open_managed(
-                candidate,
-                flags=os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                mode=MODE_OWNER_EDITABLE,
-                root=project_dir,
+    def _composed_body(for_id: str) -> tuple[str, bool]:
+        """The exact text written for *for_id* (+ whether the heading moved)."""
+        text = content
+        moved = False
+        if (
+            not explicit_id
+            and heading_num is not None
+            and heading_num != int(for_id.split("-", 1)[1])
+        ):
+            text = _renumber_heading(text, for_id)
+            moved = True
+        if role:
+            text = f"<!-- role_hint: {role} -->\n" + text
+        return text, moved
+
+    # TODO-0261 (RB-4): an explicit --force re-dispatch overwrites an existing
+    # unit. Never under a live pipeline — the engine reads that md; and the
+    # old ``.ready`` is dropped so the engine cannot pick up a half-baselined
+    # unit while the snapshot is being rebuilt. Liveness comes from the SHARED
+    # resolver (both pid sources) — a single-file read is exactly how the two
+    # liveness codes diverged before it was unified (AUD04-07).
+    force_existing = force and explicit_id and (inbox / f"{todo_id}.md").is_file()
+    if force_existing:
+        running, _pid, _source = _liveness.resolve(project_dir)
+        if running:
+            raise AwfApiError(
+                f"{todo_id} cannot be force-re-dispatched while a pipeline is "
+                "live — stop it first (awf kill), then retry."
             )
-        except FileExistsError:
-            if explicit_id:
-                raise AwfApiError(
-                    f"{candidate.name} already exists in inbox. Use a different "
-                    "todo_id or remove the existing file first."
-                ) from None
-            todo_id = _next_todo_id(project_dir)
-            # desynchronize the herd of parallel callers
-            import random as _random
-            import time as _time
-            _time.sleep(_random.uniform(0, 0.02))
-            continue
-        except managed_fs.ManagedPathError as e:
-            raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
-        os.close(fd)
-        md_path = candidate
-        break
-    if md_path is None:
-        raise AwfApiError(
-            f"could not reserve a free TODO id (16 consecutive collisions, "
-            f"last tried {todo_id}) — check .agentic/inbox for stray TODO files"
+        stale_ready = inbox / f"{todo_id}.ready"
+        refuse_unsafe_surfaces(
+            project_dir, f"dispatch {todo_id}", inbox, stale_ready
         )
+        stale_ready.unlink(missing_ok=True)
+
+    # A plain repeat of an explicit id is refused BEFORE the write-ahead
+    # journal exists: writing ours first would overwrite the journal of a
+    # still-pending dispatch of that id, and a later ``--resume`` would finish
+    # it with the wrong body. Auto ids never reach this check — the loop below
+    # skips taken numbers.
+    if explicit_id and not force and (inbox / f"{todo_id}.md").is_file():
+        raise AwfApiError(
+            f"{todo_id}.md already exists in inbox. Use a different todo_id or "
+            "remove the existing file first (or pass force=True to re-dispatch "
+            "it)."
+        )
+
+    md_path: Path | None = None
+    created_md = True
+    # ``resume_dispatch`` rebuilds the unit from the journal, which carries only
+    # the TODO body. A dispatch with leak-gate / include / claim exclusions
+    # would lose them (baseline rebuilt WITHOUT the exclusions, audit links
+    # skipped) — mark it for a manual ``force`` re-dispatch instead of a silent
+    # wrong resume.
+    resume_needs_manual = bool(carry_over or include_files or claimed)
+    if force_existing:
+        md_path = inbox / f"{todo_id}.md"
+        created_md = False
+        tmp_journal = _write_journal(
+            project_dir,
+            todo_id,
+            _composed_body(todo_id)[0],
+            needs_manual_resume=resume_needs_manual,
+        )
+        _publish_journal(project_dir, todo_id, tmp_journal)
+    else:
+        for _attempt in range(16):
+            candidate = inbox / f"{todo_id}.md"
+            # TODO-0261 (RB-4): the write-ahead journal lands BEFORE the
+            # reservation. A kill between the two leaves only a journal (the
+            # resume recreates the md from it); a kill after it leaves a
+            # journal + md — never a TODO without a way to finish it.
+            #
+            # The write is ATTEMPT-UNIQUE and is promoted to the canonical
+            # ``DISPATCH-<id>.json`` only after this attempt wins the id: two
+            # parallel auto dispatches used to write the same canonical path
+            # before either reserved, so the loser's body replaced the
+            # winner's and a killed winner resumed with a foreign body.
+            tmp_journal = _write_journal(
+                project_dir,
+                todo_id,
+                _composed_body(todo_id)[0],
+                needs_manual_resume=resume_needs_manual,
+            )
+            try:
+                # R1.5: no-follow all along — a swapped intermediate component
+                # fails closed (ManagedPathError), never a write outside.
+                fd = managed_fs.open_managed(
+                    candidate,
+                    flags=os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    mode=MODE_OWNER_EDITABLE,
+                    root=project_dir,
+                )
+            except FileExistsError:
+                # Another caller won this id. Drop only OUR temp journal — the
+                # winner's canonical file is not ours to touch.
+                _discard_journal_tmp(tmp_journal)
+                if explicit_id:
+                    raise AwfApiError(
+                        f"{candidate.name} already exists in inbox. Use a "
+                        "different todo_id or remove the existing file first "
+                        "(or pass force=True to re-dispatch it)."
+                    ) from None
+                todo_id = _next_todo_id(project_dir)
+                # desynchronize the herd of parallel callers
+                import random as _random
+                import time as _time
+                _time.sleep(_random.uniform(0, 0.02))
+                continue
+            except managed_fs.ManagedPathError as e:
+                _discard_journal_tmp(tmp_journal)
+                raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
+            except BaseException:
+                # The temp journal stays: the resume can find and finish this id.
+                raise
+            os.close(fd)
+            md_path = candidate
+            _publish_journal(project_dir, todo_id, tmp_journal)
+            break
+        if md_path is None:
+            # Every attempt lost its id and dropped its own temp journal —
+            # nothing canonical was ever written, so there is nothing to clean.
+            raise AwfApiError(
+                f"could not reserve a free TODO id (16 consecutive collisions, "
+                f"last tried {todo_id}) — check .agentic/inbox for stray TODO files"
+            )
 
     # REPORTS26 F5: auto number + a foreign number in the title heading
     # (a copied template kept its old title) — renumber the
@@ -1240,17 +1539,7 @@ def dispatch_todo(
     # the first candidate on collisions, hence here, not earlier). The
     # rest of the content stays untouched; an explicit id never reaches
     # here (mismatch refused above, matching number is a no-op).
-    renumbered = False
-    if not explicit_id and heading_num is not None:
-        if heading_num != int(todo_id.split("-", 1)[1]):
-            content = _renumber_heading(content, todo_id)
-            renumbered = True
-
-    # Optional role hint as HTML comment (invisible to LLM reading the .md,
-    # visible to grep / debugging).
-    body = content
-    if role:
-        body = f"<!-- role_hint: {role} -->\n" + body
+    body, renumbered = _composed_body(todo_id)
 
     # RUN3 #4: never (re)issue a number whose DONE closure is still in the
     # outbox — the fresh TODO would be invisible (todos.is_closed). The
@@ -1258,7 +1547,9 @@ def dispatch_todo(
     from .hygiene import clear_stale_closures, has_done_closure
 
     if has_done_closure(project_dir, todo_id):
-        md_path.unlink(missing_ok=True)
+        if created_md:
+            md_path.unlink(missing_ok=True)
+        _remove_journal(project_dir, todo_id)
         raise AwfApiError(
             f"outbox has a DONE closure for {todo_id} — the TODO is closed as "
             "finished. Bring it back with awf restore or dispatch a new number."
@@ -1344,15 +1635,24 @@ def dispatch_todo(
     # Step 2: create baseline snapshot (sha + tests.log + env.log + status).
     # RUN10 #4: include files are excluded from the untracked snapshot by a
     # SEPARATE parameter — the leak-gate carry-over stays its own mechanism.
+    baseline_timeout = _baseline_timeout_seconds(project_dir)
     try:
-        baseline = create_baseline(
-            project_dir, todo_id, carry_over=carry_over,
+        baseline = _dispatch_baseline(
+            project_dir,
+            todo_id,
+            baseline_timeout=baseline_timeout,
+            no_baseline_tests=no_baseline_tests,
+            carry_over=carry_over,
             include=set(include_files) or None,
             claim=set(claimed) or None,
         )
     except Exception:
-        # Rollback: remove TODO .md if baseline fails (prevents orphan TODO)
-        md_path.unlink(missing_ok=True)
+        # Rollback: remove TODO .md if baseline fails (prevents orphan TODO).
+        # A force re-dispatch keeps the md (it pre-dated this call) and its
+        # journal, so ``resume_dispatch`` can finish that unit.
+        if created_md:
+            md_path.unlink(missing_ok=True)
+            _remove_journal(project_dir, todo_id)
         raise
 
     # RUN5 #1 (leak-gate): audit trail — which rejected origin this retry's
@@ -1419,11 +1719,11 @@ def dispatch_todo(
 
     # Step 3: dispatch signal
     # R1.5: the `.ready` touch is a write under `.agentic` too — no-follow.
-    ready_path = inbox / f"{todo_id}.ready"
-    try:
-        managed_fs.managed_write_text(ready_path, "", root=project_dir, mode=MODE_OWNER_EDITABLE)
-    except managed_fs.ManagedPathError as e:
-        raise AwfApiError(f"dispatch refused — unsafe inbox path: {e}") from e
+    _write_ready(project_dir, todo_id)
+    # TODO-0261 (RB-4): the unit is complete (md + baseline + .ready) — the
+    # journal has done its job. Leftover journal = an unfinished dispatch,
+    # which ``resume_dispatch`` owns.
+    _remove_journal(project_dir, todo_id)
 
     # RUN10 #4 (TODO-0074): visibility — the files the commit gate will
     # exclude (still untracked, recorded in the fresh baseline snapshot,
@@ -1506,7 +1806,123 @@ def dispatch_todo(
         isolate_dependency_warning=isolate_dependency_warning,
         claim_from=(str(claim_from).strip() if claim_from else None),
         claimed_files=[escape_str_for_ui(p) for p in claimed],
+        baseline_test_status=baseline.test_status,
+        baseline_timeout=baseline_timeout,
     )
 
 
-__all__ = ["dispatch_todo", "_next_todo_id"]
+def resume_dispatch(
+    project_dir: Path,
+    todo_id: str,
+    *,
+    no_baseline_tests: bool = False,
+) -> DispatchTodoResult:
+    """Finish a dispatch that was killed mid-baseline (TODO-0261, RB-4).
+
+    Reads the write-ahead journal ``context/DISPATCH-<id>.json``, restores a
+    missing/empty ``inbox/<id>.md`` from it, re-runs the smoke baseline under
+    the same rules as :func:`dispatch_todo` (dispatch timeout, optional skip)
+    and writes ``.ready``. Idempotent: a unit whose ``.ready`` already exists
+    only drops the stale journal. Refuses when there is no journal at all
+    (nothing to resume) or the id is archived / closed as done.
+    """
+    if not todo_id or not is_valid_todo_id(todo_id):
+        raise AwfApiError(
+            f"invalid todo_id '{todo_id}' — expected format 'TODO-NNNN' (4+ digits)"
+        )
+    project_dir = require_awf_project(project_dir)
+    inbox = paths.inbox(project_dir)
+    ready_path = inbox / f"{todo_id}.ready"
+    md_path = inbox / f"{todo_id}.md"
+    refuse_unsafe_surfaces(
+        project_dir,
+        f"resume dispatch {todo_id}",
+        inbox,
+        paths.context_dir(project_dir),
+        paths.done_dir(project_dir),
+    )
+    journal = _read_journal(project_dir, todo_id)
+    if journal is None:
+        raise AwfApiError(
+            f"{todo_id}: no pending dispatch journal "
+            f"({_journal_path(project_dir, todo_id)}) — nothing to resume"
+        )
+    if (paths.done_dir(project_dir) / todo_id).is_dir():
+        _remove_journal(project_dir, todo_id)
+        raise AwfApiError(
+            f"{todo_id} is already archived in done/{todo_id}/ — nothing to resume"
+        )
+    from .hygiene import has_done_closure
+
+    if has_done_closure(project_dir, todo_id):
+        _remove_journal(project_dir, todo_id)
+        raise AwfApiError(
+            f"outbox has a DONE closure for {todo_id} — nothing to resume"
+        )
+
+    if ready_path.is_file():
+        # Crashed AFTER the signal: the unit is complete, the journal is stale.
+        _remove_journal(project_dir, todo_id)
+        sha = ""
+        sha_path = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+        try:
+            sha = sha_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        return DispatchTodoResult(
+            todo_id=todo_id,
+            baseline_sha=sha,
+            role_hint=None,
+            files_written=[f".agentic/inbox/{todo_id}.md", f".agentic/inbox/{todo_id}.ready"],
+            resolved_project_dir=str(project_dir),
+            resumed=True,
+        )
+
+    if journal.get("needs_manual_resume"):
+        raise AwfApiError(
+            f"{todo_id}: the killed dispatch carried carry-over / include / "
+            "claim exclusions that this resume cannot replay — re-dispatch "
+            "with force=True instead of resuming."
+        )
+
+    body = str(journal.get("content") or "")
+    if not body.strip():
+        raise AwfApiError(
+            f"{todo_id}: the pending dispatch journal carries no content — "
+            "re-dispatch the unit instead"
+        )
+    try:
+        existing = md_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = ""
+    if not existing.strip():
+        managed_fs.managed_write_text(
+            md_path, body, root=project_dir, mode=MODE_OWNER_EDITABLE
+        )
+
+    baseline_timeout = _baseline_timeout_seconds(project_dir)
+    baseline = _dispatch_baseline(
+        project_dir,
+        todo_id,
+        baseline_timeout=baseline_timeout,
+        no_baseline_tests=no_baseline_tests,
+    )
+    _write_ready(project_dir, todo_id)
+    _remove_journal(project_dir, todo_id)
+    return DispatchTodoResult(
+        todo_id=todo_id,
+        baseline_sha=baseline.sha,
+        role_hint=None,
+        files_written=[
+            f".agentic/inbox/{todo_id}.md",
+            f".agentic/inbox/{todo_id}.ready",
+            *baseline.files_created,
+        ],
+        resolved_project_dir=str(project_dir),
+        baseline_test_status=baseline.test_status,
+        baseline_timeout=baseline_timeout,
+        resumed=True,
+    )
+
+
+__all__ = ["dispatch_todo", "resume_dispatch", "_next_todo_id"]
