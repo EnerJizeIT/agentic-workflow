@@ -547,15 +547,147 @@ def test_force_init_keeps_user_suite_script(tmp_git_repo):
     assert script.read_text(encoding="utf-8") == "#!/usr/bin/env bash\necho mine\n"
 
 
-def test_materialized_code_reading_role_keeps_suite_canon(tmp_git_repo):
-    api.init_project(tmp_git_repo, project_name="M6Canon")
+def test_materialized_code_reading_role_does_not_run_tests(tmp_git_repo):
+    """RB-1: ревьюер читает артефакт, а не платит вторым прогоном сьюта."""
+    api.init_project(tmp_git_repo, project_name="M6CanonRead")
     _write_skill(tmp_git_repo, "agent-code-reviewer", "# Reviewer\n\nreads code")
     api.add_role(tmp_git_repo, "code-reviewer", from_skill="agent-code-reviewer")
 
     content = _role(tmp_git_repo, "code-reviewer").read_text(encoding="utf-8")
-    assert SUITE_MARKER in content
-    assert "scripts/suite-canonical.sh" in content
-    assert "AWF_SUITE_CMD" in content
+    assert content.count(SUITE_MARKER) == 1
+    assert "Тесты в этой роли НЕ запускаются" in content
+    assert "ОДИН канонический прогон" not in content
+    assert ".agentic/context/SUITE-<tree-sha>-<cmd8>.json" in content
+
+
+@pytest.mark.parametrize(
+    ("role", "policy"),
+    [
+        ("agent-qa-review", "qa"),
+        ("agent-qa-table", "qa"),
+        ("agent-implementer", "implementer"),
+        ("agent-weak-llm-implementer", "implementer"),
+        ("agent-architect-review", "code-reading"),
+        ("agent-architector", "code-reading"),
+        ("agent-code-reviewer", "code-reading"),
+        ("agent-requirements-reviewer", "code-reading"),
+        ("agent-project-auditor", "auditor"),
+        ("agent-auditor-table", "auditor"),
+        ("agent-refactoring-specialist", "targeted"),
+        ("", "targeted"),
+    ],
+)
+def test_role_test_policy_mapping(role, policy):
+    """RB-1: тип роли определяет прогон — qa первым, иначе review съел бы QA."""
+    from awf.api.roles import role_test_policy
+
+    assert role_test_policy(role) == policy
+
+
+@pytest.mark.parametrize(
+    ("role", "fragment"),
+    [
+        ("agent-qa-review", "ОДИН канонический прогон"),
+        ("agent-implementer", "только целевые"),
+        ("agent-project-auditor", "артефакт QA"),
+        ("agent-architect-review", "НЕ запускаются"),
+        ("agent-refactoring-specialist", "только целевые проверки изменённой поверхности"),
+    ],
+)
+def test_materialized_role_gets_its_own_test_policy(
+    tmp_git_repo, role, fragment
+):
+    """RB-1: материализованная роль несёт политику своего типа, маркер один."""
+    api.init_project(tmp_git_repo, project_name=f"M6Policy{role}")
+    api.add_role(tmp_git_repo, role)
+
+    content = _role(tmp_git_repo, role).read_text(encoding="utf-8")
+    assert content.count(SUITE_MARKER) == 1, role
+    assert fragment in content, role
+
+
+def test_refresh_migrates_the_old_suite_block_in_place(tmp_git_repo):
+    """RB-1: старый безусловный канон заменяется, второй маркер не растёт."""
+    legacy_body = (
+        "Полный сьют — ОДИН канонический прогон на attempt: "
+        "`scripts/suite-canonical.sh`."
+    )
+    api.init_project(tmp_git_repo, project_name="M6PolicyMigrate")
+    _write_skill(tmp_git_repo, "skill-review", "# Review\n\nreads code")
+    api.add_role(tmp_git_repo, "code-reviewer", from_skill="skill-review")
+    path = _role(tmp_git_repo, "code-reviewer")
+    text = path.read_text(encoding="utf-8")
+    current_heading = "## Политика тестов (added by awf add_role)"
+    assert current_heading in text
+    body_start = text.index(SUITE_MARKER) + len(SUITE_MARKER)
+    body_end = text.index("<!-- awf-suite-canon:end -->")
+    legacy = (
+        text[:body_start]
+        + "\n## Канон полного прогона (added by awf add_role)\n\n"
+        + legacy_body
+        + "\n"
+        + text[body_end:]
+    )
+    path.write_text(legacy, encoding="utf-8")
+
+    result = api.add_role(
+        tmp_git_repo, "code-reviewer", refresh=True
+    )
+    assert result.refresh_status == "updated", result.as_dict()
+
+    refreshed = path.read_text(encoding="utf-8")
+    assert refreshed.count(SUITE_MARKER) == 1
+    assert "Тесты в этой роли НЕ запускаются" in refreshed
+    assert "Канон полного прогона" not in refreshed
+
+
+
+def test_migration_keeps_a_user_note_after_the_legacy_block(tmp_git_repo):
+    """RB-1: миграция старого блока не съедает пользовательский хвост."""
+    legacy_body = (
+        "Полный сьют — ОДИН канонический прогон на attempt: "
+        "`scripts/suite-canonical.sh`."
+    )
+    api.init_project(tmp_git_repo, project_name="M6PolicyMigrateTail")
+    _write_skill(tmp_git_repo, "skill-tail", "# Review\n\nreads code")
+    api.add_role(tmp_git_repo, "code-reviewer", from_skill="skill-tail")
+    path = _role(tmp_git_repo, "code-reviewer")
+    text = path.read_text(encoding="utf-8")
+    body_start = text.index(SUITE_MARKER) + len(SUITE_MARKER)
+    body_end = text.index("<!-- awf-suite-canon:end -->")
+    legacy = (
+        text[:body_start]
+        + "\n## Канон полного прогона (added by awf add_role)\n\n"
+        + legacy_body
+        + "\n"
+        + text[body_end:]
+    )
+    path.write_text(
+        legacy.rstrip() + "\n\nUSER-NOTE: keep me\n", encoding="utf-8"
+    )
+
+    result = api.add_role(tmp_git_repo, "code-reviewer", refresh=True)
+    refreshed = path.read_text(encoding="utf-8")
+    assert result.refresh_status == "updated", result.as_dict()
+    assert refreshed.count(SUITE_MARKER) == 1
+    assert "Тесты в этой роли НЕ запускаются" in refreshed
+    assert "Канон полного прогона" not in refreshed
+    assert "USER-NOTE: keep me" in refreshed
+
+
+def test_draft_candidate_carries_the_role_policy(tmp_git_repo):
+    """RB-1: draft идёт тем же путём — политика выбирается по имени роли."""
+    api.init_project(tmp_git_repo, project_name="M6PolicyDraft")
+    api.add_role(tmp_git_repo, "agent-code-reviewer", draft=True)
+
+    draft = (
+        tmp_git_repo / ".agentic" / "roles" / "draft" / "agent-code-reviewer.md"
+    )
+    content = draft.read_text(encoding="utf-8")
+    assert content.count(SUITE_MARKER) == 1
+    assert "Тесты в этой роли НЕ запускаются" in content
+    assert "ОДИН канонический прогон" not in content
+    assert not _role(tmp_git_repo, "agent-code-reviewer").exists()
 
 
 # ─── REVIEW R2-R4 (виток 3) ─────────────────────────────────────────────
