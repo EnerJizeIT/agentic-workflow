@@ -536,11 +536,17 @@ def _build_parser():
 
     p_checklist = sub.add_parser(
         "checklist",
-        help="DoD: show/check/apply/hash the unit's completion checklist",
+        help="DoD: show/check/apply/hash the unit's completion checklist; "
+        "stats aggregates the units' first verdicts",
     )
-    p_checklist.add_argument("action", choices=["show", "check", "apply", "hash"])
-    p_checklist.add_argument("todo_id", help="TODO id (e.g. TODO-0244)")
+    p_checklist.add_argument("action", choices=["show", "check", "apply", "hash", "stats"])
+    p_checklist.add_argument(
+        "todo_id", nargs="?", help="TODO id (e.g. TODO-0244; not used by stats)"
+    )
     p_checklist.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_checklist.add_argument(
+        "--wave", default="", help="stats: only units whose contract wave matches"
+    )
     p_checklist.add_argument(
         "--project-dir",
         default=".",

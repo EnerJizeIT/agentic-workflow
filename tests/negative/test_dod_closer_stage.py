@@ -1596,3 +1596,204 @@ def test_salvaged_norm_edit_blocks_without_spending(tmp_git_repo, monkeypatch):
     assert "closer edited the checklist/contract" in note
     assert "Чек-лист завершения" in note
     assert _record(proj, "TODO-0001")["attempts"] == 0, "salvage spent an attempt"
+
+
+# ─── IMP6 (R6): `awf checklist stats` ─────────────────────────────────
+
+
+def _closer_record(
+    proj: Path, todo_id: str, items: list[dict], *, wave: str = ""
+) -> Path:
+    """A record exactly as IMP4 writes it on the first entry of a unit."""
+    path = proj / ".agentic" / "context" / f"CLOSER-{todo_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "todo_id": todo_id,
+                "wave": wave,
+                "first_verdict": {
+                    "status": "checked",
+                    "ok": False,
+                    "items": items,
+                    "missing": [],
+                    "manual": [],
+                    "tree_sha": "t",
+                    "block_sha": "b",
+                    "probe_sha": "p",
+                },
+                "attempts": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _stats(proj: Path, *extra: str) -> tuple[int, str]:
+    import contextlib
+    import io
+
+    from awf.cli import _build_parser
+
+    parser, _sub = _build_parser()
+    args = parser.parse_args(
+        ["checklist", "stats", *extra, "--project-dir", str(proj)]
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = cmd_checklist.run(args)
+    return rc, buf.getvalue()
+
+
+def _stats_items(unit: str, status: str = "ok") -> list[dict]:
+    return [{"id": unit, "status": status, "detail": ""}]
+
+
+def test_stats_first_verdict_and_wave_filter(tmp_path):
+    """T7/AC15–AC17, AC28: first verdicts only, no manual, no invented zeros."""
+    proj = _project(tmp_path)
+    # A — red on the first verdict (the unit is then closed by the closer);
+    # B — green at once; C — manual only; D — another unit on the item A
+    # carried; one unit without a wave.
+    _closer_record(
+        proj,
+        "TODO-0001",
+        _stats_items("unit-01", "missing") + _stats_items("unit-manual", "manual"),
+        wave="w-a",
+    )
+    _closer_record(proj, "TODO-0002", _stats_items("unit-02"), wave="w-a")
+    _closer_record(proj, "TODO-0003", _stats_items("unit-manual", "manual"), wave="w-b")
+    _closer_record(proj, "TODO-0004", _stats_items("unit-01"), wave="w-b")
+    _closer_record(proj, "TODO-0005", _stats_items("unit-03"))
+
+    rc, out = _stats(proj)
+    lines = out.splitlines()
+    assert rc == 0
+    assert lines[0] == "| Пункт | caught | runs |"
+    assert set(lines[1]) <= {"|", "-", " "}
+    assert "unit-01 | 1 | 2" in out
+    assert "unit-02 | 0 | 1" in out
+    assert "unit-03 | 0 | 1" in out
+    assert "unit-manual" not in out
+
+    rc, out = _stats(proj, "--wave", "w-a")
+    rows = [line for line in out.splitlines()[2:] if line.strip()]
+    assert rc == 0
+    assert any("unit-01 | 1 | 1" in line for line in rows)
+    assert any("unit-02 | 0 | 1" in line for line in rows)
+    assert not any("unit-03" in line for line in rows)
+
+    rc, out = _stats(proj, "--wave", "w-zzz")
+    assert rc == 0
+    assert out.splitlines() == ["| Пункт | caught | runs |", "| --- | --- | --- |"]
+
+    rc, out = _stats(proj, "--json")
+    rows = json.loads(out)
+    assert rc == 0
+    assert {"item": "unit-01", "caught": 1, "runs": 2} in rows
+    assert {"item": "unit-02", "caught": 0, "runs": 1} in rows
+    assert all(set(row) == {"item", "caught", "runs"} for row in rows)
+    assert not any(row["item"] == "unit-manual" for row in rows)
+
+    # A tree change with a rewritten verdict cache does not move the
+    # history: the record is written once per unit.
+    (proj / ".agentic" / "context" / "CHECKLIST-TODO-0001.json").write_text(
+        json.dumps({"tree_sha": "other", "ok": True}), encoding="utf-8"
+    )
+    rc, again = _stats(proj, "--json")
+    assert rc == 0
+    assert json.loads(again) == rows
+
+    # A unit without a wave never matches a wave filter; a wave file renamed
+    # after dispatch changes nothing (the record keeps the frozen name).
+    rc, out = _stats(proj, "--wave", "w-b", "--json")
+    assert rc == 0
+    assert [row["item"] for row in json.loads(out)] == ["unit-01"]
+    waves = proj / ".agentic" / "checklists" / "waves"
+    waves.mkdir(parents=True, exist_ok=True)
+    (waves / "w-b.yaml").write_text("name: w-b\nitems: []\n", encoding="utf-8")
+    (waves / "w-b.yaml").rename(waves / "w-renamed.yaml")
+    rc, out = _stats(proj, "--wave", "w-b", "--json")
+    assert rc == 0
+    assert [row["item"] for row in json.loads(out)] == ["unit-01"]
+
+
+def test_stats_empty_project_and_broken_record(tmp_path, capsys):
+    """AC17: no data — the header only, rc 0; a broken record is skipped."""
+    proj = _project(tmp_path)
+    assert _stats(proj) == (0, "| Пункт | caught | runs |\n| --- | --- | --- |\n")
+    assert _stats(proj, "--json") == (0, "[]\n")
+    # A reader, not a dispatch: no context directory is created for the scan.
+    assert not (proj / ".agentic" / "context").exists()
+
+    path = proj / ".agentic" / "context" / "CLOSER-TODO-0001.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    rc, out = _stats(proj)
+    assert rc == 0
+    assert out.splitlines()[0] == "| Пункт | caught | runs |"
+    assert len([line for line in out.splitlines() if line.strip()]) == 2
+    # The warning goes to stderr, so the machine-readable stream stays JSON.
+    rc, out = _stats(proj, "--json")
+    assert (rc, json.loads(out)) == (0, [])
+    assert "CLOSER-TODO-0001.json" in capsys.readouterr().err
+
+
+def test_stats_is_a_live_subcommand_and_unknown_commands_refuse(tmp_path):
+    """cli-parity: the command list comes from the live subparsers.
+
+    ``stats`` needs no TODO id; the old required positional would make the
+    new action unusable from the shell.
+    """
+    import contextlib
+    import io
+
+    from awf import cli
+
+    parser, sub = cli._build_parser()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert cli._print_top_level_help(sub) == 0
+    assert "checklist" in buf.getvalue()
+
+    args = parser.parse_args(["checklist", "stats"])
+    assert (args.action, args.todo_id, args.wave) == ("stats", None, "")
+    args = parser.parse_args(["checklist", "stats", "--wave", "w-a", "--json"])
+    assert (args.wave, args.json) == ("w-a", True)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["no-such-command"])
+
+
+def test_stats_reads_the_writer_record_end_to_end(tmp_git_repo):
+    """AC15: the statistics is bound to the WRITER's record shape.
+
+    The fixtures above spell the record by hand; a rename inside
+    ``_verdict_facts`` would keep them green and leave ``stats`` silently
+    empty. Here the record comes from ``closer_stage.decide`` itself: a red
+    first verdict, then a green re-check after the closer closed the gap.
+    """
+    proj = _closer_project(tmp_git_repo)
+    _write_todo(
+        proj,
+        "TODO-0001",
+        block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+        wave="w1",
+    )
+    stage = _closer_stage()
+    assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+    rc, out = _stats(proj)
+    assert rc == 0
+    assert "| unit-01 | 0 | 1 |" in out
+    assert "| unit-02 | 1 | 1 |" in out
+    # The wave filter reads the field frozen into the record at dispatch.
+    assert _stats(proj, "--wave", "w1") == (0, out)
+
+    # The closer closes the gap: the post-run re-check is green and charges
+    # an attempt, but the first verdict — and so the counters — stays as it
+    # was (AC15).
+    (proj / "ok" / "nope").write_text("ok\n", encoding="utf-8")
+    assert closer_stage.settle_run(proj, "TODO-0001", {}).kind == "green"
+    assert _stats(proj) == (0, out)

@@ -100,9 +100,26 @@ def closer_attempts(config: dict) -> int:
     return raw
 
 
+#: The record's filename prefix — the one place the name is spelled.
+STATE_PREFIX = "CLOSER-"
+
+
 def state_path(project_dir: str | Path, todo_id: str) -> Path:
     """``.agentic/context/CLOSER-<todo>.json`` — the unit's first verdict."""
-    return paths.context_dir(Path(project_dir)) / f"CLOSER-{todo_id}.json"
+    return paths.context_dir(Path(project_dir)) / f"{STATE_PREFIX}{todo_id}.json"
+
+
+def state_paths(project_dir: str | Path) -> list[Path]:
+    """Every recorded unit state, in sorted path order (R6 statistics).
+
+    The listing lives next to the writer: a reader that re-spells
+    ``CLOSER-*.json`` silently misses the file the moment this module
+    renames it — the same rule :mod:`awf.unit_history` follows.
+    """
+    directory = paths.context_dir(Path(project_dir))
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob(f"{STATE_PREFIX}*.json"))
 
 
 def read_state(project_dir: str | Path, todo_id: str) -> dict | None:
@@ -862,4 +879,5 @@ __all__ = [
     "read_state",
     "settle_run",
     "state_path",
+    "state_paths",
 ]
