@@ -112,6 +112,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline_engine.py` | Stage handlers + transition logic |
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
 | `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, нарушения allowlist |
+| `closer_stage.py` | Closer-стадия DoD (R1–R6): вердикт, `dod:`, `CLOSER-<id>.json`, статические дефекты блока |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
