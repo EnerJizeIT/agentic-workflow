@@ -246,6 +246,79 @@ def test_service_pipeline_declares_candidate_output(tmp_git_repo: Path, monkeypa
     assert verify.on_approved == "next", "the service run never commits"
 
 
+def test_service_pipeline_carries_stage_tools_profile(tmp_git_repo: Path) -> None:
+    """PA4 (TODO-0269): ``tools`` попадает в снапшот служебного забега.
+
+    Снимок собирается общим ``stage_to_document``; потеря поля здесь молча
+    вернула бы служебному воркеру базовые права вместо объявленных.
+    """
+    from awf.api import run as api_run_module
+    from awf.pipeline import load_stages
+
+    proj = _project(tmp_git_repo)
+    (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+        'name: "default"\n'
+        "stages:\n"
+        '  - name: "plan"\n'
+        '    role: "supervisor"\n'
+        '  - name: "agent-implementer"\n'
+        '    role: "worker"\n'
+        "    tools:\n"
+        '      allow: ["bash"]\n'
+        '      deny: ["webfetch"]\n'
+        '  - name: "verify"\n'
+        '    role: "supervisor"\n',
+        encoding="utf-8",
+    )
+
+    f = api_run_module._write_service_pipeline(proj, SLUG)
+    stages = {s.name: s for s in load_stages(f)}
+    assert stages["agent-implementer"].tools == {
+        "allow": ["bash"],
+        "deny": ["webfetch"],
+    }
+
+
+def test_service_pipeline_drops_skip_if_from_candidate_stage(tmp_git_repo: Path) -> None:
+    """PA1 (TODO-0269): the candidate stage never skips.
+
+    The source ``skip_if`` belonged to the output the service run REPLACES.
+    Left in place, a green checklist skipped the only stage that creates the
+    role candidate — silently, with ``dod: none``. The snapshot drops it
+    together with the stale ``write_allow``; other workers keep theirs.
+    """
+    from awf.api import run as api_run_module
+    from awf.pipeline import load_stages
+
+    proj = _project(tmp_git_repo)
+    (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+        'name: "default"\n'
+        "stages:\n"
+        '  - name: "plan"\n'
+        '    role: "supervisor"\n'
+        '  - name: "agent-implementer"\n'
+        '    role: "worker"\n'
+        "    output: reports/candidate.md\n"
+        '    write_allow: ["reports/extra.md"]\n'
+        '    write_check: "off"\n'
+        '    skip_if: checklist_green\n'
+        '  - name: "agent-qa-review"\n'
+        '    role: "worker"\n'
+        '    skip_if: checklist_green\n'
+        '    write_check: "off"\n'
+        '  - name: "verify"\n'
+        '    role: "supervisor"\n',
+        encoding="utf-8",
+    )
+
+    f = api_run_module._write_service_pipeline(proj, SLUG)
+    stages = {s.name: s for s in load_stages(f)}
+    assert stages["agent-implementer"].skip_if == ""
+    assert stages["agent-implementer"].output == CAND
+    assert stages["agent-implementer"].write_allow == ()
+    assert stages["agent-qa-review"].skip_if == "checklist_green"
+
+
 def test_engine_freshness_check_rejects_stale_candidate(tmp_git_repo: Path) -> None:
     """(3) Суть M3.2-проверки: кандидат со старым mtime (оставшийся от
     предыдущей попытки) НЕ считается работой стадии — движок назовёт

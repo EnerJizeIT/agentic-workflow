@@ -159,6 +159,38 @@ class TestRepeatDispatchKeepsTheOldRefusal:
         assert result.todo_id == TODO
 
 
+class TestForceReissueDropsCloserState:
+    """PA4 (TODO-0269): a re-issued unit starts with a fresh closer history.
+
+    ``context/CLOSER-<id>.json`` carries the first verdict, the frozen wave
+    and the attempt counter of the OLD unit. Keeping it across a ``--force``
+    re-dispatch would report the old verdict and (IMP4) charge the retry for
+    a budget it never spent — the same lifecycle as the baseline snapshot.
+    """
+
+    def test_force_removes_the_closer_record_and_plain_repeat_keeps_it(
+        self, tmp_path: Path
+    ):
+        proj = _project(tmp_path)
+        dispatch_todo(proj, "# first\n\nfirst body.\n", todo_id=TODO)
+
+        closer = proj / ".agentic" / "context" / f"CLOSER-{TODO}.json"
+        closer.write_text(
+            '{"todo_id": "TODO-0001", "wave": "w-old", '
+            '"first_verdict": {"missing": ["unit-01"]}, "attempts": 2}\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(AwfApiError, match="already exists in inbox"):
+            dispatch_todo(proj, "# second\n\nsecond body.\n", todo_id=TODO)
+        assert closer.is_file(), "a refused dispatch removed the live unit's state"
+
+        dispatch_todo(
+            proj, "# second\n\nsecond body.\n", todo_id=TODO, force=True
+        )
+        assert not closer.exists(), "force re-dispatch kept the old closer record"
+
+
 class TestLostCollisionJournalOwnership:
     """QA1 (TODO-0261): the write-ahead journal is per ATTEMPT, not per id.
 

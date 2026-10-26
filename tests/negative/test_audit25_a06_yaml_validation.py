@@ -105,8 +105,12 @@ def test_repo_default_pipeline_loads_unchanged(tmp_path):
         # (owner decision 2026-10-15: architect-review after implementer,
         # project-auditor before verify) — not the minimal template.
         "plan", "agent-implementer", "agent-architect-review",
-        "agent-qa-review", "agent-project-auditor", "verify",
+        "agent-qa-review", "implementer-close", "agent-project-auditor",
+        "verify",
     ]
+    closer = next(s for s in stages if s.name == "implementer-close")
+    assert closer.skip_if == "checklist_green"
+    assert closer.write_check == "off"
     assert stages[-1].on_approved == "commit_and_next"
 
 
@@ -277,12 +281,13 @@ def test_allowed_keys_set_pinned():
     ORCH M7.2: + ``tools`` (профиль allow/deny permission-ключей стадии).
     SPEC IMP5: + ``write_allow`` (дополнительные разрешённые пути стадии).
     TODO-0256: + ``write_check`` (явный, названный opt-out из забора записи).
+    IMP1 closer-stage: + ``skip_if`` (единственный условный запуск стадии).
     """
     from awf.pipeline import ALLOWED_STAGE_KEYS
 
     assert ALLOWED_STAGE_KEYS == {
         "name", "role", "description", "id", "task", "input", "output",
-        "write_allow", "write_check",
+        "write_allow", "write_check", "skip_if",
         "tools",
         "on_blocked", "on_approved", "on_rejected", "on_failed",
         "max_retries", "max_rollbacks",
