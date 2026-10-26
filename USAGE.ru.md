@@ -478,6 +478,14 @@ $ awf start --pipeline audit-llm
   ошибка со списком доступных; молчаливого запуска `default` нет.
 - `awf status` показывает активный пайплайн и число доступных.
 
+**Spec-пайплайн для пакета с именем.** `awf spec init <slug> [--project DIR]
+[--force]` пишет `.agentic/pipelines/spec-<slug>.yaml` из встроенного шаблона
+`spec`: plan → шесть авторских стадий → verify. Шесть выходов —
+`docs/spec/<slug>/<slug>.*`; существующий пайплайн без `--force` не
+перезаписывается. Если в отчёте ревью требований стоит `Статус: FAIL`,
+движок возвращает стадию на `spec-requirements` без replan супервизора.
+Готовность пакета проверяет `awf spec check docs/spec/<slug>` (rc 0 = READY).
+
 **Составление пайплайна в браузере.** Форма `pipeline-compose` (MCP
 `open_form(template="pipeline-compose", project_dir=..., data={"pipeline": "<имя>"})`)
 — редактор пайплайна: строки стадий (роль, id, task, input, output,

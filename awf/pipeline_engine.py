@@ -559,6 +559,87 @@ def _handle_escalate(
     return 0, new_todo, 0  # TODO-0213: the replan unit runs the full pipeline
 
 
+def _rollback_budget_allow(
+    project_dir: Path,
+    logs_dir: Path,
+    stages: list[Stage],
+    current_todo: str,
+    target: str,
+    target_idx: int,
+    source: str,
+) -> tuple[bool, int, int]:
+    """AUD03-01: count one rollback and say whether it may happen.
+
+    The ONE budget rule for both rollback flavors (supervisor replan and
+    the spec FAIL's direct rewind): per (TODO, source->target), limit is
+    the target stage's ``max_rollbacks``. Returns (allowed, count, limit);
+    the count is the number of this rollback (1-based) for the message.
+    """
+    prev_state = read_state(project_dir) or {}
+    counts = prev_state.get("rollback_counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    rb_key = f"{current_todo}:{source}->{target}"
+    try:
+        rb_count = int(counts.get(rb_key, 0) or 0)
+    except (TypeError, ValueError):
+        rb_count = 0
+    limit = stages[target_idx].max_rollbacks
+    if rb_count >= limit:
+        print(
+            f"Rollback budget exhausted ({limit}) for {current_todo} "
+            f"({source or '?'} -> {target}). Escalating to supervisor. "
+            f"Pipeline stopped.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"Rollback budget exhausted for {rb_key} — pipeline stopped")
+        return False, rb_count, limit
+
+    counts[rb_key] = rb_count + 1
+    _write_state(project_dir, rollback_counts=counts, logs_dir=logs_dir)
+    return True, rb_count + 1, limit
+
+
+def _handle_direct_rollback(
+    project_dir: Path,
+    logs_dir: Path,
+    stages: list[Stage],
+    current_todo: str,
+    target: str,
+    source: str = "",
+) -> tuple[int, str, int]:
+    """SPEC: rewind to the author stage WITHOUT a supervisor replan.
+
+    The requirements reviewer's ``Статус: FAIL`` is itself the decision:
+    the SAME unit returns to the author stage and the review runs again.
+    Budgeting is the shared rollback rule (:func:`_rollback_budget_allow`).
+
+    Returns (new_stage_idx, new_current_todo, exit_code).
+    """
+    target_idx = _find_stage_index(stages, target)
+    if target_idx < 0:
+        print(f"ERROR: Rollback target '{target}' not found in pipeline")
+        _log(logs_dir, f"SPEC: rollback target {target!r} not found")
+        return -1, current_todo, 1
+
+    allowed, count, limit = _rollback_budget_allow(
+        project_dir, logs_dir, stages, current_todo, target, target_idx, source
+    )
+    if not allowed:
+        return -1, current_todo, 1
+
+    print(
+        f"SPEC: requirements review FAIL — rolling back to stage: "
+        f"{stages[target_idx].name} (rollback {count}/{limit})"
+    )
+    _log(
+        logs_dir,
+        f"SPEC: automatic rollback to stage {stages[target_idx].name} "
+        f"(index {target_idx}, {count}/{limit}, no supervisor replan)",
+    )
+    return target_idx, current_todo, 0
+
+
 def _handle_rollback(
     project_dir: Path,
     logs_dir: Path,
@@ -583,34 +664,16 @@ def _handle_rollback(
         print(f"ERROR: Rollback target '{target}' not found in pipeline")
         return -1, current_todo, 1
 
-    # AUD03-01: rollback budget. The key is per (TODO, source->target), so a
-    # replanned TODO or a different rollback route gets a fresh budget.
-    prev_state = read_state(project_dir) or {}
-    counts = prev_state.get("rollback_counts")
-    if not isinstance(counts, dict):
-        counts = {}
-    rb_key = f"{current_todo}:{source}->{target}"
-    try:
-        rb_count = int(counts.get(rb_key, 0) or 0)
-    except (TypeError, ValueError):
-        rb_count = 0
-    limit = stages[target_idx].max_rollbacks
-    if rb_count >= limit:
-        print(
-            f"Rollback budget exhausted ({limit}) for {current_todo} "
-            f"({source or '?'} -> {target}). Escalating to supervisor. "
-            f"Pipeline stopped.",
-            file=sys.stderr,
-        )
-        _log(logs_dir, f"Rollback budget exhausted for {rb_key} — pipeline stopped")
+    allowed, count, limit = _rollback_budget_allow(
+        project_dir, logs_dir, stages, current_todo, target, target_idx, source
+    )
+    if not allowed:
         return -1, current_todo, 1
 
-    counts[rb_key] = rb_count + 1
-    _write_state(project_dir, rollback_counts=counts, logs_dir=logs_dir)
-    print(f"Rolling back to stage: {stages[target_idx].name} (rollback {rb_count + 1}/{limit})")
+    print(f"Rolling back to stage: {stages[target_idx].name} (rollback {count}/{limit})")
     _log(
         logs_dir,
-        f"Rollback to stage {stages[target_idx].name} (index {target_idx}, {rb_count + 1}/{limit})",
+        f"Rollback to stage {stages[target_idx].name} (index {target_idx}, {count}/{limit})",
     )
 
     replan_stage = Stage(name="replan", role="supervisor", kind="replan")
@@ -972,6 +1035,28 @@ def _declared_output_problem(
             f"(last modified before this stage started)"
         )
     return ""
+
+
+def _declared_review_verdict(project_dir: Path, output: str) -> str:
+    """SPEC: the signal a review artifact's ``Статус`` implies — or "".
+
+    ``Статус: FAIL`` in the requirements-review document means the stage is
+    rejected, whatever signal the worker left: the engine then rewinds to
+    the author stage without a supervisor replan (the report is the
+    decision). ``PASS`` keeps the normal ``next`` transition. Only the
+    requirements-review document is read; a read problem or a document of
+    another role leaves the stage's own signal untouched.
+    """
+    from . import spec_package as _spec
+
+    path = project_dir / output
+    if _spec.role_for_name(path.name) != _spec.REVIEW_ROLE:
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    return "rejected" if _spec.declared_status(text) == "FAIL" else ""
 
 
 # ─── stage execution ────────────────────────────────────────────────────
@@ -2121,6 +2206,25 @@ def execute_agent_stage(
             )
             sig_type = "blocked"
 
+    # SPEC: the requirements-review report is itself a verdict. A fresh
+    # report that says ``Статус: FAIL`` rejects the stage — the engine
+    # rewinds to the author without a supervisor replan (the DONE signal
+    # cannot override the document). PASS keeps the normal advance.
+    auto_rollback = False
+    if sig_type in ("done", "approved") and stage.output:
+        verdict = _declared_review_verdict(project_dir, stage.output)
+        if verdict:
+            print(
+                f"Stage '{s_name}': declared output says FAIL — "
+                "routing as rejected (automatic rollback)."
+            )
+            _log(
+                logs_dir,
+                f"SPEC: stage {s_name} output status FAIL — routed as rejected",
+            )
+            sig_type = verdict
+            auto_rollback = True
+
     action, target = resolve_transition(stage, sig_type)
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
 
@@ -2163,6 +2267,15 @@ def execute_agent_stage(
             new_idx, new_todo, exit_code = _handle_escalate(
                 project_dir, logs_dir, s_name, current_todo, auto, stage,
                 retry_counts, stage_idx, pipeline_name,
+            )
+            return new_todo, new_idx, exit_code
+        # SPEC: an automatic FAIL rewind is the report's own decision — the
+        # same unit goes back to the author stage without a supervisor
+        # replan. A worker-emitted REVIEW-REJECTED keeps the replan path.
+        if auto_rollback:
+            new_idx, new_todo, exit_code = _handle_direct_rollback(
+                project_dir, logs_dir, stages, current_todo, target,
+                source=s_name,
             )
             return new_todo, new_idx, exit_code
         new_idx, new_todo, exit_code = _handle_rollback(

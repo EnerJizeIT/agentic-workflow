@@ -499,6 +499,14 @@ $ awf start --pipeline audit-llm
   error with the list of what exists — it never silently runs `default`.
 - `awf status` shows the active pipeline and how many are available.
 
+**Spec pipeline for a named package.** `awf spec init <slug> [--project DIR]
+[--force]` writes `.agentic/pipelines/spec-<slug>.yaml` from the packaged
+`spec` template: plan → six author stages → verify. The six outputs are
+`docs/spec/<slug>/<slug>.*`; an existing pipeline is refused without
+`--force`. A requirements review whose document says `Статус: FAIL` rewinds
+the stage to `spec-requirements` without a supervisor replan. Check package
+readiness with `awf spec check docs/spec/<slug>` (rc 0 = READY).
+
 **Compose a pipeline in the browser.** The `pipeline-compose` form (MCP
 `open_form(template="pipeline-compose", project_dir=..., data={"pipeline": "<name>"})`)
 is the pipeline editor: stage rows (role, id, task, input, output,

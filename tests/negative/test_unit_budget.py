@@ -676,3 +676,13 @@ def test_two_headings_of_one_round_count_once(tmp_path: Path) -> None:
     )
     _activate(proj, body)
     assert budget.review_passes(proj, TODO) == 1
+
+
+def test_spec_review_heading_is_not_a_pass(tmp_path: Path) -> None:
+    proj = tmp_path
+    body = (
+        "# Task\n\n## REVIEW-фикс (супервизор, виток 1)\n\n- fix\n\n"
+        "## REVIEW-фикс (spec, ревизия требований)\n\n- finding\n"
+    )
+    _activate(proj, body)
+    assert budget.review_passes(proj, TODO) == 1

@@ -17,7 +17,7 @@ from awf.api import setup
 from awf.pipeline_engine import _declared_output_problem
 from tests.spec_support import init_project_repo
 
-PACKAGE = "docs/spec/spec-pipeline"
+PACKAGE = "docs/spec/spec"
 AUTHOR_STAGES = (
     "spec-context",
     "spec-requirements",
@@ -43,8 +43,8 @@ def test_spec_variant_is_registered() -> None:
 
 def test_spec_composition_contract() -> None:
     stages = _stages()
-    assert [stage["name"] for stage in stages] == [*AUTHOR_STAGES, "verify"]
-    author = stages[:-1]
+    assert [stage["name"] for stage in stages] == ["plan", *AUTHOR_STAGES, "verify"]
+    author = stages[1:-1]
     for stage in author:
         output = stage.get("output") or ""
         assert output.startswith(f"{PACKAGE}/"), (
@@ -130,3 +130,171 @@ def test_write_variant_refuses_existing_spec_pipeline(tmp_path: Path) -> None:
     setup.write_variant_pipeline(repo, "spec", "spec")
     with pytest.raises(api.AwfApiError):
         setup.write_variant_pipeline(repo, "spec", "spec")
+
+
+# ─── S12 (TODO-0267): slug parameterization, plan stage, auto-FAIL ───────
+
+
+def _write_spec_pipeline(repo: Path, slug: str = "fixture") -> Path:
+    result, _unresolved = setup.write_spec_pipeline(repo, slug)
+    return Path(result.file)
+
+
+def test_template_and_generated_pipeline_have_plan_first(tmp_path: Path) -> None:
+    from awf.pipeline import load_stages
+
+    template = setup._builtin_pipeline_template("spec")
+    assert template is not None
+    template_stages = load_stages(template)
+    assert template_stages[0].name == "plan"
+    assert template_stages[0].kind == "plan"
+    assert template_stages[1].kind == "execute"
+
+    repo = init_project_repo(tmp_path)
+    _write_roles(repo)
+    pipeline = _write_spec_pipeline(repo, "fixture")
+    stages = load_stages(pipeline)
+    assert stages[0].name == "plan"
+    assert stages[0].kind == "plan"
+    assert stages[1].kind == "execute"
+    text = pipeline.read_text(encoding="utf-8")
+    assert "spec-pipeline" not in text
+    for stage in stages[1:-1]:
+        assert stage.output.startswith("docs/spec/fixture/fixture.")
+
+
+def test_spec_init_writes_two_slugs_and_refuses_overwrite(tmp_path: Path) -> None:
+    repo = init_project_repo(tmp_path)
+    _write_roles(repo)
+    first = _write_spec_pipeline(repo, "alpha")
+    second = _write_spec_pipeline(repo, "carry-cd")
+
+    assert first.name == "spec-alpha.yaml"
+    assert second.name == "spec-carry-cd.yaml"
+    assert first.is_file() and second.is_file()
+    assert "docs/spec/alpha/alpha.md" in first.read_text(encoding="utf-8")
+    assert "docs/spec/carry-cd/carry-cd.md" in second.read_text(encoding="utf-8")
+    assert "spec-pipeline" not in first.read_text(encoding="utf-8")
+
+    with pytest.raises(api.AwfApiError):
+        setup.write_spec_pipeline(repo, "alpha")
+    result, _unresolved = setup.write_spec_pipeline(repo, "alpha", force=True)
+    assert result.overwritten
+
+    with pytest.raises(api.AwfApiError):
+        setup.write_spec_pipeline(repo, "../escape")
+
+
+def test_fail_review_rolls_back_without_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from awf import pipeline_engine
+    from awf.pipeline import load_stages
+    from awf.transitions import resolve_transition
+
+    repo = init_project_repo(tmp_path)
+    _write_roles(repo)
+    stages = load_stages(_write_spec_pipeline(repo, "fixture"))
+    review = next(s for s in stages if s.name == "spec-requirements-review")
+    review_idx = stages.index(review)
+    target = repo / review.output
+    target.parent.mkdir(parents=True)
+    target.write_text("# Ревью\n\nСтатус: FAIL\n", encoding="utf-8")
+
+    assert pipeline_engine._declared_review_verdict(repo, review.output) == "rejected"
+    action, rollback_target = resolve_transition(review, "rejected")
+    assert (action, rollback_target) == ("rollback", "spec-requirements")
+
+    def _no_supervisor(*_args, **_kwargs):
+        raise AssertionError("the automatic FAIL must not call the supervisor")
+
+    monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", _no_supervisor)
+    new_idx, new_todo, rc = pipeline_engine._handle_direct_rollback(
+        repo,
+        repo / ".agentic" / "logs",
+        stages,
+        "TODO-0001",
+        rollback_target,
+        source=review.name,
+    )
+    assert rc == 0
+    assert new_todo == "TODO-0001"
+    assert stages[new_idx].name == "spec-requirements"
+    assert new_idx < review_idx
+
+
+def test_pass_review_advances_to_design(tmp_path: Path) -> None:
+    from awf import pipeline_engine
+    from awf.pipeline import load_stages
+    from awf.transitions import resolve_transition
+
+    repo = init_project_repo(tmp_path)
+    _write_roles(repo)
+    stages = load_stages(_write_spec_pipeline(repo, "fixture"))
+    review = next(s for s in stages if s.name == "spec-requirements-review")
+    target = repo / review.output
+    target.parent.mkdir(parents=True)
+    target.write_text("# Ревью\n\nСтатус: PASS\n", encoding="utf-8")
+
+    assert pipeline_engine._declared_review_verdict(repo, review.output) == ""
+    action, _target = resolve_transition(review, "done")
+    assert action == "next"
+    assert stages[stages.index(review) + 1].name == "spec-design"
+
+
+def test_declared_fail_rewinds_through_the_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stage wiring, not just the helper: DONE + ``Статус: FAIL`` → the
+    requirements stage, and no supervisor stage is entered."""
+    from awf import paths, pipeline_engine
+    from awf.pipeline import load_stages
+
+    repo = init_project_repo(tmp_path)
+    _write_roles(repo)
+    stages = load_stages(_write_spec_pipeline(repo, "fixture"))
+    review_idx = next(
+        i for i, s in enumerate(stages) if s.name == "spec-requirements-review"
+    )
+    review = stages[review_idx]
+    todo = "TODO-0001"
+    inbox = repo / ".agentic" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / f"{todo}.md").write_text("# Task\n", encoding="utf-8")
+
+    def mock_agent(stage, todo_id, project_dir, config, logs_dir, **_kw):
+        output = project_dir / stage.output
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("# Ревью\n\nСтатус: FAIL\n", encoding="utf-8")
+        outbox = paths.outbox(project_dir)
+        (outbox / f"DONE-{todo_id}.md").write_text("FAIL\n", encoding="utf-8")
+        (outbox / f"DONE-{todo_id}.ready").write_text("", encoding="utf-8")
+
+    def _no_supervisor(*_args, **_kwargs):
+        raise AssertionError("an automatic FAIL must not enter a supervisor stage")
+
+    monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
+    monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
+    monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
+    monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", _no_supervisor)
+    monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
+
+    new_todo, new_idx, rc = pipeline_engine.execute_agent_stage(
+        review,
+        todo,
+        repo,
+        {},
+        paths.logs_dir(repo),
+        stages,
+        review_idx,
+        [0] * len(stages),
+        auto=False,
+        agent_hard_timeout=None,
+    )
+
+    assert rc == 0
+    assert new_todo == todo
+    assert stages[new_idx].name == "spec-requirements"
+    assert new_idx < review_idx
+

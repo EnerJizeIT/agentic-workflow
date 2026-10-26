@@ -880,6 +880,24 @@ def _build_parser():
         default=".",
         help="Path to project root (default: current directory)",
     )
+    p_spec_init = spec_sub.add_parser(
+        "init",
+        help="Generate .agentic/pipelines/spec-<slug>.yaml for a package slug",
+    )
+    p_spec_init.add_argument(
+        "slug",
+        help="Package scope: the six stages write docs/spec/<slug>/<slug>.*",
+    )
+    p_spec_init.add_argument(
+        "--project",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+    p_spec_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing spec-<slug>.yaml",
+    )
     # Architecture §3 names `awf spec-check`; keep both spellings on one code path.
     p_spec_check_flat = sub.add_parser(
         "spec-check",
@@ -1043,7 +1061,13 @@ def _run_command(args) -> int:
         if args.command == "pipelines":
             from . import cmd_pipelines
             return cmd_pipelines.run(args)
-        if args.command in ("spec", "spec-check"):
+        if args.command == "spec":
+            if getattr(args, "spec_command", "") == "init":
+                from . import cmd_spec_init
+                return cmd_spec_init.run(args)
+            from . import cmd_spec_check
+            return cmd_spec_check.run(args)
+        if args.command == "spec-check":
             from . import cmd_spec_check
             return cmd_spec_check.run(args)
         if args.command == "analyze-roles":
