@@ -421,6 +421,14 @@ def test_explicit_target_survives_a_redirect():
     assert suite_guard.detect_full_suite("pytest tests/ > out.txt")
 
 
+def test_boolean_plugin_flag_does_not_swallow_the_target():
+    """AUD-28-1: ``--forked`` is a boolean plugin flag, not a valued option."""
+    assert suite_guard.detect_full_suite("pytest --forked tests/")
+    assert not suite_guard.detect_full_suite(
+        "pytest --forked tests/unit/test_x.py"
+    )
+
+
 def test_command_substitution_is_an_unknown_set():
     """AUD10: the ``$(...)`` set is unknown — never claimed "full"."""
     assert not suite_guard.detect_full_suite(
@@ -806,3 +814,292 @@ def test_a_crashing_gate_leaves_the_stage_alive(tmp_path, monkeypatch):
 
     assert captured.get("engine_facts") == []
     assert any("suite gate crashed" in line for line in log_lines), log_lines
+
+
+# --- AUD-27-1/2/3 (audit 0277): one parser, runner prefixes, option values --
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "uv run pytest tests/",
+        "uv run pytest tests/ -q",
+        "uv run --no-project pytest tests/",
+        "uv run --python 3.12 pytest tests/",
+        "poetry run pytest tests/",
+        "pdm run pytest tests/",
+        "hatch run pytest tests/",
+        "uv run python -m pytest tests/",
+        "uv run python3 -m pytest tests/ -q",
+        "sudo uv run pytest tests/",
+        "/usr/local/bin/uv run pytest tests/",
+        "env FOO=1 poetry run pytest tests/",
+        "if true; then uv run pytest tests/; fi",
+        "for f in a; do poetry run pytest tests/; done",
+    ],
+)
+def test_runner_prefixes_are_full_suite(text):
+    """AUD-27-1: uv/poetry/pdm/hatch, sudo, PATH and then/do wrappers."""
+    assert suite_guard.detect_full_suite(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "uv run pytest tests/unit/test_x.py",
+        "poetry run pytest tests -k smoke",
+        "uv run npm test",
+        "poetry run python -m pytest tests/unit/test_x.py",
+    ],
+)
+def test_runner_prefix_keeps_a_narrow_run_narrow(text):
+    assert not suite_guard.detect_full_suite(text)
+
+
+def test_bare_pytest_behind_a_runner_uses_testpaths():
+    """AUD-27-1: ``uv run pytest`` is the bare pytest rule, not a blind run."""
+    assert not suite_guard.detect_full_suite("uv run pytest")
+    assert suite_guard.detect_full_suite("uv run pytest", testpaths=True)
+    assert suite_guard.detect_full_suite("poetry run python -m pytest", testpaths=True)
+
+
+def test_runner_option_value_before_the_program():
+    """AUD-27-1 (CTX2): the wrapper's option VALUE is not the program.
+
+    ``uv run --extra dev pytest tests/``, ``poetry run --only dev pytest
+    tests/`` and ``hatch run +py=3.12 pytest tests/`` run the whole suite.
+    ``dev`` is the value of ``--extra``/``--only`` and ``+py=3.12`` is
+    hatch's matrix spec, not the program — the shared parser skips both.
+    The lookahead keeps the opposite side: a known flag is skipped alone
+    because the next word is a program (``uv run --no-project pytest``).
+    """
+    assert suite_guard.detect_full_suite("uv run --extra dev pytest tests/")
+    assert suite_guard.detect_full_suite("poetry run --only dev pytest tests/")
+    assert suite_guard.detect_full_suite("hatch run +py=3.12 pytest tests/")
+
+
+def test_unknown_runner_flag_before_a_valued_option():
+    """QA-0280-6: an unknown runner flag before a valued option is a flag.
+
+    ``uv run --no-project --python 3.12 pytest tests/`` is a real whole-suite
+    run: ``--no-project`` is a flag, ``--python 3.12`` takes a value, then
+    pytest runs. An option word is not a value, so the lookahead stops at
+    ``--no-project`` and ``--python 3.12`` is resolved by its own rule.
+    Same for ``--frozen --python 3.12``, ``--no-project --env-file .env``
+    and ``--frozen --with pytest-mock``. ``detect_runner`` keeps naming
+    pytest, so gate and artifact stay in sync.
+    """
+    assert suite_guard.detect_full_suite(
+        "uv run --no-project --python 3.12 pytest tests/"
+    )
+    assert suite_guard.detect_full_suite(
+        "uv run --frozen --python 3.12 pytest tests/"
+    )
+    assert suite_guard.detect_full_suite(
+        "uv run --no-project --env-file .env pytest tests/"
+    )
+    assert suite_guard.detect_full_suite(
+        "uv run --frozen --with pytest-mock pytest tests/"
+    )
+
+
+def test_trailing_script_behind_an_unknown_runner_flag():
+    """A prefix of only ``option value`` runs nothing: the last word is the
+    program, so its script name still counts (AUD-27-3).
+
+    ``uv run --no-project ./scripts/run-all.sh`` used to swallow the script
+    as the flag's value and lose the whole-suite fact; without the flag the
+    same script was already full. R13: a missed full run is the costly side.
+    """
+    assert suite_guard.detect_full_suite("uv run ./scripts/run-all.sh")
+    assert suite_guard.detect_full_suite(
+        "uv run --no-project ./scripts/run-all.sh"
+    )
+    assert suite_guard.detect_full_suite(
+        "poetry run --frozen bash scripts/run-all.sh"
+    )
+
+
+def test_runner_option_order_and_attachment_are_known_good():
+    """QA-0280-6 control: pin what already works so a fix keeps it.
+
+    The bug is only the spaced value after an unknown flag. The known valued
+    option first, and an attached value, already reach pytest.
+    """
+    assert suite_guard.detect_full_suite(
+        "uv run --python 3.12 --no-project pytest tests/"
+    )
+    assert suite_guard.detect_full_suite(
+        "uv run --no-project --python=3.12 pytest tests/"
+    )
+
+
+def test_short_value_option_keeps_the_suite_target():
+    """AUD-27-2: ``-r a`` is an option value, ``-rA`` is an attached value."""
+    assert suite_guard.detect_full_suite("pytest -r a tests/")
+    assert suite_guard.detect_full_suite("pytest -rA tests/")
+    assert not suite_guard.detect_full_suite("pytest -r a tests/unit")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "pytest --junitxml out/report.xml",
+        "pytest --junitxml build/report.xml -q",
+        "pytest --html build/report.html",
+        "pytest --cov-report html:cov --cov awf",
+    ],
+)
+def test_path_shaped_option_value_is_not_a_target(text):
+    """AUD-27-2: ``out/report.xml`` is an option value, not ``tests``."""
+    assert suite_guard.detect_full_suite(text, testpaths=True)
+    assert not suite_guard.detect_full_suite(text)
+
+
+def test_option_value_does_not_swallow_an_explicit_target():
+    assert suite_guard.detect_full_suite("pytest --junitxml out/report.xml tests/")
+    assert suite_guard.detect_full_suite("pytest --cov awf tests/")
+    assert not suite_guard.detect_full_suite(
+        "pytest --junitxml out/report.xml tests/unit/test_x.py", testpaths=True
+    )
+
+
+def test_boolean_long_option_keeps_its_target():
+    """The unknown-long-option rule must not eat a target after a boolean."""
+    assert suite_guard.detect_full_suite("pytest --doctest-modules tests/")
+    assert suite_guard.detect_full_suite("pytest --collect-only tests/")
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pytest tests/ -q",
+        "python3 -m pytest tests/",
+        "uv run pytest tests/",
+        "poetry run python -m pytest tests/",
+        "sudo pytest tests/",
+        "env FOO=1 uv run pytest tests/",
+        "cd /p && pytest .",
+    ],
+)
+def test_gate_and_verify_pack_share_the_parser(cmd):
+    """AUD-27-1/3: the gate and the flake probe cannot drift again."""
+    from awf import verify_pack
+
+    assert suite_guard.detect_full_suite(cmd) is True
+    assert verify_pack._is_test_like(cmd) is True
+
+
+def test_flake_probe_splits_a_single_ampersand():
+    """CTX3: ``echo x & pytest tests/`` is two commands for the flake probe.
+
+    The gate keeps its named blind spot on a single ``&``; the probe must
+    not — otherwise the pytest half is invisible and the run is not doubled.
+    """
+    from awf import verify_pack
+
+    assert verify_pack._is_test_like("echo x & pytest tests/") is True
+    assert verify_pack._is_test_like("echo x & true") is False
+
+
+def test_unknown_long_flag_before_the_suite_target_is_full():
+    """A plugin boolean we do not know must not eat ``tests/`` (R13).
+
+    ``--benchmark-only`` is not in the boolean list, so the generic rule
+    would read ``tests/`` as its value. The suite target wins: a missed
+    raw full run is the costly side.
+    """
+    assert suite_guard.detect_full_suite("pytest --benchmark-only tests/")
+    assert suite_guard.detect_full_suite(
+        "pytest --benchmark-only tests/", testpaths=True
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "hatch run test:pytest tests/",
+        "hatch run +py=3.12 test:pytest tests/",
+    ],
+)
+def test_hatch_environment_prefix_is_a_full_suite(text):
+    """QA-0280-7: hatch runs a command in a NAMED environment.
+
+    ``hatch run <env>:<command>`` — ``hatch run test:pytest tests/``, with
+    a matrix ``hatch run +py=3.12 test:pytest``. The runner-prefix loop
+    takes the word after the last ``:`` as the program, so a raw full run
+    through a named environment is visible to the gate (R13).
+    """
+    assert suite_guard.detect_full_suite(text)
+
+
+def test_pdm_boolean_site_packages_keeps_the_program():
+    """QA-0280-9: PDM's ``run -s/--site-packages`` is a BOOLEAN flag.
+
+    The runner-prefix loop must not read the program as this flag's value:
+    ``--site-packages`` is not a value option, so the gate and the probe
+    both see ``pytest tests/`` and ``detect_runner`` names pytest — no
+    artifact/gate disagreement. PDM docs, ``run`` → "Execution
+    Parameters": ``-s, --site-packages  Load site-packages …``.
+    """
+    from awf import command_parse, verify_pack
+
+    cmd = "pdm run --site-packages pytest tests/"
+    assert suite_guard.detect_full_suite(cmd)
+    assert verify_pack._is_test_like(cmd)
+    assert command_parse.detect_runner(cmd) == "pytest"
+
+
+def test_hatch_environment_prefix_with_a_python_command():
+    """QA-0280-10: ``hatch run <env>:<command>`` where command is ``python``.
+
+    The word after the last ``:`` is classified with the parser's own
+    program predicate, so ``test:python -m pytest`` is a python module run,
+    not ``other``: the gate and the probe see the raw full run, and
+    ``detect_runner`` names pytest — no artifact/gate disagreement.
+    """
+    from awf import verify_pack
+
+    for cmd in (
+        "hatch run test:python -m pytest tests/",
+        "hatch run +py=3.12 test:python -m pytest tests/",
+    ):
+        assert suite_guard.detect_full_suite(cmd), cmd
+        assert verify_pack._is_test_like(cmd), cmd
+
+
+def test_double_dash_before_the_suite_target_is_full():
+    """``pytest -- tests/`` runs the suite: ``--`` is not an option value.
+
+    The unknown-long-option rule assumes a value, and ``--`` looks like an
+    unknown long option, so the suite-target exception is what keeps the
+    target. Pin it: a later rule change must not swallow ``tests/`` here.
+    """
+    assert suite_guard.detect_full_suite("pytest -- tests/")
+    assert suite_guard.detect_full_suite("pytest -- tests", testpaths=True)
+    assert not suite_guard.detect_full_suite("pytest -- tests/unit")
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "hatch run -v test:pytest tests/",
+        "hatch run --verbose test:pytest tests/",
+        "hatch run +py=3.12 -v test:pytest tests/",
+    ],
+)
+def test_hatch_env_form_behind_an_unknown_runner_flag_is_full(cmd):
+    """QA-0280-11 / AUD-28-14: the env form is a program word in the lookahead.
+
+    ``_is_program_word`` peels the ``<env>:<program>`` tail before the
+    known-family test, so the unknown-option lookahead also treats the env
+    word as a program: a boolean runner flag (``-v``/``--verbose``) does not
+    consume it as a value. R13's costly side is the MISSED full run, so the
+    env form must count as a program here as well: gate, probe and
+    ``detect_runner`` agree.
+    """
+    from awf import command_parse, verify_pack
+
+    assert suite_guard.detect_full_suite(cmd), cmd
+    assert verify_pack._is_test_like(cmd), cmd
+    assert command_parse.detect_runner(cmd) == "pytest", cmd

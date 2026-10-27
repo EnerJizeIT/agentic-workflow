@@ -435,3 +435,31 @@ def test_materialized_roles_carry_the_canonical_suite_rule(role: str):
     if not path.is_file():
         pytest.skip(f"{path} not materialized — .agentic/ is runtime, not tracked")
     _assert_canonical_rule(path)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "uv run pytest tests/ -q",
+        "poetry run python -m pytest tests/ -q",
+        "timeout 600 python3 -m pytest tests/ -q",
+    ],
+)
+def test_flake_probe_doubles_a_runner_prefixed_test_command(
+    tmp_path, monkeypatch, cmd
+):
+    """AUD-27-1: the probe answers through the shared parser now.
+
+    Before the unit only a bare ``pytest`` first word was doubled; the same
+    canonical command behind ``uv run``/``poetry run``/``timeout`` ran once,
+    so a timing flake in it was invisible. The shared parser unwraps the
+    prefix, and the probe must double exactly these commands.
+    """
+    project = _project_with_contract(tmp_path, verify=cmd)
+    calls = _fake_runner(monkeypatch, iter([(0, "1 passed", False)] * 2))
+
+    result, report = _report(project, tmp_path)
+
+    assert calls.count(cmd) == 2, "a runner-prefixed test command must run twice"
+    assert result.sections["contract_tests"] == "pass"
+    assert "flake: ok (2/2)" in report

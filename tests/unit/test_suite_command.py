@@ -189,6 +189,7 @@ def test_script_artifact_matches_cli(tmp_path, awf_bin):
     assert artifacts, "the script wrote no artifact for the canonical command"
     data = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert data["command"] == command
+    assert data["runner_source"] == "cli"
 
 
 def test_script_carries_no_pytest_literal():

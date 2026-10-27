@@ -34,7 +34,8 @@ Sections (each: status + details + denominator):
    → an explicit section error.
 7. ``contract_tests`` — commands from the TODO contract ``verify:`` block,
    each with a timeout (``run_tree``). Test-like commands (``pytest`` /
-   ``py.test`` / ``python -m pytest``, including a venv path) are run twice:
+   ``py.test`` / ``python -m pytest``, including a venv path), also behind
+   a runner prefix (``uv run``, ``poetry run``), are run twice:
    ``flake: ok (2/2)`` when both outcomes agree, ``flake: unstable`` +
    WARNING when they differ. The FIRST outcome decides the gate: pass then
    fail stays a pass (with the warning), fail then pass stays a FAIL — the
@@ -88,7 +89,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths
+from . import command_parse, paths
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._proc import run_tree
@@ -537,70 +538,24 @@ def _untracked_excluded_section(project: Path, todo_id: str) -> Section:
 #: canonical result; a differing second run marks the command as flaky.
 FLAKE_RUNS = 2
 
-#: A command is "test-like" when a shell segment *invokes* pytest —
-#: directly (`pytest`, `py.test`, possibly via an absolute venv path), as
-#: `python -m pytest`, or through a runner prefix (`uv run pytest`,
-#: `poetry run pytest`, `env python -m pytest`). The check is structural,
-#: not a substring search, and splits on shell operators with or without
-#: surrounding spaces (`pytest; echo`, `pytest&&echo`, `cd tests;pytest .`).
-#: A wrapper (`coverage run -m pytest`, `bash scripts/run-all.sh`, arbitrary
-#: shell) is NOT test-like and keeps its single run (R1).
-_TEST_PROGRAMS = frozenset({"pytest", "py.test"})
-_PYTHON_RE = re.compile(r"^python\d*(?:\.\d+)*$")
-_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_SHELL_OPERATORS = frozenset({"&&", "||", ";", "|", "&"})
-
-
-def _shell_segments(tokens: list[str]) -> list[list[str]]:
-    """Split a token list into shell segments on `&&`, `||`, `;`, `|`, `&`."""
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token in _SHELL_OPERATORS:
-            segments.append([])
-        else:
-            segments[-1].append(token)
-    return [seg for seg in segments if seg]
-
-
-def _strip_runner_prefixes(args: list[str]) -> list[str]:
-    """Drop `env`, `uv run`, `poetry run` and env assignments before a program."""
-    while args:
-        program = args[0].rsplit("/", 1)[-1]
-        if program == "env":
-            args = args[1:]
-            while args and _ENV_ASSIGN_RE.match(args[0]):
-                args.pop(0)
-            continue
-        if program in {"uv", "poetry"} and len(args) >= 2 and args[1] == "run":
-            args = args[2:]
-            while args and _ENV_ASSIGN_RE.match(args[0]):
-                args.pop(0)
-            continue
-        break
-    return args
-
 
 def _is_test_like(cmd: str) -> bool:
-    try:
-        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return False
-    for segment in _shell_segments(tokens):
-        args = _strip_runner_prefixes(list(segment))
-        if not args:
-            continue
-        program = args[0].rsplit("/", 1)[-1]
-        if program in _TEST_PROGRAMS:
-            return True
-        if (
-            _PYTHON_RE.match(program)
-            and len(args) >= 3
-            and args[1] == "-m"
-            and args[2].rsplit("/", 1)[-1] in _TEST_PROGRAMS
-        ):
+    """True when a shell segment *invokes* pytest — so the probe doubles it.
+
+    Directly (``pytest``, ``py.test``, possibly via an absolute venv path),
+    as ``python -m pytest``, or through a runner prefix (``uv run pytest``,
+    ``poetry run pytest``, ``env python -m pytest``). A wrapper (``coverage
+    run -m pytest``, ``bash scripts/run-all.sh``, arbitrary shell) is NOT
+    test-like and keeps its single run (R1). The parsing itself is shared
+    with the suite gate and ``scripts/suite-canonical.sh``
+    (``awf.command_parse``, AUD-27-3), so the three cannot drift again. A
+    single ``&`` splits here (CTX3): ``echo x & pytest tests/`` runs pytest
+    as a separate command, and the flake probe must double it; the suite
+    gate keeps its named blind spot on ``&``, so the flag is per caller.
+    """
+    for segment in command_parse.split_segments(cmd, split_single_amp=True):
+        program = command_parse.parse_words(command_parse.split_words(segment))
+        if program is not None and program.kind in ("pytest", "python-pytest"):
             return True
     return False
 

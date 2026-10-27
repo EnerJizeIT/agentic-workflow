@@ -779,6 +779,12 @@ def _build_parser():
         default=".",
         help="Path to project root (default: current directory)",
     )
+    p_suite_command.add_argument(
+        "--runner",
+        default=None,
+        metavar="COMMAND",
+        help="AUD-27-3: print the runner name of COMMAND via the shared parser",
+    )
 
     p_mutations = sub.add_parser(
         "mutations",

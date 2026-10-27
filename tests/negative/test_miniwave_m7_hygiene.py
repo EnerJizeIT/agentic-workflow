@@ -471,11 +471,13 @@ def test_unknown_runner_reports_null_counts(tmp_path: Path) -> None:
     assert payload["runner"] == "suiter"
 
 
-def test_runner_is_detected_behind_one_wrapper(tmp_path: Path) -> None:
+def test_runner_is_detected_behind_nested_wrappers(tmp_path: Path) -> None:
     """W6 (vitok 5): the payload of a quoted wrapper hides the runner word
     (the boundary quote glues to it — ``pytest'`` is not ``pytest``) and a
-    ``timeout``/``env`` prefix carries it away. One level is unwrapped; a
-    wrapped KNOWN runner still finds its counts."""
+    ``timeout``/``env`` prefix carries it away. The shared awf parser
+    (AUD-27-3) unwraps both, so a wrapped KNOWN runner still finds its
+    counts; an UNKNOWN runner behind the same wrappers keeps null counts,
+    and the hint says why counts are not facts."""
     (tmp_path / "wrap1").mkdir()
     proj1, bindir1 = _suite_project(
         tmp_path / "wrap1",
@@ -486,7 +488,7 @@ def test_runner_is_detected_behind_one_wrapper(tmp_path: Path) -> None:
         proj1, bindir1, f"bash -c 'timeout 600 {bindir1 / 'pytest'}'"
     )
     assert payload["runner"] == "pytest", (
-        "the runner word must survive one wrapper level with the quote glue"
+        "the runner word must survive the quoted wrapper and its prefix"
     )
     assert payload["counts"]["passed"] == 1
 
@@ -501,6 +503,6 @@ def test_runner_is_detected_behind_one_wrapper(tmp_path: Path) -> None:
         f"bash -c 'env GATE=1 timeout 5 {bindir2 / 'shrunner'} x'",
     )
     assert ws["counts"] is None, (
-        "two wrapper levels stay unknown — the counts stay null with a hint"
+        "an unknown runner family keeps null counts — never fake zeros"
     )
-    assert ws["counts_hint"], "an unknown wrapped command names the unwrap limit"
+    assert ws["counts_hint"], "an unknown runner names the reason in the hint"
