@@ -1,52 +1,47 @@
 # Готовность пакета: carry batch C+D
 
 Статус: READY
-Ревизия: readiness-4
+Ревизия: readiness-6
 Scope: carry-cd
-Входы: `carry-cd.context.md@ctx-2`; `carry-cd.md@req-5`; `carry-cd.requirements-review.md@review-5`; `carry-cd.architecture.md@arch-4`; `carry-cd.test-spec.md@qa-2`; TODO-0266; retired `done/TODO-0243/TODO.md`; протокол `specification-pipeline.md`
-База кода: commit `bdd1074`; в дереве untracked `docs/spec/carry-cd/`; дельта `b6c4258..bdd1074` — 12 файлов spec-пайплайна (включая `awf/pipeline_engine.py`), нормативные якоря R#/K# перепроверены на `bdd1074`
-Проверено: carry-cd.context.md=ctx-2; carry-cd.md=req-5; carry-cd.requirements-review.md=review-5; carry-cd.architecture.md=arch-4; carry-cd.test-spec.md=qa-2; carry-cd.readiness.md=readiness-4
-Пакет-sha: 2077a1196cba0f32369c19b2d3d05af507c19f6f30c0c5a99621ff271c5b1727
+Входы: `carry-cd.context.md@ctx-4`; `carry-cd.md@req-7`; `carry-cd.requirements-review.md@review-7`; `carry-cd.architecture.md@arch-5`; `carry-cd.test-spec.md@qa-3`; TODO-0279; TODO-0266; протокол `specification-pipeline.md`
+База кода: HEAD `13fb5e4` + WIP TODO-0276 в рабочем дереве; пакет `docs/spec/carry-cd/` untracked
+Проверено: carry-cd.context.md=ctx-4; carry-cd.md=req-7; carry-cd.requirements-review.md=review-7; carry-cd.architecture.md=arch-5; carry-cd.test-spec.md=qa-3; carry-cd.readiness.md=readiness-6
+Пакет-sha: 9233514185900d60d1662cfbfd89b9d9045248e28d359bf4535e85afbff7be94
 
 ## Вердикт
 
-READY. FR11 закрыт: `carry-cd.architecture.md@arch-4` — 2081 слово при пороге 2200; пакет — 9032 слова по пяти документам, с этой готовностью укладывается в 11000; `awf spec check docs/spec/carry-cd` даёт rc 0.
+READY. Блокеров и MAJOR нет: `review-7` PASS по `req-7`, контракты K1–K14 согласованы с R1–R13, матрица покрытия полная (54 ID), `Пакет-sha` сходится, K6 в норме — контекст 1962/2200, пакет 10983/11000. F1 закрыт на всех поверхностях: R12/AC30–AC32 = K12/D6/D11/D12 = T2 = контекст §0.
 
-Сжатие не меняло норм: сравнение с сохранённой копией `arch-2` показывает только новый заголовок, правки FR9 (K9, §3, D10, IMP3, A-RR23) и удалённый навигационный §0. Ни один K#/D#/IMP# не потерян. Порядок FR9 один на всех поверхностях: R9/AC24/INV1 (`req-5`) = K9/§3/D10 (`arch-4`) = T6 (`qa-2`): preflight → `RUN-EVIDENCE` → `VERIFIED` → `managed_mkdir` → сигнал; отказ по симлинку не оставляет evidence, отпечатка и сигнала. Preflight достижим первым: `refuse_unsafe_surfaces` проходит по ещё не созданному `inbox`, а stale `CANDIDATE` только удаляется и новых файлов не создаёт.
+Остаточные MINOR/SUGGESTION не меняют реализуемого поведения: единица близости D6 названа в D12 (`весь хвост`), расхождение «network/transient» — только слово при одном backoff.
 
-Способ ревью: отдельная стадия `spec-readiness` (`agent-requirements-reviewer`); прочитаны шесть документов, `approve_commit` и `refuse_unsafe_surfaces` на `bdd1074`, матрица и бюджеты проверены инструментом `awf.spec_package`. Runtime не запускался; выводы о коде — чтением. Авторские файлы не менял.
+Способ ревью: стадия `spec-readiness` (`agent-requirements-reviewer`), отдельная сессия. Прочитаны шесть документов целиком, `budget_rows`, `spec check`, разбор матрицы и проба `awf._net.classify_failure` на строках §0 на текущем дереве. Runtime не запускался.
+
+## Сверка входа ctx-4 после сжатия
+
+Контекст сжат с `ctx-3` до `ctx-4` ради K6; копии `ctx-3` в дереве нет, поэтому проверял по фактам: строки провайдера на текущем дереве воспроизведены пробой (F1 `Invalid credential` → `network`; F2 `statusCode: 401` → `""`; F3 JSON-код → `""`; F6 `rc=137` → `oom-like`). Нормы `req-7` не менялись, PASS `review-7` остаётся в силе.
+
+Сжатие потеряло навигацию, не нормы: подразделы §0.1–§0.5 исчезли, ссылки на них остались (FR17); счётчики строк и матрица замеров ушли — факты живут в §0 и `DONE-TODO-0276`, T2 закрепляет ожидания.
 
 ## Проверка маршрута
 
-- FR1 — VERIFIED: `arch-4` несёт `Статус: REVIEW`.
-- FR2 — VERIFIED: `ctx-2` на `bdd1074`, названа дельта `b6c4258..bdd1074`; C10 (`setup.py:488`) и C13 (`:856,937`) на месте.
-- FR3 — ACCEPTED MINOR: AC30 говорит «stage-log», поведение задают K12/T2 (лог воркера от `log_start_offset`); A-RR23 это фиксирует.
-- FR4 — ACCEPTED MINOR: у R13/A5 нет отдельного AC на легаси-фолбэк; его проверяют T3/T4 и K14.
-- FR5 — VERIFIED: T8 держит копию front matter, не путь к живому TODO.
-- FR6 — ACCEPTED MINOR: `tests/unit/test_worker_exit.py` существует с TODO-0226; IMP1 его обновляет.
-- FR7 — SUGGESTION: IMP2 приписывает `collect_handoff(engine_facts=…)` файлу `unit_contract.py`; функция в `agent_stage.py:328`, и `agent_stage.py` уже в IMP2. Опечатка плана, поведение не меняет.
-- FR8 — MINOR, вне пакета: `inbox/TODO-0264.md` дублирует scope; супервизор отзывает или сужает его до первого dev-юнита.
-- FR9 — VERIFIED: R9/AC24/C5/INV1 = K9/§3/D10 = T6, порядок и отсутствие файлов при отказе совпадают.
-- FR10 — MINOR: навигационные номера строк `ctx-2` (C3, C5, C7, C13, P7) устарели; нормативные якоря R#/K# верны.
-- FR11 — VERIFIED: `arch-4` — 2081 слово, порог 2200; бюджет пакета в норме.
-- FR12 — SUGGESTION: `qa-2` в шапке называет вход `context.md@ctx-1`, хотя актуален `ctx-2`; проверки и база `bdd1074` от этого не устарели.
+| ID | Важность | Локация | Проблема и доказательство | Последствие | Что должно измениться | Владелец | Состояние |
+|---|---|---|---|---|---|---|---|
+| FR1 | MAJOR | `arch-5` | Статус `REVIEW`, входы `req-7`; DRAFT заблокировал бы | — | — | архитектор | VERIFIED |
+| FR2 | MAJOR | `ctx-4` §0 | Реальные строки провайдера сохранены, F1 воспроизведён пробой | Без них F1 не доказуем | — | аудитор | VERIFIED |
+| FR4 | MINOR | R13/A5 | Отдельного AC на легаси-фолбэк нет; приёмка по T3/T4/K14 | — | Уточнить после READY | аналитик | ACCEPTED |
+| FR7 | SUGGESTION | IMP2 | `collect_handoff` приписан `unit_contract.py`; функция в `agent_stage.py:343` | Имя файла, не контракт | Исправить имя при правке IMP2 | архитектор | OPEN |
+| FR9 | MAJOR | R9/AC24/INV1 = K9/D10 = T6 | Preflight → `RUN-EVIDENCE` → `VERIFIED` → `managed_mkdir` → сигнал | — | — | архитектор/аналитик/QA | VERIFIED |
+| FR10 | MINOR | `ctx-4` §2 | Навигационные номера строк не перепроверены; якоря R#/K# верны | Ссылки, не нормы | Перепроверить при следующей правке | аудитор | OPEN |
+| FR11 | MAJOR | `arch-5` | 2199 ≤ 2200 | — | — | архитектор | VERIFIED |
+| FR13 | BLOCKER | `ctx-4`; пакет | K6 (RR26) закрыт: 1962/2200, пакет 10983/11000 | — | — | аудитор (ctx-4) | VERIFIED |
+| FR14 | MINOR | R12/AC31 | RR30: тексты R12/AC31 не называют единицу близости D6 | Решение задано: D12/A-RR30 — весь хвост; T2 закрепляет | Назвать единицу в R12/AC31 | аналитик (req-8) | ACCEPTED |
+| FR15 | MINOR | AC31/K12 | QA5: AC31 говорит «network», K12 — `network`/`transient` при одном backoff | Поведение одно (`is_network_failure`) | Привести слово | аналитик | ACCEPTED |
+| FR16 | MINOR | WIP 0276 | QA6: `test_carry_diag.py` (`:393-396`, `:412`, `:717-732`) пинит старое правило | IMP1 обязан перевернуть | Обновить пины в IMP1 | реализатор 0276 | OPEN |
+| FR17 | MINOR | `ctx-4`; `arch-5`; `qa-3` | Ссылки на §0.1/§0.4/§0.5 после сжатия: `context.md:6,141,178`; `architecture.md:5,7`; `test-spec.md:5,51`; `requirements-review.md:5,31` | Навигация, содержание §0 на месте | Заменить на «§0» | аудитор, архитектор, QA | OPEN |
+| FR18 | MINOR | `arch-5`; `qa-3` | Входы называют `ctx-3`, документ на `ctx-4` | Нормы от `req-7`, не менялись | Обновить строку входов | архитектор, QA | OPEN |
+| FR19 | MINOR | `ctx-4` §0 | «Факты»: `Endpoint is unavailable` и `[unsupported_request]` записаны как «сеть»/«не сеть», а дерево даёт `""`/`network` — это цель, не замер | Читатель примет цель за измерение | Пометить колонку «текущий класс» либо «цель» | аудитор | OPEN |
 
-## Находки
-
-| ID | Важность | Находка и решение | Владелец |
-|---|---|---|---|
-| FR1 | BLOCKER, VERIFIED | `arch-4` — REVIEW, содержание прежнее. | архитектор |
-| FR2 | BLOCKER, VERIFIED | `ctx-2` на `bdd1074` с названной дельтой. | аудитор |
-| FR3 | MINOR, ACCEPTED | RR23: AC30 «stage-log» против K12/T2; поведение задано, текст — после READY. | аналитик |
-| FR4 | MINOR, ACCEPTED | RR24: нет отдельного AC на легаси-фолбэк; T3/T4 и K14 покрывают. | аналитик |
-| FR5 | MINOR, VERIFIED | RR25: T8 — копия front matter. | тест-спека |
-| FR6 | MINOR, ACCEPTED | `test_worker_exit.py` не новый; IMP1 обновляет существующий. | QA |
-| FR7 | SUGGESTION | IMP2: `collect_handoff` живёт в `agent_stage.py:328`, файл уже в списке. | архитектор |
-| FR8 | MINOR | `inbox/TODO-0264.md` — тот же scope; отозвать или сузить до первого dev-юнита. | супервизор |
-| FR9 | MAJOR, VERIFIED | R9/AC24/C5/INV1 = K9/§3/D10 = T6: preflight до записей; отказ без новых файлов. | архитектор, аналитик, QA |
-| FR10 | MINOR | `ctx-2`: устаревшие номера строк в навигационных ссылках. | аудитор |
-| FR11 | MAJOR, VERIFIED | Архитектура 2081 ≤ 2200; `awf spec check` проходит шаг бюджета. | архитектор |
-| FR12 | SUGGESTION | `qa-2`: в шапке `context.md@ctx-1` вместо `ctx-2`; смысл проверок не устарел. | тест-спека |
+Закрытые: FR3 (AC30 — лог воркера), FR5 (T8 — копия front matter), FR6 (файл есть), FR8 (TODO-0264 отозван), FR12 (входы актуальны).
 
 ## Матрица покрытия
 
@@ -63,7 +58,7 @@ READY. FR11 закрыт: `carry-cd.architecture.md@arch-4` — 2081 слово 
 | R9 | carry-cd.md#R9 | C5/K9 | T6/IMP3 |
 | R10 | carry-cd.md#R10 | K10 | T12/IMP6 |
 | R11 | carry-cd.md#R11 | C6/K11 | T7/IMP3 |
-| R12 | carry-cd.md#R12 | C1/K12 | T2/IMP1 |
+| R12 | carry-cd.md#R12 | C1/K12/D6/D11/D12 | T2/IMP1 |
 | R13 | carry-cd.md#R13 | C7/K13/K14 | T3/T4/IMP2 |
 | AC1 | carry-cd.md#R1 | C1/K1 | T1/IMP1 |
 | AC2 | carry-cd.md#R1 | C1/K1 | T1/IMP1 |
@@ -95,7 +90,7 @@ READY. FR11 закрыт: `carry-cd.architecture.md@arch-4` — 2081 слово 
 | AC28 | carry-cd.md#R11 | C6/K11 | T7/IMP3 |
 | AC29 | carry-cd.md#R11 | C6/K11 | T7/IMP3 |
 | AC30 | carry-cd.md#R12 | C1/K12 | T2/IMP1 |
-| AC31 | carry-cd.md#R12 | C1/K12 | T2/IMP1 |
+| AC31 | carry-cd.md#R12 | C1/K12/D6 | T2/IMP1 |
 | AC32 | carry-cd.md#R12 | C1/K12 | T2/IMP1 |
 | AC33 | carry-cd.md#R13 | C7/K13/K14 | T3/T4/IMP2 |
 | AC34 | carry-cd.md#R13 | C7/K13/K14 | T3/T4/IMP2 |
@@ -109,26 +104,33 @@ READY. FR11 закрыт: `carry-cd.architecture.md@arch-4` — 2081 слово 
 
 ## Открытые вопросы
 
-Блокирующих нет. Q1 (бюджет архитектуры) закрыт `arch-4`. FR8 (`inbox/TODO-0264.md`) не влияет на пакет: супервизор закрывает дубль до первого dev-юнита.
+| ID | Вопрос | Владелец | Влияние |
+|---|---|---|---|
+| RR30 | Назвать единицу близости D6 в R12/AC31 (решение — D12: весь хвост) | аналитик (req-8) | Не блокирует |
+| QA5 | Слово «network» в AC31 привести к K12 | аналитик | Не блокирует |
+| FR17 | Ссылки на §0.1–§0.5 после сжатия контекста | аудитор, архитектор, QA | Не блокирует |
+| FR18 | Входы `arch-5`/`qa-3` называют `ctx-3` | архитектор, QA | Не блокирует |
+| FR19 | Пометки «замер/цель» в §0 контекста | аудитор | Не блокирует |
+| FR7 | Имя файла `collect_handoff` в IMP2 | архитектор | Не блокирует |
 
 ## Остаточные риски и ограничения
 
-- Runtime не запускался: T1–T14 спроектированы, не пройдены. Baseline — `scripts/check-contracts.sh` ok и 103 целевых теста (данные `ctx-2`); полный сьют в spec-ране не гонялся.
-- AC30 говорит «stage-log», а проверка идёт по логу воркера (RR23). Исполнитель обязан следовать K12/T2; текст требований можно уточнить после READY.
-- Навигационные номера строк в `ctx-2` и вход `ctx-1` в `qa-2` — устаревшие ссылки без влияния на нормы.
-- FR8: параллельный `TODO-0264` с тем же scope может привести к двойной работе, если его не отозвать.
+- Runtime не запускался: T1–T14 спроектированы, не пройдены; база — 103 теста и 96 целевых IMP1 (`ctx-4` §6).
+- QA6: без переворота пинов WIP 0276 новые тесты дадут ложный красный; IMP1 обязан перевернуть их вместе с `_net.py`.
+- FR10: номера строк §2 в `ctx-4` не перепроверены; нормы верны.
+- FR17/FR18/FR19 — навигация и формулировки; реализацию не меняют.
 
 ## Порядок чтения
 
-Требования → архитектура (K1-K14, D1-D10, IMP1-IMP6) → тест-спек (T1-T14); контекст — источники и риски; `review-5` и этот файл — история находок.
+Требования → архитектура (K1–K14, D1–D12, IMP1–IMP6) → тест-спека (T1–T14); контекст — факты §0; `review-7` и этот файл — история.
 
 ## Условия завершения реализации
 
-- T1-T13 зелёные, T14 пройден; у каждого IMP `prove_red` красный на `bdd1074` и зелёный после.
-- `bash scripts/run-all.sh` — rc 0; `check-contracts.sh` — ok; бюджеты не выросли; канарейки `proc.pid > 1` и `_forbid_session_kill` целы.
-- Отказы не оставляют лишних файлов, каталогов, `.ready`, baseline и `.bak`; старые проекты идут прежним путём; handoff без «Engine facts» читается.
-- Перед первым dev-юнитом закрыть FR8 (TODO-0264).
+- T1–T13 зелёные, T14 пройден; `prove_red` красный на `13fb5e4`, зелёный после.
+- `bash scripts/run-all.sh` rc 0; канарейки `proc.pid > 1` и `_forbid_session_kill` целы.
+- Отказы не оставляют файлов, каталогов, `.ready`, baseline и `.bak`.
+- Пакет в READY: `readiness-6`, `spec check` rc 0.
 
 ## Инструкция исполнителю
 
-Работай строго по R#/AC#/INV# и K1-K14, в порядке IMP1 → IMP6. Где AC30 говорит «stage-log», действует K12/T2: лог воркера от `log_start_offset`. Легаси-фолбэк R13 задают A5, K14 и T3/T4. Порядок R9 — preflight до `RUN-EVIDENCE`/`VERIFIED` (K9, D10, T6). Новую существенную неоднозначность верни владельцу; READY не разрешает публикацию и внешние изменения.
+Работай по R#/AC#/INV# и K1–K14, порядок IMP1 → IMP6. Классы — по R12/K12: OOM, D6, auth, сеть; auth в контексте провайдера — код ИЛИ фраза, вне — код и фраза; D6 — весь хвост лога. Пины `test_carry_diag.py` перевернуть вместе с `_net.py` (QA6). R9 — preflight до `RUN-EVIDENCE`/`VERIFIED` (K9, D10, T6). Легаси-фолбэк R13 — A5, K14, T3/T4. Неоднозначность верни владельцу; READY не разрешает публикацию.

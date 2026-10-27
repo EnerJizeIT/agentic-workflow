@@ -1,10 +1,34 @@
 # Контекст: carry batch C+D — диагностика/доки/паритет и approve-bind
 
-Scope: carry-cd (SPEC-ран: только документы, код не меняется)
-Ревизия: ctx-2
-Входы: TODO-0266; retired `done/TODO-0243/TODO.md` (14 требований); DONE-0239/0240/0241; DONE-0230 (аудит M6) и DONE-0233 (виток 4); `BACKLOG-NEXT.md` G.1 (S2/S3/S5) и G (P5–P9); `inbox/TODO-0264.md` — implementer-юнит с тем же scope
-База кода: commit `bdd1074`; дельта `b6c4258..bdd1074` — `awf spec init` и разбор непереведённых ролей в `awf/api/setup.py` (+112 строк); факты C10 (`setup.py:488`) и C13 (`setup.py:856,937`) не изменились; пакет `docs/spec/carry-cd/` untracked
+Scope: carry-cd (SPEC-ран: только документы, код не меняется); ревизия ctx-4 — auth-семантика R12/AC30/C1/K12/T12
+Ревизия: ctx-4
+Входы: TODO-0279 (spec-ревизия R12); DONE-TODO-0276 (аудит IMP1, F1–F6); TODO-0266; retired `done/TODO-0243/TODO.md` (14 требований); DONE-0239/0240/0241; DONE-0230 (аудит M6) и DONE-0233 (виток 4); `BACKLOG-NEXT.md` G.1 (S2/S3/S5) и G (P5–P9); `inbox/TODO-0264.md` — implementer-юнит с тем же scope
+База кода: commit `13fb5e4`; рабочее дерево несёт WIP TODO-0276 (6 изменённых файлов + untracked `tests/negative/test_carry_diag.py`, см. §0.5); пакет `docs/spec/carry-cd/` untracked; факты C10 (`setup.py:488`) и C13 (`setup.py:856,937`) с базы `bdd1074` не перепроверялись — ревизия их не касается
 Статус: REVIEW
+
+## 0. Ревизия ctx-4 — auth-семантика R12 (TODO-0279)
+
+Повод: IMP1 (TODO-0276) остановлен на verify; аудит F1 показал, что цель R12
+на реальных логах не достигается. C1 говорит «в логе Invalid credential»,
+K12 — «401/403 с текстом»; провайдер печатает одно ИЛИ другое, поэтому
+мёртвый ключ уходит в network/silent, а свои строки (pytest `assert 401 == 200`,
+`GET /login -> HTTP 401`) дают ложный auth.
+
+Факты (логи 27.10): `AI_APICallError: Upstream request failed: Invalid
+credential` → network; `AI_APICallError: statusCode: 401` → silent;
+`{"code":401,"message":"invalid api key"}` → silent; `Endpoint is unavailable`
+— сеть; `Upstream request failed: [unsupported_request]` — не сеть. Ложные:
+pytest-строка, свой HTTP 401, rc137+auth (OOM).
+
+Решение (детали в req/arch/test-spec): auth = контекст провайдера
+(`AI_APICallError`/APIError) И (код 401/403 или специфичная фраза
+`Invalid credential`/`invalid api key`/`unauthorized`), либо код+фраза без
+контекста; rc137/-9 приоритетнее; свои тест-строки/HTTP-сервер — не auth.
+Сеть — `Endpoint is unavailable`/connect/reset/timeout; `unsupported_request`
+— transient/exception, не сеть.
+
+Ограничения: WIP 0276 в дереве не входит в пакет; код не меняется; числа
+логов — ориентир.
 
 ## 1. Итог для аналитика
 
@@ -22,7 +46,9 @@ Scope: carry-cd (SPEC-ран: только документы, код не ме�
 | S2 — имя `spec_budget` | `awf/verify_pack.py:1178`; `docs/unit-contract.md:281` | код и документ совпадают, дефиса нет |
 
 **Открыто** (остальное): C2, C4 (`require_posix` архива), C5, C6, C7, C8,
-C10, C11, C12 (approve-bind), C13, C14, S3, S5, P7, P8.
+C10, C11, C12 (approve-bind), C13, C14, S3, S5, P8. P7 реализован в WIP
+0276, но на реальных логах цель R12 не достигает — предмет ревизии ctx-3
+(§0).
 
 Три вещи в этом списке — решения, а не механика, и их нельзя «дописать» без
 ответа владельца: паритет `pipeline-write --variant` (C10/S3: материализовать
@@ -59,7 +85,7 @@ implementer-юнит с теми же 14 требованиями и `verify` н
 | C14 | Четыре док-расхождения M6 | **открыто**: (1) `docs/practices.md:42-43` обещает симлинк `templates/`, которого нет; (2) `USAGE.md:143-148` и `USAGE.ru.md:114-119` не знают код 5 и переменные `AWF_SUITE_CMD`/`AWF_PYTHON`; (3) докстринг `add_role` говорит про два built-in, их пять; (4) докстринг `awf_templates_dir` обещает «все копии зовут меня», а три модуля пишут путь руками | `awf/api/roles.py:1258`; `awf/api/_templates.py:151`; `awf/api/dashboard.py:29`; `awf/phase.py:214`; `awf/doctrine.py:68` |
 | S3 | `pipeline-write --variant` rc при unresolved | **открыто** — тот же дефект, что C10, но решение про rc | `awf/cmd_pipeline_write.py:96-106` |
 | S5 | Не-dict `paths` в записи нарушения | **открыто**: `_open_path_names` возвращает `()` для не-dict, а `open_violations` считает такую запись «исчерпанной» — fail-open | `awf/stage_manifest.py:231-233, 336`; `awf/commit_plan.py:378-390` |
-| P7 | Транзиентный сбой провайдера | **открыто**: маркеры сети — только connect/reset/timeout; 401 «Invalid credential» и 5xx попадают в `silent` и тратят silent-бюджет, а не сетевой backoff | `awf/_net.py:29-35, 92-96`; `awf/pipeline_engine.py:1192-1230` |
+| P7 | Транзиентный сбой провайдера | **WIP 0276**: один `classify_failure`, BLOCKED-ветка и backoff-ветка собраны; реальные строки мёртвого ключа всё ещё уходят в network/silent (F1) — ревизия ctx-3 | `awf/_net.py` (`classify_failure`, `_NETWORK_RE`, `_AUTH_CODE_RE`); `awf/pipeline_engine.py:2085,2152`; `awf/_worker_exit.py:67` |
 | P8 | Сырой полный pytest в обход артефакта | **открыто**: в `agent_stage`/`pipeline_engine` нет учёта команд стадии и требования `SUITE-*.json` | `awf/agent_stage.py`, `awf/pipeline_engine.py` |
 
 ## 3. Карта затронутых путей
@@ -76,7 +102,8 @@ implementer-юнит с теми же 14 требованиями и `verify` н
 | C12 | `awf_approve` в забеге | `api.pipeline.approve` | `inbox/APPROVE-<id>.ready`, `context/VERIFIED-<id>.sha` |
 | C13 | запись варианта setup | `api.setup` (config writer) | `.agentic/config.yaml` + `.bak` |
 | S5 | коммит-гейт | `stage_manifest.open_violations`, `commit_plan` | `context/…VIOLATION…json` |
-| P7, P8 | смерть стадии / запуск команд | `_net`, `pipeline_engine`, `agent_stage` | классификация смерти, бюджет прогонов |
+| P7 | смерть воркера без сигнала | `agent_stage`/`signal_watch` → `_worker_exit.classify_worker_exit` → `_net.classify_failure` → `_handle_net_death` (backoff) или `_stop_on_auth_failure` (BLOCKED); обе ветки `pipeline_engine.py:2085,2152` | строка `worker-exit:`, `BLOCKED-<id>.{md,ready}`, `last_signal`, два бюджета (net/silent) |
+| P8 | смерть стадии / запуск команд | `_net`, `pipeline_engine`, `agent_stage` | классификация смерти, бюджет прогонов |
 
 ## 4. Переиспользуемые компоненты и контракты
 
@@ -98,6 +125,9 @@ implementer-юнит с теми же 14 требованиями и `verify` н
 - Архивация и ретайр не теряют незакоммиченную работу (доктрина 02) и не трогают чужие файлы.
 - Guard-канарейки `proc.pid > 1` и `_forbid_session_kill` — не трогать.
 - Классификация сети сохраняет приоритет над silent-ретраем; сетевой бюджет отдельный.
+- Один классификатор: строка `worker-exit:` (`_worker_exit.classify_worker_exit`) и обе смертельные ветки движка читают `_net.classify_failure`. Второе правило в одной ветке запрещено — класс диагностики и решение обязаны совпадать.
+- Порядок приоритетов — часть контракта: D6 (5xx рядом с 401 → network), OOM/rc137 выключает auth (PA1).
+- Auth-стоп пишет пару `BLOCKED-<id>.{md,ready}` и `last_signal=BLOCKED-<id>` до выхода; при отказе записи — salvage, без ложного BLOCKED.
 
 ## 6. Baseline и тесты
 
@@ -107,6 +137,9 @@ implementer-юнит с теми же 14 требованиями и `verify` н
 | Целевые тесты | `pytest tests/negative/test_miniwave_m3b_movers.py tests/unit/test_unit_contract.py -q` | PASS | 103 passed за 3.03 с |
 | Baseline-команда проекта | `BASELINE-TODO-0266.tests.log` | NOT_RUN | таймаут 300 с на `tests/negative tests/unit/test_run.py tests/unit/test_pipeline_engine.py` |
 | Полный сьют | `bash scripts/run-all.sh` | NOT_RUN | не запускался: стадия аудита; перед полным прогоном — safety-грепы из AGENTS.md |
+| Целевые тесты IMP1 | `pytest tests/unit/test_worker_exit.py tests/negative/test_worker_failure_matrix.py tests/negative/test_carry_diag.py -q` | PASS | 96 passed (`DONE-TODO-0276.json`) |
+| Проба классификатора | `python -c 'from awf import _net; …'` на строках из §0.1 | ИЗМЕРЕНО | воспроизводит F1–F3, F6 на текущем дереве; кода не менял |
+| `awf spec check` | `python -m awf spec check docs/spec/carry-cd` | READY (до ревизии) | пакет на `ctx-2`; после ревизии обновят review/readiness |
 
 Готовые средства по темам: `tests/negative/test_miniwave_m3b_movers.py`
 (архив/ретайр), `tests/unit/test_unit_contract.py` (контракт), 
@@ -119,21 +152,8 @@ implementer-юнит с теми же 14 требованиями и `verify` н
 
 ## 7. Находки
 
-| ID | Важность | Файл / символ | Факт и доказательство | Влияние на фичу | Следующий шаг | Уверенность |
-|---|---|---|---|---|---|---|
-| CTX1 | MAJOR | `.agentic/inbox/TODO-0264.md` | Готовый implementer-юнит с теми же 14 требованиями; `verify` и `prove_red` указывают на несуществующий тест-файл. В очереди забега его нет (`state/run.yaml`: 0265, 0266) | Дублирование работы или провал 0264 на verify | Супервизор: заменить 0264 пакетом, отозвать или сузить | Высокая |
-| CTX2 | MAJOR | `awf/api/pipeline.py:940-984` | Бинд пишется после `managed_mkdir`, без preflight листа; своп симлинка в окне не ловится | C12: ложное «одобрено» с чужим сигналом | Dev-юнит: preflight до mkdir + no-follow запись, тест на своп | Высокая |
-| CTX3 | MAJOR | `awf/api/setup.py:835` | `yaml.safe_dump` перезаписывает конфиг без комментариев | C13: пользователь теряет пояснения в `config.yaml` | Решение: вводить сохраняющий writer (проверить зависимость) | Высокая |
-| CTX4 | MAJOR | `awf/stage_manifest.py:231-233` | Не-dict `paths` → `()` → запись считается исчерпанной (`:336`), коммит проходит | S5: fail-open при повреждённой записи | Dev-юнит: fail-closed + тест | Высокая |
-| CTX5 | MINOR | `awf/cmd_dispatch.py:56-80` | `--content-file` резолвится от CWD; три API-флага не проброшены | C7: CLI и MCP ведут себя по-разному | Dev-юнит: проброс + тест паритета | Высокая |
-| CTX6 | MINOR | `awf/agent_stage.py:272` | `worker_log_tail` вызывается всегда, до проверки `signal_present` | C2: лишние 64 КиБ чтения на каждой стадии | Dev-юнит: чтение только в ветке без сигнала | Высокая |
-| CTX7 | MINOR | `awf/cmd_pipeline_write.py:96-106` | Unresolved-роли: WARNING и rc 0; help обещает «same text» без оговорки про роли | C10/S3: пользователь ждёт рабочий пайплайн | Решение владельца: rc≠0 или строка в help/руководстве | Высокая |
-| CTX8 | MINOR | `awf/todos.py:205-233` | В архиве нет `require_posix`, хотя `docs/design.md:204` обещает отказ на не-POSIX | C4: ослабленный барьер на слабой платформе | Dev-юнит: одна строка + тест | Высокая |
-| CTX9 | MINOR | `awf/metrics.py:708-728` | Внешний путь определяется по `normpath`/`is_relative_to`; `agentic_root_for` не используется | C8: относительный `project_dir` классифицируется неверно | Dev-юнит: helper + тест с относительным путём | Средняя |
-| CTX10 | MINOR | `awf/_net.py:29-35` | 401/5xx не в маркерах сети → классификация `silent` | P7: транзиентный отказ провайдера тратит silent-бюджет и выглядит как «модель молчит» | Решение: расширять маркеры или отдельный класс + salvage-текст | Средняя |
-
-Четыре док-расхождения C14 перечислены в матрице раздела 2; отдельными
-находками не дублирую.
+Старые находки и их решения — в `carry-cd.requirements-review.md`; для этой
+ревизии актуальна только auth-семантика из §0.
 
 ## 8. Несвязанные находки
 
@@ -155,6 +175,7 @@ implementer-юнит с теми же 14 требованиями и `verify` н
   (rc остаётся 0)?
 - Q5 (владелец): P7/P8 — включать в этот пакет или вынести отдельными
   фичами? Оба меняют поведение движка, а не диагностику.
+- Q6–Q10 — решения по auth-семантике вынесены в §0.4; без них K12/T2 не переписать однозначно.
 - Допущение A1: «закрыто» в разделе 1 означает «код уже содержит требуемое
   поведение»; тест-спека всё равно должна закрепить каждое закрытое
   требование регрессионной проверкой, иначе следующая волна его откатит.
