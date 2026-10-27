@@ -695,14 +695,25 @@ def test_unit_rows_probe_their_operation_line() -> None:
 
 
 def test_writer_row_probing_the_path_line_is_red() -> None:
-    """The mutation T3 describes: put a writer row's probe back on the path."""
+    """The mutation T3 describes: put a writer row's probe back on the path.
+
+    The target must be a row that STILL claims a legacy writer site
+    (``unit-0239``) and probes its operation with a grep. A row whose
+    verdict was upgraded to ``barrier`` has a test probe, so it is not a
+    mutation target: pinning this test to one labelled row made the
+    inventory green while the guard itself died (TODO-0281 upgraded the
+    service-evidence row and this selector went red). The same TODO later
+    upgraded the last ``run.py`` writer row, so the target is any remaining
+    legacy row — pinned to its OWN module, so the mutation cannot borrow
+    line numbers from another file.
+    """
     rows = validate_document(DOC.read_text(encoding="utf-8"))
     target = next(row for row in rows
-                  if row.component.startswith("awf/api/run.py")
-                  and row.verdict.strip() == "unit-0239"
-                  and "service evidence" in row.component)
-    mutated = [replace(target, probe='grep -n \'f"RUN-EVIDENCE-{todo_id}.md"\' awf/api/run.py',
-                       expectation='f"RUN-EVIDENCE-{todo_id}.md"')
+                  if row.verdict.strip() == "unit-0239"
+                  and row.probe.strip().startswith("grep "))
+    module = _component_module(target.component)
+    mutated = [replace(target, probe=f'grep -n "^from __future__" {module}',
+                       expectation="from __future__")
                if row is target else row for row in rows]
     assert operation_less_rows(mutated), (
         "a path-line probe must not pass for a writer row")

@@ -20,7 +20,6 @@ from .. import config as cfg_mod
 from .. import git_utils, paths, todos
 from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
-from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ..signals import find_signal_file, short_id
 from ..todo_ids import is_valid_todo_id
@@ -30,6 +29,7 @@ from . import _lease, _liveness
 from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
 from ._errors import AwfApiError
 from ._helpers import (
+    managed_mkdir_api,
     managed_write_api_text,
     refuse_unsafe_surfaces,
     require_agentic,
@@ -471,12 +471,21 @@ def _arm_ack_file(inbox: Path, ack: str) -> Path:
     never eats (a second ACK can answer a FUTURE blocked cycle). The
     returned path is the file the consumer will consume.
     """
+    # AUD2 (REVIEW 0281): the ACK is the supervisor's answer to a blocked
+    # unit — the same managed barrier as the approve marker: a symlinked
+    # ``inbox`` or a linked ACK leaf must refuse, never write outside.
+    #
+    # QA-0281 (REVIEW-FIX): the barrier runs BEFORE the reuse lookup. A
+    # ``Path.glob`` on a symlinked inbox FOLLOWS the link, so a foreign
+    # ``ACK-<id>.ready`` sitting outside the project used to be RETURNED
+    # as the supervisor's answer — no write, but the refusal never ran and
+    # the engine would consume a file from outside the project.
+    managed_mkdir_api(inbox, operation=f"ack {ack}")
     existing = _armed_ack_file(inbox, ack)
     if existing is not None:
         return existing
-    inbox.mkdir(parents=True, exist_ok=True)
     path = inbox / f"ACK-{ack}.ready"
-    path.touch()
+    managed_write_api_text(path, "", operation=f"ack {ack}")
     return path
 
 
@@ -947,12 +956,7 @@ def approve_commit(
             operation="write verified fingerprint",
         )
 
-    try:
-        managed_fs.managed_mkdir(inbox)
-    except managed_fs.ManagedPathError as exc:
-        raise AwfApiError(
-            f"approve {todo_id} refused — unsafe managed path: {exc}"
-        ) from exc
+    managed_mkdir_api(inbox, operation=f"approve {todo_id}")
     if run_active:
         # M2.1: the approval is bound to the cycle it was made for — the
         # run generation captured under the verdict's lock, the verified
@@ -1627,8 +1631,25 @@ def _rollback_impl(
     require_agentic(project_dir)
     context_dir = paths.context_dir(project_dir)
     inbox = paths.inbox(project_dir)
-
     baseline_sha_file = context_dir / f"BASELINE-{todo_id}.sha"
+
+    # AUD1 (REVIEW 0281): the rollback writes TWO surfaces after the reset —
+    # ``context`` (``forget_unit_history`` unlinks CLOSER/CHECKLIST) and
+    # ``inbox`` (the ACK). A symlinked surface would send those writes
+    # outside the project; the preflight is the same barrier as restore and
+    # the archive, run BEFORE the baseline read and the git reset, so a
+    # refusal leaves the repo untouched. ``dry-run`` writes nothing and
+    # keeps its read-only behaviour.
+    if mode != "dry-run":
+        refuse_unsafe_surfaces(
+            project_dir,
+            f"rollback({mode})",
+            context_dir,
+            inbox,
+            baseline_sha_file,
+            inbox / f"ACK-{todo_id}.ready",
+        )
+
     if not baseline_sha_file.exists():
         raise AwfApiError(
             f"Baseline SHA not found: {baseline_sha_file}. "
@@ -1718,7 +1739,12 @@ def _rollback_impl(
         f"created_at: {ts}\n"
     )
     ack_path = inbox / f"ACK-{todo_id}.ready"
-    atomic_write_text(ack_path, ack_content)
+    # AUD1: no-follow write, not a bare atomic_write — a link swapped onto
+    # the ACK leaf between the preflight and here is replaced, never
+    # followed outside the inbox.
+    managed_write_api_text(
+        ack_path, ack_content, operation=f"rollback({mode}) ack"
+    )
 
     return RollbackResult(
         todo_id=todo_id,
@@ -2141,7 +2167,6 @@ def continue_pipeline(
                         f"nothing to accept."
                     ),
                 )
-            ack_inbox.mkdir(parents=True, exist_ok=True)
             _arm_ack_file(ack_inbox, ack)
 
     # M2 (REVIEW виток 10): a pin that won over the ack means the ack was

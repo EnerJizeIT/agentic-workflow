@@ -241,6 +241,106 @@ class TestCorruptViolationRecord:
         open_ones = stage_manifest.open_violations(repo)
         assert [v.paths for v in open_ones] == [("src/a.py",)]
 
+    def test_non_hash_after_is_open_and_refuses_commit(self, gate_repo):
+        """CTX3 (TODO-0281): строковый, но не 64-hex ``after`` — не
+        доказуемое состояние, значит открытое нарушение (fail-closed)."""
+        from awf import stage_manifest
+
+        repo, sha = gate_repo
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("unit work\n", encoding="utf-8")
+        self._record(
+            repo,
+            {"src/a.py": {"before": "<missing>", "after": "deadbeef"}},
+        )
+
+        open_ones = stage_manifest.open_violations(repo)
+        assert [v.paths for v in open_ones] == [("src/a.py",)]
+        refusal = stage_manifest.violation_refusal(repo)
+        assert "src/a.py" in refusal
+        assert f"WRITE-VIOLATION-{TODO}.json" in refusal
+
+        head_before = self._head(repo)
+        logs = repo / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        outcome = maybe_commit(
+            "implement", TODO, "commit_and_report", repo, logs,
+            auto=False, baseline_sha=sha,
+        )
+        assert outcome.status == "refused", (
+            f"a non-hash after must refuse the commit — got "
+            f"{outcome.status}: {outcome.reason}"
+        )
+        assert "src/a.py" in outcome.reason
+        assert self._head(repo) == head_before
+
+    def test_missing_marker_after_is_open_and_refuses_commit(self, gate_repo):
+        """AUD4 (REVIEW 0281): ``<missing>`` — легальный маркер
+        ``file_hash``, но не доказуемое состояние: запись остаётся
+        открытой (fail-closed), снимается только явным удалением."""
+        from awf import stage_manifest
+
+        repo, sha = gate_repo
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("unit work\n", encoding="utf-8")
+        self._record(
+            repo,
+            {"src/a.py": {"before": "<missing>", "after": "<missing>"}},
+        )
+
+        open_ones = stage_manifest.open_violations(repo)
+        assert [v.paths for v in open_ones] == [("src/a.py",)]
+        refusal = stage_manifest.violation_refusal(repo)
+        assert "src/a.py" in refusal
+        assert f"WRITE-VIOLATION-{TODO}.json" in refusal
+
+        head_before = self._head(repo)
+        logs = repo / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        outcome = maybe_commit(
+            "implement", TODO, "commit_and_report", repo, logs,
+            auto=False, baseline_sha=sha,
+        )
+        assert outcome.status == "refused", (
+            f"the <missing> marker must keep the record open — got "
+            f"{outcome.status}: {outcome.reason}"
+        )
+        assert self._head(repo) == head_before
+
+    def test_mixed_record_is_unverifiable_and_advises_delete_only(self, gate_repo):
+        """CTX3 + PA-0281-4 (TODO-0281): смешанная запись остаётся открытой
+        по любому не-доказуемому пути, и remedy не предлагает откат.
+
+        ``_has_unverifiable_path`` — отдельное чтение правила для ТЕКСТА
+        отказа; здесь открыт и обычный хэш (файл совпадает), и не-хэш
+        ``after``. Флаг обязан взвестись на втором, иначе владельцу снова
+        посоветуют «Roll the path back», который такую запись не снимет.
+        """
+        import hashlib
+
+        from awf import stage_manifest
+
+        repo, _sha = gate_repo
+        (repo / "src").mkdir()
+        target = repo / "src" / "a.py"
+        target.write_text("unit work\n", encoding="utf-8")
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        self._record(
+            repo,
+            {
+                "src/a.py": {"before": "<missing>", "after": digest},
+                "src/b.py": {"before": "<missing>", "after": "deadbeef"},
+            },
+        )
+
+        open_ones = stage_manifest.open_violations(repo)
+        assert len(open_ones) == 1
+        assert open_ones[0].paths == ("src/a.py", "src/b.py")
+        assert open_ones[0].unverifiable is True
+        refusal = stage_manifest.violation_refusal(repo)
+        assert "delete" in refusal
+        assert "Roll the path back" not in refusal
+
     def test_corrupt_record_survives_a_newer_record(self, gate_repo):
         from awf import stage_manifest
 

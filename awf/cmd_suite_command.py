@@ -12,17 +12,31 @@ the contract the script branches on:
 
 The shell helper branches on 5 separately: «broken file» and «empty key»
 must not share a message (K14, CTX1 volut 4).
+
+``--runner COMMAND`` is the second mode (AUD-27-3): print the runner name
+from the shared parser and exit 0. It answers no project question, so this
+mode reads no config and a broken one cannot fake a runner failure.
 """
 from __future__ import annotations
 
 import sys
 from typing import Any
 
-from . import suite_command
+from . import command_parse, suite_command
 
 
 def run(args: Any) -> int:
-    """Print the canonical command; the exit code is the contract above."""
+    """Print the canonical command; the exit code is the contract above.
+
+    ``--runner COMMAND`` is the other question this command answers: the
+    runner name of a shell line, from the shared parser (AUD-27-3). The
+    shell helper uses it for the artifact's ``runner``/``counts`` fields,
+    so the script is not a third parser.
+    """
+    runner = getattr(args, "runner", None)
+    if runner is not None:
+        print(command_parse.detect_runner(runner))
+        return 0
     resolved, state = suite_command.resolve_with_state(
         getattr(args, "project_dir", ".")
     )

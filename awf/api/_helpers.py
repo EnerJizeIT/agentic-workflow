@@ -240,6 +240,45 @@ def refuse_unsafe_surfaces(
         ) from exc
 
 
+def surfaces_are_managed(
+    project_dir: Path, operation: str, *surfaces: Path
+) -> bool:
+    """Best-effort form of :func:`refuse_unsafe_surfaces` for cleanup paths.
+
+    A rollback must not raise: the refusal it undoes already stands. It
+    must also never touch a surface the barrier would refuse, so an unsafe
+    surface yields ``False`` and the caller SKIPS it — the check is the
+    same one, not a second, weaker copy written next to it (CTX4,
+    TODO-0281).
+    """
+    try:
+        refuse_unsafe_surfaces(project_dir, operation, *surfaces)
+    except Exception:  # noqa: BLE001 — a rollback must never raise (AUD-0281-4)
+        # Any preflight failure means "cannot prove this surface safe": an
+        # ``OSError`` from a component lookup and a translated refusal both
+        # land here, so the caller SKIPS the surface instead of raising out
+        # of the cleanup that the refusal already justified.
+        return False
+    return True
+
+
+def managed_mkdir_api(path: Path, *, operation: str) -> None:
+    """Create a managed directory, translating the refusal to ``AwfApiError``.
+
+    The mkdir counterpart of :func:`managed_write_api_text`. Three approve
+    paths needed the same barrier around an ``inbox`` creation: the main
+    approve had the ``ManagedPathError`` translation inline, the service
+    approve and the ACK writer reached for a bare ``Path.mkdir``. One call
+    now, so the error text and the refusal type cannot drift between them.
+    """
+    try:
+        managed_fs.managed_mkdir(path)
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"{operation} refused — unsafe managed path: {exc}"
+        ) from exc
+
+
 def managed_write_api_text(
     path: Path,
     content: str,
@@ -337,6 +376,8 @@ __all__ = [
     "require_awf_project",
     "require_git_repo",
     "refuse_unsafe_surfaces",
+    "surfaces_are_managed",
+    "managed_mkdir_api",
     "managed_write_api_text",
     "read_file_text",
     "read_log_tail",
