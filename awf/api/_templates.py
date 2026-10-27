@@ -63,6 +63,13 @@ limits:
   # Valid range: 0..20.
   max_review_passes: 3
 
+checklist:
+  # CLOSER IMP4: how many COMPLETED closer runs one unit may spend while its
+  # definition-of-done gate is still red. A crash without a verdict, a
+  # salvaged signal and a skip do not count. At the cap the unit is BLOCKED
+  # for the supervisor (no third run). Valid range: 1..2.
+  closer_attempts: 1
+
 phases:
   current: ".agentic/phases/plan.md"
 

@@ -67,6 +67,33 @@ def _stage_yaml(name: str, role: str, **extra: Any) -> dict[str, Any]:
 # the same slug. Kept as an alias for existing importers.
 _slugify_role = slugify_role
 
+# CLOSER IMP7 (R7): the definition-of-done stage every composed pipeline
+# carries. The canonical contract is docs/spec/closer-stage K6; the local
+# .agentic/pipelines/default.yaml and the shipped templates hold the same
+# block, so the generator is the third surface of one composition.
+_CLOSER_STAGE_NAME = "implementer-close"
+_CLOSER_STAGE_TASK = (
+    "Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`); "
+    "`manual` вне scope, блок не править; не меняй скоуп и контракт; "
+    "запусти `awf checklist check <todo>`; отчитайся пунктами."
+)
+# R7: the closer runs after the last stage that may write the unit. Roles
+# below only report findings (no code edits), so they stay after it.
+_POST_CLOSER_ROLES = frozenset({"agent-project-auditor"})
+
+
+def _closer_stage() -> dict[str, Any]:
+    """The closer stage block — one builder for the generator path."""
+    return _stage_yaml(
+        _CLOSER_STAGE_NAME,
+        "agent-implementer",
+        id=_CLOSER_STAGE_NAME,
+        task=_CLOSER_STAGE_TASK,
+        skip_if="checklist_green",
+        write_check="off",
+    )
+
+
 #: TODO-0230 (M6): built-in pipeline starters shipped with awf. The form's
 #: "flow variant" choice picks one instead of the generated team pipeline.
 #: REVIEW W5: this mapping is the ONE registry — the CLI ``--variant``
@@ -338,8 +365,10 @@ def build_pipeline_stages(
         warnings: optional list collecting the degradations above.
 
     Returns:
-        List of stage dicts:
-        ``[plan(supervisor)] + [working stages] + [verify(supervisor)]``.
+        List of stage dicts: ``[plan(supervisor)] + [working stages] +
+        [implementer-close] + [verify(supervisor)]``. CLOSER IMP7 (R7):
+        the closer stands after the last writing stage — before the
+        findings-only tail (``_POST_CLOSER_ROLES``).
 
     Raises:
         ValueError: if team_order is empty or has no valid role entries
@@ -426,6 +455,14 @@ def build_pipeline_stages(
         ),
     ]
 
+    # CLOSER IMP7 (R7): after the last writing stage, before the
+    # findings-only tail. One insertion after the loop: ``closer_at`` may
+    # equal ``len(work_roles)`` (append), and a single call site keeps the
+    # position rule in one place.
+    closer_at = len(work_roles)
+    while closer_at > 0 and work_roles[closer_at - 1] in _POST_CLOSER_ROLES:
+        closer_at -= 1
+
     for role in work_roles:
         stages.append(
             _stage_yaml(
@@ -440,6 +477,7 @@ def build_pipeline_stages(
                 max_retries=3,
             )
         )
+    stages.insert(1 + closer_at, _closer_stage())
 
     stages.append(
         _stage_yaml(

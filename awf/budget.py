@@ -336,7 +336,7 @@ def _log_text(project_dir: Path) -> str:
 
 def _unit_segments(project_dir: Path, todo_id: str) -> list[dict]:
     """The pipeline segments of one unit: stage starts and the complete stamp."""
-    marker = f"PIPELINE-{todo_id}.yaml"
+    marker = paths.pipeline_snapshot_path(project_dir, todo_id).name
     segments: list[dict] = []
     current: dict | None = None
     for line in _log_text(project_dir).splitlines():

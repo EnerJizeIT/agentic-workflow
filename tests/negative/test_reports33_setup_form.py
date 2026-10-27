@@ -67,8 +67,10 @@ class TestSingleRoleMode:
             include_qa=False,
         )
         assert result.pipeline_file is not None
-        # plan → implementer → verify: ни аудитора, ни QA в цепочке
-        assert _roles(awf_project) == ["supervisor", "agent-implementer", "supervisor"]
+        # plan → implementer → closer → verify: ни аудитора, ни QA в цепочке
+        assert _roles(awf_project) == [
+            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+        ]
         assert "agent-project-auditor" not in _roles(awf_project)
 
     def test_single_role_with_qa(self, awf_project):
@@ -80,13 +82,19 @@ class TestSingleRoleMode:
             include_qa=True,
         )
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-qa-review", "supervisor",
+            "supervisor",
+            "agent-implementer",
+            "agent-qa-review",
+            "agent-implementer",
+            "supervisor",
         ]
         assert "agent-project-auditor" not in _roles(awf_project)
 
     def test_primary_defaults_to_first_team_role(self, awf_project):
         api.apply_project_setup(awf_project, team=TEAM, stage_mode="single")
-        assert _roles(awf_project) == ["supervisor", "agent-implementer", "supervisor"]
+        assert _roles(awf_project) == [
+            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+        ]
 
     def test_primary_not_in_team_falls_back_with_warning(self, awf_project):
         result = api.apply_project_setup(
@@ -96,7 +104,9 @@ class TestSingleRoleMode:
             primary_role="ghost-role",
         )
         # деградация, не сбой: основная = первая роль команды
-        assert _roles(awf_project) == ["supervisor", "agent-implementer", "supervisor"]
+        assert _roles(awf_project) == [
+            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+        ]
         assert any("ghost-role" in w for w in result.warnings)
 
     def test_include_qa_without_qa_role_warns_and_skips(self, awf_project):
@@ -106,7 +116,9 @@ class TestSingleRoleMode:
             stage_mode="single",
             include_qa=True,
         )
-        assert _roles(awf_project) == ["supervisor", "agent-implementer", "supervisor"]
+        assert _roles(awf_project) == [
+            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+        ]
         assert any("QA" in w for w in result.warnings)
 
     def test_primary_is_qa_role_no_duplicate_stage(self, awf_project):
@@ -119,7 +131,9 @@ class TestSingleRoleMode:
         )
         roles = _roles(awf_project)
         assert roles.count("agent-qa-review") == 1
-        assert roles == ["supervisor", "agent-qa-review", "supervisor"]
+        assert roles == [
+            "supervisor", "agent-qa-review", "agent-implementer", "supervisor",
+        ]
 
 
 # ─── (b) «цепочка» — прежний линейный состав ───────────────────────────────
@@ -132,6 +146,7 @@ class TestChainMode:
             "supervisor",
             "agent-implementer",
             "agent-qa-review",
+            "agent-implementer",
             "agent-project-auditor",
             "supervisor",
         ]
@@ -143,6 +158,7 @@ class TestChainMode:
             "supervisor",
             "agent-implementer",
             "agent-qa-review",
+            "agent-implementer",
             "agent-project-auditor",
             "supervisor",
         ]
@@ -151,7 +167,7 @@ class TestChainMode:
         result = api.apply_project_setup(
             awf_project, team=TEAM, stage_mode="diagonal"
         )
-        assert len(_roles(awf_project)) == 5
+        assert len(_roles(awf_project)) == 6
         assert any("diagonal" in w for w in result.warnings)
 
 
@@ -198,8 +214,11 @@ class TestPreview:
                 "single": single_text,
             },
         })
-        # дефолтный состав («одна роль») показан в превью как есть
-        assert single_text in rendered
+        # дефолтный состав («одна роль») показан в превью как есть; the
+        # <pre> is autoescaped by Jinja, so compare its own escaping.
+        from markupsafe import escape as _escape
+
+        assert str(_escape(single_text)) in rendered
         # и поля выбора состава присутствуют в форме
         assert 'name="stage_mode"' in rendered
         assert 'name="primary_role"' in rendered
@@ -253,7 +272,11 @@ class TestIdempotentResubmit:
         assert config2 == config1
         # состав не дублируется повторной отправкой
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-qa-review", "supervisor",
+            "supervisor",
+            "agent-implementer",
+            "agent-qa-review",
+            "agent-implementer",
+            "supervisor",
         ]
 
     def test_resubmit_mode_switch_replaces_pipeline(self, awf_project):
@@ -266,7 +289,9 @@ class TestIdempotentResubmit:
             team=TEAM, stage_mode="single",
             primary_role="agent-implementer",
         )
-        assert _roles(awf_project) == ["supervisor", "agent-implementer", "supervisor"]
+        assert _roles(awf_project) == [
+            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+        ]
 
 
 # ─── plugin-обвязка: поля формы доходят до apply ───────────────────────────
@@ -308,7 +333,11 @@ class TestFormSubmitPlumbing:
         target = proj / ".agentic" / "pipelines" / "default.yaml"
         roles = [s["role"] for s in yaml.safe_load(target.read_text())["stages"]]
         assert roles == [
-            "supervisor", "agent-implementer", "agent-qa-review", "supervisor",
+            "supervisor",
+            "agent-implementer",
+            "agent-qa-review",
+            "agent-implementer",
+            "supervisor",
         ]
 
     def test_process_role_saves_legacy_submit_stays_chain(
@@ -323,5 +352,5 @@ class TestFormSubmitPlumbing:
         )
         target = proj / ".agentic" / "pipelines" / "default.yaml"
         roles = [s["role"] for s in yaml.safe_load(target.read_text())["stages"]]
-        assert len(roles) == 5
+        assert len(roles) == 6
         assert roles[-1] == "supervisor"

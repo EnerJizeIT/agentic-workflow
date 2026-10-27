@@ -29,14 +29,15 @@ class TestBuildPipelineStages:
             {"agent": "developer", "type": "default"},
             {"agent": "qa", "type": "default"},
         ])
-        # plan(supervisor) + developer + qa + verify(supervisor)
-        assert len(stages) == 4
+        # plan(supervisor) + developer + qa + closer + verify(supervisor)
+        assert len(stages) == 5
         assert stages[0]["name"] == "plan"
         assert stages[0]["role"] == "supervisor"
         assert stages[-1]["name"] == "verify"
         assert stages[-1]["role"] == "supervisor"
         assert stages[1]["role"] == "developer"
         assert stages[2]["role"] == "qa"
+        assert stages[3]["name"] == "implementer-close"
 
     def test_empty_team_raises(self):
         """Empty team = plan→verify with no work — useless, must raise."""
@@ -54,8 +55,11 @@ class TestBuildPipelineStages:
             {"agent": "developer"},
             {"agent": "developer"},
         ])
-        # plan + developer + verify (developer deduped)
-        execute_stages = [s for s in stages if s["role"] != "supervisor"]
+        # plan + developer + closer + verify (developer deduped)
+        execute_stages = [
+            s for s in stages
+            if s["role"] != "supervisor" and s["name"] != "implementer-close"
+        ]
         assert len(execute_stages) == 1
 
     def test_agent_key_takes_precedence_over_role(self):
@@ -63,6 +67,36 @@ class TestBuildPipelineStages:
         stages = api.setup.build_pipeline_stages([{"role": "qa", "agent": "developer"}])
         execute = [s for s in stages if s["role"] != "supervisor"]
         assert execute[0]["role"] == "developer"
+
+    def test_closer_after_qa_before_auditor(self):
+        """R7/AC18: the generated default carries the closer on its place.
+
+        The closer stands after the last writing stage (qa-review) and
+        before the findings-only auditor; it declares the gate keys and
+        no output/allowlist (K6).
+        """
+        stages = api.setup.build_pipeline_stages([
+            {"agent": "agent-implementer"},
+            {"agent": "agent-architect-review"},
+            {"agent": "agent-qa-review"},
+            {"agent": "agent-project-auditor"},
+        ])
+        assert [s["name"] for s in stages] == [
+            "plan",
+            "agent-implementer",
+            "agent-architect-review",
+            "agent-qa-review",
+            "implementer-close",
+            "agent-project-auditor",
+            "verify",
+        ]
+        closer = stages[4]
+        assert closer["role"] == "agent-implementer"
+        assert closer["id"] == "implementer-close"
+        assert closer["skip_if"] == "checklist_green"
+        assert closer["write_check"] == "off"
+        assert "output" not in closer
+        assert "write_allow" not in closer
 
 
 # ─── write_pipeline ─────────────────────────────────────────────────────
@@ -79,9 +113,47 @@ class TestWritePipeline:
 
         data = yaml.safe_load(path.read_text())
         assert data["name"] == "default"
-        assert len(data["stages"]) == 4
+        assert len(data["stages"]) == 5
         assert data["stages"][0]["role"] == "supervisor"
         assert data["stages"][-1]["role"] == "supervisor"
+
+    def test_written_default_carries_the_closer_block(self, awf_project):
+        """R7/AC18: the FILE the form path writes round-trips the closer.
+
+        The generator dicts are not the artifact — the YAML a project gets
+        must load back as an execute stage with the gate keys and without
+        ``output``/``write_allow`` (K6). A dump that dropped a key would
+        make the written default skip the gate or refuse to load.
+        """
+        from awf.pipeline import load_stages
+
+        path = api.setup.write_pipeline(
+            [
+                {"agent": "agent-implementer"},
+                {"agent": "agent-architect-review"},
+                {"agent": "agent-qa-review"},
+                {"agent": "agent-project-auditor"},
+            ],
+            awf_project,
+        )
+        stages = load_stages(path)
+        assert [s.name for s in stages] == [
+            "plan",
+            "agent-implementer",
+            "agent-architect-review",
+            "agent-qa-review",
+            "implementer-close",
+            "agent-project-auditor",
+            "verify",
+        ]
+        closer = stages[4]
+        assert closer.role == "agent-implementer"
+        assert closer.kind == "execute"
+        assert closer.skip_if == "checklist_green"
+        assert closer.write_check == "off"
+        assert closer.output == ""
+        assert closer.write_allow == ()
+        assert "Закрой ТОЛЬКО пункты" in closer.task
 
     def test_backs_up_existing(self, awf_project):
         """Existing default.yaml backed up to .bak before overwrite."""
@@ -100,6 +172,21 @@ class TestWritePipeline:
         )
         for stage in data["stages"]:
             assert "action" not in stage
+
+
+# ─── config template (AU4) ──────────────────────────────────────────────
+
+
+def test_config_template_exposes_closer_attempts(awf_project):
+    """AU4: the closer budget is a visible knob, not a hidden reader.
+
+    The template is the only place an owner learns the key exists; a reader
+    with no template entry is configurability nobody finds.
+    """
+    data = yaml.safe_load(
+        (awf_project / ".agentic" / "config.yaml").read_text(encoding="utf-8")
+    )
+    assert data["checklist"]["closer_attempts"] == 1
 
 
 # ─── update_config_role_mapping ─────────────────────────────────────────

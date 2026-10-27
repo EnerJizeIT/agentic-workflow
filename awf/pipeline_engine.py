@@ -2057,6 +2057,7 @@ def execute_agent_stage(
         )
         signal = f"BLOCKED-{current_todo}"
 
+    signal_from_salvage = False
     if not signal:
         # Salvage path
         baseline_sha = stage_baseline_sha
@@ -2132,6 +2133,10 @@ def execute_agent_stage(
             print("No signal after supervisor salvage. Stopping.", file=sys.stderr)
             _log(logs_dir, f"Stopped: salvage produced no signal at {s_name}")
             return current_todo, stage_idx, 1
+        # CLOSER IMP4 (K4): a signal the supervisor produced after the
+        # worker died without a verdict is not a completed closer run — it
+        # must not spend an attempt (AC11).
+        signal_from_salvage = True
         print(f"Salvaged signal: {signal}", file=sys.stderr)
         _log(logs_dir, f"Salvaged signal: {signal} via supervisor")
 
@@ -2171,6 +2176,42 @@ def execute_agent_stage(
             consumed.unlink()
         except FileNotFoundError:
             pass
+
+    # CLOSER IMP4 (K4): the gate is recomputed on the tree the stage
+    # produced (the result check, NOT a second decision point); its colour
+    # decides the next step, not the worker's signal type. One path for both
+    # signals: a completed run with a verdict charges an attempt, a salvaged
+    # signal is re-checked without charging (AC11).
+    # A pre-stage manifest failure blocks before the worker ever runs;
+    # there is no signal of the closer to settle (manifest_blocked).
+    if stage.skip_if and not manifest_blocked:
+        outcome = closer_stage.settle_run(
+            project_dir,
+            current_todo,
+            config,
+            charge=not signal_from_salvage,
+        )
+        _log(logs_dir, outcome.log_line)
+        if outcome.kind == "blocked":
+            _write_state(
+                project_dir,
+                last_signal=f"BLOCKED-{current_todo}",
+                logs_dir=logs_dir,
+            )
+            return current_todo, stage_idx, 1
+        if outcome.kind == "retry":
+            # Red and still under the cap: re-enter the same stage. Its entry
+            # (``decide``) re-reads the counter. No ``retry_counts`` bump — a
+            # planned closer attempt is not a stage failure.
+            print(
+                f"Closer still red after attempt {outcome.attempts}; "
+                "re-entering the stage.",
+                file=sys.stderr,
+            )
+            return current_todo, stage_idx, 0
+        # Green: the verdict decides the outcome (a BLOCKED signal after a
+        # green gate is a completed close).
+        sig_type = "done"
 
     # SPEC IMP5 (K5): a stage that wrote outside its allowlist is BLOCKED,
     # whatever signal it left. The report names the paths; the DONE signal

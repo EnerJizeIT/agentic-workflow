@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import paths, todos
+from . import closer_stage, paths, todos
 from ._markdown import append_block
 from .api.hygiene import backup_and_write_todo, not_started_reason
 from .checklist_gate import run as run_gate
@@ -155,26 +155,99 @@ def _cmd_apply(args: Any, project: Path) -> int:
     return 0
 
 
+STATS_HEADER = "| Пункт | caught | runs |"
+STATS_SEPARATOR = "| --- | --- | --- |"
+_VERDICT_STATUSES = ("ok", "missing")
+
+
+def _stats_records(project: Path) -> list[tuple[str, dict]]:
+    """``(wave, first_verdict)`` per unit, in sorted path order (R6).
+
+    Only the FIRST verdict counts: the record is written once per unit, so
+    the history does not move when the tree changes or the verdict cache is
+    rewritten. A broken record is skipped with a warning — a made-up zero
+    row would be worse than a missing unit.
+    """
+    records: list[tuple[str, dict]] = []
+    for path in closer_stage.state_paths(project):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"warning: {path.name}: skipped ({e})", file=sys.stderr)
+            continue
+        if not isinstance(data, dict):
+            print(f"warning: {path.name}: skipped (not a JSON object)", file=sys.stderr)
+            continue
+        verdict = data.get("first_verdict")
+        if not isinstance(verdict, dict):
+            continue
+        wave = data.get("wave")
+        records.append((wave.strip() if isinstance(wave, str) else "", verdict))
+    return records
+
+
+def _stats_rows(records: list[tuple[str, dict]], wave: str) -> list[dict]:
+    """``caught``/``runs`` per item; ``manual`` has no probe (RR21)."""
+    rows: dict[str, dict] = {}
+    for unit_wave, verdict in records:
+        if wave and unit_wave != wave:
+            continue
+        items = verdict.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            status = item.get("status")
+            if not isinstance(item_id, str) or not item_id:
+                continue
+            if status not in _VERDICT_STATUSES:
+                continue
+            row = rows.setdefault(item_id, {"item": item_id, "caught": 0, "runs": 0})
+            row["runs"] += 1
+            if status == "missing":
+                row["caught"] += 1
+    return list(rows.values())
+
+
+def _cmd_stats(args: Any, project: Path) -> int:
+    rows = _stats_rows(_stats_records(project), getattr(args, "wave", "") or "")
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, ensure_ascii=False))
+        return 0
+    print(STATS_HEADER)
+    print(STATS_SEPARATOR)
+    for row in rows:
+        print(f"| {row['item']} | {row['caught']} | {row['runs']} |")
+    return 0
+
+
 _ACTIONS = {
     "show": _cmd_show,
     "check": _cmd_check,
     "apply": _cmd_apply,
     "hash": _cmd_hash,
+    "stats": _cmd_stats,
 }
 
 
 def run(args: Any) -> int:
+    project = Path(args.project_dir).resolve()
     # F12: the argument is a TODO id, not a path. ``Path / token`` with an
     # absolute token silently drops the inbox prefix, so a reader/writer
     # must refuse before building any path (no reads, writes or backups
     # outside the project — the one declared write surface is the inbox).
-    if not is_valid_todo_id(args.todo_id):
-        print(
-            f"ERROR: {args.todo_id!r} is not a TODO id (TODO-NNNN)",
-            file=sys.stderr,
+    # ``stats`` is project-wide: it reads every unit's frozen first verdict
+    # and takes no TODO id (R6).
+    if args.action != "stats" and not is_valid_todo_id(args.todo_id):
+        detail = (
+            "a TODO id is required"
+            if args.todo_id is None
+            else f"{args.todo_id!r} is not a TODO id"
         )
+        print(f"ERROR: {detail} (TODO-NNNN)", file=sys.stderr)
         return 2
-    project = Path(args.project_dir).resolve()
     try:
         return _ACTIONS[args.action](args, project)
     except (ChecklistError, managed_fs.ManagedPathError, ValueError, OSError) as e:

@@ -19,6 +19,7 @@ from .._atomic import MODE_OWNER_EDITABLE, atomic_write_text
 from .._lock import LOCK_NAME
 from ..dispatch_policy import CONFIG_VERSION
 from ..infra import managed_fs
+from ..unit_history import forget_unit_history
 from . import _liveness
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
@@ -959,6 +960,11 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
         )
     shutil.move(str(md), str(target))
     (inbox / f"{todo_id}.ready").touch()
+
+    # CTX2: a restored id is about to run again — the previous attempt's
+    # CLOSER (first verdict/attempts) and CHECKLIST (verdict cache) must
+    # not be inherited by the re-run. Same helper as the rollbacks.
+    forget_unit_history(project_dir, todo_id)
 
     # TODO-0191 (REPORTS30): the handoff tail is NOT moved back to the
     # live .agentic/handoff/ — the bare shutil.move there silently

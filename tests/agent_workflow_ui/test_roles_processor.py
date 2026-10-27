@@ -623,8 +623,10 @@ def test_bd9_pipeline_written_with_team_and_project(isolated_roles_dir, reset_pr
     import yaml as _yaml
 
     parsed = _yaml.safe_load(target.read_text())
-    assert len(parsed["stages"]) == 4
-    assert [s["name"] for s in parsed["stages"]] == ["plan", "worker", "tester", "verify"]
+    assert len(parsed["stages"]) == 5
+    assert [s["name"] for s in parsed["stages"]] == [
+        "plan", "worker", "tester", "implementer-close", "verify",
+    ]
 
 
 def test_bd9_pipeline_skipped_no_project_dir(isolated_roles_dir, reset_project_dir, tmp_path):

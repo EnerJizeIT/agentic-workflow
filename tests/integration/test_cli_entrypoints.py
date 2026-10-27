@@ -1080,12 +1080,18 @@ class TestPipelineWriteEntrypoint:
         target = repo / ".agentic" / "pipelines" / "audit-probe.yaml"
         assert target.is_file()
         data = yaml.safe_load(target.read_text(encoding="utf-8"))
-        # stages generated like the setup form: plan → roles → verify
-        assert [s["role"] for s in data["stages"]] == [
-            "supervisor",
+        # stages generated like the setup form: plan → roles → closer → verify
+        # (CLOSER IMP7: the closer shares agent-implementer, so compare names).
+        assert [s["name"] for s in data["stages"]] == [
+            "plan",
             "agent-implementer",
-            "supervisor",
+            "implementer-close",
+            "verify",
         ]
+        closer = data["stages"][2]
+        assert closer["role"] == "agent-implementer"
+        assert closer["skip_if"] == "checklist_green"
+        assert closer["write_check"] == "off"
         # contract: config.yaml and supervisor.md byte-identical
         assert (repo / ".agentic" / "config.yaml").read_text(encoding="utf-8") == (
             config_before

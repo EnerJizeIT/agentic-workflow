@@ -273,6 +273,39 @@ def test_unknown_stage_key_rejected(tmp_path, key):
         load_stages(p)
 
 
+def test_stage_label_prefers_id_over_name(tmp_path):
+    """CTX4: the loader addresses a stage by ``id`` (it becomes the stage
+    name at load), so a validation message must label the same stage.
+    ``name != id`` used to be reported under the name — a stage that does
+    not exist at run time."""
+    p = _write(
+        tmp_path,
+        "stages:\n"
+        "  - id: impl\n    name: agent-implementer\n    role: worker\n"
+        "    bogus: 1\n"
+        "  - name: verify\n    role: supervisor\n",
+    )
+    with pytest.raises(AwfApiError, match=r"stage 'impl'"):
+        load_stages(p)
+
+
+def test_stage_label_prefers_id_over_name_for_skip_if(tmp_path):
+    """CTX4: the ``skip_if`` branch labels the stage the same way.
+
+    The unknown-key test above only proves the first branch; every other
+    refusal in the same loop shares ``label`` and must name the stage by
+    its id too — the address the engine resolves at run time."""
+    p = _write(
+        tmp_path,
+        "stages:\n"
+        "  - id: impl\n    name: agent-implementer\n    role: worker\n"
+        "    skip_if: always\n"
+        "  - name: verify\n    role: supervisor\n",
+    )
+    with pytest.raises(AwfApiError, match=r"stage 'impl'.*skip_if"):
+        load_stages(p)
+
+
 def test_allowed_keys_set_pinned():
     """A-06: набор разрешённых ключей один для загрузки и записи.
 

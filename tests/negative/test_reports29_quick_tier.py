@@ -38,7 +38,12 @@ def _stages(path):
 
 
 def _worker_roles(stages):
-    return [s["role"] for s in stages if s["role"] != "supervisor"]
+    # CLOSER IMP7: the closer is a conditional gate, not a team worker —
+    # these cases assert the team composition, so it is filtered by name.
+    return [
+        s["role"] for s in stages
+        if s["role"] != "supervisor" and s.get("name") != "implementer-close"
+    ]
 
 
 class TestQuickPipelineWritten:
@@ -88,10 +93,14 @@ class TestQuickPipelineWritten:
         quick = _pipes(awf_project) / "quick.yaml"
         data = yaml.safe_load(quick.read_text(encoding="utf-8"))
         validated = validate_pipeline_document(data, "quick.yaml")
-        assert [s["role"] for s in validated] == ["supervisor", DEV, "supervisor"]
+        assert [s["name"] for s in validated] == [
+            "plan", DEV, "implementer-close", "verify",
+        ]
         loaded = load_stages(quick)
-        assert [s.role for s in loaded] == ["supervisor", DEV, "supervisor"]
-        assert [s.kind for s in loaded] == ["plan", "execute", "verify"]
+        assert [s.name for s in loaded] == [
+            "plan", DEV, "implementer-close", "verify",
+        ]
+        assert [s.kind for s in loaded] == ["plan", "execute", "execute", "verify"]
 
     def test_quick_name_is_quick(self, awf_project):
         api.apply_project_setup(awf_project, team=[{"agent": DEV}, {"agent": QA}])

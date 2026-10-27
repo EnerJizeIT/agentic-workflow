@@ -24,6 +24,7 @@ from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ..signals import find_signal_file, short_id
 from ..todo_ids import is_valid_todo_id
+from ..unit_history import forget_unit_history
 from ..verify import parse_argv
 from . import _lease, _liveness
 from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
@@ -1681,6 +1682,12 @@ def _rollback_impl(
             f"{e.returncode}) — the revision is not reachable in this repo. "
             f"Check {baseline_sha_file} and the git history."
         ) from e
+
+    # CTX2: the rollback re-runs the same unit id — its unkeyed history
+    # (CLOSER first verdict/attempts, CHECKLIST verdict cache) would be
+    # inherited by that re-run. Forgotten on the main path too, not only
+    # on the service rollback (one home: awf.unit_history).
+    forget_unit_history(project_dir, todo_id)
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     ack_content = (

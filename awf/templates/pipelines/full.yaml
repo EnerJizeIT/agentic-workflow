@@ -28,6 +28,14 @@ stages:
   on_rejected: escalate
   on_failed: escalate
   max_retries: 3
+- name: implementer-close
+  id: implementer-close
+  role: agent-implementer
+  task: 'Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`);
+    `manual` вне scope, блок не править; не меняй скоуп и контракт; запусти
+    `awf checklist check <todo>`; отчитайся пунктами.'
+  skip_if: checklist_green
+  write_check: 'off'
 - name: agent-project-auditor
   role: agent-project-auditor
   task: 'Wide project slice around the change: portability, cross-unit inconsistencies,

@@ -15,9 +15,11 @@ from pathlib import Path
 
 from . import config as cfg_mod
 from . import paths
+from ._errors import AwfApiError
 from ._log import log as _log
 from .doctrine import materialize_doctrine
-from .pipeline import Stage
+from .pipeline import Stage, load_stages, resolve_pipeline_file
+from .todo_ids import is_valid_todo_id
 from .xdg import awf_roles_dir
 
 log = logging.getLogger(__name__)
@@ -37,6 +39,69 @@ def get_role_model(config: dict, role: str) -> str | None:
     return val if val else None
 
 
+def _snapshot_stage_names(project_dir: Path, todo_id: str) -> list[str] | None:
+    """CTX1: effective stage names from the unit's frozen pipeline snapshot.
+
+    The engine executes ``context/PIPELINE-<id>.yaml`` captured at launch;
+    the worker prompt must describe that same definition. Returns None
+    when the unit has no readable snapshot (old unit, manual launch,
+    malformed file) — the caller falls back to the live pipeline, exactly
+    like ``_apply_pipeline_snapshot`` degrades.
+    """
+    if not is_valid_todo_id(todo_id):
+        return None
+    snap = paths.pipeline_snapshot_path(project_dir, todo_id)
+    if not snap.is_file():
+        return None
+
+    try:
+        stages = load_stages(snap)
+    except AwfApiError:
+        return None
+    names = [s.name for s in stages]
+    return names or None
+
+
+def _live_stage_names(
+    project_dir: Path, pipeline_name: str | None
+) -> list[str]:
+    """Effective stage names from the live pipeline file (the fallback).
+
+    KAUD-2: respect an explicit pipeline_name, then
+    config.default_pipeline, then "default". Empty on any resolve/load
+    failure — the caller then emits no pipeline context at all.
+    """
+    import yaml as _yaml
+
+    config_data = cfg_mod.load(project_dir)
+    if not pipeline_name:
+        pipeline_name = (
+            cfg_mod.get(config_data, "default_pipeline", "default") or "default"
+        )
+
+    try:
+        pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config_data)
+    except FileNotFoundError:
+        return []
+    except AwfApiError:
+        # RUN3 #1: the resolver now rejects an explicit-but-missing name
+        # (and invalid names) with AwfApiError. This caller passes the
+        # config-derived name explicitly, so a project without a pipeline
+        # file (or with an invalid default_pipeline) must degrade to "no
+        # pipeline context" — not crash the prompt build.
+        return []
+    if not pipeline_file.is_file():
+        return []
+
+    try:
+        pipeline = _yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+    except (OSError, _yaml.YAMLError):
+        return []
+
+    stages = pipeline.get("stages", []) if pipeline else []
+    return [(s.get("id") or s.get("name")) for s in stages]
+
+
 def _build_pipeline_context(
     project_dir: Path,
     todo_id: str,
@@ -53,42 +118,19 @@ def _build_pipeline_context(
     REQUIREMENTS.md already exists, implementer from writing
     requirements, etc.
     """
-    import yaml as _yaml
-
     parts: list[str] = []
 
-    # 1. Read pipeline stages — KAUD-2: respect explicit pipeline_name,
-    #    then config.default_pipeline, then "default".
-    from . import config as _cfg_mod
-    from .pipeline import resolve_pipeline_file
+    # 1. Stage list — CTX1: the unit runs the snapshot captured at launch,
+    #    so the prompt describes that definition. A live-file edit made
+    #    mid-run must not leak new stages into the worker's context.
+    stage_names = _snapshot_stage_names(project_dir, todo_id)
 
-    config_data = _cfg_mod.load(project_dir)
-    if not pipeline_name:
-        pipeline_name = _cfg_mod.get(config_data, "default_pipeline", "default") or "default"
-    from .api._errors import AwfApiError  # lazy — same precedent as pipeline.py
-
-    try:
-        pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config_data)
-    except FileNotFoundError:
-        return ""
-    except AwfApiError:
-        # RUN3 #1: the resolver now rejects an explicit-but-missing name
-        # (and invalid names) with AwfApiError. This caller passes the
-        # config-derived name explicitly, so a project without a pipeline
-        # file (or with an invalid default_pipeline) must degrade to "no
-        # pipeline context" — not crash the prompt build.
-        return ""
-    if not pipeline_file.is_file():
-        return ""
-
-    try:
-        pipeline = _yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-    except (OSError, _yaml.YAMLError):
-        return ""
-
-    stages = pipeline.get("stages", []) if pipeline else []
-    if not stages:
-        return ""
+    if stage_names is None:
+        # No snapshot (old unit / manual launch / malformed) — degrade to
+        # the live pipeline, the same fallback the engine takes.
+        stage_names = _live_stage_names(project_dir, pipeline_name)
+        if not stage_names:
+            return ""
 
     # 2. Find current stage from state file
     from .pipeline_state import read_state
@@ -98,26 +140,20 @@ def _build_pipeline_context(
     if not current_stage_name:
         return ""
 
-    # 3. Find position in pipeline. ORCH M4.4: a stage addressed by `id`
-    # carries no explicit `name` in the YAML (the id becomes the stage
-    # name at load, see load_stages) — match by the effective name (id or
-    # name), else an id-addressed stage is never found and, worse, the
-    # before/after list below KeyErrors on its missing `name`.
-    current_idx = None
-    for i, s in enumerate(stages):
-        if (s.get("id") or s.get("name")) == current_stage_name:
-            current_idx = i
-            break
-
-    if current_idx is None:
+    # 3. Find position in the stage list. ORCH M4.4: a stage addressed by
+    # `id` carries no explicit `name` in the YAML (the id becomes the
+    # stage name at load, see load_stages) — the names built above are
+    # already the effective ones (id or name).
+    if current_stage_name not in stage_names:
         return ""
+    current_idx = stage_names.index(current_stage_name)
 
-    total = len(stages)
+    total = len(stage_names)
     parts.append(f"## Pipeline context (you are stage {current_idx + 1} of {total})")
 
-    # 4. List other stages — effective names (id or name), same rule.
-    before = [(s.get("id") or s.get("name")) for s in stages[:current_idx]]
-    after = [(s.get("id") or s.get("name")) for s in stages[current_idx + 1:]]
+    # 4. List other stages — effective names, same rule.
+    before = stage_names[:current_idx]
+    after = stage_names[current_idx + 1:]
 
     if before:
         parts.append(f"Before you: {', '.join(before)}")

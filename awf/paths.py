@@ -91,6 +91,22 @@ def context_dir(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "context"
 
 
+def pipeline_snapshot_path(project_dir: str | Path, todo_id: str) -> Path:
+    """``.agentic/context/PIPELINE-<todo>.yaml`` — the unit's frozen stages.
+
+    ONE accessor for the three readers (orchestrator writes it, supervisor
+    reads it for the prompt, budget matches it in the log). Re-spelling the
+    filename in each would drift silently: the engine would execute one
+    file while the prompt describes another, or the budget would never see
+    the unit's start.
+
+    ``todo_id`` has no default on purpose: ``PIPELINE-.yaml`` is not a file
+    any writer produces, so a caller that forgot the unit would get a
+    silently wrong path instead of a TypeError.
+    """
+    return context_dir(project_dir) / f"PIPELINE-{todo_id}.yaml"
+
+
 def done_dir(project_dir: str | Path = ".") -> Path:
     """DF6-1: Return .agentic/done/ — archive for completed TODOs."""
     return agentic_dir(project_dir) / "done"
