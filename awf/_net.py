@@ -41,15 +41,26 @@ NETWORK_MARKERS: tuple[str, ...] = (
     "ETIMEDOUT",
 )
 
-# CARRY IMP1 (R12): connect/reset/timeout are network even without the
+# CARRY IMP1 (R12/K12): connect/reset/timeout are network even without the
 # exact vendor strings above. ``_`` is a word char, so ``\btimeout\b``
-# does not match a config key like ``no_output_timeout``. AUD3: the
-# provider-side phrasings below are network too — they mean the request
-# never reached the model.
+# does not match a config key like ``no_output_timeout``. The list is
+# CLOSED (R12): each phrase below means the request never reached the
+# model. ``upstream request failed`` alone is NOT network — the provider
+# also uses it for request-shape errors (``[unsupported_request]``).
 _NETWORK_RE = re.compile(
     r"(?i)\b(?:connect(?:ion)?|reset|timeout|timed\s+out"
-    r"|upstream\s+request\s+failed|all\s+workers\s+are\s+unavailable)\b"
+    r"|endpoint\s+is\s+unavailable"
+    r"|all\s+workers\s+are\s+unavailable"
+    r"|admission\s+slot"
+    r"|cell\s+is\s+at\s+capacity)\b"
 )
+
+# K12: the provider wrapper on the SAME line separates a provider refusal
+# from the project's own output. Inside the wrapper a 401/403 token OR a
+# credential phrase is enough — the wrapper already speaks for the
+# provider; outside it BOTH are required (a code names a rejected request,
+# a bare ``unauthorized`` is ordinary log text).
+_PROVIDER_CONTEXT_RE = re.compile(r"(?i)(?:ai_apicallerror|error\.error\s*=)")
 
 # Auth is a separate class: a dead credential is NOT fixed by a backoff
 # retry — it must stop the stage with a BLOCKED note (R12). AUD1: a bare
@@ -58,21 +69,20 @@ _NETWORK_RE = re.compile(
 # AUD1 (extends the bare-word fix): the code must be its own TOKEN, not an
 # identifier fragment. ``test_401_credential`` / ``assert_403`` in a project's
 # own log would otherwise match the word AND the code and block the stage.
-# PA1/AUD1: the code alone is not enough either — it needs an HTTP/status
-# context (``HTTP 401``, ``statusCode: 403``, ``code: 403``) or to lead the
-# line (a server's bare reply). AUD1 narrows it once more: the context must
-# ALSO carry a credential phrase. ``HTTP 401`` / ``GET /login -> HTTP 401``
-# name a rejected request, not a dead key; K12 requires 401/403 *with* the
-# text about credential/key/unauthorized. A bare ``assert 401 == 200`` under
-# a test named ``test_unauthorized_access_is_rejected`` is a project's own
-# failing test, not a dead key.
+# K12: the code token is an HTTP/status/code/error key (a quoted JSON key is
+# allowed: ``"code": 401``) or a code that leads the line (a server's bare
+# reply, ``401 Invalid credential``). The phrase is the credential word.
+# Outside the provider wrapper BOTH are required on the same line: ``HTTP
+# 401`` / ``GET /login -> HTTP 401`` name a rejected request, not a dead
+# key. A bare ``assert 401 == 200`` under a test named
+# ``test_unauthorized_access_is_rejected`` is a project's own failing test.
 _AUTH_PHRASE_RE = re.compile(
     r"(?i)(?:invalid[ \t_-]+)?"
     r"(?:credential|api[ _-]?key|unauthorized|forbidden)\b"
 )
 _AUTH_CODE_RE = re.compile(
     r"(?i)(?:"
-    r"\b(?:http(?:/[0-9.]+)?|statuscode|status|code|error)\b"
+    r"\b(?:http(?:/[0-9.]+)?|statuscode|status|code|error)\b[\"']?"
     r"[ \t]*[:=]?[ \t]*(?:401|403)(?!\w)"
     r"|^[ \t]*(?:401|403)(?!\w)"
     r")"
@@ -92,6 +102,9 @@ _TRANSIENT_RE = re.compile(
     r"|\b(?:429|500|502|503|504)\s+(?:internal\s+server\s+error|"
     r"service\s+unavailable|bad\s+gateway|gateway\s+timeout|"
     r"too\s+many\s+requests)\b"
+    # R12 names the BARE reason phrases too: a provider may print them
+    # without a numeric code.
+    r"|\b(?:service\s+unavailable|too\s+many\s+requests)\b"
     r")"
 )
 
@@ -104,20 +117,28 @@ RETRY_FAILURE_CLASSES: tuple[str, ...] = ("network", "transient")
 
 
 def _auth_lines(text: str) -> list[str]:
-    """The ONE auth rule: a line with a 401/403 status AND a credential word.
+    """The ONE auth rule (K12): provider wrapper OR code+phrase outside it.
 
-    PA1: an auth context is an HTTP/status/code/error anchor or a code that
-    leads the line — a bare number in ``assert 401 == 200`` or in a URL is
-    not one. AUD1: the context alone is still not auth — the line must also
-    name the credential (K12), so ``HTTP 401`` on a rejected login stays
-    ordinary output. Same-line keeps the class and the evidence
-    (``failure_evidence``) in agreement by construction: if no single line
-    names the failure, the note could not quote it either.
+    Inside the provider wrapper (``AI_APICallError`` / ``error.error=``) a
+    401/403 token OR a credential phrase is enough — the wrapper already
+    says the provider refused. Outside it BOTH are required on the same
+    line: a code names a rejected request (``HTTP 401``, a project's own
+    failing test) and a bare word is ordinary output. Same-line keeps the
+    class and the evidence (``failure_evidence``) in agreement by
+    construction: if no single line names the failure, the note could not
+    quote it either.
     """
-    return [
-        ln for ln in (text or "").splitlines()
-        if _AUTH_CODE_RE.search(ln) and _AUTH_PHRASE_RE.search(ln)
-    ]
+    hits: list[str] = []
+    for line in (text or "").splitlines():
+        has_code = bool(_AUTH_CODE_RE.search(line))
+        has_phrase = bool(_AUTH_PHRASE_RE.search(line))
+        if _PROVIDER_CONTEXT_RE.search(line):
+            named = has_code or has_phrase
+        else:
+            named = has_code and has_phrase
+        if named:
+            hits.append(line)
+    return hits
 
 
 def _is_network_text(text: str) -> bool:
@@ -206,29 +227,39 @@ def is_oom_exit(rc: int | None, text: str) -> bool:
 
 
 def classify_failure(text: str, rc: int | None = None) -> str:
-    """CARRY IMP1 (R12): one of ``network`` / ``auth`` / ``transient`` / "".
+    """CARRY IMP1 (R12/K12): one of ``network`` / ``auth`` / ``transient`` / "".
 
-    Priority network → auth → transient, with TWO deliberate exceptions:
-    D6 — a 5xx/429 next to a 401/403 is an endpoint problem, not a dead key,
-    so the mixture returns ``network`` and takes the backoff retry instead
-    of stopping the stage as BLOCKED. PA1 — an OOM/signal exit outranks the
-    auth text (``is_oom_exit``): the process died before it could act on a
-    credential, so the log does not speak for it. ``transient`` alone is the
-    5xx/429/overloaded family; the engine retries it like ``network``
-    (``is_network_failure``).
+    Priority: OOM → D6 → auth → network → transient.
+    ``is_oom_exit`` (rc 137/-9 or a ``Killed`` line) means the process died
+    before it could act on a credential or read a 5xx, so that text does not
+    speak for it: OOM returns "" and ``classify_worker_exit`` prints
+    ``oom-like`` (D11/F6). The ONE exception is a bare network marker with
+    no auth/transient text — the endpoint died and the backoff retry owns it
+    (``test_worker_exit`` pins that pre-existing precedence). D6 — a 5xx/429
+    next to a 401/403 is an endpoint problem, not a dead key, so the mixture
+    returns ``network`` and takes the backoff retry instead of stopping as
+    BLOCKED. Otherwise auth outranks network (``R12``: a dead key must stop
+    the stage even if the same tail also carries a reset). ``transient``
+    alone is the 5xx/429/overloaded family; the engine retries it like
+    ``network`` (``is_network_failure``).
     """
     if not text:
         return ""
-    if _is_network_text(text):
-        return "network"
-    has_auth = bool(_auth_lines(text)) and not is_oom_exit(rc, text)
+    has_auth = bool(_auth_lines(text))
     has_transient = bool(
         _TRANSIENT_RE.search(text) or "overloaded" in text.lower()
     )
+    has_network = _is_network_text(text)
+    if is_oom_exit(rc, text):
+        if has_network and not (has_auth or has_transient):
+            return "network"
+        return ""  # D11/F6: the signal exit outranks auth and 5xx text
     if has_auth and has_transient:
         return "network"  # D6: never BLOCK on a 5xx+401 mixture
     if has_auth:
         return "auth"
+    if has_network:
+        return "network"
     if has_transient:
         return "transient"
     return ""

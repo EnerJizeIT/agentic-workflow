@@ -378,6 +378,7 @@ def test_hard_timeout_without_a_name_falls_back_to_unknown(tmp_path, monkeypatch
         ("500 passed", ""),
         ("took 429ms", ""),
         ("step 500 of 1000", ""),
+        ("503", ""),
         ("status: 200", ""),
         ("", ""),
         # D6: a 5xx next to a 401 is an endpoint problem, not a dead key
@@ -403,13 +404,31 @@ def test_hard_timeout_without_a_name_falls_back_to_unknown(tmp_path, monkeypatch
         ("code: 5xx", "transient"),
         # a JSON dump of the same provider error (quoted key)
         ('{"statusCode":503}', "transient"),
-        ("Upstream request failed", "network"),
+        # R12: the bare reason phrases are transient too
+        ("Service Unavailable", "transient"),
+        ("Too Many Requests", "transient"),
+        # R12/K12: the network list is CLOSED and ``upstream request failed``
+        # alone is not on it — the provider also uses it for request-shape
+        # errors (``[unsupported_request]`` stays silent).
+        ("Upstream request failed", ""),
+        ("Upstream request failed: [unsupported_request]", ""),
+        ("[unsupported_request]", ""),
+        ("Bad Request", ""),
         ("All workers are unavailable", "network"),
-        # the real opencode provider shape: the status code and the
-        # credential phrase on ONE line is auth (the code alone is not).
+        ("Endpoint is unavailable", "network"),
+        ("timed out waiting for an admission slot", "network"),
+        ("the cell is at capacity", "network"),
+        # the real opencode provider shape: INSIDE the provider wrapper a
+        # code OR a credential phrase is enough (K12).
+        ("AI_APICallError: statusCode: 401", "auth"),
         ("AI_APICallError: statusCode: 401 Invalid credential", "auth"),
         ("AI_APICallError: statusCode: 403 invalid api key", "auth"),
-        ("AI_APICallError: statusCode: 401", ""),
+        ("AI_APICallError: Upstream request failed: Invalid credential", "auth"),
+        ("AI_APICallError: unauthorized", "auth"),
+        ("error.error=invalid api key", "auth"),
+        # a quoted JSON code plus the phrase is code+phrase outside the
+        # wrapper (AC32)
+        ('{"code": 401, "message": "invalid api key"}', "auth"),
     ],
 )
 def test_classify_failure_matrix(text, expected):
@@ -592,6 +611,65 @@ def test_auth_crash_branch_blocks_without_a_respawn(project, tmp_path, monkeypat
     assert read_state(project).get("last_signal") == "BLOCKED-TODO-0001"
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "AI_APICallError: statusCode: 401",
+        "AI_APICallError: Upstream request failed: Invalid credential",
+    ],
+)
+def test_provider_wrapper_auth_blocks_without_a_respawn(
+    project, tmp_path, monkeypatch, line,
+):
+    """AC30: the two real provider strings reach the SAME BLOCKED stop."""
+    journal, prepare = _mock_pipeline(
+        monkeypatch, line + "\n", lambda run_no, kw: None,
+    )
+    prepare(tmp_path)
+
+    result = _run_stage(project, tmp_path)
+
+    assert journal["runs"] == 1
+    assert result[2] == 1
+    note = project / ".agentic" / "outbox" / "BLOCKED-TODO-0001.md"
+    assert "## ВЕРДИКТ" in note.read_text(encoding="utf-8")
+
+    from awf.pipeline_state import read_state
+
+    assert read_state(project).get("last_signal") == "BLOCKED-TODO-0001"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "AI_APICallError: statusCode: 401",
+        "AI_APICallError: Upstream request failed: Invalid credential",
+    ],
+)
+def test_provider_wrapper_auth_blocks_on_the_crash_branch_too(
+    project, tmp_path, monkeypatch, line,
+):
+    """T2: BOTH death branches read R12. The real provider strings must
+    reach the same BLOCKED stop when the worker CRASHES (RuntimeError), not
+    only on the silent-exit branch — the two branches are separate code."""
+    def behavior(run_no, kw):
+        raise RuntimeError("agent stage crashed")
+
+    journal, prepare = _mock_pipeline(monkeypatch, line + "\n", behavior)
+    prepare(tmp_path)
+
+    result = _run_stage(project, tmp_path)
+
+    assert journal["runs"] == 1, "auth must not spawn a second worker"
+    assert result[2] == 1
+    note = project / ".agentic" / "outbox" / "BLOCKED-TODO-0001.md"
+    assert "## ВЕРДИКТ" in note.read_text(encoding="utf-8")
+
+    from awf.pipeline_state import read_state
+
+    assert read_state(project).get("last_signal") == "BLOCKED-TODO-0001"
+
+
 def test_crash_after_a_signal_is_not_classified(project, tmp_path, monkeypatch):
     """R1 on the ENGINE surface: a crash AFTER the worker's signal must not
     read the log tail at all.
@@ -745,6 +823,74 @@ def test_oom_rc_outranks_an_auth_string():
     assert classify_worker_exit(0, "Killed\n401 Invalid credential") == "oom-like"
     # a normal exit still classifies by the text
     assert classify_worker_exit(1, "401 Invalid credential") == "auth"
+    # D11: a network marker on another line must not revive the auth text —
+    # only a BARE marker keeps its retry precedence (test_worker_exit).
+    assert _net.classify_failure(
+        "Cannot connect to API\nAI_APICallError: unauthorized", 137
+    ) == ""
+    assert classify_worker_exit(
+        137, "Cannot connect to API\nAI_APICallError: unauthorized"
+    ) == "oom-like"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "HTTP 500",
+        "HTTP 500 Internal Server Error",
+        "503 Service Unavailable",
+        "429 Too Many Requests",
+        "overloaded",
+    ],
+)
+def test_oom_rc_outranks_a_five_xx_text(text):
+    """AC31/D11 (F6): a memory kill plus 5xx text is still ``oom-like`` —
+    WIP 0276 protected OOM only from auth, so the 5xx text stayed network."""
+    assert _net.classify_failure(text, 137) == ""
+    assert classify_worker_exit(137, text) == "oom-like"
+    assert _net.classify_failure(text, None) in _net.RETRY_FAILURE_CLASSES
+
+
+def test_auth_outranks_a_network_marker_when_no_5xx_is_present():
+    """R12: auth is before network — a dead key stops the stage even if the
+    same tail also carries a reset (only D6, a 5xx/429, flips it)."""
+    assert _net.classify_failure(
+        "AI_APICallError: Connection reset\nAI_APICallError: unauthorized"
+    ) == "auth"
+    assert _net.classify_failure(
+        "AI_APICallError: Connection reset\nAI_APICallError: unauthorized\nHTTP 503"
+    ) == "network"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # code-only and keyed code inside the SECOND wrapper form
+        "error.error= 403",
+        "error.error=statusCode: 403",
+        # ``forbidden`` is a K12 phrase on its own inside the wrapper
+        "AI_APICallError: Forbidden",
+        # JSON dump: quoted key + phrase
+        '{"statusCode": 401, "message": "Unauthorized"}',
+    ],
+)
+def test_provider_context_accepts_code_or_phrase(text):
+    """K12: inside the provider wrapper a code OR a phrase is enough. The OR
+    branch must hold for BOTH wrapper spellings and for ``forbidden`` — the
+    matrix pins only the ``AI_APICallError: statusCode: 401`` example."""
+    assert _net.classify_failure(text) == "auth"
+
+
+def test_provider_context_is_line_scoped():
+    """K12: the wrapper licenses code-or-phrase on ITS line only.
+
+    A wrapper on one line must not turn a bare code on a later line into a
+    provider refusal: the same project output (``statusCode: 401`` in a test
+    dump) would then BLOCK the stage just because an ``AI_APICallError``
+    appeared earlier in the tail."""
+    assert _net.classify_failure(
+        "AI_APICallError: API call failed\nstatusCode: 401"
+    ) == ""
 
 
 @pytest.mark.parametrize("rc", [137, -9])
