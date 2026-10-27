@@ -432,6 +432,20 @@ def managed_write_text(
             os.close(f)
 
 
+def managed_write_under_agentic(
+    path: Path, content: str, *, errors: str = "strict"
+) -> None:
+    """Create the parents and write a file under the project's ``.agentic``.
+
+    The shared managed mkdir+write pair of the ``context``/``state`` writers
+    (baseline-adjacent links, claim records, ``last-kill``): the root is
+    derived from the leaf like every other managed writer, so a symlinked
+    component refuses before the first byte lands.
+    """
+    managed_mkdir(path.parent)
+    managed_write_text(path, content, root=agentic_root_for(path), errors=errors)
+
+
 __all__ = [
     "ManagedPathError",
     "is_posix",
@@ -444,4 +458,5 @@ __all__ = [
     "open_managed",
     "managed_mkdir",
     "managed_write_text",
+    "managed_write_under_agentic",
 ]

@@ -31,10 +31,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import paths
-from ._atomic import atomic_write_text
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._path_link import decode_path_link, encode_path_link
+from .infra import managed_fs
 
 #: The dispatch warning lists at most this many files (the rest as "…N more").
 WARNING_CAP = 10
@@ -183,17 +183,17 @@ def write_include_audit(project_dir: Path, todo_id: str, files: list[str]) -> No
         # raise ``UnicodeEncodeError`` AFTER the TODO reservation and leave a
         # half-dispatch (no ``.ready``/``.include``), so the write keeps
         # ``surrogateescape`` too.
-        atomic_write_text(
-            include_file_path(project_dir, todo_id),
-            encode_path_link(files),
-            errors="surrogateescape",
+        # AUD-0282-1: managed ``context`` writer (symlink refuses, best-effort).
+        target = include_file_path(project_dir, todo_id)
+        managed_fs.managed_write_under_agentic(
+            target, encode_path_link(files), errors="surrogateescape"
         )
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — include_untracked: {len(files)} "
             "pre-existing untracked file(s) re-claimed into the unit commit",
         )
-    except OSError as e:
+    except (OSError, managed_fs.ManagedPathError) as e:
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — include audit link not written: {e}",

@@ -18,8 +18,8 @@ from pathlib import Path
 from .. import budget as budget_mod
 from .. import config as cfg_mod
 from .. import git_utils, paths, todos
-from .._atomic import atomic_write_text
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
+from ..infra import managed_fs
 from ..pipeline_state import read_state
 from ..signals import find_signal_file, short_id
 from ..todo_ids import is_valid_todo_id
@@ -1507,9 +1507,10 @@ def create_baseline(
                 env_parts.append(f"{cmd[0]} failed: {e}\n")
         _write_baseline_file(context_dir / f"BASELINE-{todo_id}.env.log", "".join(env_parts))
 
-        files_created = sorted(
-            f.name for f in context_dir.glob(f"BASELINE-{todo_id}.*") if f.is_file()
-        )
+        # AUD-0282-3: report only the files THIS call wrote — the glob also
+        # picked up a stale ``BASELINE-<id>.claim/.include/.carry_over`` or a
+        # sibling snapshot, so the dispatch answer named files it never made.
+        files_created = sorted({path.name for path in written})
 
         return BaselineResult(
             todo_id=todo_id,
@@ -2653,14 +2654,18 @@ def _write_last_kill(
     warning, never the kill."""
     try:
         state_dir = paths.agentic_dir(project_dir) / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
         record = {
             "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "pipeline_pid": pipeline_pid,
             "workers": {str(k): v for k, v in worker_results.items()},
         }
-        atomic_write_text(state_dir / LAST_KILL_FILE, json.dumps(record))
-    except OSError:
+        # AUD-0282-2: the record is a ``state`` writer like every other
+        # managed surface. Both refusal types are swallowed: a failed write
+        # loses the orphan warning, never the kill (``ManagedPathError`` is
+        # NOT an ``OSError`` subclass).
+        target = state_dir / LAST_KILL_FILE
+        managed_fs.managed_write_under_agentic(target, json.dumps(record))
+    except (OSError, managed_fs.ManagedPathError):
         pass
 
 
