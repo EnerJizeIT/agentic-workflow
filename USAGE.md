@@ -124,8 +124,11 @@ facts (finding ids, sev, essence, unit, file scope extracted from titles)
 plus explicit «супервизор дополняет замысел» placeholders for the intent
 (criteria, verify commands, scope). It invents no criteria and touches no
 network — a local index file only (default search: `<project>/`,
-`.agentic/context/`). An existing `--out` file is
-never overwritten without `--force`.
+`.agentic/context/`). `--out` must land under the project's `.agentic/`:
+an outside path (the project root included) or a symlinked component is
+refused before a file appears, and a relative path resolves from the
+current directory. An existing `--out` file is never overwritten without
+`--force`.
 
 **`awf feedback --type bug|feature --title "…" [--body "…"]
 [--severity low|medium|high] [--stdout]`** (MCP: `awf_feedback`) — the

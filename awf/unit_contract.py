@@ -95,6 +95,7 @@ from pathlib import Path
 import yaml
 
 from ._log import log as _log
+from ._markdown import skip_comments_and_blanks
 from .signals import find_signal_file
 
 #: Gate names ``scripts/run-all.sh`` can run: the fixed checks plus the
@@ -291,13 +292,7 @@ def inject_replan_for(content: str, target: str) -> str:
     if error:
         raise ValueError(error)
     if open_i is None or close_j is None:
-        i = 0
-        while i < len(lines):
-            s = lines[i].strip()
-            if not s or s.startswith("<!--"):
-                i += 1
-                continue
-            break
+        i = skip_comments_and_blanks(lines)
         lines = lines[:i] + ["---", line, "---"] + lines[i:]
     else:
         body = lines[open_i + 1 : close_j]
@@ -364,21 +359,16 @@ def _find_contract_block(content: str) -> tuple[int | None, int | None, str | No
     The title may precede the block: a TODO usually opens with
     ``# TODO — <title>``, and a contract written just below it is still the
     contract (one heading only, and only when ``---`` follows it directly;
-    a horizontal rule deeper in the body is not a block).
+    a horizontal rule deeper in the body is not a block). Blanks AND
+    completed comments below the title are trivia on the same terms as the
+    leading ones — a note between the title and ``---`` must not hide the
+    block (R5).
     """
     lines = content.splitlines()
-    i = 0
-    while i < len(lines):
-        s = lines[i].strip()
-        if not s or s.startswith("<!--"):
-            i += 1
-            continue
-        break
+    i = skip_comments_and_blanks(lines)
     after_title = False
     if i < len(lines) and re.match(r"^#\s+\S", lines[i].strip()):
-        j = i + 1
-        while j < len(lines) and not lines[j].strip():
-            j += 1
+        j = skip_comments_and_blanks(lines, i + 1)
         if j < len(lines) and lines[j].strip() == "---":
             i = j
             after_title = True
@@ -455,13 +445,7 @@ def inject_pipeline_key(content: str, pipeline: str) -> str:
     if error:
         raise ValueError(error)
     if open_i is None or close_j is None:
-        i = 0
-        while i < len(lines):
-            s = lines[i].strip()
-            if not s or s.startswith("<!--"):
-                i += 1
-                continue
-            break
+        i = skip_comments_and_blanks(lines)
         lines = lines[:i] + ["---", line, "---"] + lines[i:]
     else:
         body = lines[open_i + 1 : close_j]

@@ -123,65 +123,6 @@ def require_git_repo(project_dir: Path) -> None:
         )
 
 
-def _surface_on_root_basis(surface: Path) -> Path:
-    """Place a surface on the root's basis without resolving its leaf.
-
-    ``refuse_unsafe_surfaces`` compares a RESOLVED root with the caller's
-    own spelling of the surface. A relative project (``Path("proj")``) or an
-    absolute one reached through a symlinked parent (``/…/link/proj``,
-    ``link -> real``) used to read as "escapes managed root" — a false
-    refusal on a project the baseline wrote (Q4/Q4b).
-
-    Resolving the PARENT gives the canonical basis the root lives on.
-    Resolving the leaf would follow the very symlink the walk must refuse,
-    so the leaf stays as spelled and the no-follow ``lstat`` sees it.
-
-    Q6 (виток 7): ``resolve()`` raises ``RuntimeError`` on a symlink loop
-    (``pipelines -> pipelines``). That is the same unsafe path, not an
-    unexpected traceback — it becomes the barrier's own refusal type.
-    """
-    absolute = surface if surface.is_absolute() else Path.cwd() / surface
-    try:
-        parent = absolute.parent.resolve()
-    except (OSError, RuntimeError) as exc:
-        raise managed_fs.ManagedPathError(
-            f"cannot resolve managed path parent {absolute.parent}: {exc}"
-        ) from exc
-    return parent / absolute.name
-
-
-def _raw_root_for(project_dir: Path) -> Path:
-    """Project root exactly as the caller spelled it — no ``resolve()``."""
-    raw = managed_fs.agentic_root_for(Path(project_dir) / ".agentic")
-    return raw if raw.is_absolute() else Path.cwd() / raw
-
-
-def _surface_on_raw_basis(surface: Path, *, raw_root: Path) -> Path:
-    """Re-anchor the surface's OWN components on the raw project root.
-
-    Q5 (виток 7): the containment check above resolves the surface's
-    parent, so a symlink component INSIDE the project
-    (``roles/draft -> roles``) resolves into the root and passes. That is
-    fine for a writer (``managed_write_text`` walks the raw leaf), but
-    ``refuse_unsafe_surfaces`` also guards DESTRUCTIVE ops that then work
-    on the raw path (``unlink``/``shutil.move``) — the internal link sent
-    them at a live file.
-
-    The chain is taken from the surface's own spelling (no resolve) and
-    re-anchored at the raw root, so the walk is purely lexical and every
-    component the caller named — leaf included — is ``lstat``-ed. The
-    project root's own spelling stays outside the walk (a symlinked parent
-    above the project is not an escape — Q4b).
-    """
-    absolute = surface if surface.is_absolute() else Path.cwd() / surface
-    anchor = managed_fs.agentic_root_for(absolute)
-    try:
-        chain = absolute.relative_to(anchor)
-    except ValueError:
-        chain = Path(absolute.name)
-    return raw_root / chain
-
-
 def refuse_unsafe_surfaces(
     project_dir: Path, operation: str, *surfaces: Path
 ) -> None:
@@ -217,23 +158,17 @@ def refuse_unsafe_surfaces(
        anyway, but the destructive ops this helper guards work on the raw
        path after the preflight, so resolution alone is not enough.
     """
-    raw_root = _raw_root_for(project_dir)
+    raw_root = managed_fs.raw_root_for(project_dir)
     root = managed_fs.agentic_root_for(paths.agentic_dir(project_dir))
     try:
-        # H1 (TODO-0233, виток 4): the no-follow guarantee does not exist
-        # off POSIX — the policy other managed barriers already follow
-        # (``_wipe``/``_lease``). Refuse BEFORE any surface walk, so a
-        # platform without lstat/O_NOFOLLOW never gets a weaker barrier.
-        managed_fs.require_posix(operation)
-        for surface in surfaces:
-            # Raw first: an internal symlink (Q5) and a symlink loop (Q6)
-            # are caught by ``lstat`` before any ``resolve()`` runs.
-            managed_fs.assert_no_symlink_escape(
-                _surface_on_raw_basis(surface, raw_root=raw_root), root=raw_root
-            )
-            managed_fs.assert_no_symlink_escape(
-                _surface_on_root_basis(surface), root=root
-            )
+        # H1 (TODO-0233, виток 4): the POSIX refusal and the two-basis walk
+        # live in ``managed_fs`` — the draft barrier builds the same three
+        # steps, and one of them must not gain a check the other lacks.
+        # Raw first: an internal symlink (Q5) and a symlink loop (Q6) are
+        # caught by ``lstat`` before any ``resolve()`` runs.
+        managed_fs.assert_managed_surfaces(
+            surfaces, raw_root=raw_root, root=root, operation=operation
+        )
     except managed_fs.ManagedPathError as exc:
         raise AwfApiError(
             f"{operation} refused — unsafe managed path: {exc}"

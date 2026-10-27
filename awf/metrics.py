@@ -714,13 +714,16 @@ def _write_cache_managed(
     предупреждением. Молчаливой внешней записи нет.
 
     Классификация «внутри/вне» идёт по лексически нормализованному пути
-    (``normpath``, НЕ ``resolve``): настроенный путь с избыточным ``..``
+    (``abspath`` = ``normpath`` от пути, привязанного к текущему каталогу;
+    НЕ ``resolve``): настроенный путь с избыточным ``..``
     (``cache/../state/x.json``) остаётся внутри проекта, а ``../shared`` —
-    снаружи. Симлинк-компоненты ``normpath`` не раскрывает — барьер
-    no-follow остаётся на месте.
+    снаружи. Симлинк-компоненты ``abspath`` не раскрывает — барьер
+    no-follow остаётся на месте. Оба пути (лист и корень) приводятся к
+    абсолютному виду: корень ``Path("proj")`` из другого каталога и лист,
+    собранный из него же, тогда сравниваются одним правилом.
     """
-    path = Path(os.path.normpath(path))
-    project_dir = Path(os.path.normpath(project_dir))
+    path = Path(os.path.abspath(path))
+    project_dir = Path(os.path.abspath(project_dir))
     if path.is_relative_to(project_dir):
         managed_fs.managed_write_text(path, content, root=project_dir)
         return

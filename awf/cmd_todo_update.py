@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import api
+from . import api, paths
 
 
 def run(args: Any) -> int:
@@ -22,7 +22,9 @@ def run(args: Any) -> int:
     content = str(getattr(args, "content", "") or "")
     if content_file:
         try:
-            content = Path(content_file).resolve().read_text(encoding="utf-8")
+            content = paths.cli_file_arg(project_dir, content_file).resolve().read_text(
+                encoding="utf-8"
+            )
         except OSError as e:
             print(f"ERROR: cannot read --content-file {content_file!r}: {e}")
             return 1

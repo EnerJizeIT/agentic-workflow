@@ -940,6 +940,7 @@ def dispatch_todo(
     replan_for: str | None = None,
     claim_from: str | None = None,
     source_ref: str | None = None,
+    source_file: str | None = None,
     no_baseline_tests: bool = False,
     force: bool = False,
 ) -> DispatchTodoResult:
@@ -1032,6 +1033,11 @@ def dispatch_todo(
             against the project root and must stay inside it; an absolute
             path is used as passed. A missing/unreadable file or an unknown
             section refuses BEFORE any side effect (no TODO, no baseline).
+        source_file: PA-0284-3 — the file the content was read from, when
+            the caller is a CLI route (``--content-file``). It prefixes a
+            contract parse error so the message names the suspect file
+            without the caller matching on message text. ``None`` for a
+            direct content string — the message is unchanged.
         no_baseline_tests: TODO-0261 (RB-4) — skip the baseline test command
             entirely. The snapshot still records sha/status/env; the tests
             log says ``skipped`` and ``.ready`` is written immediately. For
@@ -1122,7 +1128,11 @@ def dispatch_todo(
     try:
         _contract, unknown_keys = parse_todo_contract(content)
     except ValueError as e:
-        raise AwfApiError(f"TODO contract block: {e}") from None
+        # PA-0284-3: the file name is CARRIED here, not sniffed from the
+        # message text by the caller — a contract error and a project
+        # precondition must not be told apart by a substring.
+        prefix = f"{source_file}: " if source_file else ""
+        raise AwfApiError(f"{prefix}TODO contract block: {e}") from None
 
     # REPORTS26 B2: write entry point — a bare .agentic/ without
     # config.yaml (stale directory) is refused before any side effect.

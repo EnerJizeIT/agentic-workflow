@@ -1,7 +1,10 @@
 """Entry point for ``awf todo-draft <AUDIT-ID|FU-NN>`` (U11, E3).
 
-Prints the draft skeleton to stdout, or writes it to ``--out`` (an
-existing file is never overwritten without ``--force``).
+Prints the draft skeleton to stdout, or writes it to ``--out``. The
+target must lie under the project's ``.agentic`` — an outside path or a
+symlinked component is refused before a file appears; an existing file is
+never overwritten without ``--force``. A relative ``--out`` resolves from
+the current directory.
 """
 from __future__ import annotations
 

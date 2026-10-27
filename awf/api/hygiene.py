@@ -1641,21 +1641,30 @@ def blocked_draft(project_dir: Path, todo_id: str) -> BlockedDraftResult:
 
     TODO-0229 (M5): every blocked round used to cost the supervisor a manual
     rewrite of the note into a REVIEW-fix section. This reads
-    ``outbox/BLOCKED-<id>.md``, takes its ``## НАХОДКИ`` and
-    ``## НАПРАВЛЕНИЯ-ФИКСА`` sections and returns a paste-ready text with the
-    supervisor's decision slots left empty. It does NOT write the TODO — the
-    supervisor stays the one who decides scope and carries.
+    ``outbox/BLOCKED-<id>.md`` (falling back to the legacy short name
+    ``outbox/BLOCKED-<short>.md`` only when the canonical file is absent),
+    takes its ``## НАХОДКИ`` and ``## НАПРАВЛЕНИЯ-ФИКСА`` sections and
+    returns a paste-ready text with the supervisor's decision slots left
+    empty. It does NOT write the TODO — the supervisor stays the one who
+    decides scope and carries.
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
     todo = str(todo_id or "").strip()
     _validate_id(todo)
-    note = paths.outbox(project_dir) / f"BLOCKED-{todo}.md"
+    outbox = paths.outbox(project_dir)
+    note = outbox / f"BLOCKED-{todo}.md"
     if not note.is_file():
-        raise AwfApiError(
-            f"no BLOCKED note for {todo} ({note}) — nothing to draft a "
-            "REVIEW-fix from"
-        )
+        # R6 (K6): a note written before the canonical name existed is still
+        # readable — the short form is a fallback, never an override of the
+        # canonical file.
+        legacy = outbox / f"BLOCKED-{short_id(todo)}.md"
+        if not legacy.is_file():
+            raise AwfApiError(
+                f"no BLOCKED note for {todo} ({note} or {legacy}) — nothing "
+                "to draft a REVIEW-fix from"
+            )
+        note = legacy
     try:
         text = note.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
@@ -1665,7 +1674,7 @@ def blocked_draft(project_dir: Path, todo_id: str) -> BlockedDraftResult:
     fixes = section_body(text, "НАПРАВЛЕНИЯ-ФИКСА")
     if not findings and not fixes:
         raise AwfApiError(
-            f"BLOCKED-{todo}.md does not follow the BLOCKED schema — expected "
+            f"{note.name} does not follow the BLOCKED schema — expected "
             "'## НАХОДКИ' / '## НАПРАВЛЕНИЯ-ФИКСА' sections "
             "(docs/unit-contract.md)"
         )
