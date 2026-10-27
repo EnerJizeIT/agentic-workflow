@@ -224,11 +224,16 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     from .infra import managed_fs
 
     root = managed_fs.agentic_root_for(dest.parent)
-    for surface in (dest, inbox_p, outbox_p, handoff_dir(project_dir)):
-        try:
+    try:
+        # K2 (carry-cd R2): the no-follow preflight below has no guarantee
+        # off POSIX — a platform without lstat/O_NOFOLLOW refuses FIRST, in
+        # the same ``OSError`` family as the symlink refusal, so a weak
+        # archive never runs silently (the ``_wipe``/``_lease`` policy).
+        managed_fs.require_posix("archive todo")
+        for surface in (dest, inbox_p, outbox_p, handoff_dir(project_dir)):
             managed_fs.assert_no_symlink_escape(surface, root=root)
-        except managed_fs.ManagedPathError as e:
-            raise OSError(f"archive {todo_id} refused: {e}") from e
+    except managed_fs.ManagedPathError as e:
+        raise OSError(f"archive {todo_id} refused: {e}") from e
 
     # A-12 (audit 2026-09-25): collect every (src -> dst) move FIRST so
     # the versioning below sees the whole picture before anything is

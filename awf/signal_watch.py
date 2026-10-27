@@ -21,7 +21,7 @@ from pathlib import Path
 from . import _net, _proc, paths
 from ._env import awf_subprocess_env
 from ._log import log as _log
-from ._worker_exit import worker_exit_line
+from ._worker_exit import signal_present_line, worker_exit_line
 from .infra import managed_fs
 
 BD20_POLL_INTERVAL = 3
@@ -105,7 +105,7 @@ def _late_signal_done(
     if logs_dir:
         _log(
             logs_dir,
-            f"BD-20: signal already detected ({late}) — treating stage as done",
+            signal_present_line(late),
         )
     return subprocess.CompletedProcess(cmd, 0)
 
@@ -500,12 +500,18 @@ def run_subprocess_until_signal(
                     # is logically done. Consume it instead of raising: the
                     # caller picks the signal up and moves on (the hung tree
                     # is already dead).
-                    if logs_dir:
-                        _log(
-                            logs_dir,
-                            "BD-20: signal already detected — treating stage as done",
-                        )
-                    return subprocess.CompletedProcess(cmd, 0)
+                    # CARRY IMP1 (R1): name the signal — the holder has it;
+                    # without a holder re-read the outbox, else "unknown".
+                    # The send-off is the shared ``_late_signal_done`` — the
+                    # same decision the other two kill paths take.
+                    late_name = (
+                        signal_holder.get("signal") if signal_holder else None
+                    ) or _late_signal() or "unknown"
+                    done = _late_signal_done(
+                        cmd, late_name, signal_holder, logs_dir,
+                    )
+                    if done is not None:
+                        return done
                 # TODO-0226 (F2): the TERM → grace → KILL kill is another
                 # window a signal can land in — re-read before calling the
                 # stage a timeout death.

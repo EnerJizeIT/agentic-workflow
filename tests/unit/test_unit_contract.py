@@ -655,3 +655,24 @@ class TestParseDoneJson:
 
     def test_gates_any_strings_ok(self):
         assert parse_done_json('{"gates": ["contracts"]}') == {"gates": ["contracts"]}
+
+
+# ─── Engine facts in the handoff (CARRY IMP2, R13/K13) ──────────────────
+
+class TestEngineFactsInHandoff:
+    def test_engine_fact_section(self, tmp_path, monkeypatch):
+        proj = _project(tmp_path)
+        _stub_git(monkeypatch, [])
+        out = collect_handoff(
+            "worker", "TODO-0002", proj, proj / ".agentic" / "logs",
+            engine_facts=["suite_gate=raw-full-suite"],
+        )
+        body = out.read_text(encoding="utf-8")
+        assert "## Engine facts" in body
+        assert "- suite_gate=raw-full-suite" in body
+
+    def test_no_section_without_facts(self, tmp_path, monkeypatch):
+        proj = _project(tmp_path)
+        _stub_git(monkeypatch, [])
+        out = collect_handoff("worker", "TODO-0002", proj, proj / ".agentic" / "logs")
+        assert "## Engine facts" not in out.read_text(encoding="utf-8")

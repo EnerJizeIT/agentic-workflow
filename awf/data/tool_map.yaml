@@ -179,6 +179,8 @@ groups:
         when: "check package"
       - cli: spec-check
         when: "same spelling"
+      - cli: suite-command
+        when: "canonical suite"
       - cli: config-get
         when: "read one config.yaml value"
       - cli: checklist

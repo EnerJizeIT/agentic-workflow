@@ -1,32 +1,20 @@
 # Требования: carry batch C+D — диагностика, документация, паритет и approve-bind
 
 Статус: REVIEW
-Ревизия: req-5
-Входы: carry-cd.context.md@ctx-2; carry-cd.requirements-review.md@review-4; TODO-0266; retired `.agentic/done/TODO-0243/TODO.md`; `BACKLOG-NEXT.md` вне репозитория — `/home/pklochkov/Desktop/awf report/roadmap/BACKLOG-NEXT.md`
-База кода: HEAD `bdd1074`; рабочее дерево: untracked `docs/spec/carry-cd/`
-Основание: TODO-0266; контекст §2; review-1, review-2; DONE-0239/0240/0241/0230/0233.
+Ревизия: req-7
+Входы: carry-cd.context.md@ctx-3; carry-cd.requirements-review.md@review-6; TODO-0279; TODO-0266; retired `.agentic/done/TODO-0243/TODO.md`; `BACKLOG-NEXT.md`
+База кода: HEAD `13fb5e4` + WIP 0276
+Основание: TODO-0279; контекст §0, §2; review-1–review-6; DONE-0239/0240/0241/0230/0233/0276.
 
 ## Цель и scope
 
-Закрыть остатки C+D: диагностика смертельного выхода, барьеры записи и архива, паритет CLI↔MCP, документация, approve-bind и сохранение конфига.
+Закрыть остатки C+D: диагностика смерти воркера, барьеры записи и архива, паритет CLI↔MCP, документы, approve-bind, сохранение конфига.
 
-В итерации R1-R13. Вне итерации закрытые C1, C3, C4 (подсказка), C9, S2: регрессия в тест-спеке (A1).
+В итерации R1–R13; закрытые C1, C3, C4 (подсказка), C9, S2 — вне, регрессия в тест-спеке (A1).
 
 ## Текущее поведение и ограничения
 
-- C2: хвост лога считается до проверки сигнала (`awf/agent_stage.py:272`); «signal already detected» есть с именем и без (`awf/signal_watch.py:108,506`).
-- C4: архив без POSIX-проверки (`awf/todos.py:166`), хотя `docs/design.md:215` обещает отказ.
-- C5: README обещает «Windows (untested)» (`README.md:48`); `_lock.py:12` говорит «Windows support», хотя msvcrt жив для прямых `locked()` (`docs/design.md:216`).
-- C6: тривия пропускается построчно, заголовок — первый `# ` в любом месте (`awf/unit_contract.py:357`; `awf/commit_gate.py:95`).
-- C7: голый `write_text` после `mkdir` (`awf/todo_draft.py:333-338`); legacy `BLOCKED-<short>` не найден (`awf/api/hygiene.py:1628`); `--content-file` от CWD (`awf/cmd_dispatch.py:56`); три флага не проброшены.
-- C8: «внутри/вне» — `normpath` + `is_relative_to` (`awf/metrics.py:722`); внешний кэш пишется с предупреждением (`:722`).
-- C10/S3: CLI пишет файл без ролей, rc 0; общий строитель — `_variant_composition` (`awf/api/setup.py:488`), форма зовёт `_materialize_variant_roles` (`:727`).
-- C11: код default 2, релизные заметки — 1 (`docs/RELEASE-NOTES.md:111`).
-- C12: бинд после `managed_mkdir` голыми `atomic_write_text`/`touch` (`awf/api/pipeline.py:940`).
-- C13: `yaml.safe_load`/`safe_dump` теряют комментарии (`awf/api/setup.py:856,937`).
-- S5: не-dict `paths` даёт пустой набор, запись исчерпана — fail-open (`awf/stage_manifest.py:231`).
-- P7: 401 и 5xx не в маркерах сети, попадают в `silent` (`awf/_net.py:29`).
-- P8: движок не учитывает команды стадии и `SUITE-*.json`.
+Состояние и точки в коде — контекст §2–§3. Предмет: строки мёртвого ключа уходят в `network`/`silent` (CTX11–CTX16) — R12.
 
 ## Требования
 
@@ -36,16 +24,16 @@ MUST. Источник: C2; CTX6; `awf/agent_stage.py:272`; `awf/_worker_exit.py
 
 `worker_log_tail` возвращает хвост только без сигнала: аргумент не вычисляется до `signal_present`. При сигнале `worker-exit:` не пишется; имя сигнала называет `U6b: signal present (<name>)` — оба места с «сигнал на диске» используют один текст.
 
-AC1 — при сигнале читатель хвоста не вызван, `worker-exit:` нет, `U6b: signal present` содержит имя сигнала.
+AC1 — при сигнале хвост не читается, `worker-exit:` нет, `U6b: signal present` несёт имя.
 AC2 — без сигнала читается не больше 64 КиБ от `log_start_offset`; пустой путь, файл и отсутствующий лог дают `""`.
-AC3 — `worker-exit:` один текст с rc, сигналом выхода, длительностью и классом; второго «signal already detected» без имени нет.
+AC3 — `worker-exit:` один текст (rc, сигнал, длительность, класс); второго «signal already detected» без имени нет.
 Сценарий: C1.
 
 ### R2 — POSIX-барьер архивации
 
 MUST. Источник: C4; CTX8; `awf/todos.py:166`; сосед `awf/api/_helpers.py:227`.
 
-`archive_todo` отказывает на не-POSIX до перемещения тем же `OSError`, что и на no-follow отказе, с текстом про платформу; no-follow preflight четырёх поверхностей сохраняется.
+`archive_todo` отказывает на не-POSIX до перемещения тем же `OSError`, что и no-follow, с текстом про платформу; preflight четырёх поверхностей сохраняется.
 
 AC4 — на эмуляции не-POSIX архив отказывает; ни один файл не перемещён и не удалён, `done/<id>` не создан.
 AC5 — на POSIX переносятся те же файлы; симлинк на любой поверхности по-прежнему отказывает до эффекта.
@@ -55,9 +43,9 @@ AC5 — на POSIX переносятся те же файлы; симлинк �
 
 MUST. Источник: C5; `README.md:48`; `awf/_lock.py:12`; `docs/design.md:215-216`.
 
-README не обещает запуск на Windows: запуск и разрушение на не-POSIX отказывают. Докстринг `_lock.py` описывает msvcrt как живую ветку прямых `locked()` и мёртвый резерв в записи состояния. `design.md` сохраняет это разделение, не упоминает `_transact.py` и ссылается на инвентарь `docs/design/agentic-writers.md`.
+README не обещает запуск на Windows: запуск и разрушение на не-POSIX отказывают. Докстринг `_lock.py` описывает msvcrt как живую ветку прямых `locked()` и мёртвый резерв в записи состояния. `design.md` сохраняет разделение, не упоминает `_transact.py`, ссылается на `docs/design/agentic-writers.md`.
 
-AC6 — в README нет «Windows (untested)» и обещаний запуска; докстринг `_lock.py` говорит, где msvcrt жив, а где мёртв.
+AC6 — README без «Windows (untested)» и обещаний запуска; докстринг `_lock.py` различает живую и мёртвую ветки msvcrt.
 AC7 — `design.md` называет те же группы барьеров и содержит ссылку на инвентарь.
 Сценария нет: проверка текста.
 
@@ -77,7 +65,7 @@ AC11 — правка только текста и докстрингов; `dash
 
 MUST. Источник: C6; RR2; `awf/unit_contract.py:357`; `awf/commit_gate.py:95`; `awf/_markdown.py:74`.
 
-Перед контрактом пропускаются пустые строки и завершённые `<!-- … -->` любой длины, скан останавливается на первом `---` — блок не съедается. Заголовок коммита ищется после полного пропуска тривии и фенсов; первый H1 вне комментария и фенса становится subject.
+Перед контрактом пропускаются пустые строки и завершённые `<!-- … -->` любой длины, скан останавливается на первом `---` — блок не съедается. Заголовок коммита ищется после пропуска тривии и фенсов; первый H1 вне них — subject.
 
 AC12 — TODO с двухстрочным `<!-- … -->` перед `---` загружается, контракт найден; TODO-0266 — отдельная регрессия.
 AC13 — `# TODO-9999` внутри фенса не влияет на subject; H1 после фенса используется.
@@ -89,7 +77,7 @@ AC15 — незакрытый комментарий даёт «контракт
 
 MUST. Источник: C7; CTX5; `awf/todo_draft.py:333-338`; `awf/api/hygiene.py:1628`; `awf/cmd_dispatch.py:56`; `awf/api/dispatch.py:937`.
 
-`todo-draft --out` проходит `refuse_unsafe_surfaces` и managed-запись до создания `<out>` и его родителей; симлинк или выход за `.agentic` отказывает без файлов. `blocked_draft` берёт канонический `BLOCKED-<id>.md`, короткий `BLOCKED-<short>.md` — только при его отсутствии. `--content-file` резолвится от корня проекта. CLI пробрасывает `allow_mismatch`, `carry_over_from`, `include_untracked` (`--allow-mismatch`, `--carry-over-from TODO-NNNN`, повторяемый `--include-untracked PATH`).
+`todo-draft --out` проходит `refuse_unsafe_surfaces` и managed-запись до `<out>` и родителей; симлинк или выход за `.agentic` отказывает без файлов. `blocked_draft` берёт канонический `BLOCKED-<id>.md`, короткий `BLOCKED-<short>.md` — только при его отсутствии. `--content-file` резолвится от корня проекта. CLI пробрасывает `allow_mismatch`, `carry_over_from`, `include_untracked` (`--allow-mismatch`, `--carry-over-from TODO-NNNN`, повторяемый `--include-untracked PATH`).
 
 AC16 — `--out` с симлинком или путём вне `.agentic` (включая путь внутри проекта) отказывает; ни `<out>`, ни родители не созданы; `--force` перезаписывает как раньше.
 AC17 — один legacy `BLOCKED-<short>.md` даёт фикс; при обоих файлах берётся канонический, это видно по тексту.
@@ -111,7 +99,7 @@ AC21 — путь вне проекта пишется с предупрежде
 
 MUST. Источник: C10, S3; CTX7; RR4, RR9; `awf/cmd_pipeline_write.py:73`; `awf/api/setup.py:488,581`; `awf/cli.py:840`.
 
-CLI и форма собирают YAML одним `_variant_composition` и отдают один текст `pipeline_variant_yaml_text`. Эффекты разные: форма материализует роли, CLI — нет (INV3); `--help` и вывод называют непереведённые роли и маршрут `awf add-role` или форму. Код возврата от ролей не зависит; неизвестный вариант отбивает argparse с rc 2.
+CLI и форма собирают YAML одним `_variant_composition` и отдают один текст `pipeline_variant_yaml_text`. Эффекты разные: форма материализует роли, CLI — нет (INV3); `--help` и вывод называют непереведённые роли и маршрут `awf add-role` или форму. Код возврата от ролей не зависит; неизвестный вариант — argparse rc 2.
 
 AC22 — `--help` и успешный вывод называют разницу: роли не создаются, непереведённые перечислены с маршрутом.
 AC23 — unresolved-роль даёт WARNING и rc 0, файл валиден; `config.yaml`, `supervisor.md`, роли не созданы; занятое имя без `--force` и ошибка записи — rc 1 без изменения файла; неизвестный `--variant` — rc 2.
@@ -149,20 +137,24 @@ AC29 — валидные записи как раньше; после ново�
 
 ### R12 — Классификация транзиентного сбоя провайдера
 
-MUST. Источник: P7; CTX10; RR7; `awf/_net.py:29`; `awf/pipeline_engine.py:1277`; A4.
+MUST. Источник: P7; CTX10–CTX16; RR7; `awf/_net.py:29`; `awf/pipeline_engine.py:1277`; A4, A8.
 
-Авторизация — отдельный класс: `401`/`403` с текстом про credential/ключ/unauthorized дают BLOCKED-исход — `outbox/BLOCKED-<id>.md` по стандартной схеме `docs/unit-contract.md`, `last_signal=BLOCKED-<id>`, стоп стадии; второго спавна нет. Перегрузка и серверные ошибки — сеть: `HTTP 500`/`503`, `500 Internal Server Error`, `429 Too Many Requests`, `overloaded` и connect/reset/timeout; им backoff, silent-бюджет цел. Число без HTTP-контекста — не сеть: `1500 passed` и `took 429ms` остаются `silent`; oom-like и silent — как сейчас.
+Класс смерти без сигнала — `oom-like`, `network`, `auth` или `silent`; `worker-exit:` и движок читают одно правило (INV6). Контекст провайдера — обёртка `AI_APICallError` или `error.error=`.
 
-AC30 — `401 Invalid credential` даёт `outbox/BLOCKED-<id>.md` по стандартной схеме с причиной, `last_signal=BLOCKED-<id>`; `awf blocked-draft` его читает; в stage-log один `awf run`, второго нет.
-AC31 — `HTTP 500`, `503 Service Unavailable`, `429 Too Many Requests`, `overloaded` дают network и backoff; silent-счётчик не вырос.
-AC32 — `connect`/`reset`/`timeout` — network; `1500 passed`, `took 429ms` и прочий текст — `silent`.
+- Auth: в контексте провайдера — `401`/`403` ИЛИ фраза про credential/ключ/unauthorized/forbidden; вне контекста — код отдельным токеном (начало строки, HTTP/status/code) И фраза; свои строки и сервер без обёртки — не auth. Auth даёт `outbox/BLOCKED-<id>.md` по `docs/unit-contract.md`, `last_signal=BLOCKED-<id>`, стоп без спавна.
+- Network (backoff, silent-бюджет цел) — закрытый список: connect/reset/timeout, `Endpoint is unavailable`, `All workers are unavailable`, `admission slot`, `cell is at capacity`, `500`/`500 Internal Server Error`/`503`/`429`, `overloaded`, голые `Too Many Requests`/`Service Unavailable`. `upstream request failed` сам по себе — не сеть.
+- Порядок: OOM/rc137 — `oom-like`; D6 (5xx/429 рядом с 401/403) — `network`; auth до сети. Прочее (`[unsupported_request]`, `Bad Request`, число без статус-контекста) — `silent`.
+
+AC30 — `AI_APICallError: statusCode: 401` и `AI_APICallError: Upstream request failed: Invalid credential` дают `outbox/BLOCKED-<id>.md` и `last_signal=BLOCKED-<id>`; `awf blocked-draft` его читает; в логе воркера от `log_start_offset` один `awf run`.
+AC31 — сетевой список R12 даёт `network` и backoff, silent-счётчик цел; `rc=137` с auth- или 5xx-текстом — `oom-like`; `[unsupported_request]`/`Bad Request` — `silent`; 401/403 вместе с 5xx — `network` (D6).
+AC32 — `{"code": 401, "message": "invalid api key"}` и `AI_APICallError: unauthorized` — auth; `401 Invalid credential` вне контекста (код в начале строки) — auth; `GET /login -> HTTP 401`, `assert 401 == 200`, `test_401_credential_expiry`, `unauthorized` вне контекста без кода — не auth; `1500 passed`, `took 429ms` — `silent`.
 Сценарий: C1.
 
 ### R13 — Полный сьют только через канонический артефакт
 
 MUST. Источник: P8; RR8, RR16; `scripts/suite-canonical.sh`; A5.
 
-Движок ищет в логе воркера стадии (от `log_start_offset` до конца, не только хвост) запуск полного сьюта: `pytest` с целью `tests/` целиком, `scripts/run-all.sh`. Конкретный файл или `-k` полным сьютом не считается. `SUITE-WARN:` в stage-log и факт `suite_gate=raw-full-suite` в handoff появляются, если нет `SUITE-<tree-sha>-*.json` дерева, у которого `command` равен действующей канонической команде — `verification.test_cmd`, а при отсутствии ключа легаси-фолбэку `suite-canonical.sh`; стадия не блокируется.
+Движок ищет в логе воркера (от `log_start_offset` до конца) полный сьют: `pytest` с целью `tests/`, `scripts/run-all.sh`. Конкретный файл или `-k` полным сьютом не считается. `SUITE-WARN:` в stage-log и факт `suite_gate=raw-full-suite` в handoff появляются, если нет `SUITE-<tree-sha>-*.json` дерева, у которого `command` равен действующей канонической команде — `verification.test_cmd`, а при отсутствии ключа легаси-фолбэку `suite-canonical.sh`; стадия не блокируется.
 
 AC33 — сырой `pytest tests/` без подходящего артефакта даёт `SUITE-WARN:` и факт в handoff; коммит не блокируется.
 AC34 — канонический прогон с подходящим артефактом гасит предупреждение; артефакт чужой команды (`AWF_SUITE_CMD`) или чужого дерева не гасит.
@@ -172,15 +164,15 @@ AC34 — канонический прогон с подходящим арте�
 
 ### C1 — Смерть воркера без сигнала
 
-Предусловия: rc≠0, сигнала нет; в логе `Invalid credential`.
+Предусловия: rc≠0, сигнала нет, в логе строка провайдера.
 
-1. Стадия классифицирует смерть и пишет `worker-exit:` с rc, длительностью и классом.
+1. `worker-exit:` с rc, длительностью и классом.
 2. Хвост читается только без сигнала.
-3. Авторизация — BLOCKED с текстом про ключ; silent-бюджет цел.
+3. `AI_APICallError: statusCode: 401`/`… Invalid credential` — auth: BLOCKED, `last_signal=BLOCKED-<id>`, стоп, silent-бюджет цел.
 
-Расширения: 1a — `503 overloaded` даёт network и backoff. 1b — сигнал найден после kill: строка `U6b: signal present (<name>)`, хвост не читался, `worker-exit:` нет.
+Расширения: 1a — `503 overloaded`/голый `Too Many Requests` — network и backoff. 1b — сигнал после kill: `U6b: signal present (<name>)`, хвост не читался, `worker-exit:` нет. 1c — `rc=137` — `oom-like`. 1d — `GET /login -> HTTP 401` без обёртки — не auth.
 
-Результат: одна строка, бюджет по классу.
+Результат: класс по R12.
 
 ### C2 — Архивация на чужой платформе
 
@@ -251,10 +243,11 @@ INV7 — закрытые C1, C3, C4-подсказка, C9, S2 сохраняю
 A1 — C1, C3, C4-подсказка, C9, S2 закрыты кодом; регрессия — в тест-спеке.
 A2 — C10/S3: CLI не материализует роли; unresolved — rc 0, ошибка записи и занятое имя — rc 1, неизвестный вариант — rc 2 (INV3).
 A3 — C13: библиотеку выбирает архитектор после проверки зависимостей (сейчас только PyYAML).
-A4 — P7: 401/403 — BLOCKED-файл и стоп, 5xx/429/overloaded — сеть; ключ не лечится backoff-ом.
+A4 — P7: auth — BLOCKED и стоп, перегрузка — backoff (R12, A8).
 A5 — P8: обход — предупреждение, не блокировка; артефакт засчитывается при совпадении дерева и канонической команды (`verification.test_cmd` или легаси-фолбэк).
-A6 — один пакет: R1-R13 малы и делят тестовую поверхность; R9 и R10 — отдельные IMP-юниты.
+A6 — один пакет: R1–R13 делят тестовую поверхность; R9, R10 — отдельные IMP-юниты.
 A7 — R9: подмена сигнала на обычный файл не ловится no-follow и вне scope; проверяется симлинк (CTX2).
+A8 — R12: auth в контексте провайдера — код или фраза, вне — код-токен и фраза; D6 и OOM старше auth; список сети закрыт, `upstream request failed` — не сеть; request-shape — `silent` (§0.4).
 
 ## Открытые вопросы
 
@@ -262,4 +255,4 @@ A7 — R9: подмена сигнала на обычный файл не ло�
 
 ## Изменения
 
-req-5 закрывает FR9 readiness-2: R9 задаёт порядок «preflight → `RUN-EVIDENCE`/`VERIFIED` → сигнал», preflight до любых записей; AC24, C5, INV1 согласованы. Остальное не менялось. Повторное ревью: R9, INV1, C5.
+req-7 (TODO-0279): закрыты RR27–RR29 — код в начале строки и `unauthorized` в контексте провайдера — auth; список сети закрыт (429, `500 Internal Server Error`, admission/capacity), `upstream request failed` — не сеть; D6 и OOM старше auth. Повторное ревью: R12, AC30–AC32, C1, A8, INV6. Вниз: K12 (arch-5), T2 (qa-3), готовность. Бюджет: context 3173/2200 — сжать (RR26).
