@@ -550,6 +550,14 @@ Gitignored-файлы тоже не попадают — git их не отсл�
 отчёта) и ссылка `full report: .agentic/outbox/DONE-<id>.md`; полная
 вклейка отчёта в handoff убрана (0187).
 
+Секция «Engine facts» — факты движка, которых нет в DONE.json воркера
+(файл принадлежит воркеру и ручной прогон снаружи движка не видит).
+Сейчас там один факт: `suite_gate=raw-full-suite` — в логе воркера был
+полный прогон (`pytest tests/` или `scripts/run-all.sh`), а канонического
+артефакта `.agentic/context/SUITE-<tree-sha>-*.json` с командой из
+`awf suite-command` нет. Стадию и коммит факт не блокирует. Старые handoff
+без этой секции читаются как раньше.
+
 Отчёт на стадии verify: `.agentic/context/GATES-<todo>.md` (собирает
 `awf verify-pack --todo <id>`, U5) — быстрые гейты, safety-канарейки,
 минимальность диффа против baseline, команды из `verify:`, prove-red и

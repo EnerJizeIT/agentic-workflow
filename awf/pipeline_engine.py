@@ -1570,6 +1570,171 @@ def _stage_write_violation(
     return bad
 
 
+def _blocked_note_lines(
+    verdict: str,
+    findings: list[str],
+    directions: list[str],
+) -> list[str]:
+    """The standard BLOCKED schema in ONE place (``docs/unit-contract.md``).
+
+    Both engine producers — an auth death (R12) and a write violation
+    (AUD1) — pass structured sections here, so a heading change cannot land
+    in one producer and leave the other unparseable by ``awf blocked-draft``.
+    Items are plain text; the ``- `` marker is added here, once.
+    """
+    return [
+        "## ВЕРДИКТ",
+        "",
+        verdict,
+        "",
+        "## НАХОДКИ",
+        "",
+        *(f"- {item}" for item in findings),
+        "",
+        "## НАПРАВЛЕНИЯ-ФИКСА",
+        "",
+        *(f"- {item}" for item in directions),
+        "",
+        "## ПЕРЕНОСЫ",
+        "",
+        "- нет",
+        "",
+    ]
+
+
+def _write_blocked_note(
+    project_dir: Path,
+    todo_id: str,
+    verdict: str,
+    findings: list[str],
+    directions: list[str],
+) -> Exception | None:
+    """The ENGINE's writer of the standard BLOCKED closure (K12, AUD2).
+
+    PA3: the closer has its own ``closer_stage._blocked_note``; that stays
+    separate. The ENGINE's schema is single-sourced here
+    (``_blocked_note_lines``), and a test pins the closer to the same
+    headings, so neither writer can drift into a form ``awf blocked-draft``
+    cannot parse.
+
+    Both engine producers — an auth death (R12) and a write violation
+    (AUD1) — hand their sections to this one writer; the schema, the file
+    name, the outbox, the managed barrier and the failure log live here, so
+    a change cannot land in one producer only. Schema:
+    ``docs/unit-contract.md`` (``## ВЕРДИКТ`` / ``## НАХОДКИ`` /
+    ``## НАПРАВЛЕНИЯ-ФИКСА`` / ``## ПЕРЕНОСЫ``).
+
+    AUD2: the note and its ``.ready`` marker are written together — the
+    same pair the closer writes. ``is_closed``, ``blocked_count`` and the
+    wait-for-event reader key off the marker; a note without it left the
+    unit "active". Returns the failure (``None`` on success), so each
+    producer decides with its own gate in mind: the auth producer refuses a
+    BLOCKED state it could not record (AUD5 — no other trace exists); the
+    violation producer keeps the closure, because its persistent record,
+    not the note, is what the commit gate reads (the closer's policy).
+    """
+    lines = _blocked_note_lines(verdict, findings, directions)
+    outbox = paths.outbox(project_dir)
+    # No bare ``mkdir`` here: ``managed_write_text`` creates missing
+    # directories through ``mkdirat`` on the verified parent. A path
+    # ``mkdir`` before the barrier would follow a symlinked ``.agentic`` /
+    # ``outbox`` and create directories OUTSIDE the project before the
+    # refusal (audit 0239 / managed_fs doctrine).
+    root = managed_fs.agentic_root_for(outbox)
+    try:
+        managed_fs.managed_write_text(
+            outbox / f"BLOCKED-{todo_id}.md",
+            "\n".join(lines),
+            root=root,
+        )
+        managed_fs.managed_write_text(
+            outbox / f"BLOCKED-{todo_id}.ready",
+            "",
+            root=root,
+        )
+    except (OSError, managed_fs.ManagedPathError) as e:
+        _log(
+            paths.logs_dir(project_dir),
+            f"BLOCKED note not written: {stage_manifest.display_path(str(e))}",
+        )
+        return e
+    return None
+
+
+def _write_blocked_signal_note(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    reason: str,
+    tail: str = "",
+) -> Exception | None:
+    """CARRY IMP1 (R12): an auth death becomes the standard BLOCKED note.
+
+    The caller writes ``last_signal=BLOCKED-<id>`` and stops the stage —
+    no second spawn. AUD4: ``## НАХОДКИ`` quotes the log lines that name
+    the failure (or the last few), so the note carries evidence.
+    """
+    display_todo = stage_manifest.display_path(todo_id)
+    display_stage = stage_manifest.display_path(stage_name)
+    from . import _net
+
+    evidence = _net.failure_evidence(tail)
+    return _write_blocked_note(
+        project_dir,
+        todo_id,
+        f"blocked — стадия `{display_stage}` ({display_todo}): провайдер "
+        "отверг авторизацию (credential/ключ); работа остановлена",
+        [
+            reason,
+            *(f"лог: `{line}`" for line in evidence),
+            "повторный спавн не выполнялся: backoff не лечит мёртвый ключ",
+        ],
+        [
+            "проверь credential/API-ключ провайдера в opencode.json",
+            "после исправления перезапусти стадию (awf continue / awf run-next)",
+        ],
+    )
+
+
+def _stop_on_auth_failure(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    logs_dir: Path,
+    tail: str = "",
+) -> None:
+    """CARRY IMP1 (R12): the one auth stop for BOTH death branches.
+
+    A dead credential is not a silent death: the standard BLOCKED closure,
+    the ``BLOCKED-<id>`` marker and a stopped stage — no second spawn, no
+    silent-retry budget spent. The crash branch and the no-signal branch
+    call this; a copied block in one of them would let the two deaths
+    drift.
+
+    AUD5: when the closure cannot be written the stage is NOT marked
+    ``BLOCKED`` — a marker with no note would tell the supervisor a unit is
+    blocked while ``awf blocked-draft`` has nothing to read. Fall through to
+    the same typed salvage stop the managed-path refusals use.
+    """
+    failure = _write_blocked_signal_note(
+        project_dir, todo_id, stage_name,
+        "лог воркера: авторизация провайдера отклонена (401/403 credential)",
+        tail,
+    )
+    if failure is not None:
+        _unsafe_stage_stop(project_dir, todo_id, stage_name, logs_dir, failure)
+        return
+    _write_state(
+        project_dir,
+        last_signal=f"BLOCKED-{todo_id}",
+        logs_dir=logs_dir,
+    )
+    _log(
+        logs_dir,
+        f"CARRY IMP1: auth failure on {stage_name} — BLOCKED, stage stopped",
+    )
+
+
 def _write_blocked_violation_note(
     project_dir: Path,
     todo_id: str,
@@ -1586,8 +1751,6 @@ def _write_blocked_violation_note(
     from it. A free-form note under the same file name was invisible to
     that reader.
     """
-    outbox = paths.outbox(project_dir)
-    outbox.mkdir(parents=True, exist_ok=True)
     # The note must name the files that really exist: both paths come from
     # the SAME constructors the writers use (``violation_path`` for the
     # record the commit gate reads, ``_stage_diff_path`` for the report).
@@ -1613,51 +1776,35 @@ def _write_blocked_violation_note(
     findings: list[str] = []
     if paths_outside:
         findings += [
-            f"- `{stage_manifest.display_path(path)}` — вне allowlist стадии"
+            f"`{stage_manifest.display_path(path)}` — вне allowlist стадии"
             for path in paths_outside
         ]
         report_status = "" if report_file.is_file() else " (не записан)"
         findings.append(
-            f"- отчёт со списком и allowlist: "
+            f"отчёт со списком и allowlist: "
             f"`{stage_manifest.display_path(diff_rel)}`{report_status}"
         )
     else:
         findings.append(
-            "- стадия прошла без забора — её записи считаются непроверенными"
+            "стадия прошла без забора — её записи считаются непроверенными"
             if stage_ran
-            else "- стадия не запускалась: без манифеста забор невозможен"
+            else "стадия не запускалась: без манифеста забор невозможен"
         )
-    lines = [
-        "## ВЕРДИКТ",
-        "",
+    # The note is the owner-facing trace here; the violation record written
+    # by ``_block_on_write_violation`` BEFORE this call is the gate. A
+    # failed note write is logged (inside the writer) and the closure
+    # stands — same policy as ``closer_stage._blocked_note``.
+    _write_blocked_note(
+        project_dir,
+        todo_id,
         verdict,
-        "",
-        "## НАХОДКИ",
-        "",
-        *findings,
-        "",
-        "## НАПРАВЛЕНИЯ-ФИКСА",
-        "",
-        "- откати или перепиши перечисленные пути (файлы автоматически не трогаются)",
-        f"- удали `{stage_manifest.display_path(record_rel)}`, чтобы снять нарушение явно",
-        "- пока запись открыта, commit-план отказывает любому коммиту",
-        "",
-        "## ПЕРЕНОСЫ",
-        "",
-        "- нет",
-        "",
-    ]
-    try:
-        managed_fs.managed_write_text(
-            outbox / f"BLOCKED-{todo_id}.md",
-            "\n".join(lines),
-            root=managed_fs.agentic_root_for(outbox),
-        )
-    except (OSError, managed_fs.ManagedPathError) as e:
-        _log(
-            paths.logs_dir(project_dir),
-            f"BLOCKED note not written: {stage_manifest.display_path(str(e))}",
-        )
+        findings,
+        [
+            "откати или перепиши перечисленные пути (файлы автоматически не трогаются)",
+            f"удали `{stage_manifest.display_path(record_rel)}`, чтобы снять нарушение явно",
+            "пока запись открыта, commit-план отказывает любому коммиту",
+        ],
+    )
 
 
 def _block_on_write_violation(
@@ -1710,6 +1857,24 @@ def _block_on_write_violation(
         logs_dir=logs_dir,
     )
     return True
+
+
+def _worker_exit_code(log_holder: dict[str, str]) -> int | None:
+    """The worker's exit code recorded by ``agent_stage`` for THIS attempt.
+
+    CARRY IMP1: the crash branch gets only the exception, so it would
+    otherwise classify a death by text alone and miss the PA1 rule (an
+    OOM/signal exit outranks auth text). ``None`` = not known (the crash
+    happened before the subprocess returned), which keeps the text-only
+    behavior.
+    """
+    raw = log_holder.get("exit_code")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def execute_agent_stage(
@@ -1903,7 +2068,23 @@ def execute_agent_stage(
                 # run's log tail, plus the preflight-timeout marker in the
                 # exception text (the endpoint was down before the worker
                 # even started — no log to read yet).
-                tail = worker_log_tail(log_holder)
+                # CARRY IMP1 (R1): the same "tail only without a signal"
+                # invariant the normal exit path holds. A crash AFTER the
+                # worker wrote its signal (e.g. the handoff write failed) is
+                # not a provider death — classifying its unrelated log text
+                # could BLOCK a completed unit. With a signal on disk the
+                # crash falls through to the generic stop below.
+                signal_on_disk = read_signal_for_todo(
+                    outbox, current_todo, *prefixes
+                )
+                if signal_on_disk:
+                    tail = ""
+                    failure_class = ""
+                else:
+                    tail = worker_log_tail(log_holder)
+                    failure_class = _net.classify_failure(
+                        tail, _worker_exit_code(log_holder)
+                    )
                 # QA (U6c): the preflight text check applies ONLY to
                 # TimeoutError — preflight is the only network death with no
                 # worker log. U6b's RuntimeError embeds the full Cmd (stage
@@ -1911,10 +2092,13 @@ def execute_agent_stage(
                 # "preflight" stage name must not classify a clean-log crash
                 # as network. A crash death is classified by its log tail.
                 # Pinned by test_crash_text_with_preflight_word_not_network.
-                if _net.is_network_failure(tail) or (
-                    isinstance(e, TimeoutError)
+                if (
+                    not signal_on_disk
+                    and isinstance(e, TimeoutError)
                     and _net.is_preflight_timeout(str(e))
                 ):
+                    failure_class = "network"
+                if failure_class in _net.RETRY_FAILURE_CLASSES:
                     net_retries, net_retry_scheduled = _handle_net_death(
                         s_name=s_name, net_retries=net_retries,
                         net_limit=net_limit, net_key=net_key,
@@ -1923,6 +2107,13 @@ def execute_agent_stage(
                         prefixes=prefixes,
                     )
                     break  # scheduled → next net round; exhausted → failure path
+                if failure_class == "auth":
+                    # CARRY IMP1 (R12): a dead credential is not a silent
+                    # death — BLOCKED note, state marker, stopped stage.
+                    _stop_on_auth_failure(
+                        project_dir, current_todo, s_name, logs_dir, tail,
+                    )
+                    return current_todo, stage_idx, 1
                 print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
                 _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
                 return current_todo, stage_idx, 1
@@ -1955,8 +2146,13 @@ def execute_agent_stage(
             # U6b: worker died without a signal — classify the death BEFORE
             # the silent retry: a dead model endpoint is not fixed by a
             # continue-push, it gets its own backoff-retry budget (30/60/120s).
+            # CARRY IMP1 (R12): auth is a third class — a dead credential is
+            # a BLOCKED stop, not a silent retry; 5xx/429 share the backoff.
             tail = worker_log_tail(log_holder)
-            if _net.is_network_failure(tail):
+            failure_class = _net.classify_failure(
+                tail, _worker_exit_code(log_holder)
+            )
+            if failure_class in _net.RETRY_FAILURE_CLASSES:
                 net_retries, net_retry_scheduled = _handle_net_death(
                     s_name=s_name, net_retries=net_retries,
                     net_limit=net_limit, net_key=net_key,
@@ -1965,6 +2161,11 @@ def execute_agent_stage(
                     prefixes=prefixes,
                 )
                 break  # scheduled → next net round; exhausted → failure path
+            if failure_class == "auth":
+                _stop_on_auth_failure(
+                    project_dir, current_todo, s_name, logs_dir, tail,
+                )
+                return current_todo, stage_idx, 1
 
             # TODO-0196: no signal, but the stage LEFT WORK in the tree —
             # only the finish (the signal) is missing. A continue-push with

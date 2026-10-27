@@ -9,10 +9,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths
+from . import _net, paths, suite_guard
 from ._atomic import atomic_write_text
 from ._log import log as _log
-from ._worker_exit import worker_exit_line, worker_log_tail
+from ._worker_exit import signal_present_line, worker_exit_line, worker_log_tail
 from .doctrine import materialize_doctrine
 from .infra import managed_fs
 from .pipeline import Stage
@@ -207,13 +207,21 @@ def run_agent_stage(
             watch_paths.append(outbox / f"{prefix}-{todo_id}.ready")
             watch_paths.append(outbox / f"{prefix}-{todo_id}.md.ready")
 
-    from . import _net
     from . import config as cfg_mod
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
 
     if log_holder is None:
         log_holder = {}
+    # CARRY IMP1: the engine's crash branch needs the exit code to apply the
+    # PA1 rule (an OOM/signal exit outranks auth text). ``log_holder`` is
+    # reused across the stage's attempts, so a stale value from the previous
+    # attempt must not survive a hard-timeout raise before the subprocess
+    # returns. The log pointer is reset for the SAME reason: an attempt that
+    # dies before opening its own log (a preflight timeout) must not hand the
+    # classifier the previous attempt's tail — R1/AC2 call that defect out.
+    for stale in ("exit_code", "log_path", "log_start_offset"):
+        log_holder.pop(stale, None)
 
     # RUN8 #2: record the worker pid in state AT SPAWN TIME (the callback
     # fires before the wait loop) — kill_pipeline kills the worker's
@@ -263,13 +271,19 @@ def run_agent_stage(
                                       _net.NO_OUTPUT_TIMEOUT_DEFAULT),
     )
     agent_elapsed = time.monotonic() - agent_start
+    # CARRY IMP1: the real return code of THIS attempt — the engine reads it
+    # from the holder (the crash branch cannot see the local variable).
+    log_holder["exit_code"] = str(result.returncode)
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     # TODO-0226: a silent death must leave a trace in the stage log — exit
     # code, signal, duration and class are the only evidence of why the
     # session ended without a signal (three such deaths in 0224 were blind).
     present = read_signal_for_todo(outbox, todo_id, *prefixes)
     exit_line = worker_exit_line(
-        result.returncode, agent_elapsed, worker_log_tail(log_holder),
+        result.returncode, agent_elapsed,
+        # CARRY IMP1 (R1): the tail is lazy — with a signal this lambda is
+        # never called, so a normal finish costs no 64 KiB read.
+        tail_fn=lambda: worker_log_tail(log_holder),
         signal_present=bool(present),
     )
     if exit_line:
@@ -282,7 +296,7 @@ def run_agent_stage(
         if present:
             _log(
                 logs_dir,
-                f"U6b: signal present ({present}); ignoring worker exit code "
+                f"{signal_present_line(present)}; ignoring worker exit code "
                 f"{result.returncode}",
             )
         else:
@@ -291,12 +305,29 @@ def run_agent_stage(
                 f"Cmd: {' '.join(cmd)}"
             )
 
+    # CARRY IMP2 (R13/K13): a full suite run by hand is visible in the stage
+    # log and as a handoff fact; the stage and the commit stay unblocked.
+    engine_facts: list[str] = []
+    log_path = log_holder.get("log_path", "")
+    if log_path:
+        suite_warn = suite_guard.check(
+            project_dir,
+            _net.read_log_from(
+                Path(log_path),
+                int(log_holder.get("log_start_offset") or 0),
+            ),
+        )
+        if suite_warn:
+            _log(logs_dir, suite_warn)
+            engine_facts.append(suite_guard.RAW_SUITE_FACT)
+
     collect_handoff(
         role, todo_id, project_dir, logs_dir,
         exit_code=result.returncode, duration_sec=agent_elapsed, attempt=attempt,
         stage_name=stage.name,
         stage_id=stage.id or stage.name,
         model=role_model,
+        engine_facts=engine_facts,
     )
 
 
@@ -336,6 +367,7 @@ def collect_handoff(
     stage_name: str = "",
     stage_id: str = "",
     model: str | None = None,
+    engine_facts: list[str] | None = None,
 ) -> Path:
     """BD-15/19: gather PROGRESS/DONE + git diff summary into handoff .md.
 
@@ -467,6 +499,11 @@ def collect_handoff(
 
     if machine_facts_lines:
         parts += ["## Machine facts (DONE.json)", "", *machine_facts_lines, ""]
+
+    # CARRY IMP2 (R13/K13): engine-only facts (the raw-full-suite gate).
+    # Older handoffs simply have no such section — readers ignore it.
+    if engine_facts:
+        parts += ["## Engine facts", "", *[f"- {fact}" for fact in engine_facts], ""]
 
     if progress_body:
         parts += ["## PROGRESS notes (from worker)", "", progress_body, ""]

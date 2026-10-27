@@ -10,11 +10,39 @@ The line is observational only: it never changes retry policy.
 """
 from __future__ import annotations
 
-import re
 import signal as _signals
+from collections.abc import Callable
 from pathlib import Path
 
 from . import _net
+
+
+def normalize_signal_name(name: str | None) -> str | None:
+    """PA2: the ONE place that turns a signal FILE name into a signal name.
+
+    ``_detect_new_signal`` returns the file name (``DONE-TODO-0001.ready``),
+    while ``read_signal_for_todo`` already strips the suffix. Both flow into
+    logs and the supervisor, so a single normalizer keeps one spelling:
+    ``DONE-TODO-0001``. ``.ready`` goes first, then the BD-21 ``.md`` typo
+    form (``DONE-TODO-0001.md.ready``).
+    """
+    if not name:
+        return name
+    base = name[: -len(".ready")] if name.endswith(".ready") else name
+    if base.endswith(".md"):
+        base = base[: -len(".md")]
+    return base
+
+
+def signal_present_line(name: str | None) -> str:
+    """CARRY IMP1 (R1): the ONE text for "a signal is already on disk".
+
+    Both signal_watch places (late signal after a kill, hard timeout with a
+    seen signal) and the normal exit path use it — a second wording without
+    the signal name was the defect (AC1/AC3). PA2: the name is normalized
+    here, so a watcher file name and the outbox reader print the same text.
+    """
+    return f"U6b: signal present ({normalize_signal_name(name) or 'unknown'})"
 
 
 def exit_signal_name(rc: int) -> str:
@@ -37,17 +65,21 @@ def exit_signal_name(rc: int) -> str:
 
 
 def classify_worker_exit(rc: int, tail: str) -> str:
-    """TODO-0226: why the worker ended silently — one of four classes.
+    """TODO-0226 / CARRY IMP1: why the worker ended silently.
 
-    ``network`` keeps the EXISTING classification (``_net`` markers) first,
-    so a network death still drives its own backoff retry. ``oom-like`` is
-    a memory-killer sign: rc 137 (128+SIGKILL), a raw SIGKILL, or the
-    shell's ``Killed`` line. Everything else is a plain silent exit
-    (model stopped answering / output limit / forgot the signal).
+    Delegates the provider-failure classes to ``_net.classify_failure`` so
+    the ``worker-exit:`` line and the engine's retry decision can never
+    disagree (R12). ``transient`` (5xx/429/overloaded) keeps the retry
+    budget of ``network`` — the diagnostic says ``network`` too, matching
+    the requirement's wording ("перегрузка — сеть"). ``auth`` is its own
+    class: a dead credential stops the stage with a BLOCKED note.
     """
-    if _net.is_network_failure(tail or ""):
+    failure = _net.classify_failure(tail or "", rc)
+    if failure == "auth":
+        return "auth"
+    if failure in _net.RETRY_FAILURE_CLASSES:
         return "network"
-    if rc in (137, -9) or re.search(r"(?m)^Killed\b", tail or ""):
+    if _net.is_oom_exit(rc, tail or ""):
         return "oom-like"
     return "silent"
 
@@ -70,17 +102,23 @@ def worker_exit_line(
     duration_sec: float,
     tail: str = "",
     *,
+    tail_fn: Callable[[], str] | None = None,
     signal_present: bool = False,
     cls: str | None = None,
 ) -> str:
     """TODO-0226: the stage-log diagnostic for a worker's silent death.
 
     "" when the worker produced a signal — that is a normal finish, not a
-    silent death (U6b). ``cls`` lets an engine kill path label its own
-    cause (``timeout``) instead of guessing from an rc it synthesized.
+    silent death (U6b). CARRY IMP1 (R1): the tail is LAZY. ``tail_fn`` is
+    not called when ``signal_present`` is true — reading a 64 KiB log to
+    throw the result away was waste on every normal finish. ``cls`` lets an
+    engine kill path label its own cause (``timeout``) instead of guessing
+    from an rc it synthesized.
     """
     if signal_present:
         return ""
+    if tail_fn is not None:
+        tail = tail_fn() or ""
     return (
         f"worker-exit: rc={rc} signal={exit_signal_name(rc)} "
         f"duration={duration_sec:.0f}s class={cls or classify_worker_exit(rc, tail)}"

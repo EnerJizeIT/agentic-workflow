@@ -95,29 +95,19 @@ sha=$(run_awf tree-sha) || {
   exit 2
 }
 
-# Команда: `AWF_SUITE_CMD` побеждает; иначе — `verification.test_cmd` из
-# config.yaml (init подбирает её под стек: npm test / go test / cargo test).
-# Пустое значение test_cmd — «сьют не настроен» (rc=2), а не повод гнать
-# чужой pytest; полный pytest остаётся только для старого проекта БЕЗ ключа.
-# config-get: 1 — ключа нет, 3 — YAML null, 4 — пустая/пробельная строка,
-# 5 — config.yaml битый (rc=2 «broken», а не зелёный pytest-фолбэк).
+# Команда: `AWF_SUITE_CMD` побеждает (оболочка — единственное место
+# переопределения); иначе — `awf suite-command`, единственная сборка
+# канонической строки (config / легаси-фолбэк / «не настроен»). Код возврата
+# резолвера: 0 — config, 1 — легаси, 2 — пустая/пробельная строка, null или
+# битый config.yaml.
 if [ -n "${AWF_SUITE_CMD:-}" ]; then
   cmd=$AWF_SUITE_CMD
 else
-  cfg_cmd=$(run_awf config-get verification.test_cmd)
+  cmd=$(run_awf suite-command)
   cfg_rc=$?
-  if [ "$cfg_rc" -eq 5 ]; then
-    echo "suite not configured: broken .agentic/config.yaml" >&2
-    exit 2
-  fi
-  if [ "$cfg_rc" -ge 3 ]; then
+  if [ "$cfg_rc" -ne 0 ] && [ "$cfg_rc" -ne 1 ]; then
     echo "suite not configured: set verification.test_cmd or AWF_SUITE_CMD" >&2
     exit 2
-  fi
-  if [ "$cfg_rc" -ne 0 ]; then
-    cmd="$pybin -m pytest tests/ -q -n auto --timeout=300 -p no:cacheprovider"
-  else
-    cmd=$cfg_cmd
   fi
 fi
 cmd8=$("$pybin" -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:8])' "$cmd") || exit 2

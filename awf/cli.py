@@ -770,6 +770,16 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_suite_command = sub.add_parser(
+        "suite-command",
+        help="CARRY IMP2: print the canonical full-suite command (rc 0 config, 1 legacy, 2 unset)",
+    )
+    p_suite_command.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_mutations = sub.add_parser(
         "mutations",
         help="U11/B6: run scripts/mutations.txt on a quiet tree (supervisor tool)",
@@ -1091,6 +1101,9 @@ def _run_command(args) -> int:
         if args.command == "tree-sha":
             from . import cmd_tree_sha
             return cmd_tree_sha.run(args)
+        if args.command == "suite-command":
+            from . import cmd_suite_command
+            return cmd_suite_command.run(args)
         if args.command == "mutations":
             from . import cmd_mutations
             return cmd_mutations.run(args)
