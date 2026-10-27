@@ -218,7 +218,11 @@ def record_violation(
     return target
 
 
-def _open_path_names(root: Path, record: dict) -> tuple[str, ...]:
+#: K11: a non-dict ``paths`` is corrupt — this name keeps it open.
+_CORRUPT_PATHS = "<paths: invalid>"
+
+
+def _open_path_names(root: Path, record: dict) -> tuple[tuple[str, ...], bool]:
     """Recorded paths whose content still equals the rejected write.
 
     ONE rule for both readers: the merge in :func:`record_violation` and the
@@ -226,11 +230,12 @@ def _open_path_names(root: Path, record: dict) -> tuple[str, ...]:
     thing — they can drift, and then a merge keeps a path the gate considers
     spent (or the reverse: a rejected write no longer withholds the commit).
     A path whose ``after`` state is not a hash cannot be proven gone: fail
-    closed.
+    closed. A non-dict ``paths`` is CORRUPT (K11): the flag is the single
+    classifier — the name is synthetic, the record stays open.
     """
     paths = record.get("paths") or {}
     if not isinstance(paths, dict):
-        return ()
+        return (_CORRUPT_PATHS,), True
     still_open: list[str] = []
     for path, states in paths.items():
         after = states.get("after") if isinstance(states, dict) else None
@@ -239,19 +244,21 @@ def _open_path_names(root: Path, record: dict) -> tuple[str, ...]:
             continue
         if _file_hash(root / str(path)) == after:
             still_open.append(str(path))
-    return tuple(still_open)
+    return tuple(still_open), False
 
 
 def _still_rejected_paths(root: Path, record: dict) -> dict[str, dict[str, object]]:
     """Path states of an earlier record that still match the rejected write."""
-    raw = record.get("paths")
-    if not isinstance(raw, dict):
-        return {}
-    open_names = set(_open_path_names(root, record))
+    open_names, corrupt = _open_path_names(root, record)
+    if corrupt:
+        # K11: a corrupt record cannot be proven gone — keep it open.
+        return {_CORRUPT_PATHS: {"before": "<missing>", "after": None}}
+    raw = record.get("paths") or {}
+    open_set = set(open_names)
     kept: dict[str, dict[str, object]] = {}
     for path, states in raw.items():
         name = str(path)
-        if name not in open_names:
+        if name not in open_set:
             continue
         after = states.get("after") if isinstance(states, dict) else None
         if isinstance(after, str):
@@ -317,7 +324,7 @@ def open_violations(project_dir: str | Path) -> list[OpenViolation]:
                 OpenViolation(stem, "?", (), "record is not an object", record_name=stem)
             )
             continue
-        open_paths = _open_path_names(root, record)
+        open_paths, corrupt = _open_path_names(root, record)
         error = str(record.get("error") or "")
         if error:
             # A manifest was unavailable at some point: only an explicit
@@ -333,13 +340,14 @@ def open_violations(project_dir: str | Path) -> list[OpenViolation]:
                 )
             )
             continue
-        if record.get("paths") and not open_paths:
-            continue  # every rejected path is gone — the record is spent
-        if not record.get("paths"):
-            found.append(
-                OpenViolation(stem, "?", (), "record names no path", record_name=stem)
-            )
-            continue
+        if not corrupt:
+            if record.get("paths") and not open_paths:
+                continue  # every rejected path is gone — the record is spent
+            if not record.get("paths"):
+                found.append(
+                    OpenViolation(stem, "?", (), "record names no path", record_name=stem)
+                )
+                continue
         found.append(
             OpenViolation(
                 todo_id=str(record.get("todo_id") or stem),

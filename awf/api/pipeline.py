@@ -717,6 +717,8 @@ def approve_commit(
     run_active = bool(run and run.get("active"))
     evidence_file = paths.context_dir(project_dir) / f"RUN-EVIDENCE-{todo_id}.md"
     verified_file = paths.context_dir(project_dir) / f"VERIFIED-{todo_id}.sha"
+    inbox = paths.inbox(project_dir)
+    signal = inbox / f"APPROVE-{todo_id}.ready"
 
     # R2.4 (roadmap R2): in an active run the approval is bound to a
     # MATERIALISED CANDIDATE, not to the dirty worktree. The candidate tree
@@ -783,15 +785,10 @@ def approve_commit(
             )
         verified_fp = current_fp
 
-    if evidence.strip():
-        managed_write_api_text(
-            evidence_file,
-            f"# Run evidence — {todo_id}\n\n"
-            f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
-            f"{evidence.strip()}\n",
-            operation="write run evidence",
-        )
-    elif run_active and not evidence_file.is_file():
+    # K9 (carry-cd R9, arch-4 point 1): the read-only requirements run
+    # BEFORE the first effect. A missing evidence/verified_sha is a call
+    # error, not an unsafe path — the barrier below must not mask it.
+    if run_active and not evidence.strip() and not evidence_file.is_file():
         raise AwfApiError(
             "Run mode requires independent-verification evidence. Pass the "
             "commands you actually ran and the verdict via evidence=..., e.g. "
@@ -809,6 +806,22 @@ def approve_commit(
             "you recorded at verify time (`awf tree-sha` / `awf_tree_sha`, "
             "BEFORE your checks). Approve without it is refused — the "
             "commit gate would commit a tree you did not verify."
+        )
+
+    # K9 (carry-cd R9): the preflight of the surfaces the approval writes
+    # runs BEFORE RUN-EVIDENCE / VERIFIED and before managed_mkdir — a
+    # symlinked ``inbox`` or a symlinked APPROVE leaf refuses with no new
+    # file (INV1). The fingerprint must never be rolled back, so the
+    # refusal cannot come after it.
+    refuse_unsafe_surfaces(project_dir, "approve", inbox, signal)
+
+    if evidence.strip():
+        managed_write_api_text(
+            evidence_file,
+            f"# Run evidence — {todo_id}\n\n"
+            f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
+            f"{evidence.strip()}\n",
+            operation="write run evidence",
         )
 
     baseline_sha = _commit_plan.read_baseline_sha(project_dir, todo_id)
@@ -934,14 +947,12 @@ def approve_commit(
             operation="write verified fingerprint",
         )
 
-    inbox = paths.inbox(project_dir)
     try:
         managed_fs.managed_mkdir(inbox)
     except managed_fs.ManagedPathError as exc:
         raise AwfApiError(
             f"approve {todo_id} refused — unsafe managed path: {exc}"
         ) from exc
-    signal = inbox / f"APPROVE-{todo_id}.ready"
     if run_active:
         # M2.1: the approval is bound to the cycle it was made for — the
         # run generation captured under the verdict's lock, the verified
@@ -981,9 +992,16 @@ def approve_commit(
             # evidence_digest.
             binding.update(candidate_evidence.binding_projection())
             binding["evidence_digest"] = candidate_evidence.evidence_digest()
-        atomic_write_text(signal, json.dumps(binding, sort_keys=True) + "\n")
+        managed_write_api_text(
+            signal,
+            json.dumps(binding, sort_keys=True) + "\n",
+            operation="write approve signal",
+        )
     else:
-        signal.touch()
+        # K9: the marker is written no-follow too — a symlink swapped onto
+        # the leaf between the preflight and the write is replaced, never
+        # followed (the preflight already refused an existing one).
+        managed_write_api_text(signal, "", operation="write approve signal")
 
     # RUN5 #1 (Part B): failsafe — list rejected-attempt files that would be
     # SILENTLY excluded from this commit (still untracked AND in the

@@ -148,3 +148,116 @@ class TestIncludeUntracked:
 
         files = _files_changed_since_baseline(repo, sha, todo_id=TODO)
         assert files == [], "default behavior: pre-existing untracked stays excluded"
+
+
+class TestCorruptViolationRecord:
+    """CARRY IMP3 (carry-cd R11, AC28–AC29): повреждённая запись нарушения
+    закрывает коммит.
+
+    Не-dict ``paths`` нельзя доказать исчезнувшим — fail-closed: запись
+    остаётся открытой под синтетическим именем ``<paths: invalid>``, а
+    слияние новой записи поверх не теряет повреждение.
+    """
+
+    def _record(self, repo: Path, paths, *, todo: str = TODO) -> Path:
+        import json
+
+        ctx = repo / ".agentic" / "context"
+        ctx.mkdir(parents=True, exist_ok=True)
+        record = {
+            "todo_id": todo,
+            "stage": "worker",
+            "recorded_at": "2026-10-27T00:00:00+00:00",
+            "allowlist": [],
+            "paths": paths,
+            "error": "",
+        }
+        target = ctx / f"WRITE-VIOLATION-{todo}.json"
+        target.write_text(json.dumps(record), encoding="utf-8")
+        return target
+
+    def _head(self, repo: Path) -> str:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    def test_non_dict_paths_is_open_and_refuses_commit(self, gate_repo):
+        from awf import stage_manifest
+
+        repo, sha = gate_repo
+        self._record(repo, "oops")
+
+        open_ones = stage_manifest.open_violations(repo)
+        assert [v.paths for v in open_ones] == [("<paths: invalid>",)]
+        refusal = stage_manifest.violation_refusal(repo)
+        assert "<paths: invalid>" in refusal
+        assert f"WRITE-VIOLATION-{TODO}.json" in refusal
+
+        head_before = self._head(repo)
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("unit work\n", encoding="utf-8")
+        logs = repo / ".agentic" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        outcome = maybe_commit(
+            "implement", TODO, "commit_and_report", repo, logs,
+            auto=False, baseline_sha=sha,
+        )
+        assert outcome.status == "refused", (
+            f"a corrupt violation record must refuse the commit — got "
+            f"{outcome.status}: {outcome.reason}"
+        )
+        assert "<paths: invalid>" in outcome.reason, (
+            f"the refusal must name the corrupt record's synthetic path: {outcome.reason}"
+        )
+        assert f"WRITE-VIOLATION-{TODO}.json" in outcome.reason, (
+            f"the refusal must name the record file to delete: {outcome.reason}"
+        )
+        assert self._head(repo) == head_before
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=repo, capture_output=True,
+        )
+        assert staged.returncode == 0, "a refused commit must not stage anything"
+
+    def test_empty_paths_names_no_path(self, gate_repo):
+        from awf import stage_manifest
+
+        repo, _sha = gate_repo
+        self._record(repo, [])
+
+        open_ones = stage_manifest.open_violations(repo)
+        assert len(open_ones) == 1
+        assert open_ones[0].paths == ()
+        assert "record names no path" in stage_manifest.violation_refusal(repo)
+
+    def test_path_without_after_stays_open(self, gate_repo):
+        from awf import stage_manifest
+
+        repo, _sha = gate_repo
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("unit work\n", encoding="utf-8")
+        self._record(repo, {"src/a.py": {"before": "<missing>"}})
+
+        open_ones = stage_manifest.open_violations(repo)
+        assert [v.paths for v in open_ones] == [("src/a.py",)]
+
+    def test_corrupt_record_survives_a_newer_record(self, gate_repo):
+        from awf import stage_manifest
+
+        repo, _sha = gate_repo
+        self._record(repo, "oops")
+        (repo / "src").mkdir()
+        (repo / "src" / "a.py").write_text("unit work\n", encoding="utf-8")
+        stage_manifest.record_violation(
+            repo, TODO, "worker",
+            allowlist=(),
+            paths_outside=["src/a.py"],
+        )
+        open_ones = stage_manifest.open_violations(repo)
+        paths = {p for v in open_ones for p in v.paths}
+        assert "<paths: invalid>" in paths, "merge must not lose the corruption"
+        assert "src/a.py" in paths
+
+        (repo / "src" / "a.py").write_text("rolled back\n", encoding="utf-8")
+        still = {p for v in stage_manifest.open_violations(repo) for p in v.paths}
+        assert still == {"<paths: invalid>"}

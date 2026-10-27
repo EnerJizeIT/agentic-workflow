@@ -29,8 +29,11 @@ APPROVE без привязки — ручной touch / старая верси
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from awf import api, git_utils, run_state
 from awf.commit_gate import maybe_commit
@@ -257,3 +260,137 @@ def test_outside_run_signal_stays_empty_and_commits(tmp_git_repo):
     ok = _gate(proj, baseline_sha)
     assert ok.status == "committed", f"the no-run path must commit — got {ok.status}: {ok.reason}"
     assert _head(proj) != baseline_sha
+
+
+# ─── CARRY IMP3: preflight approve до записей (carry-cd R9, AC24) ───────
+
+def _approve(proj: Path) -> None:
+    api.approve_commit(
+        proj, TODO,
+        evidence="pytest -q → 42 passed; verdict: approve",
+        verified_sha=git_utils.tree_fingerprint(proj),
+    )
+
+
+def _context_names(proj: Path) -> set[str]:
+    return {p.name for p in (proj / ".agentic" / "context").iterdir()}
+
+
+def _link_leaf(path: Path, target: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    path.symlink_to(target)
+
+
+def test_approve_refuses_symlinked_inbox_before_writes(tmp_git_repo):
+    """AC24: симлинк inbox — отказ unsafe managed path до RUN-EVIDENCE,
+    VERIFIED и сигнала."""
+    from awf.api._errors import AwfApiError
+
+    proj = _project(tmp_git_repo)
+    _verify_state(proj)
+    api.run_start(proj, queue=[TODO])
+
+    outside = tmp_git_repo.parent / "outside-inbox"
+    outside.mkdir()
+    canary = outside / "canary.txt"
+    canary.write_text("keep me", encoding="utf-8")
+    inbox = proj / ".agentic" / "inbox"
+    for child in list(inbox.iterdir()):
+        child.unlink()
+    inbox.rmdir()
+    inbox.symlink_to(outside, target_is_directory=True)
+    before = _context_names(proj)
+
+    with pytest.raises(AwfApiError, match="unsafe managed path"):
+        _approve(proj)
+
+    assert _context_names(proj) == before
+    assert f"RUN-EVIDENCE-{TODO}.md" not in _context_names(proj)
+    assert f"VERIFIED-{TODO}.sha" not in _context_names(proj)
+    assert not (outside / f"APPROVE-{TODO}.ready").exists()
+    assert canary.read_text(encoding="utf-8") == "keep me"
+
+
+def test_approve_refuses_symlinked_signal_leaf_before_writes(tmp_git_repo):
+    """AC24: симлинк-подмена APPROVE-<id>.ready — отказ до записей,
+    внешний файл цел."""
+    from awf.api._errors import AwfApiError
+
+    proj = _project(tmp_git_repo)
+    _verify_state(proj)
+    api.run_start(proj, queue=[TODO])
+
+    outside = tmp_git_repo.parent / "outside-signal"
+    outside.mkdir()
+    foreign = outside / "foreign.txt"
+    foreign.write_text("keep me", encoding="utf-8")
+    signal = proj / ".agentic" / "inbox" / f"APPROVE-{TODO}.ready"
+    _link_leaf(signal, foreign)
+    before = _context_names(proj)
+
+    with pytest.raises(AwfApiError, match="unsafe managed path"):
+        _approve(proj)
+
+    assert _context_names(proj) == before
+    assert f"RUN-EVIDENCE-{TODO}.md" not in _context_names(proj)
+    assert f"VERIFIED-{TODO}.sha" not in _context_names(proj)
+    assert signal.is_symlink(), "a refused approve must not replace the linked leaf"
+    assert foreign.read_text(encoding="utf-8") == "keep me"
+
+
+# ─── CARRY IMP3: тот же preflight вне забега (ветка пустого маркера) ─────
+
+def test_outside_run_refuses_symlinked_inbox_before_verified(tmp_git_repo):
+    """AC24 вне забега: симлинк inbox — отказ до RUN-EVIDENCE и VERIFIED.
+    Прежний порядок писал VERIFIED и только потом падал на managed_mkdir."""
+    from awf.api._errors import AwfApiError
+    proj = _project(tmp_git_repo)
+    _verify_state(proj)
+    outside = tmp_git_repo.parent / "outside-nonrun"
+    outside.mkdir()
+    canary = outside / "canary.txt"
+    canary.write_text("keep me", encoding="utf-8")
+    inbox = proj / ".agentic" / "inbox"
+    for child in list(inbox.iterdir()):
+        child.unlink()
+    inbox.rmdir()
+    inbox.symlink_to(outside, target_is_directory=True)
+    before = _context_names(proj)
+    assert f"VERIFIED-{TODO}.sha" not in before
+
+    with pytest.raises(AwfApiError, match="unsafe managed path"):
+        api.approve_commit(
+            proj, TODO, evidence="probes ok; verdict: approve",
+            verified_sha=git_utils.tree_fingerprint(proj),
+        )
+
+    assert _context_names(proj) == before
+    assert f"RUN-EVIDENCE-{TODO}.md" not in _context_names(proj)
+    assert not (outside / f"APPROVE-{TODO}.ready").exists()
+    assert canary.read_text(encoding="utf-8") == "keep me"
+
+
+def test_outside_run_refuses_symlinked_signal_leaf(tmp_git_repo):
+    """AC24 вне забега: симлинк-лист APPROVE — отказ без записи по ссылке
+    (прежний touch() шёл по ней)."""
+    from awf.api._errors import AwfApiError
+    proj = _project(tmp_git_repo)
+    _verify_state(proj)
+    outside = tmp_git_repo.parent / "outside-signal-nonrun"
+    outside.mkdir()
+    foreign = outside / "foreign.txt"
+    foreign.write_text("keep me", encoding="utf-8")
+    os.utime(foreign, (1, 1))  # известная mtime: touch по ссылке её сдвинет
+    signal = proj / ".agentic" / "inbox" / f"APPROVE-{TODO}.ready"
+    _link_leaf(signal, foreign)
+    before = _context_names(proj)
+
+    with pytest.raises(AwfApiError, match="unsafe managed path"):
+        api.approve_commit(proj, TODO, verified_sha=git_utils.tree_fingerprint(proj))
+
+    assert _context_names(proj) == before
+    assert signal.is_symlink(), "a refused approve must not replace the linked leaf"
+    assert foreign.read_text(encoding="utf-8") == "keep me"
+    assert foreign.stat().st_mtime == 1, "the refusal must not write through the link"
