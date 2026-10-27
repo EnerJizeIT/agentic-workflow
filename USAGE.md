@@ -146,9 +146,14 @@ not stay silent: silence does not fix the tool.
 **`awf config-get <dotted.key> [--project-dir DIR]`** — prints one
 `config.yaml` value for scripts: strings raw, other values as YAML. Exit
 codes: 0 — value printed, 1 — key absent, 3 — YAML `null`, 4 — a
-whitespace-only string. That is how the canonical suite helper tells "not
-configured" from a command: it maps 3/4 to its own rc 2 instead of
-running a command named `null`.
+whitespace-only string, 5 — `config.yaml` is malformed. The canonical
+suite helper asks not `config-get` but `awf suite-command`, which returns 0
+for the configured command, 1 for the legacy pytest fallback, 2 for a
+`null`/empty key ("not configured") and 5 for a broken `config.yaml` (it
+names the broken project instead of falling back to pytest). The helper
+honours `AWF_SUITE_CMD` (a shell command that replaces the configured
+suite command) and `AWF_PYTHON` (the interpreter for the default pytest
+command).
 
 ## Workflow commit
 
@@ -609,7 +614,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 - **Token usage:** ~2M input tokens per session (4 TODOs). Supervisor reads vision, BACKLOG, source files.
 - **Pipeline depth:** tested up to 5 agent stages. More stages = longer runs, more tokens.
 - **Single-machine:** not distributed. Orchestrator, workers, dashboard all run locally.
-- **Linux-first:** `PR_SET_PDEATHSIG` for worker cleanup is Linux-only. macOS should work. Windows untested.
+- **Linux-first:** `PR_SET_PDEATHSIG` for worker cleanup is Linux-only. macOS should work. Windows is unsupported: `start` and the destructive paths (`reset`/`rollback`/`init --force`) refuse on non-POSIX.
 - **One TODO at a time:** a pipeline processes one TODO per run; a run (забег)
   chains them — `awf_run_next` launches the next queued TODO.
 - **No streaming:** dashboard polls every 3 seconds (not WebSocket/SSE).

@@ -9,7 +9,16 @@ The lock lives in a SEPARATE file (``.agentic/state/.lock``): locking the
 data file itself would fight with the temp+rename writes — rename replaces
 the inode, and a lock held on the old inode protects nothing.
 
-fcntl.flock on POSIX; msvcrt.locking on Windows (kept for Windows support).
+fcntl.flock on POSIX; msvcrt.locking on Windows. The msvcrt branch is a
+live path only for the three callers that reach it directly via
+``locked()`` (``api/hygiene.py``, ``pipeline_state.py``,
+``infra/state_store/_lock.py``). The ``run_state`` facade also calls
+``locked()`` directly, but it opens the lock file through the managed
+opener first, and that opener refuses on non-POSIX before the lock — so
+msvcrt in that write path is a dead reserve, kept so the module still
+imports and the direct callers keep working. In ``pipeline_state`` the
+lock, the read and the merge all succeed on Windows; only the publish
+refuses (``ManagedPathError``), so no bytes are written.
 """
 from __future__ import annotations
 

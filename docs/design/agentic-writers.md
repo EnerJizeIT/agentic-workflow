@@ -68,8 +68,10 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 Ослабленная реализация молча не включается. Источник и полный текст —
 [`docs/design.md`](../design.md): строка «Запись состояния — fail-closed» и
 абзац «Платформа». Платформенный запрет закрывает путь записи состояния; при
-этом прямые вызовы `locked()` (`api/hygiene.py`, `infra/state_store/_lock.py`)
-до win32-ветки `_lock.py` доходят — она живая, её вердикт `unit-0239`
+этом прямые вызовы `locked()` (`api/hygiene.py`, `pipeline_state.py`,
+`infra/state_store/_lock.py`) до win32-ветки `_lock.py` доходят — она живая.
+У `pipeline_state.py` lock/read/merge успевают, отказывает только публикация;
+у `api/hygiene.py` и `infra/state_store/_lock.py` вердикт `unit-0239`
 (перевод на managed-примитив или явный отказ, не удаление).
 
 Правило листа (юнит 0235, N3): для разрушающей операции проверяются **все**
@@ -230,8 +232,8 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/infra/state_store/_projection.py` · запись (`write_text`) и удаление (`unlink`) проекции | `.agentic/state/*.json` | `tests/negative/roadmap_r2/test_roadmap_r2_publish_qa.py::test_projection_writer_no_follow_barrier` | `test_projection_writer_no_follow_barrier` | `barrier` |
 | `awf/infra/state_store/_records.py` · GC записей (`unlink`) | `.agentic/state/records/**` | `tests/negative/test_miniwave_m3b_movers.py::test_gc_records_refuses_symlinked_records_and_keeps_canary` | `test_gc_records_refuses_symlinked_records_and_keeps_canary` | `barrier` |
 | `awf/infra/state_store/_wipe.py` · reset состояния (`unlink`/`rmtree`) | `.agentic/state/**` | `tests/negative/test_miniwave_m3_managedfs.py::test_wipe_refuses_symlinked_state_and_keeps_outside_canary` | `test_wipe_refuses_symlinked_state_and_keeps_outside_canary` | `barrier` |
-| `awf/_lock.py` · win32 `mkdir` состояния (достижим: прямые `locked()` в `api/hygiene.py`, `infra/state_store/_lock.py`) | `.agentic/state/` (каталог блокировки) | `grep -n "state_dir.mkdir(parents=True, exist_ok=True)" awf/_lock.py` | `state_dir.mkdir(parents=True, exist_ok=True)` | `unit-0239` |
-| `awf/_lock.py` · win32 файл блокировки (достижим: прямые `locked()` в `api/hygiene.py`, `infra/state_store/_lock.py`) | `.agentic/state/.lock` | `grep -n 'open(lock_file, "a+b")' awf/_lock.py` | `open(lock_file, "a+b")` | `unit-0239` |
+| `awf/_lock.py` · win32 `mkdir` состояния (достижим: прямые `locked()` в `api/hygiene.py`, `pipeline_state.py`, `infra/state_store/_lock.py`) | `.agentic/state/` (каталог блокировки) | `grep -n "state_dir.mkdir(parents=True, exist_ok=True)" awf/_lock.py` | `state_dir.mkdir(parents=True, exist_ok=True)` | `unit-0239` |
+| `awf/_lock.py` · win32 файл блокировки (достижим: прямые `locked()` в `api/hygiene.py`, `pipeline_state.py`, `infra/state_store/_lock.py`) | `.agentic/state/.lock` | `grep -n 'open(lock_file, "a+b")' awf/_lock.py` | `open(lock_file, "a+b")` | `unit-0239` |
 | `awf/_log.py` · ротация лога | `.agentic/logs/*.log` | `grep -n "old.unlink()" awf/_log.py` | `old.unlink()` | `unit-0239` |
 | `awf/_log.py` · `rename` лога в архив | `.agentic/logs/*.log` | `grep -n "log_file.rename(archive)" awf/_log.py` | `log_file.rename(archive)` | `unit-0239` |
 | `awf/_log.py` · `mkdir` корня логов | `.agentic/` (корень при отсутствии) | `grep -n "root.mkdir(parents=True" awf/_log.py` | `root.mkdir(parents=True` | `unit-0239` |
@@ -339,7 +341,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
   `awf/doctrine.py` (обе строки — `exception+init-bootstrap`).
 - **`_lock.py` win32 — мёртвый резерв только в пути записи состояния.**
   `run_state._ensure_lock_file` отказывает до `locked()`, но прямые вызовы
-  `locked()` (`api/hygiene.py`,
+  `locked()` (`api/hygiene.py`, `pipeline_state.py`,
   `infra/state_store/_lock.py::project_lock`) входят в win32-ветку и создают
   `.agentic/state/.lock` голыми `mkdir` + `open` до любого POSIX-отказа. Это
   нарушение fail-closed, а не разрешённое исключение: обе строки несут

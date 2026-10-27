@@ -40,7 +40,7 @@ coverage, mutation smoke, произвольный shell) и timeout прого�
   — правило «один канонический прогон на attempt»; materialization
   (`awf/api/roles.py`) добавляет его блоком `awf-suite-canon` каждой
   skill-sourced роли. Источник шаблонов один — пакет `awf/templates/`;
-  корневой `templates/` — симлинк на него (нужен dogfood-запуску).
+  корневой `templates/` удалён (TODO-0230), dogfood-запуск читает пакет.
 - `tests/unit/test_template_sync.py` — источник шаблонов и живой
   `scripts/suite-canonical.sh` не расходятся с тем, что получает новый проект.
 

@@ -888,7 +888,9 @@ def _build_parser():
         "--variant",
         choices=list(BUILTIN_PIPELINES),
         help="Write a built-in starter pipeline (same text the setup form "
-             "offers) instead of a role composition",
+             "offers) instead of a role composition. Role files are NOT "
+             "created here: unresolved roles are listed and you add them "
+             "with `awf add-role <slug>` or the project-setup form",
     )
     p_pipeline_write.add_argument(
         "--force",

@@ -14,6 +14,22 @@ from . import api
 from .api._helpers import slugify_role
 
 
+def _warn_unresolved(roles: Any) -> None:
+    """Name every role with no role file and the route that creates one.
+
+    One text for both write paths: a ``--role`` composition and a
+    ``--variant`` starter report a missing role identically, so the two
+    answers cannot drift apart.
+    """
+    for role in roles:
+        print(
+            f"WARNING: role '{role}' has no role file (checked "
+            f".agentic/roles/ and the global awf roles dir) — add it "
+            f"with `awf add-role {role}` or the project-setup form; its "
+            f"stage will fail at runtime.",
+        )
+
+
 def run(args: Any) -> int:
     """Execute ``awf pipeline-write`` and return exit code."""
     project_dir = Path(getattr(args, "project_dir", ".")).resolve()
@@ -55,12 +71,7 @@ def run(args: Any) -> int:
     try:
         from .api.setup import _unresolved_team_roles
 
-        for role in _unresolved_team_roles(team, project_dir):
-            print(
-                f"WARNING: role '{role}' has no role file (checked "
-                f".agentic/roles/ and the global awf roles dir) — its stage "
-                f"will fail at runtime.",
-            )
+        _warn_unresolved(_unresolved_team_roles(team, project_dir))
     except Exception:
         pass  # the warning is best-effort; the write already succeeded
 
@@ -74,10 +85,12 @@ def _write_variant(project_dir: Path, name: str, variant: str, force: bool) -> i
     """Write a built-in starter pipeline (the setup form's variant path).
 
     The composition (template lookup, stage validation, description) lives
-    in ``awf.api.setup.write_variant_pipeline`` — the same public entry the
-    setup flow's builder uses. This command only formats the answer; it
-    reaches into no private helper. The written text is the preview text
-    (``pipeline_variant_yaml_text``), by construction of that one builder.
+    in ``awf.api.setup`` — the same variant composition the setup form's
+    writer uses (``write_pipeline(flow_variant=...)``); the form differs
+    only in materializing the role files. This command only formats the
+    answer; it reaches into no private helper. The written text is the
+    preview text (``pipeline_variant_yaml_text``), by construction of that
+    one builder.
 
     The side-effect contract is unchanged: only the pipeline file is
     touched; a missing role file is reported, never materialized
@@ -93,14 +106,13 @@ def _write_variant(project_dir: Path, name: str, variant: str, force: bool) -> i
         print(f"ERROR: {e}")
         return 1
 
-    for role in unresolved:
-        print(
-            f"WARNING: role '{role}' has no role file (checked "
-            f".agentic/roles/ and the global awf roles dir) — its "
-            f"stage will fail at runtime.",
-        )
+    _warn_unresolved(unresolved)
 
     verb = "Overwrote" if result.overwritten else "Wrote"
     print(f"{verb} pipeline {result.name!r} ({result.stages} stages) → {result.file}")
-    print("config.yaml and supervisor.md were not touched.")
+    print(
+        "config.yaml and supervisor.md were not touched; role files were "
+        "not created (unlike the setup form) — add a missing role with "
+        "`awf add-role <slug>` or the project-setup form.",
+    )
     return 0
