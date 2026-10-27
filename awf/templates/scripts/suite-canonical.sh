@@ -19,7 +19,8 @@
 #   scripts/suite-canonical.sh [--force] [--project DIR]
 #
 # Код возврата: код сьюта (0 — зелёный). 2 — не удалось посчитать tree-sha,
-# неверные аргументы или пустой verification.test_cmd («сьют не настроен»).
+# неверные аргументы, пустой verification.test_cmd или битый config.yaml
+# («сьют не настроен»; битый файл называется отдельным текстом).
 set -u
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 2
@@ -98,13 +99,18 @@ sha=$(run_awf tree-sha) || {
 # Команда: `AWF_SUITE_CMD` побеждает (оболочка — единственное место
 # переопределения); иначе — `awf suite-command`, единственная сборка
 # канонической строки (config / легаси-фолбэк / «не настроен»). Код возврата
-# резолвера: 0 — config, 1 — легаси, 2 — пустая/пробельная строка, null или
-# битый config.yaml.
+# резолвера: 0 — config, 1 — легаси, 2 — пустая/пробельная строка или null,
+# 5 — битый config.yaml (отдельный код: «файл не читается» и «ключа нет» —
+# разные состояния, K14).
 if [ -n "${AWF_SUITE_CMD:-}" ]; then
   cmd=$AWF_SUITE_CMD
 else
   cmd=$(run_awf suite-command)
   cfg_rc=$?
+  if [ "$cfg_rc" -eq 5 ]; then
+    echo "suite not configured: broken .agentic/config.yaml" >&2
+    exit 2
+  fi
   if [ "$cfg_rc" -ne 0 ] && [ "$cfg_rc" -ne 1 ]; then
     echo "suite not configured: set verification.test_cmd or AWF_SUITE_CMD" >&2
     exit 2

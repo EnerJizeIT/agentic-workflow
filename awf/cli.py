@@ -772,7 +772,7 @@ def _build_parser():
 
     p_suite_command = sub.add_parser(
         "suite-command",
-        help="CARRY IMP2: print the canonical full-suite command (rc 0 config, 1 legacy, 2 unset)",
+        help="CARRY IMP2: print the canonical full-suite command (rc 0 config, 1 legacy, 2 unset, 5 broken config)",
     )
     p_suite_command.add_argument(
         "--project-dir",

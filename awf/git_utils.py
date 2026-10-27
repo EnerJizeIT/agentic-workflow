@@ -155,9 +155,16 @@ def tree_fingerprint(project_dir: str | Path) -> str:
         path = pd / name
         if path.is_file():
             content_hash = hashlib.sha256()
-            with open(path, "rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 20), b""):
-                    content_hash.update(chunk)
+            try:
+                with open(path, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1 << 20), b""):
+                        content_hash.update(chunk)
+            except OSError:
+                # CTX2 (0277 volut 4): an unreadable untracked file (mode
+                # 000, a stale NFS handle) must not abort the whole
+                # fingerprint — callers use it as a cache key, not as a
+                # content audit. The marker keeps the digest deterministic.
+                content_hash = hashlib.sha256(b"\0unreadable-untracked-file\0")
             h.update(name.encode("utf-8", "surrogateescape") + b"\0" + content_hash.digest())
     return h.hexdigest()
 

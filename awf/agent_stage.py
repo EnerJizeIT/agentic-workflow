@@ -310,13 +310,25 @@ def run_agent_stage(
     engine_facts: list[str] = []
     log_path = log_holder.get("log_path", "")
     if log_path:
-        suite_warn = suite_guard.check(
-            project_dir,
-            _net.read_log_from(
-                Path(log_path),
-                int(log_holder.get("log_start_offset") or 0),
-            ),
-        )
+        # CTX2 (volut 4): the gate is an observer — a crash inside it (an
+        # unreadable untracked file, a git the model refuses) must neither
+        # kill the stage nor fake a fact. Same shape as the verify pack:
+        # log the failure, carry on without the fact.
+        try:
+            suite_warn = suite_guard.check(
+                project_dir,
+                _net.read_log_from(
+                    Path(log_path),
+                    int(log_holder.get("log_start_offset") or 0),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 — the gate must never stop the stage
+            _log(
+                logs_dir,
+                f"U6c: suite gate crashed: {type(e).__name__}: {e} — no "
+                "raw-full-suite fact",
+            )
+            suite_warn = ""
         if suite_warn:
             _log(logs_dir, suite_warn)
             engine_facts.append(suite_guard.RAW_SUITE_FACT)
