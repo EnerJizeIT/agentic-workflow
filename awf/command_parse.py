@@ -258,6 +258,15 @@ def unwrap_prefix(words: list[str]) -> list[str]:
                     i += 2
             continue
         if name in _LEAD_WRAPPERS:
+            # PA-0280-1: ``command -v``/``-V`` ASK whether a program exists;
+            # they do not run it. Unwrapping would report the query as a
+            # suite run (a wasted flake-probe run, a false gate fact).
+            if (
+                name == "command"
+                and i + 1 < len(words)
+                and unquote(words[i + 1]) in ("-v", "-V")
+            ):
+                break
             i += 1
             valued = _LEAD_VALUE_OPTIONS.get(name, frozenset())
             while i < len(words):

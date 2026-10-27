@@ -55,7 +55,12 @@ from ..pipeline_state import read_state
 from ..signals import short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
-from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic
+from ._helpers import (
+    managed_mkdir_api,
+    managed_write_api_text,
+    refuse_unsafe_surfaces,
+    require_agentic,
+)
 from ._results import (
     BlockedDraftResult,
     RemoveTodoResult,
@@ -428,7 +433,13 @@ def clear_stale_closures(project_dir: Path, todo_id: str) -> tuple[list[str], Pa
     files = closure_files(project_dir, todo_id)
     if not files:
         return [], None
-    trace.mkdir(parents=True, exist_ok=True)
+    # REVIEW 0281 residual: the trace leaf was preflighted above; creating
+    # it through the no-follow barrier refuses a link swapped in BEFORE this
+    # mkdir. The ``shutil.move`` calls below stay path-based, so a directory
+    # swapped in AFTER it is the movers' known residual (same class in
+    # ``remove_todo``/``retire_todo``), not something this mkdir can close —
+    # closing it needs dirfd moves, which this unit does not add.
+    managed_mkdir_api(trace, operation=f"clear closures for {todo_id}")
     moved: list[str] = []
     for f in files:
         shutil.move(str(f), str(trace / f.name))
@@ -585,7 +596,7 @@ def remove_todo(project_dir: Path, todo_id: str) -> RemoveTodoResult:
                 f"{todo_id} has PROGRESS — it was started. Use awf todo-retire."
             )
 
-        done_dir.mkdir(parents=True, exist_ok=True)
+        managed_mkdir_api(done_dir, operation=f"remove {todo_id}")
         shutil.move(str(md), str(trace))
         trace_rel = trace.relative_to(project_dir).as_posix()
 
@@ -766,7 +777,7 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
                 (p, p.name) for p in sorted(outbox.glob(f"REVIEW-{tid}.*")) if p.is_file()
             )
 
-        done_dir.mkdir(parents=True, exist_ok=True)
+        managed_mkdir_api(done_dir, operation=f"retire {todo_id}")
         moved: list[str] = []
         pairs: list[tuple[str, str]] = []  # (from, to) — project-relative
         for src, name in candidates:

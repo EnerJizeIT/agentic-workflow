@@ -295,3 +295,39 @@ def test_cli_runner_flag_does_not_need_a_readable_project(tmp_path, awf_bin, awf
 
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == "pytest"
+
+
+# --- PA-0280-1: ``command -v`` — запрос, а не запуск -----------------------
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "command -v pytest",
+        "command -V pytest",
+        "command -v pytest tests/",
+    ],
+)
+def test_command_query_is_not_a_suite_run(cmd):
+    """``command -v`` не запускает раннер — разбор оставляет ``other``.
+
+    Прежний разбор снимал ``command`` и называл программой pytest: гейт
+    видел полный прогон там, где команда только спрашивает про наличие
+    программы, и тратил второй прогон флейк-пробы.
+    """
+    kinds = [
+        program.kind
+        for program in (
+            command_parse.parse_words(command_parse.split_words(segment))
+            for segment in command_parse.split_segments(cmd)
+        )
+        if program is not None
+    ]
+    assert kinds == ["other"]
+
+
+def test_command_wrapper_still_unwraps_a_launch():
+    """``command pytest tests/`` по-прежнему запуск — оболочка снимается."""
+    program = command_parse.parse_words(
+        command_parse.split_words("command pytest tests/")
+    )
+    assert program is not None and program.kind == "pytest"
