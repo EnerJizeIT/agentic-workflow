@@ -385,9 +385,14 @@ def test_flow_variant_preview_matches_write_with_a_custom_default_pipeline(
 
     api.init_project(tmp_git_repo, project_name="M6CustomName")
     cfg = tmp_git_repo / ".agentic" / "config.yaml"
+    # Replace the declared name instead of appending a second
+    # ``default_pipeline`` key: the R10 writer refuses duplicate keys as
+    # invalid YAML (the old safe_dump silently kept the last one).
     cfg.write_text(
-        cfg.read_text(encoding="utf-8").rstrip("\n")
-        + "\ndefault_pipeline: custom-flow\n",
+        cfg.read_text(encoding="utf-8").replace(
+            'default_pipeline: "default"',
+            'default_pipeline: "custom-flow"',
+        ),
         encoding="utf-8",
     )
 

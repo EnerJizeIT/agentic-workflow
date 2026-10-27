@@ -95,6 +95,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/dispatch.py` | `dispatch_todo` (atomic: TODO + baseline + signal + pre-check grep) |
 | `api/lifecycle.py` | `init_project`, `get_status`, `get_report` |
 | `api/setup.py` | `apply_project_setup` (form materialization → pipeline.yaml + config) |
+| `config_write.py` | Байт-сохраняющий патч `config.yaml` (R10): скаляры `models.<role>`, `context.message`, `supervisor.instructions` без потери комментариев, пустых строк и порядка; отказ на битом YAML, flow-стиле, CRLF и нестандартном отступе |
 | `api/context.py` | `load_supervisor_context` (aggregate: vision + plan + phase + state) |
 | `api/brief.py` | `awf_brief` — карточка супервизора из живого состояния |
 | `api/dashboard.py` | Dashboard HTML generation + `generate_state_dict()` JSON API |
