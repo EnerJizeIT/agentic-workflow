@@ -340,6 +340,7 @@ optional_data_keys:
 
       <div id="stage-rows"></div>
       <p class="stage-empty" id="stage-empty">Стадий нет — добавьте хотя бы одну</p>
+      <p class="note warn" id="tools-error" hidden>Поле tools — невалидный JSON; стадия не сохранится</p>
 
       <div class="field" style="margin-top: 10px;">
         <button type="button" class="btn-add" id="add-stage-btn">+ Добавить стадию</button>
@@ -413,8 +414,24 @@ optional_data_keys:
         { key: "on_rejected", label: "on_rejected", policy: "on_rejected" },
         { key: "on_failed", label: "on_failed", policy: "on_failed" },
         { key: "max_retries", label: "max_retries", type: "number" },
-        { key: "max_rollbacks", label: "max_rollbacks", type: "number" }
+        { key: "max_rollbacks", label: "max_rollbacks", type: "number" },
+        // CLOSER IMP7 (PA2): these stage keys used to be dropped on
+        // re-save from the form. Empty values stay omitted, so an old
+        // pipeline round-trips without gaining keys.
+        { key: "skip_if", label: "skip_if (checklist_green)" },
+        { key: "write_check", label: "write_check (on/off)" },
+        { key: "write_allow", label: "write_allow (пути через запятую)", list: true, wide: true },
+        { key: "tools", label: "tools (JSON allow/deny)", json: true, wide: true }
       ];
+
+      function toolsValue(inp) {
+        try {
+          var v = JSON.parse(inp.value.trim());
+          return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+        } catch (e) {
+          return null;
+        }
+      }
 
       function mkBtn(text, cls, title) {
         var b = document.createElement('button');
@@ -461,6 +478,8 @@ optional_data_keys:
           if (f.policy) inp.setAttribute('list', 'pol-' + f.policy);
           if (f.type === 'number') { inp.min = '0'; inp.step = '1'; }
           var v = stage[f.key];
+          if (f.list && Array.isArray(v)) v = v.join(', ');
+          if (f.json && v && typeof v === 'object') v = JSON.stringify(v);
           if (v !== undefined && v !== null && v !== '') inp.value = String(v);
           div.appendChild(label);
           div.appendChild(inp);
@@ -506,14 +525,20 @@ optional_data_keys:
       function validate() {
         var rows = document.querySelectorAll('#stage-rows .stage-row');
         var name = document.getElementById('pipeline-name').value.trim();
+        var toolsBad = false;
         var rowsOk = rows.length > 0 && Array.prototype.every.call(rows, function (row) {
           var role = row.querySelector('.st-role').value.trim();
           var badBudget = Array.prototype.some.call(
             row.querySelectorAll('input[type="number"]'),
             function (i) { return budgetBad(i); }
           );
-          return role !== '' && !badBudget;
+          var toolsInp = row.querySelector('.st-tools');
+          var toolsInvalid = !!toolsInp && toolsInp.value.trim() !== '' &&
+            toolsValue(toolsInp) === null;
+          if (toolsInvalid) toolsBad = true;
+          return role !== '' && !badBudget && !toolsInvalid;
         });
+        document.getElementById('tools-error').hidden = !toolsBad;
         var overwriteBlocked =
           prefillExisting &&
           name === prefillName &&
@@ -540,6 +565,15 @@ optional_data_keys:
             if (f.type === 'number') {
               var n = Number(v);
               if (Number.isInteger(n) && n >= 0) st[f.key] = n;
+            } else if (f.list) {
+              var parts = v.split(',').map(function (s) { return s.trim(); })
+                .filter(function (s) { return s !== ''; });
+              if (parts.length) st[f.key] = parts;
+            } else if (f.json) {
+              var obj = toolsValue(inp);
+              // An empty object stays omitted, exactly as the preview
+              // writes it — the preview must match the saved file.
+              if (obj && Object.keys(obj).length) st[f.key] = obj;
             } else {
               st[f.key] = v;
             }
@@ -576,6 +610,14 @@ optional_data_keys:
           if (st.description) lines.push('  description: ' + yamlValue(st.description));
           if (st.input) lines.push('  input: ' + yamlValue(st.input));
           if (st.output) lines.push('  output: ' + yamlValue(st.output));
+          if (st.write_allow && st.write_allow.length) {
+            lines.push('  write_allow: [' + st.write_allow.map(yamlValue).join(', ') + ']');
+          }
+          if (st.write_check) lines.push('  write_check: ' + yamlValue(st.write_check));
+          if (st.skip_if) lines.push('  skip_if: ' + yamlValue(st.skip_if));
+          if (st.tools && Object.keys(st.tools).length) {
+            lines.push('  tools: ' + JSON.stringify(st.tools));
+          }
           ['on_blocked', 'on_approved', 'on_rejected', 'on_failed'].forEach(function (k) {
             if (st[k]) lines.push('  ' + k + ': ' + yamlValue(st[k]));
           });

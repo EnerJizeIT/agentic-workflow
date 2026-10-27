@@ -131,7 +131,8 @@ verify-pack. Проба не пишет в проект: allowlist разреш�
 - Данные: `awf/checklists/base.yaml`, `awf/checklists/classes.yaml`,
   образец волны `awf/templates/docs/waves/example.yaml`.
 - Гейт: `awf/checklist_gate.py` (`run(project, todo_id, tree_sha=...)`).
-- CLI: `awf checklist show|check|apply|hash <todo>`.
+- CLI: `awf checklist show|check|apply|hash <todo>`;
+  `awf checklist stats [--wave W] [--json]` — счётчики по первым вердиктам.
 - Пакет проверки: секция `checklist` в `awf verify-pack`.
 - Контракт юнита: `docs/unit-contract.md`, ключи `checklist_classes` и
   `wave`.

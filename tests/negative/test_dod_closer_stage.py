@@ -1797,3 +1797,92 @@ def test_stats_reads_the_writer_record_end_to_end(tmp_git_repo):
     (proj / "ok" / "nope").write_text("ok\n", encoding="utf-8")
     assert closer_stage.settle_run(proj, "TODO-0001", {}).kind == "green"
     assert _stats(proj) == (0, out)
+
+
+# ─── IMP7 (R7/R8): delivery — generator, templates, init, old pipeline ──
+
+
+def test_generator_and_templates_carry_closer(tmp_git_repo):
+    """T8: the generator and both shipped templates deliver the closer.
+
+    AC18 — a project composed from the form gets ``implementer-close``
+    after the last writing stage (``qa-review``) and before the
+    findings-only auditor; ``full`` and ``code-health`` carry it in place
+    and load through the shared validator. AC19 — ``awf init`` writes no
+    pipeline and leaves an existing file byte-for-byte; an old pipeline
+    without the key loads with an empty ``skip_if``.
+    """
+    from awf.api import setup
+
+    team = [
+        {"agent": "agent-implementer"},
+        {"agent": "agent-architect-review"},
+        {"agent": "agent-qa-review"},
+        {"agent": "agent-project-auditor"},
+    ]
+    generated = setup.build_pipeline_stages(team)
+    assert [s["name"] for s in generated] == [
+        "plan",
+        "agent-implementer",
+        "agent-architect-review",
+        "agent-qa-review",
+        "implementer-close",
+        "agent-project-auditor",
+        "verify",
+    ]
+
+    for variant, before, after in (
+        ("full", "agent-qa-review", "agent-project-auditor"),
+        ("code-health", "agent-refactoring-specialist", "verify"),
+    ):
+        template = setup._builtin_pipeline_template(variant)
+        assert template is not None, variant
+        stages = load_stages(template)
+        names = [s.name for s in stages]
+        assert "implementer-close" in names, variant
+        index = names.index("implementer-close")
+        assert names[index - 1] == before, (variant, names)
+        assert names[index + 1] == after, (variant, names)
+        closer = stages[index]
+        assert closer.kind == "execute"
+        assert closer.skip_if == "checklist_green"
+        assert closer.write_check == "off"
+        assert closer.output == "" and closer.write_allow == ()
+        generated_closer = next(
+            stage for stage in generated if stage["name"] == "implementer-close"
+        )
+        assert closer.task == generated_closer["task"], (
+            f"{variant}: the template task drifted from the generator"
+        )
+
+    # AC19: init creates the directory but no pipeline, and re-init is
+    # non-destructive — an existing file keeps its bytes.
+    api.init_project(tmp_git_repo, project_name="CloserDelivery")
+    pipelines = tmp_git_repo / ".agentic" / "pipelines"
+    assert not list(pipelines.glob("*.yaml"))
+    old = pipelines / "default.yaml"
+    old.write_text(
+        "name: default\nstages:\n"
+        "- name: plan\n  role: supervisor\n"
+        "- name: worker\n  role: worker\n"
+        "- name: verify\n  role: supervisor\n",
+        encoding="utf-8",
+    )
+    before_bytes = old.read_bytes()
+    api.init_project(tmp_git_repo, project_name="CloserDelivery")
+    assert old.read_bytes() == before_bytes
+    assert all(stage.skip_if == "" for stage in load_stages(old))
+
+
+def test_unit_contract_documents_the_closer_surface():
+    """T8 (audit IMP4/IMP6): the owner-facing document names the knobs."""
+    contract = (
+        Path(__file__).resolve().parents[2] / "docs" / "unit-contract.md"
+    ).read_text(encoding="utf-8")
+    for phrase in (
+        "skip_if",
+        "checklist.closer_attempts",
+        "awf checklist stats",
+        "CLOSER-<todo>.json",
+    ):
+        assert phrase in contract, phrase

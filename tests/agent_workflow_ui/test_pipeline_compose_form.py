@@ -344,3 +344,31 @@ def test_open_form_renders_prefilled_html(plugin_initialized, project):
     stages = _script_json(rendered, "initialStages")
     assert stages == [{"role": "agent-security-auditor", "max_retries": 2}]
     assert "value=\"audit-llm\"" in rendered
+
+
+def test_closer_and_write_fields_survive_resave():
+    """PA2 (closer IMP7): the form used to drop these keys on re-save.
+
+    ``skip_if``, ``write_check``, ``write_allow`` and ``tools`` are stage
+    schema keys (awf/pipeline.py); the form must render them, keep their
+    shape (list / object, not ``[object Object]``) and emit them again.
+    """
+    stage = {
+        "role": "agent-implementer",
+        "id": "implementer-close",
+        "skip_if": "checklist_green",
+        "write_check": "off",
+        "write_allow": ["reports/a.md", "reports/b.md"],
+        "tools": {"deny": ["write"]},
+    }
+    html = _render(initial_stages=[stage])
+    assert _script_json(html, "initialStages")[0] == stage
+
+    fields = html.split("var FIELDS =", 1)[1].split("];", 1)[0]
+    for key in ("skip_if", "write_check", "write_allow", "tools"):
+        assert f'key: "{key}"' in fields
+    # list/object shapes survive: join for the input, split/parse on collect
+    assert "f.list" in html and "f.json" in html
+    preview = html.split("function buildYamlPreview", 1)[1]
+    for key in ("write_allow", "write_check", "skip_if", "tools"):
+        assert key in preview
