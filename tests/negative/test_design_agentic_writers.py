@@ -334,7 +334,7 @@ def _probe_line_numbers(row: Row) -> set[int]:
 
 
 FS_OPERATION_RE = re.compile(
-    r"atomic_write_text|write_text|write_bytes|managed_write_api_text|\.touch\(|\.mkdir\(|"
+    r"atomic_write_text|write_text|write_bytes|managed_mkdir_api|managed_write_api_text|\.touch\(|\.mkdir\(|"
     r"\.unlink\(|os\.unlink\(|os\.link\(|shutil\.move\(|\.rename\(|\.replace\(|"
     r"rmtree\(|rmdir\(|\bopen\s*\(")
 NOTE_ROW_MARKERS = ("note «BLOCKED cleared»",)

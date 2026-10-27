@@ -1076,10 +1076,18 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
         )
 
     outbox = paths.outbox(project_dir)
-    outbox.mkdir(parents=True, exist_ok=True)
+    # REVIEW 0281 residual: the REVIEW artifact is a managed surface like
+    # every other outbox writer — a bare ``mkdir``/write follows a
+    # symlinked ``outbox`` or leaf and lands outside the project. Both the
+    # directory and the leaf go through the no-follow barrier; a refusal
+    # happens before the first effect (no file, no directory, no run
+    # count).
+    managed_mkdir_api(outbox, operation=f"reject {todo_id}")
     review_file = outbox / f"REVIEW-{todo_id}.md"
-    atomic_write_text(
-        review_file, f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n"
+    managed_write_api_text(
+        review_file,
+        f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n",
+        operation=f"reject {todo_id}",
     )
 
     # RUN5 #1 (Part A.1) + RB-2: record the attempt's files (new untracked
@@ -1277,7 +1285,13 @@ def create_baseline(
     # ``context/`` — one barrier for the surface before the first write, so a
     # symlinked context neither overwrites nor deletes outside the project.
     refuse_unsafe_surfaces(project_dir, "create baseline", context_dir)
-    context_dir.mkdir(parents=True, exist_ok=True)
+    # REVIEW 0281 residual: the preflight above checks ``context`` on the
+    # canonical (resolved-parent) basis; the directory and up to six baseline
+    # files are then created through the raw-basis no-follow walk, so a link
+    # swapped in after the preflight is refused before the first byte lands.
+    # The two ``unlink`` removals below are a different branch: each keeps its
+    # own ``refuse_unsafe_surfaces`` right before the delete.
+    managed_mkdir_api(context_dir, operation="create baseline")
 
     # REPORTS26 B1: track the files THIS call writes — an unexpected
     # exception after the first write removes them before re-raise (zero
@@ -1289,8 +1303,15 @@ def create_baseline(
         # The untracked snapshot carries RAW path bytes (surrogateescape);
         # the other baseline files are ASCII. One writer, one codec — a
         # non-UTF-8 name must not crash the dispatch after the TODO is
-        # reserved.
-        atomic_write_text(path, content, errors="surrogateescape")
+        # reserved. The writer is the managed no-follow one (REVIEW 0281
+        # residual): a symlinked component or leaf refuses instead of
+        # writing outside the project.
+        managed_write_api_text(
+            path,
+            content,
+            operation="create baseline",
+            errors="surrogateescape",
+        )
         written.append(path)
 
     try:
