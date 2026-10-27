@@ -111,7 +111,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
 | `pipeline_engine.py` | Stage handlers + transition logic |
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
-| `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, нарушения allowlist |
+| `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, запись нарушений allowlist; чтение и классификацию держит `violations.py` |
+| `violations.py` | Чтение и классификация записей нарушений стадии (CTX5, TODO-0281): один разбор открытых путей для merge и гейта, fail-closed на не-64-hex `after`; пишет запись `stage_manifest.py` |
 | `closer_stage.py` | Closer-стадия DoD (R1–R6): вердикт, `dod:`, `CLOSER-<id>.json`, статические дефекты блока |
 | `suite_guard.py` | Распознавание полного сьюта/сырых прогонов (R13): testpaths, обёртки, цитаты |
 | `command_parse.py` | Единый разбор шелл-строки для трёх потребителей сьюта (AUD-27-3): сегменты, слова, снятие обёрток (`uv/poetry/pdm/hatch run`, `sudo`, `then/do`, PATH), `python -m pytest`; гейт, verify-pack и `suite-canonical.sh` зовут его, а не держат свои парсеры |

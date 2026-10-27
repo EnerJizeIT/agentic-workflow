@@ -24,8 +24,10 @@ from . import _liveness
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import (
+    managed_mkdir_api,
     managed_write_api_text,
     read_file_text,
+    refuse_unsafe_surfaces,
     require_agentic,
     require_git_repo,
 )
@@ -948,18 +950,48 @@ def restore_todo(project_dir: Path, todo_id: str) -> RestoreResult:
         raise AwfApiError(f"done/{todo_id}/ has no TODO.md — nothing to restore.")
 
     inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
+    context = paths.context_dir(project_dir)
+    # CTX1 (TODO-0281, the R2 class): the restore MOVES a file out of the
+    # archive into the inbox and creates a signal — a symlinked ``inbox``
+    # or ``done`` used to send the move/touch outside the project. Same
+    # barrier as ``archive_todo``: POSIX + no-follow over every surface,
+    # BEFORE the first ``mkdir``.
+    #
+    # architect-review (TODO-0281): ``context`` belongs in this list too —
+    # ``forget_unit_history`` below unlinks CLOSER/CHECKLIST there, so a
+    # symlinked ``.agentic/context`` would send those deletes outside the
+    # project. The barrier covers the surfaces the operation really touches,
+    # not only the ones the move names.
+    target = inbox / f"{todo_id}.md"
+    refuse_unsafe_surfaces(
+        project_dir,
+        "restore",
+        inbox,
+        done_dir,
+        target,
+        inbox / f"{todo_id}.ready",
+        context,
+    )
+    # PA-0281-2 (audit 0281): the preflight alone left a swap window — a
+    # ``inbox`` replaced by a link between the check and ``Path.mkdir``
+    # created the directory outside the project (the F-0219-2 shape the
+    # dispatch path already closed). The managed mkdir IS the effect: the
+    # bare ``inbox.mkdir`` that used to stand here ran first and reopened
+    # the very window it was meant to close, so it is gone — not kept
+    # beside the managed call.
+    managed_mkdir_api(inbox, operation="restore")
     # A-12 (audit 2026-09-25): a restore must never overwrite an active
     # TODO — the archived copy and the live task are different units
     # sharing a number. Refuse before any move; both stay byte-for-byte.
-    target = inbox / f"{todo_id}.md"
     if target.exists():
         raise AwfApiError(
             f"inbox/{todo_id}.md already exists — {todo_id} is active. "
             "Refusing to overwrite it with the archived copy."
         )
     shutil.move(str(md), str(target))
-    (inbox / f"{todo_id}.ready").touch()
+    managed_write_api_text(
+        inbox / f"{todo_id}.ready", "", operation="write restore signal"
+    )
 
     # CTX2: a restored id is about to run again — the previous attempt's
     # CLOSER (first verdict/attempts) and CHECKLIST (verdict cache) must
@@ -1517,6 +1549,11 @@ def _reset_runtime_impl(
     # fallback log aborts with zero side effects — the failure of the
     # LAST directory must not leave the FIRST already deleted.
     try:
+        # CTX4 (TODO-0281): the POSIX guarantee is explicit before the
+        # first unlink — the same rule every other destructive surface
+        # follows (``_wipe``/``_lease``). Off POSIX the walk below could
+        # not honour no-follow, so the whole plan refuses.
+        managed_fs.require_posix("reset")
         managed_fs.assert_managed_dir(agentic, root=project_dir)
         for d in dirs_to_clean:
             managed_fs.assert_managed_dir(agentic / d, root=project_dir)
@@ -1717,6 +1754,9 @@ def _remove_orphans_impl(
     # listed before an invalid one is NOT removed either.
     plan: list[tuple[str, Path, Path]] = []
     try:
+        # CTX4 (TODO-0281): explicit POSIX refusal before the first unlink —
+        # the same rule reset follows, not a narrower second guard.
+        managed_fs.require_posix("remove_orphans")
         if os.path.lexists(inbox):
             managed_fs.assert_managed_dir(inbox, root=project_dir)
         for tid in orphan_ids:

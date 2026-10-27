@@ -23,16 +23,17 @@ from pathlib import Path
 from .. import budget as budget_mod
 from .. import config as cfg_mod
 from .. import git_utils, paths, pipeline_state, run_state, todos
-from .._atomic import atomic_write_text
 from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
 from ..unit_history import forget_unit_history
 from . import _liveness
 from ._errors import AwfApiError
 from ._helpers import (
+    managed_mkdir_api,
     managed_write_api_text,
     refuse_unsafe_surfaces,
     require_awf_project,
+    surfaces_are_managed,
 )
 from ._results import (
     RunFinishResult,
@@ -3575,8 +3576,21 @@ def _write_service_pipeline(project_dir: Path, slug: str) -> Path:
         f"# generated: {run_state.now_iso()}\n"
     )
     out = paths.agentic_dir(project_dir) / "pipelines" / f"{name}.yaml"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(out, header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True))
+    # PA-0281-1 (audit 0281): a managed write like every sibling pipeline
+    # writer — ``api/pipelines.py`` writes through the barrier, ``api/setup.py``
+    # preflights before its first effect. A symlinked ``pipelines`` (or a leaf
+    # swapped for a link) refuses BEFORE the write, so the generated file
+    # never appears outside the project. The rollback that guards this very
+    # path must only ever refuse to delete what this writer left inside.
+    # No separate ``managed_mkdir``: the managed write creates the missing
+    # ``pipelines`` directory itself (``_open_dir_chain(create=True)``), the
+    # same single-call shape the two sibling writers use.
+    refuse_unsafe_surfaces(project_dir, "service pipeline", out.parent, out)
+    managed_write_api_text(
+        out,
+        header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
+        operation=f"write service pipeline {name}",
+    )
     return out
 
 
@@ -3612,43 +3626,55 @@ def _rollback_service_side_effects(
             # to escape here).
             pass
     inbox = paths.inbox(project_dir)
-    for suffix in (".md", ".ready"):
-        try:
-            (inbox / f"{todo_id}{suffix}").unlink()
-        except OSError:
-            pass
     ctx = paths.context_dir(project_dir)
-    # Every baseline artefact a dispatch leaves behind — the "undo EVERY side
-    # effect" contract above is only held when this list is COMPLETE.
-    # ``create_baseline`` writes the snapshot files (``.worktree`` is the
-    # TODO-0204 member); the three transfer links (``.include`` /
-    # ``.carry_over`` / ``.claim``, TODO-0221) are written by the dispatch
-    # next to it. Each was added on its own; a missing member here leaves a
-    # stale artefact behind a rolled-back service start.
-    for name in (
-        f"BASELINE-{todo_id}.sha",
-        f"BASELINE-{todo_id}.status",
-        f"BASELINE-{todo_id}.tests.log",
-        f"BASELINE-{todo_id}.env.log",
-        f"BASELINE-{todo_id}.untracked",
-        f"BASELINE-{todo_id}.worktree",
-        f"BASELINE-{todo_id}.include",
-        f"BASELINE-{todo_id}.carry_over",
-        f"BASELINE-{todo_id}.claim",
-    ):
+    # PA-0281-3: an empty ``todo_id`` means the unit was never dispatched
+    # (the refusal happened in the write/dispatch pair) — there are no
+    # unit artefacts to undo, only the generated pipeline below.
+    # CTX4 (TODO-0281): the rollback is best-effort, but it must never
+    # delete THROUGH a symlinked surface (the S9-01 class the other
+    # destructive paths refuse). One shared preflight decides; an unsafe
+    # surface is skipped, not raised — the refusal it undoes stands.
+    if todo_id and surfaces_are_managed(project_dir, "service rollback", inbox):
+        for suffix in (".md", ".ready"):
+            try:
+                (inbox / f"{todo_id}{suffix}").unlink()
+            except OSError:
+                pass
+    if todo_id and surfaces_are_managed(project_dir, "service rollback", ctx):
+        # Every baseline artefact a dispatch leaves behind — the "undo EVERY
+        # side effect" contract above is only held when this list is
+        # COMPLETE. ``create_baseline`` writes the snapshot files
+        # (``.worktree`` is the TODO-0204 member); the three transfer links
+        # (``.include`` / ``.carry_over`` / ``.claim``, TODO-0221) are
+        # written by the dispatch next to it. Each was added on its own; a
+        # missing member here leaves a stale artefact behind a rolled-back
+        # service start.
+        for name in (
+            f"BASELINE-{todo_id}.sha",
+            f"BASELINE-{todo_id}.status",
+            f"BASELINE-{todo_id}.tests.log",
+            f"BASELINE-{todo_id}.env.log",
+            f"BASELINE-{todo_id}.untracked",
+            f"BASELINE-{todo_id}.worktree",
+            f"BASELINE-{todo_id}.include",
+            f"BASELINE-{todo_id}.carry_over",
+            f"BASELINE-{todo_id}.claim",
+        ):
+            try:
+                (ctx / name).unlink()
+            except OSError:
+                pass
+        # AU1 (audit IMP2): the unit's gate artifacts (CLOSER/CHECKLIST) are
+        # unkeyed unit history — a later unit that reuses the id must not
+        # inherit ``first_verdict``/``attempts``. CTX2: the SAME forget runs
+        # on the main rollback and on restore_todo — one home.
+        forget_unit_history(project_dir, todo_id)
+    pipeline_file = paths.agentic_dir(project_dir) / "pipelines" / f"{pipe_name}.yaml"
+    if surfaces_are_managed(project_dir, "service rollback", pipeline_file):
         try:
-            (ctx / name).unlink()
+            pipeline_file.unlink()
         except OSError:
             pass
-    # AU1 (audit IMP2): the unit's gate artifacts (CLOSER/CHECKLIST) are
-    # unkeyed unit history — a later unit that reuses the id must not
-    # inherit ``first_verdict``/``attempts``. CTX2: the SAME forget runs on
-    # the main rollback and on restore_todo — one home, no per-path lists.
-    forget_unit_history(project_dir, todo_id)
-    try:
-        (paths.agentic_dir(project_dir) / "pipelines" / f"{pipe_name}.yaml").unlink()
-    except OSError:
-        pass
 
 
 def run_service_start(
@@ -3751,14 +3777,26 @@ def run_service_start(
     )
 
     # Side effects — rolled back as a set on launch failure (V-01/V-02).
-    _write_service_pipeline(project_dir, slug_clean)
     from .dispatch import dispatch_todo
 
-    dispatch = dispatch_todo(
-        project_dir,
-        _service_todo_content(slug_clean, description_clean),
-        pipeline=pipe_name,
-    )
+    # PA-0281-3 (audit 0281): a refusal in EITHER half of the side-effect
+    # set leaves no generated pipeline behind. The docstring promises "no
+    # pipeline file", yet a ``dispatch_todo`` refusal (symlinked ``inbox``,
+    # a non-POSIX surface) used to escape without the rollback: the write
+    # was outside its ``try``. Empty ``todo_id`` = the unit was never
+    # dispatched; the rollback then skips the unit artefacts.
+    try:
+        _write_service_pipeline(project_dir, slug_clean)
+        dispatch = dispatch_todo(
+            project_dir,
+            _service_todo_content(slug_clean, description_clean),
+            pipeline=pipe_name,
+        )
+    except Exception:
+        _rollback_service_side_effects(
+            project_dir, "", pipe_name, clear_slot=False
+        )
+        raise
     todo_id = dispatch.todo_id
 
     outcome: dict = {}
@@ -4207,8 +4245,18 @@ def run_service_approve(
         )
 
     ctx = paths.context_dir(project_dir)
-    ctx.mkdir(parents=True, exist_ok=True)
     evidence_file = ctx / f"RUN-EVIDENCE-{todo_id}.md"
+    inbox = paths.inbox(project_dir)
+    signal = inbox / f"APPROVE-{todo_id}.ready"
+
+    # CTX2 (TODO-0281, the carry-cd R9 class): the same managed barrier the
+    # main approve uses. The preflight runs BEFORE the first directory or
+    # file: a symlinked ``context``/``inbox`` or a symlinked APPROVE leaf
+    # refuses with no RUN-EVIDENCE and no signal (INV1). The marker is
+    # never created through a link.
+    refuse_unsafe_surfaces(
+        project_dir, "service approve", ctx, evidence_file, inbox, signal
+    )
 
     # Verdict first, signal second (the A-04 pattern): a counted reject
     # must refuse WITHOUT the file — a leftover APPROVE would unlock the
@@ -4235,16 +4283,18 @@ def run_service_approve(
             "— the verdict stays 'rejected'. Resolve it (a fresh service "
             "run) before approving."
         )
-    atomic_write_text(
+    managed_write_api_text(
         evidence_file,
         f"# Service run evidence — {todo_id}\n\n"
         f"_Recorded: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_\n\n"
         f"{evidence_clean}\n",
+        operation="write service run evidence",
     )
-    inbox = paths.inbox(project_dir)
-    inbox.mkdir(parents=True, exist_ok=True)
-    signal = inbox / f"APPROVE-{todo_id}.ready"
-    signal.touch()
+    managed_mkdir_api(inbox, operation=f"service approve {todo_id}")
+    # K9 (the same rule as the main approve): the empty marker is written
+    # no-follow — a symlink swapped onto the leaf between the preflight and
+    # the write is replaced, never followed.
+    managed_write_api_text(signal, "", operation="write service approve signal")
     return ServiceRunApproveResult(
         todo_id=todo_id,
         signal_file=str(signal),
