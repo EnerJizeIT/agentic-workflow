@@ -113,6 +113,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
 | `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, нарушения allowlist |
 | `closer_stage.py` | Closer-стадия DoD (R1–R6): вердикт, `dod:`, `CLOSER-<id>.json`, статические дефекты блока |
+| `suite_guard.py` | Распознавание полного сьюта/сырых прогонов (R13): testpaths, обёртки, цитаты |
+| `suite_command.py` | Каноническая команда сьюта и артефакт (R13/K13); `awf suite-command` |
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |

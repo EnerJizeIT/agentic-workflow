@@ -992,7 +992,7 @@ def approve_commit(
             # evidence_digest.
             binding.update(candidate_evidence.binding_projection())
             binding["evidence_digest"] = candidate_evidence.evidence_digest()
-        managed_write_api_text(
+        managed_write_api_text(  # approve binding
             signal,
             json.dumps(binding, sort_keys=True) + "\n",
             operation="write approve signal",
