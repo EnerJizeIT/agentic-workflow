@@ -258,7 +258,16 @@
 - ⬜ **config.yaml, CRLF (PA-0286-1):** гвард CRLF живёт только при прямом вызове `config_write`; API-путь (`api/setup.py`, `api/roles.py`) читает через `Path.read_text()` и нормализует `\r\n` до писателя, поэтому CRLF-файл теряет все `\r`. Читать `newline=""` (или байты) либо снять обещание из `docs/design.md:98`.
 - ⬜ **config.yaml, два писателя (PA-0286-2):** `api/roles.py::_compute_config_update` принимает 4-пробельный отступ, `config_write::_find_block` требует ровно `role+2`; `dev: {}` первый считает отсутствующим блоком и дописывает второй `dev:`. Свести `roles.py` на `config_write.patch_mapping` (следующий юнит).
 - ⬜ **Runner naming (PA-0280-2):** `./scripts/run-all.sh` → `run-all.sh`, а `sudo ./scripts/run-all.sh` и `uv run scripts/run-all.sh` → `unknown`; counts null в обоих случаях. Выбрать одно имя (всегда `unknown` для скрипта) или строку в `docs/unit-contract.md`.
-- ⬜ **Зеркало отчёта метрик под `.agentic` (арх-ревью 0287):** `metrics._mirror_report` копирует отчёт голыми `mkdir` + `shutil.copyfile`, без классификации `_managed_root_for`. Если `metrics.mirror_dir` настроен внутри проекта (например, `.agentic/context`), симлинк-компонент уводит копию наружу — тот же разрыв, что AUD-0284-6 у `--out`, закрытый только для самого отчёта. Проводить зеркало через тот же классификатор при листе внутри проекта; тест с симлинком.
+- ⬜ **Зеркало отчёта метрик под `.agentic` (арх-ревью 0287):** `metrics._mirror_report` копирует отчёт голыми `mkdir` + `shutil.copyfile`, без классификации `managed_fs.classify_project_surface`. Если `metrics.mirror_dir` настроен внутри проекта (например, `.agentic/context`), симлинк-компонент уводит копию наружу — тот же разрыв, что AUD-0284-6 у `--out`, закрытый только для самого отчёта. Проводить зеркало через тот же классификатор при листе внутри проекта; тест с симлинком.
+
+### Остатки аудитов 0283–0286 (MINOR, не код)
+
+- ⬜ **AUD-0283-1:** шесть строк переведённых писателей в `docs/design/agentic-writers.md` держат вердикт `unit-0239` с `grep`-пробой, хотя отказные тесты уже есть; перевести строки в `barrier` селекторами (список тестов — в `.agentic/done/TODO-0283/DONE.md`).
+- ⬜ **AUD-0283-2:** у `managed_write_under_agentic` нет собственной строки в инвентаре (у брата `managed_write_text` есть); добавить `barrier`-строку на помощника.
+- ⬜ **AUD-0284-6:** отчёт `--out` закрыт юнитом 0287; остаток — зеркало `metrics._mirror_report`, оно заведено строкой «Зеркало отчёта метрик под `.agentic`» выше.
+- ⬜ **AUD-0284-7:** два предиката «это заголовок» (`unit_contract._find_contract_block` против `_markdown.HEADING_RE`/`first_heading_index`) расходятся на пустом и сдвинутом H1 — молчаливая потеря контракта; свести к одному + два кейса в `test_carry_paths`.
+- ⬜ **AUD-0285-3:** `docs/design.md` и `agentic-writers.md` прячут разрыв fail-closed у `pipeline_state.py` (`.agentic/state/.lock` и каталог создаются голыми `mkdir`+`open` до POSIX-отказа); дописать создание и `unit-0239` в оба предложения.
+- ⬜ **AUD-0286 MINOR:** PA-0286-1 (CRLF-гвард недостижим из API) и PA-0286-2 (два писателя `config.yaml`) уже заведены двумя строками выше — отдельных действий здесь нет.
 
 ## opencode 2.* — миграция (запланированный ран)
 

@@ -746,7 +746,9 @@ def parse_todo_contract(
                 "'spec_package' requires 'source_refs' — a unit that runs under "
                 "a package must name at least one '<file>#<section>' link into it "
                 "(a producer unit of the spec pipeline may omit them: it is "
-                "writing the package, not consuming it)"
+                "writing the package, not consuming it — name the run by adding "
+                "'pipeline: spec' to the contract block or dispatch it with "
+                "--pipeline spec)"
             )
     if "source_refs" in data and "spec_package" not in data:
         raise ValueError(

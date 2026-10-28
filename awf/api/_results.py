@@ -348,8 +348,10 @@ class ApplyProjectSetupResult:
 
     pipeline_file: str | None
     # TODO-0173 (quick tier): the S-class variant written next to the
-    # active pipeline (pipelines/quick.yaml); None when skipped
-    # (QA-only team / active pipeline already named 'quick').
+    # active pipeline (pipelines/quick.yaml); None when skipped (QA-only
+    # team / active pipeline already named 'quick') or when an existing
+    # quick.yaml is not a pipeline the engine can load (kept as is, a
+    # warning names why).
     quick_pipeline_file: str | None = None
     config_updated: bool = False
     supervisor_md_updated: bool = False

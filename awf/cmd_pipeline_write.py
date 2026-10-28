@@ -2,8 +2,9 @@
 
 Stages are generated mechanically from the given roles, exactly the way
 the project-setup form does it (``build_pipeline_stages``): supervisor
-``plan`` → one stage per role → supervisor ``verify``. Only the pipeline
-file is written — config.yaml and supervisor.md are not touched.
+``plan`` → one stage per role → the ``implementer-close`` gate →
+supervisor ``verify``. Only the pipeline file is written — config.yaml
+and supervisor.md are not touched.
 """
 from __future__ import annotations
 

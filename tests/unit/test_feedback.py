@@ -34,6 +34,28 @@ def _set_feedback_dir(project: Path, dir_path: Path) -> None:
     cfg_file.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
 
 
+def test_desktop_report_stays_portable_on_non_posix(
+    project, tmp_path, monkeypatch
+):
+    """AUD287-2, documented exception: the feedback report is outside-surface.
+
+    Unlike the metrics cache/report (managed writer, POSIX-gated), the file
+    for the owner on the desktop is written by a plain atomic writer, so it
+    stays portable. This test pins that difference as a decision.
+    """
+    from awf.infra import managed_fs
+
+    monkeypatch.setattr(managed_fs, "is_posix", lambda: False)
+    out_dir = tmp_path / "desk"
+    _set_feedback_dir(project, out_dir)
+
+    result = api.feedback(
+        project, ftype="bug", title="Portable report", body=""
+    )
+
+    assert Path(result.file).is_file()
+
+
 class TestFacts:
     """Шапка-факты: версия, проект, фаза, забег, задача, awf-репо."""
 

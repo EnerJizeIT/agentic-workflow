@@ -11,7 +11,6 @@ stages:
   on_rejected: escalate
   on_failed: escalate
   max_retries: 1
-  max_rollbacks: 3
 - name: spec-context
   role: agent-project-auditor
   task: 'Spec stage 0. Read the request and the project. Write the context file named
@@ -32,6 +31,7 @@ stages:
   on_rejected: escalate
   on_failed: escalate
   max_retries: 3
+  max_rollbacks: 3
 - name: spec-requirements-review
   role: agent-requirements-reviewer
   task: 'Spec stage 2. Review the requirements against their sources. Write the
@@ -42,7 +42,6 @@ stages:
   on_rejected: rollback_to:spec-requirements
   on_failed: escalate
   max_retries: 3
-  max_rollbacks: 3
 - name: spec-design
   role: agent-architector
   task: 'Spec stage 3. After requirements PASS, write the architecture file named in
@@ -73,7 +72,6 @@ stages:
   on_rejected: rollback_to:spec-requirements
   on_failed: escalate
   max_retries: 3
-  max_rollbacks: 3
 - name: verify
   role: supervisor
   description: Supervisor verifies the spec package and approves it

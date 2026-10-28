@@ -199,6 +199,55 @@ def assert_managed_surfaces(
         assert_no_symlink_escape(surface_on_root_basis(surface), root=root)
 
 
+def classify_project_surface(
+    surface: Path, *, project_dir: Path
+) -> tuple[Path, Path | None]:
+    """Decide whether a leaf belongs to the project and on which basis.
+
+    The ONE place that answers "is this path inside the project?" for the
+    artifact writers (metrics cache, metrics report, ...). It used to live
+    in ``metrics._managed_root_for`` as a second copy of the two-basis
+    knowledge kept here, and the copy drifted: a leaf spelled through a
+    SECOND alias of the project (``alias-b`` → the root, while the project
+    is spelled ``alias-a``) read as "outside" and skipped the barrier.
+
+    Returns ``(path, root)``: ``root`` is the canonical project root the
+    managed writer walks from, ``path`` is the surface re-anchored on it
+    with its own components kept (every component the caller named is
+    still ``lstat``-ed by the writer). ``root`` is ``None`` for a genuine
+    outside surface — then ``path`` is the surface as spelled (absolute,
+    ``..`` collapsed lexically like the old ``abspath``).
+
+    The prefix search is what recognizes ANY spelling of the root (a
+    relative path, a symlinked parent, a second alias) while keeping the
+    remaining components lexical: a swapped internal link
+    (``.agentic/reports -> outside``) is not resolved away and stays for
+    the no-follow walk to refuse.
+
+    Among the prefixes that resolve to the root it takes the SHALLOWEST
+    (the one closest to ``/``), not the first found walking up: an
+    internal component that happens to resolve to the root
+    (``sub -> .`` so ``sub/.agentic/x`` resolves to ``.agentic/x``) must
+    stay in the chain, exactly like any other swapped component. Taking
+    the deepest match would drop ``sub`` and silently write at a path the
+    caller never named.
+    """
+    raw_root = raw_root_for(project_dir)
+    absolute = surface if surface.is_absolute() else Path.cwd() / surface
+    absolute = Path(os.path.abspath(absolute))
+    root = Path(os.path.realpath(raw_root))
+    matched: Path | None = None
+    for prefix in (absolute, *absolute.parents):
+        if os.path.realpath(prefix) == str(root):
+            matched = prefix
+    if matched is None:
+        return absolute, None
+    chain = absolute.relative_to(matched)
+    if not chain.parts:
+        return root, root
+    return root / chain, root
+
+
 # ── symlink-free walks ──────────────────────────────────────────────────
 
 
@@ -563,6 +612,7 @@ __all__ = [
     "surface_on_root_basis",
     "surface_on_raw_basis",
     "assert_managed_surfaces",
+    "classify_project_surface",
     "assert_no_symlink_escape",
     "assert_managed_dir",
     "open_append_log",

@@ -386,8 +386,10 @@ budget is exhausted it stops and reports instead of looping forever.
 ## Custom pipelines
 
 You design the pipeline in the setup form. Any roles, any depth. Every
-pipeline is `plan (supervisor) → worker stages → verify (supervisor)` —
-the form generates the wrapper stages, you pick the middle. Stage keys:
+generated pipeline (except the quick tier, which drops the closer) is
+`plan (supervisor) → worker stages → closer gate →
+verify (supervisor)` — the form adds the wrapper stages, you pick
+the middle. Stage keys:
 `name`, `role`, `description`, `on_blocked` / `on_approved` /
 `on_rejected`, `max_retries`, `max_rollbacks`. `kind` (plan / execute /
 verify) is computed from the stage's position — do not write it.
@@ -437,12 +439,23 @@ stages:
 
 **Unit levels: quick vs full.** The setup form writes a second pipeline
 next to the active one — `.agentic/pipelines/quick.yaml`, the same team
-minus the QA stage (`agent-qa-review`). Pick the level per unit:
+minus the QA stage (`agent-qa-review`) and minus the closer gate
+(`implementer-close`). Pick the level per unit:
 
 - **quick** — S-class units: docs, shield tests, counters, one-line fixes
-  that change no behavior.
+  that change no behavior. No closer: the quick tier stays the short set,
+  so a red completion checklist is not closed for you — it still shows up
+  as a failed check at verify; fix it by hand or run the unit on the full
+  pipeline.
 - **full** (the active pipeline) — engine, security, behavior, data
-  schemas. When in doubt, full.
+  schemas. Carries the closer gate. The shipped `full` and `code-health`
+  starters carry it too.
+- **single** (a `stage_mode` of the setup form) — one working role per
+  unit, NOT one agent: the closer gate and `verify` still run.
+- When in doubt, full.
+
+An existing `quick.yaml` is never overwritten: the setup form keeps the file
+and returns it as is, so delete it when you want it rebuilt for a new team.
 
 How to choose: `pipeline: quick` in the TODO front-matter, or a per-item
 `{"todo_id": "TODO-NNNN", "pipeline": "quick"}` in the run queue (the
@@ -494,8 +507,9 @@ $ awf start --pipeline audit-llm
 
 - `awf pipeline-write <name> --role R1 [--role R2] [--force]` (MCP
   `awf_write_pipeline`) writes ONLY `.agentic/pipelines/<name>.yaml` —
-  stages are generated like in the setup form (plan → roles → verify);
-  config.yaml and supervisor.md are not touched.
+  stages are generated like in the setup form
+  (plan → roles → closer gate → verify); config.yaml and supervisor.md
+  are not touched.
 - `awf pipeline-write <name> --variant full|code-health` writes one of the
   built-in starter pipelines — byte-identical to what the project-setup
   form offers. Role files are the project's responsibility here: the

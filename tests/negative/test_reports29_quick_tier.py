@@ -93,14 +93,16 @@ class TestQuickPipelineWritten:
         quick = _pipes(awf_project) / "quick.yaml"
         data = yaml.safe_load(quick.read_text(encoding="utf-8"))
         validated = validate_pipeline_document(data, "quick.yaml")
-        assert [s["name"] for s in validated] == [
-            "plan", DEV, "implementer-close", "verify",
-        ]
+        assert [s["name"] for s in validated] == ["plan", DEV, "verify"]
         loaded = load_stages(quick)
-        assert [s.name for s in loaded] == [
-            "plan", DEV, "implementer-close", "verify",
-        ]
-        assert [s.kind for s in loaded] == ["plan", "execute", "execute", "verify"]
+        assert [s.name for s in loaded] == ["plan", DEV, "verify"]
+        assert [s.kind for s in loaded] == ["plan", "execute", "verify"]
+
+    def test_quick_has_no_closer(self, awf_project):
+        """IMP7 (TODO-0290): quick stays the short set — no closer gate."""
+        api.apply_project_setup(awf_project, team=[{"agent": DEV}, {"agent": QA}])
+        stages = _stages(_pipes(awf_project) / "quick.yaml")
+        assert "implementer-close" not in [s.get("name") for s in stages]
 
     def test_quick_name_is_quick(self, awf_project):
         api.apply_project_setup(awf_project, team=[{"agent": DEV}, {"agent": QA}])
@@ -150,16 +152,107 @@ class TestNormalPipelineUntouched:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert config["default_pipeline"] == "custom"
 
-    def test_resubmit_backs_up_existing_quick(self, awf_project):
+    def test_resubmit_keeps_existing_quick(self, awf_project):
+        """TODO-0290: an existing quick.yaml is the user's file — kept as is.
+
+        The 2.1.0 shape (with the closer) is a real pipeline, so adopting it
+        is what keeps old quick units running exactly as before.
+        """
         quick = _pipes(awf_project) / "quick.yaml"
         quick.parent.mkdir(parents=True, exist_ok=True)
-        quick.write_text("old: content\n", encoding="utf-8")
-        api.apply_project_setup(awf_project, team=[{"agent": DEV}, {"agent": QA}])
+        old_text = (
+            "name: quick\n"
+            "description: written by 2.1.0\n"
+            "stages:\n"
+            "- name: plan\n"
+            "  role: supervisor\n"
+            "- name: agent-implementer\n"
+            "  role: agent-implementer\n"
+            "- name: implementer-close\n"
+            "  role: agent-implementer\n"
+            "  id: implementer-close\n"
+            "  skip_if: checklist_green\n"
+            "  write_check: 'off'\n"
+            "- name: verify\n"
+            "  role: supervisor\n"
+        )
+        quick.write_text(old_text, encoding="utf-8")
+        result = api.apply_project_setup(
+            awf_project, team=[{"agent": DEV}, {"agent": QA}]
+        )
         backup = _pipes(awf_project) / "quick.yaml.bak"
-        assert backup.is_file()
-        assert backup.read_text(encoding="utf-8") == "old: content\n"
-        # and the new file is the QA-free one
-        assert _worker_roles(_stages(quick)) == [DEV]
+        assert not backup.exists()
+        assert quick.read_text(encoding="utf-8") == old_text
+        assert result.quick_pipeline_file == str(quick)
+
+    def test_empty_existing_quick_is_not_reported_ready(self, awf_project):
+        """TODO-0290: a file the engine cannot load is not a quick tier.
+
+        Adopting it silently would hand the next unit a `pipeline: quick`
+        that fails in `load_stages` with no hint of the cause.
+        """
+        quick = _pipes(awf_project) / "quick.yaml"
+        quick.parent.mkdir(parents=True, exist_ok=True)
+        quick.write_text("", encoding="utf-8")
+        result = api.apply_project_setup(
+            awf_project, team=[{"agent": DEV}, {"agent": QA}]
+        )
+        assert result.quick_pipeline_file is None
+        assert any("quick" in w for w in result.warnings), result.warnings
+        # never overwritten — the user may still want to inspect it
+        assert quick.read_text(encoding="utf-8") == ""
+
+    def test_quick_path_that_is_a_directory_is_not_adopted(self, awf_project):
+        """TODO-0290: a directory on the quick path is a named skip."""
+        quick = _pipes(awf_project) / "quick.yaml"
+        quick.parent.mkdir(parents=True, exist_ok=True)
+        quick.mkdir()
+        result = api.apply_project_setup(
+            awf_project, team=[{"agent": DEV}, {"agent": QA}]
+        )
+        assert result.quick_pipeline_file is None
+        assert any("quick" in w for w in result.warnings), result.warnings
+        assert quick.is_dir()
+
+    def test_symlinked_pipelines_dir_is_refused_before_adopt(
+        self, awf_project, tmp_path
+    ):
+        """TODO-0290 REVIEW CTX3: the adopt branch must not skip the barrier.
+
+        A symlinked ``.agentic/pipelines`` used to be refused by the write
+        path. The early return (keep the user's quick.yaml) stood before
+        ``refuse_unsafe_surfaces``, so a valid file OUTSIDE the project was
+        reported as the ready quick tier. The barrier belongs before the
+        branch, exactly as :func:`write_pipeline` runs it.
+        """
+        from awf.api._errors import AwfApiError
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "quick.yaml").write_text(
+            "name: quick\n"
+            "description: outside the project\n"
+            "stages:\n"
+            "- name: plan\n"
+            "  role: supervisor\n"
+            "- name: verify\n"
+            "  role: supervisor\n",
+            encoding="utf-8",
+        )
+        pipes = _pipes(awf_project)
+        if pipes.is_symlink() or pipes.is_file():
+            pipes.unlink()
+        elif pipes.is_dir():
+            import shutil
+
+            shutil.rmtree(pipes)
+        pipes.symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(AwfApiError, match="unsafe managed path"):
+            api.setup.write_quick_pipeline(
+                [{"agent": DEV}, {"agent": QA}], awf_project
+            )
+        assert (outside / "quick.yaml").is_file()
 
 
 class TestQuickSkipped:

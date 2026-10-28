@@ -28,6 +28,37 @@ AUTHOR_STAGES = (
 )
 
 
+def test_only_the_rollback_target_declares_max_rollbacks() -> None:
+    """AUD3 (0288): the budget lives on the rollback TARGET, nowhere else.
+
+    The engine takes the limit from ``stages[target_idx].max_rollbacks``
+    (``_rollback_budget_allow``), so a budget on a rollback SOURCE — or on a
+    stage no rollback targets — is dead configuration. Both reviews roll back
+    to ``spec-requirements``: the budget must sit there and only there.
+    """
+    from awf.pipeline import _ROLLBACK_TO_KEYS
+
+    stages, _description = setup._variant_composition("spec")
+    # QA2 (0289): derive the targets from the SAME key set the resolver
+    # reads (``on_blocked`` and ``on_rejected``). Scanning only
+    # ``on_rejected`` would miss a future ``on_blocked: rollback_to:X`` and
+    # then praise a budget on X as "dead" (or miss one that X lacks).
+    targets = {
+        str(stage.get(key) or "").split("rollback_to:", 1)[1]
+        for stage in stages
+        for key in _ROLLBACK_TO_KEYS
+        if str(stage.get(key) or "").startswith("rollback_to:")
+    }
+    assert targets == {"spec-requirements"}, targets
+    carrying = {stage["name"] for stage in stages if "max_rollbacks" in stage}
+    assert carrying == targets, (
+        "max_rollbacks is read only from the rollback TARGET; stages carrying "
+        f"a (possibly inert) budget: {sorted(carrying)}"
+    )
+    target = next(s for s in stages if s["name"] == "spec-requirements")
+    assert target["max_rollbacks"] == 3
+
+
 def _stages() -> list[dict]:
     stages, _description = setup._variant_composition("spec")
     return stages

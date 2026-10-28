@@ -483,14 +483,14 @@ optional_data_keys: []
       <div class="field">
         <label class="radio-line">
           <input type="radio" name="stage_mode" value="single" checked>
-          Одна рабочая роль на юнит (+ verify)
+          Одна рабочая роль на юнит (+ closer-гейт и verify)
         </label>
         <label class="radio-line">
           <input type="radio" name="stage_mode" value="chain">
           Линейная цепочка: все роли на каждый юнит
         </label>
       </div>
-      <p class="hint">Типовой случай — одна роль выполняет TODO, supervisor проверяет. Цепочка — каждый юнит проходит все роли команды по порядку.</p>
+      <p class="hint">Типовой случай — одна роль выполняет TODO, closer-стадия закрывает «Чек-лист завершения» (пропускается, когда он уже зелёный), затем supervisor проверяет. Цепочка — каждый юнит проходит все роли команды по порядку.</p>
 
       <div id="single-mode-opts">
         <div class="field">
@@ -800,8 +800,9 @@ optional_data_keys: []
       }
 
       // Mirrors awf.api.setup.build_pipeline_stages: plan(supervisor) →
-      // working stages → verify(supervisor). "single" keeps the primary
-      // role (+ the team QA role when requested); "chain" — all roles.
+      // working stages → closer gate → verify(supervisor). "single" keeps
+      // the primary role (+ the team QA role when requested); "chain" — all
+      // roles. The closer (IMP7) is part of both — it is not "one agent".
       // The text format matches the yaml.safe_dump of the written file.
       function buildPreviewText(mode, team, primary, includeQa) {
         var roles = teamRoleSlugs(team);
@@ -831,7 +832,28 @@ optional_data_keys: []
           '  role: supervisor',
           '  description: Supervisor studies the plan and creates a TODO'
         ];
-        work.forEach(function (r) {
+        var closerLines = [
+          '- name: implementer-close',
+          '  role: agent-implementer',
+          '  id: implementer-close',
+          '  task: Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`); `manual`',
+          '    вне scope, блок не править; не меняй скоуп и контракт; запусти `awf checklist',
+          '    check <todo>`; отчитайся пунктами.',
+          '  skip_if: checklist_green',
+          "  write_check: 'off'"
+        ];
+        // The closer goes after the last writing stage: trailing
+        // findings-only roles (``_POST_CLOSER_ROLES`` in awf.api.setup)
+        // stay after it. The same rule as build_pipeline_stages — the
+        // preview must not invent a second position.
+        var closerAt = work.length;
+        while (closerAt > 0 && work[closerAt - 1] === 'agent-project-auditor') {
+          closerAt -= 1;
+        }
+        work.forEach(function (r, idx) {
+          if (idx === closerAt) {
+            closerLines.forEach(function (line) { lines.push(line); });
+          }
           lines.push('- name: ' + r);
           lines.push('  role: ' + r);
           lines.push('  description: ' + r + ' executes the TODO');
@@ -840,6 +862,9 @@ optional_data_keys: []
           lines.push('  on_failed: escalate');
           lines.push('  max_retries: 3');
         });
+        if (closerAt === work.length) {
+          closerLines.forEach(function (line) { lines.push(line); });
+        }
         lines.push('- name: verify');
         lines.push('  role: supervisor');
         lines.push('  description: Supervisor verifies the result');
