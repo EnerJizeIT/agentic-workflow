@@ -22,6 +22,8 @@ from . import closer_stage, paths, stage_manifest, todos, verify
 from . import commit_plan as _commit_plan
 from . import config as cfg_mod
 from . import stage_timeout as _stage_timeout
+from . import suite_guard as _suite_guard
+from . import unit_contract as _unit_contract
 from ._errors import AwfApiError as _AwfApiError
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
@@ -2012,6 +2014,28 @@ def execute_agent_stage(
         _log(logs_dir, f"STAGE-ERROR: {e}")
         return current_todo, stage_idx, 1
     _log(logs_dir, f"stage timeout: {stage_cap.seconds}s (source: {stage_cap.source})")
+
+    # OPS IMP2 (R2/K2): a full run in the declared checks marks a "big unit"
+    # — name it BEFORE the spawn, with the cap and its route. An explicit
+    # caller timeout suppresses the line (AC21) at any stage/project keys.
+    # The warning never changes rc and never writes BLOCKED; a broken
+    # contract is a verify-pack matter, so it builds no line here.
+    if agent_hard_timeout is None:
+        try:
+            contract, _unknown = _unit_contract.parse_todo_contract(
+                todos.read_todo_text(project_dir, current_todo)
+            )
+        except ValueError:
+            contract = None
+        declared = (contract or {}).get("verify")
+        full_cmd = _suite_guard.declares_full_suite(declared, project_dir)
+        if full_cmd:
+            _log(
+                logs_dir,
+                f"STAGE-WARN: full suite in verify: `{full_cmd}`; "
+                f"cap {stage_cap.seconds}s (source: {stage_cap.source}) — "
+                "raise timeout or split the unit",
+            )
 
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
     _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")

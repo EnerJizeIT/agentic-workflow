@@ -424,6 +424,31 @@ def detect_full_suite(text: str, *, testpaths: bool = False) -> bool:
     return False
 
 
+def declares_full_suite(
+    verify: object, project_dir: str | Path = "."
+) -> str | None:
+    """The first ``verify:`` command that runs the whole suite, or ``None``.
+
+    OPS IMP2 (R2/K2): the ONE owner of "is this declared command a full
+    run". Every command goes through :func:`detect_full_suite` with the
+    same ``testpaths`` reading the raw-run gate uses, so the warning and
+    the gate cannot drift apart. Anything but a list/tuple of strings is
+    "nothing declared".
+
+    The caller owns the contract parse: a broken block is a verify-pack
+    matter, not a reason to guess a warning.
+    """
+    if not isinstance(verify, (list, tuple)):
+        return None
+    testpaths = suite_command.testpaths_configured(project_dir)
+    for command in verify:
+        if isinstance(command, str) and detect_full_suite(
+            command, testpaths=testpaths
+        ):
+            return command
+    return None
+
+
 def _artifact_matches(context_dir: Path, sha: str, command: str) -> bool:
     for artifact in context_dir.glob(f"SUITE-{sha}-*.json"):
         try:
@@ -463,5 +488,6 @@ def check(project_dir: str | Path, log_text: str) -> str:
 __all__ = [
     "RAW_SUITE_FACT",
     "check",
+    "declares_full_suite",
     "detect_full_suite",
 ]
