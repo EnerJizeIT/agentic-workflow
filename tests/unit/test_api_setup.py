@@ -7,6 +7,8 @@ Validates that form submit data correctly materializes into:
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -889,3 +891,33 @@ class TestDegradedConfigLeavesBothSurfaces:
         assert any(
             "file left untouched" in w for w in result.warnings
         ), result.warnings
+
+
+class TestSupervisorTemplateUnitLevels:
+    """TODO-0290 REVIEW CTX1: the manual every new project receives.
+
+    ``awf init`` copies ``awf/templates/roles/supervisor.md`` into
+    ``.agentic/roles/supervisor.md``, so the quick/single wording has to
+    live there too — README/USAGE are not what the supervisor reads.
+    """
+
+    TEMPLATE = (
+        Path(__file__).resolve().parents[2]
+        / "awf" / "templates" / "roles" / "supervisor.md"
+    )
+
+    def _section(self) -> str:
+        text = self.TEMPLATE.read_text(encoding="utf-8")
+        start = text.index("### Unit levels (quick vs full)")
+        end = text.index("### Quality bar (unit protocol)", start)
+        return text[start:end]
+
+    def test_quick_names_the_missing_closer(self):
+        section = self._section()
+        assert "without the closer gate" in section
+        assert "No closer" in section
+
+    def test_single_is_not_one_agent_and_keeps_closer(self):
+        section = self._section()
+        assert "NOT one agent" in section
+        assert "closer gate and `verify` still run" in section

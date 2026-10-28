@@ -275,6 +275,15 @@ def test_variant_help_names_the_difference(capsys):
     assert "awf add-role" in out
 
 
+def test_role_help_names_the_closer_gate(capsys):
+    """TODO-0290: --help names the closer gate for a role composition."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["pipeline-write", "--help"])
+    assert exc.value.code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "implementer-close gate" in out
+
+
 def test_variant_write_matches_preview_and_touches_only_pipeline(
     project, capsys, no_resolvable_roles
 ):

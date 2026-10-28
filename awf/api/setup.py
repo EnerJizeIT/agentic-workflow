@@ -69,7 +69,8 @@ def _stage_yaml(name: str, role: str, **extra: Any) -> dict[str, Any]:
 _slugify_role = slugify_role
 
 # CLOSER IMP7 (R7): the definition-of-done stage every composed pipeline
-# carries. The canonical contract is docs/spec/closer-stage K6; the local
+# carries — except the quick tier (IMP7/TODO-0290: quick stays short). The
+# canonical contract is docs/spec/closer-stage K6; the local
 # .agentic/pipelines/default.yaml and the shipped templates hold the same
 # block, so the generator is the third surface of one composition.
 _CLOSER_STAGE_NAME = "implementer-close"
@@ -341,12 +342,14 @@ def build_pipeline_stages(
     stage_mode: str = "chain",
     primary_role: str = "",
     include_qa: bool = False,
+    include_closer: bool = True,
     warnings: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build ordered pipeline stages from team selection.
 
     Wraps the user's team with supervisor at both ends
-    (always plan → agents → verify).
+    (always plan → agents → verify; the closer gate sits before ``verify``
+    unless ``include_closer=False``).
 
     REPORTS33 (TODO-0209): ``stage_mode`` picks the working part — the
     composition is a conscious choice, not a surprise:
@@ -355,7 +358,12 @@ def build_pipeline_stages(
     - ``"single"``: one working role per unit — ``primary_role`` (or the
       first team role) plus, when ``include_qa`` is set and the team has
       a QA role that is not the primary, that QA role. A primary that is
-      already the QA role adds no duplicate stage.
+      already the QA role adds no duplicate stage. This is NOT "one agent
+      only": the closer gate (``implementer-close``) and ``verify`` still
+      run, so a single unit keeps its definition-of-done check.
+    - ``include_closer`` (IMP7, TODO-0290): ``True`` (default) inserts
+      the ``implementer-close`` gate; the quick tier passes ``False`` —
+      quick stays the short S-class set.
 
     Args:
         team_order: list of team member dicts (from form's team_config JSON).
@@ -373,8 +381,9 @@ def build_pipeline_stages(
 
     Returns:
         List of stage dicts: ``[plan(supervisor)] + [working stages] +
-        [implementer-close] + [verify(supervisor)]``. CLOSER IMP7 (R7):
-        the closer stands after the last writing stage — before the
+        [implementer-close] + [verify(supervisor)]`` (the closer is
+        omitted when ``include_closer=False``). CLOSER IMP7 (R7): the
+        closer stands after the last writing stage — before the
         findings-only tail (``_POST_CLOSER_ROLES``).
 
     Raises:
@@ -484,7 +493,8 @@ def build_pipeline_stages(
                 max_retries=3,
             )
         )
-    stages.insert(1 + closer_at, _closer_stage())
+    if include_closer:
+        stages.insert(1 + closer_at, _closer_stage())
 
     stages.append(
         _stage_yaml(
@@ -727,7 +737,9 @@ def write_pipeline(
     Args:
         team_order: form team_config list (ordered).
         project_dir: absolute path to awf project.
-        stage_mode: ``"chain"`` (default) or ``"single"``.
+        stage_mode: ``"chain"`` (default) or ``"single"``. ``"single"``
+            is one working role per unit — NOT one agent: the
+            closer gate and ``verify`` still run.
         primary_role: ``"single"`` mode — the primary role (name/slug).
         include_qa: ``"single"`` mode — add the team's QA role.
         flow_variant: built-in starter pipeline (``full`` / ``code-health`` / ``spec``);
@@ -793,6 +805,34 @@ def write_pipeline(
     return target
 
 
+def _existing_quick_problem(target: Path) -> str | None:
+    """Why an existing ``quick.yaml`` cannot be adopted — ``None`` when it can.
+
+    TODO-0290: "keep the user's quick.yaml" is only honest for a file the
+    engine can run. An empty, truncated or hand-broken file (or a
+    directory on that path) used to be reported as a working quick tier:
+    ``quick_pipeline_file`` was set and the unit failed later at
+    ``load_stages`` with no hint of the real cause. A file that does not
+    parse as a pipeline document is not "the user's quick tier", so the
+    caller names it instead of adopting it.
+    """
+    if not target.is_file():
+        return f"existing {target.name} is not a regular file"
+    try:
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, UnicodeDecodeError, OSError) as e:
+        # A YAML parser error is multi-line and points at columns; the
+        # warning is one line for the user, so only the first line travels.
+        first = str(e).strip().splitlines()
+        detail = first[0] if first else type(e).__name__
+        return f"existing {target.name} is unreadable ({detail})"
+    try:
+        validate_pipeline_document(data, target.name)
+    except AwfApiError as e:
+        return f"existing {target.name} is not a valid pipeline ({e})"
+    return None
+
+
 def write_quick_pipeline(
     team_order: list[dict[str, Any]],
     project_dir: Path,
@@ -802,34 +842,69 @@ def write_quick_pipeline(
     """Write ``.agentic/pipelines/quick.yaml`` — the team without QA stages.
 
     TODO-0173 (quick tier): the S-class variant of the same team — the
-    QA role stages (``_QA_ROLE_SLUGS``) removed: plan(supervisor) →
-    worker stages → verify(supervisor). The normal pipeline and
-    ``default_pipeline`` are untouched; quick is an alternate pipeline
-    selected per unit (``pipeline: quick`` in the TODO front-matter or a
-    run-queue item).
+    QA role stages (``_QA_ROLE_SLUGS``) and the closer gate removed:
+    plan(supervisor) → worker stages → verify(supervisor). The normal
+    pipeline and ``default_pipeline`` are untouched; quick is an
+    alternate pipeline selected per unit (``pipeline: quick`` in the
+    TODO front-matter or a run-queue item).
+
+    IMP7 (TODO-0290): quick stays the short set — no ``implementer-close``
+    gate; the closer belongs to the full/default/single compositions.
 
     Skipped (``None`` + a warning naming the reason) when:
     - no worker stage survives the QA removal (QA-only team), or
-    - the ACTIVE pipeline already has the name ``quick`` — writing the
-      variant would clobber the active file.
+    - the ACTIVE pipeline already has the name ``quick`` — that file holds
+      the full composition this setup wrote, so the QA-free variant must
+      not replace it.
 
-    An existing quick.yaml is backed up to ``.bak`` (same as
-    :func:`write_pipeline`).
+    An EXISTING quick.yaml is never overwritten (TODO-0290): it may be
+    the user's own file (including one written by 2.1.0 with the closer),
+    so it is returned as is. That also keeps old quick pipelines running
+    exactly as before — no closer is injected into a local file. Only a
+    file that parses as a pipeline document is adopted: an empty, broken
+    or non-file path is a NAMED skip (``None`` + a warning), never a
+    "quick is ready" report over something ``load_stages`` would reject.
     """
     pipelines_dir = project_dir / ".agentic" / "pipelines"
 
     if _active_pipeline_name(project_dir) == _QUICK_PIPELINE_NAME:
         reason = (
-            "the active pipeline is named 'quick' — writing the quick "
-            "variant would overwrite the active file"
+            "the active pipeline is named 'quick' — it holds the full "
+            "composition from this setup, so the QA-free variant is not written"
         )
         log.warning("write_quick_pipeline: %s — not written", reason)
         if warnings is not None:
             warnings.append(f"quick pipeline: {reason}, quick.yaml not written")
         return None
 
+    target = pipelines_dir / f"{_QUICK_PIPELINE_NAME}.yaml"
+    # Target is the only surface: there is no backup branch anymore. The
+    # barrier runs BEFORE the adopt branch (TODO-0290 REVIEW CTX3): an
+    # existing file reached through a symlinked `.agentic/pipelines` must
+    # be refused, not reported as a ready quick tier with a path outside
+    # the project — that is what the write path refused before the adopt
+    # branch existed.
+    refuse_unsafe_surfaces(project_dir, "write quick pipeline", target)
+    if target.exists():
+        problem = _existing_quick_problem(target)
+        if problem is None:
+            log.info("Quick pipeline already exists at %s — kept as is", target)
+            return target
+        # Never overwritten (TODO-0290) — but never reported as ready either.
+        log.warning("write_quick_pipeline: %s — quick.yaml left as is", problem)
+        if warnings is not None:
+            warnings.append(
+                f"quick pipeline: {problem} — quick.yaml left as is; "
+                "delete it to rebuild the quick tier"
+            )
+        return None
+
     try:
-        stages = build_pipeline_stages(team_order, exclude_roles=_QA_ROLE_SLUGS)
+        stages = build_pipeline_stages(
+            team_order,
+            exclude_roles=_QA_ROLE_SLUGS,
+            include_closer=False,
+        )
     except ValueError as e:
         reason = str(e)
         log.warning("write_quick_pipeline: %s — not written", reason)
@@ -837,24 +912,9 @@ def write_quick_pipeline(
             warnings.append(f"quick pipeline: {reason} — quick.yaml not written")
         return None
 
-    target = pipelines_dir / f"{_QUICK_PIPELINE_NAME}.yaml"
-    backup = target.with_name(f"{target.name}.bak")
-    # Same branch rule as ``write_pipeline``: the backup is a surface only
-    # when there is something to move aside.
-    surfaces = [target]
-    if target.exists():
-        surfaces.append(backup)
-    refuse_unsafe_surfaces(project_dir, "write quick pipeline", *surfaces)
-    if target.exists():
-        try:
-            target.rename(backup)
-            log.info("Backed up existing quick pipeline to %s", backup)
-        except OSError:
-            pass
-
     content = _dump_pipeline(
         _QUICK_PIPELINE_NAME,
-        "Quick tier (S-class units): the team without the QA stage",
+        "Quick tier (S-class units): the team without the QA stage or closer gate",
         stages,
     )
     managed_write_api_text(
@@ -1383,8 +1443,9 @@ def apply_project_setup(
        ``default_pipeline`` from config.yaml when it declares a valid
        custom name, otherwise ``default.yaml`` (AUD06-04). Existing file
        backed up to ``.bak``. Also writes ``pipelines/quick.yaml`` — the
-       S-class variant without the QA stages (TODO-0173); a skip (QA-only
-       team / active pipeline named 'quick') is a warning, not a failure.
+       S-class variant without the QA stages or the closer gate
+       (TODO-0173/TODO-0290); a skip (QA-only team / active pipeline named
+       'quick') is a warning, not a failure.
     2. Patches ``.agentic/config.yaml``:
         - ``models.<role>.agent_name = "worker"`` for each non-supervisor
           team role (BD-12), keyed by role slug (AUD06-01).
@@ -1403,7 +1464,9 @@ def apply_project_setup(
         team: list of team member dicts from form team_config.
         context_message: optional free-text project context (UI-2).
         supervisor_instructions: optional additional supervisor guidance (UI-3).
-        stage_mode: ``"chain"`` (default) or ``"single"``.
+        stage_mode: ``"chain"`` (default) or ``"single"``. ``"single"``
+            is one working role per unit — NOT one agent: the
+            closer gate and ``verify`` still run.
         primary_role: ``"single"`` mode — the primary role (name/slug).
         include_qa: ``"single"`` mode — add the team's QA role.
         flow_variant: built-in starter pipeline (``full`` / ``code-health`` / ``spec``);

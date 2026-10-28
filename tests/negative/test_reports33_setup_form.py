@@ -121,6 +121,15 @@ class TestSingleRoleMode:
         ]
         assert any("QA" in w for w in result.warnings)
 
+    def test_single_keeps_closer_gate(self, awf_project):
+        """IMP7 (TODO-0290): single is not "one agent" — the closer runs."""
+        api.apply_project_setup(awf_project, team=TEAM, stage_mode="single")
+        stages = yaml.safe_load(_pipeline_text(awf_project))["stages"]
+        assert any(
+            s.get("id") == "implementer-close" for s in stages
+        ), stages
+        assert stages[-1]["name"] == "verify"
+
     def test_primary_is_qa_role_no_duplicate_stage(self, awf_project):
         api.apply_project_setup(
             awf_project,
@@ -190,6 +199,25 @@ class TestPreview:
             primary_role="agent-implementer",
         )
         assert _pipeline_text(awf_project) == expected
+
+    def test_form_text_names_the_closer_gate(self, awf_project):
+        """TODO-0290: the single label/hint say closer, not "one agent"."""
+        from agent_workflow_ui.render.engine import (
+            create_default_env,
+            render_template,
+        )
+
+        single_text = api.setup.pipeline_yaml_text(
+            TEAM, name="default", stage_mode="single",
+        )
+        rendered = render_template(create_default_env(), "project-setup", {
+            "form_id": "FORM-test",
+            "submit_url": "http://127.0.0.1:1/submit/FORM-test",
+            "available_roles": [],
+            "pipeline_preview": {"name": "default", "single": single_text},
+        })
+        assert "closer-гейт" in rendered
+        assert "Одна рабочая роль на юнит (+ verify)" not in rendered
 
     def test_render_data_contains_pipeline_text(self, awf_project):
         """Уровень render: в контекст формы попадает текст pipeline.yaml."""

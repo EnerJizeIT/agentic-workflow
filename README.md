@@ -58,7 +58,7 @@ pip install awf agent-workflow-ui
 - 🎯 **State-Machine Orchestration (SMO)** — awf guides the supervisor through phases: `init → goal → form → normalize → brief → run → verify → done`. Every tool returns a `next_action` hint — even weak models follow the full flow without getting lost.
 - 🔧 **55 MCP tools** — typed pipeline control: init, dispatch, start, approve, reject, rollback, dashboard, model validation, run-queue revision, service run, commit-workflow. No bash, no manual file editing.
 - 📊 **Live Dashboard** — HTTP server with real-time polling. Chat-style agent handoffs, TODO content, TODO timeline, worker status, browser notifications. No page reloads.
-- 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. You choose in the setup form.
+- 🧱 **Custom pipelines** — any roles, any depth. 1 stage or 10. You choose in the setup form. Generated, full and code-health pipelines carry the `implementer-close` gate (it closes the unit's completion checklist); `single` keeps it too, while the quick tier skips it to stay short.
 - ✅ **Approve / Reject** — symmetric verify tools. Approve commits and archives. Reject kills the pipeline and asks for fixes.
 - 🔍 **Pre-dispatch check** — before launching a pipeline, awf greps your codebase for keywords from the TODO. Warning if the task might already be done.
 - 🔄 **Crash recovery** — salvage path when workers don't signal, orphan TODO cleanup, state reconciliation on startup.

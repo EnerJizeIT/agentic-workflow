@@ -570,12 +570,17 @@ Every TODO must start with a prohibitions section adapted to the project:
 ### Unit levels (quick vs full)
 
 The setup form writes a second pipeline, `.agentic/pipelines/quick.yaml` —
-the same team without the QA stage. Pick the level per unit:
+the same team without the QA stage and without the closer gate. Pick the
+level per unit:
 
 - **quick** — S-class units: docs, shield tests, counters, one-line fixes
-  that change no behavior.
+  that change no behavior. No closer: nobody closes the completion
+  checklist for you, so a red checklist stays red at verify — fix it by
+  hand or run the unit on the full pipeline.
 - **full** (the active pipeline) — engine, security, behavior, data
-  schemas. When in doubt, full.
+  schemas. Carries the closer gate. When in doubt, full.
+- **single** is the form's `stage_mode`, not a level: one working role per
+  unit — NOT one agent. The closer gate and `verify` still run.
 - How to choose: `pipeline: quick` in the TODO front-matter, or a
   per-item `{"todo_id": "TODO-NNNN", "pipeline": "quick"}` in the run
   queue (the queue item wins over the front-matter).

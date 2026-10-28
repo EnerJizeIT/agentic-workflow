@@ -214,3 +214,7 @@ exit-код verify-pack: супервизор оправдывался вруч�
 - `awf/spec_package.py::spec_gate` — один предикат готовности.
 - `awf/api/dispatch.py`, `awf/api/pipeline.py` — три точки гейта.
 - `awf/verify_pack.py::_spec_budget_section` — справка без стопа.
+
+## Closer-гейт: quick без него, single с ним
+
+**Практика.** Closer (`implementer-close`) входит в default, full и code-health и в режиме single; quick остаётся коротким набором без него, а существующий `quick.yaml` пользователя не перезаписывается.
