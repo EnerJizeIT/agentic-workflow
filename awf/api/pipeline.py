@@ -25,6 +25,7 @@ from ..signals import find_signal_file, short_id
 from ..todo_ids import is_valid_todo_id
 from ..unit_history import forget_unit_history
 from ..verify import parse_argv
+from ..versions import apply_handshake
 from . import _lease, _liveness
 from ._background import CHILD_PROBE_SECONDS, PipelineArgs, start_in_background
 from ._errors import AwfApiError
@@ -1838,6 +1839,10 @@ def start_pipeline(
 ) -> StartResult:
     """Start the pipeline from the beginning.
 
+    OPS IMP6 (R6/K7): the answer carries the launch handshake (runner/plugin
+    versions + advisory drift warning) on every path — applied by this
+    wrapper, so the warning never changes the outcome (INV7).
+
     ``todo_id`` pins the pipeline to a specific TODO (NEG-2026-09-19 R1):
     without it the engine picks the "newest active" TODO, which breaks run
     queues with dependencies.
@@ -1851,6 +1856,33 @@ def start_pipeline(
     before. The run-level flag (``run_start(no_checkpoints=...)``) and the
     config/env bypasses keep working; any one of them is enough.
     """
+    return apply_handshake(
+        _start_pipeline(
+            project_dir,
+            background=background,
+            pipeline=pipeline,
+            from_stage=from_stage,
+            auto=auto,
+            timeout=timeout,
+            todo_id=todo_id,
+            no_checkpoints=no_checkpoints,
+        ),
+        project_dir,
+    )
+
+
+def _start_pipeline(
+    project_dir: Path,
+    *,
+    background: bool = False,
+    pipeline: str | None = None,
+    from_stage: str | None = None,
+    auto: bool = False,
+    timeout: int | None = None,
+    todo_id: str = "",
+    no_checkpoints: bool = False,
+) -> StartResult:
+    """The launch itself; :func:`start_pipeline` adds the handshake fields."""
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
     # OPS IMP1 (R1/INV8): validate the cap BEFORE the readiness gate, the
@@ -2161,6 +2193,35 @@ def continue_pipeline(
     THIS launch only — process-scoped, not written to config or state
     (same semantics as :func:`start_pipeline`).
     """
+    return apply_handshake(
+        _continue_pipeline(
+            project_dir,
+            pipeline=pipeline,
+            from_stage=from_stage,
+            auto=auto,
+            timeout=timeout,
+            background=background,
+            ack=ack,
+            no_checkpoints=no_checkpoints,
+            todo_id=todo_id,
+        ),
+        project_dir,
+    )
+
+
+def _continue_pipeline(
+    project_dir: Path,
+    *,
+    pipeline: str | None = None,
+    from_stage: str | None = None,
+    auto: bool = False,
+    timeout: int | None = None,
+    background: bool = True,
+    ack: str = "",
+    no_checkpoints: bool = False,
+    todo_id: str = "",
+) -> StartResult:
+    """The resume itself; :func:`continue_pipeline` adds the handshake fields."""
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
     # OPS IMP1 (R1/INV8): same early cap validation as start_pipeline —

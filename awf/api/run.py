@@ -26,6 +26,7 @@ from .. import git_utils, paths, pipeline_state, run_state, stage_timeout, todos
 from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
 from ..unit_history import forget_unit_history
+from ..versions import apply_handshake
 from . import _liveness
 from ._errors import AwfApiError
 from ._helpers import (
@@ -1459,7 +1460,31 @@ def run_next(
     exceeded / stop flag / rejected twice → run stops with a report; previous
     TODO not archived → refused; TODO file missing → refused (the supervisor
     must write it first).
+
+    OPS IMP6 (R6/K7): the answer carries the launch handshake (runner/plugin
+    versions + advisory drift warning); it never changes the action (INV7).
     """
+    return apply_handshake(
+        _run_next(
+            project_dir,
+            from_stage=from_stage,
+            auto=auto,
+            timeout=timeout,
+            background=background,
+        ),
+        project_dir,
+    )
+
+
+def _run_next(
+    project_dir: Path,
+    *,
+    from_stage: str | None = None,
+    auto: bool = False,
+    timeout: int | None = None,
+    background: bool = True,
+) -> RunNextResult:
+    """The launch itself; :func:`run_next` adds the handshake fields."""
     project_dir = _require_run_project(project_dir)
     # OPS IMP1 (R1/INV8): validate the cap BEFORE the reservation and the
     # first file — caller by raise, project key as a refusal.

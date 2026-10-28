@@ -21,10 +21,10 @@ means, so every source is read here and nowhere else:
 A version alone does not prove the code is identical (two checkouts can both
 say 2.1.0 — AUD-0293-2). The identity of the code is the commit: ``repo_commit``
 reads the pinned checkout's HEAD, ``process_commit`` reads the running tree's,
-and ``doctor`` compares them. The launch handshake compares versions only; its
-own commit check is IMP6's work (TODO-0297). ``version_warning`` is the
-handshake's compact drift line (K5/K7); ``doctor`` prints the same rules as
-separate per-check lines (AC23).
+and ``doctor`` compares them; the launch handshake (``handshake``) names a
+commit disagreement too, so a version match cannot hide different code.
+``version_warning`` is the handshake's compact drift line (K5/K7); ``doctor``
+prints the same rules as separate per-check lines (AC23).
 """
 from __future__ import annotations
 
@@ -390,6 +390,73 @@ def version_warning(
     return "version drift: " + ", ".join(parts) + f" — run awf doctor; {advice}"
 
 
+def _commit_identity_warning(process: str, runner: str) -> str:
+    """The handshake's code-identity line (AUD-0293-2, AUD-0296d-2).
+
+    A version string does not identify the code, so ``awf start`` also names
+    a commit disagreement between the pinned checkout and the running tree.
+    Only evidence against evidence is a drift: a checkout outside git (no
+    commit) proves nothing and stays silent here — ``doctor`` reports that
+    as its own row. A runner commit with no process commit is the audit's
+    CTX1 case and is named as such.
+    """
+    if not runner:
+        return ""
+    if not process:
+        return f"process has no commit evidence (runner commit {runner})"
+    if runner != process:
+        return f"runner commit {runner} differs from process commit {process}"
+    return ""
+
+
+def handshake(project_dir: str | Path, config: dict[str, Any]) -> dict[str, str]:
+    """The launch handshake facts (K7): the version pair and the drift warning.
+
+    ``runner_version`` is the version of the code that will execute stages —
+    the pinned checkout, else the process. ``plugin_version`` is the serving
+    plugin module (AC27: ``unknown`` never forms a pair). ``warning`` is the
+    version drift line plus, when a pinned checkout is in play, the commit
+    identity line; both are advisories — the launch proceeds (INV7).
+    """
+    process = process_version()
+    runner = runner_version(project_dir, config)
+    plugin = plugin_version()
+    path = runner_path(project_dir, config)
+    warning = version_warning(
+        process=process,
+        runner=runner,
+        plugin=plugin,
+        pinned_dir=str(path) if path is not None else "",
+        plugin_required=plugin_requirement(),
+    )
+    if path is not None:
+        identity = _commit_identity_warning(process_commit(), repo_commit(path))
+        if identity:
+            warning = f"{warning}; {identity}" if warning else identity
+    return {
+        "runner_version": runner,
+        "plugin_version": plugin,
+        "warning": warning,
+    }
+
+
+def apply_handshake(result: Any, project_dir: str | Path) -> Any:
+    """Fill the launch result's handshake fields (K7), returning *result*.
+
+    The handshake is advisory: any failure while reading the version facts
+    leaves the fields empty instead of breaking a valid launch (INV7).
+    """
+    try:
+        config = cfg_mod.load(Path(project_dir).resolve())
+        facts = handshake(project_dir, config)
+    except Exception:  # noqa: BLE001 — INV7: a version read never breaks a launch
+        return result
+    result.runner_version = facts["runner_version"]
+    result.plugin_version = facts["plugin_version"]
+    result.warning = facts["warning"]
+    return result
+
+
 __all__ = [
     "UNKNOWN",
     "RUNNER_DIR_KEY",
@@ -397,7 +464,9 @@ __all__ = [
     "ADVICE_UPGRADE",
     "DRIFT_FLOOR",
     "DRIFT_VERSION",
+    "apply_handshake",
     "awf_satisfies",
+    "handshake",
     "install_metadata",
     "pinned_version",
     "plugin_drift_kind",

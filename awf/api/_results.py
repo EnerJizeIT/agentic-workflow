@@ -325,6 +325,13 @@ class StartResult:
     # the warning the supervisor needs to warn the user BEFORE the form
     # pops up. "" when the checkpoint is off for this launch.
     checkpoint_warning: str = ""
+    # OPS IMP6 (R6/K7): the launch handshake — the version of the code that
+    # will execute stages (pinned runner, else process), the serving plugin
+    # module's version, and the drift warning ("" when they agree). The
+    # warning is advisory: it never changes the outcome or rc (INV7).
+    runner_version: str = ""
+    plugin_version: str = ""
+    warning: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -656,6 +663,11 @@ class RunNextResult:
     log_file: str = ""
     report_file: str = ""
     next_action: str = ""
+    # OPS IMP6 (R6/K7): the same launch handshake ``StartResult`` carries —
+    # runner/plugin versions and the advisory drift warning (INV7).
+    runner_version: str = ""
+    plugin_version: str = ""
+    warning: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

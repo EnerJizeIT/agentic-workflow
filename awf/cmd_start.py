@@ -6,11 +6,47 @@ single source of truth for both foreground and background modes.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from . import api
+from .infra import managed_fs
+
+
+def _report_handshake(result: api.StartResult) -> None:
+    """Print the launch handshake (R6/K7): versions and any drift warning.
+
+    Both lines go to stderr and, when ``result.log_file`` is known, to the
+    launch log — K7/T18 want the version pair there even on a healthy run,
+    so the log can answer "which code ran this pipeline" after the fact. The
+    log write goes through the managed opener — a bare ``Path.open("a")``
+    follows a symlinked ``.agentic``/``logs`` outside the project (the
+    F-B/F2 class every other log writer delegates to ``managed_fs``).
+    Advisories only: the caller's return code is untouched (INV7).
+    """
+    lines: list[str] = []
+    if result.runner_version or result.plugin_version:
+        lines.append(
+            f"runner: {result.runner_version}, plugin: {result.plugin_version}"
+        )
+    if result.warning:
+        lines.append(result.warning)
+    if not lines:
+        return
+    for line in lines:
+        print(line, file=sys.stderr)
+    if not result.log_file:
+        return
+    try:
+        fd, _actual = managed_fs.open_append_log(
+            Path(result.log_file), create=True
+        )
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except (OSError, managed_fs.ManagedPathError):
+        pass
 
 
 def run(args: Any) -> int:
@@ -58,6 +94,10 @@ def run(args: Any) -> int:
     except api.AwfApiError as e:
         print(str(e))
         return 1
+
+    # A noop never launched anything — the versions describe no run.
+    if result.run_mode != "noop":
+        _report_handshake(result)
 
     # Background — print launch info, return immediately
     if result.run_mode == "background":
