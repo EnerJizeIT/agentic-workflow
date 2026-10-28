@@ -345,14 +345,14 @@ def test_l2_out_tilde_is_expanded_once(tmp_path, monkeypatch):
 
 def test_d_tool_counter_matches_docs():
     counts = registry.tool_counts()
-    assert counts == {"total": 55, "awf": 50, "ui": 5}, counts
+    assert counts == {"total": 56, "awf": 51, "ui": 5}, counts
     names = registry.tool_names()
     assert "awf_blocked_draft" in names
 
     repo_root = Path(__file__).resolve().parents[2]
-    assert "55 tools: 50 `awf_*` workflow + 5 UI" in (
+    assert "56 tools: 51 `awf_*` workflow + 5 UI" in (
         repo_root / "USAGE.md"
     ).read_text(encoding="utf-8")
-    assert "55 инструмента: 50 `awf_*` workflow + 5 UI" in (
+    assert "56 инструмента: 51 `awf_*` workflow + 5 UI" in (
         repo_root / "USAGE.ru.md"
     ).read_text(encoding="utf-8")
