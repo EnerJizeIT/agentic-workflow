@@ -45,6 +45,9 @@ groups:
         when: "list pipelines + active"
       - mcp: awf_check_model_config
         when: "models vs providers"
+      - mcp: awf_doctor
+        cli: doctor
+        when: "preflight: versions, models, dead keys"
   - title: run
     tools:
       - mcp: awf_run_start

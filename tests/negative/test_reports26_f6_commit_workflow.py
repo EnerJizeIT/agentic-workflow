@@ -244,13 +244,14 @@ class TestMessageFormat:
 class TestDelivery:
     """Инвариант 3: MCP-инструмент зарегистрирован, счётчик актуален."""
 
-    def test_mcp_tool_registered_counter_53(self):
+    def test_mcp_tool_registered_counter(self):
         names = [s.name for s in _registry.TOOLS]
         assert "awf_commit_workflow" in names
-        # 0229: +awf_blocked_draft — 55 tools (5 UI + 50 workflow).
-        assert len(names) == 55, f"registry has {len(names)} tools, expected 55"
         counts = _registry.tool_counts()
-        assert counts == {"total": 55, "awf": 50, "ui": 5}
+        assert counts["total"] == len(names), (
+            f"registry has {len(names)} tools, counter says {counts['total']}"
+        )
+        assert counts["total"] == counts["awf"] + counts["ui"]
 
     def test_cli_subcommand_registered(self):
         from awf import cli

@@ -11,8 +11,11 @@ from .. import paths
 from ._helpers import is_slug_name
 
 _CONFIG_TEMPLATE = '''project:
+  # ``project.root`` was written here with no reader anywhere in awf: the
+  # project root is always the ``project_dir`` the caller passes, so the key
+  # advertised a setting that did nothing and made every fresh project fail
+  # ``awf doctor`` with a dead-key WARN (AUD-0296 CTX3). Dropped.
   name: '{project_name}'
-  root: "."
 
 # R2.2 (roadmap R2): the config schema version. A project WITHOUT this key is
 # a legacy project and keeps the pre-R2.2 dirty-tree behaviour ('warn').

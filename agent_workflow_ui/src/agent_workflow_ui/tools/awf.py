@@ -3243,6 +3243,58 @@ async def awf_check_model_config(
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
+# ─── Doctor (OPS IMP5, R5) ──────────────────────────────────────────────
+
+
+async def awf_doctor(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Diagnose versions, models and dead config keys before a launch.
+
+    One report line per check with an ``ok`` / ``WARN`` mark:
+
+    - the running ``awf`` version and its tree commit, and the pinned
+      ``automation.runner_dir`` checkout (version and commit — the same
+      version with a different commit is a WARN: a version string does not
+      identify code);
+    - the plugin module (``agent_workflow_ui``) and its install metadata; a
+      stale metadata says "reinstall the package", a module that differs from
+      the running awf says "restart the opencode session" (it is loaded by the
+      process, not by the pinned runner);
+    - the model/provider check (``awf_check_model_config`` runs this in
+      detail; a broken surface degrades to one ``unknown`` line);
+    - the keys of ``.agentic/config.yaml`` that no code reads (e.g.
+      ``retry.max_attempts``). Values of config keys and tokens are never
+      printed — only key names.
+
+    The doctor never blocks a launch (INV7). ``rc`` is the CLI exit code:
+    0 — no WARN, 1 — WARNs, 2 — the project is not assessed (no ``.agentic/``);
+    rc 2 is a valid answer, not a tool error. Call it BEFORE ``awf_start``
+    when something feels off after an upgrade or an MCP restart.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: rc (0/1/2), lines (list of report lines), warnings (the
+        WARN lines).
+    """
+    try:
+        from awf.doctor import run_doctor
+
+        report = await asyncio.to_thread(
+            run_doctor, _resolve_project_dir(project_dir)
+        )
+        return {
+            "status": "ok",
+            "rc": report.rc,
+            "lines": report.lines,
+            "warnings": report.warnings,
+        }
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
 # ─── Kill pipeline (SELF-2) ─────────────────────────────────────────────
 
 

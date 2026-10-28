@@ -130,6 +130,17 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Diagnose versions, models and dead config keys (rc 1 on WARN)",
+    )
+    p_doctor.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
+    )
+
     p_start = sub.add_parser("start", help="Start the pipeline from the beginning")
     _add_start_args(p_start)
     p_start.add_argument(
@@ -1068,6 +1079,9 @@ def _run_command(args) -> int:
             return cmd_blocked_draft.run(args)
         if args.command == "status":
             return cmd_status.run(args)
+        if args.command == "doctor":
+            from . import cmd_doctor
+            return cmd_doctor.run(args)
         if args.command in ("start", "continue"):
             return cmd_start.run(args)
         if args.command == "init":

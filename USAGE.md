@@ -662,7 +662,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-55 tools: 50 `awf_*` workflow + 5 UI (forms).
+56 tools: 51 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -1063,6 +1063,7 @@ for every replan/split goes into the run report/note.
 | `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); `refresh=True` re-materializes an existing skill-sourced role; draft area: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
+| `awf_doctor` | Diagnose versions (awf, pinned runner commit, plugin, install metadata), models and config keys no code reads; rc 0/1/2, never blocks a launch |
 | `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop |
 
 ### UI (forms)

@@ -101,6 +101,9 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/dashboard.py` | Dashboard HTML generation + `generate_state_dict()` JSON API |
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
+| `versions.py` | R5/R6: единственный дом версий — модуль `awf`, закреплённый `automation.runner_dir` (разбор `__init__.py` без импорта чужого кода), модуль плагина, метаданные установки |
+| `config_keys.py` | R5: реестр ключей `.agentic/config.yaml`, которые читает код; `dead_keys` называет листья без читателя (OPS7, храповик в тестах) |
+| `doctor.py` | R5: `run_doctor` — отчёт ok/WARN (версии с коммитами, модели, мёртвые ключи), rc 0/1/2, запуск не блокирует; `cmd_doctor.py` его печатает |
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
 | `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
 | `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
