@@ -1894,7 +1894,10 @@ def resume_dispatch(
             todo_id=todo_id,
             baseline_sha=sha,
             role_hint=None,
-            files_written=[f".agentic/inbox/{todo_id}.md", f".agentic/inbox/{todo_id}.ready"],
+            # Nothing is written in this branch: the unit was complete
+            # before the journal went stale, so the answer must not claim
+            # the .md/.ready were created (AUD-0283-3).
+            files_written=[],
             resolved_project_dir=str(project_dir),
             resumed=True,
         )
@@ -1916,10 +1919,12 @@ def resume_dispatch(
         existing = md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         existing = ""
+    written: list[str] = []
     if not existing.strip():
         managed_fs.managed_write_text(
             md_path, body, root=project_dir, mode=MODE_OWNER_EDITABLE
         )
+        written.append(f".agentic/inbox/{todo_id}.md")
 
     baseline_timeout = _baseline_timeout_seconds(project_dir)
     baseline = _dispatch_baseline(
@@ -1929,16 +1934,14 @@ def resume_dispatch(
         no_baseline_tests=no_baseline_tests,
     )
     _write_ready(project_dir, todo_id)
+    written.append(f".agentic/inbox/{todo_id}.ready")
+    written.extend(baseline.files_created)
     _remove_journal(project_dir, todo_id)
     return DispatchTodoResult(
         todo_id=todo_id,
         baseline_sha=baseline.sha,
         role_hint=None,
-        files_written=[
-            f".agentic/inbox/{todo_id}.md",
-            f".agentic/inbox/{todo_id}.ready",
-            *baseline.files_created,
-        ],
+        files_written=written,
         resolved_project_dir=str(project_dir),
         baseline_test_status=baseline.test_status,
         baseline_timeout=baseline_timeout,

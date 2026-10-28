@@ -95,7 +95,7 @@ from pathlib import Path
 import yaml
 
 from ._log import log as _log
-from ._markdown import skip_comments_and_blanks
+from ._markdown import first_heading_index, skip_comments_and_blanks
 from .signals import find_signal_file
 
 #: Gate names ``scripts/run-all.sh`` can run: the fixed checks plus the
@@ -367,7 +367,7 @@ def _find_contract_block(content: str) -> tuple[int | None, int | None, str | No
     lines = content.splitlines()
     i = skip_comments_and_blanks(lines)
     after_title = False
-    if i < len(lines) and re.match(r"^#\s+\S", lines[i].strip()):
+    if i < len(lines) and first_heading_index(lines, level=1, start=i) == i:
         j = skip_comments_and_blanks(lines, i + 1)
         if j < len(lines) and lines[j].strip() == "---":
             i = j

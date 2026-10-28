@@ -311,6 +311,24 @@ def test_managed_mkdir_refuses_symlinked_component(tmp_path):
     assert (outside / "canary.txt").read_text(encoding="utf-8") == "keep me"
 
 
+def test_managed_write_under_agentic_refuses_symlinked_component(tmp_path):
+    """The shared mkdir+write primitive of the context/state writers
+    (``BASELINE-*`` links, ``CLAIM-*``, ``last-kill``) refuses a swapped
+    component before the directory or the file appears outside."""
+    from awf.infra import managed_fs
+
+    project = _project(tmp_path)
+    outside = _outside(tmp_path)
+    _swap_for_symlink(project / ".agentic" / "context", outside)
+
+    target = project / ".agentic" / "context" / "PRIMITIVE.md"
+    with pytest.raises(managed_fs.ManagedPathError):
+        managed_fs.managed_write_under_agentic(target, "payload")
+
+    assert not (outside / "PRIMITIVE.md").exists()
+    assert (outside / "canary.txt").read_text(encoding="utf-8") == "keep me"
+
+
 def test_managed_mkdir_refuses_existing_leaf_not_a_directory(tmp_path):
     """Существующий лист-не-каталог — отказ, файл не тронут (H4)."""
     from awf.infra import managed_fs
