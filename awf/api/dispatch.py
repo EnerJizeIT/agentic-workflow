@@ -1145,14 +1145,23 @@ def dispatch_todo(
     # one. Without ``spec_package`` the legacy path is untouched.
     package = ""
     if _contract:
-        from ..unit_contract import spec_package_gate
+        from ..unit_contract import is_spec_producer, spec_package_gate
 
-        gate_message = spec_package_gate(project_dir, _contract)
-        if gate_message:
-            raise AwfApiError(
-                f"spec gate refused the dispatch: {gate_message}"
-            )
         package = _contract.get("spec_package")
+        # S14: the PRODUCER of a package (a unit of the spec pipeline) is
+        # not consumer-gated and gets no norm snapshot — it is the run that
+        # writes the package the consumer gate later demands READY. Without
+        # this branch the spec run could only start by dropping
+        # ``spec_package`` from its own TODO.
+        producer = bool(package) and is_spec_producer(_contract, pipeline or "")
+        if producer:
+            package = ""
+        else:
+            gate_message = spec_package_gate(project_dir, _contract)
+            if gate_message:
+                raise AwfApiError(
+                    f"spec gate refused the dispatch: {gate_message}"
+                )
         if package:
             refs = list(_contract.get("source_refs") or [])
             # K4: with a package declared, the legacy ``source_ref`` parameter

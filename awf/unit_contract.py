@@ -219,6 +219,34 @@ def check_source_refs(value: object) -> list[str]:
     return refs
 
 
+#: Names of the spec-authoring pipelines: the template ``spec`` and every
+#: slug-specific ``spec-<slug>`` written by ``awf spec init``.
+_PRODUCER_PIPELINE_RE = re.compile(r"spec(?:-.*)?\Z")
+
+
+def is_spec_producer(contract: dict | None, pipeline: str = "") -> bool:
+    """S14: does this unit WRITE the package instead of consuming it?
+
+    A producer runs the spec pipeline: its stages create and revise the
+    very package the consumer gate demands READY. Gating the producer on
+    its own unfinished package is a deadlock — the run can never start the
+    work that would make the package READY.
+
+    The unit is a producer when its own ``pipeline:`` key OR the pipeline
+    it is launched with names ``spec`` / ``spec-<slug>`` (the launch is
+    what actually runs, so it can promote a unit whose TODO does not name
+    the pipeline). A unit without ``spec_package`` keeps the consumer
+    rules.
+    """
+    if not contract or not contract.get("spec_package"):
+        return False
+    names = (
+        str(contract.get("pipeline") or "").strip(),
+        str(pipeline or "").strip(),
+    )
+    return any(_PRODUCER_PIPELINE_RE.match(name) for name in names if name)
+
+
 def resolve_spec_package(
     project_dir: str | Path, package: str
 ) -> tuple[Path, str]:
@@ -586,12 +614,19 @@ def _check_verify_shell_operators(value: list) -> None:
             raise ValueError(f"'verify[{k}]' ({raw!r}) {refusal}")
 
 
-def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
+def parse_todo_contract(
+    content: str, *, pipeline: str = ""
+) -> tuple[dict | None, list[str]]:
     """Parse + validate the optional contract block at the top of a TODO.
 
     Returns ``(contract, unknown_keys)``: ``contract`` is ``None`` when the
     TODO has no block, otherwise a dict (possibly empty). Raises
     ``ValueError`` with a message naming the problem and the fix.
+
+    ``pipeline`` is the launch pipeline name (S14): a producer unit may
+    omit ``source_refs``, and the parser must know the run's pipeline when
+    the TODO's own block does not name it. It never overrides a declared
+    ``pipeline:`` key — both names count (see :func:`is_spec_producer`).
     """
     yaml_lines, error = _find_contract_lines(content)
     if error:
@@ -706,10 +741,13 @@ def parse_todo_contract(content: str) -> tuple[dict | None, list[str]]:
     if "source_refs" in data:
         data["source_refs"] = check_source_refs(data["source_refs"])
     if "spec_package" in data and "source_refs" not in data:
-        raise ValueError(
-            "'spec_package' requires 'source_refs' — a unit that runs under "
-            "a package must name at least one '<file>#<section>' link into it"
-        )
+        if not is_spec_producer(data, pipeline):
+            raise ValueError(
+                "'spec_package' requires 'source_refs' — a unit that runs under "
+                "a package must name at least one '<file>#<section>' link into it "
+                "(a producer unit of the spec pipeline may omit them: it is "
+                "writing the package, not consuming it)"
+            )
     if "source_refs" in data and "spec_package" not in data:
         raise ValueError(
             "'source_refs' requires 'spec_package' — the links are resolved "
@@ -908,6 +946,7 @@ __all__ = [
     "parse_todo_contract",
     "check_pipeline_name",
     "check_replan_for",
+    "is_spec_producer",
     "inject_pipeline_key",
     "inject_replan_for",
     "replan_for_of",

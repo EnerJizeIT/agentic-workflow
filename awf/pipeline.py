@@ -718,6 +718,36 @@ def pipeline_snapshot_text(
     return header + yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
 
 
+def snapshot_pipeline_name(project_dir: str | Path, todo_id: str) -> str:
+    """The pipeline name recorded in a unit's frozen snapshot, or ``""``.
+
+    ORCH M3.3: the engine runs a pinned TODO on ``PIPELINE-<id>.yaml`` when
+    that snapshot exists, whatever was passed on the command line. Callers
+    that must decide something about the RUN (not the published file) read
+    the name through this one accessor instead of parsing the document a
+    second way. A missing, malformed or nameless snapshot answers ``""`` —
+    the caller falls back to the explicit name or the project default,
+    exactly like ``_apply_pipeline_snapshot`` degrades.
+    """
+    from .todo_ids import is_valid_todo_id
+
+    if not is_valid_todo_id(todo_id):
+        return ""
+    snap = paths.pipeline_snapshot_path(project_dir, todo_id)
+    if not snap.is_file():
+        return ""
+    import yaml
+
+    try:
+        with snap.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (yaml.YAMLError, UnicodeDecodeError, OSError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("name") or "").strip()
+
+
 def active_pipeline_name(
     project_dir: str | Path,
     config: dict | None = None,

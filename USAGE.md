@@ -512,8 +512,21 @@ $ awf start --pipeline audit-llm
 `spec` template: plan → six author stages → verify. The six outputs are
 `docs/spec/<slug>/<slug>.*`; an existing pipeline is refused without
 `--force`. A requirements review whose document says `Статус: FAIL` rewinds
-the stage to `spec-requirements` without a supervisor replan. Check package
-readiness with `awf spec check docs/spec/<slug>` (rc 0 = READY).
+the stage to `spec-requirements` without a supervisor replan; a readiness
+report whose document says `Статус: BLOCKED` rewinds to its author
+(requirements or architecture). Check package readiness with
+`awf spec check docs/spec/<slug>` (rc 0 = READY).
+
+The spec unit is the package PRODUCER: a TODO with `spec_package` and the
+`spec` / `spec-<slug>` pipeline is not held by the consumer readiness gate
+(its run is what makes the package READY); only consumer units are gated.
+The pipeline name comes from the unit's frozen snapshot, the launch
+argument or the TODO's own `pipeline:` key — a crashed spec run resumes
+without repeating `--pipeline`.
+The six stage roles (`agent-project-auditor`, `agent-system-analyst`,
+`agent-requirements-reviewer`, `agent-architector`, `agent-qa-review`)
+ship as role templates, so setup and `awf add-role` install them in a clean
+project.
 
 **Compose a pipeline in the browser.** The `pipeline-compose` form (MCP
 `open_form(template="pipeline-compose", project_dir=..., data={"pipeline": "<name>"})`)
