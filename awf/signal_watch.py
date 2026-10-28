@@ -31,6 +31,19 @@ PREFLIGHT_POLL_START = 5.0
 PREFLIGHT_POLL_CAP = 30.0
 
 
+class HardTimeoutError(TimeoutError):
+    """K3 (R3): the hard cap fired — no signal within ``seconds``.
+
+    A subclass of ``TimeoutError`` so every existing catch keeps working;
+    the engine uses the type to tell the hard cap from the preflight and
+    watchdog timeouts (INV3, INV9), which keep their own branches.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        super().__init__(f"Subprocess did not produce signal within {seconds}s")
+
+
 def _wait_for_endpoint(url: str, budget: float, logs_dir: Path | None) -> None:
     """U6a: block until the model endpoint answers, within ``budget`` seconds.
 
@@ -521,9 +534,7 @@ def run_subprocess_until_signal(
                 if done is not None:
                     return done
                 _log_timeout_exit(logs_dir, run_started, proc.returncode)
-                raise TimeoutError(
-                    f"Subprocess did not produce signal within {hard_timeout}s"
-                )
+                raise HardTimeoutError(hard_timeout)
 
             time.sleep(BD20_POLL_INTERVAL)
     finally:
