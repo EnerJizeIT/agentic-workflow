@@ -275,7 +275,7 @@ async def awf_start(
     pipeline: str | None = None,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     todo_id: str = "",
     no_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -300,7 +300,9 @@ async def awf_start(
         pipeline: Pipeline name to run (default: from config.yaml).
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
-        timeout: Agent stage timeout in seconds (default: 3600).
+        timeout: Agent stage cap in seconds. Omit it to use the stage
+            key `timeout`, then `automation.stage_timeout_seconds`,
+            then 3600.
         todo_id: Pin the pipeline to a specific TODO (e.g. "TODO-0015").
             Without it the engine picks the "newest active" TODO — wrong
             pick when several TODOs are active (AUD08-02).
@@ -392,7 +394,7 @@ async def awf_continue(
     pipeline: str | None = None,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     ack: str = "",
     todo_id: str = "",
     background: bool = True,
@@ -409,7 +411,9 @@ async def awf_continue(
         pipeline: Pipeline name to run (default: from config.yaml).
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
-        timeout: Agent stage timeout in seconds (default: 3600).
+        timeout: Agent stage cap in seconds. Omit it to use the stage
+            key `timeout`, then `automation.stage_timeout_seconds`,
+            then 3600.
         ack: Accept a BLOCKED TODO and resume (e.g. "TODO-0009"). Writes
             ACK-{todo}.ready and clears the BLOCKED closure — the supervisor's
             answer survives process death. The ack also PINS its own unit:
@@ -476,7 +480,7 @@ async def awf_retry_stage(
     *,
     pipeline: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Retry the current salvage stage — kill + continue in one call.
 
@@ -495,7 +499,9 @@ async def awf_retry_stage(
             NOT your project; always pass it explicitly (AUD08-12).
         pipeline: Pipeline name to run (default: from config.yaml).
         auto: Skip interactive supervisor waits (CI mode).
-        timeout: Agent stage timeout in seconds (default: 3600).
+        timeout: Agent stage cap in seconds. Omit it to use the stage
+            key `timeout`, then `automation.stage_timeout_seconds`,
+            then 3600.
 
     Returns:
         Same shape as :func:`awf_start`.
@@ -1005,7 +1011,7 @@ async def awf_run_next(
     project_dir: str | None = None,
     *,
     from_stage: str | None = None,
-    timeout: int = 3600,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Launch the next queue item, or stop when a gate fires.
 
@@ -2295,8 +2301,9 @@ async def awf_write_pipeline(
     assignments), ``task`` (optional short stage assignment),
     ``name`` (defaults to the id, then to the role slug),
     ``description``, ``on_blocked`` / ``on_approved`` / ``on_rejected`` /
-    ``on_failed``, ``max_retries``, ``max_rollbacks``. Unknown keys are
-    refused (the loader would ignore them).
+    ``on_failed``, ``max_retries``, ``max_rollbacks``, ``timeout`` (the
+    stage's own agent time cap in seconds, a positive integer). Unknown keys
+    are refused (the loader would ignore them).
 
     Args:
         name: Pipeline name — letters, digits, '_', '.', '-' (no path

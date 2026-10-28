@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import budget as budget_mod
 from .. import config as cfg_mod
-from .. import git_utils, paths, todos
+from .. import git_utils, paths, stage_timeout, todos
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
 from ..infra import managed_fs
 from ..pipeline_state import read_state
@@ -1805,6 +1805,26 @@ def _rollback_impl(
 # ─── start_pipeline / continue_pipeline ─────────────────────────────────
 
 
+def _stage_timeout_refusal(project_dir: Path) -> StartResult | None:
+    """OPS IMP1 (R1/INV8): a bad project cap refuses before any file.
+
+    The caller value is a raise (``stage_timeout.validate_caller``); the
+    project key is a state refusal — same family as "another launch is in
+    progress", rc 1, nothing written. The message wording lives in
+    ``stage_timeout.project_refusal`` (shared with ``run_next``).
+    """
+    message = stage_timeout.project_refusal(cfg_mod.load(project_dir))
+    if message is None:
+        return None
+    return StartResult(
+        run_mode="noop",
+        run_id=None,
+        log_file=None,
+        exit_code=1,
+        message=message,
+    )
+
+
 def start_pipeline(
     project_dir: Path,
     *,
@@ -1812,7 +1832,7 @@ def start_pipeline(
     pipeline: str | None = None,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     todo_id: str = "",
     no_checkpoints: bool = False,
 ) -> StartResult:
@@ -1833,6 +1853,12 @@ def start_pipeline(
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+    # OPS IMP1 (R1/INV8): validate the cap BEFORE the readiness gate, the
+    # lease and the first file — caller by raise, project key as a refusal.
+    timeout = stage_timeout.validate_caller(timeout)
+    timeout_refusal = _stage_timeout_refusal(project_dir)
+    if timeout_refusal is not None:
+        return timeout_refusal
 
     # SPEC IMP3 (K3): the readiness gate for the selected unit, BEFORE the
     # lease, the PID file and the first stage. A READY package is required
@@ -2091,7 +2117,7 @@ def continue_pipeline(
     pipeline: str | None = None,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     background: bool = True,
     ack: str = "",
     no_checkpoints: bool = False,
@@ -2137,6 +2163,12 @@ def continue_pipeline(
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+    # OPS IMP1 (R1/INV8): same early cap validation as start_pipeline —
+    # before the ACK is written, the lease is taken and a stage starts.
+    timeout = stage_timeout.validate_caller(timeout)
+    timeout_refusal = _stage_timeout_refusal(project_dir)
+    if timeout_refusal is not None:
+        return timeout_refusal
 
     if ack and not re.match(r"^TODO-\d{4,}$", ack):
         return StartResult(
@@ -2933,7 +2965,7 @@ def retry_stage(
     *,
     pipeline: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     background: bool = True,
 ) -> StartResult:
     """P2: Kill pipeline (if running) and restart from the salvage stage.
@@ -2954,6 +2986,12 @@ def retry_stage(
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+    # OPS IMP1 (R1/INV8): validate the cap BEFORE the kill — a bad value
+    # must not stop a live pipeline on the way to a refusal.
+    timeout = stage_timeout.validate_caller(timeout)
+    timeout_refusal = _stage_timeout_refusal(project_dir)
+    if timeout_refusal is not None:
+        return timeout_refusal
 
     # Read the salvage state BEFORE the kill: kill_pipeline clears the state
     # (AUD04-08 keeps only the salvage counter), and todo_id goes with it.

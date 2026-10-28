@@ -21,6 +21,8 @@ from . import budget as _budget
 from . import closer_stage, paths, stage_manifest, todos, verify
 from . import commit_plan as _commit_plan
 from . import config as cfg_mod
+from . import stage_timeout as _stage_timeout
+from ._errors import AwfApiError as _AwfApiError
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
@@ -1998,6 +2000,19 @@ def execute_agent_stage(
             _log(logs_dir, f"SKIPPED ({decision.skip_reason})")
             return current_todo, stage_idx + 1, 0
 
+    # OPS IMP1 (R1): ONE resolver for this stage's cap — caller → stage →
+    # project → 3600. The line goes to the run log BEFORE the first spawn,
+    # so the operator sees the cap and its source in the answer. A bad
+    # value normally never reaches here (load error for the stage key, a
+    # refusal before the lease for the project key) — the guard keeps the
+    # stage from starting silently on a cap nobody validated.
+    try:
+        stage_cap = _stage_timeout.resolve(agent_hard_timeout, stage.timeout, config)
+    except _AwfApiError as e:
+        _log(logs_dir, f"STAGE-ERROR: {e}")
+        return current_todo, stage_idx, 1
+    _log(logs_dir, f"stage timeout: {stage_cap.seconds}s (source: {stage_cap.source})")
+
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
     _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")
 
@@ -2108,7 +2123,7 @@ def execute_agent_stage(
             worker_run += 1
             try:
                 _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                                 prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
+                                 prev_handoffs=prev_handoffs, hard_timeout=stage_cap.seconds,
                                  retry_note=retry_note, attempt=worker_run,
                                  log_holder=log_holder)
             except managed_fs.ManagedPathError as e:

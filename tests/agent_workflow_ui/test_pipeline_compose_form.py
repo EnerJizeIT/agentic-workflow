@@ -349,9 +349,10 @@ def test_open_form_renders_prefilled_html(plugin_initialized, project):
 def test_closer_and_write_fields_survive_resave():
     """PA2 (closer IMP7): the form used to drop these keys on re-save.
 
-    ``skip_if``, ``write_check``, ``write_allow`` and ``tools`` are stage
-    schema keys (awf/pipeline.py); the form must render them, keep their
-    shape (list / object, not ``[object Object]``) and emit them again.
+    ``skip_if``, ``write_check``, ``write_allow``, ``tools`` and the stage
+    time cap ``timeout`` are stage schema keys (awf/pipeline.py); the form
+    must render them, keep their shape (list / object / number, not
+    ``[object Object]``) and emit them again.
     """
     stage = {
         "role": "agent-implementer",
@@ -360,15 +361,16 @@ def test_closer_and_write_fields_survive_resave():
         "write_check": "off",
         "write_allow": ["reports/a.md", "reports/b.md"],
         "tools": {"deny": ["write"]},
+        "timeout": 600,
     }
     html = _render(initial_stages=[stage])
     assert _script_json(html, "initialStages")[0] == stage
 
     fields = html.split("var FIELDS =", 1)[1].split("];", 1)[0]
-    for key in ("skip_if", "write_check", "write_allow", "tools"):
+    for key in ("skip_if", "write_check", "write_allow", "tools", "timeout"):
         assert f'key: "{key}"' in fields
     # list/object shapes survive: join for the input, split/parse on collect
     assert "f.list" in html and "f.json" in html
     preview = html.split("function buildYamlPreview", 1)[1]
-    for key in ("write_allow", "write_check", "skip_if", "tools"):
+    for key in ("write_allow", "write_check", "skip_if", "tools", "timeout"):
         assert key in preview

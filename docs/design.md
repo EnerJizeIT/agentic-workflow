@@ -169,6 +169,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline.py` — тождество стадии | Stage `id` (адрес: имя стадии = id) + `task` (поручение): повторы роли с разными id, дубли id отвергаются (ORCH M3.1) |
 | `pipeline.py` — поручение стадии | Stage `input`/`output` (относительные пути проекта): execute-промпт несёт task/входы/выходы, движок проверяет объявленный выход (существует + свежий) перед переходом к следующей стадии, лимит повтора — на экземпляр стадии (ORCH M3.2) |
 | `pipeline.py` — профиль tools стадии | Stage `tools` (`allow`/`deny` списки permission-ключей: bash/edit/write/webfetch + `<server>_<tool>` MCP): единый реестр ключей (неизвестный — ошибка загрузки), мерж в `awf/_env.py` при спавне поверх M2.2 + readonly_roles — deny сильнее allow, базовые управляющие запреты профилем не отменяются (ORCH M7.2) |
+| `stage_timeout.py` | Потолок одной стадии (OPS IMP1, R1): один расчёт "явный `--timeout` → ключ стадии `timeout` → `automation.stage_timeout_seconds` → 3600", источник капа в логе стадии, отказ на не-положительное-целое |
 | `api/pipelines.py` | Named pipelines: write_pipeline / list_pipelines (RUN3 #1) |
 | `api/planning.py` | Increment planning: apply_increment_plan (форма → вариант) |
 | `api/roles.py` | Роли: add_role (draft-область: кандидаты в `roles/draft/`, adopt/discard/list) + zone-анализ для analyze_roles |

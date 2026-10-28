@@ -18,6 +18,7 @@ from typing import Any
 
 from . import config as cfg_mod
 from . import paths
+from . import stage_timeout as _stage_timeout
 from ._atomic import atomic_write_text
 from ._log import log as _log
 from .pipeline import load_stages, pipeline_snapshot_text, resolve_pipeline_file
@@ -187,13 +188,16 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
-    # KAUD-4: read --timeout from CLI args, pass to agent stages
+    # KAUD-4 / OPS IMP1 (R1): read --timeout from CLI args, pass to agent
+    # stages. ``None`` = "not given" (the stage/project/default chain
+    # decides); anything else must be a positive integer — the old silent
+    # fallback to 3600 hid `--timeout 0` and `--timeout -5` (AC3).
     cli_timeout = getattr(args, "timeout", None)
     try:
-        agent_hard_timeout = int(cli_timeout) if cli_timeout else None
-    except (ValueError, TypeError):
-        print(f"WARNING: invalid timeout '{cli_timeout}' — ignoring.", file=sys.stderr)
-        agent_hard_timeout = None
+        agent_hard_timeout = _stage_timeout.validate_caller(cli_timeout, "--timeout")
+    except AwfApiError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     try:
         pipeline_file = resolve_pipeline_file(project_dir, pipeline_name, config)
     except AwfApiError as e:

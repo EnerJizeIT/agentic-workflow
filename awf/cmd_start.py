@@ -41,7 +41,7 @@ def run(args: Any) -> int:
                 pipeline=getattr(args, "pipeline", None),
                 from_stage=getattr(args, "from_stage", None),
                 auto=getattr(args, "auto", False),
-                timeout=getattr(args, "timeout", 3600),
+                timeout=getattr(args, "timeout", None),
                 background=background,
                 ack=ack,
             )
@@ -52,7 +52,7 @@ def run(args: Any) -> int:
                 pipeline=getattr(args, "pipeline", None),
                 from_stage=getattr(args, "from_stage", None),
                 auto=getattr(args, "auto", False),
-                timeout=getattr(args, "timeout", 3600),
+                timeout=getattr(args, "timeout", None),
                 todo_id=getattr(args, "todo", "") or "",
             )
     except api.AwfApiError as e:

@@ -315,12 +315,13 @@ def test_allowed_keys_set_pinned():
     SPEC IMP5: + ``write_allow`` (дополнительные разрешённые пути стадии).
     TODO-0256: + ``write_check`` (явный, названный opt-out из забора записи).
     IMP1 closer-stage: + ``skip_if`` (единственный условный запуск стадии).
+    OPS IMP1 (R1): + ``timeout`` (потолок времени одной стадии, секунды).
     """
     from awf.pipeline import ALLOWED_STAGE_KEYS
 
     assert ALLOWED_STAGE_KEYS == {
         "name", "role", "description", "id", "task", "input", "output",
-        "write_allow", "write_check", "skip_if",
+        "write_allow", "write_check", "skip_if", "timeout",
         "tools",
         "on_blocked", "on_approved", "on_rejected", "on_failed",
         "max_retries", "max_rollbacks",

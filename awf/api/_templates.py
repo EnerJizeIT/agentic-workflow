@@ -45,6 +45,13 @@ verification:
   typecheck_cmd: '{typecheck_cmd}'
   build_cmd: '{build_cmd}'
 
+automation:
+  # OPS IMP1 (R1): the default cap for ONE agent stage, in seconds.
+  # Priority: explicit --timeout / MCP timeout -> stage key `timeout` ->
+  # this key -> 3600. Anything that is not a positive integer refuses the
+  # launch; a stage key that is not one is a pipeline load error.
+  stage_timeout_seconds: 3600
+
 engine:
   # Engine liveness (TODO-0241/0242; docs/design.md, USAGE.md). The interval
   # is clamped to at most 30s (a larger value warns); the staleness threshold

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .. import budget as budget_mod
 from .. import config as cfg_mod
-from .. import git_utils, paths, pipeline_state, run_state, todos
+from .. import git_utils, paths, pipeline_state, run_state, stage_timeout, todos
 from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
 from ..unit_history import forget_unit_history
@@ -1450,7 +1450,7 @@ def run_next(
     *,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     background: bool = True,
 ) -> RunNextResult:
     """Launch the next queue item, or stop when a gate fires.
@@ -1461,6 +1461,17 @@ def run_next(
     must write it first).
     """
     project_dir = _require_run_project(project_dir)
+    # OPS IMP1 (R1/INV8): validate the cap BEFORE the reservation and the
+    # first file — caller by raise, project key as a refusal.
+    timeout = stage_timeout.validate_caller(timeout)
+    cap_refusal = stage_timeout.project_refusal(cfg_mod.load(project_dir))
+    if cap_refusal is not None:
+        return RunNextResult(
+            action="refused",
+            todo_id="",
+            message=cap_refusal,
+            next_action="Fix the key in .agentic/config.yaml, then retry.",
+        )
 
     state = run_state.read_run(project_dir)
     if not state or not state.get("active"):

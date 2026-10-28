@@ -369,6 +369,20 @@ per-stage time, the round headings); no role switch or automatic retry
 follows — the owner decides. A value outside 0..20 is a config refusal, not a
 silent "no limit".
 
+A stage's time cap has a third input besides the project key:
+
+```yaml
+automation:
+  stage_timeout_seconds: 3600   # cap for ONE agent stage, seconds
+```
+
+Priority: an explicit `awf start --timeout N` (MCP `timeout`) wins, then the
+stage's own `timeout: N` in `pipeline.yaml`, then this key, then 3600. Only a
+positive integer is accepted: `0`, `-5` and `"1h"` refuse the launch and name
+the input instead of silently falling back to 3600. The stage log line
+`stage timeout: <N>s (source: <caller|stage|project|default>)` names the
+effective cap and where it came from.
+
 `awf_status` and `awf_brief` show the active unit's `passes: N/max`; at the
 cap the State section adds `budget: exhausted`. The RUN-REPORT's
 `## Unit economics` section gives every unit in the run one line: `passes`,

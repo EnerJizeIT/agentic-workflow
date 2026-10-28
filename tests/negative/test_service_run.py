@@ -279,6 +279,36 @@ def test_service_pipeline_carries_stage_tools_profile(tmp_git_repo: Path) -> Non
     }
 
 
+def test_service_pipeline_carries_stage_timeout(tmp_git_repo: Path) -> None:
+    """AC4/T3: the stage ``timeout`` survives into the service-run snapshot.
+
+    Both snapshots are built by the same ``stage_to_document``; a field lost
+    here would silently run the service worker on the project/default cap
+    instead of the one its pipeline declared.
+    """
+    from awf.api import run as api_run_module
+    from awf.pipeline import load_stages
+
+    proj = _project(tmp_git_repo)
+    (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+        'name: "default"\n'
+        "stages:\n"
+        '  - name: "plan"\n'
+        '    role: "supervisor"\n'
+        '  - name: "agent-implementer"\n'
+        '    role: "worker"\n'
+        "    timeout: 600\n"
+        '  - name: "verify"\n'
+        '    role: "supervisor"\n',
+        encoding="utf-8",
+    )
+
+    f = api_run_module._write_service_pipeline(proj, SLUG)
+    stages = {s.name: s for s in load_stages(f)}
+    assert stages["agent-implementer"].timeout == 600
+    assert stages["plan"].timeout is None
+
+
 def test_service_pipeline_drops_skip_if_from_candidate_stage(tmp_git_repo: Path) -> None:
     """PA1 (TODO-0269): the candidate stage never skips.
 
