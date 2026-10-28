@@ -155,11 +155,13 @@ def update_gitignore(project_dir: Path) -> None:
 
 
 def awf_templates_dir() -> Path:
-    """Root of the templates the awf package ships — the ONLY source.
+    """Root of the templates the awf package ships — the canonical builder.
 
-    REVIEW architect: role templates, pipeline starters and the init
-    skeleton's fallback each spelled this path themselves. A layout change
-    had to find every copy; now the copies call this.
+    Callers that need the package templates ask for this path instead of
+    spelling ``<package>/templates`` themselves. It is not a claim about
+    every module: a few sites (dashboard HTML, supervisor phases, builtin
+    doctrine) still resolve their own subdirectory, and this function does
+    not migrate them.
 
     TODO-0230 (Y2): the repo-root ``templates/`` symlink is gone. A
     checkout and a wheel both read ``<awf package>/templates`` next to

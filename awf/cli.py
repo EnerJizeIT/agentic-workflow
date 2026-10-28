@@ -223,7 +223,7 @@ def _build_parser():
     _content_group.add_argument(
         "--content-file",
         dest="content_file",
-        help="New content read from a file",
+        help="New content read from a file (relative to --project-dir)",
     )
     p_todo_update.add_argument(
         "--reason",
@@ -261,7 +261,7 @@ def _build_parser():
     _review_group.add_argument(
         "--text-file",
         dest="text_file",
-        help="Review fix text read from a file",
+        help="Review fix text read from a file (relative to --project-dir)",
     )
     p_review_append.add_argument(
         "--reason",
@@ -294,7 +294,7 @@ def _build_parser():
     _dispatch_content.add_argument(
         "--content-file",
         dest="content_file",
-        help="TODO body read from a file",
+        help="TODO body read from a file (relative to --project-dir)",
     )
     p_dispatch.add_argument(
         "--resume",
@@ -322,6 +322,30 @@ def _build_parser():
     p_dispatch.add_argument("--role", default=None, help="Optional role hint")
     p_dispatch.add_argument("--todo-id", dest="todo_id", default=None)
     p_dispatch.add_argument("--pipeline", default=None)
+    # R6 (K6): parity with ``api.dispatch_todo`` — the MCP form already
+    # accepts these; the CLI used to drop them.
+    p_dispatch.add_argument(
+        "--allow-mismatch",
+        dest="allow_mismatch",
+        action="store_true",
+        help="Allow an explicit --todo-id that disagrees with the title number",
+    )
+    p_dispatch.add_argument(
+        "--carry-over-from",
+        dest="carry_over_from",
+        default=None,
+        metavar="TODO-NNNN",
+        help="Re-claim the files of a rejected unit (its REJECT-<id>.files)",
+    )
+    p_dispatch.add_argument(
+        "--include-untracked",
+        dest="include_untracked",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="Include a pre-existing untracked file in this unit's commit "
+        "(repeatable)",
+    )
     p_dispatch.add_argument(
         "--project-dir",
         dest="project_dir",
@@ -827,8 +851,9 @@ def _build_parser():
     p_todo_draft.add_argument(
         "--out",
         default="",
-        help="Write the draft to a file (default: stdout; an existing file "
-        "is not overwritten without --force)",
+        help="Write the draft under the project's .agentic/ (a relative "
+        "path resolves from the current directory; default: stdout; an "
+        "existing file is not overwritten without --force)",
     )
     p_todo_draft.add_argument(
         "--force",
@@ -863,7 +888,9 @@ def _build_parser():
         "--variant",
         choices=list(BUILTIN_PIPELINES),
         help="Write a built-in starter pipeline (same text the setup form "
-             "offers) instead of a role composition",
+             "offers) instead of a role composition. Role files are NOT "
+             "created here: unresolved roles are listed and you add them "
+             "with `awf add-role <slug>` or the project-setup form",
     )
     p_pipeline_write.add_argument(
         "--force",

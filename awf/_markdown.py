@@ -71,33 +71,56 @@ def fence_flags(lines: list[str]) -> list[bool]:
     return flags
 
 
+def skip_comments_and_blanks(lines: list[str], start: int = 0) -> int:
+    """Index of the first line after the blanks and comments from ``start``.
+
+    A comment may span any number of lines — ``<!-- a`` / ``b -->`` is one
+    completed comment, not two lines of prose. The walk stops at the first
+    other line, ``---`` included, so the caller sees the contract's first
+    rule exactly where it is. An unterminated comment consumes the rest of
+    the file — the same way a renderer treats it.
+
+    ``start`` lets the contract locator resume below the title: a comment
+    between the title and ``---`` is trivia of the same kind as the leading
+    one, so the contract is found instead of hidden (R5).
+    """
+    index = start
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped:
+            index += 1
+            continue
+        if not stripped.startswith("<!--"):
+            break
+        end = index
+        while end < len(lines) and "-->" not in lines[end]:
+            end += 1
+        if end >= len(lines):
+            return len(lines)
+        index = end + 1
+    return index
+
+
 def skip_leading_trivia(lines: list[str]) -> int:
     """Index of the first line after the leading comments, blanks and front
     matter.
 
     A unit file may open with ``<!-- role_hint: ... -->`` (optionally several
     lines), then the ``---`` contract block. Neither is content: the title
-    follows them. An unterminated comment or contract block consumes the
-    rest of the file — the same way the parsers see it.
+    follows them. The cycle repeats — comments, contract, comments again —
+    so a comment written AFTER the closing ``---`` is trivia too: a fake
+    ``# TODO-9999`` inside it is not the title, and the renumber / DoD
+    writers do not touch it. An unterminated comment or contract block
+    consumes the rest of the file — the same way the parsers see it.
     """
-    index = 0
-    while index < len(lines):
-        stripped = lines[index].strip()
-        if stripped.startswith("<!--"):
-            while index < len(lines) and "-->" not in lines[index]:
-                index += 1
-            index += 1
-            continue
-        if not stripped:
-            index += 1
-            continue
-        break
-    if index < len(lines) and lines[index].strip() == "---":
+    index = skip_comments_and_blanks(lines, 0)
+    while index < len(lines) and lines[index].strip() == "---":
         end = index + 1
         while end < len(lines) and lines[end].strip() != "---":
             end += 1
-        if end < len(lines):
-            index = end + 1
+        if end >= len(lines):
+            return index
+        index = skip_comments_and_blanks(lines, end + 1)
     return index
 
 
@@ -200,5 +223,6 @@ __all__ = [
     "first_heading_index",
     "lines_below",
     "section_body",
+    "skip_comments_and_blanks",
     "skip_leading_trivia",
 ]

@@ -38,10 +38,10 @@ import re
 from pathlib import Path
 
 from . import paths
-from ._atomic import atomic_write_text
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._path_link import decode_path_link, encode_path_link
+from .infra import managed_fs
 
 _TODO_ID_RE = re.compile(r"TODO-\d{4,}")
 
@@ -63,12 +63,13 @@ def write_carry_over_link(project_dir: Path, todo_id: str, origin: str) -> None:
     contract as the include/claim links: a failed write logs but must not undo
     the dispatch (the baseline snapshot already excluded the paths)."""
     try:
-        atomic_write_text(carry_over_link_path(project_dir, todo_id), f"{origin}\n")
+        target = carry_over_link_path(project_dir, todo_id)
+        managed_fs.managed_write_under_agentic(target, f"{origin}\n")
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — carry-over link written (origin {origin})",
         )
-    except OSError as e:
+    except (OSError, managed_fs.ManagedPathError) as e:
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — carry-over audit link not written: {e}",
@@ -273,12 +274,11 @@ def snapshot_rejected_files(project_dir: Path, todo_id: str, logs_dir: Path) -> 
         # byte-faithfully. Strict UTF-8 would raise ``UnicodeEncodeError`` — a
         # ``ValueError``, NOT the ``OSError`` this guard swallows — and break
         # the "never raises" contract by failing the reject itself.
-        reject_files_path(project_dir, todo_id).write_text(
-            encode_path_link(new),
-            encoding="utf-8",
-            errors="surrogateescape",
+        target = reject_files_path(project_dir, todo_id)
+        managed_fs.managed_write_under_agentic(
+            target, encode_path_link(new), errors="surrogateescape"
         )
-    except OSError as e:
+    except (OSError, managed_fs.ManagedPathError) as e:
         _log(logs_dir, f"leak-gate: could not write REJECT-{todo_id}.files: {e}")
         return []
     if new:

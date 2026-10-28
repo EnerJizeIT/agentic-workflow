@@ -704,3 +704,188 @@ class TestUnresolvedRoleWarning:
             awf_project, team=[{"agent": "globally-installed"}]
         )
         assert not any("globally-installed" in w for w in result.warnings)
+
+
+# ─── AUD1/AUD2 (TODO-0286): R10 holds on the whole submit ─────────────────
+
+
+COMMENTED_CONFIG = """# top comment
+project:
+  name: demo  # inline
+
+# models comment
+models:
+  supervisor:
+    description: Current session model
+  developer:
+    agent_name: worker  # keep me
+    model: old/model
+
+# trailing comment
+limits:
+  max_review_passes: 3
+"""
+
+
+class TestSubmitKeepsConfigComments:
+    """AUD1: context/instructions used to dump the whole config with
+    yaml.safe_dump — one submit with a filled UI-2 field dropped every
+    comment. The patch must cover all writers of one submit."""
+
+    def test_comments_and_order_survive_context_and_instructions(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text(COMMENTED_CONFIG, encoding="utf-8")
+        api.apply_project_setup(
+            awf_project,
+            team=[{"agent": "developer", "model": "new/model"}],
+            context_message="Build a CLI",
+            supervisor_instructions="Prefer simple",
+        )
+        text = config_path.read_text(encoding="utf-8")
+        assert "# top comment" in text
+        assert "# models comment" in text
+        assert "# trailing comment" in text
+        assert "agent_name: worker  # keep me" in text
+        data = yaml.safe_load(text)
+        assert data["models"]["developer"]["model"] == "new/model"
+        assert data["context"]["message"] == "Build a CLI"
+        assert data["supervisor"]["instructions"] == "Prefer simple"
+        assert list(data)[:3] == ["project", "models", "limits"]
+
+
+class TestConfigRefusalPrecedesEffects:
+    """AUD2/INV1: a flow-style config is refused by the R10 writer — that
+    refusal must happen before the pipeline or role files are written."""
+
+    def test_flow_style_config_refuses_before_pipeline(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text("models: {a: {}}\n", encoding="utf-8")
+        with pytest.raises(api.AwfApiError, match="flow-style"):
+            api.apply_project_setup(
+                awf_project, team=[{"agent": "developer"}]
+            )
+        pipes = awf_project / ".agentic" / "pipelines"
+        assert not (pipes / "default.yaml").exists()
+        assert not (pipes / "quick.yaml").exists()
+        assert not (config_path.parent / "config.yaml.bak").exists()
+        assert config_path.read_text(encoding="utf-8") == "models: {a: {}}\n"
+
+    def test_flow_style_config_refuses_before_variant_roles(
+        self, awf_project, monkeypatch, tmp_path
+    ):
+        xdg = tmp_path / "xdg-empty"
+        xdg.mkdir()
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text("models: {a: {}}\n", encoding="utf-8")
+        with pytest.raises(api.AwfApiError, match="flow-style"):
+            api.apply_project_setup(
+                awf_project, team=[], flow_variant="full"
+            )
+        roles = awf_project / ".agentic" / "roles"
+        assert not (roles / "agent-implementer.md").exists()
+        assert not (awf_project / ".agentic" / "pipelines" / "default.yaml").exists()
+
+
+class TestLongContextIsSaved:
+    """QA-0286-1: a normal sentence in UI-2 exceeded PyYAML's 80-column fold
+    and the whole context patch was refused — the field silently did nothing
+    for any message longer than one short line."""
+
+    LONG = (
+        "Build a command line tool that parses the config, validates it and "
+        "prints a friendly report to the user every day"
+    )
+
+    def test_long_context_message_reaches_config_with_comments_intact(
+        self, awf_project
+    ):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text(COMMENTED_CONFIG, encoding="utf-8")
+        result = api.apply_project_setup(
+            awf_project,
+            team=[{"agent": "developer", "model": "new/model"}],
+            context_message=self.LONG,
+            supervisor_instructions=self.LONG,
+        )
+        text = config_path.read_text(encoding="utf-8")
+        data = yaml.safe_load(text)
+        assert data["context"]["message"] == self.LONG
+        assert data["supervisor"]["instructions"] == self.LONG
+        assert "# top comment" in text
+        assert "# trailing comment" in text
+        assert not any("refused" in w for w in result.warnings), result.warnings
+
+
+class TestContextRefusalPrecedesEffects:
+    """AUD0286-2/INV1: a flow-style ``context:`` header makes the UI-2 patch
+    refuse. That refusal must happen before the pipeline, roles and role
+    mapping are written, and it must not patch supervisor.md either."""
+
+    def test_flow_style_context_refuses_before_pipeline(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text(
+            "context: {message: old}\nproject:\n  name: demo\n",
+            encoding="utf-8",
+        )
+        sup = awf_project / ".agentic" / "roles" / "supervisor.md"
+        sup_before = sup.read_text(encoding="utf-8")
+        with pytest.raises(api.AwfApiError, match="flow-style"):
+            api.apply_project_setup(
+                awf_project,
+                team=[{"agent": "developer"}],
+                context_message="new context",
+            )
+        pipes = awf_project / ".agentic" / "pipelines"
+        assert not (pipes / "default.yaml").exists()
+        assert not (pipes / "quick.yaml").exists()
+        assert config_path.read_text(encoding="utf-8") == (
+            "context: {message: old}\nproject:\n  name: demo\n"
+        )
+        assert sup.read_text(encoding="utf-8") == sup_before
+
+    def test_direct_save_refusal_writes_nothing(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        config_path.write_text(
+            "supervisor: {instructions: old}\n", encoding="utf-8"
+        )
+        sup = awf_project / ".agentic" / "roles" / "supervisor.md"
+        sup_before = sup.read_text(encoding="utf-8")
+        result = api.setup.save_context_and_instructions(
+            awf_project, supervisor_instructions="new rules"
+        )
+        assert result is False
+        assert config_path.read_text(encoding="utf-8") == (
+            "supervisor: {instructions: old}\n"
+        )
+        assert sup.read_text(encoding="utf-8") == sup_before
+
+
+class TestDegradedConfigLeavesBothSurfaces:
+    """AUD0286-2/AUD06-02/03: a config we cannot PARSE is not a refusal — the
+    submit degrades to a warning. The all-or-nothing rule still holds: the
+    warning says "file left untouched", so neither config.yaml nor
+    supervisor.md may be patched, and ``config_updated`` stays False (the old
+    flag reported True from the mere presence of a UI-2 field)."""
+
+    def test_broken_yaml_context_submit_writes_neither_surface(self, awf_project):
+        config_path = awf_project / ".agentic" / "config.yaml"
+        original = b"project: [unclosed\n"
+        config_path.write_bytes(original)
+        sup = awf_project / ".agentic" / "roles" / "supervisor.md"
+        sup_before = sup.read_bytes()
+
+        result = api.apply_project_setup(
+            awf_project,
+            team=[],
+            context_message="hello",
+            supervisor_instructions="rules",
+        )
+
+        assert result.config_updated is False
+        assert result.supervisor_md_updated is False
+        assert config_path.read_bytes() == original
+        assert sup.read_bytes() == sup_before
+        assert any(
+            "file left untouched" in w for w in result.warnings
+        ), result.warnings

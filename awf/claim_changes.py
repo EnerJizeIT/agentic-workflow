@@ -29,9 +29,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import git_utils, paths
-from ._atomic import atomic_write_text
 from ._errors import AwfApiError
 from ._log import log as _log
+from .infra import managed_fs
 from .todo_ids import is_valid_todo_id
 
 #: Only code transfer lives here; findings go through the R5 channel.
@@ -342,9 +342,17 @@ def apply_claim_changes(
             "plan is invalidated; re-preview before applying"
         )
     path = claim_record_path(project_dir, plan.source_todo)
-    atomic_write_text(
-        path, json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
-    )
+    # AUD-0282-1: the record lives on the managed ``context`` surface — a
+    # symlinked component refuses before a byte lands (same refusal type as
+    # every other API writer).
+    try:
+        managed_fs.managed_write_under_agentic(
+            path, json.dumps(plan.to_dict(), indent=2, sort_keys=True) + "\n"
+        )
+    except managed_fs.ManagedPathError as exc:
+        raise AwfApiError(
+            f"claim_changes refused — unsafe managed path: {exc}"
+        ) from exc
     try:
         _log(
             paths.logs_dir(project_dir),
@@ -393,12 +401,14 @@ def write_claim_link(project_dir: Path, todo_id: str, source_todo: str) -> None:
     contract as the carry-over/include links: a failed write logs but must
     not undo the dispatch (the baseline snapshot already excluded the paths)."""
     try:
-        atomic_write_text(claim_link_path(project_dir, todo_id), f"{source_todo}\n")
+        # AUD-0282-1: managed ``context`` writer (symlink refuses, best-effort).
+        target = claim_link_path(project_dir, todo_id)
+        managed_fs.managed_write_under_agentic(target, f"{source_todo}\n")
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — claim link written (origin {source_todo})",
         )
-    except OSError as e:
+    except (OSError, managed_fs.ManagedPathError) as e:
         _log(
             paths.logs_dir(project_dir),
             f"dispatch: {todo_id} — claim audit link not written: {e}",

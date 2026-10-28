@@ -984,7 +984,9 @@ class TestTodoDraftEntrypoint:
 
     def test_out_writes_skeleton(self, tmp_path, capsys):
         repo = self._repo_with_index(tmp_path)
-        out = tmp_path / "draft.md"
+        # R6 (K6): a draft is an awf-written surface — it lives under .agentic.
+        (repo / ".agentic").mkdir()
+        out = repo / ".agentic" / "drafts" / "draft.md"
         capsys.readouterr()
 
         rc = cli.main([
@@ -1001,7 +1003,8 @@ class TestTodoDraftEntrypoint:
 
     def test_existing_out_refused_then_force(self, tmp_path, capsys):
         repo = self._repo_with_index(tmp_path)
-        out = tmp_path / "draft.md"
+        (repo / ".agentic" / "drafts").mkdir(parents=True)
+        out = repo / ".agentic" / "drafts" / "draft.md"
         out.write_text("old")
         capsys.readouterr()
 

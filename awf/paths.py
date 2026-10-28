@@ -50,6 +50,19 @@ def agentic_dir(project_dir: str | Path = ".") -> Path:
     return Path(project_dir).resolve() / ".agentic"
 
 
+def cli_file_arg(project_dir: str | Path, value: str) -> Path:
+    """A CLI file argument resolved from the PROJECT root, not the CWD.
+
+    ``--content-file`` / ``--text-file`` on the commands that read a TODO
+    body (dispatch, todo-update, review-append) mean one thing: a relative
+    path belongs to ``project_dir``. Resolving from the shell's CWD made
+    the same arguments read different files depending on where the caller
+    stood (PA-0284-2); an absolute path is taken as passed.
+    """
+    path = Path(value)
+    return path if path.is_absolute() else Path(project_dir) / path
+
+
 #: The .agentic/ RUNTIME subdirectories awf writes itself (signals, baselines,
 #: logs, state, …). ONE source for three consumers that must not drift apart:
 #: the init/force-init runtime wipe (``api._destructive.INIT_RUNTIME_DIRS``),

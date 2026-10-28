@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import api
+from . import api, paths
 
 
 def run(args: Any) -> int:
@@ -23,7 +23,9 @@ def run(args: Any) -> int:
     text = str(getattr(args, "text", "") or "")
     if text_file:
         try:
-            text = Path(text_file).resolve().read_text(encoding="utf-8")
+            text = paths.cli_file_arg(project_dir, text_file).resolve().read_text(
+                encoding="utf-8"
+            )
         except OSError as e:
             print(f"ERROR: cannot read --text-file {text_file!r}: {e}")
             return 1

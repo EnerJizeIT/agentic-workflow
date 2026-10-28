@@ -43,6 +43,8 @@ carry a frozen definition-of-done checklist that the engine re-runs itself.
 - `pip install -U awf agent-workflow-ui` (plugin requires `awf>=2.0.0`).
 - Units without a checklist keep the legacy path (`checklist: none`).
 - Templates now live in `awf/templates`; `awf init` installs them.
+- `retry.silent_work_attempts` default 2 (raised 1 → 2) — one more
+  continue-push for silent workers.
 
 ## [1.9.0] — 2026-10-13
 
@@ -108,8 +110,8 @@ hands-free, and prove-red and roles grew into first-class tools.
 
 - Nothing breaking: `pip install -U awf agent-workflow-ui`; the plugin
   requires `awf>=1.8.0`.
-- Optional: `retry.silent_work_attempts` (default 1) tunes the
-  continue-push budget for silent workers.
+- Optional: `retry.silent_work_attempts` tunes the continue-push budget
+  for silent workers.
 
 ## [1.7.0] — 2026-10-10
 

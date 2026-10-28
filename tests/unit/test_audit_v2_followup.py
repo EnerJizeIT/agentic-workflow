@@ -291,13 +291,17 @@ class TestAtomicWrites:
         assert "atomic_write_text" in src, "H3: verify.py should use atomic_write_text"
 
     def test_cmd_baseline_uses_atomic(self):
-        """H3: baseline logic uses atomic_write_text (in api.pipeline)."""
+        """H3: baseline logic uses an atomic writer (in api.pipeline).
+
+        M3c/0281-0284: baseline writes go through the managed barrier
+        (``managed_write_api_text``) — same temp+rename plus a no-follow walk.
+        """
         import inspect
 
         from awf.api import pipeline
 
         src = inspect.getsource(pipeline)
-        assert "atomic_write_text" in src
+        assert "managed_write_api_text" in src or "atomic_write_text" in src
 
     def test_cmd_init_uses_atomic(self):
         """H3: init logic uses an atomic writer (in api.lifecycle).
@@ -332,13 +336,17 @@ class TestAtomicWrites:
         assert "managed_write_api_text" in src or "atomic_write_text" in src
 
     def test_cmd_rollback_uses_atomic(self):
-        """H3: rollback logic uses atomic_write_text (in api.pipeline)."""
+        """H3: rollback logic uses an atomic writer (in api.pipeline).
+
+        M3c/0281-0284: rollback writes go through the managed barrier
+        (``managed_write_api_text``) — same temp+rename plus a no-follow walk.
+        """
         import inspect
 
         from awf.api import pipeline
 
         src = inspect.getsource(pipeline)
-        assert "atomic_write_text" in src
+        assert "managed_write_api_text" in src or "atomic_write_text" in src
 
     def test_atomic_write_crash_cleans_temp(self, tmp_path, monkeypatch):
         """H3 crash safety: if write raises, temp file is cleaned up."""

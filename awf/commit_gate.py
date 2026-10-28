@@ -36,6 +36,7 @@ from pathlib import Path
 
 from . import commit_delta, commit_plan, git_utils, paths, publish, stage_manifest
 from ._log import log as _log
+from ._markdown import HEADING_RE, first_heading_index, skip_leading_trivia
 from .infra import managed_fs
 
 # R2.3: the delta-merge algorithm, the per-file delta staging and the
@@ -101,7 +102,9 @@ def _todo_title(project_dir: Path, todo_id: str) -> str:
     REPORTS33 (TODO-0204): the bullet (``·``) is stripped too — a heading
     ``# TODO-0001 — · Text`` must not yield the ``— ·`` subject artifact.
     A heading that is the boilerplate only (``# TODO-0001``) yields "" —
-    the caller degrades to the legacy subject.
+    the caller degrades to the legacy subject. Fenced lines and the leading
+    comments / front matter are not the title: the first H1 OUTSIDE them
+    wins, a ``# TODO-9999`` inside an example is a comment.
     """
     todo_file = paths.inbox(project_dir) / f"{todo_id}.md"
     try:
@@ -110,15 +113,19 @@ def _todo_title(project_dir: Path, todo_id: str) -> str:
         text = todo_file.read_text(encoding="utf-8", errors="surrogateescape")
     except OSError:
         return ""
-    for line in text.splitlines():
-        m = re.match(r"^#\s+(.+)$", line)
-        if not m:
-            continue
-        title = m.group(1).strip()
-        title = re.sub(r"^TODO(?:-\d+)?\b", "", title)
-        title = title.lstrip("—–-: \t·•")
-        return title.strip()
-    return ""
+    lines = text.splitlines()
+    index = first_heading_index(
+        lines, level=1, start=skip_leading_trivia(lines)
+    )
+    if index is None:
+        return ""
+    heading = HEADING_RE.match(lines[index])
+    if heading is None:
+        return ""
+    title = heading.group(2).strip()
+    title = re.sub(r"^TODO(?:-\d+)?\b", "", title)
+    title = title.lstrip("—–-: \t·•")
+    return title.strip()
 
 
 def _commit_subject(stage_name: str, todo_id: str, title: str) -> str:

@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from .. import config as cfg_mod
+from ..config_write import patch_config_values, patch_mapping
 from ..pipeline import active_pipeline_name, validate_pipeline_document
 from ._errors import AwfApiError
 from ._helpers import managed_write_api_text, refuse_unsafe_surfaces, require_agentic, slugify_role
@@ -308,6 +309,12 @@ def _materialize_variant_roles(variant: str, project_dir: Path) -> bool:
             f"materialize roles for flow variant {variant!r}",
             *[path for path, _ in pending],
         )
+    # INV1/AUD2: the config mapping refusal (flow-style/indentation) is
+    # checked before the first role file lands. The setup form preflights the
+    # same team one level up, but ``setup.write_pipeline(flow_variant=...)``
+    # is a public writer (exported, called directly) — it must not write
+    # roles and then refuse the config.
+    preflight_config_role_mapping([{"role": role} for role in roles], project_dir)
     for role_path, body in pending:
         managed_write_api_text(
             role_path, body, operation=f"materialize role {role_path.stem}"
@@ -860,6 +867,140 @@ def write_quick_pipeline(
 # ─── Config.yaml role mapping (BD-12 + BD-32) ───────────────────────────
 
 
+def _prepare_role_mapping(
+    team: list[dict[str, Any]],
+    project_dir: Path,
+    *,
+    warnings: list[str] | None = None,
+) -> tuple[Path, str, str, dict[str, dict[str, Any]]] | None:
+    """BD-12/BD-32: compute the config.yaml text, touching no file (INV1).
+
+    Returns ``(config_path, raw, new_text, updates)`` or ``None`` when there
+    is nothing to write (absent/unreadable config, non-dict root, no change).
+    The patch refusal (flow-style, broken indentation) raises
+    :class:`AwfApiError` here — before the caller writes any pipeline or
+    role file.
+    """
+    config_path = project_dir / ".agentic" / "config.yaml"
+    if not config_path.is_file():
+        log.warning("BD-12: no config.yaml at %s — skip role mapping", config_path)
+        return None
+
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+        config = yaml.safe_load(raw) or {}
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+        # AUD06-02: non-UTF-8 bytes and read errors used to escape as
+        # UnicodeDecodeError/OSError and crash the whole submit.
+        log.error("BD-12: cannot read config.yaml: %s — skip role mapping", e)
+        if warnings is not None:
+            warnings.append(
+                f"config.yaml: unreadable ({type(e).__name__}) — role mapping skipped"
+            )
+        return None
+    if not isinstance(config, dict):
+        log.error("BD-12: config.yaml root is not a mapping — skip")
+        if warnings is not None:
+            warnings.append("config.yaml: root is not a mapping — role mapping skipped")
+        return None
+
+    models = config.get("models") or {}
+    if not isinstance(models, dict):
+        log.error("BD-12: config.yaml 'models' is not a mapping — skip")
+        return None
+
+    updates: dict[str, dict[str, Any]] = {}
+    for member in team:
+        if not isinstance(member, dict):
+            continue
+        role = str(member.get("role") or member.get("agent") or "").strip()
+        if not role or role in _SKIP_ROLE_MAPPING:
+            continue
+        # AUD06-01: key models.<role> with the SAME slug the pipeline uses
+        # (build_pipeline_stages slugifies) — the runtime reads
+        # models.<slug>.agent_name / .model, so a raw-name key would be a
+        # silent lookup miss (BD-12/BD-32 never applied).
+        role = slugify_role(role)
+        entry = models.get(role)
+        if not isinstance(entry, dict):
+            entry = {}
+        change = updates.setdefault(role, {})
+        if not entry.get("agent_name"):
+            change["agent_name"] = _DEFAULT_AGENT_FOR_ROLE
+        if "model" in member:
+            member_model = str(member.get("model") or "").strip()
+            # Empty string = the user cleared the model (BD-32) — the
+            # writer removes the key; a non-empty value replaces it.
+            change["model"] = member_model or None
+
+    # R10: patch only the target scalars — comments, blank lines and the
+    # order of every other key survive. Flow-style or non-standard files
+    # are refused by the writer before anything is written.
+    new_text = patch_mapping(raw, updates)
+    if new_text == raw:
+        return None
+    return config_path, raw, new_text, updates
+
+
+def _write_role_mapping(
+    prepared: tuple[Path, str, str, dict[str, dict[str, Any]]],
+) -> bool:
+    config_path, raw, new_text, updates = prepared
+    for role, change in updates.items():
+        if "agent_name" in change:
+            log.info(
+                "BD-12: mapped role %r -> agent_name=%s",
+                role,
+                _DEFAULT_AGENT_FOR_ROLE,
+            )
+        if "model" in change:
+            if change["model"] is None:
+                log.info("BD-32: role %r -> model cleared", role)
+            else:
+                log.info("BD-32: role %r -> model=%s", role, change["model"])
+
+    # P3: keep latest backup as .bak + timestamped copy for history
+    backup = config_path.with_suffix(".yaml.bak")
+    try:
+        old_content = raw
+        # AUD14-06: backups hold the full config (may contain keys) —
+        # the managed writer creates them 0600; write_text left them 0644.
+        managed_write_api_text(
+            backup, old_content, operation="config backup"
+        )
+        # Also write timestamped backup (keep last 3)
+        from datetime import datetime as _dt
+        ts_backup = config_path.with_name(
+            f"config.yaml.{_dt.now().strftime('%Y%m%d%H%M%S')}.bak"
+        )
+        managed_write_api_text(
+            ts_backup, old_content, operation="config backup"
+        )
+        old_baks = sorted(config_path.parent.glob("config.yaml.*.bak"))
+        for old in old_baks[:-3]:
+            old.unlink(missing_ok=True)
+    except (OSError, AwfApiError) as e:
+        log.warning("BD-12: backup failed: %s", e)
+
+    managed_write_api_text(
+        config_path,
+        new_text,
+        operation="update config.yaml",
+    )
+    log.info("BD-12: config.yaml updated with role mappings")
+    return True
+
+
+def preflight_config_role_mapping(
+    team: list[dict[str, Any]],
+    project_dir: Path,
+    *,
+    warnings: list[str] | None = None,
+) -> None:
+    """INV1/AUD2: run the R10 refusal before any pipeline or role is written."""
+    _prepare_role_mapping(team, project_dir, warnings=warnings)
+
+
 def update_config_role_mapping(
     team: list[dict[str, Any]],
     project_dir: Path,
@@ -885,98 +1026,10 @@ def update_config_role_mapping(
     Returns:
         True if config.yaml was updated, False otherwise.
     """
-    config_path = project_dir / ".agentic" / "config.yaml"
-    if not config_path.is_file():
-        log.warning("BD-12: no config.yaml at %s — skip role mapping", config_path)
+    prepared = _prepare_role_mapping(team, project_dir, warnings=warnings)
+    if prepared is None:
         return False
-
-    try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
-        # AUD06-02: non-UTF-8 bytes and read errors used to escape as
-        # UnicodeDecodeError/OSError and crash the whole submit.
-        log.error("BD-12: cannot read config.yaml: %s — skip role mapping", e)
-        if warnings is not None:
-            warnings.append(
-                f"config.yaml: unreadable ({type(e).__name__}) — role mapping skipped"
-            )
-        return False
-    if not isinstance(config, dict):
-        log.error("BD-12: config.yaml root is not a mapping — skip")
-        if warnings is not None:
-            warnings.append("config.yaml: root is not a mapping — role mapping skipped")
-        return False
-
-    models = config.setdefault("models", {})
-    if not isinstance(models, dict):
-        log.error("BD-12: config.yaml 'models' is not a mapping — skip")
-        return False
-
-    changed = False
-    for member in team:
-        if not isinstance(member, dict):
-            continue
-        role = str(member.get("role") or member.get("agent") or "").strip()
-        if not role or role in _SKIP_ROLE_MAPPING:
-            continue
-        # AUD06-01: key models.<role> with the SAME slug the pipeline uses
-        # (build_pipeline_stages slugifies) — the runtime reads
-        # models.<slug>.agent_name / .model, so a raw-name key would be a
-        # silent lookup miss (BD-12/BD-32 never applied).
-        role = slugify_role(role)
-        entry = models.get(role)
-        if not isinstance(entry, dict):
-            entry = {}
-            models[role] = entry
-        if not entry.get("agent_name"):
-            entry["agent_name"] = _DEFAULT_AGENT_FOR_ROLE
-            changed = True
-            log.info("BD-12: mapped role %r -> agent_name=%s", role, _DEFAULT_AGENT_FOR_ROLE)
-        if "model" in member:
-            member_model = str(member.get("model") or "").strip()
-            if member_model:
-                if entry.get("model") != member_model:
-                    entry["model"] = member_model
-                    changed = True
-                    log.info("BD-32: role %r -> model=%s", role, member_model)
-            elif "model" in entry:
-                del entry["model"]
-                changed = True
-                log.info("BD-32: role %r -> model cleared", role)
-
-    if not changed:
-        return False
-
-    # P3: keep latest backup as .bak + timestamped copy for history
-    backup = config_path.with_suffix(".yaml.bak")
-    try:
-        old_content = config_path.read_text(encoding="utf-8")
-        # AUD14-06: backups hold the full config (may contain keys) —
-        # the managed writer creates them 0600; write_text left them 0644.
-        managed_write_api_text(
-            backup, old_content, operation="config backup"
-        )
-        # Also write timestamped backup (keep last 3)
-        from datetime import datetime as _dt
-        ts_backup = config_path.with_name(
-            f"config.yaml.{_dt.now().strftime('%Y%m%d%H%M%S')}.bak"
-        )
-        managed_write_api_text(
-            ts_backup, old_content, operation="config backup"
-        )
-        old_baks = sorted(config_path.parent.glob("config.yaml.*.bak"))
-        for old in old_baks[:-3]:
-            old.unlink(missing_ok=True)
-    except (OSError, AwfApiError) as e:
-        log.warning("BD-12: backup failed: %s", e)
-
-    managed_write_api_text(
-        config_path,
-        yaml.safe_dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False),
-        operation="update config.yaml",
-    )
-    log.info("BD-12: config.yaml updated with role mappings")
-    return True
+    return _write_role_mapping(prepared)
 
 
 # ─── Context + supervisor.md patches (UI-2/UI-3) ────────────────────────
@@ -1012,42 +1065,31 @@ _UI3_LEGACY_PATTERN = re.compile(
 )
 
 
-def save_context_and_instructions(
+def _prepare_context_patch(
     project_dir: Path,
-    *,
-    context_message: str = "",
-    supervisor_instructions: str = "",
-    warnings: list[str] | None = None,
-) -> bool:
-    """UI-2/UI-3: persist ``context_message`` + ``supervisor_instructions``.
+    context_message: str,
+    supervisor_instructions: str,
+    warnings: list[str] | None,
+) -> tuple[Path, str, str] | None:
+    """Compute the UI-2/UI-3 ``config.yaml`` text, touching no file (INV1).
 
-    Persists to:
-    1. ``config.yaml`` — machine-readable (``context.message``,
-       ``supervisor.instructions``).
-    2. ``supervisor.md`` — appended as markdown sections (supervisor LLM
-       sees them via ``--file``).
+    Returns ``(config_path, raw, new_text)`` or ``None`` when there is
+    nothing to write: empty inputs, or a config that cannot be read/parsed
+    (that damage goes to *warnings* — the submit must survive it, AUD06-02/03).
 
-    Both fields are OPTIONAL — if empty, no changes made.
-
-    Idempotent: re-submitting with new content replaces existing UI-2/UI-3
-    sections in supervisor.md — the sentinel-delimited blocks (and the
-    legacy bare-heading sections from files written before AUD06-08) are
-    stripped before re-appending.
-
-    Returns:
-        True if any file was changed, False otherwise.
+    Raises :class:`AwfApiError` when the R10 writer refuses (flow-style
+    ``context:``/``supervisor:`` header, broken indentation, bad round-trip).
+    The caller must not write any file in that case.
     """
-    context_message = context_message.strip()
-    supervisor_instructions = supervisor_instructions.strip()
-
     if not context_message and not supervisor_instructions:
-        return False
+        return None
 
     config_path = project_dir / ".agentic" / "config.yaml"
+    raw = ""
     if config_path.exists():
         try:
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+            raw = config_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
             # AUD06-02: unreadable config must degrade (warning), not crash
             # the submit; AUD06-03: never overwrite a config we cannot parse
             # — that would wipe project/models/phases with one section.
@@ -1059,10 +1101,20 @@ def save_context_and_instructions(
                     f"config.yaml: unreadable ({type(e).__name__}) — "
                     "context/instructions save skipped, file left untouched"
                 )
-            return False
-        if config is None:
-            config = {}  # empty file — nothing to lose
-        if not isinstance(config, dict):
+            return None
+        try:
+            parsed = yaml.safe_load(raw)
+        except yaml.YAMLError as e:
+            log.error(
+                "UI-2/UI-3: cannot parse config.yaml: %s — skipping save", e
+            )
+            if warnings is not None:
+                warnings.append(
+                    f"config.yaml: unreadable ({type(e).__name__}) — "
+                    "context/instructions save skipped, file left untouched"
+                )
+            return None
+        if parsed is not None and not isinstance(parsed, dict):
             log.error(
                 "UI-2/UI-3: config.yaml root is not a mapping — skipping save"
             )
@@ -1071,47 +1123,116 @@ def save_context_and_instructions(
                     "config.yaml: root is not a mapping — "
                     "context/instructions save skipped, file left untouched"
                 )
-            return False
-    else:
-        config = {}
+            return None
 
-    config_changed = False
+    updates: dict[str, dict[str, Any]] = {}
     if context_message:
-        ctx_section = config.setdefault("context", {})
-        if not isinstance(ctx_section, dict):
-            ctx_section = {}
-            config["context"] = ctx_section
-        ctx_section["message"] = context_message
-        config_changed = True
-        log.info("UI-2: saved context.message to config.yaml (%d chars)", len(context_message))
-
+        updates.setdefault("context", {})["message"] = context_message
     if supervisor_instructions:
-        sup_section = config.setdefault("supervisor", {})
-        if not isinstance(sup_section, dict):
-            sup_section = {}
-            config["supervisor"] = sup_section
-        sup_section["instructions"] = supervisor_instructions
-        config_changed = True
-        log.info("UI-3: saved supervisor.instructions to config.yaml (%d chars)", len(supervisor_instructions))
+        updates.setdefault("supervisor", {})["instructions"] = (
+            supervisor_instructions
+        )
 
+    # R10/AUD1: patch only the two keys — comments, blank lines and the
+    # order of every other key survive (the old safe_dump rewrote the
+    # whole file, comments included).
+    new_text = patch_config_values(raw, updates, operation="UI-2/UI-3")
+    return config_path, raw, new_text
+
+
+def preflight_context_config(
+    project_dir: Path,
+    *,
+    context_message: str = "",
+    supervisor_instructions: str = "",
+) -> None:
+    """INV1/AUD0286-2: run the UI-2/UI-3 refusal before any other write.
+
+    ``apply_project_setup`` otherwise writes the pipeline, roles and the
+    role mapping first, and only then discovers that ``context.message``
+    cannot be patched — the submit would be half applied. A degraded
+    (unreadable/unparseable) config is NOT a refusal: it stays a warning
+    later (AUD06-02/03), so the preflight silently lets it through.
+    """
+    _prepare_context_patch(
+        project_dir,
+        context_message.strip(),
+        supervisor_instructions.strip(),
+        None,
+    )
+
+
+def _save_context_and_instructions(
+    project_dir: Path,
+    *,
+    context_message: str = "",
+    supervisor_instructions: str = "",
+    warnings: list[str] | None = None,
+) -> tuple[bool, bool]:
+    """Persist UI-2/UI-3; return ``(config_changed, supervisor_md_changed)``.
+
+    A refused config patch writes nothing at all — not even supervisor.md.
+    Old code reported the config as updated and patched supervisor.md after
+    the refusal, so the two surfaces diverged (AUD0286-2). The same
+    all-or-nothing rule holds for a DEGRADED config (unreadable, broken or
+    non-dict root): its warning already says "save skipped, file left
+    untouched", so supervisor.md must not be patched either (AUD06-02/03).
+    """
+    context_message = context_message.strip()
+    supervisor_instructions = supervisor_instructions.strip()
+
+    if not context_message and not supervisor_instructions:
+        return False, False
+
+    try:
+        prepared = _prepare_context_patch(
+            project_dir,
+            context_message,
+            supervisor_instructions,
+            warnings,
+        )
+    except AwfApiError as e:
+        log.error("UI-2/UI-3: config.yaml not patched: %s", e)
+        if warnings is not None:
+            warnings.append(str(e))
+        return False, False
+
+    if prepared is None:
+        # AUD06-02/03: empty inputs returned above, so None here means the
+        # config is degraded (unreadable/broken/non-dict root). The warning
+        # is already recorded — do not patch the second surface either.
+        return False, False
+
+    config_path, raw, new_text = prepared
+    config_changed = new_text != raw
     if config_changed:
         managed_write_api_text(
             config_path,
-            yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+            new_text,
             operation="save context/instructions",
         )
+        if context_message:
+            log.info(
+                "UI-2: saved context.message to config.yaml (%d chars)",
+                len(context_message),
+            )
+        if supervisor_instructions:
+            log.info(
+                "UI-3: saved supervisor.instructions to config.yaml (%d chars)",
+                len(supervisor_instructions),
+            )
 
     # 2. Patch supervisor.md (idempotent via UI-2/UI-3 marker sections)
     supervisor_md = project_dir / ".agentic" / "roles" / "supervisor.md"
     if not supervisor_md.exists():
         log.warning("UI-2/UI-3: supervisor.md not found at %s — skipping append", supervisor_md)
-        return config_changed
+        return config_changed, False
 
     try:
         current = supervisor_md.read_text(encoding="utf-8")
     except OSError as e:
         log.error("UI-2/UI-3: failed to read supervisor.md: %s", e)
-        return config_changed
+        return config_changed, False
 
     # Strip existing UI-2/UI-3 sections (idempotent — re-submit replaces):
     # sentinel-delimited blocks first (new format), then the legacy
@@ -1138,16 +1259,53 @@ def save_context_and_instructions(
             "<!-- awf:ui3:end -->\n"
         )
 
-    if sections_to_add:
-        new_content = current + "".join(sections_to_add)
-        managed_write_api_text(
-            supervisor_md,
-            new_content,
-            operation="save supervisor.md",
-        )
-        log.info("UI-2/UI-3: appended %d section(s) to supervisor.md", len(sections_to_add))
+    if not sections_to_add:
+        return config_changed, False
 
-    return True
+    new_content = current + "".join(sections_to_add)
+    managed_write_api_text(
+        supervisor_md,
+        new_content,
+        operation="save supervisor.md",
+    )
+    log.info("UI-2/UI-3: appended %d section(s) to supervisor.md", len(sections_to_add))
+    return config_changed, True
+
+
+def save_context_and_instructions(
+    project_dir: Path,
+    *,
+    context_message: str = "",
+    supervisor_instructions: str = "",
+    warnings: list[str] | None = None,
+) -> bool:
+    """UI-2/UI-3: persist ``context_message`` + ``supervisor_instructions``.
+
+    Persists to:
+    1. ``config.yaml`` — machine-readable (``context.message``,
+       ``supervisor.instructions``).
+    2. ``supervisor.md`` — appended as markdown sections (supervisor LLM
+       sees them via ``--file``).
+
+    Both fields are OPTIONAL — if empty, no changes made.
+
+    Idempotent: re-submitting with new content replaces existing UI-2/UI-3
+    sections in supervisor.md — the sentinel-delimited blocks (and the
+    legacy bare-heading sections from files written before AUD06-08) are
+    stripped before re-appending.
+
+    A refused config patch (R10/AUD0286-2) leaves both surfaces untouched.
+
+    Returns:
+        True if any file was changed, False otherwise.
+    """
+    config_changed, md_changed = _save_context_and_instructions(
+        project_dir,
+        context_message=context_message,
+        supervisor_instructions=supervisor_instructions,
+        warnings=warnings,
+    )
+    return config_changed or md_changed
 
 
 def _role_resolves(role: str, project_dir: Path) -> bool:
@@ -1285,7 +1443,22 @@ def apply_project_setup(
     # REVIEW W3: the variant branch writes models.<role>.agent_name inside
     # write_pipeline; the out-list carries that fact to the report flag.
     variant_config_updates: list[bool] = []
+    # R10/INV1 (AUD0286-2): the UI-2/UI-3 patch is the last writer of the
+    # submit — run its refusal first so a refused context leaves no
+    # pipeline, no roles and no supervisor.md behind.
+    preflight_context_config(
+        project_dir,
+        context_message=context_message,
+        supervisor_instructions=supervisor_instructions,
+    )
     if team or flow_variant:
+        # R10/INV1 (AUD2): the team's config patch happens after the
+        # pipeline write — compute its refusal first, so a refused submit
+        # leaves the project untouched. Variant roles are preflighted by
+        # ``_materialize_variant_roles`` right before its own first write;
+        # deriving the variant composition here again would be a second
+        # owner of the same stage list.
+        preflight_config_role_mapping(team, project_dir)
         try:
             pipeline_path = write_pipeline(
                 team,
@@ -1346,12 +1519,13 @@ def apply_project_setup(
             "role creates the pipeline"
         )
 
-    sup_md_updated = save_context_and_instructions(
+    context_config_changed, sup_md_updated = _save_context_and_instructions(
         project_dir,
         context_message=context_message,
         supervisor_instructions=supervisor_instructions,
         warnings=warnings,
     )
+    config_updated = config_updated or context_config_changed
 
     # D9 (topic-trainer spec): a rebuilt pipeline shifts stage positions, but
     # the BD-31 disambiguation addenda in role files still say "position 2/3".
@@ -1381,7 +1555,7 @@ def apply_project_setup(
     return ApplyProjectSetupResult(
         pipeline_file=str(pipeline_path) if pipeline_path else None,
         quick_pipeline_file=str(quick_path) if quick_path else None,
-        config_updated=config_updated or bool(context_message) or bool(supervisor_instructions),
+        config_updated=config_updated,
         supervisor_md_updated=sup_md_updated,
         warnings=warnings,
     )

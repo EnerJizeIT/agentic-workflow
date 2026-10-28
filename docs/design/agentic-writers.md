@@ -68,8 +68,10 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 Ослабленная реализация молча не включается. Источник и полный текст —
 [`docs/design.md`](../design.md): строка «Запись состояния — fail-closed» и
 абзац «Платформа». Платформенный запрет закрывает путь записи состояния; при
-этом прямые вызовы `locked()` (`api/hygiene.py`, `infra/state_store/_lock.py`)
-до win32-ветки `_lock.py` доходят — она живая, её вердикт `unit-0239`
+этом прямые вызовы `locked()` (`api/hygiene.py`, `pipeline_state.py`,
+`infra/state_store/_lock.py`) до win32-ветки `_lock.py` доходят — она живая.
+У `pipeline_state.py` lock/read/merge успевают, отказывает только публикация;
+у `api/hygiene.py` и `infra/state_store/_lock.py` вердикт `unit-0239`
 (перевод на managed-примитив или явный отказ, не удаление).
 
 Правило листа (юнит 0235, N3): для разрушающей операции проверяются **все**
@@ -170,7 +172,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/pipeline.py` · ACK-сигнал: managed `mkdir` + write | `.agentic/inbox/ACK-<id>.ready` | `tests/negative/test_review0281_barriers.py::test_arm_ack_file_refuses_symlinked_inbox` | `test_arm_ack_file_refuses_symlinked_inbox` | `barrier` |
 | `awf/api/pipeline.py` · APPROVE `.ready` `touch` | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "managed_write_api_text(signal, \"\", operation=\"write approve signal\")" awf/api/pipeline.py` | `managed_write_api_text(signal, ""` | `unit-0239` |
 | `awf/api/pipeline.py` · APPROVE-бинд: запись | `.agentic/inbox/APPROVE-<id>.ready` | `grep -n "managed_write_api_text(  # approve binding" awf/api/pipeline.py` | `managed_write_api_text(` | `unit-0239` |
-| `awf/api/pipeline.py` · last-kill write | `.agentic/state/last-kill.json` | `grep -n "atomic_write_text(state_dir / LAST_KILL_FILE" awf/api/pipeline.py` | `atomic_write_text(` | `unit-0239` |
+| `awf/api/pipeline.py` · last-kill write | `.agentic/state/last-kill.json` | `grep -n "managed_fs.managed_write_under_agentic(target, json.dumps(record))" awf/api/pipeline.py` | `managed_fs.managed_write_under_agentic(target, json.dumps(record))` | `unit-0239` |
 | `awf/api/pipeline.py` · reconcile ACK (A2) | `.agentic/inbox/ACK-*.ready` | `grep -n "ack.unlink()" awf/api/pipeline.py` | `ack.unlink()` | `unit-0239` |
 | `awf/api/pipeline.py` · pending closure | `.agentic/inbox/CLOSE-*.ready` | `tests/negative/test_miniwave_m3d_unlinks.py::test_resolve_pending_closure_refuses_symlinked_inbox` | `test_resolve_pending_closure_refuses_symlinked_inbox` | `barrier` |
 | `awf/api/pipeline.py` · unblock preflight | `.agentic/outbox/BLOCKED-<id>.{ready,md}` → `.agentic/context/` | `tests/negative/test_miniwave_m3d_unlinks.py::test_unblock_todo_preflights_outbox_and_context` | `test_unblock_todo_preflights_outbox_and_context` | `barrier` |
@@ -178,7 +180,6 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/api/pipeline.py` · note «BLOCKED cleared» (A3) | `.agentic/context/NOTE-*.md` | `grep -n "BLOCKED cleared" awf/api/pipeline.py` | `BLOCKED cleared` | `unit-0239` |
 | `awf/api/pipeline.py` · `mkdir` inbox (M3c #2) | `.agentic/inbox/` (каталог) | `tests/negative/test_inventory_batch1.py::test_approve_refuses_symlinked_inbox` | `test_approve_refuses_symlinked_inbox` | `barrier` |
 | `awf/api/pipeline.py` · `mkdir` outbox | `.agentic/outbox/` (каталог) | `grep -n "managed_mkdir_api(outbox" awf/api/pipeline.py` | `managed_mkdir_api(outbox` | `unit-0239` |
-| `awf/api/pipeline.py` · `mkdir` state | `.agentic/state/` (каталог) | `grep -n "state_dir.mkdir(parents=True" awf/api/pipeline.py` | `state_dir.mkdir(parents=True` | `unit-0239` |
 | `awf/api/pipeline.py` · salvage `unlink` | `.agentic/inbox/SALVAGE-*.md` | `grep -n -B2 "^            p.unlink()" awf/api/pipeline.py` | `for p in salvage_notes` | `unit-0239` |
 | `awf/api/roles.py` · adopt/discard черновика | `.agentic/roles/draft/<slug>.md` | `tests/negative/test_miniwave_m3d_unlinks.py::test_role_adopt_refuses_symlinked_draft` | `test_role_adopt_refuses_symlinked_draft` | `barrier` |
 | `awf/api/run.py` · RUN-REPORT: запись | `.agentic/outbox/RUN-REPORT-<ts>.md` | `tests/negative/test_inventory_batch1.py::test_run_report_write_refuses_symlinked_outbox` | `test_run_report_write_refuses_symlinked_outbox` | `barrier` |
@@ -209,8 +210,8 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/candidate_verify.py` · worktree: `mkdir` | `/tmp/opencode/**` (вне проекта) | `grep -n "dest.mkdir(parents=True, exist_ok=True)" awf/candidate_verify.py` | `dest.mkdir(parents=True, exist_ok=True)` | `exception+outside-surface: одноразовый worktree вне проекта` |
 | `awf/candidate_verify.py` · worktree index: `unlink` | временный git-index (вне проекта) | `grep -n "git read-tree creates the index" awf/candidate_verify.py` | `git read-tree creates the index` | `exception+outside-surface: одноразовый git-index вне проекта` |
 | `awf/candidate_verify.py` · worktree: `rmtree` | `/tmp/opencode/**` (вне проекта) | `grep -n "shutil.rmtree(dest, ignore_errors=True)" awf/candidate_verify.py` | `shutil.rmtree(dest, ignore_errors=True)` | `exception+outside-surface: одноразовый worktree вне проекта` |
-| `awf/claim_changes.py` · запись claim-плана | `.agentic/context/CLAIM-*` | `grep -n -A1 "^    atomic_write_text($" awf/claim_changes.py` | `path, json.dumps(plan.to_dict()` | `unit-0239` |
-| `awf/claim_changes.py` · claim-ссылка | `.agentic/context/BASELINE-<id>.claim` | `grep -n "claim_link_path(project_dir, todo_id), f" awf/claim_changes.py` | `claim_link_path(project_dir, todo_id), f"{source_todo}` | `unit-0239` |
+| `awf/claim_changes.py` · запись claim-плана | `.agentic/context/CLAIM-*` | `grep -n -A1 "managed_fs.managed_write_under_agentic(" awf/claim_changes.py` | `path, json.dumps(plan.to_dict(` | `unit-0239` |
+| `awf/claim_changes.py` · claim-ссылка | `.agentic/context/BASELINE-<id>.claim` | `grep -n -A1 "managed_fs.managed_write_under_agentic(" awf/claim_changes.py` | `managed_fs.managed_write_under_agentic(target, f"{source_todo}\n")` | `unit-0239` |
 | `awf/claim_changes.py` · снятие claim-ссылки | `.agentic/context/BASELINE-<id>.claim` | `grep -n "claim_link_path(Path(project_dir), todo_id).unlink" awf/claim_changes.py` | `claim_link_path(Path(project_dir), todo_id).unlink` | `unit-0239` |
 | `awf/commit_delta.py` · одноразовый git-index | `/tmp/opencode/**` (вне проекта) | `grep -n "tempfile.mkstemp" awf/commit_delta.py` | `tempfile.mkstemp` | `exception+outside-surface: изолированный git-index вне проекта` |
 | `awf/commit_delta.py` · index: `unlink` | временный git-index (вне проекта) | `grep -n "os.unlink(index_path)" awf/commit_delta.py` | `os.unlink(index_path)` | `exception+outside-surface: изолированный git-index вне проекта` |
@@ -225,14 +226,14 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/feedback.py` · отчёт обратной связи | `~/Desktop` (вне проекта) | `grep -n 'Path.home() / "Desktop"' awf/feedback.py` | `Path.home() / "Desktop"` | `exception+outside-surface: отчёт кладётся на рабочий стол владельца` |
 | `awf/feedback.py` · отчёт: `write_text` | `~/Desktop` (вне проекта) | `grep -n "atomic_write_text(dest, report)" awf/feedback.py` | `atomic_write_text(dest, report)` | `exception+outside-surface: отчёт кладётся на рабочий стол владельца` |
 | `awf/feedback.py` · отчёт: `mkdir` каталога | `~/Desktop` (вне проекта) | `grep -n "target.mkdir(parents=True, exist_ok=True)" awf/feedback.py` | `target.mkdir(parents=True, exist_ok=True)` | `exception+outside-surface: каталог отчёта на рабочем столе владельца` |
-| `awf/include_untracked.py` · audit-ссылка baseline | `.agentic/context/BASELINE-<id>.include` | `grep -n "atomic_write_text(" awf/include_untracked.py` | `atomic_write_text(` | `unit-0239` |
+| `awf/include_untracked.py` · audit-ссылка baseline | `.agentic/context/BASELINE-<id>.include` | `grep -n -A1 "managed_fs.managed_write_under_agentic(" awf/include_untracked.py` | `target, encode_path_link(files)` | `unit-0239` |
 | `awf/include_untracked.py` · снятие audit-ссылки | `.agentic/context/BASELINE-<id>.include` | `grep -n "include_file_path(project_dir, todo_id).unlink" awf/include_untracked.py` | `include_file_path(project_dir, todo_id).unlink` | `unit-0239` |
 | `awf/infra/state_store/_io.py` · запись состояния (`write_text`) | `.agentic/state/**` | `tests/negative/test_miniwave_m3_managedfs_round2.py::test_put_record_and_control_refuse_symlinked_state` | `test_put_record_and_control_refuse_symlinked_state` | `barrier` |
 | `awf/infra/state_store/_projection.py` · запись (`write_text`) и удаление (`unlink`) проекции | `.agentic/state/*.json` | `tests/negative/roadmap_r2/test_roadmap_r2_publish_qa.py::test_projection_writer_no_follow_barrier` | `test_projection_writer_no_follow_barrier` | `barrier` |
 | `awf/infra/state_store/_records.py` · GC записей (`unlink`) | `.agentic/state/records/**` | `tests/negative/test_miniwave_m3b_movers.py::test_gc_records_refuses_symlinked_records_and_keeps_canary` | `test_gc_records_refuses_symlinked_records_and_keeps_canary` | `barrier` |
 | `awf/infra/state_store/_wipe.py` · reset состояния (`unlink`/`rmtree`) | `.agentic/state/**` | `tests/negative/test_miniwave_m3_managedfs.py::test_wipe_refuses_symlinked_state_and_keeps_outside_canary` | `test_wipe_refuses_symlinked_state_and_keeps_outside_canary` | `barrier` |
-| `awf/_lock.py` · win32 `mkdir` состояния (достижим: прямые `locked()` в `api/hygiene.py`, `infra/state_store/_lock.py`) | `.agentic/state/` (каталог блокировки) | `grep -n "state_dir.mkdir(parents=True, exist_ok=True)" awf/_lock.py` | `state_dir.mkdir(parents=True, exist_ok=True)` | `unit-0239` |
-| `awf/_lock.py` · win32 файл блокировки (достижим: прямые `locked()` в `api/hygiene.py`, `infra/state_store/_lock.py`) | `.agentic/state/.lock` | `grep -n 'open(lock_file, "a+b")' awf/_lock.py` | `open(lock_file, "a+b")` | `unit-0239` |
+| `awf/_lock.py` · win32 `mkdir` состояния (достижим: прямые `locked()` в `api/hygiene.py`, `pipeline_state.py`, `infra/state_store/_lock.py`) | `.agentic/state/` (каталог блокировки) | `grep -n "state_dir.mkdir(parents=True, exist_ok=True)" awf/_lock.py` | `state_dir.mkdir(parents=True, exist_ok=True)` | `unit-0239` |
+| `awf/_lock.py` · win32 файл блокировки (достижим: прямые `locked()` в `api/hygiene.py`, `pipeline_state.py`, `infra/state_store/_lock.py`) | `.agentic/state/.lock` | `grep -n 'open(lock_file, "a+b")' awf/_lock.py` | `open(lock_file, "a+b")` | `unit-0239` |
 | `awf/_log.py` · ротация лога | `.agentic/logs/*.log` | `grep -n "old.unlink()" awf/_log.py` | `old.unlink()` | `unit-0239` |
 | `awf/_log.py` · `rename` лога в архив | `.agentic/logs/*.log` | `grep -n "log_file.rename(archive)" awf/_log.py` | `log_file.rename(archive)` | `unit-0239` |
 | `awf/_log.py` · `mkdir` корня логов | `.agentic/` (корень при отсутствии) | `grep -n "root.mkdir(parents=True" awf/_log.py` | `root.mkdir(parents=True` | `unit-0239` |
@@ -268,15 +269,14 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/prove_red.py` · bootstrap: `write_text` | `/tmp/opencode/**` (вне проекта) | `grep -n "bootstrap.write_text(_BOOTSTRAP_SOURCE" awf/prove_red.py` | `bootstrap.write_text(_BOOTSTRAP_SOURCE` | `exception+outside-surface: bootstrap-файл baseline-прогона вне проекта` |
 | `awf/publish.py` · факты публикации | `.agentic/state/`, `.agentic/context/` | `tests/negative/roadmap_r2/test_roadmap_r2_publish.py::test_managed_refusal_on_publish_path_is_a_typed_outcome` | `test_managed_refusal_on_publish_path_is_a_typed_outcome` | `barrier` |
 | `awf/publish.py` · удаление факта | `.agentic/state/*`, `.agentic/context/*` | `tests/negative/roadmap_r2/test_roadmap_r2_publish.py::test_projection_remove_no_follow_barrier` | `test_projection_remove_no_follow_barrier` | `barrier` |
-| `awf/reject_files.py` · carry-over-ссылка | `.agentic/context/BASELINE-<id>.carry_over` | `grep -n "atomic_write_text(" awf/reject_files.py` | `atomic_write_text(` | `unit-0239` |
+| `awf/reject_files.py` · carry-over-ссылка | `.agentic/context/BASELINE-<id>.carry_over` | `grep -n -A1 "managed_fs.managed_write_under_agentic(" awf/reject_files.py` | `managed_fs.managed_write_under_agentic(target, f"{origin}\n")` | `unit-0239` |
 | `awf/reject_files.py` · снятие carry-over-ссылки (`unlink`) | `.agentic/context/BASELINE-<id>.carry_over` | `grep -n "carry_over_link_path(Path(project_dir), todo_id).unlink" awf/reject_files.py` | `carry_over_link_path(Path(project_dir), todo_id).unlink` | `unit-0239` |
-| `awf/reject_files.py` · REJECT-файл | `.agentic/context/REJECT-<id>.files` | `grep -n "reject_files_path(project_dir, todo_id).write_text(" awf/reject_files.py` | `reject_files_path(project_dir, todo_id).write_text(` | `unit-0239` |
+| `awf/reject_files.py` · REJECT-файл | `.agentic/context/REJECT-<id>.files` | `grep -n -A1 "managed_fs.managed_write_under_agentic(" awf/reject_files.py` | `target, encode_path_link(new)` | `unit-0239` |
 | `awf/signals.py` · `clean_stage_signals` (правило N3) | `.agentic/outbox/*-<id>.ready` | `tests/negative/test_miniwave_m3d_unlinks.py::test_clean_stage_signals_refuses_symlink_leaf` | `test_clean_stage_signals_refuses_symlink_leaf` | `barrier` |
 | `awf/stage_manifest.py` · `mkdir` context под запись нарушения — managed | `.agentic/context/` (каталог) | `tests/negative/test_review0281_barriers.py::test_record_violation_refuses_symlinked_agentic` | `test_record_violation_refuses_symlinked_agentic` | `barrier` |
 | `awf/closer_stage.py` · запись CLOSER-<id>.json | `.agentic/context/CLOSER-<id>.json` | `tests/negative/test_dod_closer_stage.py::test_decision_writes_one_dod_line_and_skips_without_spawn` | `test_decision_writes_one_dod_line_and_skips_without_spawn` | `barrier` |
 | `awf/unit_history.py` · `forget_unit_history`: `unlink` | `.agentic/context/CLOSER-<id>.json`, `.agentic/context/CHECKLIST-<id>.json` | `grep -n "path.unlink()" awf/unit_history.py` | `path.unlink()` | `unit-0271` |
-| `awf/todo_draft.py` · `--out` черновика | `путь, выбранный пользователем (вне .agentic)` | `grep -n "out_path.write_text(draft" awf/todo_draft.py` | `out_path.write_text(draft` | `exception+outside-surface: CLI пишет туда, куда указал пользователь` |
-| `awf/todo_draft.py` · `mkdir` каталога `--out` | `путь, выбранный пользователем (вне .agentic)` | `grep -n "out_path.parent.mkdir(parents=True, exist_ok=True)" awf/todo_draft.py` | `out_path.parent.mkdir(parents=True, exist_ok=True)` | `exception+outside-surface: каталог выбирает пользователь` |
+| `awf/todo_draft.py` · `--out` черновика (managed) | `.agentic/**` | `tests/negative/test_carry_paths.py::TestTodoDraftBarrier::test_out_outside_agentic_refused_without_files` | `test_out_outside_agentic_refused_without_files` | `barrier` |
 | `awf/todos.py` · архивация задачи | `.agentic/done/<id>`, `.agentic/inbox`, `.agentic/outbox` | `tests/negative/test_miniwave_m3b_movers.py::test_archive_todo_refuses_symlinked_destination_leaf` | `test_archive_todo_refuses_symlinked_destination_leaf` | `barrier` |
 | `awf/todos.py` · `mkdir` каталога архива | `.agentic/done/<id>` (каталог) | `grep -n "dest.mkdir(parents=True" awf/todos.py` | `dest.mkdir(parents=True` | `unit-0239` |
 | `awf/todos.py` · потребление сигналов inbox | `.agentic/inbox/*.ready` | `grep -n "p.unlink()" awf/todos.py` | `p.unlink()` | `unit-0239` |
@@ -341,7 +341,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
   `awf/doctrine.py` (обе строки — `exception+init-bootstrap`).
 - **`_lock.py` win32 — мёртвый резерв только в пути записи состояния.**
   `run_state._ensure_lock_file` отказывает до `locked()`, но прямые вызовы
-  `locked()` (`api/hygiene.py`,
+  `locked()` (`api/hygiene.py`, `pipeline_state.py`,
   `infra/state_store/_lock.py::project_lock`) входят в win32-ветку и создают
   `.agentic/state/.lock` голыми `mkdir` + `open` до любого POSIX-отказа. Это
   нарушение fail-closed, а не разрешённое исключение: обе строки несут

@@ -25,6 +25,7 @@ import contextlib
 import errno
 import os
 import stat
+from collections.abc import Iterable
 from pathlib import Path
 
 from .. import todo_ids
@@ -90,6 +91,112 @@ def agentic_root_for(path: Path) -> Path:
         if anchor.name == ".agentic":
             return anchor.parent
     return path.parent
+
+
+# ── two-basis path projection ───────────────────────────────────────────
+
+
+def raw_root_for(project_dir: Path) -> Path:
+    """Project root exactly as the caller spelled it — no ``resolve()``.
+
+    The no-follow walk must start from the caller's own spelling: resolving
+    the project would erase a symlinked parent the walk is allowed to cross
+    (Q4b) and the internal links it must refuse (Q5).
+    """
+    raw = agentic_root_for(Path(project_dir) / ".agentic")
+    return raw if raw.is_absolute() else Path.cwd() / raw
+
+
+def surface_on_root_basis(surface: Path) -> Path:
+    """Place a surface on the root's basis without resolving its leaf.
+
+    A relative project (``Path("proj")``) or an absolute one reached through
+    a symlinked parent (``/…/link/proj``, ``link -> real``) used to read as
+    "escapes managed root" — a false refusal on a project the baseline wrote
+    (Q4/Q4b).
+
+    Resolving the PARENT gives the canonical basis the root lives on.
+    Resolving the leaf would follow the very symlink the walk must refuse,
+    so the leaf stays as spelled and the no-follow ``lstat`` sees it.
+
+    Q6: ``resolve()`` raises ``RuntimeError`` on a symlink loop
+    (``pipelines -> pipelines``). That is the same unsafe path, not an
+    unexpected traceback — it becomes the barrier's own refusal type.
+    """
+    absolute = surface if surface.is_absolute() else Path.cwd() / surface
+    try:
+        parent = absolute.parent.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ManagedPathError(
+            f"cannot resolve managed path parent {absolute.parent}: {exc}"
+        ) from exc
+    return parent / absolute.name
+
+
+def surface_on_raw_basis(surface: Path, *, raw_root: Path) -> Path:
+    """Re-anchor the surface's OWN components on the raw project root.
+
+    Q5: the containment check resolves the surface's parent, so a symlink
+    component INSIDE the project (``roles/draft -> roles``) resolves into
+    the root and passes. That is fine for a writer
+    (``managed_write_text`` walks the raw leaf), but ``refuse_unsafe_surfaces``
+    also guards DESTRUCTIVE ops that then work on the raw path
+    (``unlink``/``shutil.move``) — the internal link sent them at a live
+    file.
+
+    The chain is taken from the surface's own spelling (no resolve) and
+    re-anchored at the raw root, so the walk is purely lexical and every
+    component the caller named — leaf included — is ``lstat``-ed. The
+    project root's own spelling stays outside the walk (a symlinked parent
+    above the project is not an escape — Q4b).
+
+    A surface ALREADY under ``raw_root`` keeps its own chain: anchoring it
+    by the nearest ``.agentic`` would collapse a nested component
+    (``.agentic/sub/.agentic/x`` -> ``.agentic/x``) and the walk — and the
+    writer behind it — would touch a path the caller never named. The
+    nearest-``.agentic`` anchor is only for a surface spelled through
+    another name of the same project (a resolved root vs a relative or
+    symlinked one).
+    """
+    absolute = surface if surface.is_absolute() else Path.cwd() / surface
+    try:
+        chain = absolute.relative_to(raw_root)
+    except ValueError:
+        anchor = agentic_root_for(absolute)
+        try:
+            chain = absolute.relative_to(anchor)
+        except ValueError:
+            chain = Path(absolute.name)
+    return raw_root / chain
+
+
+def assert_managed_surfaces(
+    surfaces: Iterable[Path],
+    *,
+    raw_root: Path,
+    root: Path,
+    operation: str,
+) -> None:
+    """POSIX + two-basis no-follow preflight over ``surfaces``.
+
+    ONE assembly of the invariant: no surface may cross a symlink on the
+    caller's spelling (``raw_root`` basis) or land outside the resolved
+    managed root (``root`` basis). Both barriers run through it — the API
+    layer (``api._helpers.refuse_unsafe_surfaces``) and the draft writer
+    (``todo_draft.make_todo_draft``, which adds only its own ``.agentic``
+    containment). A check added here cannot be missed by one of them.
+
+    ``surface_on_root_basis`` resolves the PARENT only, so a symlinked
+    leaf stays visible to the ``lstat`` walk. Raises
+    :class:`ManagedPathError`; the caller translates it to its own error
+    type.
+    """
+    require_posix(operation)
+    for surface in surfaces:
+        assert_no_symlink_escape(
+            surface_on_raw_basis(surface, raw_root=raw_root), root=raw_root
+        )
+        assert_no_symlink_escape(surface_on_root_basis(surface), root=root)
 
 
 # ── symlink-free walks ──────────────────────────────────────────────────
@@ -432,16 +539,35 @@ def managed_write_text(
             os.close(f)
 
 
+def managed_write_under_agentic(
+    path: Path, content: str, *, errors: str = "strict"
+) -> None:
+    """Create the parents and write a file under the project's ``.agentic``.
+
+    The shared managed mkdir+write pair of the ``context``/``state`` writers
+    (baseline-adjacent links, claim records, ``last-kill``): the root is
+    derived from the leaf like every other managed writer, so a symlinked
+    component refuses before the first byte lands.
+    """
+    managed_mkdir(path.parent)
+    managed_write_text(path, content, root=agentic_root_for(path), errors=errors)
+
+
 __all__ = [
     "ManagedPathError",
     "is_posix",
     "require_posix",
     "validate_todo_id",
     "agentic_root_for",
+    "raw_root_for",
+    "surface_on_root_basis",
+    "surface_on_raw_basis",
+    "assert_managed_surfaces",
     "assert_no_symlink_escape",
     "assert_managed_dir",
     "open_append_log",
     "open_managed",
     "managed_mkdir",
     "managed_write_text",
+    "managed_write_under_agentic",
 ]

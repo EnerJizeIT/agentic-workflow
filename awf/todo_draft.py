@@ -14,10 +14,13 @@ Escaped pipes (``\\|``) inside cells are supported.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from .infra import managed_fs
 
 _INDEX_NAME = "AUDIT-INDEX.md"
 
@@ -322,21 +325,81 @@ def make_todo_draft(
     """Full CLI-level flow: resolve index, parse, render, write/return.
 
     Returns ``(out_path, draft_text)``; ``out_path`` is None in stdout
-    mode. Refuses to overwrite an existing ``--out`` without ``force``.
+    mode. ``--out`` must lie under the project's ``.agentic`` — anything
+    else (an outside path or a symlinked component) refuses before a file
+    appears. Refuses to overwrite an existing ``--out`` without ``force``.
     """
     pd = Path(project_dir)
     idx_path = resolve_index_path(index_path, pd)
     index = parse_audit_index(idx_path.read_text(encoding="utf-8"))
     draft = build_todo_draft(query, index, str(idx_path))
     if out:
-        out_path = Path(out)
-        if out_path.exists() and not force:
+        # R6 (K6): the draft lives under the project's ``.agentic`` only —
+        # an outside path or any symlinked component refuses BEFORE ``<out>``
+        # and its parents exist. AUD-0284-1: ONE ``abspath`` basis for the
+        # root, the agentic dir and ``<out>`` (Q4b/Q5).
+        root = Path(os.path.abspath(project_dir))
+        agentic = root / ".agentic"
+        # QA-0284-3: the walk must see the components the caller NAMED.
+        # ``abspath`` normalizes ``a/../b`` lexically, so a symlinked ``a``
+        # disappears from the chain before the no-follow walk — and the
+        # write lands at the lexical path the caller never named. The
+        # spelling (absolute, not normalized) goes to the walk; the
+        # normalized path decides containment and the write.
+        spelled = Path(out)
+        if not spelled.is_absolute():
+            spelled = Path.cwd() / spelled
+        target = Path(os.path.abspath(spelled))
+        if not agentic.is_dir():
             raise TodoDraftError(
-                f"{out} already exists — pass --force to overwrite"
+                f"project is not awf-initialized: no {agentic} — "
+                "run 'awf init' first, or omit --out"
             )
-        if not out_path.parent.exists():
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(draft, encoding="utf-8")
+        # PA-0284-8 (1): no-follow walk over the caller's OWN spelling. The
+        # shared two-basis assembly decides only "is a component a symlink"
+        # — it does NOT decide where the file lands. A path already under
+        # the raw root keeps its own chain, so a nested component is never
+        # collapsed onto another one.
+        try:
+            resolved_root = root.resolve()
+            managed_fs.assert_managed_surfaces(
+                [spelled],
+                raw_root=root,
+                root=resolved_root,
+                operation="todo draft --out",
+            )
+        except (managed_fs.ManagedPathError, OSError, RuntimeError) as e:
+            raise TodoDraftError(f"refusing --out {out}: {e}") from e
+        # PA-0284-8 (2): containment on the RESOLVED basis — the project
+        # root and ``<out>.parent``. A symlinked project parent resolves to
+        # the same place (Q4b); a foreign or nested ``.agentic`` resolves
+        # outside ours and refuses; a resolve failure is a refusal too.
+        try:
+            resolved_agentic = resolved_root / ".agentic"
+            resolved_parent = target.parent.resolve()
+        except (OSError, RuntimeError) as e:
+            raise TodoDraftError(f"refusing --out {out}: {e}") from e
+        if not resolved_parent.is_relative_to(resolved_agentic):
+            raise TodoDraftError(
+                f"refusing --out {out}: write under {agentic} "
+                "(the project's .agentic), or omit --out"
+            )
+        # The write path is anchored on the raw root for ``managed_write_text``.
+        # A path already under the root keeps its own chain (nested components
+        # included); only a path spelled through another name of the SAME
+        # project is re-anchored — the resolved containment above just proved
+        # it is our ``.agentic``, so this is not a substitution.
+        out_path = managed_fs.surface_on_raw_basis(target, raw_root=root)
+        try:
+            # AUD-0284-3: the no-follow walk ran BEFORE "already exists" —
+            # ``--force`` cannot make a symlink legal.
+            if out_path.exists() and not force:
+                raise TodoDraftError(
+                    f"{out} already exists — pass --force to overwrite"
+                )
+            managed_fs.managed_write_text(out_path, draft, root=root)
+        except (managed_fs.ManagedPathError, OSError) as e:
+            raise TodoDraftError(f"refusing --out {out}: {e}") from e
         return out_path, draft
     return None, draft
 

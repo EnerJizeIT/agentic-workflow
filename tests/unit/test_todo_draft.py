@@ -120,9 +120,14 @@ class TestDraft:
 
 
 class TestMakeDraft:
+    def _out(self, tmp_path: Path) -> Path:
+        # R6 (K6): a draft is an awf-written surface — it lives under .agentic.
+        (tmp_path / ".agentic").mkdir(exist_ok=True)
+        return tmp_path / ".agentic" / "drafts" / "draft.md"
+
     def test_out_writes_file(self, tmp_path: Path) -> None:
         index = _index_file(tmp_path)
-        out = tmp_path / "draft.md"
+        out = self._out(tmp_path)
         out_path, draft = td.make_todo_draft(
             "FU-13", index_path=index, project_dir=tmp_path, out=out
         )
@@ -132,7 +137,8 @@ class TestMakeDraft:
 
     def test_existing_out_refused_without_force(self, tmp_path: Path) -> None:
         index = _index_file(tmp_path)
-        out = tmp_path / "draft.md"
+        out = self._out(tmp_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("old")
         with pytest.raises(td.TodoDraftError, match="already exists"):
             td.make_todo_draft("FU-13", index_path=index, project_dir=tmp_path, out=out)
@@ -140,7 +146,8 @@ class TestMakeDraft:
 
     def test_force_overwrites(self, tmp_path: Path) -> None:
         index = _index_file(tmp_path)
-        out = tmp_path / "draft.md"
+        out = self._out(tmp_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text("old")
         td.make_todo_draft(
             "FU-13", index_path=index, project_dir=tmp_path, out=out, force=True

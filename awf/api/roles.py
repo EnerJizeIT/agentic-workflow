@@ -1255,9 +1255,12 @@ def add_role(
     """Generate a new role at ``.agentic/roles/{role_name}.md``.
 
     Content sources:
-    - built-in (W7): ``agent-qa-review`` / ``agent-implementer`` take
-      the protocol templates shipped with awf (``awf/templates/roles/``)
-      — the supervisor strategy works in other projects too;
+    - built-in (W7): the five shipped protocol templates
+      (``agent-qa-review``, ``agent-implementer``,
+      ``agent-architect-review``, ``agent-project-auditor``,
+      ``agent-refactoring-specialist``) come from
+      ``awf/templates/roles/`` — the supervisor strategy works in other
+      projects too;
     - default (no ``from_skill``, no built-in template): a placeholder
       template (``description``/``model`` fill its sections);
     - ``from_skill="name"``: an opencode skill — the SKILL.md body with

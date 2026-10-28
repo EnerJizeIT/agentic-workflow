@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import api
+from . import api, paths
 
 
 def _print_result(result: Any) -> None:
@@ -58,8 +58,13 @@ def run(args: Any) -> int:
         print("ERROR: --content or --content-file is required (or --resume TODO-NNNN)")
         return 1
     if content_file:
+        # R6 (K6): a relative --content-file is resolved from the project
+        # root, not from the shell's CWD — the CLI and the MCP form read the
+        # same file for the same arguments.
         try:
-            content = Path(content_file).resolve().read_text(encoding="utf-8")
+            content = paths.cli_file_arg(project_dir, content_file).resolve().read_text(
+                encoding="utf-8"
+            )
         except OSError as e:
             print(f"ERROR: cannot read --content-file {content_file!r}: {e}")
             return 1
@@ -73,10 +78,19 @@ def run(args: Any) -> int:
             todo_id=getattr(args, "todo_id", None) or None,
             pipeline=getattr(args, "pipeline", None) or None,
             source_ref=source_ref,
+            source_file=content_file or None,
             no_baseline_tests=no_baseline_tests,
             force=bool(getattr(args, "force", False)),
+            allow_mismatch=bool(getattr(args, "allow_mismatch", False)),
+            carry_over_from=getattr(args, "carry_over_from", None) or None,
+            include_untracked=getattr(args, "include_untracked", None) or None,
         )
     except api.AwfApiError as e:
+        # R5 (K5): the unterminated-contract error names the FILE it read —
+        # the content is no longer a bare string on this route.
+        # AUD-0284-2/PA-0284-3: the name travels from ``dispatch_todo``
+        # (``source_file``), so a project precondition ("No .agentic/") is
+        # not blamed on the file and no message substring is parsed here.
         print(f"ERROR: {e}")
         return 1
 
