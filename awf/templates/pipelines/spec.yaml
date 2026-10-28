@@ -70,9 +70,10 @@ stages:
     matrix. Do not fix other authors files.'
   output: docs/spec/{{spec_slug}}/{{spec_slug}}.readiness.md
   on_blocked: escalate
-  on_rejected: escalate
+  on_rejected: rollback_to:spec-requirements
   on_failed: escalate
   max_retries: 3
+  max_rollbacks: 3
 - name: verify
   role: supervisor
   description: Supervisor verifies the spec package and approves it

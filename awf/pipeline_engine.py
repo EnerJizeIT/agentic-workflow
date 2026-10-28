@@ -610,9 +610,11 @@ def _handle_direct_rollback(
 ) -> tuple[int, str, int]:
     """SPEC: rewind to the author stage WITHOUT a supervisor replan.
 
-    The requirements reviewer's ``Статус: FAIL`` is itself the decision:
-    the SAME unit returns to the author stage and the review runs again.
-    Budgeting is the shared rollback rule (:func:`_rollback_budget_allow`).
+    A rejecting verdict in the declared output is itself the decision — a
+    requirements review ``Статус: FAIL`` or a readiness ``Статус: BLOCKED``
+    (S14): the SAME unit returns to the author stage and the review runs
+    again. Budgeting is the shared rollback rule
+    (:func:`_rollback_budget_allow`).
 
     Returns (new_stage_idx, new_current_todo, exit_code).
     """
@@ -629,7 +631,7 @@ def _handle_direct_rollback(
         return -1, current_todo, 1
 
     print(
-        f"SPEC: requirements review FAIL — rolling back to stage: "
+        f"SPEC: declared verdict rejects the stage — rolling back to: "
         f"{stages[target_idx].name} (rollback {count}/{limit})"
     )
     _log(
@@ -1037,26 +1039,81 @@ def _declared_output_problem(
     return ""
 
 
-def _declared_review_verdict(project_dir: Path, output: str) -> str:
-    """SPEC: the signal a review artifact's ``Статус`` implies — or "".
+def _verdict_document(project_dir: Path, output: str) -> tuple[str, str] | None:
+    """The role and text of a verdict artifact, or ``None``.
 
-    ``Статус: FAIL`` in the requirements-review document means the stage is
-    rejected, whatever signal the worker left: the engine then rewinds to
-    the author stage without a supervisor replan (the report is the
-    decision). ``PASS`` keeps the normal ``next`` transition. Only the
-    requirements-review document is read; a read problem or a document of
-    another role leaves the stage's own signal untouched.
+    One reader for the review and the readiness document: both are
+    identified by file name and decoded the same way, so the verdict and
+    the rewind decision cannot drift on the role table or the decode
+    policy. A foreign document, a missing file or a non-UTF-8 file is
+    ``None`` — the stage keeps its own signal.
     """
     from . import spec_package as _spec
 
     path = project_dir / output
-    if _spec.role_for_name(path.name) != _spec.REVIEW_ROLE:
-        return ""
+    role = _spec.role_for_name(path.name)
+    if role not in (_spec.REVIEW_ROLE, _spec.READINESS_ROLE):
+        return None
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
+        return None
+    return role, text
+
+
+def _declared_review_verdict(project_dir: Path, output: str) -> str:
+    """SPEC: the signal a verdict artifact's ``Статус`` implies — or "".
+
+    Two documents are verdicts, and both are the stage's own decision:
+
+    - the requirements review: ``Статус: FAIL`` rejects the stage, ``PASS``
+      advances it;
+    - the readiness report (S14): ``Статус: BLOCKED`` rejects it exactly
+      like a review FAIL — the package goes back to its author without a
+      supervisor replan, ``READY`` advances it.
+
+    Whatever signal the worker left, the document wins. Any other package
+    document (a ``Статус`` quoted in requirements, architecture or the test
+    spec) carries no verdict; a read problem leaves the stage's own signal
+    untouched.
+    """
+    from . import spec_package as _spec
+
+    document = _verdict_document(project_dir, output)
+    if document is None:
         return ""
-    return "rejected" if _spec.declared_status(text) == "FAIL" else ""
+    role, text = document
+    status = _spec.declared_status(text)
+    rejecting = "FAIL" if role == _spec.REVIEW_ROLE else "BLOCKED"
+    return "rejected" if status == rejecting else ""
+
+
+def _readiness_rollback_target(
+    project_dir: Path, output: str, stages: list[Stage]
+) -> str:
+    """S14: the author stage a BLOCKED readiness belongs back at, or "".
+
+    The readiness report's first open question names its owner. An
+    architecture owner rewinds to the architect stage, every other owner
+    (requirements, analysis, an empty section) to the analyst stage — the
+    package's root author. The stage is found by ROLE, not by a hardcoded
+    stage name, so a renamed or reordered pipeline still lands on the
+    author. A pipeline without the role yields "" — the declared policy
+    target stays in force.
+    """
+    from . import spec_package as _spec
+
+    document = _verdict_document(project_dir, output)
+    if document is None or document[0] != _spec.READINESS_ROLE:
+        return ""
+    question = _spec.first_open_question(document[1])
+    owner = question[1].lower() if question else ""
+    architecture = "архит" in owner or "architect" in owner
+    role = "agent-architector" if architecture else "agent-system-analyst"
+    for stage in stages:
+        if stage.role == role:
+            return stage.name
+    return ""
 
 
 # ─── stage execution ────────────────────────────────────────────────────
@@ -2484,17 +2541,28 @@ def execute_agent_stage(
         verdict = _declared_review_verdict(project_dir, stage.output)
         if verdict:
             print(
-                f"Stage '{s_name}': declared output says FAIL — "
-                "routing as rejected (automatic rollback)."
+                f"Stage '{s_name}': declared output rejects the stage "
+                "(Статус: FAIL or BLOCKED) — routing as rejected "
+                "(automatic rollback)."
             )
             _log(
                 logs_dir,
-                f"SPEC: stage {s_name} output status FAIL — routed as rejected",
+                f"SPEC: stage {s_name} output is a rejecting verdict "
+                "(FAIL/BLOCKED) — routed as rejected",
             )
             sig_type = verdict
             auto_rollback = True
 
     action, target = resolve_transition(stage, sig_type)
+    # S14: a BLOCKED readiness report is an automatic rewind to the AUTHOR
+    # who owns the finding (requirements or architecture) — the policy
+    # gives the rollback action, the report's owner picks the stage.
+    if auto_rollback and action == "rollback":
+        author_stage = _readiness_rollback_target(
+            project_dir, stage.output or "", stages
+        )
+        if author_stage:
+            target = author_stage
     _log(logs_dir, f"Transition: stage={stage_idx} signal={sig_type} -> action={action} target={target}")
 
     if action in ("next", "commit_and_next", "commit_and_report"):

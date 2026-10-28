@@ -666,11 +666,14 @@ def _token_present(text: str, token: str) -> bool:
     return re.search(rf"(?<![\w]){re.escape(token)}(?![\w])", text) is not None
 
 
-def _open_question(text: str) -> tuple[str, str] | None:
+def first_open_question(text: str) -> tuple[str, str] | None:
     """First row of ``## Открытые вопросы``: ``(вопрос, владелец)``.
 
     The table is ``ID | Вопрос | Владелец | Влияние``; a missing section or
-    an empty table returns ``None`` (the caller names it separately).
+    an empty table returns ``None`` (the caller names it separately). The
+    readiness refusal names the owner, and the pipeline engine uses the
+    same owner to send a BLOCKED package back to the author who owns the
+    finding (requirements or architecture), not to a fixed stage.
     """
     lines = text.splitlines()
     start = None
@@ -698,7 +701,7 @@ def _open_question(text: str) -> tuple[str, str] | None:
 
 
 def _blocked_message(path: str, text: str) -> str:
-    question = _open_question(text)
+    question = first_open_question(text)
     if question is None:
         has_section = any(
             title == "Открытые вопросы" for _level, title in _headings(text)
@@ -964,6 +967,7 @@ __all__ = [
     "declared_status",
     "discover_documents",
     "fingerprint_documents",
+    "first_open_question",
     "package_fingerprint",
     "parse_coverage_matrix",
     "parse_spec_header",

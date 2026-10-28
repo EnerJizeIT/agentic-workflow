@@ -124,6 +124,48 @@ class TestKilledDispatchIsResumable:
         assert md.read_text(encoding="utf-8").strip()
         assert not _journal(proj).exists()
         assert (proj / ".agentic" / "context" / "BASELINE-TODO-0001.sha").is_file()
+        # AUD-0283-3: the unit's .md already existed, so resume must not
+        # report it as written; .ready and the baseline files were.
+        assert f".agentic/inbox/{TODO}.md" not in result.files_written
+        assert f".agentic/inbox/{TODO}.ready" in result.files_written
+        assert any("BASELINE-" in f for f in result.files_written)
+
+    def test_resume_after_signal_reports_no_writes(self, tmp_path: Path):
+        # AUD-0283-3: the unit completed before the journal went stale —
+        # resume only drops the journal and writes nothing.
+        proj = _project(tmp_path)
+        import awf.api.dispatch as dispatch_mod
+
+        dispatch_mod._write_journal(proj, TODO, "# already done\n\nbody.\n")
+        _ready(proj).write_text("", encoding="utf-8")
+
+        result = resume_dispatch(proj, TODO)
+
+        assert result.resumed is True
+        assert result.files_written == []
+        assert not _journal(proj).exists()
+
+    @pytest.mark.parametrize("state", ["missing", "empty"])
+    def test_resume_restores_the_unit_file_and_reports_it(
+        self, tmp_path: Path, state: str
+    ):
+        # AUD-0283-3, the write side: when the journal is the only copy of the
+        # unit file, resume restores it and names it. The old answer listed
+        # .md unconditionally; the honest list must still carry it HERE.
+        proj = _project(tmp_path)
+        import awf.api.dispatch as dispatch_mod
+
+        body = "# restored probe\n\nbody.\n"
+        dispatch_mod._write_journal(proj, TODO, body)
+        md = proj / ".agentic" / "inbox" / f"{TODO}.md"
+        if state == "empty":
+            md.write_text("  \n", encoding="utf-8")
+
+        result = resume_dispatch(proj, TODO)
+
+        assert md.read_text(encoding="utf-8") == body
+        assert f".agentic/inbox/{TODO}.md" in result.files_written
+        assert f".agentic/inbox/{TODO}.ready" in result.files_written
 
     def test_resume_without_journal_is_refused(self, tmp_path: Path):
         proj = _project(tmp_path)

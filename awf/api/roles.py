@@ -736,6 +736,12 @@ _BUILTIN_ROLE_NAMES = (
     "agent-architect-review",
     "agent-project-auditor",
     "agent-refactoring-specialist",
+    # SPEC S1 (TODO-0288): the three author roles of the shipped ``spec``
+    # variant. Without them a clean project could not materialize the
+    # pipeline its own template declares.
+    "agent-system-analyst",
+    "agent-requirements-reviewer",
+    "agent-architector",
 )
 
 

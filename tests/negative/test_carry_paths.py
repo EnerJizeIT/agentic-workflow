@@ -168,6 +168,22 @@ class TestContractTrivia:
         contract, _unknown = parse_todo_contract(content)
         assert contract == {"wave": "w1"}
 
+    def test_empty_h1_still_opens_the_contract(self) -> None:
+        # AUD-0284-7: the title locator (HEADING_RE) sees ``# `` as an H1,
+        # while the old hand-rolled predicate required a non-space text and
+        # silently lost the contract. One predicate: the contract is found.
+        content = '# \n---\nverify: ["x"]\n---\n# TODO-0001 Real\n'
+        assert _find_contract_block(content) == (1, 3, None)
+        contract, _unknown = parse_todo_contract(content)
+        assert contract == {"verify": ["x"]}
+
+    def test_indented_h1_is_not_a_title(self) -> None:
+        # AUD-0284-7, the other side: the old predicate ``strip()``-ed the
+        # line and treated an INDENTED ``#`` as a title. HEADING_RE anchors
+        # at column 0, so the ``---`` below is not a title-following block.
+        content = '  # TODO-0001 Real\n---\nverify: ["x"]\n---\n'
+        assert _find_contract_block(content) == (None, None, None)
+
     def test_horizontal_rule_is_not_a_block(self) -> None:
         content = "# TODO — task\n\nIntro.\n\n---\n\nMore.\n"
         contract, _unknown = parse_todo_contract(content)
@@ -815,3 +831,181 @@ class TestMetricsPath:
         assert path.parent == home / "Desktop"
         assert path.name.startswith("awf-metrics-")
         assert path.name.endswith(".md")
+
+    def test_report_out_inside_agentic_refuses_symlinked_component(
+        self, tmp_path: Path
+    ) -> None:
+        # AUD-0284-6: ``--out`` accepts a path under ``.agentic``; the report
+        # must go through the same managed barrier as the cache, not a bare
+        # mkdir+write that follows a swapped component outside the project.
+        repo = _project(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (repo / ".agentic" / "reports").symlink_to(
+            outside, target_is_directory=True
+        )
+        target = repo / ".agentic" / "reports" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert not (outside / "report.md").exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_report_out_inside_project_is_written(self, tmp_path: Path) -> None:
+        # Positive control for AUD-0284-6: the in-project classification must
+        # still WRITE a symlink-free report and create the missing parents via
+        # the managed chain. Without it a blanket in-project refusal would
+        # keep the negative test above green.
+        repo = _project(tmp_path)
+        target = repo / ".agentic" / "context" / "reports" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path == str(target)
+        assert target.is_file()
+        assert "# Метрики программы" in target.read_text(encoding="utf-8")
+        assert not [w for w in res.warnings if "отчёт не записан" in w]
+
+    def test_report_out_inside_project_refuses_symlinked_leaf(
+        self, tmp_path: Path
+    ) -> None:
+        # Leaf rule (N3): a symlinked LEAF under the project is a refusal too —
+        # the barrier must not stop at the intermediate components.
+        repo = _project(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim.md"
+        victim.write_text("keep me", encoding="utf-8")
+        target = repo / ".agentic" / "context" / "report.md"
+        target.symlink_to(victim)
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert victim.read_text(encoding="utf-8") == "keep me"
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_report_out_through_project_symlink_is_inside(self, tmp_path: Path) -> None:
+        # A287-1: ``collect_metrics`` resolves ``project_dir`` but ``--out``
+        # stays lexical. A project reached through a symlink used to look
+        # "outside" — the report then skipped the barrier and followed the
+        # symlinked ``.agentic/reports`` out of the project. One basis:
+        # the root is canonical, the leaf keeps its no-follow components.
+        repo = _project(tmp_path)
+        linked = tmp_path / "proj-link"
+        linked.symlink_to(repo, target_is_directory=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (repo / ".agentic" / "reports").symlink_to(
+            outside, target_is_directory=True
+        )
+        target = linked / ".agentic" / "reports" / "report.md"
+
+        res = M.collect_metrics(
+            linked,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert not (outside / "report.md").exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_report_out_through_project_symlink_writes_inside(
+        self, tmp_path: Path
+    ) -> None:
+        # A287-1 positive control: a plain path through the project symlink
+        # is still an ordinary in-project write — landed in the real root.
+        repo = _project(tmp_path)
+        linked = tmp_path / "proj-link"
+        linked.symlink_to(repo, target_is_directory=True)
+        target = linked / ".agentic" / "context" / "report.md"
+
+        res = M.collect_metrics(
+            linked,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path == str(target)
+        assert (repo / ".agentic" / "context" / "report.md").is_file()
+        assert not [w for w in res.warnings if "отчёт не записан" in w]
+
+    def test_report_outside_project_refuses_symlinked_leaf(
+        self, tmp_path: Path
+    ) -> None:
+        # A287-2: an out-of-project ``--out`` is the same external surface as
+        # the cache — anchored on the leaf's parent, with a warning. A
+        # symlinked LEAF must refuse instead of overwriting the foreign file.
+        repo = _project(tmp_path)
+        victim = tmp_path / "victim.md"
+        victim.write_text("keep me", encoding="utf-8")
+        target = tmp_path / "external" / "report.md"
+        target.parent.mkdir()
+        target.symlink_to(victim)
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert victim.read_text(encoding="utf-8") == "keep me"
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_report_outside_project_writes_with_warning(self, tmp_path: Path) -> None:
+        # A287-2 positive control: the external write still happens (desktop is
+        # the default out) and names itself in the warnings, as the cache does.
+        repo = _project(tmp_path)
+        target = tmp_path / "external" / "deep" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path == str(target)
+        assert target.is_file()
+        assert any(str(target) in w and "вне проекта" in w for w in res.warnings)
+
+    def test_report_out_inside_project_has_managed_rights(self, tmp_path: Path) -> None:
+        # A287-3: in-project ``--out`` follows the managed policy, not the
+        # umask — 0600 file, 0700 created directories (the report carries
+        # model names and spend).
+        repo = _project(tmp_path)
+        target = repo / "reports" / "deep" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path == str(target)
+        assert target.is_file()
+        assert target.stat().st_mode & 0o777 == 0o600
+        assert (repo / "reports").stat().st_mode & 0o777 == 0o700
+        assert (repo / "reports" / "deep").stat().st_mode & 0o777 == 0o700

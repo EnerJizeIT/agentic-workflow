@@ -697,41 +697,91 @@ def _models_cache_file(project_dir: Path, cache_path: str | None) -> Path:
     return f
 
 
-def _write_cache_managed(
-    path: Path, content: str, *, project_dir: Path, warnings: list[str]
-) -> None:
-    """Записать кэш метрик через no-follow барьер.
+def _managed_root_for(path: Path, project_dir: Path) -> tuple[Path, Path | None]:
+    """Лист и managed-корень для него (``None`` — лист вне проекта).
 
-    Граница проходит по проекту, а не по наличию компонента ``.agentic``:
-    лист ВНУТРИ проекта (даже без ``.agentic`` — например, настроенный
-    ``cache/models.json``) проверяется от корня проекта, поэтому симлинк
-    ``cache`` наружу даёт отказ, а не молчаливую запись снаружи. Кэш по
-    умолчанию лежит под ``.agentic/state`` — тот же случай.
+    Одно правило классификации для кэша цен и отчёта: граница проходит по
+    проекту, а не по наличию компонента ``.agentic``, поэтому настроенный
+    ``cache/models.json`` и ``--out`` под ``.agentic`` равны.
 
-    Лист ВНЕ проекта (``~/.cache/awf/models.json``) — внешняя поверхность
-    того же класса, что отчёт на рабочем столе: недостающих родителей
-    создаём до записи, барьер якорим на родителе листа, и говорим об этом
-    предупреждением. Молчаливой внешней записи нет.
-
-    Классификация «внутри/вне» идёт по лексически нормализованному пути
-    (``abspath`` = ``normpath`` от пути, привязанного к текущему каталогу;
-    НЕ ``resolve``): настроенный путь с избыточным ``..``
-    (``cache/../state/x.json``) остаётся внутри проекта, а ``../shared`` —
-    снаружи. Симлинк-компоненты ``abspath`` не раскрывает — барьер
-    no-follow остаётся на месте. Оба пути (лист и корень) приводятся к
-    абсолютному виду: корень ``Path("proj")`` из другого каталога и лист,
-    собранный из него же, тогда сравниваются одним правилом.
+    Один базис для обеих сторон (A287-1): лист приходит и в исходном
+    спеллинге проекта, и в уже разрешённом (``--out`` по умолчанию
+    строится от ``resolve``-корня), поэтому корень канонизируется
+    ``realpath``, а лист сверяется с обоими: путь через симлинк на проект
+    не выглядит «снаружи» и не уходит в голую запись. Сам лист остаётся
+    лексическим (``abspath`` раскрывает ``..``, но не симлинки) — симлинк-
+    компонент внутри проекта не становится целью, барьер no-follow на
+    месте.
     """
-    path = Path(os.path.abspath(path))
-    project_dir = Path(os.path.abspath(project_dir))
-    if path.is_relative_to(project_dir):
-        managed_fs.managed_write_text(path, content, root=project_dir)
+    leaf = Path(os.path.abspath(path))
+    raw_root = Path(os.path.abspath(project_dir))
+    root = Path(os.path.realpath(raw_root))
+    for base in (raw_root, root):
+        try:
+            rel = leaf.relative_to(base)
+        except ValueError:
+            continue
+        return (root / rel if rel.parts else root), root
+    return leaf, None
+
+
+def _write_managed_artifact(
+    path: Path,
+    content: str,
+    *,
+    project_dir: Path,
+    warnings: list[str],
+    label: str,
+) -> None:
+    """Записать артефакт метрик (кэш цен/подписок, отчёт) под одним правилом.
+
+    Одна классификация «внутри/вне проекта» для кэша и отчёта: граница
+    проходит по проекту, а не по наличию компонента ``.agentic``, поэтому
+    настроенный ``cache/models.json`` и ``--out`` под ``.agentic`` равны.
+    ``label`` — род артефакта для предупреждения; поведение веток от него
+    не зависит.
+
+    Один базис для обеих сторон (A287-1): корень канонизируется
+    ``realpath`` (см. :func:`_managed_root_for`), лист остаётся лексическим,
+    поэтому симлинк-компонент внутри проекта не становится целью, а путь,
+    собранный от симлинка на проект, не выглядит «снаружи». ``project_dir``
+    — спеллинг вызывающего; отчёт передаёт его до ``resolve``, чтобы лист,
+    собранный от того же симлинка, попал в границу, а не в голую запись.
+
+    ВНУТРИ проекта — ``managed_write_text`` от канонического корня: симлинк-
+    компонент отказывает до первого байта, недостающие каталоги создаются
+    с правами 0700, файл — 0600 (не umask: в артефактах имена моделей и
+    суммы затрат).
+
+    ВНЕ проекта (``~/.cache/awf/models.json``, рабочий стол) — внешняя
+    поверхность того же класса: недостающих родителей создаём обычным
+    ``mkdir`` (managed-корня вне проекта нет — документированное
+    исключение), барьер якорим на родителе листа (симлинк-ЛИСТ отказывает,
+    а не перезаписывает чужой файл), файл получает те же 0600, и говорим об
+    этом предупреждением. Молчаливой внешней записи нет.
+    """
+    path, root = _managed_root_for(path, project_dir)
+    if root is not None:
+        managed_fs.managed_write_text(path, content, root=root)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     warnings.append(
-        f"кэш метрик вне проекта ({path}) — запись вне managed-барьера проекта"
+        f"{label} вне проекта ({path}) — запись вне managed-барьера проекта"
     )
     managed_fs.managed_write_text(path, content, root=path.parent)
+
+
+def _write_cache_managed(
+    path: Path, content: str, *, project_dir: Path, warnings: list[str]
+) -> None:
+    """Кэш цен/подписок — общий писатель артефактов с меткой «кэш метрик»."""
+    _write_managed_artifact(
+        path,
+        content,
+        project_dir=project_dir,
+        warnings=warnings,
+        label="кэш метрик",
+    )
 
 
 def load_models_cache(
@@ -1462,6 +1512,19 @@ def _report_name() -> str:
     return f"awf-metrics-{time.strftime('%Y%m%d-%H%M')}.md"
 
 
+def _write_report_managed(
+    path: Path, content: str, *, project_dir: Path, warnings: list[str]
+) -> None:
+    """Отчёт метрик — общий писатель артефактов с меткой «отчёт метрик»."""
+    _write_managed_artifact(
+        path,
+        content,
+        project_dir=project_dir,
+        warnings=warnings,
+        label="отчёт метрик",
+    )
+
+
 def _mirror_report(report_path: Path, mirror_dir: str, warnings: list[str]) -> str | None:
     """U8c: копия отчёта в ``metrics.mirror_dir`` (то же имя).
 
@@ -1512,6 +1575,12 @@ def collect_metrics(
     Исключённые сессии других проектов — с предупреждением в отчёте;
     путь проекта без совпадений — пустые данные сессий + предупреждение.
     """
+    # A287-1: канонический корень — для сбора; исходный спеллинг пути
+    # (до resolve) — для классификации отчёта. ``--out`` пришёл от той же
+    # спеллинг-основы, что и проект у вызывающего; если классифицировать
+    # уже разрешённым корнем, путь через симлинк на проект выглядит
+    # «снаружи» и уходит в голую запись.
+    raw_project_dir = Path(project_dir).expanduser()
     project_dir = Path(project_dir).resolve()
     warnings: list[str] = []
     notes: list[str] = []
@@ -1722,13 +1791,14 @@ def collect_metrics(
     )
     try:
         out_path = _resolve_out_path(out, project_dir, cfg)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(report, encoding="utf-8")
+        _write_report_managed(
+            out_path, report, project_dir=raw_project_dir, warnings=warnings
+        )
         result.report_path = str(out_path)
         # U8c: зеркало — только после успешной записи отчёта.
         if mirror and mirror_dir:
             result.mirror_path = _mirror_report(out_path, mirror_dir, warnings)
-    except OSError as e:
+    except (OSError, managed_fs.ManagedPathError) as e:
         warnings.append(f"отчёт не записан: {e}")
         result.warnings = warnings
     return result

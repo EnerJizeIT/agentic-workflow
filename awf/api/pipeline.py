@@ -391,7 +391,9 @@ def _budget_refusal(project_dir: Path, todo_id: str, action: str) -> StartResult
     )
 
 
-def _spec_gate_for_launch(project_dir: Path, todo_id: str) -> str:
+def _spec_gate_for_launch(
+    project_dir: Path, todo_id: str, pipeline: str = ""
+) -> str:
     """SPEC IMP3 (K3): the readiness refusal for a launch, or ``""``.
 
     The SAME predicate dispatch uses (``unit_contract.spec_package_gate``)
@@ -402,14 +404,24 @@ def _spec_gate_for_launch(project_dir: Path, todo_id: str) -> str:
     declares the package, any read/parse failure IS a readiness refusal: a
     launch must never pass a unit whose package claims cannot be read.
     Called BEFORE the lease, the PID and the stage.
+
+    S14: a PRODUCER unit (``spec_package`` plus the spec pipeline) is not
+    consumer-gated — its run is what makes the package READY. The pipeline
+    name is resolved in the engine's order: the unit's frozen snapshot
+    (ORCH M3.3 — what a resume actually runs), then the explicit launch
+    argument, then the TODO's own ``pipeline:`` key, then the project
+    default. A resume after a crash or ``awf kill`` names no pipeline at
+    all, so the snapshot is what keeps the producer a producer there.
     """
     if not todo_id:
         return ""
     path = paths.inbox(project_dir) / f"{todo_id}.md"
     if not path.is_file():
         return ""
+    from ..pipeline import active_pipeline_name, snapshot_pipeline_name
     from ..unit_contract import (
         declares_spec_package,
+        is_spec_producer,
         parse_todo_contract,
         spec_package_gate,
     )
@@ -420,10 +432,23 @@ def _spec_gate_for_launch(project_dir: Path, todo_id: str) -> str:
         return f"TODO {todo_id}: {e}"
     if not declares_spec_package(content):
         return ""
+    # S14: the launch pipeline is known BEFORE the parse — a producer may
+    # omit ``source_refs``, and any spec pipeline (snapshot, argument, the
+    # TODO's own key or a spec default) makes the unit a producer.
+    hint = snapshot_pipeline_name(project_dir, todo_id)
+    if not hint:
+        hint = str(pipeline or "").strip()
+    if not hint:
+        try:
+            hint = active_pipeline_name(project_dir, cfg_mod.load(project_dir))
+        except (OSError, ValueError):
+            hint = ""
     try:
-        contract, _unknown = parse_todo_contract(content)
+        contract, _unknown = parse_todo_contract(content, pipeline=hint)
     except ValueError as e:
         return f"TODO {todo_id}: {e}"
+    if is_spec_producer(contract, hint):
+        return ""
     return spec_package_gate(project_dir, contract)
 
 
@@ -1816,7 +1841,7 @@ def start_pipeline(
     launch_todo = (todo_id or "").strip() or (todos.newest_active(project_dir) or "")
     if launch_todo and not is_valid_todo_id(launch_todo):
         return _invalid_todo_refusal("start", launch_todo)
-    gate_message = _spec_gate_for_launch(project_dir, launch_todo)
+    gate_message = _spec_gate_for_launch(project_dir, launch_todo, pipeline or "")
     if gate_message:
         return _spec_gate_refusal(gate_message)
 
@@ -2139,7 +2164,7 @@ def continue_pipeline(
     resume_target = _resume_target(project_dir, explicit_pin, ack or "")
     if resume_target and not is_valid_todo_id(resume_target):
         return _invalid_todo_refusal("continue", resume_target)
-    gate_message = _spec_gate_for_launch(project_dir, resume_target)
+    gate_message = _spec_gate_for_launch(project_dir, resume_target, pipeline or "")
     if gate_message:
         return _spec_gate_refusal(gate_message)
 

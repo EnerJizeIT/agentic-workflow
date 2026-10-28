@@ -1145,14 +1145,23 @@ def dispatch_todo(
     # one. Without ``spec_package`` the legacy path is untouched.
     package = ""
     if _contract:
-        from ..unit_contract import spec_package_gate
+        from ..unit_contract import is_spec_producer, spec_package_gate
 
-        gate_message = spec_package_gate(project_dir, _contract)
-        if gate_message:
-            raise AwfApiError(
-                f"spec gate refused the dispatch: {gate_message}"
-            )
         package = _contract.get("spec_package")
+        # S14: the PRODUCER of a package (a unit of the spec pipeline) is
+        # not consumer-gated and gets no norm snapshot — it is the run that
+        # writes the package the consumer gate later demands READY. Without
+        # this branch the spec run could only start by dropping
+        # ``spec_package`` from its own TODO.
+        producer = bool(package) and is_spec_producer(_contract, pipeline or "")
+        if producer:
+            package = ""
+        else:
+            gate_message = spec_package_gate(project_dir, _contract)
+            if gate_message:
+                raise AwfApiError(
+                    f"spec gate refused the dispatch: {gate_message}"
+                )
         if package:
             refs = list(_contract.get("source_refs") or [])
             # K4: with a package declared, the legacy ``source_ref`` parameter
@@ -1894,7 +1903,10 @@ def resume_dispatch(
             todo_id=todo_id,
             baseline_sha=sha,
             role_hint=None,
-            files_written=[f".agentic/inbox/{todo_id}.md", f".agentic/inbox/{todo_id}.ready"],
+            # Nothing is written in this branch: the unit was complete
+            # before the journal went stale, so the answer must not claim
+            # the .md/.ready were created (AUD-0283-3).
+            files_written=[],
             resolved_project_dir=str(project_dir),
             resumed=True,
         )
@@ -1916,10 +1928,12 @@ def resume_dispatch(
         existing = md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         existing = ""
+    written: list[str] = []
     if not existing.strip():
         managed_fs.managed_write_text(
             md_path, body, root=project_dir, mode=MODE_OWNER_EDITABLE
         )
+        written.append(f".agentic/inbox/{todo_id}.md")
 
     baseline_timeout = _baseline_timeout_seconds(project_dir)
     baseline = _dispatch_baseline(
@@ -1929,16 +1943,14 @@ def resume_dispatch(
         no_baseline_tests=no_baseline_tests,
     )
     _write_ready(project_dir, todo_id)
+    written.append(f".agentic/inbox/{todo_id}.ready")
+    written.extend(baseline.files_created)
     _remove_journal(project_dir, todo_id)
     return DispatchTodoResult(
         todo_id=todo_id,
         baseline_sha=baseline.sha,
         role_hint=None,
-        files_written=[
-            f".agentic/inbox/{todo_id}.md",
-            f".agentic/inbox/{todo_id}.ready",
-            *baseline.files_created,
-        ],
+        files_written=written,
         resolved_project_dir=str(project_dir),
         baseline_test_status=baseline.test_status,
         baseline_timeout=baseline_timeout,
