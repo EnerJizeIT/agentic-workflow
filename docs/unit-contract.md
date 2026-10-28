@@ -73,7 +73,9 @@ prove_red: ["tests/unit/test_x.py::test_y"]
   в пределах — pass со строкой `allowed N xfailed, M skipped`. rc≠0
   остаётся FAIL при любом допуске. `xpassed` не судится: pass со строкой
   о числе (устаревший xfail). Отрицательное число или строка —
-  ошибка контракта.
+  ошибка контракта. Оба допуска входят в замороженный хэш контракта
+  closer-стадии: добавленный после снимка допуск — правка нормы
+  (явный 0 равен отсутствию ключа).
 - `gates` — список коротких имён проверок: канонический набор
   `KNOWN_GATES` из `awf/unit_contract.py`
   (`contracts`, `ratchet`, `instructions`, `tests`, `lint`, `mutations`).

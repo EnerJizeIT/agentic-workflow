@@ -1886,3 +1886,82 @@ def test_unit_contract_documents_the_closer_surface():
         "CLOSER-<todo>.json",
     ):
         assert phrase in contract, phrase
+
+
+# ─── TODO-0298: the allowances are part of the frozen norm ───────────────
+
+
+class TestFrozenAllowances:
+    BASE = {
+        "verify": ["python -m pytest -q"],
+        "gates": ["contracts"],
+        "prove_red": ["tests/x.py::test_y"],
+    }
+
+    def test_adding_an_allowance_moves_the_hash(self):
+        before = closer_stage.contract_fingerprint(dict(self.BASE))
+        for key in ("xfail_allow", "skip_allow"):
+            with_allow = dict(self.BASE)
+            with_allow[key] = 1
+            assert closer_stage.contract_fingerprint(with_allow) != before, key
+
+    def test_key_order_and_absent_or_zero_are_stable(self):
+        ordered = dict(self.BASE)
+        reordered = {k: ordered[k] for k in reversed(list(ordered))}
+        assert (
+            closer_stage.contract_fingerprint(ordered)
+            == closer_stage.contract_fingerprint(reordered)
+        )
+        assert closer_stage.contract_fingerprint(None) == (
+            closer_stage.contract_fingerprint({})
+        )
+        explicit_zero = dict(ordered, xfail_allow=0, skip_allow=0)
+        assert closer_stage.contract_fingerprint(explicit_zero) == (
+            closer_stage.contract_fingerprint(ordered)
+        )
+
+    def test_adding_an_allowance_after_the_snapshot_is_a_norm_edit(
+        self, tmp_git_repo
+    ):
+        proj = _closer_project(tmp_git_repo)
+        _write_todo(
+            proj,
+            "TODO-0001",
+            block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+            contract=list(_NORM_CONTRACT),
+        )
+        stage = _closer_stage()
+        assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+        _edit_todo(
+            proj,
+            "TODO-0001",
+            old='files: ["src/x.py"]',
+            new='files: ["src/x.py"]\nxfail_allow: 1',
+        )
+        blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+        assert blocked.kind == "blocked"
+
+    def test_raising_a_declared_zero_after_the_snapshot_is_a_norm_edit(
+        self, tmp_git_repo
+    ):
+        """A declared 0 is the norm; raising it to 1 is still an edit."""
+        proj = _closer_project(tmp_git_repo)
+        _write_todo(
+            proj,
+            "TODO-0001",
+            block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+            contract=list(_NORM_CONTRACT) + ["xfail_allow: 0"],
+        )
+        stage = _closer_stage()
+        assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+        _edit_todo(proj, "TODO-0001", old="xfail_allow: 0", new="xfail_allow: 1")
+        blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+        assert blocked.kind == "blocked"
+        assert "контракт TODO" in (blocked.log_line or "")
+
+    def test_the_two_allowances_do_not_collapse_into_one(self):
+        xfail = closer_stage.contract_fingerprint(dict(self.BASE, xfail_allow=1))
+        skip = closer_stage.contract_fingerprint(dict(self.BASE, skip_allow=1))
+        assert xfail != skip

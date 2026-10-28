@@ -37,9 +37,20 @@ CLOSER_ATTEMPTS_KEY = "checklist.closer_attempts"
 DEFAULT_CLOSER_ATTEMPTS = 1
 MAX_CLOSER_ATTEMPTS = 2
 
-#: The contract keys frozen before the first closer (IMP5, R5): the closer
-#: may not rewrite the check semantics; ``files`` is a report, not a norm.
-FROZEN_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red")
+#: Allowance keys whose default is 0: an absent key and an explicit 0 mean
+#: the same check, so they hash the same (TODO-0298). The one place the pair
+#: is spelled — ``FROZEN_CONTRACT_KEYS`` is built from it, so a new allowance
+#: cannot land in the hash without also landing in the zero-normalisation.
+_ALLOWANCE_KEYS: tuple[str, ...] = ("xfail_allow", "skip_allow")
+
+#: The contract keys frozen before the first closer (IMP5, R5; IMP4,
+#: TODO-0298): the closer may not rewrite the check semantics; ``files`` is
+#: a report, not a norm. ``xfail_allow``/``skip_allow`` are part of the norm
+#: too: a unit that adds an allowance widens what counts as green, so the
+#: hash must move.
+FROZEN_CONTRACT_KEYS: tuple[str, ...] = (
+    "verify", "gates", "prove_red",
+) + _ALLOWANCE_KEYS
 
 #: The one wording AC12/AC13 require on a norm edit.
 NORM_EDIT_REASON = "closer edited the checklist/contract"
@@ -170,16 +181,24 @@ def _verdict_facts(verdict: dict) -> dict:
 
 
 def contract_fingerprint(contract: dict | None) -> str:
-    """sha256 of the frozen contract keys (IMP5, R5).
+    """sha256 of the frozen contract keys (IMP5, R5; TODO-0298).
 
-    ``verify``, ``gates`` and ``prove_red`` decide what the unit is checked
-    against; ``files`` and the other keys are a report, not a norm, and are
-    deliberately outside the hash (AC13). No contract at all and an empty
-    contract hash the same — an absent norm is a fixed value, not a crash.
+    ``verify``, ``gates``, ``prove_red`` and the allowances
+    ``xfail_allow``/``skip_allow`` decide what the unit is checked against;
+    ``files`` and the other keys are a report, not a norm, and are
+    deliberately outside the hash (AC13). An allowance equal to its default
+    (0) is dropped, so an explicit ``xfail_allow: 0`` hashes like an absent
+    key — the norm did not change. Key order never matters (``sort_keys``).
+    No contract at all and an empty contract hash the same — an absent norm
+    is a fixed value, not a crash.
     """
     frozen: dict[str, Any] = {}
     if isinstance(contract, dict):
         frozen = {k: contract[k] for k in FROZEN_CONTRACT_KEYS if k in contract}
+        for key in _ALLOWANCE_KEYS:
+            value = frozen.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value == 0:
+                del frozen[key]
     blob = json.dumps(
         frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
