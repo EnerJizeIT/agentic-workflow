@@ -807,7 +807,7 @@ class TestWorkerExitDiagnostic:
         monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _SilentPopen)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
-        with pytest.raises(TimeoutError, match="no output"):
+        with pytest.raises(TimeoutError, match="no output") as caught:
             run_subprocess_until_signal(
                 ["silent-worker"], cwd=tmp_path,
                 watch_paths=[signal_file],
@@ -815,6 +815,11 @@ class TestWorkerExitDiagnostic:
                 log_name="silent-worker.out",
                 no_output_timeout=0.01,
             )
+        # R3/INV9: only the hard cap is typed — the watchdog keeps its own
+        # branch in the engine.
+        from awf.signal_watch import HardTimeoutError
+
+        assert not isinstance(caught.value, HardTimeoutError)
 
         text = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
         assert "class=timeout" in text

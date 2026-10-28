@@ -7,17 +7,18 @@ added the four service-run tools — 52 tools (5 UI + 47 workflow);
 REPORTS26 F6 (TODO-0166) added ``awf_commit_workflow`` — 53 tools
 (5 UI + 48 workflow); TODO-0240 added ``awf_review_append`` — 54 tools
 (5 UI + 49 workflow); TODO-0229 added ``awf_blocked_draft`` — 55 tools
-(5 UI + 50 workflow). The docs carried stale totals (48 / 47 / 45 /
+(5 UI + 50 workflow); OPS IMP5 (TODO-0296) added ``awf_doctor`` — 56 tools
+(5 UI + 51 workflow). The docs carried stale totals (48 / 47 / 45 /
 37 = 5 UI + 32 workflow) in several places. This guard pins every live
 doc that claims a tools counter:
 
-  * the current total ``55`` is present in a counting context — a line
+  * the current total ``56`` is present in a counting context — a line
     that talks about tools / the UI+workflow split;
-  * no stale total (``54`` / ``53`` / ``52`` / ``48`` / ``45`` / ``37`` /
-    ``32``) appears in a counting context.
+  * no stale total (``55`` / ``54`` / ``53`` / ``52`` / ``50`` / ``49`` /
+    ``48`` / ``45`` / ``37`` / ``32``) appears in a counting context.
 
-Note: after TODO-0229 the workflow count is 50 — ``49`` is the previous
-workflow count, so ``49`` (workflow) and ``48``/``49`` (totals) are stale.
+Note: after TODO-0296 the workflow count is 51 — ``50`` is the previous
+workflow count, so ``50`` (workflow) and ``55`` (total) are stale.
 
 A bare number on a non-counting line (a line number, a year, ...) is not
 flagged — only lines that count tools.
@@ -45,8 +46,8 @@ DOCS = [
     REPO_ROOT / "agent_workflow_ui" / "README.md",
 ]
 
-_CURRENT_RE = re.compile(r"\b55\b")
-_STALE_RE = re.compile(r"\b(?:54|53|52|49|48|45|37|32)\b")
+_CURRENT_RE = re.compile(r"\b56\b")
+_STALE_RE = re.compile(r"\b(?:55|54|53|52|50|49|48|45|37|32)\b")
 
 # A line counts tools when it mentions "tool(s)" ...
 _TOOL_LINE = re.compile(r"\btools?\b", re.I)
@@ -72,25 +73,25 @@ def test_docs_exist():
 
 
 def test_current_counter_present():
-    """Each doc carries the current total (55) in a counting line."""
+    """Each doc carries the current total (56) in a counting line."""
     bad = []
     for doc in DOCS:
         lines = _counting_lines(doc)
         assert lines, f"{doc.relative_to(REPO_ROOT)}: no tools-counting line at all"
         if not any(_CURRENT_RE.search(line) for line in lines):
             bad.append(str(doc.relative_to(REPO_ROOT)))
-    assert not bad, f"docs without the current '54' counter: {bad}"
+    assert not bad, f"docs without the current '56' counter: {bad}"
 
 
 def test_no_stale_counter_in_counting_context():
-    """53/52/48/45/37/32 must not survive in a line that counts tools."""
+    """55/54/53/52/50/49/48/45/37/32 must not survive in a counting line."""
     stale = []
     for doc in DOCS:
         for line in _counting_lines(doc):
             if _STALE_RE.search(line):
                 stale.append(f"{doc.relative_to(REPO_ROOT)}: {line.strip()}")
     assert not stale, (
-        "stale tools counter (53/52/48/45/37/32) in a counting line:\n" + "\n".join(stale)
+        "stale tools counter (55/54/53/52/50/49/48/45) in a counting line:\n" + "\n".join(stale)
     )
 
 

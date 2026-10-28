@@ -84,4 +84,5 @@ def test_registry_lists_commit_workflow():
     names = [s.name for s in _registry.TOOLS]
     assert "awf_commit_workflow" in names
     counts = _registry.tool_counts()
-    assert counts == {"total": 55, "awf": 50, "ui": 5}
+    assert counts["total"] == len(names)
+    assert counts["total"] == counts["awf"] + counts["ui"]

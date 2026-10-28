@@ -30,12 +30,12 @@ groups:
     tools:
       - mcp: awf_status
         cli: status
-        when: "state: units, pipeline, signal"
+        when: "state: units, pipeline"
       - mcp: awf_commit_workflow
         cli: commit-workflow
         when: "workflow files → git"
       - mcp: awf_current_step
-        when: "phase + full prompt"
+        when: "phase + prompt"
       - mcp: awf_load_supervisor_context
         when: "full context, one call"
       - mcp: awf_wait_for_event
@@ -45,16 +45,19 @@ groups:
         when: "list pipelines + active"
       - mcp: awf_check_model_config
         when: "models vs providers"
+      - mcp: awf_doctor
+        cli: doctor
+        when: "preflight: versions, models, dead keys"
   - title: run
     tools:
       - mcp: awf_run_start
         when: "queue, budget, stop flags"
       - mcp: awf_run_status
-        when: "position, budget, stop reason"
+        when: "position, budget, stop"
       - mcp: awf_run_next
         when: "launch the next item"
       - mcp: awf_run_note
-        when: "owner's live status line"
+        when: "live status line"
       - mcp: awf_run_revise
         when: "revise/retry queue"
       - mcp: awf_run_finish
@@ -69,7 +72,7 @@ groups:
         when: "approve service unit"
       - mcp: awf_approve
         cli: approve
-        when: "approve (evidence, sha)"
+        when: "approve (evidence)"
       - mcp: awf_reject
         when: "reject (REVIEW signal)"
   - title: hygiene

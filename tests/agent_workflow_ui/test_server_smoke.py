@@ -161,6 +161,8 @@ def test_all_tools_registered():
         "awf_run_service_approve",
         # REPORTS26 F6: workflow definitions commit (TODO-0166)
         "awf_commit_workflow",
+        # OPS IMP5 (R5): pre-launch diagnosis (TODO-0296)
+        "awf_doctor",
     }
     assert tool_names == expected, f"Missing tools: {expected - tool_names}"
 

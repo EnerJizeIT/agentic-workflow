@@ -86,6 +86,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_wait_for_event", awf.awf_wait_for_event),
     # Model configuration validation (dogfood-10)
     _spec("awf_check_model_config", awf.awf_check_model_config),
+    # OPS IMP5 (R5): pre-launch diagnosis — versions, models, dead config keys
+    _spec("awf_doctor", awf.awf_doctor),
     # Kill pipeline (SELF-2)
     _spec("awf_kill", awf.awf_kill),
     # SMO: Phase-aware supervisor tools

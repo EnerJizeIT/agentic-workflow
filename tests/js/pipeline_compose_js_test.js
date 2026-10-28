@@ -80,6 +80,7 @@ test('collectStages keeps the closer gate and its write fields', () => {
     '.st-write_check': 'off',
     '.st-write_allow': 'reports/a.md, reports/b.md',
     '.st-tools': '{"deny": ["write"]}',
+    '.st-timeout': '600',
   }]);
   assert.deepStrictEqual(compose.collectStages(), [{
     role: 'agent-implementer',
@@ -89,6 +90,7 @@ test('collectStages keeps the closer gate and its write fields', () => {
     write_check: 'off',
     write_allow: ['reports/a.md', 'reports/b.md'],
     tools: { deny: ['write'] },
+    timeout: 600,
   }]);
 });
 
@@ -112,12 +114,18 @@ test('buildYamlPreview emits the same keys collectStages collects', () => {
     '.st-skip_if': 'checklist_green',
     '.st-write_check': 'off',
     '.st-write_allow': 'a.md',
+    '.st-timeout': '900',
   }]);
   const preview = compose.buildYamlPreview('default', compose.collectStages());
-  for (const key of ['write_allow:', 'write_check:', 'skip_if:']) {
+  for (const key of ['write_allow:', 'write_check:', 'skip_if:', 'timeout:']) {
     assert.ok(preview.includes(key), `${key} missing from preview:\n${preview}`);
   }
   assert.ok(preview.includes('"off"'), 'write_check must stay a quoted string');
+});
+
+test('a stage timeout of 0 is omitted (the backend refuses it)', () => {
+  setRows([{ '.st-role': 'agent-implementer', '.st-timeout': '0' }]);
+  assert.deepStrictEqual(compose.collectStages(), [{ role: 'agent-implementer' }]);
 });
 
 test('invalid tools JSON disables submit instead of silently dropping it', () => {

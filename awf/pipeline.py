@@ -37,6 +37,7 @@ from . import config as cfg_mod
 from . import paths
 from ._env import is_known_permission_key
 from ._errors import AwfApiError
+from .stage_timeout import is_valid as is_valid_stage_timeout
 
 
 @dataclass
@@ -73,6 +74,10 @@ class Stage:
     # run" — no gate is consulted at the stage boundary. The only allowed
     # value is ``checklist_green`` (the gate verdict decides the skip).
     skip_if: str = ""
+    # OPS IMP1 (R1): this stage's time cap in seconds. ``None`` = "not
+    # set" — the resolver falls through to the project key and 3600.
+    # The cap is a positive integer; the loader refuses anything else.
+    timeout: int | None = None
     # ORCH M7.2: the stage's tools profile — a mapping with ``allow``
     # and/or ``deny`` lists of opencode permission keys (bash/edit/
     # write/webfetch + ``<server>_<tool>`` MCP). Merged onto the base
@@ -168,6 +173,8 @@ ALLOWED_STAGE_KEYS = frozenset(
         "write_check",
         # IMP1 (R1): the one conditional-run key (``checklist_green``).
         "skip_if",
+        # OPS IMP1 (R1): the stage's own time cap in seconds.
+        "timeout",
         # ORCH M7.2: the stage's tools profile (allow/deny permission keys).
         "tools",
         "on_blocked",
@@ -376,6 +383,17 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                     f"Pipeline {source}: stage '{label}' has an invalid "
                     f"'skip_if' (allowed values: "
                     f"{sorted(SKIP_IF_ALLOWED)}), got {value!r}."
+                )
+        # OPS IMP1 (R1): the stage time cap — positive integer seconds only.
+        # ``None`` (absent or null) means "not set": the run resolver falls
+        # through to the project key and 3600.
+        if "timeout" in stage and stage["timeout"] is not None:
+            value = stage["timeout"]
+            if not is_valid_stage_timeout(value):
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'timeout' (must be a positive integer number of "
+                    f"seconds), got {value!r}."
                 )
         if "write_allow" in stage and stage["write_allow"] is not None:
             value = stage["write_allow"]
@@ -586,6 +604,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         kwargs["write_check"] = s.get("write_check") or "on"
         # IMP1 (R1): absent or null → always run (empty string).
         kwargs["skip_if"] = s.get("skip_if") or ""
+        # OPS IMP1 (R1): absent or null → "not set" (the resolver falls
+        # through to the project key and 3600).
+        kwargs["timeout"] = s.get("timeout")
         # ORCH M7.2: the stage's tools profile (empty → unchanged behavior).
         kwargs["tools"] = s.get("tools") or {}
         for pk in _POLICY_KEYS:
@@ -676,6 +697,11 @@ def stage_to_document(stage: Stage) -> dict[str, Any]:
         entry["output"] = stage.output
     if stage.skip_if:
         entry["skip_if"] = stage.skip_if
+    # OPS IMP1 (R1): the stage time cap round-trips through the snapshot
+    # only when it is set ("not set" stays absent, so old snapshots read
+    # exactly as before).
+    if stage.timeout is not None:
+        entry["timeout"] = stage.timeout
     if stage.write_allow:
         entry["write_allow"] = list(stage.write_allow)
     if stage.write_check and stage.write_check != "on":

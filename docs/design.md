@@ -101,6 +101,9 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/dashboard.py` | Dashboard HTML generation + `generate_state_dict()` JSON API |
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
+| `versions.py` | R5/R6: единственный дом версий — модуль `awf`, закреплённый `automation.runner_dir` (разбор `__init__.py` без импорта чужого кода), модуль плагина, метаданные установки |
+| `config_keys.py` | R5: реестр ключей `.agentic/config.yaml`, которые читает код; `dead_keys` называет листья без читателя (OPS7, храповик в тестах) |
+| `doctor.py` | R5: `run_doctor` — отчёт ok/WARN (версии с коммитами, модели, мёртвые ключи), rc 0/1/2, запуск не блокирует; `cmd_doctor.py` его печатает |
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
 | `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
 | `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
@@ -169,6 +172,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline.py` — тождество стадии | Stage `id` (адрес: имя стадии = id) + `task` (поручение): повторы роли с разными id, дубли id отвергаются (ORCH M3.1) |
 | `pipeline.py` — поручение стадии | Stage `input`/`output` (относительные пути проекта): execute-промпт несёт task/входы/выходы, движок проверяет объявленный выход (существует + свежий) перед переходом к следующей стадии, лимит повтора — на экземпляр стадии (ORCH M3.2) |
 | `pipeline.py` — профиль tools стадии | Stage `tools` (`allow`/`deny` списки permission-ключей: bash/edit/write/webfetch + `<server>_<tool>` MCP): единый реестр ключей (неизвестный — ошибка загрузки), мерж в `awf/_env.py` при спавне поверх M2.2 + readonly_roles — deny сильнее allow, базовые управляющие запреты профилем не отменяются (ORCH M7.2) |
+| `stage_timeout.py` | Потолок одной стадии (OPS IMP1, R1): один расчёт "явный `--timeout` → ключ стадии `timeout` → `automation.stage_timeout_seconds` → 3600", источник капа в логе стадии, отказ на не-положительное-целое |
 | `api/pipelines.py` | Named pipelines: write_pipeline / list_pipelines (RUN3 #1) |
 | `api/planning.py` | Increment planning: apply_increment_plan (форма → вариант) |
 | `api/roles.py` | Роли: add_role (draft-область: кандидаты в `roles/draft/`, adopt/discard/list) + zone-анализ для analyze_roles |

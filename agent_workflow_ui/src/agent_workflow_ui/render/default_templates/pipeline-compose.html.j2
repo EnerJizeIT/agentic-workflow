@@ -421,7 +421,11 @@ optional_data_keys:
         { key: "skip_if", label: "skip_if (checklist_green)" },
         { key: "write_check", label: "write_check (on/off)" },
         { key: "write_allow", label: "write_allow (пути через запятую)", list: true, wide: true },
-        { key: "tools", label: "tools (JSON allow/deny)", json: true, wide: true }
+        { key: "tools", label: "tools (JSON allow/deny)", json: true, wide: true },
+        // OPS IMP1 (R1): the stage's own time cap. A positive integer —
+        // collected/emitted like the other numeric fields, never silently
+        // dropped on re-save (the backend refuses 0 anyway).
+        { key: "timeout", label: "timeout (секунды, > 0)", type: "number", min: 1 }
       ];
 
       function toolsValue(inp) {
@@ -476,7 +480,7 @@ optional_data_keys:
           inp.className = 'st-' + f.key;
           if (f.key === 'role') inp.setAttribute('list', 'roles-list');
           if (f.policy) inp.setAttribute('list', 'pol-' + f.policy);
-          if (f.type === 'number') { inp.min = '0'; inp.step = '1'; }
+          if (f.type === 'number') { inp.min = String(f.min !== undefined ? f.min : 0); inp.step = '1'; }
           var v = stage[f.key];
           if (f.list && Array.isArray(v)) v = v.join(', ');
           if (f.json && v && typeof v === 'object') v = JSON.stringify(v);
@@ -519,7 +523,11 @@ optional_data_keys:
         var v = inp.value.trim();
         if (v === '') return false;
         var n = Number(v);
-        return !Number.isInteger(n) || n < 0;
+        // The field's own floor (``min``): max_retries/max_rollbacks allow 0,
+        // the stage ``timeout`` starts at 1 — 0 is a backend load error.
+        var min = inp.min !== undefined && inp.min !== '' ? Number(inp.min) : 0;
+        if (!Number.isInteger(min)) min = 0;
+        return !Number.isInteger(n) || n < min;
       }
 
       function validate() {
@@ -564,7 +572,8 @@ optional_data_keys:
             if (v === '') return;
             if (f.type === 'number') {
               var n = Number(v);
-              if (Number.isInteger(n) && n >= 0) st[f.key] = n;
+              var floor = f.min !== undefined ? f.min : 0;
+              if (Number.isInteger(n) && n >= floor) st[f.key] = n;
             } else if (f.list) {
               var parts = v.split(',').map(function (s) { return s.trim(); })
                 .filter(function (s) { return s !== ''; });
@@ -615,6 +624,7 @@ optional_data_keys:
           }
           if (st.write_check) lines.push('  write_check: ' + yamlValue(st.write_check));
           if (st.skip_if) lines.push('  skip_if: ' + yamlValue(st.skip_if));
+          if (st.timeout !== undefined) lines.push('  timeout: ' + st.timeout);
           if (st.tools && Object.keys(st.tools).length) {
             lines.push('  tools: ' + JSON.stringify(st.tools));
           }

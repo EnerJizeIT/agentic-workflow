@@ -6,6 +6,8 @@ skipped when locating the block)::
 
     verify: ["python3 -m pytest tests/unit/test_x.py -q"]
     flake: off
+    xfail_allow: 1
+    skip_allow: 2
     gates: ["contracts", "ratchet"]
     prove_red: ["tests/unit/test_x.py::test_y"]
     prove_red_pin: ["tests/unit/test_x.py::test_y"]
@@ -134,6 +136,7 @@ _CONTRACT_KEYS: tuple[str, ...] = (
     "files", "pipeline", "replan_for",
     "checklist_classes", "wave",
     "spec_package", "source_refs",
+    "xfail_allow", "skip_allow",
 )
 
 #: Same shape rule the engine enforces (awf/pipeline.py::resolve_pipeline_file,
@@ -661,6 +664,16 @@ def parse_todo_contract(
             raise ValueError(
                 "'flake' must be 'on' or 'off' — 'off' runs every `verify:` "
                 "command once (the flake probe is skipped)"
+            )
+    for key in ("xfail_allow", "skip_allow"):
+        if key not in data:
+            continue
+        value = data[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f"'{key}' must be a non-negative integer (the number of "
+                f"{'xfailed' if key == 'xfail_allow' else 'skipped'} tests "
+                f"the unit allows), got {value!r}"
             )
     if "gates" in data:
         _check_str_list(data["gates"], "gates")

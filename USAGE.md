@@ -369,6 +369,20 @@ per-stage time, the round headings); no role switch or automatic retry
 follows — the owner decides. A value outside 0..20 is a config refusal, not a
 silent "no limit".
 
+A stage's time cap has a third input besides the project key:
+
+```yaml
+automation:
+  stage_timeout_seconds: 3600   # cap for ONE agent stage, seconds
+```
+
+Priority: an explicit `awf start --timeout N` (MCP `timeout`) wins, then the
+stage's own `timeout: N` in `pipeline.yaml`, then this key, then 3600. Only a
+positive integer is accepted: `0`, `-5` and `"1h"` refuse the launch and name
+the input instead of silently falling back to 3600. The stage log line
+`stage timeout: <N>s (source: <caller|stage|project|default>)` names the
+effective cap and where it came from.
+
 `awf_status` and `awf_brief` show the active unit's `passes: N/max`; at the
 cap the State section adds `budget: exhausted`. The RUN-REPORT's
 `## Unit economics` section gives every unit in the run one line: `passes`,
@@ -648,7 +662,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-55 tools: 50 `awf_*` workflow + 5 UI (forms).
+56 tools: 51 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -1049,6 +1063,7 @@ for every replan/split goes into the run report/note.
 | `awf_add_role` | Create a role at `.agentic/roles/{name}.md`: template, or from an opencode skill (`from_skill`); `refresh=True` re-materializes an existing skill-sourced role; draft area: `draft` / `adopt` / `discard` / `list_drafts` |
 | `awf_analyze_roles` | Detect role zone overlaps, write disambiguation |
 | `awf_check_model_config` | Validate models in config.yaml vs opencode.json |
+| `awf_doctor` | Diagnose versions (awf, pinned runner commit, plugin, install metadata), models and config keys no code reads; rc 0/1/2, never blocks a launch |
 | `awf_feedback` | Write a bug/feature report about awf friction to the owner's desktop |
 
 ### UI (forms)

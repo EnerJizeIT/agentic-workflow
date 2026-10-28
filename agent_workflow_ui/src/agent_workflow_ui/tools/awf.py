@@ -275,7 +275,7 @@ async def awf_start(
     pipeline: str | None = None,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     todo_id: str = "",
     no_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -300,7 +300,9 @@ async def awf_start(
         pipeline: Pipeline name to run (default: from config.yaml).
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
-        timeout: Agent stage timeout in seconds (default: 3600).
+        timeout: Agent stage cap in seconds. Omit it to use the stage
+            key `timeout`, then `automation.stage_timeout_seconds`,
+            then 3600.
         todo_id: Pin the pipeline to a specific TODO (e.g. "TODO-0015").
             Without it the engine picks the "newest active" TODO — wrong
             pick when several TODOs are active (AUD08-02).
@@ -392,7 +394,7 @@ async def awf_continue(
     pipeline: str | None = None,
     from_stage: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
     ack: str = "",
     todo_id: str = "",
     background: bool = True,
@@ -409,7 +411,9 @@ async def awf_continue(
         pipeline: Pipeline name to run (default: from config.yaml).
         from_stage: Start from a specific stage name.
         auto: Skip interactive supervisor waits (CI mode).
-        timeout: Agent stage timeout in seconds (default: 3600).
+        timeout: Agent stage cap in seconds. Omit it to use the stage
+            key `timeout`, then `automation.stage_timeout_seconds`,
+            then 3600.
         ack: Accept a BLOCKED TODO and resume (e.g. "TODO-0009"). Writes
             ACK-{todo}.ready and clears the BLOCKED closure — the supervisor's
             answer survives process death. The ack also PINS its own unit:
@@ -476,7 +480,7 @@ async def awf_retry_stage(
     *,
     pipeline: str | None = None,
     auto: bool = False,
-    timeout: int = 3600,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Retry the current salvage stage — kill + continue in one call.
 
@@ -495,7 +499,9 @@ async def awf_retry_stage(
             NOT your project; always pass it explicitly (AUD08-12).
         pipeline: Pipeline name to run (default: from config.yaml).
         auto: Skip interactive supervisor waits (CI mode).
-        timeout: Agent stage timeout in seconds (default: 3600).
+        timeout: Agent stage cap in seconds. Omit it to use the stage
+            key `timeout`, then `automation.stage_timeout_seconds`,
+            then 3600.
 
     Returns:
         Same shape as :func:`awf_start`.
@@ -1005,7 +1011,7 @@ async def awf_run_next(
     project_dir: str | None = None,
     *,
     from_stage: str | None = None,
-    timeout: int = 3600,
+    timeout: int | None = None,
 ) -> dict[str, Any]:
     """Launch the next queue item, or stop when a gate fires.
 
@@ -2295,8 +2301,9 @@ async def awf_write_pipeline(
     assignments), ``task`` (optional short stage assignment),
     ``name`` (defaults to the id, then to the role slug),
     ``description``, ``on_blocked`` / ``on_approved`` / ``on_rejected`` /
-    ``on_failed``, ``max_retries``, ``max_rollbacks``. Unknown keys are
-    refused (the loader would ignore them).
+    ``on_failed``, ``max_retries``, ``max_rollbacks``, ``timeout`` (the
+    stage's own agent time cap in seconds, a positive integer). Unknown keys
+    are refused (the loader would ignore them).
 
     Args:
         name: Pipeline name — letters, digits, '_', '.', '-' (no path
@@ -3233,6 +3240,58 @@ async def awf_check_model_config(
         return response
     except api.AwfApiError as e:
         return _err(e)
+    except Exception as e:
+        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+
+# ─── Doctor (OPS IMP5, R5) ──────────────────────────────────────────────
+
+
+async def awf_doctor(
+    project_dir: str | None = None,
+) -> dict[str, Any]:
+    """Diagnose versions, models and dead config keys before a launch.
+
+    One report line per check with an ``ok`` / ``WARN`` mark:
+
+    - the running ``awf`` version and its tree commit, and the pinned
+      ``automation.runner_dir`` checkout (version and commit — the same
+      version with a different commit is a WARN: a version string does not
+      identify code);
+    - the plugin module (``agent_workflow_ui``) and its install metadata; a
+      stale metadata says "reinstall the package", a module that differs from
+      the running awf says "restart the opencode session" (it is loaded by the
+      process, not by the pinned runner);
+    - the model/provider check (``awf_check_model_config`` runs this in
+      detail; a broken surface degrades to one ``unknown`` line);
+    - the keys of ``.agentic/config.yaml`` that no code reads (e.g.
+      ``retry.max_attempts``). Values of config keys and tokens are never
+      printed — only key names.
+
+    The doctor never blocks a launch (INV7). ``rc`` is the CLI exit code:
+    0 — no WARN, 1 — WARNs, 2 — the project is not assessed (no ``.agentic/``);
+    rc 2 is a valid answer, not a tool error. Call it BEFORE ``awf_start``
+    when something feels off after an upgrade or an MCP restart.
+
+    Args:
+        project_dir: Project root. Default is the MCP process cwd ($HOME) —
+            NOT your project; always pass it explicitly (AUD08-12).
+
+    Returns:
+        Dict with: rc (0/1/2), lines (list of report lines), warnings (the
+        WARN lines).
+    """
+    try:
+        from awf.doctor import run_doctor
+
+        report = await asyncio.to_thread(
+            run_doctor, _resolve_project_dir(project_dir)
+        )
+        return {
+            "status": "ok",
+            "rc": report.rc,
+            "lines": report.lines,
+            "warnings": report.warnings,
+        }
     except Exception as e:
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 

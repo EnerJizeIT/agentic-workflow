@@ -87,7 +87,7 @@ class PipelineArgs:
     pipeline: str | None = None
     from_stage: str | None = None
     auto: bool = False
-    timeout: int = 3600
+    timeout: int | None = None
     todo_id: str = ""
     # RUN3 #6: single-launch checkpoint bypass — the orchestrator turns it
     # into AWF_NO_CHECKPOINTS for the process duration (see run_pipeline).
@@ -100,7 +100,7 @@ def start_in_background(
     pipeline: str | None,
     from_stage: str | None,
     auto: bool,
-    timeout: int,
+    timeout: int | None,
     todo_id: str = "",
     no_checkpoints: bool = False,
 ) -> tuple[int, Path, Path]:
@@ -190,7 +190,11 @@ def start_in_background(
         child_argv += ["--todo", todo_id]
     if auto:
         child_argv.append("--auto")
-    child_argv += ["--timeout", str(timeout)]
+    # OPS IMP1 (R1): "not given" stays not given — the child resolves the
+    # stage key, the project key and the 3600 default itself. Passing a
+    # concrete 3600 here would erase the caller/default distinction (RR6).
+    if timeout is not None:
+        child_argv += ["--timeout", str(timeout)]
 
     # RUN3 #6: single-launch checkpoint bypass — env for the child's
     # duration only (never in argv: the child is a plain `awf start`).

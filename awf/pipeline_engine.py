@@ -21,6 +21,10 @@ from . import budget as _budget
 from . import closer_stage, paths, stage_manifest, todos, verify
 from . import commit_plan as _commit_plan
 from . import config as cfg_mod
+from . import stage_timeout as _stage_timeout
+from . import suite_guard as _suite_guard
+from . import unit_contract as _unit_contract
+from ._errors import AwfApiError as _AwfApiError
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
 from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
@@ -31,6 +35,7 @@ from .pipeline import Stage
 from .pipeline_state import read_state
 from .pipeline_state import write_state as _write_state
 from .plan_progress import mark_plan_step_done as _mark_plan_step_done
+from .signal_watch import HardTimeoutError as _HardTimeoutError
 from .signals import (
     clean_stage_signals,
     expected_signal_prefixes,
@@ -1718,6 +1723,43 @@ def _write_blocked_note(
     return None
 
 
+def _write_stage_blocked_note(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    summary: str,
+    leading: list[str],
+    closing: str,
+    directions: list[str],
+    tail: str = "",
+) -> Exception | None:
+    """K12/K3: the engine's evidence-backed BLOCKED note for a stage death.
+
+    Auth (R12) and the hard cap (R3) differ only in the verdict tail, the
+    named findings and the directions. The display paths, the
+    ``blocked — стадия ...`` line, the log evidence and the heading schema
+    are the same, so they live here: a change cannot land in one producer
+    only. AUD4: ``## НАХОДКИ`` quotes ``leading``, the evidence lines, then
+    ``closing`` — the note carries the log that explains the death.
+    """
+    display_todo = stage_manifest.display_path(todo_id)
+    display_stage = stage_manifest.display_path(stage_name)
+    from . import _net
+
+    evidence = _net.failure_evidence(tail)
+    return _write_blocked_note(
+        project_dir,
+        todo_id,
+        f"blocked — стадия `{display_stage}` ({display_todo}): {summary}",
+        [
+            *leading,
+            *(f"лог: `{line}`" for line in evidence),
+            closing,
+        ],
+        directions,
+    )
+
+
 def _write_blocked_signal_note(
     project_dir: Path,
     todo_id: str,
@@ -1728,29 +1770,50 @@ def _write_blocked_signal_note(
     """CARRY IMP1 (R12): an auth death becomes the standard BLOCKED note.
 
     The caller writes ``last_signal=BLOCKED-<id>`` and stops the stage —
-    no second spawn. AUD4: ``## НАХОДКИ`` quotes the log lines that name
-    the failure (or the last few), so the note carries evidence.
+    no second spawn.
     """
-    display_todo = stage_manifest.display_path(todo_id)
-    display_stage = stage_manifest.display_path(stage_name)
-    from . import _net
-
-    evidence = _net.failure_evidence(tail)
-    return _write_blocked_note(
-        project_dir,
-        todo_id,
-        f"blocked — стадия `{display_stage}` ({display_todo}): провайдер "
-        "отверг авторизацию (credential/ключ); работа остановлена",
-        [
-            reason,
-            *(f"лог: `{line}`" for line in evidence),
-            "повторный спавн не выполнялся: backoff не лечит мёртвый ключ",
-        ],
+    return _write_stage_blocked_note(
+        project_dir, todo_id, stage_name,
+        "провайдер отверг авторизацию (credential/ключ); работа остановлена",
+        [reason],
+        "повторный спавн не выполнялся: backoff не лечит мёртвый ключ",
         [
             "проверь credential/API-ключ провайдера в opencode.json",
             "после исправления перезапусти стадию (awf continue / awf run-next)",
         ],
+        tail,
     )
+
+
+def _close_stage_blocked(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    logs_dir: Path,
+    failure: Exception | None,
+    log_line: str,
+) -> None:
+    """K12/K3: the one closure of every BLOCKED stage stop.
+
+    Auth (R12) and the hard cap (R3) die for different reasons and write
+    different notes, but the closure is identical: a failed note write is
+    a typed unsafe stop, otherwise the ``BLOCKED-<id>`` marker and one log
+    line. Two copies would let the marker policy drift.
+
+    AUD5: when the note cannot be written the stage is NOT marked
+    ``BLOCKED`` — a marker with no note would tell the supervisor a unit is
+    blocked while ``awf blocked-draft`` has nothing to read. Fall through to
+    the same typed salvage stop the managed-path refusals use.
+    """
+    if failure is not None:
+        _unsafe_stage_stop(project_dir, todo_id, stage_name, logs_dir, failure)
+        return
+    _write_state(
+        project_dir,
+        last_signal=f"BLOCKED-{todo_id}",
+        logs_dir=logs_dir,
+    )
+    _log(logs_dir, log_line)
 
 
 def _stop_on_auth_failure(
@@ -1766,29 +1829,52 @@ def _stop_on_auth_failure(
     the ``BLOCKED-<id>`` marker and a stopped stage — no second spawn, no
     silent-retry budget spent. The crash branch and the no-signal branch
     call this; a copied block in one of them would let the two deaths
-    drift.
-
-    AUD5: when the closure cannot be written the stage is NOT marked
-    ``BLOCKED`` — a marker with no note would tell the supervisor a unit is
-    blocked while ``awf blocked-draft`` has nothing to read. Fall through to
-    the same typed salvage stop the managed-path refusals use.
+    drift. The closure itself is shared with the hard cap
+    (``_close_stage_blocked``).
     """
     failure = _write_blocked_signal_note(
         project_dir, todo_id, stage_name,
         "лог воркера: авторизация провайдера отклонена (401/403 credential)",
         tail,
     )
-    if failure is not None:
-        _unsafe_stage_stop(project_dir, todo_id, stage_name, logs_dir, failure)
-        return
-    _write_state(
-        project_dir,
-        last_signal=f"BLOCKED-{todo_id}",
-        logs_dir=logs_dir,
-    )
-    _log(
-        logs_dir,
+    _close_stage_blocked(
+        project_dir, todo_id, stage_name, logs_dir, failure,
         f"CARRY IMP1: auth failure on {stage_name} — BLOCKED, stage stopped",
+    )
+
+
+def _stop_on_hard_timeout(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    logs_dir: Path,
+    seconds: float,
+    tail: str = "",
+) -> None:
+    """K3 (R3): the hard cap is a BLOCKED stop, not a network retry.
+
+    The cap means the stage hung — the unit is too big or its ``timeout``
+    is too tight, and a repeat would burn the same hour again (A4). The
+    note is the standard BLOCKED closure so ``awf blocked-draft`` can
+    build the REVIEW draft; its findings quote the cap and the log tail.
+    The marker half is the shared ``_close_stage_blocked`` (AUD5).
+    """
+    cap = f"{seconds:g}s"
+    failure = _write_stage_blocked_note(
+        project_dir, todo_id, stage_name,
+        f"жёсткий таймаут {cap}; стадия остановлена без повторного спавна",
+        [f"кап: {cap}"],
+        "повторный спавн не выполнялся: повтор сжёг бы тот же кап",
+        [
+            "подними timeout (--timeout / ключ стадии / "
+            "automation.stage_timeout_seconds)",
+            "раздели юнит на части, если работа не влезает в кап",
+        ],
+        tail,
+    )
+    _close_stage_blocked(
+        project_dir, todo_id, stage_name, logs_dir, failure,
+        f"hard timeout on {stage_name} — BLOCKED, stage stopped",
     )
 
 
@@ -1998,6 +2084,41 @@ def execute_agent_stage(
             _log(logs_dir, f"SKIPPED ({decision.skip_reason})")
             return current_todo, stage_idx + 1, 0
 
+    # OPS IMP1 (R1): ONE resolver for this stage's cap — caller → stage →
+    # project → 3600. The line goes to the run log BEFORE the first spawn,
+    # so the operator sees the cap and its source in the answer. A bad
+    # value normally never reaches here (load error for the stage key, a
+    # refusal before the lease for the project key) — the guard keeps the
+    # stage from starting silently on a cap nobody validated.
+    try:
+        stage_cap = _stage_timeout.resolve(agent_hard_timeout, stage.timeout, config)
+    except _AwfApiError as e:
+        _log(logs_dir, f"STAGE-ERROR: {e}")
+        return current_todo, stage_idx, 1
+    _log(logs_dir, f"stage timeout: {stage_cap.seconds}s (source: {stage_cap.source})")
+
+    # OPS IMP2 (R2/K2): a full run in the declared checks marks a "big unit"
+    # — name it BEFORE the spawn, with the cap and its route. An explicit
+    # caller timeout suppresses the line (AC21) at any stage/project keys.
+    # The warning never changes rc and never writes BLOCKED; a broken
+    # contract is a verify-pack matter, so it builds no line here.
+    if agent_hard_timeout is None:
+        try:
+            contract, _unknown = _unit_contract.parse_todo_contract(
+                todos.read_todo_text(project_dir, current_todo)
+            )
+        except ValueError:
+            contract = None
+        declared = (contract or {}).get("verify")
+        full_cmd = _suite_guard.declares_full_suite(declared, project_dir)
+        if full_cmd:
+            _log(
+                logs_dir,
+                f"STAGE-WARN: full suite in verify: `{full_cmd}`; "
+                f"cap {stage_cap.seconds}s (source: {stage_cap.source}) — "
+                "raise timeout or split the unit",
+            )
+
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
     _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")
 
@@ -2108,7 +2229,7 @@ def execute_agent_stage(
             worker_run += 1
             try:
                 _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                                 prev_handoffs=prev_handoffs, hard_timeout=agent_hard_timeout,
+                                 prev_handoffs=prev_handoffs, hard_timeout=stage_cap.seconds,
                                  retry_note=retry_note, attempt=worker_run,
                                  log_holder=log_holder)
             except managed_fs.ManagedPathError as e:
@@ -2136,9 +2257,23 @@ def execute_agent_stage(
                 )
                 if signal_on_disk:
                     tail = ""
-                    failure_class = ""
                 else:
                     tail = worker_log_tail(log_holder)
+                # K3 (R3): the hard cap is not classified by the tail — a
+                # stuck stage is a BLOCKED stop (no second spawn). With a
+                # signal on disk the pre-existing branch stands (the watcher
+                # returns the late signal instead of raising — AC10, INV1).
+                # Preflight and the watchdog raise plain ``TimeoutError``
+                # (INV3, INV9) and keep their own branches below.
+                if isinstance(e, _HardTimeoutError) and not signal_on_disk:
+                    _stop_on_hard_timeout(
+                        project_dir, current_todo, s_name, logs_dir,
+                        e.seconds, tail,
+                    )
+                    return current_todo, stage_idx, 1
+                if signal_on_disk:
+                    failure_class = ""
+                else:
                     failure_class = _net.classify_failure(
                         tail, _worker_exit_code(log_holder)
                     )

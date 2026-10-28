@@ -39,7 +39,8 @@ def _print_top_level_help(sub) -> int:
         "  --background         Run detached via setsid — writes to",
         "                       .agentic/logs/awf-start.out. Default is",
         "                       foreground; pass --background to detach.",
-        "  --timeout <seconds>  Agent timeout (default: 3600)",
+        "  --timeout <seconds>  Agent stage cap (default: stage key,",
+        "                       automation.stage_timeout_seconds, then 3600)",
         "  --ack <TODO-NNNN>    (continue only) Accept a BLOCKED TODO and resume",
     ]
     print("\n".join(lines))
@@ -67,8 +68,11 @@ def _add_start_args(parser):
     parser.add_argument(
         "--timeout",
         type=int,
-        default=3600,
-        help="Agent timeout in seconds (default: 3600)",
+        default=None,
+        help=(
+            "Agent stage cap in seconds (default: the stage key 'timeout', "
+            "then automation.stage_timeout_seconds, then 3600)"
+        ),
     )
     parser.add_argument(
         "--project-dir",
@@ -124,6 +128,17 @@ def _build_parser():
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",
+    )
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Diagnose versions, models and dead config keys (rc 1 on WARN)",
+    )
+    p_doctor.add_argument(
+        "--project-dir",
+        dest="project_dir",
+        default=".",
+        help="Project root (default: current directory)",
     )
 
     p_start = sub.add_parser("start", help="Start the pipeline from the beginning")
@@ -1064,6 +1079,9 @@ def _run_command(args) -> int:
             return cmd_blocked_draft.run(args)
         if args.command == "status":
             return cmd_status.run(args)
+        if args.command == "doctor":
+            from . import cmd_doctor
+            return cmd_doctor.run(args)
         if args.command in ("start", "continue"):
             return cmd_start.run(args)
         if args.command == "init":

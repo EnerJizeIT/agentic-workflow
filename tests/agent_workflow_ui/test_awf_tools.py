@@ -2495,3 +2495,62 @@ class TestSupervisorBeatWiring:
         assert result["status"] == "ok", (
             "the accompanying call must survive a beat failure"
         )
+
+
+# ─── awf_doctor (OPS IMP5, R5) ──────────────────────────────────────────
+
+
+class TestAwfDoctor:
+    def test_returns_report_fields(self, mcp_project, monkeypatch):
+        from awf import doctor as doctor_mod
+
+        report = doctor_mod.DoctorReport(
+            rc=1, lines=["WARN  x: y"], warnings=["WARN  x: y"]
+        )
+        monkeypatch.setattr(doctor_mod, "run_doctor", lambda project_dir: report)
+
+        result = run(awf.awf_doctor(project_dir=str(mcp_project)))
+
+        assert result["status"] == "ok"
+        assert result["rc"] == 1
+        assert result["lines"] == ["WARN  x: y"]
+        assert result["warnings"] == ["WARN  x: y"]
+
+    def test_rc_2_is_a_valid_answer(self, mcp_project, monkeypatch):
+        from awf import doctor as doctor_mod
+
+        report = doctor_mod.DoctorReport(rc=2, lines=["n/a  project: none"], warnings=[])
+        monkeypatch.setattr(doctor_mod, "run_doctor", lambda project_dir: report)
+
+        result = run(awf.awf_doctor(project_dir=str(mcp_project)))
+
+        assert result["status"] == "ok"
+        assert result["rc"] == 2
+
+    def test_exception_is_an_error_not_a_traceback(self, mcp_project, monkeypatch):
+        from awf import doctor as doctor_mod
+
+        def boom(project_dir):
+            raise OSError("boom")
+
+        monkeypatch.setattr(doctor_mod, "run_doctor", boom)
+
+        result = run(awf.awf_doctor(project_dir=str(mcp_project)))
+
+        assert result["status"] == "error"
+        assert "OSError" in result["error"]
+        assert "boom" in result["error"]
+
+    def test_real_report_on_a_non_project_is_rc_2(self, tmp_path):
+        """The wiring, not a mock: a bare dir reaches the real ``run_doctor``.
+
+        The mocked neighbours above prove the field mapping; this one proves
+        the tool path (``_resolve_project_dir`` → a worker thread → the real
+        report) — rc 2 returns before any version/model surface is read.
+        """
+        result = run(awf.awf_doctor(project_dir=str(tmp_path)))
+
+        assert result["status"] == "ok"
+        assert result["rc"] == 2
+        assert result["warnings"] == []
+        assert "no .agentic/" in result["lines"][0]
