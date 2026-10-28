@@ -1506,7 +1506,7 @@ def apply_project_setup(
             warnings.append(
                 f"role '{role}' has no role file (checked .agentic/roles/ and "
                 "the global awf roles dir) — its stage will fail at runtime; "
-                f"create .agentic/roles/{role}.md or fix the team"
+                f"run `awf add-role {role}` (or fix the team)"
             )
     else:
         config_updated = False

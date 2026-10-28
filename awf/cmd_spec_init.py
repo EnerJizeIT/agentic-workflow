@@ -32,7 +32,8 @@ def run(args: Any) -> int:
         print(
             f"WARNING: role '{role}' has no role file (checked "
             f".agentic/roles/ and the global awf roles dir) — its "
-            f"stage will fail at runtime.",
+            f"stage will fail at runtime; install it with "
+            f"`awf add-role {role}`.",
         )
 
     verb = "Overwrote" if result.overwritten else "Wrote"

@@ -45,7 +45,7 @@ pip install awf agent-workflow-ui
 |---|---|
 | **Python** | 3.10+ |
 | **opencode** | any recent version with MCP support |
-| **OS** | Linux (tested), macOS (should work). Windows is unsupported: `start` and the destructive paths (`reset`/`rollback`/`init --force`) refuse on non-POSIX |
+| **OS** | Linux (tested), macOS (should work). Windows is unsupported: `start`, the destructive paths (`reset`/`rollback`/`init --force`) and the managed writers — including the `awf metrics` cache and report — refuse on non-POSIX. `awf feedback`'s desktop report stays portable (outside-surface exception) |
 | **Models** | Model-agnostic. Tested with Qwen vLLM. Should work with Claude, GPT, or any opencode-supported provider. |
 | **Git** | 2.36+ (`git hook run`); git 2.5–2.35 works via a direct hook fallback with the same semantics |
 

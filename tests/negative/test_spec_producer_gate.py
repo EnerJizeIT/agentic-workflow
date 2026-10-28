@@ -90,6 +90,29 @@ def test_dispatch_consumer_on_blocked_package_is_refused(tmp_path: Path):
     assert not (repo / ".agentic" / "inbox" / f"{TODO}.md").exists()
 
 
+def test_dispatch_producer_without_pipeline_names_the_cure(tmp_path: Path):
+    """AUD1 (0288): the refusal must name the fix it demands.
+
+    A hand-written producer TODO has ``spec_package`` but neither
+    ``source_refs`` nor a ``pipeline:`` key. Dispatch cannot know the launch
+    pipeline, so it refuses — the text has to name the way out instead of
+    only restating what a producer is.
+    """
+    repo = init_project_repo(tmp_path)
+    content = (
+        "---\nspec_package: spec/pkg\n---\n"
+        f"# {TODO} — spec unit\n"
+    )
+
+    with pytest.raises(api.AwfApiError) as excinfo:
+        api.dispatch_todo(repo, content, todo_id=TODO)
+
+    message = str(excinfo.value)
+    assert "pipeline: spec" in message, message
+    assert "--pipeline" in message, message
+    assert not (repo / ".agentic" / "inbox" / f"{TODO}.md").exists()
+
+
 def test_start_producer_on_blocked_package_passes_the_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

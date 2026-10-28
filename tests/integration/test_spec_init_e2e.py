@@ -119,3 +119,23 @@ def test_spec_init_refuses_an_escaping_slug_and_a_missing_project(
     rc = cli.main(["spec", "init", "pkg", "--project", str(plain)])
     assert rc == 1
     assert "No .agentic/" in capsys.readouterr().out
+
+
+def test_spec_init_warning_names_the_add_role_cure(tmp_path: Path, capsys) -> None:
+    """AUD2 (0288): an unresolved stage role is curable in one command.
+
+    A clean project has the packaged role TEMPLATES but no role files, so
+    ``write_spec_pipeline`` reports the roles as unresolved. The warning must
+    name ``awf add-role`` — otherwise the reader is told "fails at runtime"
+    with no path forward.
+    """
+    from awf import cli
+
+    repo = init_project_repo(tmp_path)
+
+    rc = cli.main(["spec", "init", "pkg", "--project", str(repo)])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "awf add-role" in out, out
+    assert "agent-requirements-reviewer" in out, out

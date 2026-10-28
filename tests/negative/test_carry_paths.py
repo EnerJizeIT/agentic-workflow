@@ -1009,3 +1009,205 @@ class TestMetricsPath:
         assert target.stat().st_mode & 0o777 == 0o600
         assert (repo / "reports").stat().st_mode & 0o777 == 0o700
         assert (repo / "reports" / "deep").stat().st_mode & 0o777 == 0o700
+
+    def test_report_out_through_second_alias_writes_inside(self, tmp_path: Path) -> None:
+        # AUD287-1: the project is spelled by ONE alias, ``--out`` by a
+        # SECOND alias of the same root. The old per-module classifier knew
+        # only the project's own spelling and sent the leaf to the "outside"
+        # branch; the shared classifier recognizes any spelling of the root.
+        repo = _project(tmp_path)
+        project_alias = tmp_path / "proj-a"
+        project_alias.symlink_to(repo, target_is_directory=True)
+        report_alias = tmp_path / "proj-b"
+        report_alias.symlink_to(repo, target_is_directory=True)
+        target = report_alias / ".agentic" / "context" / "report.md"
+
+        res = M.collect_metrics(
+            project_alias,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path == str(target)
+        assert (repo / ".agentic" / "context" / "report.md").is_file()
+        assert not [w for w in res.warnings if "отчёт не записан" in w]
+        assert not [w for w in res.warnings if "вне проекта" in w]
+
+    def test_report_out_through_second_alias_refuses_swapped_reports_dir(
+        self, tmp_path: Path
+    ) -> None:
+        # The swap half of AUD287-1: a second alias must not turn a swapped
+        # in-project component into an "outside" write. The leaf is
+        # re-anchored on the canonical root with its components kept, so the
+        # no-follow walk sees ``.agentic/reports`` and refuses.
+        repo = _project(tmp_path)
+        project_alias = tmp_path / "proj-a"
+        project_alias.symlink_to(repo, target_is_directory=True)
+        report_alias = tmp_path / "proj-b"
+        report_alias.symlink_to(repo, target_is_directory=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (repo / ".agentic" / "reports").symlink_to(
+            outside, target_is_directory=True
+        )
+        target = report_alias / ".agentic" / "reports" / "report.md"
+
+        res = M.collect_metrics(
+            project_alias,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert not (outside / "report.md").exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_cache_through_second_alias_refuses_swapped_component(
+        self, tmp_path: Path
+    ) -> None:
+        # The cache and the report go through the same classifier (AUD287-1):
+        # a second alias cannot launder a swapped component for the cache
+        # either.
+        repo = _project(tmp_path)
+        project_alias = tmp_path / "proj-a"
+        project_alias.symlink_to(repo, target_is_directory=True)
+        cache_alias = tmp_path / "proj-b"
+        cache_alias.symlink_to(repo, target_is_directory=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (repo / ".agentic" / "reports").symlink_to(
+            outside, target_is_directory=True
+        )
+        leaf = cache_alias / ".agentic" / "reports" / "models.json"
+        warnings: list[str] = []
+
+        with pytest.raises(managed_fs.ManagedPathError):
+            M._write_cache_managed(
+                leaf, "{}", project_dir=project_alias, warnings=warnings
+            )
+        assert not (outside / "models.json").exists()
+
+    def test_report_on_non_posix_is_refused_with_a_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AUD287-2, documented gate: the metrics report shares the managed
+        # writer with the cache, so on non-POSIX it is not written at all —
+        # the refusal is a warning, not a silent skip, and ``report_path``
+        # stays None while the exit code still talks about measurement.
+        repo = _project(tmp_path)
+        monkeypatch.setattr(managed_fs, "is_posix", lambda: False)
+        target = repo / ".agentic" / "context" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert not target.exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+        # AUD287-3: the return code talks about MEASUREMENT, not the file.
+        # Nothing here is measurable (no db, no models, no workers), so it is
+        # 1 even though a report was rendered — the refused write changed it
+        # neither way.
+        assert res.exit_code == 1
+
+    def test_measured_but_unwritten_report_keeps_exit_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AUD287-3 core distinction: a refused file does NOT change the return
+        # code. A measured unit (a verify commit) with the report surface
+        # refused on non-POSIX must still report ``exit_code == 0`` and
+        # ``report_path is None`` — "measured, no file", not "nothing
+        # measured". Coupling the exit code to the file would fail here.
+        repo = _project(tmp_path)
+        (repo / "src.py").write_text("x = 1\n", encoding="utf-8")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "awf(verify): TODO-0001")
+        monkeypatch.setattr(managed_fs, "is_posix", lambda: False)
+        target = repo / ".agentic" / "context" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.measured is True
+        assert res.exit_code == 0
+        assert res.report_path is None
+        assert not target.exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_report_on_non_posix_outside_leaves_no_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AUD287-2: "refused entirely" means no side effect at all. The
+        # outside branch creates missing parents with a plain mkdir, so the
+        # platform guard runs BEFORE it — a refused report must not leave an
+        # empty directory where the file was meant to land.
+        repo = _project(tmp_path)
+        monkeypatch.setattr(managed_fs, "is_posix", lambda: False)
+        target = tmp_path / "outside-desk" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert not target.exists()
+        assert not target.parent.exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_report_out_through_component_pointing_at_the_root_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        # QA1 (0289): the classifier must keep the components below the
+        # matched root spelling. An internal component that happens to
+        # resolve to the project root (``.agentic/reports -> .``) is a
+        # swapped component, not a second alias of the root: dropping it
+        # silently wrote the report at ``<repo>/report.md`` and reported a
+        # path that was never created.
+        repo = _project(tmp_path)
+        (repo / ".agentic" / "reports").symlink_to(
+            repo, target_is_directory=True
+        )
+        target = repo / ".agentic" / "reports" / "report.md"
+
+        res = M.collect_metrics(
+            repo,
+            db_path=tmp_path / "absent.db",
+            models_path=tmp_path / "absent.json",
+            out=str(target),
+        )
+
+        assert res.report_path is None
+        assert not (repo / "report.md").exists()
+        assert not target.exists()
+        assert any("отчёт не записан" in w for w in res.warnings)
+
+    def test_classify_keeps_components_below_the_matched_root_alias(
+        self, tmp_path: Path
+    ) -> None:
+        # QA1 (0289): the shallowest matching prefix is the root's alias,
+        # never a deeper component that also resolves to it. The chain
+        # below the alias stays lexical and reaches the no-follow walk.
+        repo = _project(tmp_path)
+        alias = tmp_path / "proj-a"
+        alias.symlink_to(repo, target_is_directory=True)
+        (repo / "sub").symlink_to(repo, target_is_directory=True)
+
+        path, root = managed_fs.classify_project_surface(
+            alias / "sub" / ".agentic" / "x.md", project_dir=alias
+        )
+
+        assert root == repo.resolve()
+        assert path == repo.resolve() / "sub" / ".agentic" / "x.md"

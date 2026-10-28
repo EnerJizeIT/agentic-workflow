@@ -342,6 +342,8 @@ def test_flow_variant_warns_about_unresolved_stage_roles(
     joined = " ".join(result.warnings)
     for role in ("agent-architect-review", "agent-refactoring-specialist"):
         assert role in joined, joined
+    # AUD2 (0288): the warning names the cure, not only the symptom.
+    assert "awf add-role" in joined, joined
 
 
 def test_flow_variant_preview_is_the_written_file(tmp_git_repo):
