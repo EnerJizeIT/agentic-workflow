@@ -4,6 +4,34 @@ Short, human note for what the current release ships. Full per-version
 history lives in `CHANGELOG.md`; this file is the quick "what changed and
 why it matters" for the `awf` core and the `agent-workflow-ui` MCP plugin.
 
+## [2.1.0] — 2026-10-28
+
+Features now start with a specification, not with code. This release makes the
+spec pipeline a product artefact, adds the closer stage that proves a frozen
+definition of done, and closes the carry-wave gaps in diagnostics, the suite
+gate and config writes.
+
+### Highlights
+
+- **Spec-first by default.** `awf spec init` builds a per-package pipeline; six
+  documents end in a READY verdict that the engine checks. A spec revision may
+  re-open a BLOCKED package; a dev unit on the same package is still refused.
+  The three spec roles ship as templates, so a fresh project can run a spec.
+- **The closer proves the DoD.** After the last writing stage, the engine runs
+  the frozen checklist: `skip_if`, a verdict, a budget of verdict runs,
+  immutability of the block and contract, and `awf checklist stats`.
+- **Honest gates.** Worker death is classified (auth/network/transient/silent);
+  the suite gate recognises `pytest` without a target and `uv`/`poetry`/`pdm`/
+  `hatch` prefixes; `config_write` preserves comments and order; the remaining
+  state surfaces go through managed no-follow barriers.
+- **Less manual supervision.** Role-specific test policy, tracked carry-over,
+  reject→retry in the queue, atomic dispatch, and the review-pass budget turn
+  the old hands-on recovery steps into engine behaviour.
+
+### Upgrade
+
+`pip install -U awf agent-workflow-ui` (the plugin requires `awf>=2.1.0`).
+
 ## [2.0.0] — 2026-10-25
 
 Agents lie by accident; the engine now asks for evidence. This release is the

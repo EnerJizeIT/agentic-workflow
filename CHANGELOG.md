@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2026-10-28
+
+Spec-first becomes the default path for features. A READY specification package
+is a product artefact: the engine produces it, gates dev units on it, and hands
+the norm to the implementer; the closer stage proves the frozen DoD.
+
+### Added
+
+- **Spec pipeline.** `awf spec init <slug>`, `awf spec check`, six-document
+  READY packages, a producer gate that lets a spec revision re-open a BLOCKED
+  package, readiness rewind to the author, and the three spec roles shipped as
+  templates for a fresh project.
+- **Closer stage.** A DoD gate after the last writing stage: `skip_if`, a
+  verdict, a budget of verdict runs, block/contract immutability, stats
+  (`awf checklist stats`) and delivery in default/full/code-health/quick.
+- **Carry diagnostics and gates.** Worker-death diagnosis with auth/network/
+  transient/silent classes; a suite gate that recognises `pytest` without a
+  target and runner prefixes (`uv`/`poetry`/`pdm`/`hatch`); `config_write` that
+  preserves comments and order; managed barriers on the remaining surfaces.
+- **Process guards.** Role-specific test policy, tracked carry-over, reject→
+  retry in the queue, atomic dispatch with `--no-baseline-tests`, the unit
+  review-pass budget, and BUDGET as an actionable event.
+
+### Changed
+
+- One command parser is shared by the gate, verify-pack and the canonical
+  script; raw `pytest` without a target counts as full when `testpaths` is set.
+- `pipeline-write --variant` returns non-zero on unresolved roles (CLI/form
+  parity); Windows is documented as unsupported for state/start paths.
+
+### Upgrade
+
+`pip install -U awf agent-workflow-ui` (the plugin requires `awf>=2.1.0`).
+
 ## [2.0.0] — 2026-10-25
 
 Two demanding quality waves turned awf from a launcher into a durable
