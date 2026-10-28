@@ -42,6 +42,10 @@ Sections (each: status + details + denominator):
    red is never hidden. Every other command (``run-all``, coverage, mutation
    smoke, arbitrary shell) runs ONCE, as before; a timeout is not retried.
    The contract's ``flake: off`` disables the probe for the whole unit.
+   Independently of ``flake``, a test-like command at rc 0 is judged by its
+   canonical pytest summary: ``xfailed``/``skipped`` above the contract's
+   ``xfail_allow``/``skip_allow`` (per command, 0 by default) fail it;
+   ``xpassed`` is only a note.
 8. ``prove_red`` — the contract's ``prove_red`` list through
     :func:`awf.prove_red.prove_red`; the verdict goes into the report. The
     mutually exclusive ``prove_red_pin`` list runs the same baseline check
@@ -584,6 +588,103 @@ def _qa_findings_path(project: Path, todo_id: str) -> Path | None:
 _QA_PASSED_RE = re.compile(r"\b(\d+)\s+passed\b")
 
 
+#: R4: the pytest summary words a contract command is judged by. Plural
+#: forms map onto the singular key so ``1 error`` / ``2 errors`` agree.
+_PYTEST_COUNT_WORDS = {
+    "passed": "passed",
+    "failed": "failed",
+    "error": "error",
+    "errors": "error",
+    "xfailed": "xfailed",
+    "xpassed": "xpassed",
+    "skipped": "skipped",
+    "deselected": "deselected",
+    "warning": "warning",
+    "warnings": "warning",
+}
+_PYTEST_COUNT_PAIR_RE = re.compile(
+    r"\b(\d+)\s+(" + "|".join(_PYTEST_COUNT_WORDS) + r")\b"
+)
+#: ANSI SGR escapes: pytest emits the summary coloured when ``PY_COLORS`` /
+#: ``FORCE_COLOR`` is inherited or the command passes ``--color=yes``. The
+#: escape's final ``m`` is a word character, so the ``\b`` in the pair
+#: pattern would miss the FIRST pair of a coloured line (``…[1m1 xfailed``)
+#: and the whole gate would silently pass — strip colour before parsing.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _pytest_counts(output: str) -> dict[str, int]:
+    """R4: parse the LAST pytest summary line into ``word -> count``.
+
+    The canonical run's outcome is the one the gate already judged by rc;
+    its pytest summary sits on the last line carrying ``<number> <word>``
+    pairs (``1 failed, 2 passed in 0.12s``). A missing word is simply
+    absent — callers read it as 0. Output without a summary (a non-test
+    command, an aborted launch) yields ``{}``.
+    """
+    plain = _ANSI_ESCAPE_RE.sub("", output or "")
+    for line in reversed(plain.splitlines()):
+        pairs = _PYTEST_COUNT_PAIR_RE.findall(line)
+        if not pairs:
+            continue
+        counts: dict[str, int] = {}
+        for number, word in pairs:
+            key = _PYTEST_COUNT_WORDS[word.lower()]
+            counts[key] = counts.get(key, 0) + int(number)
+        return counts
+    return {}
+
+
+def _allow_value(contract: dict | None, key: str) -> int:
+    """R4: a contract allowance, 0 when absent (validation lives in the parser)."""
+    value = (contract or {}).get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _xfail_skip_judgement(
+    output: str, xfail_allow: int, skip_allow: int
+) -> tuple[bool, str]:
+    """R4: judge the canonical summary — ``(passed, note)``.
+
+    ``passed`` is False when the summary shows more ``xfailed``/``skipped``
+    than the unit declared; ``note`` then carries the numbers. Otherwise
+    the note names the allowed counts (only when an allowance is declared)
+    and any ``xpassed`` (stale xfail — never judged, A12).
+    """
+    counts = _pytest_counts(output)
+    xfailed = counts.get("xfailed", 0)
+    skipped = counts.get("skipped", 0)
+    xpassed = counts.get("xpassed", 0)
+    over = []
+    if xfailed > xfail_allow:
+        over.append(f"{xfailed} xfailed > xfail_allow {xfail_allow}")
+    if skipped > skip_allow:
+        over.append(f"{skipped} skipped > skip_allow {skip_allow}")
+    if over:
+        return False, "FAIL — " + ", ".join(over)
+    notes = []
+    if xfail_allow or skip_allow:
+        notes.append(f"allowed {xfailed} xfailed, {skipped} skipped")
+    if xpassed:
+        notes.append(f"{xpassed} xpassed (stale xfail)")
+    return True, "; ".join(notes)
+
+
+def _summary_signature(rc: int | None, output: str) -> tuple:
+    """R4/AC22: the comparable outcome of a TEST-LIKE run.
+
+    The flake repeat exists only for test-like commands, so this helper
+    compares the judged counts on top of rc: ``0 xfailed`` turning into
+    ``1 xfailed`` between the canonical run and the repeat is a visible
+    instability even when both exit 0 — the verdict still comes from the
+    first run. Non-test commands never reach here (they run once).
+    """
+    counts = _pytest_counts(output)
+    return (rc, counts.get("xfailed", 0), counts.get("skipped", 0))
+
+
 def _pytest_timeout_available() -> bool:
     """True when the ``pytest-timeout`` plugin loads in this interpreter.
 
@@ -712,25 +813,40 @@ def _contract_tests_section(project: Path, contract: dict | None, timeout: int) 
         )
     flake_value = (contract or {}).get("flake", "on")
     flake_off = flake_value is False or str(flake_value).strip().lower() == "off"
+    xfail_allow = _allow_value(contract, "xfail_allow")
+    skip_allow = _allow_value(contract, "skip_allow")
     s = Section(name="contract_tests", status="pass")
     ok = 0
     unstable = 0
     for cmd in cmds:
         command = str(cmd)
-        probe = not flake_off and _is_test_like(command)
+        test_like = _is_test_like(command)
+        probe = not flake_off and test_like
         rc, out, timed_out = _run_cmd(command, project, timeout)
         if timed_out:
             # A timeout is never retried: the first run already failed.
             s.status = "fail"
             s.lines.append(f"- `{cmd}`: FAIL — timeout after {timeout}s")
             continue
+        # R4: a test-like command at rc 0 still has to prove it ran the
+        # tests — xfail/skip above the declared allowance is not green. The
+        # CANONICAL (first) run decides; the flake repeat never overrides.
+        summary_ok, summary_note = (
+            _xfail_skip_judgement(out, xfail_allow, skip_allow)
+            if test_like and rc == 0
+            else (True, "")
+        )
+        suffix = f"; {summary_note}" if summary_note else ""
         if not probe:
-            if rc == 0:
-                ok += 1
-                s.lines.append(f"- `{cmd}`: pass")
-            else:
+            if rc != 0:
                 s.status = "fail"
                 s.lines.append(f"- `{cmd}`: FAIL (rc={rc}) — {_tail(out)}")
+            elif not summary_ok:
+                s.status = "fail"
+                s.lines.append(f"- `{cmd}`: {summary_note}")
+            else:
+                ok += 1
+                s.lines.append(f"- `{cmd}`: pass{suffix}")
             continue
         first_rc = rc
         repeats = [
@@ -738,8 +854,10 @@ def _contract_tests_section(project: Path, contract: dict | None, timeout: int) 
             for _ in range(FLAKE_RUNS - 1)
         ]
         same_outcome = all(
-            not repeat_timeout and repeat_rc == first_rc
-            for repeat_rc, _repeat_out, repeat_timeout in repeats
+            not repeat_timeout
+            and _summary_signature(repeat_rc, repeat_out)
+            == _summary_signature(first_rc, out)
+            for repeat_rc, repeat_out, repeat_timeout in repeats
         )
         # FLAKE_RUNS == 2 → exactly one repeat; the wording below calls it
         # "the second run". The constant stays the source of the count.
@@ -747,20 +865,44 @@ def _contract_tests_section(project: Path, contract: dict | None, timeout: int) 
             repeats[0] if repeats else (first_rc, "", False)
         )
         seen = "timeout" if second_timeout else f"rc={second_rc}"
+        if not second_timeout and second_rc == first_rc == 0:
+            seen += ", summary differs"
         if first_rc == 0:
+            if same_outcome:
+                flake_line = f"flake: ok ({FLAKE_RUNS}/{FLAKE_RUNS})"
+            elif summary_ok:
+                # The canonical run passed, so the differing repeat is a
+                # WARNING only.
+                flake_line = (
+                    f"flake: unstable — WARNING: first rc=0, second {seen} — "
+                    f"flakiness alone does not fail the gate"
+                )
+            else:
+                # The canonical summary already failed: do not claim that
+                # flakiness alone is irrelevant right next to a FAIL.
+                flake_line = (
+                    f"flake: unstable — WARNING: first rc=0, second {seen} — "
+                    f"the canonical (first) summary decides"
+                )
+            if not summary_ok:
+                # R4: the verdict is the canonical summary's, but the repeat
+                # is still described honestly — a differing second summary
+                # must not be reported as "flake: ok".
+                s.status = "fail"
+                if not same_outcome:
+                    unstable += 1
+                s.lines.append(f"- `{cmd}`: {summary_note}; {flake_line}")
+                continue
             ok += 1
             if same_outcome:
-                s.lines.append(
-                    f"- `{cmd}`: pass; flake: ok ({FLAKE_RUNS}/{FLAKE_RUNS})"
-                )
+                s.lines.append(f"- `{cmd}`: pass{suffix}; {flake_line}")
             else:
                 # The first (canonical) outcome passed: the gate stays green,
                 # the differing second run is a visible WARNING.
                 unstable += 1
                 s.lines.append(
-                    f"- `{cmd}`: pass (first outcome used); flake: unstable — "
-                    f"WARNING: first rc=0, second {seen} — flakiness alone "
-                    f"does not fail the gate"
+                    f"- `{cmd}`: pass{suffix} (first outcome used); "
+                    f"{flake_line}"
                 )
             continue
         s.status = "fail"
