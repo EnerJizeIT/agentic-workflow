@@ -35,7 +35,15 @@ ALLOWED_ROLES = frozenset(
         "agent-qa-review",
     }
 )
-MODES = ("off", "fix-only", "always")
+#: The canonical policies ``mode()`` returns, keyed by every accepted config
+#: spelling. ``on`` is a live projects' name for "enabled" and resolves to the
+#: spec's own policy (``fix-only``: a fresh first entry, the same session on a
+#: retry) — NOT ``always``, which reuses even the first entry. Callers compare
+#: policies, never config spellings.
+_POLICIES = {"off": "off", "fix-only": "fix-only", "always": "always", "on": "fix-only"}
+#: Every accepted config spelling — derived from the policy table so the two
+#: cannot drift (a new alias is added in ONE place).
+MODES = tuple(_POLICIES)
 
 _SESSION_TABLES = ("session", "session_v2")
 _KEY_RE = re.compile(r"^[^/\\]+$")
@@ -78,11 +86,17 @@ def session_title(role: str, stage: str, todo_id: str, attempt: int) -> str:
 
 
 def mode(config: dict) -> str:
+    """The canonical reuse policy: ``off`` / ``fix-only`` / ``always``.
+
+    ``on`` is a live projects' spelling of "enabled"; it resolves to
+    ``fix-only`` HERE, at the config boundary. ``always`` stays separate and
+    opt-in: it reuses even the first entry, which ``on`` must never do
+    silently. Callers compare policies, never config spellings.
+    """
     value = config_mod.get(config, "engine.reuse_session", "off")
     if not isinstance(value, str):
         return "off"
-    value = value.strip().lower()
-    return value if value in MODES else "off"
+    return _POLICIES.get(value.strip().lower(), "off")
 
 
 def decision_line(decision: Decision) -> str:
@@ -126,7 +140,12 @@ def _age_minutes(ts: object) -> float | None:
 def read_session_file(
     project_dir: Path, todo_id: str, stage: str
 ) -> dict | None:
-    """Parsed pair file, or None when absent/broken (K6: exactly six keys)."""
+    """Parsed pair file, or None when absent/broken.
+
+    K6: six keys (``session_id``, ``title``, ``agent``, ``model``,
+    ``attempt``, ``ts``). A retired pair (TODO-0306) keeps its id and adds
+    ``status: retired``; the pair is overwritten by the fresh capture.
+    """
     try:
         path = session_file(project_dir, todo_id, stage)
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -137,6 +156,16 @@ def read_session_file(
     if not isinstance(data.get("session_id"), str) or not data["session_id"]:
         return None
     return data
+
+
+def _write_payload(
+    project_dir: Path, todo_id: str, stage: str, payload: dict
+) -> None:
+    """The ONE writer of ``SESSION-<todo>-<stage>.json`` (managed path)."""
+    managed_fs.managed_write_under_agentic(
+        session_file(project_dir, todo_id, stage),
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
 
 
 def _write_session_file(
@@ -159,10 +188,32 @@ def _write_session_file(
         "attempt": attempt,
         "ts": ts,
     }
-    managed_fs.managed_write_under_agentic(
-        session_file(project_dir, todo_id, stage),
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-    )
+    _write_payload(project_dir, todo_id, stage, payload)
+
+
+def _mark_retired(
+    project_dir: Path,
+    todo_id: str,
+    stage: str,
+    data: dict,
+    logs_dir: Path | None = None,
+) -> None:
+    """Mark a pair file whose session is gone (TODO-0306).
+
+    The next entry starts a FRESH opencode session; the file keeps the old
+    id and gains ``status: retired`` so the stage log and the context
+    directory both name the reason instead of silently reusing a dead
+    session (the incident: a closed opencode session made the continuation
+    hang without a trace). Best effort: a failed write is a log line, the
+    stage never falls.
+    """
+    payload = dict(data)
+    payload["status"] = "retired"
+    try:
+        _write_payload(project_dir, todo_id, stage, payload)
+    except (OSError, managed_fs.ManagedPathError) as exc:
+        if logs_dir is not None:
+            _log(logs_dir, f"session retire skipped: write failed: {exc}")
 
 
 def _persist_row(
@@ -301,7 +352,11 @@ def decide(
             _log(logs_dir, f"session lookup skipped: {e}")
         return Decision(False, "", "session not found")
     if row is None:
-        return Decision(False, "", "session not found")
+        # TODO-0306: the base is readable and the id is gone — the session
+        # died with the opencode restart. Retire the pair file and start
+        # fresh instead of resuming an id opencode no longer knows.
+        _mark_retired(project_dir, todo_id, stage, data, logs_dir=logs_dir)
+        return Decision(False, "", "session dead (opencode restart)")
 
     if current == "fix-only" and attempt <= 1:
         return Decision(False, "", "attempt 1")

@@ -152,6 +152,11 @@ class BriefResult:
     # stale. The State section names the resume.
     engine_dead: str = ""
     engine_dead_todo: str = ""
+    # TODO-0306: the explicit stale-stage line ("" when the stage moves) —
+    # "STALE stage … — dead: …". A dead engine carries the same fact in
+    # display form; the card shows this line INSTEAD of the engine_dead
+    # one (one thought, one place).
+    stale_stage: str = ""
     # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
     # ("" when none) — the card names the owner's decision, not a resume.
     budget_exhausted_todo: str = ""
@@ -493,7 +498,14 @@ def _state_lines(r: BriefResult) -> list[str]:
         lines.append(f"- stall: {r.stall}")
     if r.zombie_state:
         lines.append(f"- zombie-state: {r.zombie_state}")
-    if r.engine_dead:
+    # TODO-0306: the explicit STALE line outranks the engine_dead wording
+    # when both describe the same frozen stage — the resume advice still
+    # comes from next_action (engine_dead). The opt-in stall line already
+    # names a quiet live stage; the STALE line is not repeated next to it
+    # (one thought, one place — and the card word budget).
+    if r.stale_stage and not r.stall:
+        lines.append(f"- {r.stale_stage}")
+    elif r.engine_dead:
         lines.append(f"- engine_dead: {r.engine_dead}")
     if r.budget_exhausted_todo:
         lines.append(f"- budget: exhausted ({r.budget_exhausted_todo})")
@@ -680,7 +692,15 @@ def next_action_from_status(s: Any) -> str:
         return _status_get(s, name, default)
 
     expected = _get("expected_action")
-    if expected:
+    # TODO-0306 (architect review, round 3): ``expected_action`` is built
+    # from ``pipeline_running`` alone, so on a real project it says "worker
+    # stage running — auto-transition … Do NOT intervene" next to the
+    # STALE line — the silent wait of incident 1 in words. While the stage
+    # is frozen the stale advice wins (the engine-death advice below still
+    # outranks it: that pid is gone). A stale line WITHOUT a running
+    # pipeline keeps the structural answer (``awf_start`` …): nothing is
+    # waiting there, so the frozen stage is only a leftover.
+    if expected and not (_get("stale_stage") and _get("pipeline_running")):
         return str(expected)
     if _get("salvage_needed"):
         stage = _get("salvage_stage") or "?"
@@ -713,6 +733,14 @@ def next_action_from_status(s: Any) -> str:
             return closed_run_hint()
         return engine_dead_hint(
             str(_get("engine_dead")), str(_get("engine_dead_todo") or "")
+        )
+    if _get("stale_stage"):
+        # TODO-0306 (PA-0306-3): a live pid with a stale heartbeat is not
+        # "go idle" — the same frozen stage the card paints STALE. The
+        # engine-death advice above outranks it (its pid is gone). The line
+        # itself already sits in the card; here only the next step.
+        return (
+            "Stale stage — read the log; `awf_kill` then `awf_continue` if gone."
         )
     if _get("pipeline_running"):
         stage = _get("current_stage_name") or "?"
@@ -834,6 +862,7 @@ def build_brief(
     zombie_state = ""
     engine_dead = ""
     engine_dead_todo = ""
+    stale_stage = ""
     budget_exhausted_todo = ""
     if status is not None:
         active_todos = [dict(t) for t in status.active_todos]
@@ -867,6 +896,12 @@ def build_brief(
             status.get("engine_dead_todo") or ""
             if isinstance(status, dict)
             else getattr(status, "engine_dead_todo", "") or ""
+        )
+        # TODO-0306: the explicit stale-stage line from the same read.
+        stale_stage = str(
+            status.get("stale_stage") or ""
+            if isinstance(status, dict)
+            else getattr(status, "stale_stage", "") or ""
         )
         # TODO-0262 REVIEW (CTX1): the exhausted-unit fact from the same read.
         budget_exhausted_todo = str(
@@ -960,6 +995,7 @@ def build_brief(
         zombie_state=zombie_state,
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
+        stale_stage=stale_stage,
         budget_exhausted_todo=budget_exhausted_todo,
     )
     result.text = render_brief(result)

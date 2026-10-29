@@ -53,6 +53,11 @@ HEARTBEAT_NAME = "engine.heartbeat"
 DEFAULT_HEARTBEAT_SECONDS = 30.0
 DEFAULT_STALE_SECONDS = 120.0
 MAX_HEARTBEAT_SECONDS = 30.0
+#: TODO-0306: the stage is STALE when ``current.yaml``'s ``updated_at`` is
+#: older than this many minutes (or the engine pid is dead). Unlike the
+#: opt-in ``run.stall_minutes`` diagnostic this one is ON by default: the
+#: incident was a frozen stage that every surface kept painting green.
+DEFAULT_STALE_STAGE_MINUTES = 15
 #: How many ``ENGINE-EXIT-*.md`` records the context directory keeps; an
 #: older crash-loop cannot push the fresh evidence out of the listing.
 ENGINE_EXIT_RETENTION = 20
@@ -539,6 +544,171 @@ class EngineDead:
         return f"stage={self.stage or '?'}, todo={self.todo_id or '?'}, {self.reason}"
 
 
+@dataclass(frozen=True)
+class StaleStage:
+    """The stage on disk is not progressing: the engine pid is dead, or
+    ``updated_at`` has not moved for longer than the threshold and no live
+    heartbeat proves the engine runs.
+
+    Separate from :class:`EngineDead` on purpose: the death fact feeds the
+    resume advice (``engine_dead_hint``), while this one is the explicit
+    "not green" line the card, status and dashboard render. A dead engine
+    produces both — the surfaces show the STALE line, the advice still
+    comes from the single death owner.
+
+    The duration and the threshold live inside :attr:`reason`: the line is
+    the only consumer, and a placeholder zero on the engine-death path
+    would be a fabricated fact (TODO-0306 architect review).
+    """
+
+    stage: str
+    todo_id: str
+    reason: str
+
+    @property
+    def line(self) -> str:
+        todo = f" ({self.todo_id})" if self.todo_id else ""
+        return f"STALE stage {self.stage or '?'}{todo} — dead: {self.reason}"
+
+
+def stale_stage_minutes(config: dict | None = None) -> int:
+    """``automation.stale_stage_minutes``, default 15.
+
+    A broken or non-positive value degrades to the default: the detector
+    must stay ON (the incident's whole point was a silent freeze), and a
+    typo must not disable it.
+    """
+    value = cfg_mod.get(config or {}, "automation.stale_stage_minutes")
+    if isinstance(value, bool):
+        return DEFAULT_STALE_STAGE_MINUTES
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_STALE_STAGE_MINUTES
+    return minutes if minutes > 0 else DEFAULT_STALE_STAGE_MINUTES
+
+
+def _updated_at_age_minutes(
+    state: dict, *, now: float | None = None
+) -> float | None:
+    raw = state.get("updated_at")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    current = time.time() if now is None else now
+    return max(current - parsed.timestamp(), 0.0) / 60.0
+
+
+def _engine_heartbeats(
+    project_dir: Path, pid: int, config: dict | None, *, now: float | None = None
+) -> bool:
+    """True when the heartbeat belongs to ``pid`` and is still fresh.
+
+    Same evidence :func:`detect_engine_dead` calls "alive" (one reader:
+    :func:`_heartbeat_for_pid`): a foreign or unreadable heartbeat proves
+    nothing (pre-0241 engines wrote none), so it reads as NOT alive and the
+    ``updated_at`` age decides.
+    """
+    present, age = _heartbeat_for_pid(project_dir, pid, now=now)
+    if not present or age is None:
+        return False
+    return age <= heartbeat_stale_seconds(config)
+
+
+def detect_stale_stage(
+    project_dir: Path,
+    state: dict | None,
+    config: dict | None = None,
+    *,
+    now: float | None = None,
+    live_pid: int | None = None,
+) -> StaleStage | None:
+    """The active stage is STALE: dead engine pid, or a quiet ``updated_at``.
+
+    A live heartbeat of the SAME pid is proof the engine runs, so the age
+    rule is skipped: ``updated_at`` is written on stage start and on
+    signals only, so every stage longer than the threshold would otherwise
+    be painted dead (TODO-0306 architect review). The opt-in stall line
+    stays the diagnostic for a live but silent worker.
+
+    ``live_pid`` is the resolver's answer when the caller already asked it
+    (``check_pipeline_running``). A state naming a DIFFERENT pid is a
+    leftover from the previous run — the launch window, where the engine is
+    starting, not frozen — so it is not reported. The same pid keeps the
+    stale rule in force: a live process with a stale heartbeat is exactly
+    the frozen engine the incident hit (PA-0306-3).
+
+    Read-only and degradation-safe (a broken state file yields None, never
+    a traceback). A marker-less leftover (``phase: done``) is not a running
+    stage and is never reported. A pending salvage or checkpoint is a
+    DELIBERATE stop with its own badge — a quiet ``updated_at`` there is
+    not a freeze. Both guards live here, not in each surface, so the card,
+    status and dashboard cannot drift apart (same rule as
+    :func:`status_engine_dead`).
+    """
+    if not isinstance(state, dict) or not state:
+        return None
+    if state.get("phase") == "done":
+        return None
+    if state.get("salvage_needed") or state.get("checkpoint_pending"):
+        return None
+    stage = str(state.get("stage_name") or "").strip()
+    todo_id = str(state.get("todo_id") or "").strip()
+    if not (stage or todo_id or state.get("stage_kind")):
+        return None
+
+    cfg = config if config is not None else cfg_mod.load(project_dir)
+    threshold = stale_stage_minutes(cfg)
+
+    try:
+        state_pid = int(state.get("pipeline_pid") or 0)
+    except (TypeError, ValueError):
+        state_pid = 0
+    if live_pid is not None and live_pid > 1:
+        if state_pid and state_pid != live_pid:
+            # The live engine is a DIFFERENT process: this state belongs to
+            # the previous run (launch window). The resolver owns the
+            # running fact; a leftover state is not a freeze.
+            return None
+        pid = live_pid
+    else:
+        pid = state_pid
+    if pid > 1:
+        from .api._liveness import probe_alive
+
+        if not probe_alive(pid):
+            return StaleStage(
+                stage=stage,
+                todo_id=todo_id,
+                reason=f"pid {pid} dead",
+            )
+        if _engine_heartbeats(project_dir, pid, cfg, now=now):
+            return None
+
+    age = _updated_at_age_minutes(state, now=now)
+    if age is None or age < threshold:
+        return None
+    return StaleStage(
+        stage=stage,
+        todo_id=todo_id,
+        reason=f"no state event for {int(age)} min (limit {threshold} min)",
+    )
+
+
+def stale_line_from_engine_dead(dead: EngineDead) -> StaleStage:
+    """The STALE view of a confirmed engine death (same fact, display form)."""
+    return StaleStage(
+        stage=dead.stage,
+        todo_id=dead.todo_id,
+        reason=dead.reason,
+    )
+
+
 def engine_dead_hint(line: str, todo_id: str = "") -> str:
     """The one wording of the resume hint (status, brief, run status).
 
@@ -596,15 +766,12 @@ def detect_engine_dead(
     if not probe_alive(pid):
         return EngineDead(stage=stage, todo_id=todo_id, reason=f"pid {pid} dead")
 
-    heartbeat = read_heartbeat(project_dir)
-    if not heartbeat:
+    present, age = _heartbeat_for_pid(project_dir, pid, now=now)
+    if not present:
+        # Missing or foreign heartbeat (another launch, a test seam, a
+        # pre-0241 engine): its age says nothing about THIS pid. No death
+        # verdict from absent evidence.
         return None
-    if _heartbeat_pid(heartbeat) != pid:
-        # The heartbeat belongs to another engine run (a previous launch, a
-        # test seam): its age says nothing about THIS pid. No death verdict
-        # from foreign evidence — same answer as "no heartbeat" (pre-0241).
-        return None
-    age = _heartbeat_age_seconds(heartbeat, now=now)
     if age is None:
         return EngineDead(
             stage=stage, todo_id=todo_id, reason="heartbeat unreadable"
@@ -645,6 +812,25 @@ def status_engine_dead(
     return detect_engine_dead(project_dir, state, config)
 
 
+def _heartbeat_for_pid(
+    project_dir: Path, pid: int, *, now: float | None = None
+) -> tuple[bool, float | None]:
+    """``(present, age_seconds)`` for a heartbeat owned by ``pid``.
+
+    The ONE evidence reader shared by the death verdict and the stale
+    detector: ``present`` is False for a missing or foreign heartbeat
+    (another launch, a pre-0241 engine) — neither life nor death may be
+    derived from it. ``age`` is None when the heartbeat is present but its
+    stamp is unreadable: the caller decides whether that is death
+    (:func:`detect_engine_dead`) or merely no proof of life
+    (:func:`detect_stale_stage`).
+    """
+    heartbeat = read_heartbeat(project_dir)
+    if not heartbeat or _heartbeat_pid(heartbeat) != pid:
+        return False, None
+    return True, _heartbeat_age_seconds(heartbeat, now=now)
+
+
 def _heartbeat_pid(heartbeat: dict) -> int | None:
     try:
         pid = int(heartbeat.get("pid"))
@@ -674,8 +860,10 @@ def _heartbeat_age_seconds(heartbeat: dict, *, now: float | None = None) -> floa
 __all__ = [
     "EngineDead",
     "EngineLiveness",
+    "StaleStage",
     "closed_run_hint",
     "detect_engine_dead",
+    "detect_stale_stage",
     "disarm_parent_death_signal",
     "engine_dead_hint",
     "exit_file_path",
@@ -684,6 +872,8 @@ __all__ = [
     "heartbeat_stale_seconds",
     "install_parent_death_signal",
     "read_heartbeat",
+    "stale_line_from_engine_dead",
+    "stale_stage_minutes",
     "status_engine_dead",
     "write_engine_exit",
     "write_heartbeat",

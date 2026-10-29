@@ -430,11 +430,16 @@ def test_mismatches_and_age_give_fresh(tmp_path, monkeypatch):
         attempt=2, config=_config("fix-only"),
     ).reason == "no session file"
 
+    # TODO-0306: the base is readable but the id is gone — a dead session.
+    # The pair file is retired and the entry starts fresh.
     _write_pair(proj, session_id="missing", attempt=1)
     assert session_store.decide(
         proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
         attempt=2, config=_config("fix-only"),
-    ).reason == "session not found"
+    ).reason == "session dead (opencode restart)"
+    retired = session_store.read_session_file(proj, TODO, STAGE)
+    assert retired["session_id"] == "missing"
+    assert retired["status"] == "retired"
 
     _write_pair(proj, session_id="s1", attempt=1)
     control = session_store.decide(
@@ -544,3 +549,113 @@ def test_missing_ts_gives_fresh(tmp_path, monkeypatch):
     )
     assert decision.reused is False
     assert decision.reason == "session too old"
+
+
+# TODO-0306 (PA-0306-4): ``on`` is the spec's "enabled" policy — a fresh
+# first entry and the same session on a retry — NOT ``always``.
+def test_on_mode_is_the_spec_policy_not_always(tmp_path, monkeypatch):
+    proj = _project(tmp_path)
+    db = _make_db(tmp_path / "opencode.db")
+    _insert(db, "s1", f"awf-{ROLE}-{STAGE}-{TODO}-a1", int(time.time() * 1000))
+    _write_pair(proj, session_id="s1", attempt=1)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+
+    # ``on`` is a config alias, not a policy — mode() resolves it at the
+    # boundary, and the policy is ``fix-only``, so the first entry is fresh
+    # and the retry continues the pair. ``always`` stays separate.
+    assert "on" in session_store.MODES
+    assert session_store.mode(_config("on")) == "fix-only"
+    assert session_store.mode(_config("always")) == "always"
+    first = session_store.decide(
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        attempt=1, config=_config("on"),
+    )
+    assert first.reused is False and first.reason == "attempt 1"
+    retry = session_store.decide(
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        attempt=2, config=_config("on"),
+    )
+    assert retry.reused is True and retry.session_id == "s1"
+
+
+def test_always_mode_reuses_the_first_entry(tmp_path, monkeypatch):
+    """PA-0306-4: ``always`` is the one policy that continues even when the
+    pair's attempt counter is 1 — kept apart from ``on``/``fix-only``."""
+    proj = _project(tmp_path)
+    db = _make_db(tmp_path / "opencode.db")
+    _insert(db, "s1", f"awf-{ROLE}-{STAGE}-{TODO}-a1", int(time.time() * 1000))
+    _write_pair(proj, session_id="s1", attempt=1)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+
+    decision = session_store.decide(
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        attempt=1, config=_config("always"),
+    )
+    assert decision.reused is True and decision.session_id == "s1"
+
+
+# TODO-0306 (3): a dead session never hangs the stage — fresh + reason.
+def test_dead_session_spawns_fresh_and_logs_reason(tmp_path, monkeypatch):
+    """The pair names an id the base no longer has (opencode restart): the
+    entry starts a FRESH session (no ``--session``), the stage log carries
+    the reason, and the pair file is marked ``status: retired``."""
+    proj = _project(tmp_path)
+    db = _make_db(tmp_path / "opencode.db")
+    _write_pair(proj, session_id="gone", attempt=1)
+    seen = _runner(monkeypatch, db)
+
+    _run(proj, monkeypatch, db, _config("fix-only"))
+
+    assert "--session" not in seen[0], seen[0]
+    assert "session dead (opencode restart)" in _log_text(proj)
+    # The fake spawn created a new row, so the pair file is fresh again —
+    # the retirement was written before the spawn (and overwritten by the
+    # capture); the log is the durable evidence of the reason.
+    pair = session_store.read_session_file(proj, TODO, STAGE)
+    assert pair is not None and pair["session_id"] != "gone"
+
+
+# TODO-0306 (QA): the retire write is best effort — a broken disk logs, the
+# stage still starts fresh instead of falling.
+def test_retire_write_failure_never_falls_the_stage(tmp_path, monkeypatch):
+    proj = _project(tmp_path)
+    db = _make_db(tmp_path / "opencode.db")
+    _write_pair(proj, session_id="gone", attempt=1)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(session_store, "_write_payload", _boom)
+
+    decision = session_store.decide(
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        attempt=1, config=_config("on"),
+        logs_dir=proj / ".agentic" / "logs",
+    )
+
+    assert decision.reused is False
+    assert decision.reason == "session dead (opencode restart)"
+    assert "session retire skipped" in _log_text(proj)
+
+
+# TODO-0306 (QA): нечитаемая база — не смерть сессии. Retire-маркер ставится
+# только когда база прочитана и id в ней реально нет; иначе сбой диска/схемы
+# пометил бы живую сессию мёртвой и потерял бы её для следующего витка.
+def test_unreadable_base_does_not_retire_the_pair(tmp_path, monkeypatch):
+    proj = _project(tmp_path)
+    _write_pair(proj, session_id="s1", attempt=1)
+    missing_db = tmp_path / "no-such-dir" / "opencode.db"
+    monkeypatch.setattr(session_store, "db_path", lambda: missing_db)
+
+    decision = session_store.decide(
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        attempt=2, config=_config("on"),
+        logs_dir=proj / ".agentic" / "logs",
+    )
+
+    assert decision.reused is False
+    assert decision.reason == "session not found", decision.reason
+    pair = session_store.read_session_file(proj, TODO, STAGE)
+    assert pair is not None and pair["session_id"] == "s1"
+    assert "status" not in pair, "сбой чтения базы не делает сессию мёртвой"

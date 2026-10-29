@@ -38,6 +38,15 @@ def run(args: Any) -> int:
             print("---")
         print()
 
+    # TODO-0306: a frozen or dead stage is never silent — the line prints
+    # even when the resolver does not call the pipeline "running" (the
+    # incident: a dead QA next to a green status). ``stale_stage`` carries
+    # both forms (a quiet stage and the engine-death wording); get_status
+    # fills it whenever ``engine_dead`` is set, so no separate fallback.
+    if result.stale_stage:
+        print(result.stale_stage)
+        print()
+
     for entry in result.active_todos:
         todo_id = entry["todo_id"]
         print(f"Active: {todo_id}")
