@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.2.0] - 2026-10-29
 
-### Added
+### Added.
 
 - ops reliability (R1–R6): per-stage timeout from config, full-suite warning before spawn, hard timeout -> BLOCKED with log tail, xfail/skip gate, `awf doctor` (versions, code identity, config-key registry, dead keys, plugin drift, no secrets), start handshake (rc/version/code identity).
 - context efficiency IMP5: fix rounds resume the same implementer/QA opencode session (`engine.reuse_session`, `on`/`always`/`fix-only`/`off`), live capture diagnostics.

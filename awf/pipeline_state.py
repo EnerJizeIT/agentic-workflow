@@ -104,7 +104,7 @@ def bump_stage_attempt(
 
     def _bump(current: dict[str, Any] | None) -> dict[str, Any]:
         merged = dict(current or {})
-        attempts = merged.get("stage_attempts")
+        attempts = merged.get("stage_attempts") or {}
         if not isinstance(attempts, dict):
             attempts = {}
         try:
