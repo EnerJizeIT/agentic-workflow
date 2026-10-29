@@ -61,7 +61,7 @@ def env(monkeypatch, tmp_path):
     return opencode
 
 
-def _versions(monkeypatch, *, process="2.1.0", plugin="2.1.0", metadata="2.1.0"):
+def _versions(monkeypatch, *, process="2.2.0", plugin="2.2.0", metadata="2.2.0"):
     monkeypatch.setattr("awf.versions.process_version", lambda: process)
     monkeypatch.setattr("awf.versions.plugin_version", lambda: plugin)
     monkeypatch.setattr("awf.versions.install_metadata", lambda name: metadata)
@@ -72,7 +72,7 @@ def _lines(report) -> str:
 
 
 def test_newer_pinned_runner_does_not_warn_about_the_plugin(project, env, monkeypatch):
-    """AUD-0296-3: runner 2.5.0, process and plugin 2.1.0 → only the runner WARNs."""
+    """AUD-0296-3: runner 2.5.0, process and plugin 2.2.0 → only the runner WARNs."""
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
     (runner / "awf" / "__init__.py").write_text('__version__ = "2.5.0"\n')
@@ -80,7 +80,7 @@ def test_newer_pinned_runner_does_not_warn_about_the_plugin(project, env, monkey
     config["automation"] = {"runner_dir": str(runner)}
     _write_config(project, config)
     _versions(monkeypatch)
-    monkeypatch.setattr("awf.versions.plugin_requirement", lambda: "2.1.0")
+    monkeypatch.setattr("awf.versions.plugin_requirement", lambda: "2.2.0")
     monkeypatch.setattr("awf.versions.repo_commit", lambda path: "run5000")
 
     report = run_doctor(project)
@@ -91,7 +91,7 @@ def test_newer_pinned_runner_does_not_warn_about_the_plugin(project, env, monkey
     assert not any(
         line.startswith("WARN  plugin:") for line in report.lines
     ), _lines(report)
-    assert any("plugin: 2.1.0" in line for line in report.lines), _lines(report)
+    assert any("plugin: 2.2.0" in line for line in report.lines), _lines(report)
 
 
 def test_malformed_config_is_a_fail_not_a_healthy_empty_config(
@@ -174,12 +174,12 @@ def test_metadata_follows_the_imported_module_not_the_process_cwd(tmp_path):
 
 def test_plugin_drift_uses_the_declared_awf_floor():
     """AUD-0296-3: the plugin's ``awf>=`` floor must be met by the process."""
-    assert versions.awf_satisfies("2.1.0", "2.1.0") is True
-    assert versions.awf_satisfies("2.0.9", "2.1.0") is False
+    assert versions.awf_satisfies("2.2.0", "2.2.0") is True
+    assert versions.awf_satisfies("2.0.9", "2.2.0") is False
     assert versions.awf_satisfies("2.5.0", "") is True
-    assert versions.plugin_drift_kind("2.1.0", "2.1.0", "2.1.0") == ""
-    assert versions.plugin_drift_kind("2.1.0", "2.1.0", "2.2.0") != ""
-    assert versions.plugin_drift_kind("2.1.0", "2.0.0", "2.1.0") != ""
+    assert versions.plugin_drift_kind("2.2.0", "2.2.0", "2.2.0") == ""
+    assert versions.plugin_drift_kind("2.2.0", "2.2.0", "2.2.0") != ""
+    assert versions.plugin_drift_kind("2.2.0", "2.0.0", "2.2.0") != ""
 
 
 # ─── QA-0296: two rules the audit fixes left untested ───────────────────
@@ -189,7 +189,7 @@ def test_relative_runner_dir_resolves_against_the_project(project, env, monkeypa
     """R5: a relative ``runner_dir`` is the project's, as the launch resolves it."""
     (project / "runner" / "awf").mkdir(parents=True)
     (project / "runner" / "awf" / "__init__.py").write_text(
-        '__version__ = "2.1.0"\n', encoding="utf-8"
+        '__version__ = "2.2.0"\n', encoding="utf-8"
     )
     config = dict(CLEAN_CONFIG)
     config["automation"] = {"runner_dir": "runner"}
@@ -223,15 +223,15 @@ def test_config_root_must_be_a_mapping(project, env, monkeypatch):
 def test_unmet_floor_outranks_a_version_difference(project, env, monkeypatch):
     """AUD-0296 CTX4: an old awf is told to upgrade even when versions differ.
 
-    A plugin 2.0.0 that declares ``awf>=2.2.0`` against a running 2.1.0 used to
+    A plugin 2.0.0 that declares ``awf>=2.2.0`` against a running 2.2.0 used to
     read as a plain version pair, and the report advised "restart the opencode
     session" — a restart cannot install a newer awf.
     """
-    monkeypatch.setattr("awf.versions.process_version", lambda: "2.1.0")
+    monkeypatch.setattr("awf.versions.process_version", lambda: "2.2.0")
     monkeypatch.setattr("awf.versions.plugin_version", lambda: "2.0.0")
     monkeypatch.setattr(
         "awf.versions.install_metadata",
-        lambda name: "2.0.0" if name == "agent-workflow-ui" else "2.1.0",
+        lambda name: "2.0.0" if name == "agent-workflow-ui" else "2.2.0",
     )
     monkeypatch.setattr("awf.versions.plugin_requirement", lambda: "2.2.0")
 
@@ -246,13 +246,13 @@ def test_unmet_floor_outranks_a_version_difference(project, env, monkeypatch):
 def test_version_warning_unmet_floor_beats_a_version_difference():
     """CTX4: the handshake line names the floor instead of advising a restart."""
     line = versions.version_warning(
-        process="2.1.0", runner="2.1.0", plugin="2.0.0", plugin_required="2.2.0"
+        process="2.2.0", runner="2.2.0", plugin="2.0.0", plugin_required="2.2.0"
     )
     assert "requires awf>=2.2.0" in line, line
     assert "restart the opencode session" not in line, line
     assert line.endswith("— run awf doctor; upgrade awf"), line
     assert (
-        versions.plugin_drift_kind("2.1.0", "2.0.0", "2.2.0")
+        versions.plugin_drift_kind("2.2.0", "2.0.0", "2.2.0")
         == versions.DRIFT_FLOOR
     )
 

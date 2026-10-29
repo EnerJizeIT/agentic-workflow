@@ -62,7 +62,7 @@ def env(monkeypatch, tmp_path):
     return opencode
 
 
-def _versions(monkeypatch, *, process="2.1.0", plugin="2.1.0", metadata="2.1.0"):
+def _versions(monkeypatch, *, process="2.2.0", plugin="2.2.0", metadata="2.2.0"):
     monkeypatch.setattr("awf.versions.process_version", lambda: process)
     monkeypatch.setattr("awf.versions.plugin_version", lambda: plugin)
     monkeypatch.setattr("awf.versions.install_metadata", lambda name: metadata)
@@ -97,7 +97,7 @@ def test_runner_version_drift_is_a_warn(project, env, monkeypatch):
     runner_warns = [line for line in report.warnings if line.startswith("WARN  runner:")]
     assert len(runner_warns) == 1, _lines(report)
     assert "2.0.0" in runner_warns[0]
-    assert "2.1.0" in runner_warns[0]
+    assert "2.2.0" in runner_warns[0]
     assert str(runner) in runner_warns[0]
 
 
@@ -105,7 +105,7 @@ def test_same_version_different_code_is_a_warn(project, env, monkeypatch):
     """AUD-0293-2: equal versions do not identify code — commits do."""
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
-    (runner / "awf" / "__init__.py").write_text('__version__ = "2.1.0"\n')
+    (runner / "awf" / "__init__.py").write_text('__version__ = "2.2.0"\n')
     config = dict(CLEAN_CONFIG)
     config["automation"] = {"runner_dir": str(runner)}
     _write_config(project, config)
@@ -169,11 +169,11 @@ def test_config_without_dead_keys_has_no_key_warn(project, env, monkeypatch):
 
 def test_plugin_and_metadata_warnings_are_separate(project, env, monkeypatch):
     """AC23: plugin vs awf is one WARN, metadata vs module is another."""
-    monkeypatch.setattr("awf.versions.process_version", lambda: "2.1.0")
+    monkeypatch.setattr("awf.versions.process_version", lambda: "2.2.0")
     monkeypatch.setattr("awf.versions.plugin_version", lambda: "2.0.0")
     monkeypatch.setattr(
         "awf.versions.install_metadata",
-        lambda name: "1.6.0" if name == "agent-workflow-ui" else "2.1.0",
+        lambda name: "1.6.0" if name == "agent-workflow-ui" else "2.2.0",
     )
 
     report = run_doctor(project)
@@ -185,7 +185,7 @@ def test_plugin_and_metadata_warnings_are_separate(project, env, monkeypatch):
         if line.startswith("WARN  agent-workflow-ui metadata:")
     ]
     assert len(plugin_warn) == 1, _lines(report)
-    assert "2.0.0" in plugin_warn[0] and "2.1.0" in plugin_warn[0]
+    assert "2.0.0" in plugin_warn[0] and "2.2.0" in plugin_warn[0]
     assert len(meta_warn) == 1, _lines(report)
     assert "1.6.0" in meta_warn[0] and "2.0.0" in meta_warn[0]
     assert "stale, reinstall the package" in meta_warn[0]
@@ -210,9 +210,9 @@ def test_plugin_floor_unmet_with_equal_versions_names_the_floor(
 def test_version_warning_floor_unmet_does_not_claim_equal_versions_differ():
     """K5: the handshake line names the floor instead of "plugin != process"."""
     line = versions.version_warning(
-        process="2.1.0", runner="2.1.0", plugin="2.1.0", plugin_required="2.2.0"
+        process="2.2.0", runner="2.2.0", plugin="2.2.0", plugin_required="2.2.0"
     )
-    assert "plugin 2.1.0 requires awf>=2.2.0 (process 2.1.0)" in line, line
+    assert "plugin 2.2.0 requires awf>=2.2.0 (process 2.2.0)" in line, line
     assert "!=" not in line, line
     assert line.endswith("— run awf doctor; upgrade awf"), line
 
@@ -260,20 +260,20 @@ def test_cmd_doctor_prints_lines_and_returns_rc(project, env, monkeypatch, capsy
 def test_version_warning_is_empty_when_versions_agree():
     """K5: matching versions produce no handshake warning."""
     assert versions.version_warning(
-        process="2.1.0", runner="2.1.0", plugin="2.1.0"
+        process="2.2.0", runner="2.2.0", plugin="2.2.0"
     ) == ""
 
 
 def test_version_warning_lists_only_drifted_participants():
     """K5: the runner is named with its pinned path, the process always."""
     line = versions.version_warning(
-        process="2.1.0",
+        process="2.2.0",
         runner="2.0.0",
-        plugin="2.1.0",
+        plugin="2.2.0",
         pinned_dir="/opt/awf",
     )
     assert line.startswith("version drift: runner 2.0.0 (pinned: /opt/awf), ")
-    assert "process 2.1.0" in line
+    assert "process 2.2.0" in line
     assert "plugin" not in line
     assert line.endswith("— run awf doctor; restart the opencode session")
 
@@ -281,25 +281,25 @@ def test_version_warning_lists_only_drifted_participants():
 def test_version_warning_does_not_blame_the_plugin_for_a_newer_runner():
     """AUD-0296-3: the plugin follows the process, not the pinned runner."""
     line = versions.version_warning(
-        process="2.1.0", runner="2.5.0", plugin="2.1.0"
+        process="2.2.0", runner="2.5.0", plugin="2.2.0"
     )
     assert "runner 2.5.0" in line
-    assert "process 2.1.0" in line
+    assert "process 2.2.0" in line
     assert "plugin" not in line
-    assert versions.plugin_drift_kind("2.1.0", "2.1.0") == ""
+    assert versions.plugin_drift_kind("2.2.0", "2.2.0") == ""
 
 
 def test_version_warning_names_a_drifting_plugin():
     """K5: a plugin that lags the runner is named; unknown forms no pair."""
     line = versions.version_warning(
-        process="2.1.0", runner="2.1.0", plugin="2.0.0"
+        process="2.2.0", runner="2.2.0", plugin="2.0.0"
     )
     assert "plugin 2.0.0" in line
     assert "runner" not in line
     assert versions.version_warning(
-        process="2.1.0", runner="2.1.0", plugin=versions.UNKNOWN
+        process="2.2.0", runner="2.2.0", plugin=versions.UNKNOWN
     ) == ""
-    assert versions.plugin_drift_kind("2.1.0", versions.UNKNOWN) == ""
+    assert versions.plugin_drift_kind("2.2.0", versions.UNKNOWN) == ""
 
 
 def test_repo_commit_is_empty_outside_a_repository(tmp_path, monkeypatch):
@@ -307,17 +307,17 @@ def test_repo_commit_is_empty_outside_a_repository(tmp_path, monkeypatch):
     monkeypatch.delenv("GIT_DIR", raising=False)
     monkeypatch.delenv("GIT_WORK_TREE", raising=False)
     assert versions.repo_commit(tmp_path) == ""
-    assert versions.runner_drift("2.1.0", "2.0.0") is True
-    assert versions.runner_drift("2.1.0", "2.1.0") is False
+    assert versions.runner_drift("2.2.0", "2.0.0") is True
+    assert versions.runner_drift("2.2.0", "2.2.0") is False
 
 
 @pytest.mark.parametrize(
     ("dirname", "expected"),
     [
-        ("awf-2.1.0.egg-info", "awf"),
+        ("awf-2.2.0.egg-info", "awf"),
         ("awf.egg-info", "awf"),
-        ("agent_workflow_ui-2.1.0.dist-info", "agent-workflow-ui"),
-        ("agent-workflow-ui-2.1.0.egg-info", "agent-workflow-ui"),
+        ("agent_workflow_ui-2.2.0.dist-info", "agent-workflow-ui"),
+        ("agent-workflow-ui-2.2.0.egg-info", "agent-workflow-ui"),
         ("agent-workflow-ui.egg-info", "agent-workflow-ui"),
     ],
 )
@@ -349,14 +349,14 @@ def test_unreadable_pinned_runner_does_not_blame_the_plugin(project, env, monkey
         line for line in report.lines if line.startswith("WARN  plugin:")
     ]
     assert not plugin_warns, _lines(report)
-    assert any("plugin: 2.1.0" in line for line in report.lines), _lines(report)
+    assert any("plugin: 2.2.0" in line for line in report.lines), _lines(report)
 
 
 def test_plugin_drift_ignores_an_unknown_runner():
     """AC27: ``unknown`` on the runner side forms no pair either."""
-    assert versions.plugin_drift_kind(versions.UNKNOWN, "2.1.0") == ""
+    assert versions.plugin_drift_kind(versions.UNKNOWN, "2.2.0") == ""
     line = versions.version_warning(
-        process="2.1.0", runner=versions.UNKNOWN, plugin="2.1.0"
+        process="2.2.0", runner=versions.UNKNOWN, plugin="2.2.0"
     )
     assert "runner unknown" in line
     assert "plugin" not in line
