@@ -24,7 +24,8 @@ did not run and needs no write opt-out. A missing or ``null`` key means
 The frozen norm (IMP5, R5) is the checklist block hash plus a sha256 over
 the contract keys that decide what the unit is checked against —
 ``verify``, ``gates``, ``prove_red``, its mechanism keys
-``prove_red_kind``/``prove_red_note``/``prove_red_cmd`` and the allowances
+``prove_red_kind``/``prove_red_note``/``prove_red_cmd``, the pin list
+``prove_red_pin``, the flake-probe switch ``flake`` and the allowances
 ``xfail_allow``/``skip_allow`` (:data:`FROZEN_CONTRACT_KEYS`). An allowance
 equal to its default 0 hashes like an absent key; ``files`` is a report,
 not a norm, and stays outside.
@@ -68,9 +69,13 @@ _ALLOWANCE_KEYS: tuple[str, ...] = ("xfail_allow", "skip_allow")
 #: hash must move. ``prove_red_kind``/``prove_red_cmd`` (AUD-0298-1) say HOW
 #: the red proof is produced and ``prove_red_note`` justifies the kind —
 #: switching either swaps the check just as much as editing ``prove_red``.
+#: ``flake`` switches the flake probe and ``prove_red_pin`` replaces the
+#: red proof with a pin-ok list (AUD-0299-1): both decide the check, so both
+#: move the hash.
 FROZEN_CONTRACT_KEYS: tuple[str, ...] = (
     "verify", "gates", "prove_red",
     "prove_red_kind", "prove_red_note", "prove_red_cmd",
+    "prove_red_pin", "flake",
 ) + _ALLOWANCE_KEYS
 
 #: The one wording AC12/AC13 require on a norm edit.
@@ -224,7 +229,8 @@ def contract_fingerprint(contract: dict | None) -> str:
 
     ``verify``, ``gates``, ``prove_red`` with the keys that set its mechanism
     (``prove_red_kind``/``prove_red_cmd``) and the justification that goes
-    with the kind (``prove_red_note``), plus the allowances
+    with the kind (``prove_red_note``), the pin list ``prove_red_pin``, the
+    flake-probe switch ``flake``, plus the allowances
     ``xfail_allow``/``skip_allow``, decide what the unit is checked against;
     ``files`` and the other keys are a report, not a norm, and are
     deliberately outside the hash (AC13). An allowance equal to its default

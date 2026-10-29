@@ -2063,3 +2063,44 @@ class TestFrozenProveRedDetails:
         blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
         assert blocked.kind == "blocked"
         assert "контракт TODO" in (blocked.log_line or "")
+
+
+# ─── AUD-0299-1: flake and prove_red_pin are part of the frozen norm ──────
+
+
+class TestFrozenFlakeAndPin:
+    """AUD-0299-1: both keys decide what the unit is checked against."""
+
+    BASE = {
+        "verify": ["python -m pytest -q"],
+        "gates": ["contracts"],
+        "prove_red": ["tests/x.py::test_y"],
+    }
+
+    def test_switching_flake_moves_the_hash(self):
+        on = closer_stage.contract_fingerprint(dict(self.BASE, flake="on"))
+        off = closer_stage.contract_fingerprint(dict(self.BASE, flake="off"))
+        assert on != off
+
+    def test_switching_the_pin_list_moves_the_hash(self):
+        one = closer_stage.contract_fingerprint(
+            dict(self.BASE, prove_red_pin=["tests/x.py::test_y"])
+        )
+        two = closer_stage.contract_fingerprint(
+            dict(self.BASE, prove_red_pin=["tests/x.py::test_z"])
+        )
+        assert one != two
+
+    def test_key_order_and_an_empty_contract_stay_stable(self):
+        ordered = dict(
+            self.BASE,
+            flake="off",
+            prove_red_pin=["tests/x.py::test_y"],
+        )
+        reordered = {k: ordered[k] for k in reversed(list(ordered))}
+        assert closer_stage.contract_fingerprint(ordered) == (
+            closer_stage.contract_fingerprint(reordered)
+        )
+        assert closer_stage.contract_fingerprint(None) == (
+            closer_stage.contract_fingerprint({})
+        )

@@ -597,54 +597,73 @@ def test_role_test_policy_mapping(role, policy):
     assert role_test_policy(role) == policy
 
 
+def _policy_bodies() -> dict[str, str]:
+    from awf.api.roles import _suite_canon_body
+
+    return {
+        policy: _suite_canon_body(policy)
+        for policy in ("qa", "implementer", "code-reading", "auditor", "targeted")
+    }
+
+
 @pytest.mark.parametrize(
-    ("role", "fragment"),
+    "role",
     [
-        ("agent-qa-review", "ОДИН канонический прогон"),
-        ("agent-implementer", "только целевые"),
-        ("agent-project-auditor", "артефакт QA"),
-        ("agent-architect-review", "НЕ запускаются"),
-        ("agent-refactoring-specialist", "только целевые проверки изменённой поверхности"),
+        "agent-qa-review",
+        "agent-implementer",
+        "agent-project-auditor",
+        "agent-architect-review",
+        "agent-refactoring-specialist",
     ],
 )
-def test_materialized_role_gets_its_own_test_policy(
-    tmp_git_repo, role, fragment
-):
-    """RB-1: материализованная роль несёт политику своего типа, маркер один."""
+def test_materialized_role_gets_its_own_test_policy(tmp_git_repo, role):
+    """RB-1: the materialized role carries its policy body exactly once.
+
+    The invariant is the pair (one marker, one managed body for this
+    role's policy), not a hand-picked phrase: a phrase drifts the moment
+    the managed text is edited.
+    """
+    from awf.api.roles import role_test_policy
+
     api.init_project(tmp_git_repo, project_name=f"M6Policy{role}")
     api.add_role(tmp_git_repo, role)
 
     content = _role(tmp_git_repo, role).read_text(encoding="utf-8")
     assert content.count(SUITE_MARKER) == 1, role
-    assert fragment in content, role
+    body = _policy_bodies()[role_test_policy(role)]
+    assert content.count(body) == 1, role
 
 
 @pytest.mark.parametrize(
-    ("role", "fragment"),
+    "role",
     [
-        ("agent-qa-review", "ОДИН канонический прогон"),
-        ("agent-implementer", "только целевые"),
-        ("agent-project-auditor", "артефакт QA"),
-        ("agent-architect-review", "НЕ запускаются"),
+        "agent-qa-review",
+        "agent-implementer",
+        "agent-project-auditor",
+        "agent-architect-review",
     ],
 )
 def test_shipped_role_template_names_the_single_test_policy_block(
-    tmp_git_repo, role, fragment
+    tmp_git_repo, role
 ):
-    """AUD289-2, one owner: the tracked template names the managed block
-    instead of restating the rule. A second copy drifts when the role is
+    """AUD289-2, one owner: the tracked template points at the managed
+    block and does not restate it. A second copy drifts when the role is
     renamed (the policy is chosen by name token) and on every refresh, so
-    the materialized file must carry the fragment exactly once."""
+    the invariant is checked against the policy bodies themselves."""
+    from awf.api.roles import role_test_policy
+
     text = (TEMPLATES / "roles" / f"{role}.md").read_text(encoding="utf-8")
     assert "Политика тестов" in text, role
     assert "правилу M1 ниже" not in text, role
-    assert fragment not in text, role
+    for policy, body in _policy_bodies().items():
+        assert body not in text, f"{role} restates the {policy} policy"
 
     api.init_project(tmp_git_repo, project_name=f"M6Template{role}")
     api.add_role(tmp_git_repo, role)
     content = _role(tmp_git_repo, role).read_text(encoding="utf-8")
-    assert content.count(fragment) == 1, role
     assert content.count(SUITE_MARKER) == 1, role
+    body = _policy_bodies()[role_test_policy(role)]
+    assert content.count(body) == 1, role
 
 
 def test_refresh_migrates_the_old_suite_block_in_place(tmp_git_repo):

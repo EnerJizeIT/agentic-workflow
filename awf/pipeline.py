@@ -76,8 +76,8 @@ class Stage:
     write_allow: tuple[str, ...] = ()
     write_check: str = "on"
     # IMP1 (R1): the ONE conditional-run mechanism. Empty means "always
-    # run" — no gate is consulted at the stage boundary. The only allowed
-    # value is ``checklist_green`` (the gate verdict decides the skip).
+    # run" — no gate is consulted at the stage boundary. Allowed values:
+    # ``SKIP_IF_ALLOWED`` (the named verdict/fact decides the skip).
     skip_if: str = ""
     # OPS IMP1 (R1): this stage's time cap in seconds. ``None`` = "not
     # set" — the resolver falls through to the project key and 3600.
