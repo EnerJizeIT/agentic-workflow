@@ -195,7 +195,7 @@ def test_plugin_floor_unmet_with_equal_versions_names_the_floor(
     project, env, monkeypatch
 ):
     """AUD-0296-3: equal versions + unmet ``awf>=`` floor is not "!=" advice."""
-    _versions(monkeypatch)
+    _versions(monkeypatch, process="2.1.0", plugin="2.1.0", metadata="2.1.0")
     monkeypatch.setattr("awf.versions.plugin_requirement", lambda: "2.2.0")
 
     report = run_doctor(project)
@@ -210,9 +210,9 @@ def test_plugin_floor_unmet_with_equal_versions_names_the_floor(
 def test_version_warning_floor_unmet_does_not_claim_equal_versions_differ():
     """K5: the handshake line names the floor instead of "plugin != process"."""
     line = versions.version_warning(
-        process="2.2.0", runner="2.2.0", plugin="2.2.0", plugin_required="2.2.0"
+        process="2.1.0", runner="2.1.0", plugin="2.1.0", plugin_required="2.2.0"
     )
-    assert "plugin 2.2.0 requires awf>=2.2.0 (process 2.2.0)" in line, line
+    assert "plugin 2.1.0 requires awf>=2.2.0 (process 2.1.0)" in line, line
     assert "!=" not in line, line
     assert line.endswith("— run awf doctor; upgrade awf"), line
 

@@ -72,7 +72,7 @@ def _lines(report) -> str:
 
 
 def test_newer_pinned_runner_does_not_warn_about_the_plugin(project, env, monkeypatch):
-    """AUD-0296-3: runner 2.5.0, process and plugin 2.1.0 → only the runner WARNs."""
+    """AUD-0296-3: runner 2.5.0, process and plugin 2.2.0 → only the runner WARNs."""
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
     (runner / "awf" / "__init__.py").write_text('__version__ = "2.5.0"\n')
@@ -91,7 +91,7 @@ def test_newer_pinned_runner_does_not_warn_about_the_plugin(project, env, monkey
     assert not any(
         line.startswith("WARN  plugin:") for line in report.lines
     ), _lines(report)
-    assert any("plugin: 2.1.0" in line for line in report.lines), _lines(report)
+    assert any("plugin: 2.2.0" in line for line in report.lines), _lines(report)
 
 
 def test_malformed_config_is_a_fail_not_a_healthy_empty_config(
@@ -189,7 +189,7 @@ def test_relative_runner_dir_resolves_against_the_project(project, env, monkeypa
     """R5: a relative ``runner_dir`` is the project's, as the launch resolves it."""
     (project / "runner" / "awf").mkdir(parents=True)
     (project / "runner" / "awf" / "__init__.py").write_text(
-        '__version__ = "2.1.0"\n', encoding="utf-8"
+        '__version__ = "2.2.0"\n', encoding="utf-8"
     )
     config = dict(CLEAN_CONFIG)
     config["automation"] = {"runner_dir": "runner"}
