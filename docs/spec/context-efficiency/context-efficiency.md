@@ -119,7 +119,7 @@ AC40 — спавн, убитый до захвата, сдвигает счёт
 
 MUST, в итерации. Источник: 0251 п.2–3; A4, A8.
 
-Поведение: `engine.reuse_session` — `off`, `fix-only`, `always` (алиас `on` = `fix-only`); по умолчанию `off`. `fix-only` продолжает только при повторе стадии (`attempt > 1` пары по R6), независимо от `## REVIEW-фикс`. `always` — без порога: живой файл пары с той же ролью и моделью, в том числе при потерянном счётчике; без файла равен `fix-only`. Разрешены `agent-implementer`, `agent-refactoring-specialist` и `agent-qa-review` (пара `checklist-close`/`checklist-check`); остальные, включая `agent-project-auditor` и супервизора, — свежие.
+Поведение: `engine.reuse_session` — `off`, `fix-only`, `always` (алиас `on` = `fix-only`); по умолчанию `off`. `fix-only` продолжает только при повторе стадии (`attempt > 1` пары по R6), независимо от `## REVIEW-фикс`. `always` — без порога: живой файл пары с той же ролью и моделью, в том числе при потерянном счётчике; без файла равен `fix-only`. Разрешены `agent-implementer`, `agent-refactoring-specialist` и `agent-qa-review`; остальные, включая `agent-project-auditor` и супервизора, — свежие.
 
 Продолжение требует совпадения роли, модели и возраста ≤ `engine.session_max_age_minutes` (240) от `ts`.
 
@@ -223,7 +223,7 @@ A4 — `off|fix-only|always` и роли из 0251 не сужены; `always` �
 A5 — `reuse: k/n` из журнала пар и файлов сессий.
 A6 — Q1, Q2 закрыты: id в `SESSION-<todo>-<stage>.json` (R6), пакет через `--file` (R2–R4).
 A7 — R1 при любом `context_pack` (0250 п.1); INV1 сравнивает флаги и вложения, не промпт (RR25).
-A8 — `always` ограничен парой, иначе контекст `implementer` попал бы в `implementer-close` (RR26).
+A8 — `always` ограничен парой `checklist-close`/`checklist-check`, иначе `implementer` попадёт в `checklist-close` (RR26).
 
 ## Открытые вопросы
 

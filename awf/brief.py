@@ -66,6 +66,11 @@ CONTINUE_LINE = (
     "setup-цепочка не нужна."
 )
 NEW_LINE = "New project (setup chain applies)."
+# TODO-0308 (PA-0308-1): a project without work history can still carry a
+# fact that needs the owner's hand (a frozen stage, a lingering zombie
+# state). The header must not advertise the setup chain in that case — the
+# NEXT line already points at the actionable advice.
+ACTION_LINE = "Owner's decision pending — see State and What's next."
 
 FEEDBACK_LINE = (
     "Friction with awf → `awf feedback --type bug|feature` (report to the "
@@ -157,6 +162,10 @@ class BriefResult:
     # display form; the card shows this line INSTEAD of the engine_dead
     # one (one thought, one place).
     stale_stage: str = ""
+    # TODO-0308 (PA-0308-1): the status carries a fact that needs the
+    # owner's hand (``_actionable_fact``) — the card renders the NEXT
+    # advice instead of the setup chain even without work history.
+    actionable_fact: bool = False
     # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
     # ("" when none) — the card names the owner's decision, not a resume.
     budget_exhausted_todo: str = ""
@@ -574,7 +583,7 @@ def render_brief(r: BriefResult) -> str:
     L.append("")
     L.append("## What's next")
     L.append("")
-    if r.is_live_project:
+    if r.is_live_project or r.actionable_fact:
         if r.next_action:
             L.append(f"- next: {r.next_action}")
         if r.phase_summary and r.run is None:
@@ -585,6 +594,9 @@ def render_brief(r: BriefResult) -> str:
             # (active or finished), the State section and the run-aware
             # next action already carry the working context — the static
             # phase prompt would only duplicate it and blow the budget.
+            # TODO-0308 (architect review): ``phase_summary`` is non-empty
+            # only for a continued project (``build_brief`` gates it), so
+            # the render does not re-check ``is_live_project`` — one owner.
             L.append("")
             L.append(_demote_headings(r.phase_summary))
             if r.phase_clipped:
@@ -654,16 +666,22 @@ def _status_get(s: Any, name: str, default: Any = None) -> Any:
     return getattr(s, name, default)
 
 
-# The facts that need the owner's hand, in the order they outrank the calm
-# states. ``next_action_from_status`` ranks exactly these before
-# pipeline_running/active/suggestion; ``_actionable_fact`` is the same list,
-# not a second copy — adding a fact here teaches both surfaces at once.
+# The facts that need the owner's hand. ``_actionable_fact`` gates the
+# setup chain on any of them. ``next_action_from_status`` ranks the same
+# facts in this order before pipeline_running/active/suggestion, but keeps
+# its own if-chain — this tuple feeds the gate only, not that order. One
+# list still owns the fact names, so a new fact is added once here.
+# TODO-0308: ``stale_stage`` and ``zombie_state`` belong here too — a frozen
+# or lingering stage without work history must get its advice, not the
+# setup chain.
 _ACTIONABLE_FIELDS = (
     "expected_action",
     "salvage_needed",
     "blocked_ids",
     "budget_exhausted_todo",
     "engine_dead",
+    "stale_stage",
+    "zombie_state",
 )
 
 
@@ -747,6 +765,11 @@ def next_action_from_status(s: Any) -> str:
         return (
             "Stale stage — read the log; `awf_kill` then `awf_continue` if gone."
         )
+    if _get("zombie_state"):
+        # TODO-0308 (PA-0308-2): a lingering stage state without a dead pid
+        # still needs the owner — resume the unit, never start the setup
+        # chain. The State line names the exact ``awf_continue(todo_id=…)``.
+        return "Zombie stage state — read State, then `awf_continue` to resume."
     if _get("pipeline_running"):
         stage = _get("current_stage_name") or "?"
         return (
@@ -838,7 +861,13 @@ def build_brief(
     # project whose FIRST unit crashed (no done/, no run record). The
     # field list lives with the advice owner (``_actionable_fact``); the
     # ORDER still belongs to next_action_from_status alone.
-    if status is not None and (continues or _actionable_fact(status)):
+    # TODO-0308 (PA-0308-1): the same answer drives every surface below
+    # (header line, setup hint, NEXT); ``setup_chain`` is the ONE owner of
+    # "the setup chain applies" — the render no longer re-derives it from
+    # ``is_live_project`` alone.
+    actionable = status is not None and _actionable_fact(status)
+    setup_chain = not continues and not actionable
+    if status is not None and (continues or actionable):
         # TODO-0241 D1: the advice ORDER has one owner. The card used to
         # take ``expected_action or suggestion`` first, which let a stale
         # suggestion outrank a BLOCKED closure (and the engine-dead hint).
@@ -849,11 +878,20 @@ def build_brief(
         next_action, clipped_action = _clip_by_words(raw_action, _NEXT_ACTION_MAX_WORDS)
         if clipped_action:
             next_action += " …"
-        try:
-            prompt = _phase.get_phase_prompt(phase, project_dir)
-            phase_summary, phase_clipped = _clip_by_words(prompt, _PHASE_PROMPT_MAX_WORDS)
-        except Exception:
-            phase_summary = ""
+        # TODO-0308 (architect review): the phase prompt belongs to the
+        # working-cycle card alone. An actionable-only card (no history) is
+        # not rendered with it, so computing it here would park the
+        # setup-phase prompt in ``phase_summary`` for ``awf brief --json``
+        # readers — the same "setup chain applies" claim this unit removed
+        # from the card. The gate stays ``continues``: one owner.
+        if continues:
+            try:
+                prompt = _phase.get_phase_prompt(phase, project_dir)
+                phase_summary, phase_clipped = _clip_by_words(
+                    prompt, _PHASE_PROMPT_MAX_WORDS
+                )
+            except Exception:
+                phase_summary = ""
 
     active_todos: list[dict[str, Any]] = []
     standalone_todos: list[dict[str, Any]] = []
@@ -927,9 +965,9 @@ def build_brief(
     # live/continued project without an explicit expected_action gets one
     # derived from its state (next_action_from_status — working steps,
     # never the setup chain; TODO-0208).
-    if not continues and not next_action:
+    if setup_chain and not next_action:
         next_action = "New project — run the setup chain (above); start with `awf_init`."
-    elif continues and not next_action:
+    elif not next_action:
         next_action = next_action_from_status(status) if status is not None else LIVE_LINE
 
     # ORCH M1.2: the card's compact view of the shared run record — the
@@ -968,9 +1006,14 @@ def build_brief(
         live_line=(
             LIVE_LINE
             if is_live
-            else (CONTINUE_LINE if has_history else NEW_LINE)
+            else (
+                CONTINUE_LINE
+                if has_history
+                else (ACTION_LINE if actionable else NEW_LINE)
+            )
         ),
-        setup_hint="" if continues else SETUP_HINT,
+        setup_hint="" if not setup_chain else SETUP_HINT,
+        actionable_fact=actionable,
         next_action=next_action,
         phase_summary=phase_summary,
         phase_clipped=phase_clipped,

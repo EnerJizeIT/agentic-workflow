@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from awf import api
 from awf import brief as brief_mod
@@ -363,6 +366,91 @@ class TestLiveVsNew:
         assert "## What's next" in r.text
         assert r.text.startswith("# awf brief —")
 
+    def test_stale_stage_without_history_gets_the_stale_advice(self, tmp_path):
+        # TODO-0308 (CTX-0307-1): a live pid with a quiet ``updated_at`` and
+        # no work history is a frozen stage, not a new project. The card gate
+        # must let the stale advice through instead of the setup chain.
+        project = _setup_project(tmp_path)
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(minutes=95)
+        ).replace(microsecond=0)
+        state = {
+            "stage_idx": 1,
+            "stage_name": "agent-qa-review",
+            "stage_kind": "execute",
+            "todo_id": "TODO-0308",
+            "pipeline_pid": os.getpid(),
+            "updated_at": stamp.isoformat(),
+        }
+        (project / ".agentic" / "state" / "current.yaml").write_text(
+            yaml.safe_dump(state, sort_keys=True), encoding="utf-8"
+        )
+
+        r = api.brief(project)
+
+        assert r.stale_stage.startswith("STALE stage agent-qa-review")
+        assert "New project" not in r.next_action
+        assert "stale" in r.next_action.lower()
+        # PA-0308-1: the card itself must not push the setup chain while the
+        # NEXT line already says the stage is stale.
+        assert "STALE" in r.text
+        assert "setup chain" not in r.text
+        assert "New project" not in r.text
+
+    def test_stale_fact_alone_drives_the_gate(self, tmp_path):
+        # TODO-0308 (QA): the scenario above sets BOTH stale_stage and
+        # zombie_state, so it would stay green if only zombie_state were in
+        # ``_ACTIONABLE_FIELDS``. A state without a unit id leaves
+        # ``zombie_state`` empty (its hint needs a todo), isolating the stale
+        # fact: the gate must open on stale alone.
+        project = _setup_project(tmp_path)
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(minutes=95)
+        ).replace(microsecond=0)
+        state = {
+            "stage_idx": 1,
+            "stage_name": "agent-qa-review",
+            "stage_kind": "execute",
+            "pipeline_pid": os.getpid(),
+            "updated_at": stamp.isoformat(),
+        }
+        (project / ".agentic" / "state" / "current.yaml").write_text(
+            yaml.safe_dump(state, sort_keys=True), encoding="utf-8"
+        )
+
+        r = api.brief(project)
+
+        assert r.stale_stage.startswith("STALE stage agent-qa-review")
+        assert r.zombie_state == ""
+        assert r.actionable_fact
+        assert "stale" in r.next_action.lower()
+        assert "setup chain" not in r.text
+
+    def test_zombie_state_without_history_gets_owner_advice(self, tmp_path):
+        # PA-0308-2: a lingering stage state without a dead pid (no pid at
+        # all) is the owner's hand — the card must not offer the setup
+        # chain, and the NEXT comes from the actionable advice owner.
+        project = _setup_project(tmp_path)
+        state = {
+            "stage_name": "agent-qa-review",
+            "todo_id": "TODO-0308",
+        }
+        (project / ".agentic" / "state" / "current.yaml").write_text(
+            yaml.safe_dump(state, sort_keys=True), encoding="utf-8"
+        )
+
+        r = api.brief(project)
+
+        assert r.zombie_state
+        assert r.actionable_fact
+        assert "zombie-state:" in r.text
+        assert "setup chain" not in r.text
+        assert "New project" not in r.text
+        assert "awf_continue" in r.next_action
+        # TODO-0308 (architect review): the setup-phase prompt must not be
+        # parked in the JSON field either — the worker-cycle prompt belongs
+        # to a continued project only.
+        assert r.phase_summary == ""
 
 # ─── Word budget + determinism + JSON ────────────────────────────────────
 

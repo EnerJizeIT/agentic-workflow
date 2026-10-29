@@ -1,15 +1,15 @@
 # Готовность пакета: экономия контекста стадии и продолжение сессии
 
 Статус: READY
-Ревизия: readiness-3
+Ревизия: readiness-4
 Входы: `context-efficiency.context.md@ctx-2`; `context-efficiency.md@req-7`; `context-efficiency.requirements-review.md@rev-7`; `context-efficiency.architecture.md@arch-3`; `context-efficiency.test-spec.md@ts-4`; TODO-0302; протокол `specification-pipeline.md`
 База кода: commit `401680bbfd568ea03793a6fcbd107180fcc49da4`; в дереве — untracked `docs/spec/context-efficiency/`
-Проверено: context-efficiency.context.md=ctx-2; context-efficiency.md=req-7; context-efficiency.requirements-review.md=rev-7; context-efficiency.architecture.md=arch-3; context-efficiency.test-spec.md=ts-4; context-efficiency.readiness.md=readiness-3
-Пакет-sha: fef69c434e88d35f5512ef486d01baca290660224bace0e2fc8aeaea2b8712f5
+Проверено: context-efficiency.context.md=ctx-2; context-efficiency.md=req-7; context-efficiency.requirements-review.md=rev-7; context-efficiency.architecture.md=arch-3; context-efficiency.test-spec.md=ts-4; context-efficiency.readiness.md=readiness-4
+Пакет-sha: 5a4f9dbabaf96b978c19f88ea6dfeacef10f88d7dadf2cc60fd76780c95c3bab
 
 ## Вердикт
 
-**READY.** Ревизии актуальны: требования req-7, ревью rev-7 PASS, архитектура arch-3, тесты ts-4. Бюджеты проходят: документы 2198/2197/1180/2117/2185 слов, пакет 10919 при пороге 11 000. FR4–FR6 закрыты по существу: архитектура 2117/2200; R6/AC37 совпадают с K6/D13 (ключ — точный `title` и окно `time_created`, `directory` только тай-брейк); AC8 называет stage-log. У каждого R#, AC# и INV# есть контракт и проверка T#, план укладывается в IMP1–IMP6. Открытых BLOCKER/MAJOR нет.
+**READY.** Ревизии актуальны: требования req-7, ревью rev-7 PASS, архитектура arch-3, тесты ts-4. Бюджеты проходят: документы 2198/2200/1180/2118/2185 слов, пакет 10767 при пороге 11 000. FR4–FR6 закрыты по существу: архитектура 2118/2200; R6/AC37 совпадают с K6/D13 (ключ — точный `title` и окно `time_created`, `directory` только тай-брейк); AC8 называет stage-log. У каждого R#, AC# и INV# есть контракт и проверка T#, план укладывается в IMP1–IMP6. Открытых BLOCKER/MAJOR нет.
 
 Способ ревью: стадия `spec-readiness`, attempt 1, последовательная самопроверка в одной сессии; независимость ограничена моделью. Прочитаны требования, ревью, архитектура, тест-спека, контекст и прошлая готовность; код и база читались как факт о текущем поведении.
 
@@ -25,7 +25,7 @@
 
 | ID | Важность | Где | Как закрыто или почему не блокирует | Владелец | Состояние |
 |---|---|---|---|---|---|
-| FR4 | MAJOR | архитектура; пакет | Архитектура сведена к 2117 словам, пакет к 10919; шаг бюджета проходит. | архитектор | VERIFIED |
+| FR4 | MAJOR | архитектура; пакет | Архитектура сведена к 2118 словам, пакет к 10767; шаг бюджета проходит. | архитектор | VERIFIED |
 | FR5 | MAJOR | R6/AC37; K6/D13 | R6 и AC37 переписаны под `title` и окно `time_created`; тай-брейк `directory` в T14 набор 2. | аналитик | VERIFIED |
 | FR6 | MINOR | AC8; AC9 | AC8 называет stage-log в источниках, AC9 берёт из него хвост. | аналитик | VERIFIED |
 | RR50 | MINOR | R8/AC31; K8/D14 | AC31 задаёт результат `reuse: k/n`; журнал `SESSIONS-<todo>.jsonl` — решение архитектуры K8/D14, закреплённое T22. Имя файла не меняет поведения, поэтому норма R8 не нужна. | архитектор | ACCEPTED |
@@ -107,7 +107,7 @@ FR1–FR3 из `readiness-2` остаются VERIFIED: ключ `title`+окн�
 - T1–T26 не выполнялись: это условия реализации. Целевые тесты базы зелёные (21 и 85), полный сьют не запускался.
 - Захват сессии на живой базе не прогонялся: T14–T16 стоят на фейковой sqlite, живой путь проверяет IMP5.
 - Семантика `--session` (тот же id, вложения видны) — только T26; справка подтверждает наличие флага.
-- Документ требований — 2197 из 2200 слов: новая норма требует сначала освободить слова.
+- Документ требований — 2200 из 2200 слов: новая норма требует сначала освободить слова.
 - Отчёты ревью и готовности перезаписываются: история находок живёт в журналах стадий.
 
 ## Условия завершения реализации
