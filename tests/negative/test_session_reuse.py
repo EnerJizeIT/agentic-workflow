@@ -231,7 +231,7 @@ def test_missing_base_writes_no_file_and_logs_reason(tmp_path, monkeypatch):
     _run(proj, monkeypatch, tmp_path / "no-such.db", _config("fix-only"))
 
     assert not session_store.session_file(proj, TODO, STAGE).exists()
-    assert "session capture skipped" in _log_text(proj)
+    assert "session capture: " in _log_text(proj)
 
 
 def test_foreign_schema_writes_no_file(tmp_path, monkeypatch):
@@ -246,7 +246,7 @@ def test_foreign_schema_writes_no_file(tmp_path, monkeypatch):
     _run(proj, monkeypatch, db, _config("fix-only"))
 
     assert not session_store.session_file(proj, TODO, STAGE).exists()
-    assert "session capture skipped" in _log_text(proj)
+    assert "session capture: " in _log_text(proj)
 
 
 def test_slow_base_respects_one_second_budget(tmp_path, monkeypatch):
@@ -659,3 +659,237 @@ def test_unreadable_base_does_not_retire_the_pair(tmp_path, monkeypatch):
     pair = session_store.read_session_file(proj, TODO, STAGE)
     assert pair is not None and pair["session_id"] == "s1"
     assert "status" not in pair, "сбой чтения базы не делает сессию мёртвой"
+
+
+# TODO-0309 (1): the capture must be proven on a COPY of the live opencode
+# schema — the 5-column fake hid the real table's NOT NULL columns and
+# defaults. A debug of the live base starts with this shape, not the fake.
+_LIVE_SESSION_SCHEMA = """
+CREATE TABLE `session` (
+  `id` text PRIMARY KEY,
+  `project_id` text NOT NULL,
+  `workspace_id` text,
+  `parent_id` text,
+  `slug` text NOT NULL,
+  `directory` text NOT NULL,
+  `path` text,
+  `title` text NOT NULL,
+  `version` text NOT NULL,
+  `share_url` text,
+  `summary_additions` integer,
+  `summary_deletions` integer,
+  `summary_files` integer,
+  `summary_diffs` text,
+  `metadata` text,
+  `cost` real DEFAULT 0 NOT NULL,
+  `tokens_input` integer DEFAULT 0 NOT NULL,
+  `tokens_output` integer DEFAULT 0 NOT NULL,
+  `tokens_reasoning` integer DEFAULT 0 NOT NULL,
+  `tokens_cache_read` integer DEFAULT 0 NOT NULL,
+  `tokens_cache_write` integer DEFAULT 0 NOT NULL,
+  `revert` text,
+  `permission` text,
+  `agent` text,
+  `model` text,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `time_compacting` integer,
+  `time_archived` integer
+)
+"""
+
+
+def _make_live_schema_db(path):
+    con = sqlite3.connect(path)
+    con.execute(_LIVE_SESSION_SCHEMA)
+    con.commit()
+    con.close()
+    return path
+
+
+def _insert_live(db, sid, title, tc, *, directory=HOME_DIR):
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO session (id, project_id, slug, directory, title, version, "
+        "agent, model, time_created, time_updated) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (sid, "prj_1", "slug-1", directory, title, "1.19.4", "worker",
+         '{"id":"m","providerID":"p"}', tc, tc),
+    )
+    con.commit()
+    con.close()
+
+
+def test_capture_on_a_copy_of_the_live_schema(tmp_path, monkeypatch):
+    proj = _project(tmp_path)
+    db = _make_live_schema_db(tmp_path / "opencode.db")
+    now = int(time.time() * 1000)
+    title = f"awf-{ROLE}-{STAGE}-{TODO}-a1"
+    _insert_live(db, "live-1", title, now)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+    logs = proj / ".agentic" / "logs"
+
+    sid = session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        attempt=1, spawn_started_ms=now, logs_dir=logs,
+    )
+
+    assert sid == "live-1"
+    pair = session_store.read_session_file(proj, TODO, STAGE)
+    assert set(pair) == {"session_id", "title", "agent", "model", "attempt", "ts"}
+    assert pair["session_id"] == "live-1"
+    assert "session capture: live-1" in _log_text(proj)
+
+
+def test_capture_miss_names_the_search_in_the_reason(tmp_path, monkeypatch):
+    # The live diagnosis line: a wrong title or window must be readable
+    # without re-deriving what the code searched for.
+    proj = _project(tmp_path)
+    db = _make_live_schema_db(tmp_path / "opencode.db")
+    now = int(time.time() * 1000)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+    logs = proj / ".agentic" / "logs"
+
+    assert session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE, title="awf-miss", agent=ROLE,
+        model="", attempt=1, spawn_started_ms=now, logs_dir=logs,
+    ) is None
+
+    text = _log_text(proj)
+    assert "session capture: not found" in text
+    assert "title=awf-miss" in text
+    assert f"dir={proj}" in text
+
+
+def test_capture_miss_reason_names_the_window_the_query_used(
+    tmp_path, monkeypatch
+):
+    # TODO-0309 (architect review AR-0309-2): the diagnostic must quote the
+    # SAME window the lookup used — a debugger must not hunt a title that
+    # was simply outside the bounds. A row 3s before the early bound is
+    # deliberately missed: if the query and the line drift apart, this
+    # row either gets found (capture succeeds) or the quoted start moves.
+    proj = _project(tmp_path)
+    db = _make_live_schema_db(tmp_path / "opencode.db")
+    now = int(time.time() * 1000)
+    title = f"awf-{ROLE}-{STAGE}-{TODO}-a1"
+    _insert_live(db, "too-early", title, now - 5_000)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+    logs = proj / ".agentic" / "logs"
+
+    assert session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        attempt=1, spawn_started_ms=now, logs_dir=logs,
+    ) is None
+
+    text = _log_text(proj)
+    start_raw, rest = text.split("window=", 1)[1].split("..", 1)
+    end_raw = rest.split(",", 1)[0]
+    start, end = int(start_raw), int(end_raw)
+    assert start == now - session_store.CAPTURE_EARLY_MS
+    assert (
+        now + session_store.CAPTURE_LATE_MS
+        <= end
+        <= now + session_store.CAPTURE_LATE_MS + 2_000
+    )
+
+
+def test_capture_write_failure_names_the_reason(tmp_path, monkeypatch):
+    # TODO-0309 (1): every capture outcome carries the "session capture:"
+    # prefix. A failed pair write must be readable in the stage log (it is
+    # the only trace when the file is missing) and must never raise.
+    proj = _project(tmp_path)
+    db = _make_live_schema_db(tmp_path / "opencode.db")
+    now = int(time.time() * 1000)
+    title = f"awf-{ROLE}-{STAGE}-{TODO}-a1"
+    _insert_live(db, "s1", title, now)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(session_store, "_write_session_file", boom)
+    logs = proj / ".agentic" / "logs"
+
+    assert session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        attempt=1, spawn_started_ms=now, logs_dir=logs,
+    ) is None
+    assert "session capture: write failed: disk full" in _log_text(proj)
+    assert not session_store.session_file(proj, TODO, STAGE).exists()
+
+
+def test_confirm_reason_names_the_base_and_the_missing_id(
+    tmp_path, monkeypatch
+):
+    # TODO-0309 (1): the continuation path logs the same "session capture:"
+    # reason family — a wrong base names the path, a readable base without
+    # the row names the id it looked for.
+    proj = _project(tmp_path)
+    logs = proj / ".agentic" / "logs"
+    missing = tmp_path / "gone.db"
+    monkeypatch.setattr(session_store, "db_path", lambda: missing)
+
+    assert session_store.confirm_and_update(
+        proj, todo_id=TODO, stage=STAGE, session_id="s9", title="t",
+        agent=ROLE, model="", attempt=2, logs_dir=logs,
+    ) is None
+    assert f"(base: {missing})" in _log_text(proj)
+
+    db = _make_live_schema_db(tmp_path / "opencode.db")
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+    assert session_store.confirm_and_update(
+        proj, todo_id=TODO, stage=STAGE, session_id="missing-id", title="t",
+        agent=ROLE, model="", attempt=2, logs_dir=logs,
+    ) is None
+    assert "session capture: not found (id=missing-id)" in _log_text(proj)
+
+
+def test_capture_reason_names_the_base_path(tmp_path, monkeypatch):
+    proj = _project(tmp_path)
+    missing = tmp_path / "no-such-dir" / "opencode.db"
+    monkeypatch.setattr(session_store, "db_path", lambda: missing)
+    logs = proj / ".agentic" / "logs"
+
+    assert session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE, title=f"awf-{ROLE}-{STAGE}-{TODO}-a1",
+        agent=ROLE, model="", attempt=1,
+        spawn_started_ms=int(time.time() * 1000), logs_dir=logs,
+    ) is None
+
+    text = _log_text(proj)
+    assert "session capture: " in text
+    assert f"(base: {missing})" in text
+
+
+def test_fix_round_reuses_the_implementer_pair_not_the_qa_pair(
+    tmp_path, monkeypatch
+):
+    # TODO-0309 (2): a fix round continues the implementer's session; the
+    # QA stage keeps its own id. Both pairs are captured on the first entry.
+    proj = _project(tmp_path)
+    (proj / ".agentic" / "roles" / "agent-qa-review.md").write_text(
+        "# qa role\n", encoding="utf-8"
+    )
+    db = _make_db(tmp_path / "opencode.db")
+    seen = _runner(monkeypatch, db)
+    impl_stage = _stage("agent-implementer", ROLE)
+    qa_stage = Stage(name="agent-qa-review", role="agent-qa-review", kind="execute")
+
+    _run(proj, monkeypatch, db, _config("fix-only"), stage=impl_stage)
+    _run(proj, monkeypatch, db, _config("fix-only"), stage=qa_stage)
+
+    impl_pair = session_store.read_session_file(proj, TODO, "agent-implementer")
+    qa_pair = session_store.read_session_file(proj, TODO, "agent-qa-review")
+    assert impl_pair is not None and qa_pair is not None
+    assert impl_pair["session_id"] != qa_pair["session_id"]
+
+    # The fix round: the implementer continues ITS session.
+    _run(proj, monkeypatch, db, _config("fix-only"), stage=impl_stage)
+
+    fixed = seen[-1]
+    assert fixed[fixed.index("--session") + 1] == impl_pair["session_id"]
+    assert f"session: reused {impl_pair['session_id']}" in _log_text(proj)
+    assert session_store.read_session_file(proj, TODO, "agent-qa-review")[
+        "session_id"
+    ] == qa_pair["session_id"]

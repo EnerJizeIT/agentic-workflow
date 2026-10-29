@@ -907,6 +907,7 @@ def build_brief(
     engine_dead_todo = ""
     stale_stage = ""
     budget_exhausted_todo = ""
+    checkpoint_pending = False
     if status is not None:
         active_todos = [dict(t) for t in status.active_todos]
         # TODO-0197: the outside-run units from the same status read.
@@ -946,6 +947,10 @@ def build_brief(
             if isinstance(status, dict)
             else getattr(status, "stale_stage", "") or ""
         )
+        # BD-36: the form waits for the USER (the plan confirmation), not
+        # for a worker. The card's NEXT line says "WAIT for user
+        # confirmation" — the header must not call it a working cycle.
+        checkpoint_pending = bool(_status_get(status, "checkpoint_pending"))
         # TODO-0262 REVIEW (CTX1): the exhausted-unit fact from the same read.
         budget_exhausted_todo = str(
             status.get("budget_exhausted_todo") or ""
@@ -997,6 +1002,19 @@ def build_brief(
         if step:
             next_action = step
 
+    # TODO-0309 (AUD-0308-1): a running pipeline outranks the
+    # actionable-only line — ``expected_action`` is non-empty whenever the
+    # pipeline runs, and the worker stage needs no owner decision: the NEXT
+    # line already says "go idle". The header must not claim "Owner's
+    # decision pending" on a fresh project's first unit. Two states are the
+    # exception, both of them the owner's call the advice owner already
+    # names: a live pid with a stale heartbeat (frozen stage) and an open
+    # BD-36 checkpoint (the Next line says "WAIT for user confirmation").
+    # Neither is a working cycle.
+    working_cycle = is_live or (
+        pipeline_running and not stale_stage and not checkpoint_pending
+    )
+
     result = BriefResult(
         version=_awf.__version__,
         project=project,
@@ -1005,7 +1023,7 @@ def build_brief(
         is_live_project=continues,
         live_line=(
             LIVE_LINE
-            if is_live
+            if working_cycle
             else (
                 CONTINUE_LINE
                 if has_history

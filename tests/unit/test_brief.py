@@ -452,6 +452,144 @@ class TestLiveVsNew:
         # to a continued project only.
         assert r.phase_summary == ""
 
+    def test_running_pipeline_on_fresh_project_is_not_an_owner_decision(
+        self, tmp_path
+    ):
+        # TODO-0309 (AUD-0308-1): ``expected_action`` is non-empty whenever
+        # the pipeline runs, which made ``_actionable_fact`` true on a
+        # brand-new project's first unit. The header then said "Owner's
+        # decision pending" while NEXT said "go idle" — two answers for the
+        # same state. A running pipeline is live, not the owner's call.
+        from awf.api._results import StatusResult
+
+        project = _setup_project(tmp_path)
+        status = StatusResult(
+            project_name="proj",
+            active_todos=[{"todo_id": "TODO-0001"}],
+            done_count=0,
+            blocked_count=0,
+            blocked_ids=[],
+            conflict_warning=None,
+            suggestion=None,
+            pipeline_running=True,
+            pipeline_pid=os.getpid(),
+            current_stage_name="agent-implementer",
+            expected_action=(
+                "Pipeline running (stage: agent-implementer) — go idle; "
+                "in a run wait with `awf_wait_for_event`."
+            ),
+        )
+
+        r = brief_mod.build_brief(project, status=status)
+
+        assert r.is_live_project is False
+        assert r.actionable_fact is True
+        assert r.live_line == brief_mod.LIVE_LINE
+        assert "Owner's decision pending" not in r.text
+        assert "go idle" in r.next_action
+
+    def test_frozen_stage_under_a_live_pid_keeps_the_owner_line(self, tmp_path):
+        # TODO-0309 (architect review): a running pipeline gets the live
+        # line only when the stage is actually working. A live pid with a
+        # stale heartbeat is the frozen case the advice owner already
+        # ranks ABOVE ``expected_action`` (next_action_from_status) — the
+        # header must follow that ranking, not call it a working cycle.
+        from awf.api._results import StatusResult
+
+        project = _setup_project(tmp_path)
+        status = StatusResult(
+            project_name="proj",
+            active_todos=[{"todo_id": "TODO-0001"}],
+            done_count=0,
+            blocked_count=0,
+            blocked_ids=[],
+            conflict_warning=None,
+            suggestion=None,
+            pipeline_running=True,
+            pipeline_pid=os.getpid(),
+            current_stage_name="agent-implementer",
+            expected_action="Pipeline running (stage: agent-implementer) — go idle.",
+            stale_stage="STALE stage agent-implementer — heartbeat 40m old.",
+        )
+
+        r = brief_mod.build_brief(project, status=status)
+
+        assert r.live_line == brief_mod.ACTION_LINE
+        assert "Owner's decision pending" in r.text
+        assert "go idle" not in r.next_action
+        assert "Stale stage" in r.next_action
+
+    def test_bd36_checkpoint_on_a_fresh_project_keeps_the_owner_line(
+        self, tmp_path
+    ):
+        # TODO-0309 (QA): a checkpoint runs no worker — BD-36 waits for the
+        # USER to confirm the plan, and NEXT says exactly that. The running
+        # pipeline must not turn that wait into "continue the working
+        # cycle": the header would contradict the form instruction on the
+        # DEFAULT first-run flow (checkpoints are on by default).
+        from awf.api._results import StatusResult
+
+        project = _setup_project(tmp_path)
+        status = StatusResult(
+            project_name="proj",
+            active_todos=[{"todo_id": "TODO-0001"}],
+            done_count=0,
+            blocked_count=0,
+            blocked_ids=[],
+            conflict_warning=None,
+            suggestion=None,
+            pipeline_running=True,
+            pipeline_pid=os.getpid(),
+            current_stage_name="plan",
+            checkpoint_pending=True,
+            checkpoint_form_url="file:///tmp/form.html",
+            expected_action=(
+                "BD-36 checkpoint form is open in user's browser — WAIT for "
+                "user confirmation."
+            ),
+        )
+
+        r = brief_mod.build_brief(project, status=status)
+
+        assert r.live_line == brief_mod.ACTION_LINE
+        assert "Owner's decision pending" in r.text
+        assert "working cycle" not in r.text
+        assert "WAIT for user confirmation" in r.next_action
+
+    def test_salvage_under_a_live_pid_keeps_the_working_cycle_line(
+        self, tmp_path
+    ):
+        # TODO-0309 (QA): the OTHER running-pipeline fact. A salvage advice
+        # is the SUPERVISOR's step (review the diff, retry the stage), so
+        # the header stays on the working cycle; only the owner-waiting
+        # facts (frozen stage, BD-36) get the owner line.
+        from awf.api._results import StatusResult
+
+        project = _setup_project(tmp_path)
+        status = StatusResult(
+            project_name="proj",
+            active_todos=[{"todo_id": "TODO-0001"}],
+            done_count=0,
+            blocked_count=0,
+            blocked_ids=[],
+            conflict_warning=None,
+            suggestion=None,
+            pipeline_running=True,
+            pipeline_pid=os.getpid(),
+            current_stage_name="agent-implementer",
+            salvage_needed=True,
+            salvage_stage="agent-implementer",
+            expected_action=(
+                "Salvage (attempt 1): worker didn't signal. Review git diff, "
+                "then ACK, retry, or split the task."
+            ),
+        )
+
+        r = brief_mod.build_brief(project, status=status)
+
+        assert r.live_line == brief_mod.LIVE_LINE
+        assert "Salvage" in r.next_action
+
 # ─── Word budget + determinism + JSON ────────────────────────────────────
 
 

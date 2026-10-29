@@ -238,7 +238,7 @@ def _persist_row(
         )
     except (OSError, managed_fs.ManagedPathError) as e:
         if logs_dir is not None:
-            _log(logs_dir, f"session capture skipped: write failed: {e}")
+            _log(logs_dir, f"session capture: write failed: {e}")
         return None
     return session_id
 
@@ -275,9 +275,11 @@ def _read(fn):
         finally:
             con.close()
     except (sqlite3.Error, OSError) as e:
-        raise _DbError(str(e)) from e
+        # TODO-0309: the reason names the base it tried — a wrong path is
+        # the first suspect when the live capture finds nothing.
+        raise _DbError(f"{e} (base: {path})") from e
     if time.monotonic() - started > DB_TIMEOUT:
-        raise _DbError("read exceeded 1s")
+        raise _DbError(f"read exceeded 1s (base: {path})")
     return result
 
 
@@ -292,6 +294,16 @@ def _row_by_id(con: sqlite3.Connection, table: str, session_id: str):
         raise _DbError(str(e)) from e
 
 
+def _capture_window(spawn_started_ms: int, now_ms: int) -> tuple[int, int]:
+    """The time window a fresh session may have been created in.
+
+    One owner: the lookup and its not-found diagnostic line must name the
+    SAME window, or the log sends a debugger after a title that was simply
+    outside the bounds the query used.
+    """
+    return spawn_started_ms - CAPTURE_EARLY_MS, now_ms + CAPTURE_LATE_MS
+
+
 def _row_by_title(
     con: sqlite3.Connection,
     table: str,
@@ -300,6 +312,7 @@ def _row_by_title(
     now_ms: int,
     project_dir: Path,
 ):
+    window_start, window_end = _capture_window(spawn_started_ms, now_ms)
     try:
         return con.execute(
             "SELECT id, CASE WHEN time_updated IS NULL OR time_updated = 0 "
@@ -308,8 +321,7 @@ def _row_by_title(
             "AND time_created <= ? "
             "ORDER BY time_created DESC, "
             "(CASE WHEN directory = ? THEN 0 ELSE 1 END), id DESC LIMIT 1",
-            (title, spawn_started_ms - CAPTURE_EARLY_MS, now_ms + CAPTURE_LATE_MS,
-             str(project_dir)),
+            (title, window_start, window_end, str(project_dir)),
         ).fetchone()
     except sqlite3.Error as e:
         raise _DbError(str(e)) from e
@@ -385,18 +397,27 @@ def capture_after_spawn(
         )
     except _DbError as e:
         if logs_dir is not None:
-            _log(logs_dir, f"session capture skipped: {e}")
+            _log(logs_dir, f"session capture: {e}")
         return None
     if row is None:
         if logs_dir is not None:
-            _log(logs_dir, "session capture skipped: session not found")
+            window_start, window_end = _capture_window(spawn_started_ms, now_ms)
+            _log(
+                logs_dir,
+                "session capture: not found "
+                f"(title={title}, window={window_start}..{window_end}, "
+                f"dir={project_dir})",
+            )
         return None
     session_id, ts_ms = row
-    return _persist_row(
+    captured = _persist_row(
         project_dir, todo_id, stage,
         session_id=session_id, title=title, agent=agent, model=model,
         attempt=attempt, ts_ms=ts_ms, logs_dir=logs_dir,
     )
+    if captured is not None and logs_dir is not None:
+        _log(logs_dir, f"session capture: {captured}")
+    return captured
 
 
 def confirm_and_update(
@@ -419,11 +440,11 @@ def confirm_and_update(
         row = _read(lambda con, table: _row_by_id(con, table, session_id))
     except _DbError as e:
         if logs_dir is not None:
-            _log(logs_dir, f"session capture skipped: {e}")
+            _log(logs_dir, f"session capture: {e}")
         return None
     if row is None:
         if logs_dir is not None:
-            _log(logs_dir, "session capture skipped: session not found")
+            _log(logs_dir, f"session capture: not found (id={session_id})")
         return None
     _, ts_ms = row
     return _persist_row(
