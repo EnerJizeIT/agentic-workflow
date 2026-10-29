@@ -11,12 +11,14 @@ place where the answer becomes an action, the first verdict for the
 statistics (``context/CLOSER-<todo>.json``) and the stage-state fields the
 engine records for a skip.
 
-``skip_if`` has exactly one allowed value — ``checklist_green``
-(``pipeline.SKIP_IF_ALLOWED``): the key names a gate verdict, not a
-free-form condition. A missing or ``null`` key means "always run"; the
-loader refuses an empty string, a number or a bool. The stage must also
-name ``write_check: "off"`` — a conditional run with an implicit write
-allowlist is a static defect and blocks without a spawn (see
+``skip_if`` names a verdict or a recorded fact, never a free-form
+condition (``pipeline.SKIP_IF_ALLOWED``). ``checklist_green`` runs the gate
+at entry; such a stage must also name ``write_check: "off"`` — a
+conditional run with an implicit write allowlist is a static defect and
+blocks without a spawn. ``checklist_close_skipped`` (TODO-0304) is the
+follow-up check: it reads the recorded fact that THIS unit's close stage
+did not run and needs no write opt-out. A missing or ``null`` key means
+"always run"; the loader refuses an empty string, a number or a bool (see
 :func:`decide`).
 
 The frozen norm (IMP5, R5) is the checklist block hash plus a sha256 over
@@ -41,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import checklist_gate, paths, todos
+from . import checklist_gate, paths, pipeline_state, todos
 from . import config as cfg_mod
 from ._log import log as _log
 from .checklists import CHECKLIST_HEADING, ChecklistError, block_hash
@@ -74,8 +76,22 @@ FROZEN_CONTRACT_KEYS: tuple[str, ...] = (
 #: The one wording AC12/AC13 require on a norm edit.
 NORM_EDIT_REASON = "closer edited the checklist/contract"
 
+#: IMP1 (R1): the gate-driven ``skip_if`` value — the value this module's
+#: own decision point (gate + closer + settle) serves.
+GATE_SKIP_IF = "checklist_green"
+
 #: The stage-state reason recorded on a green skip.
 SKIP_REASON = "checklist_green"
+
+#: IMP5 (TODO-0304): the follow-up check stage's key. It skips on the FACT
+#: that the close stage of this unit did not run — never on a re-run of the
+#: gate, which could answer differently from the run the close saw.
+FOLLOWUP_SKIP_IF = "checklist_close_skipped"
+FOLLOWUP_SKIP_REASON = "checklist_close_skipped"
+#: Run-state keys of that fact. The todo is stored next to the flag: a stale
+#: flag from a previous unit must never decide another unit's stage.
+CLOSE_SKIPPED_KEY = "checklist_close_skipped"
+CLOSE_SKIPPED_TODO_KEY = "checklist_close_skipped_todo"
 
 
 class CloserConfigError(ValueError):
@@ -90,10 +106,14 @@ class Decision:
     verdict: dict = field(default_factory=dict)
     log_line: str = ""
     note: str = ""
+    #: Stage-state skip reason; empty falls back to the gate value.
+    reason: str = ""
 
     @property
     def skip_reason(self) -> str:
-        return SKIP_REASON if self.kind == "skip" else ""
+        if self.kind != "skip":
+            return ""
+        return self.reason or SKIP_REASON
 
 
 @dataclass
@@ -468,6 +488,62 @@ def _is_green(verdict: dict) -> bool:
     return verdict.get("status") == "none" or bool(verdict.get("ok"))
 
 
+def record_close_skipped(
+    project_dir: str | Path,
+    todo_id: str,
+    *,
+    skipped: bool,
+    logs_dir: Path | None = None,
+) -> None:
+    """IMP5 (TODO-0304): record whether THIS unit's close stage ran.
+
+    Written by the engine at the close stage's decision point — before the
+    spawn, so a crashed run still leaves the fact for the follow-up check.
+    ``skipped=True`` means the gate was green and no closer ran; ``False``
+    means the closer enters (the check then has a diff to review).
+    """
+    pipeline_state.write_state(
+        Path(project_dir),
+        checklist_close_skipped=bool(skipped),
+        checklist_close_skipped_todo=todo_id,
+        logs_dir=logs_dir,
+    )
+
+
+def decide_followup(
+    project_dir: str | Path,
+    todo_id: str,
+) -> Decision:
+    """IMP5 (TODO-0304): skip the check when the close stage did not run.
+
+    The fact comes from the run state, scoped to this unit — the gate is
+    NOT recomputed: a green checklist now says nothing about whether the
+    closer produced a diff to review. No close stage at all is the same
+    fact ("did not run"), so the check skips too.
+    """
+    try:
+        state = pipeline_state.read_state(Path(project_dir)) or {}
+    except (OSError, ValueError):
+        state = {}
+    # The check runs ONLY on a positive fact of this unit's close run. An
+    # absent fact (no close stage, unreadable state) is "did not run" —
+    # the same skip as a green close.
+    ran = (
+        state.get(CLOSE_SKIPPED_TODO_KEY) == todo_id
+        and CLOSE_SKIPPED_KEY in state
+        and not bool(state.get(CLOSE_SKIPPED_KEY))
+    )
+    if ran:
+        return Decision(
+            kind="run", log_line="checklist-check: close ran — checking"
+        )
+    return Decision(
+        kind="skip",
+        log_line="checklist-check: skipped (checklist-close did not run)",
+        reason=FOLLOWUP_SKIP_REASON,
+    )
+
+
 def decide(
     project_dir: str | Path,
     todo_id: str,
@@ -476,15 +552,22 @@ def decide(
 ) -> Decision:
     """Decide one entry of a stage that declares ``skip_if``.
 
-    ``skip_if`` accepts one value — ``checklist_green``. The stage must
-    also declare ``write_check: "off"``; a ``skip_if`` without it is a
-    static defect (blocked here, before a gate run or a spawn).
+    ``skip_if`` accepts the values in :data:`pipeline.SKIP_IF_ALLOWED`.
+    ``checklist_green`` runs the definition-of-done gate at entry; such a
+    stage must also declare ``write_check: "off"`` — a conditional run with
+    an implicit write allowlist is a static defect (blocked here, before a
+    gate run or a spawn). ``checklist_close_skipped`` (TODO-0304) reads the
+    recorded fact instead and needs no ``write_check`` opt-out: the check
+    stage has no output of its own.
 
     The order is fixed (architecture K2): stage/config defects first (no gate
     run, no spawn), then the gate on the current tree, then the first verdict
     and the one ``dod:`` line, then a static block defect, then green/red.
     """
     project = Path(project_dir).resolve()
+
+    if stage.skip_if == FOLLOWUP_SKIP_IF:
+        return decide_followup(project, todo_id)
 
     # 1. Static stage defect: the closer must NAME the opt-out from the write
     # check. A ``skip_if`` stage with an implicit allowlist is a config typo,

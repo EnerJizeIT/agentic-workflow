@@ -274,6 +274,7 @@ def test_refresh_replaces_legacy_blocks_instead_of_duplicating(tmp_git_repo):
                 "agent-architect-review",
                 "agent-qa-review",
                 "agent-implementer",
+                "agent-qa-review",
                 "agent-project-auditor",
                 "supervisor",
             ],
@@ -285,6 +286,7 @@ def test_refresh_replaces_legacy_blocks_instead_of_duplicating(tmp_git_repo):
                 "agent-architect-review",
                 "agent-refactoring-specialist",
                 "agent-implementer",
+                "agent-qa-review",
                 "supervisor",
             ],
         ),
@@ -321,6 +323,7 @@ def test_apply_project_setup_writes_full_variant(tmp_git_repo):
         "agent-architect-review",
         "agent-qa-review",
         "agent-implementer",
+        "agent-qa-review",
         "agent-project-auditor",
         "supervisor",
     ]
@@ -744,6 +747,7 @@ def test_flow_variant_needs_no_team(tmp_git_repo):
         "agent-architect-review",
         "agent-refactoring-specialist",
         "agent-implementer",
+        "agent-qa-review",
         "supervisor",
     ]
     assert result.quick_pipeline_file is None

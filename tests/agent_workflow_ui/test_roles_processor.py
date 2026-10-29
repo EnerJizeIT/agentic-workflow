@@ -623,9 +623,10 @@ def test_bd9_pipeline_written_with_team_and_project(isolated_roles_dir, reset_pr
     import yaml as _yaml
 
     parsed = _yaml.safe_load(target.read_text())
-    assert len(parsed["stages"]) == 5
+    assert len(parsed["stages"]) == 6
     assert [s["name"] for s in parsed["stages"]] == [
-        "plan", "worker", "tester", "implementer-close", "verify",
+        "plan", "worker", "tester", "checklist-close", "checklist-check",
+        "verify",
     ]
 
 

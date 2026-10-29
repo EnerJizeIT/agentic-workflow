@@ -897,7 +897,7 @@ def _build_parser():
         "--role",
         action="append",
         help="Worker role for a stage (repeatable; supervisor plan/verify "
-             "stages and the implementer-close gate are added "
+             "stages and the checklist-close/check pair are added "
              "automatically, as in the setup form)",
     )
     role_or_variant.add_argument(

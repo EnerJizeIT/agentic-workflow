@@ -739,16 +739,23 @@ def test_closer_stage_position_and_prompt(tmp_path):
         "agent-implementer",
         "agent-architect-review",
         "agent-qa-review",
-        "implementer-close",
+        "checklist-close",
+        "checklist-check",
         "agent-project-auditor",
         "verify",
     ]
-    idx = names.index("implementer-close")
+    idx = names.index("checklist-close")
     assert 0 < idx < len(stages) - 1
+    check = stages[names.index("checklist-check")]
+    assert check.role == "agent-qa-review"
+    assert check.skip_if == "checklist_close_skipped"
+    assert check.session_key == "agent-qa-review"
+    assert names.index("checklist-check") == idx + 1
 
     closer = stages[idx]
-    assert closer.name == "implementer-close"
-    assert closer.id == "implementer-close"
+    assert closer.name == "checklist-close"
+    assert closer.id == "checklist-close"
+    assert closer.session_key == "agent-implementer"
     assert closer.role == "agent-implementer"
     assert closer.kind == "execute"
     assert closer.skip_if == "checklist_green"
@@ -773,11 +780,13 @@ def test_closer_stage_position_and_prompt(tmp_path):
     reloaded = {s.name: s for s in load_stages(
         _write_text(tmp_path / "PIPELINE-TODO-0001.yaml", snapshot)
     )}
-    assert reloaded["implementer-close"].skip_if == "checklist_green"
-    assert reloaded["implementer-close"].write_check == "off"
-    assert reloaded["implementer-close"].output == ""
-    assert reloaded["implementer-close"].write_allow == ()
-    assert reloaded["implementer-close"].task == closer.task
+    assert reloaded["checklist-close"].skip_if == "checklist_green"
+    assert reloaded["checklist-close"].write_check == "off"
+    assert reloaded["checklist-close"].output == ""
+    assert reloaded["checklist-close"].write_allow == ()
+    assert reloaded["checklist-close"].task == closer.task
+    assert reloaded["checklist-check"].skip_if == "checklist_close_skipped"
+    assert reloaded["checklist-check"].session_key == "agent-qa-review"
     assert "write_allow" not in yaml.safe_load(snapshot)["stages"][idx]
     assert "output" not in yaml.safe_load(snapshot)["stages"][idx]
 
@@ -789,10 +798,11 @@ def test_closer_stage_position_and_prompt(tmp_path):
     )
     service_file = api_run._write_service_pipeline(proj, "sla")
     service = {s.name: s for s in load_stages(service_file)}
-    assert service["implementer-close"].skip_if == "checklist_green"
-    assert service["implementer-close"].write_check == "off"
-    assert service["implementer-close"].output == ""
-    assert service["implementer-close"].write_allow == ()
+    assert service["checklist-close"].skip_if == "checklist_green"
+    assert service["checklist-close"].write_check == "off"
+    assert service["checklist-close"].output == ""
+    assert service["checklist-close"].write_allow == ()
+    assert service["checklist-check"].skip_if == "checklist_close_skipped"
     assert service["agent-implementer"].output == (
         ".agentic/roles/draft/sla.md"
     )
@@ -1826,30 +1836,35 @@ def test_generator_and_templates_carry_closer(tmp_git_repo):
         "agent-implementer",
         "agent-architect-review",
         "agent-qa-review",
-        "implementer-close",
+        "checklist-close",
+        "checklist-check",
         "agent-project-auditor",
         "verify",
     ]
 
-    for variant, before, after in (
-        ("full", "agent-qa-review", "agent-project-auditor"),
-        ("code-health", "agent-refactoring-specialist", "verify"),
+    for variant, before in (
+        ("full", "agent-qa-review"),
+        ("code-health", "agent-refactoring-specialist"),
     ):
         template = setup._builtin_pipeline_template(variant)
         assert template is not None, variant
         stages = load_stages(template)
         names = [s.name for s in stages]
-        assert "implementer-close" in names, variant
-        index = names.index("implementer-close")
+        assert "checklist-close" in names, variant
+        index = names.index("checklist-close")
         assert names[index - 1] == before, (variant, names)
-        assert names[index + 1] == after, (variant, names)
+        # TODO-0304: the follow-up check sits right after the close.
+        assert names[index + 1] == "checklist-check", (variant, names)
+        check = stages[index + 1]
+        assert check.role == "agent-qa-review"
+        assert check.skip_if == "checklist_close_skipped"
         closer = stages[index]
         assert closer.kind == "execute"
         assert closer.skip_if == "checklist_green"
         assert closer.write_check == "off"
         assert closer.output == "" and closer.write_allow == ()
         generated_closer = next(
-            stage for stage in generated if stage["name"] == "implementer-close"
+            stage for stage in generated if stage["name"] == "checklist-close"
         )
         assert closer.task == generated_closer["task"], (
             f"{variant}: the template task drifted from the generator"

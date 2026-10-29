@@ -31,15 +31,16 @@ class TestBuildPipelineStages:
             {"agent": "developer", "type": "default"},
             {"agent": "qa", "type": "default"},
         ])
-        # plan(supervisor) + developer + qa + closer + verify(supervisor)
-        assert len(stages) == 5
+        # plan + developer + qa + close + check + verify(supervisor)
+        assert len(stages) == 6
         assert stages[0]["name"] == "plan"
         assert stages[0]["role"] == "supervisor"
         assert stages[-1]["name"] == "verify"
         assert stages[-1]["role"] == "supervisor"
         assert stages[1]["role"] == "developer"
         assert stages[2]["role"] == "qa"
-        assert stages[3]["name"] == "implementer-close"
+        assert stages[3]["name"] == "checklist-close"
+        assert stages[4]["name"] == "checklist-check"
 
     def test_empty_team_raises(self):
         """Empty team = plan→verify with no work — useless, must raise."""
@@ -57,10 +58,11 @@ class TestBuildPipelineStages:
             {"agent": "developer"},
             {"agent": "developer"},
         ])
-        # plan + developer + closer + verify (developer deduped)
+        # plan + developer + close + check + verify (developer deduped)
         execute_stages = [
             s for s in stages
-            if s["role"] != "supervisor" and s["name"] != "implementer-close"
+            if s["role"] != "supervisor"
+            and s["name"] not in ("checklist-close", "checklist-check")
         ]
         assert len(execute_stages) == 1
 
@@ -88,13 +90,14 @@ class TestBuildPipelineStages:
             "agent-implementer",
             "agent-architect-review",
             "agent-qa-review",
-            "implementer-close",
+            "checklist-close",
+            "checklist-check",
             "agent-project-auditor",
             "verify",
         ]
         closer = stages[4]
         assert closer["role"] == "agent-implementer"
-        assert closer["id"] == "implementer-close"
+        assert closer["id"] == "checklist-close"
         assert closer["skip_if"] == "checklist_green"
         assert closer["write_check"] == "off"
         assert "output" not in closer
@@ -115,7 +118,7 @@ class TestWritePipeline:
 
         data = yaml.safe_load(path.read_text())
         assert data["name"] == "default"
-        assert len(data["stages"]) == 5
+        assert len(data["stages"]) == 6
         assert data["stages"][0]["role"] == "supervisor"
         assert data["stages"][-1]["role"] == "supervisor"
 
@@ -144,7 +147,8 @@ class TestWritePipeline:
             "agent-implementer",
             "agent-architect-review",
             "agent-qa-review",
-            "implementer-close",
+            "checklist-close",
+            "checklist-check",
             "agent-project-auditor",
             "verify",
         ]

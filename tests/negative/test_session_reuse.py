@@ -361,8 +361,8 @@ def test_always_role_gate_and_pair_isolation(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: db)
 
     assert session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role="agent-qa-review",
-        agent="agent-qa-review", model="", attempt=2,
+        proj, todo_id=TODO, stage=STAGE, role="agent-project-auditor",
+        agent="agent-project-auditor", model="", attempt=2,
         config=_config("always"),
     ).reason == "role not allowed"
 

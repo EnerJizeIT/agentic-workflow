@@ -2041,11 +2041,13 @@ def _read_pipeline_roles(project_dir: Path, config: dict) -> list[str]:
     except (OSError, yaml.YAMLError, UnicodeDecodeError) as e:
         log.warning("analyze_roles: cannot read pipeline %s: %s", pipeline_file, e)
         return []
-    # CLOSER IMP7 (R7): a conditional gate (``skip_if``) is not a position
-    # in the agent chain — the closer shares ``agent-implementer``, and
-    # counting it broke the D9 promise that the last working role reads
-    # "LAST agent" (``test_rebuild_refreshes_positions``). ``skip_if``
-    # accepts only ``checklist_green`` (IMP1), so every such stage IS a gate.
+    # CLOSER IMP7 (R7): a conditional entry (``skip_if``) is not a position
+    # in the agent chain — checklist-close shares ``agent-implementer`` and
+    # checklist-check shares ``agent-qa-review``; counting either broke the
+    # D9 promise that the last working role reads "LAST agent"
+    # (``test_rebuild_refreshes_positions``). IMP5 (TODO-0304): ``skip_if``
+    # now names two facts (``checklist_green`` / ``checklist_close_skipped``)
+    # — such a stage is still a conditional entry, never a work position.
     return [s.role for s in stages if s.role != "supervisor" and not s.skip_if]
 
 

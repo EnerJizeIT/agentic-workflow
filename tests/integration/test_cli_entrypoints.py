@@ -1088,7 +1088,8 @@ class TestPipelineWriteEntrypoint:
         assert [s["name"] for s in data["stages"]] == [
             "plan",
             "agent-implementer",
-            "implementer-close",
+            "checklist-close",
+            "checklist-check",
             "verify",
         ]
         closer = data["stages"][2]

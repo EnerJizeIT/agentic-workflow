@@ -222,4 +222,4 @@ exit-код verify-pack: супервизор оправдывался вруч�
 
 ## Closer-гейт: quick без него, single с ним
 
-**Практика.** Closer (`implementer-close`) входит в default, full и code-health и в режиме single; quick остаётся коротким набором без него, а существующий `quick.yaml` пользователя не перезаписывается.
+**Практика.** Closer (`checklist-close`) и проверка его диффа (`checklist-check`) входят в default, full и code-health и в режиме single; quick остаётся коротким набором без них, а существующий `quick.yaml` пользователя не перезаписывается.

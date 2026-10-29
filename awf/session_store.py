@@ -26,7 +26,15 @@ DB_TIMEOUT = 1.0
 CAPTURE_EARLY_MS = 2_000
 CAPTURE_LATE_MS = 120_000
 DEFAULT_MAX_AGE_MINUTES = 240
-ALLOWED_ROLES = frozenset({"agent-implementer", "agent-refactoring-specialist"})
+ALLOWED_ROLES = frozenset(
+    {
+        "agent-implementer",
+        "agent-refactoring-specialist",
+        # IMP5 (TODO-0304): the checklist-check stage continues the QA
+        # session of the unit's earlier QA stage.
+        "agent-qa-review",
+    }
+)
 MODES = ("off", "fix-only", "always")
 
 _SESSION_TABLES = ("session", "session_v2")

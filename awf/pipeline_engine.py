@@ -2077,6 +2077,13 @@ def execute_agent_stage(
             )
             return current_todo, stage_idx, 1
         if decision.kind == "skip":
+            # IMP5 (TODO-0304): a green skip of the close stage is the FACT
+            # the follow-up check reads. Recorded here, at the decision, so
+            # it survives the next stage-start reset of ``stage_skipped``.
+            if stage.skip_if == closer_stage.GATE_SKIP_IF:
+                closer_stage.record_close_skipped(
+                    project_dir, current_todo, skipped=True, logs_dir=logs_dir
+                )
             _write_state(
                 project_dir,
                 stage_skipped=True,
@@ -2085,6 +2092,11 @@ def execute_agent_stage(
             )
             _log(logs_dir, f"SKIPPED ({decision.skip_reason})")
             return current_todo, stage_idx + 1, 0
+        if stage.skip_if == closer_stage.GATE_SKIP_IF:
+            # The closer enters: the follow-up check has a diff to review.
+            closer_stage.record_close_skipped(
+                project_dir, current_todo, skipped=False, logs_dir=logs_dir
+            )
 
     # OPS IMP1 (R1): ONE resolver for this stage's cap — caller → stage →
     # project → 3600. The line goes to the run log BEFORE the first spawn,
@@ -2579,7 +2591,10 @@ def execute_agent_stage(
     # signal is re-checked without charging (AC11).
     # A pre-stage manifest failure blocks before the worker ever runs;
     # there is no signal of the closer to settle (manifest_blocked).
-    if stage.skip_if and not manifest_blocked:
+    # IMP5 (TODO-0304): only the GATE-driven skip settles a closer run; the
+    # follow-up check stage reads the recorded fact and never re-runs the
+    # checklist gate here.
+    if stage.skip_if == closer_stage.GATE_SKIP_IF and not manifest_blocked:
         outcome = closer_stage.settle_run(
             project_dir,
             current_todo,

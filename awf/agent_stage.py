@@ -172,19 +172,24 @@ def run_agent_stage(
     # BEFORE the spawn — the title carries the number, the counter survives
     # a kill. Off keeps the previous title and never reads the base (AC39).
     stage_key = stage.id or stage.name
+    # IMP5 (TODO-0304): a stage may continue ANOTHER stage's session — the
+    # close stage continues the implementer, the follow-up check continues
+    # QA. The key names the pair file, the title and the shared attempt
+    # counter; empty keeps the stage address (old behavior).
+    session_key = stage.session_key or stage_key
     role_model = get_role_model(config, role)
     reuse_mode = session_store.mode(config)
     if reuse_mode != "off":
         attempt_entry = bump_stage_attempt(
-            project_dir, todo_id, stage_key, logs_dir=logs_dir
+            project_dir, todo_id, session_key, logs_dir=logs_dir
         )
         session_decision = session_store.decide(
-            project_dir, todo_id=todo_id, stage=stage_key, role=role,
+            project_dir, todo_id=todo_id, stage=session_key, role=role,
             agent=agent_name, model=role_model or "", attempt=attempt_entry,
             config=config, logs_dir=logs_dir,
         )
         title = session_store.session_title(
-            role, stage_key, todo_id, attempt_entry
+            role, session_key, todo_id, attempt_entry
         )
     else:
         title = f"awf-{role}-{todo_id}"
@@ -305,14 +310,14 @@ def run_agent_stage(
     if reuse_mode != "off":
         if session_decision.reused:
             session_store.confirm_and_update(
-                project_dir, todo_id=todo_id, stage=stage_key,
+                project_dir, todo_id=todo_id, stage=session_key,
                 session_id=session_decision.session_id, title=title,
                 agent=agent_name, model=role_model or "", attempt=attempt_entry,
                 logs_dir=logs_dir,
             )
         else:
             session_store.capture_after_spawn(
-                project_dir, todo_id=todo_id, stage=stage_key, title=title,
+                project_dir, todo_id=todo_id, stage=session_key, title=title,
                 agent=agent_name, model=role_model or "", attempt=attempt_entry,
                 spawn_started_ms=spawn_started_ms, logs_dir=logs_dir,
             )

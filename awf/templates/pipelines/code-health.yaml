@@ -20,14 +20,22 @@ stages:
   role: agent-refactoring-specialist
   task: 'Apply the agreed structural refactors from the architect''s findings: behavior
     preserved, ownership moved (old path removed), no new functionality.'
-- name: implementer-close
-  id: implementer-close
+- name: checklist-close
+  id: checklist-close
   role: agent-implementer
+  session_key: agent-implementer
   task: 'Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`);
     `manual` вне scope, блок не править; не меняй скоуп и контракт; запусти
     `awf checklist check <todo>`; отчитайся пунктами.'
   skip_if: checklist_green
   write_check: 'off'
+- name: checklist-check
+  id: checklist-check
+  role: agent-qa-review
+  session_key: agent-qa-review
+  task: 'Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые
+    тесты, без полного круга; находки — обычным `## REVIEW-фикс`.'
+  skip_if: checklist_close_skipped
 - name: verify
   on_approved: commit_and_next
   on_rejected: replan

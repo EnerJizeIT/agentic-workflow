@@ -205,7 +205,8 @@ Supervisor группирует BACKLOG задачи по глубине пай�
 
 Setup-форма пишет второй пайплайн рядом с активным —
 `.agentic/pipelines/quick.yaml`: та же команда без QA-стадии
-(`agent-qa-review`) и без closer-гейта (`implementer-close`). Уровень
+(`agent-qa-review`) и без closer-гейта с проверкой его диффа
+(`checklist-close` / `checklist-check`). Уровень
 выбирается на юнит:
 
 - **quick** — S-класс: доки, тесты-щиты, счётчики, однострочные фиксы без
