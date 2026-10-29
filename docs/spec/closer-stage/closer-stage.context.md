@@ -30,8 +30,8 @@ Scope: closer-stage (SPEC-ран: только документы, код не �
 
 Главные ограничения, которые сужают решения:
 
-- `kind` стадии вычисляется по позиции (`awf/pipeline.py:177`): первая стадия — `plan`, последняя — `verify`. Значит, воркер на позиции 0 получает супервизорский промпт (`awf/supervisor.py:265`). В предыдущей попытке забега так и вышло: лог `Stage 0: spec-context (agent-project-auditor :: plan)`; теперь у `closer-stage.yaml` первая стадия — `plan`, и ловушка закрыта.
-- Коммит делает движок на verify, а не стадия; «closer не может создавать коммит» — это свойство позиции, а не отдельный запрет. Если closer ставится в середину, у него нет commit-инструментов, но `write_allow`/`output` всё равно надо объявить явно, иначе запись в проект станет нарушением allowlist.
+- `kind` стадии вычисляется по позиции (`awf/pipeline.py:177`): первая стадия — `plan`, последняя — `verify`. Значит, воркер на позиции 0 получает супервизорский промпт (`awf/supervisor.py:265`). В прошлой попытке вышло `Stage 0: spec-context (agent-project-auditor :: plan)`; теперь первая стадия `closer-stage.yaml` — `plan`.
+- Коммит делает движок на verify: у стадии в середине нет commit-инструментов, но `write_allow`/`output` надо объявить, иначе запись нарушит allowlist.
 - Кэш гейта хранит только последний вердикт на юнит и перезаписывается при смене дерева. Истории «сколько раз пункт был missing на первом проходе» в `CHECKLIST-*.json` нет; для `caught` нужен отдельный носитель или новое поле.
 - `status=none` (блока нет) — не провал: старые юниты остаются зелёными. `skip_if: checklist_green` должен трактовать `none` как «пропустить», а не как «красный».
 
@@ -42,7 +42,7 @@ Scope: closer-stage (SPEC-ран: только документы, код не �
 | 0. Пакет-гейт | `docs/spec/closer-stage/*` | `spec_gate`, `cmd_spec_check` | `awf spec check` → rc 0 при READY; бюджет слов | `awf/spec_package.py:705`; `docs/unit-contract.md:240-280` |
 | 1. `skip_if` в схеме | `pipeline.yaml` | валидатор стадий, `Stage`, загрузчик, снапшот | ошибка загрузки на неизвестном значении; поле едет в per-TODO снапшот | `awf/pipeline.py:150,235,514`; `pipeline_snapshot_text` `:628`; `awf/api/run.py:3525` |
 | 2. Гейт после implementer | TODO юнита | вызов `checklist_gate.run` | `context/CHECKLIST-<todo>.json`; строка `dod: N/M` в логе стадии | `awf/checklist_gate.py:493`; `awf/orchestrator.py:300` |
-| 3. Closer-стадия | шаблоны пайплайнов | `Stage` с `role=agent-implementer`, `id=implementer-close`, `skip_if` | пропуск без спавна воркера; иначе обычная стадия | `awf/templates/pipelines/*`; `.agentic/pipelines/default.yaml` |
+| 3. Closer-стадия | шаблоны пайплайнов | пара `Stage`: `checklist-close` (`role=agent-implementer`, `session_key`, `skip_if`) и `checklist-check` (`role=agent-qa-review`, `skip_if: checklist_close_skipped`) | пропуск без спавна воркера; иначе обычная стадия | `awf/templates/pipelines/*`; `.agentic/pipelines/default.yaml` |
 | 4. Бюджет closer | `config.yaml` | новый валидируемый ключ, счётчик попыток | `BLOCKED-<id>.md` со списком missing | образец: `awf/budget.py:78`; шаблон `awf/api/_templates.py:58` |
 | 5. Неизменяемость | TODO + контракт | `block_hash`, снимок «до», сравнение «после» | BLOCKED «closer edited the checklist/contract» | `awf/checklists/_render.py:197`; `awf/cmd_checklist.py:99` |
 | 6. Статистика | `context/CHECKLIST-*.json` | новое действие CLI | markdown-таблица + `--json`; пустые данные — пустая таблица | `awf/checklist_gate.py:384,493`; `awf/cmd_checklist.py` |

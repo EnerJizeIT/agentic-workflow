@@ -591,15 +591,11 @@ def stale_stage_minutes(config: dict | None = None) -> int:
 def _updated_at_age_minutes(
     state: dict, *, now: float | None = None
 ) -> float | None:
-    raw = state.get("updated_at")
-    if not raw:
+    from . import pipeline_state
+
+    parsed = pipeline_state.parse_updated_at(state.get("updated_at"))
+    if parsed is None:
         return None
-    try:
-        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
     current = time.time() if now is None else now
     return max(current - parsed.timestamp(), 0.0) / 60.0
 
@@ -847,11 +843,13 @@ def _heartbeat_age_seconds(heartbeat: dict, *, now: float | None = None) -> floa
         stamp = None
     if stamp is None:
         raw = heartbeat.get("ts")
-        if isinstance(raw, str) and raw:
-            try:
-                stamp = datetime.fromisoformat(raw).timestamp()
-            except ValueError:
+        if raw:
+            from . import pipeline_state
+
+            parsed = pipeline_state.parse_updated_at(raw)
+            if parsed is None:
                 return None
+            stamp = parsed.timestamp()
     if stamp is None:
         return None
     return max(current - stamp, 0.0)

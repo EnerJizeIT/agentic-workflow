@@ -58,20 +58,6 @@ def stall_threshold_minutes(project_dir: Path | str) -> int:
     return value if value > 0 else 0
 
 
-def _parse_updated_at(raw: object) -> datetime | None:
-    """``current.yaml``'s ``updated_at`` (``isoformat`` with ``Z`` or
-    ``+00:00``). None when absent/unparseable (degradation, M1 style)."""
-    if not raw:
-        return None
-    try:
-        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    return ts
-
-
 def detect_stage_stall(
     project_dir: Path | str, *, now: datetime | None = None
 ) -> StageStall | None:
@@ -101,7 +87,9 @@ def detect_stage_stall(
         todo = str(state.get("todo_id") or "").strip()
 
         stamps: list[datetime] = []
-        updated = _parse_updated_at(state.get("updated_at"))
+        # The field's one parser (PA-0306-6): a second copy here read the
+        # same string with its own rules and could drift in silence.
+        updated = pipeline_state.parse_updated_at(state.get("updated_at"))
         if updated is not None:
             stamps.append(updated)
         log_file = paths.agentic_dir(project_dir) / "logs" / "orchestrator.log"

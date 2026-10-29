@@ -5,7 +5,7 @@
 Входы: closer-stage.context.md@ctx-1; closer-stage.md@req-4; closer-stage.requirements-review.md@review-4; closer-stage.architecture.md@arch-2; closer-stage.test-spec.md@qa-1
 База кода: commit 258f28a43f91663011c3a88967f15a2dd894d4b8; рабочее дерево: untracked `docs/spec/closer-stage/`, `M awf/budget.py`, `M tests/negative/test_unit_budget.py` (RR24)
 Проверено: closer-stage.context.md=ctx-1; closer-stage.md=req-4; closer-stage.requirements-review.md=review-4; closer-stage.architecture.md=arch-2; closer-stage.test-spec.md=qa-1; closer-stage.readiness.md=ready-1
-Пакет-sha: 2168474a3ce4f5f9f2ef79b7ceaaa2f312bc6c395b28b48b9c643f0a2c075c2e
+Пакет-sha: c1de6371c57970abb6ed229bd97664e78d136b5385b224ec512532d89df6e809
 
 ## Вердикт
 

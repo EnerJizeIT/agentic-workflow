@@ -3,3 +3,4 @@
 # красит run-all (pipefail).
 python3 -m pytest tests/ -q -n auto --timeout=300 -p no:cacheprovider
 ruff check .
+python3 -m awf spec check docs/spec/closer-stage

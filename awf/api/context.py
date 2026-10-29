@@ -428,6 +428,19 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         if next_action_from_status(status) == resume:
             run_next_action = resume
 
+    # TODO-0307 (PA-0306-1): a frozen stage reaches the bootstrap exactly
+    # like engine death — the fact travels, the advice comes from the one
+    # owner. When the owner ranks a higher-priority fact (salvage, blocked)
+    # its answer differs from the structural ``expected_action`` and wins
+    # here too; the calm "go idle" is never kept next to a frozen stage.
+    stale_stage = str(status.stale_stage or "")
+    if stale_stage:
+        from ..brief import next_action_from_status
+
+        stale_advice = next_action_from_status(status)
+        if stale_advice and stale_advice != str(status.expected_action or ""):
+            run_next_action = stale_advice
+
     # Dogfood-9: structural triggers for increment planning + commit visibility
     pipeline_configured = _pipeline_exists(project_dir)
     increment_planning_needed = (
@@ -479,6 +492,7 @@ def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
         ),
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
+        stale_stage=stale_stage,
         next_action=run_next_action,
     )
 

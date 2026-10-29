@@ -119,7 +119,7 @@ AC40 — спавн, убитый до захвата, сдвигает счёт
 
 MUST, в итерации. Источник: 0251 п.2–3; A4, A8.
 
-Поведение: `engine.reuse_session` — `off`, `fix-only`, `always`; по умолчанию `off`. `fix-only` продолжает только при повторе стадии (`attempt > 1` пары по R6), независимо от `## REVIEW-фикс`. `always` — без порога: живой файл пары с той же ролью и моделью, в том числе при потерянном счётчике; без файла равен `fix-only`. Разрешены `agent-implementer` и `agent-refactoring-specialist`; остальные, включая `agent-qa-review`, `agent-project-auditor` и супервизора, — свежие.
+Поведение: `engine.reuse_session` — `off`, `fix-only`, `always` (алиас `on` = `fix-only`); по умолчанию `off`. `fix-only` продолжает только при повторе стадии (`attempt > 1` пары по R6), независимо от `## REVIEW-фикс`. `always` — без порога: живой файл пары с той же ролью и моделью, в том числе при потерянном счётчике; без файла равен `fix-only`. Разрешены `agent-implementer`, `agent-refactoring-specialist` и `agent-qa-review` (пара `checklist-close`/`checklist-check`); остальные, включая `agent-project-auditor` и супервизора, — свежие.
 
 Продолжение требует совпадения роли, модели и возраста ≤ `engine.session_max_age_minutes` (240) от `ts`.
 

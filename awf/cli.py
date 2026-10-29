@@ -1179,3 +1179,6 @@ def _run_command(args) -> int:
         print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())

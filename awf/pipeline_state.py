@@ -262,25 +262,40 @@ def clear_state(project_dir: Path, *, logs_dir: Path | None = None) -> None:
         state_store.raise_state_removal_failure(e, "clear state")
 
 
+def parse_updated_at(raw: object) -> datetime | None:
+    """``current.yaml``'s ``updated_at`` → aware datetime, or ``None``.
+
+    The single parser for the field (PA-0306-6): this module writes the
+    timestamp as ``isoformat()`` with ``+00:00``, older states carry the
+    ``Z`` suffix, and a naive value means UTC. Absent, non-string or
+    unparseable input degrades to ``None`` ("unknown") — the caller decides
+    whether that is stale, never a traceback (M1).
+    """
+    if not raw:
+        return None
+    # Handle both 'Z' suffix (3.11+) and '+00:00' (3.9+)
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
 def is_state_stale(state: dict[str, Any], max_age_seconds: int = 7200) -> bool:
     """Check if state file is older than ``max_age_seconds`` (default 2h).
 
     Readers use this to avoid trusting stale state from a crashed pipeline
-    whose orchestrator never wrote a clean exit.
+    whose orchestrator never wrote a clean exit. Reading the timestamp stays
+    with :func:`parse_updated_at`; this reader's policy is that an unknown
+    timestamp counts as stale (fail closed).
     """
-    updated_at = state.get("updated_at")
-    if not updated_at:
+    ts = parse_updated_at(state.get("updated_at"))
+    if ts is None:
         return True
-    try:
-        # Handle both 'Z' suffix (3.11+) and '+00:00' (3.9+)
-        ts_str = str(updated_at).replace("Z", "+00:00")
-        ts = datetime.fromisoformat(ts_str)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - ts).total_seconds()
-        return age > max_age_seconds
-    except (ValueError, TypeError):
-        return True
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age > max_age_seconds
 
 
 def state_trusted(project_dir: Path, state: dict[str, Any] | None) -> bool:

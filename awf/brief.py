@@ -494,7 +494,7 @@ def _state_lines(r: BriefResult) -> list[str]:
     if r.pipeline_running:
         stage = f" · stage: {r.current_stage}" if r.current_stage else ""
         lines.append(f"- pipeline: RUNNING (PID {r.pipeline_pid}){stage}")
-    if r.stall:
+    if r.stall and not r.engine_dead:
         lines.append(f"- stall: {r.stall}")
     if r.zombie_state:
         lines.append(f"- zombie-state: {r.zombie_state}")
@@ -503,7 +503,10 @@ def _state_lines(r: BriefResult) -> list[str]:
     # comes from next_action (engine_dead). The opt-in stall line already
     # names a quiet live stage; the STALE line is not repeated next to it
     # (one thought, one place — and the card word budget).
-    if r.stale_stage and not r.stall:
+    # TODO-0307 (PA-0306-5): the stall line is a quiet LIVE stage's
+    # diagnostic; a dead engine always gets the STALE line, and its stall
+    # line is suppressed above (it is not "quiet", it is gone).
+    if r.stale_stage and (r.engine_dead or not r.stall):
         lines.append(f"- {r.stale_stage}")
     elif r.engine_dead:
         lines.append(f"- engine_dead: {r.engine_dead}")
@@ -698,8 +701,10 @@ def next_action_from_status(s: Any) -> str:
     # STALE line — the silent wait of incident 1 in words. While the stage
     # is frozen the stale advice wins (the engine-death advice below still
     # outranks it: that pid is gone). A stale line WITHOUT a running
-    # pipeline keeps the structural answer (``awf_start`` …): nothing is
-    # waiting there, so the frozen stage is only a leftover.
+    # pipeline has no structural prefill to outrank — ``expected_action``
+    # exists only while the pipeline runs — so the leftover also reaches the
+    # stale advice below: there is nothing to wait for, the leftover state
+    # must be cleared before the next launch (TODO-0307 test pins this).
     if expected and not (_get("stale_stage") and _get("pipeline_running")):
         return str(expected)
     if _get("salvage_needed"):
