@@ -77,10 +77,16 @@ def test_templates_and_generator_carry_the_pair(variant):
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
-    for sub in ("inbox", "outbox", "logs", "context", "state"):
+    for sub in ("inbox", "outbox", "logs", "context", "state", "roles"):
         (project / ".agentic" / sub).mkdir(parents=True, exist_ok=True)
     (project / ".agentic" / "config.yaml").write_text(
         "project:\n  name: CheckStage\n", encoding="utf-8"
+    )
+    # Hermetic: the stage resolves its role from the project, never from the
+    # machine's ~/.config/awf/roles (CI has none; a clean HOME reproduced the
+    # failure where the role error was swallowed by pytest.raises(RuntimeError)).
+    (project / ".agentic" / "roles" / "agent-qa-review.md").write_text(
+        "# agent-qa-review\n", encoding="utf-8"
     )
     return project
 
