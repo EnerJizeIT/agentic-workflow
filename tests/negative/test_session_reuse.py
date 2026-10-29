@@ -250,6 +250,10 @@ def test_foreign_schema_writes_no_file(tmp_path, monkeypatch):
 
 
 def test_slow_base_respects_one_second_budget(tmp_path, monkeypatch):
+    """T15/AUD-0303-1: the production budget is 1s; the test ceiling is 2s.
+
+    The old ``< 3.0`` bound let a read twice the documented budget pass.
+    """
     proj = _project(tmp_path)
     db = _make_db(tmp_path / "opencode.db")
     monkeypatch.setattr(session_store, "db_path", lambda: db)
@@ -267,7 +271,8 @@ def test_slow_base_respects_one_second_budget(tmp_path, monkeypatch):
         holder.rollback()
         holder.close()
     assert result is None
-    assert elapsed < 3.0
+    assert session_store.DB_TIMEOUT <= 2.0
+    assert elapsed < 2.0
     assert not session_store.session_file(proj, TODO, STAGE).exists()
 
 

@@ -1639,9 +1639,10 @@ def _blocked_note_lines(
 ) -> list[str]:
     """The standard BLOCKED schema in ONE place (``docs/unit-contract.md``).
 
-    Both engine producers — an auth death (R12) and a write violation
-    (AUD1) — pass structured sections here, so a heading change cannot land
-    in one producer and leave the other unparseable by ``awf blocked-draft``.
+    All three engine producers — an auth death (R12), a write violation
+    (AUD1) and the hard cap (R3, ``_stop_on_hard_timeout``) — pass
+    structured sections here, so a heading change cannot land in one
+    producer and leave the others unparseable by ``awf blocked-draft``.
     Items are plain text; the ``- `` marker is added here, once.
     """
     return [
@@ -1679,10 +1680,11 @@ def _write_blocked_note(
     headings, so neither writer can drift into a form ``awf blocked-draft``
     cannot parse.
 
-    Both engine producers — an auth death (R12) and a write violation
-    (AUD1) — hand their sections to this one writer; the schema, the file
-    name, the outbox, the managed barrier and the failure log live here, so
-    a change cannot land in one producer only. Schema:
+    All three engine producers — an auth death (R12), a write violation
+    (AUD1) and the hard cap (R3) — hand their sections to this one writer;
+    the schema, the file name, the outbox, the managed barrier and the
+    failure log live here, so a change cannot land in one producer only.
+    Schema:
     ``docs/unit-contract.md`` (``## ВЕРДИКТ`` / ``## НАХОДКИ`` /
     ``## НАПРАВЛЕНИЯ-ФИКСА`` / ``## ПЕРЕНОСЫ``).
 

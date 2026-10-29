@@ -198,6 +198,16 @@ class TestGetPhasePrompt:
         prompt = phase.get_phase_prompt("form", project)
         assert "Build feature X" in prompt
 
+    def test_brief_prompt_names_the_pipeline_levels(self, tmp_path):
+        """CTX1 (TODO-0290): the live SMO prompt names `quick`, its missing
+        `closer` gate and `single` as a stage mode — the full manual alone
+        was not read by a running project."""
+        project = _setup_project(tmp_path)
+        prompt = phase.get_phase_prompt("brief", project)
+        assert "quick" in prompt
+        assert "closer" in prompt
+        assert "`single` is a stage mode" in prompt
+
     def test_fallback_to_package_templates(self, tmp_path):
         """Without project-level templates, falls back to awf package
         templates."""

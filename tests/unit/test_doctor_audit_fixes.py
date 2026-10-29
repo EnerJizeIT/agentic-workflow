@@ -288,3 +288,18 @@ def test_model_warnings_turn_the_row_red(project, env, monkeypatch):
     assert len(models) == 1, _lines(report)
     assert "1 warning(s)" in models[0], models[0]
 
+
+def test_process_without_a_commit_names_the_missing_evidence(project, env, monkeypatch):
+    """AUD-0296 CTX1: the process row says "no commit evidence", like IMP6.
+
+    A version string alone does not identify code; when the running module
+    cannot name its commit the row must say so instead of looking healthy.
+    """
+    _versions(monkeypatch)
+    monkeypatch.setattr("awf.versions.process_commit", lambda: "")
+
+    report = run_doctor(project)
+    awf_lines = [line for line in report.lines if line.startswith("ok  awf:")]
+    assert len(awf_lines) == 1, _lines(report)
+    assert "process has no commit evidence" in awf_lines[0], awf_lines[0]
+    assert report.rc == 0, _lines(report)

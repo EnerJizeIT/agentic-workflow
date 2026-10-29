@@ -47,9 +47,12 @@ _ALLOWANCE_KEYS: tuple[str, ...] = ("xfail_allow", "skip_allow")
 #: TODO-0298): the closer may not rewrite the check semantics; ``files`` is
 #: a report, not a norm. ``xfail_allow``/``skip_allow`` are part of the norm
 #: too: a unit that adds an allowance widens what counts as green, so the
-#: hash must move.
+#: hash must move. ``prove_red_kind``/``prove_red_cmd`` (AUD-0298-1) say HOW
+#: the red proof is produced and ``prove_red_note`` justifies the kind —
+#: switching either swaps the check just as much as editing ``prove_red``.
 FROZEN_CONTRACT_KEYS: tuple[str, ...] = (
     "verify", "gates", "prove_red",
+    "prove_red_kind", "prove_red_note", "prove_red_cmd",
 ) + _ALLOWANCE_KEYS
 
 #: The one wording AC12/AC13 require on a norm edit.
@@ -183,8 +186,10 @@ def _verdict_facts(verdict: dict) -> dict:
 def contract_fingerprint(contract: dict | None) -> str:
     """sha256 of the frozen contract keys (IMP5, R5; TODO-0298).
 
-    ``verify``, ``gates``, ``prove_red`` and the allowances
-    ``xfail_allow``/``skip_allow`` decide what the unit is checked against;
+    ``verify``, ``gates``, ``prove_red`` with the keys that set its mechanism
+    (``prove_red_kind``/``prove_red_cmd``) and the justification that goes
+    with the kind (``prove_red_note``), plus the allowances
+    ``xfail_allow``/``skip_allow``, decide what the unit is checked against;
     ``files`` and the other keys are a report, not a norm, and are
     deliberately outside the hash (AC13). An allowance equal to its default
     (0) is dropped, so an explicit ``xfail_allow: 0`` hashes like an absent

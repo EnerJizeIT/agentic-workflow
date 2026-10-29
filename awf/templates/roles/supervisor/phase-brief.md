@@ -26,6 +26,11 @@ to see how many stages will run:
 If a BACKLOG task is a one-line fix, combine it with neighbors into a
 batch TODO.
 
+**Pipeline levels.** `quick` is the S-class pipeline: it has NO `closer`
+gate, so a red completion checklist stays red at verify — fix it by hand or
+use the full pipeline. `single` is a stage mode, not one agent: the
+`closer` and `verify` still run.
+
 ## Step 3: Write TODO content
 
 Prepare a TODO for the FIRST agent stage. Structure:

@@ -1284,15 +1284,21 @@ class TestU6cNetRetryOnCrash:
                 "Worker produced no output for 15.0 min (watchdog) — "
                 "process tree killed"
             ),
-            TimeoutError("Subprocess did not produce signal within 3600s"),
         ],
-        ids=["watchdog", "hard-timeout"],
+        ids=["watchdog"],
     )
     def test_non_network_timeout_keeps_stop(
         self, tmp_path, monkeypatch, exc
     ) -> None:
-        """Watchdog and hard-timeout deaths with a clean log are NOT the
-        network class — no over-classification, the old stop stands."""
+        """A watchdog death with a clean log is NOT the network class — no
+        over-classification, the old stop stands.
+
+        The hard cap left this parametrization (AUD-0294 F1): production
+        raises ``HardTimeoutError`` and the engine turns it into a BLOCKED
+        note, so a plain ``TimeoutError`` with the cap text was green on a
+        path that no longer exists. That branch is covered by
+        ``test_stage_hard_timeout.py`` — not duplicated here.
+        """
         run, calls, sleeps, state_calls, log_lines, _project = self._setup(
             tmp_path, monkeypatch, "worker: starting work\n", exc,
             until_success=99,

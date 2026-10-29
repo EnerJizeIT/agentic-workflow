@@ -1965,3 +1965,86 @@ class TestFrozenAllowances:
         xfail = closer_stage.contract_fingerprint(dict(self.BASE, xfail_allow=1))
         skip = closer_stage.contract_fingerprint(dict(self.BASE, skip_allow=1))
         assert xfail != skip
+
+
+class TestFrozenProveRedDetails:
+    """AUD-0298-1: the prove-red mechanism is part of the frozen norm."""
+
+    BASE = {
+        "verify": ["python -m pytest -q"],
+        "gates": ["contracts"],
+        "prove_red": ["tests/x.py::test_y"],
+    }
+
+    def _with_details(self, **overrides):
+        contract = dict(
+            self.BASE,
+            prove_red_kind="coverage",
+            prove_red_note="the behavior predates this unit",
+        )
+        contract.update(overrides)
+        return contract
+
+    def test_switching_the_kind_moves_the_hash(self):
+        """The note is held equal, so only the kind can move the hash."""
+        coverage = self._with_details()
+        new_api = self._with_details(prove_red_kind="new-api")
+        assert closer_stage.contract_fingerprint(new_api) != (
+            closer_stage.contract_fingerprint(coverage)
+        )
+
+    def test_switching_the_note_moves_the_hash(self):
+        one = self._with_details(prove_red_note="one")
+        two = self._with_details(prove_red_note="two")
+        assert closer_stage.contract_fingerprint(two) != (
+            closer_stage.contract_fingerprint(one)
+        )
+
+    def test_switching_the_command_moves_the_hash(self):
+        """Two different commands must not collapse into one hash."""
+        pytest_cmd = dict(self.BASE, prove_red_cmd="pytest tests/x.py -q")
+        npm_cmd = dict(self.BASE, prove_red_cmd="npm test -- --run")
+        assert closer_stage.contract_fingerprint(npm_cmd) != (
+            closer_stage.contract_fingerprint(pytest_cmd)
+        )
+
+    def test_the_details_stay_out_of_the_absent_zero_normalisation(self):
+        """Only the allowance keys normalise: an empty detail string is a value."""
+        bare = closer_stage.contract_fingerprint(dict(self.BASE))
+        empty_kind = closer_stage.contract_fingerprint(
+            dict(self.BASE, prove_red_kind="")
+        )
+        assert empty_kind != bare
+
+    def test_switching_the_kind_after_the_snapshot_is_a_norm_edit(
+        self, tmp_git_repo
+    ):
+        """AUD-0298-1 at the guard: a closer round cannot declare `coverage`.
+
+        `prove_red_kind: coverage` turns a not-red baseline into a pass in
+        verify-pack, so the unit could hide "the tests prove nothing" by
+        editing the contract after the norm snapshot.
+        """
+        proj = _closer_project(tmp_git_repo)
+        _write_todo(
+            proj,
+            "TODO-0001",
+            block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+            contract=list(_NORM_CONTRACT)
+            + [
+                "prove_red_kind: new-api",
+                'prove_red_note: "the symbol is new in this unit"',
+            ],
+        )
+        stage = _closer_stage()
+        assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+        _edit_todo(
+            proj,
+            "TODO-0001",
+            old="prove_red_kind: new-api",
+            new="prove_red_kind: coverage",
+        )
+        blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+        assert blocked.kind == "blocked"
+        assert "контракт TODO" in (blocked.log_line or "")
