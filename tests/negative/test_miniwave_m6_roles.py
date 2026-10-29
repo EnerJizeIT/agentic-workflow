@@ -616,6 +616,34 @@ def test_materialized_role_gets_its_own_test_policy(
     assert fragment in content, role
 
 
+@pytest.mark.parametrize(
+    ("role", "fragment"),
+    [
+        ("agent-qa-review", "ОДИН канонический прогон"),
+        ("agent-implementer", "только целевые"),
+        ("agent-project-auditor", "артефакт QA"),
+        ("agent-architect-review", "НЕ запускаются"),
+    ],
+)
+def test_shipped_role_template_names_the_single_test_policy_block(
+    tmp_git_repo, role, fragment
+):
+    """AUD289-2, one owner: the tracked template names the managed block
+    instead of restating the rule. A second copy drifts when the role is
+    renamed (the policy is chosen by name token) and on every refresh, so
+    the materialized file must carry the fragment exactly once."""
+    text = (TEMPLATES / "roles" / f"{role}.md").read_text(encoding="utf-8")
+    assert "Политика тестов" in text, role
+    assert "правилу M1 ниже" not in text, role
+    assert fragment not in text, role
+
+    api.init_project(tmp_git_repo, project_name=f"M6Template{role}")
+    api.add_role(tmp_git_repo, role)
+    content = _role(tmp_git_repo, role).read_text(encoding="utf-8")
+    assert content.count(fragment) == 1, role
+    assert content.count(SUITE_MARKER) == 1, role
+
+
 def test_refresh_migrates_the_old_suite_block_in_place(tmp_git_repo):
     """RB-1: старый безусловный канон заменяется, второй маркер не растёт."""
     legacy_body = (

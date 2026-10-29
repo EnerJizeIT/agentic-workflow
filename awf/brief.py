@@ -38,6 +38,14 @@ MAX_WORDS = 900
 # same rule, the line is paid by the changelog tail, not MAX_WORDS.
 # TODO-0240: the tool map gained awf_review_append — paid by the map's own
 # `when` hints (shorter lines), not by the changelog tail.
+#
+# The phase prompt has TWO surfaces, and only one is clipped here:
+# ``awf_brief`` shows a ``_PHASE_PROMPT_MAX_WORDS``-word EXCERPT of the
+# phase prompt (a recall cue, not the manual); the FULL text is
+# ``awf_current_step`` (``awf.phase.get_phase_prompt``). A rule that must
+# be read by a running project belongs in the card's own sections or near
+# the top of the prompt, not in the prompt tail — ``tests/unit/test_phase.py``
+# asserts the full prompt, so it cannot prove the card shows the line.
 _PHASE_PROMPT_MAX_WORDS = 45
 _CHANGELOG_MAX_LINES = 10
 _CHANGELOG_MAX_WORDS = 19

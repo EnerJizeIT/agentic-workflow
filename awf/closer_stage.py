@@ -11,6 +11,22 @@ place where the answer becomes an action, the first verdict for the
 statistics (``context/CLOSER-<todo>.json``) and the stage-state fields the
 engine records for a skip.
 
+``skip_if`` has exactly one allowed value — ``checklist_green``
+(``pipeline.SKIP_IF_ALLOWED``): the key names a gate verdict, not a
+free-form condition. A missing or ``null`` key means "always run"; the
+loader refuses an empty string, a number or a bool. The stage must also
+name ``write_check: "off"`` — a conditional run with an implicit write
+allowlist is a static defect and blocks without a spawn (see
+:func:`decide`).
+
+The frozen norm (IMP5, R5) is the checklist block hash plus a sha256 over
+the contract keys that decide what the unit is checked against —
+``verify``, ``gates``, ``prove_red``, its mechanism keys
+``prove_red_kind``/``prove_red_note``/``prove_red_cmd`` and the allowances
+``xfail_allow``/``skip_allow`` (:data:`FROZEN_CONTRACT_KEYS`). An allowance
+equal to its default 0 hashes like an absent key; ``files`` is a report,
+not a norm, and stays outside.
+
 IMP4 adds the attempt budget around the same record: :func:`settle_run`
 recomputes the gate after a signal and answers green / retry / blocked. A
 completed run with a verdict charges one attempt; a salvaged signal is
@@ -459,6 +475,10 @@ def decide(
     config: dict,
 ) -> Decision:
     """Decide one entry of a stage that declares ``skip_if``.
+
+    ``skip_if`` accepts one value — ``checklist_green``. The stage must
+    also declare ``write_check: "off"``; a ``skip_if`` without it is a
+    static defect (blocked here, before a gate run or a spawn).
 
     The order is fixed (architecture K2): stage/config defects first (no gate
     run, no spawn), then the gate on the current tree, then the first verdict

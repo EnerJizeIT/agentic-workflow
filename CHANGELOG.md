@@ -38,8 +38,10 @@ the norm to the implementer; the closer stage proves the frozen DoD.
 
 - One command parser is shared by the gate, verify-pack and the canonical
   script; raw `pytest` without a target counts as full when `testpaths` is set.
-- `pipeline-write --variant` returns non-zero on unresolved roles (CLI/form
-  parity); Windows is documented as unsupported for state/start paths.
+- `pipeline-write --variant` prints a WARNING and returns 0 on unresolved
+  roles (CLI/form parity, spec AC23/T11; role files are not materialized —
+  add one with `awf add-role`); Windows is documented as unsupported for
+  state/start paths.
 
 ### Upgrade
 

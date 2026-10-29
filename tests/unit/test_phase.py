@@ -201,7 +201,14 @@ class TestGetPhasePrompt:
     def test_brief_prompt_names_the_pipeline_levels(self, tmp_path):
         """CTX1 (TODO-0290): the live SMO prompt names `quick`, its missing
         `closer` gate and `single` as a stage mode — the full manual alone
-        was not read by a running project."""
+        was not read by a running project.
+
+        Surface (AUD-0299-3): this asserts the FULL prompt
+        (``get_phase_prompt``, served by ``awf_current_step``). The
+        ``awf_brief`` card clips the same text to 45 words and is NOT
+        covered here — a line visible in the card needs its own assertion
+        on ``build_brief``/card text.
+        """
         project = _setup_project(tmp_path)
         prompt = phase.get_phase_prompt("brief", project)
         assert "quick" in prompt
