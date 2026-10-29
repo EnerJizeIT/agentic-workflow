@@ -62,6 +62,8 @@ READ_KEYS: frozenset[str] = frozenset({
     "engine.heartbeat_seconds",
     "engine.heartbeat_stale_seconds",
     "engine.kill_with_parent",
+    "engine.reuse_session",
+    "engine.session_max_age_minutes",
     # ── limits / checklist ───────────────────────────────────────────────
     "limits.max_review_passes",
     "checklist.closer_attempts",

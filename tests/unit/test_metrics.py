@@ -1335,3 +1335,94 @@ class TestContentMatchEscaping:
         excl = [w for w in res.warnings if "исключены сессии других проектов" in w]
         assert any("2" in w for w in excl)
         assert not any("3" in w for w in excl)
+
+
+class TestSessionTitleParsing:
+    """T17 (R6/AC38): both worker titles are read without splitting by stage."""
+
+    def test_old_and_new_title(self):
+        assert M._todo_id_from_title("awf-agent-implementer-TODO-0002") == "TODO-0002"
+        assert M._todo_id_from_title(
+            "awf-agent-implementer-agent-developer-TODO-0001-a1"
+        ) == "TODO-0001"
+        assert M.parse_worker_title(
+            "awf-implementer-agent-developer-TODO-0001-a1", {"implementer"}
+        ) == ("implementer", "agent-developer", "TODO-0001", 1)
+        assert M.parse_worker_title(
+            "awf-implementer-TODO-0002", {"implementer"}
+        ) == ("implementer", "", "TODO-0002", None)
+
+    def test_longest_role_wins(self):
+        parsed = M.parse_worker_title(
+            "awf-agent-implementer-agent-developer-TODO-0003-a2",
+            {"agent", "agent-implementer"},
+        )
+        assert parsed[0] == "agent-implementer"
+        assert parsed[1] == "agent-developer"
+        assert parsed[3] == 2
+
+    def test_workers_by_role_single_row(self, tmp_path):
+        proj = tmp_path / "proj"
+        (proj / ".agentic" / "roles").mkdir(parents=True)
+        (proj / ".agentic" / "roles" / "implementer.md").write_text("# role\n")
+        db = tmp_path / "db.db"
+        con = sqlite3.connect(db)
+        con.executescript(_SCHEMA)
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("n1", "awf-implementer-agent-developer-TODO-0001-a1", _FAKE_HOME, 0.0,
+             100, 10, 0, 0, _ms(T0), _ms(T0 + 60)),
+        )
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("n2", "awf-implementer-TODO-0002", _FAKE_HOME, 0.0,
+             200, 20, 0, 0, _ms(T0 + 90), _ms(T0 + 120)),
+        )
+        con.commit()
+        con.close()
+        models = make_models(tmp_path / "models.json")
+        res = M.collect_metrics(
+            proj, db_path=db, models_path=models, out=tmp_path / "r.md",
+            all_projects=True,
+        )
+        assert set(res.workers_by_role) == {"implementer"}
+        assert res.workers_by_role["implementer"]["sessions"] == 2
+        assert res.workers_by_role["implementer"]["in"] == 300
+
+    def test_global_role_is_not_split_by_stage(self, tmp_path, monkeypatch):
+        """AC38: a role served from the global dir must not split by stage.
+
+        ``resolve_role_file`` falls back to ``$XDG_CONFIG_HOME/awf/roles`` —
+        a project may use such a role without a local file. The known-role
+        list has to cover that fallback, or the new title's stage becomes
+        part of the role name and the statistics divide per stage.
+        """
+        proj = tmp_path / "proj"
+        (proj / ".agentic").mkdir(parents=True)
+        xdg = tmp_path / "xdg"
+        (xdg / "awf" / "roles").mkdir(parents=True)
+        (xdg / "awf" / "roles" / "implementer.md").write_text("# role\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+
+        db = tmp_path / "db.db"
+        con = sqlite3.connect(db)
+        con.executescript(_SCHEMA)
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("n1", "awf-implementer-agent-developer-TODO-0001-a1", _FAKE_HOME, 0.0,
+             100, 10, 0, 0, _ms(T0), _ms(T0 + 60)),
+        )
+        con.execute(
+            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("n2", "awf-implementer-TODO-0002", _FAKE_HOME, 0.0,
+             200, 20, 0, 0, _ms(T0 + 90), _ms(T0 + 120)),
+        )
+        con.commit()
+        con.close()
+        models = make_models(tmp_path / "models.json")
+        res = M.collect_metrics(
+            proj, db_path=db, models_path=models, out=tmp_path / "r.md",
+            all_projects=True,
+        )
+        assert set(res.workers_by_role) == {"implementer"}
+        assert res.workers_by_role["implementer"]["sessions"] == 2

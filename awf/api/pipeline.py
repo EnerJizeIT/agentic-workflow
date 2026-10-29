@@ -2644,18 +2644,23 @@ def _clear_state_keep_salvage(project_dir: Path) -> None:
         count = int(state.get("salvage_count", 0) or 0)
     except (TypeError, ValueError):
         count = 0
+    # R6 (AC21/AC40): the (unit, stage) entry counter must survive a
+    # kill+continue — the retried stage gets -a<N+1>, not -a1 again.
+    attempts = state.get("stage_attempts")
     try:
         clear_state(project_dir)
     except OSError:
         # R1.5 (REVIEW A1): clear_state propagates a real failure; salvage
         # bookkeeping stays best-effort (AUD04-08 path).
         pass
+    keep = {}
     if count > 0:
-        write_state(
-            project_dir,
-            salvage_count=count,
-            salvage_count_key=state.get("salvage_count_key"),
-        )
+        keep["salvage_count"] = count
+        keep["salvage_count_key"] = state.get("salvage_count_key")
+    if isinstance(attempts, dict) and attempts:
+        keep["stage_attempts"] = attempts
+    if keep:
+        write_state(project_dir, **keep)
 
 
 def _collect_worker_pids(

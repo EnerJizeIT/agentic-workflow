@@ -83,8 +83,10 @@ from pathlib import Path
 from typing import Any
 
 from . import config as config_mod
+from . import paths
 from .infra import managed_fs
 from .todo_ids import extract_todo_id
+from .xdg import awf_roles_dir
 
 DEFAULT_REFERENCE_MODEL = "anthropic/claude-sonnet-4-6"
 
@@ -117,7 +119,10 @@ WEEKS_PER_MONTH = 4.345
 # A-10: общий парсер TODO ID — в `awf/todo_ids.py` (R-06, TODO-0112):
 # 4+ цифры с явной правой границей. TODO-10000 не усекается до TODO-1000,
 # TODO-10000x не читается как ID вовсе.
-_WORKER_TITLE_RE = re.compile(r"^awf-.+-TODO-(\d{4,})$")  # правая граница — `$`
+# R6: оба заголовка — старый `awf-<роль>-TODO-NNNN` и новый
+# `awf-<роль>-<стадия>-TODO-NNNN-a<N>` (правая граница — `$`). Один разбор
+# на две задачи: id и граница «роль | стадия» (K10, T17).
+_WORKER_TITLE_RE = re.compile(r"^awf-(.+)-TODO-(\d{4,})(?:-a(\d+))?$")
 # A-17: префикс commit-гейта `awf(<stage>): ` — стадия любая (verify/execute/
 # кастомные); ID извлекает общий парсер A-10 (:func:`_todo_id_from_subject`).
 _AWF_STAGE_HEAD_RE = re.compile(r"^awf\([^)]*\):\s*")
@@ -126,7 +131,48 @@ _AWF_STAGE_HEAD_RE = re.compile(r"^awf\([^)]*\):\s*")
 def _todo_id_from_title(title: str | None) -> str | None:
     """Заголовок воркер-сессии ``awf-<роль>-TODO-NNNN`` → TODO ID или None."""
     m = _WORKER_TITLE_RE.match(title or "")
-    return f"TODO-{m.group(1)}" if m else None
+    return f"TODO-{m.group(2)}" if m else None
+
+
+def parse_worker_title(
+    title: str | None, known_roles=()
+) -> tuple[str, str, str, int | None] | None:
+    """R6/T17: ``awf-<роль>[-<стадия>]-TODO-NNNN[-a<N>]`` → 4 поля.
+
+    Старый заголовок даёт пустую стадию и ``attempt=None``. Без списка
+    известных ролей границу «роль | стадия» не найти — весь средний
+    кусок считается ролью (стадия пустая).
+    """
+    m = _WORKER_TITLE_RE.match(title or "")
+    if not m:
+        return None
+    middle, digits, att = m.groups()
+    todo = f"TODO-{digits}"
+    attempt = int(att) if att else None
+    roles = sorted({r for r in (known_roles or ()) if r}, key=len, reverse=True)
+    for role in roles:
+        if middle == role:
+            return (role, "", todo, attempt)
+        if middle.startswith(role + "-"):
+            return (role, middle[len(role) + 1:], todo, attempt)
+    return (middle, "", todo, attempt)
+
+
+def known_role_slugs(project_dir: str | Path) -> frozenset[str]:
+    """Роли проекта и глобального каталога (K10).
+
+    ``resolve_role_file`` берёт роль из проекта, иначе из
+    ``$XDG_CONFIG_HOME/awf/roles`` — глобальная роль без локального файла
+    тоже должна быть известна, иначе её стадия склеится с именем роли и
+    статистика разделится по стадиям (AC38).
+    """
+    slugs: set[str] = set()
+    for roles_dir in (paths.roles_dir(project_dir), awf_roles_dir()):
+        try:
+            slugs.update(p.stem for p in roles_dir.glob("*.md") if p.is_file())
+        except OSError:
+            continue
+    return frozenset(slugs)
 
 
 def _todo_id_from_subject(subject: str | None) -> str | None:
@@ -406,6 +452,7 @@ def collect_workers(
     directory: str | None,
     matched: frozenset[str] | None,
     warnings: list[str],
+    known_roles: frozenset[str] | None = None,
 ) -> dict[str, dict]:
     """Воркерские сессии (``awf-<роль>-TODO-NNNN``), сгруппированные по TODO.
 
@@ -463,7 +510,10 @@ def collect_workers(
                 "role_sums": {},
             },
         )
-        role = (title or "").replace(f"-{todo}", "").removeprefix("awf-")
+        parsed = parse_worker_title(title, known_roles or ())
+        role = parsed[0] if parsed else (
+            title or ""
+        ).replace(f"-{todo}", "").removeprefix("awf-")
         rsum = d["role_sums"].setdefault(
             role, {"sessions": 0, "in": 0, "out": 0, "cr": 0, "cost": 0.0}
         )
@@ -1645,7 +1695,10 @@ def collect_metrics(
                 "измеряются)"
             )
     if con is not None:
-        workers = collect_workers(con, since_ms, directory, matched, warnings)
+        workers = collect_workers(
+            con, since_ms, directory, matched, warnings,
+            known_roles=known_role_slugs(project_dir),
+        )
     commits = collect_commit_info(project_dir, warnings)
 
     todos = sorted(set(workers) | set(commits))
