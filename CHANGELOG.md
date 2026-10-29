@@ -5,11 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-10-29
+
+### Added
+
+- ops reliability (R1–R6): per-stage timeout from config, full-suite warning before spawn, hard timeout -> BLOCKED with log tail, xfail/skip gate, `awf doctor` (versions, code identity, config-key registry, dead keys, plugin drift, no secrets), start handshake (rc/version/code identity).
+- context efficiency IMP5: fix rounds resume the same implementer/QA opencode session (`engine.reuse_session`, `on`/`always`/`fix-only`/`off`), live capture diagnostics.
+- checklist stages: `implementer-close` renamed to `checklist-close`, new `checklist-check` (QA re-check of the closer diff); sessions keyed by role.
+- QA-death resilience: stale stage in brief/status/dashboard, pipeline-snapshot hint with a working exit, session-death fresh fallback with reason, kill isolation canary.
+- specs READY: `docs/spec/context-efficiency/`, `docs/spec/opencode2/` (opencode 2.x TЗ, v1+v2).
+
+### Changed
+
+- spec tooling: `awf spec check` in project commands and CI gates; frozen contract hash covers `xfail_allow`/`skip_allow`, `flake`, `prove_red_pin`; `python -m awf.cli` runs (no silent no-op).
+- stricter reports: tool counters 56/51, docs/claims synced, phase-prompt surface named.
 
 ### Fixed
 
-- closer contract hash covers `xfail_allow`/`skip_allow`; adding one after the snapshot is a norm edit.
+- stale tool counters and brief word budget caught by CI after 0296.
+- false green in 0307 (`spec check` through no-op CLI) and broken setup preview in 0304.
+- brief: stale wins over setup chain and live-project header follows owner facts.
 
 ## [2.1.0] — 2026-10-28
 
