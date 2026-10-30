@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,23 @@ from . import config_keys, paths, versions, xdg
 OK = "ok"
 WARN = "WARN"
 NA = "n/a"
+
+# A11: opencode 2.x uses Bun's fetch, which rejects the socks scheme. A socks
+# proxy in the worker environment is a real network death, not a preference.
+PROXY_VARS = (
+    "http_proxy", "https_proxy", "all_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+)
+
+
+def socks_proxy_var(environ: dict[str, str] | None = None) -> str:
+    """The first proxy variable whose URL uses a socks scheme (name only)."""
+    env = os.environ if environ is None else environ
+    for name in PROXY_VARS:
+        value = (env.get(name) or "").strip().lower()
+        if value.startswith(("socks4", "socks5", "socks")):
+            return name
+    return ""
 
 
 @dataclass(frozen=True)
@@ -286,6 +304,13 @@ def _check_opencode(config: dict[str, Any], config_problem: str, out: _Lines) ->
         out.warn("managed", opencode_version.MANAGED_WARNING)
     elif plan.warning:
         out.warn("opencode.standalone", plan.warning)
+    proxy_var = socks_proxy_var()
+    if proxy_var:
+        out.warn(
+            "proxy",
+            f"{proxy_var} uses a socks scheme — opencode 2.x fetch does not "
+            "support it; workers will fail network calls",
+        )
 
 
 def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
@@ -355,4 +380,4 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     )
 
 
-__all__ = ["DoctorReport", "run_doctor"]
+__all__ = ["DoctorReport", "run_doctor", "socks_proxy_var"]

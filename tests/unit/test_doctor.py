@@ -394,3 +394,16 @@ def test_invalid_runner_dir_is_a_warn_not_not_pinned(project, env, monkeypatch, 
     assert "automation.runner_dir" in runner_warns[0]
     assert "launch will refuse" in runner_warns[0]
     assert "not pinned" not in _lines(report)
+
+
+def test_socks_proxy_is_a_warn_without_the_value(project, env, monkeypatch):
+    """A11: opencode 2.x fetch rejects socks; doctor names the variable only."""
+    _versions(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "socks5h://127.0.0.1:10808")
+
+    report = run_doctor(project)
+    assert report.rc == 1
+    warns = [line for line in report.warnings if line.startswith("WARN  proxy:")]
+    assert len(warns) == 1, _lines(report)
+    assert "HTTPS_PROXY" in warns[0]
+    assert "10808" not in "\n".join(report.lines)

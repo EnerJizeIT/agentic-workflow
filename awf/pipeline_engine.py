@@ -1347,6 +1347,7 @@ def _handle_net_death(
     outbox: Path,
     todo_id: str,
     prefixes: tuple[str, ...],
+    reason: str = "",
 ) -> tuple[int, bool]:
     """U6b/U6c: what a network-class death does — schedule the backoff
     retry (budget left) or declare the budget exhausted.
@@ -1384,10 +1385,11 @@ def _handle_net_death(
             net_retry_count=net_retries, net_retry_key=net_key,
             logs_dir=logs_dir,
         )
+        suffix = f" — {reason}" if reason else ""
         print(
             f"U6b: worker log shows a network failure — retrying "
             f"'{s_name}' in {backoff:.0f}s "
-            f"(net retry {net_retries}/{net_limit})...",
+            f"(net retry {net_retries}/{net_limit})...{suffix}",
             file=sys.stderr,
         )
         _log(
@@ -2004,6 +2006,33 @@ def _block_on_write_violation(
     return True
 
 
+_REASON_LIMIT = 300
+
+
+def _log_error_line(tail: str, limit: int = _REASON_LIMIT) -> str:
+    """Last ERROR-ish line of a worker-log tail, clipped (A11).
+
+    The supervisor reads the stage log, not the worker log; a bare
+    "crashed/retrying" hides ``AgentNotFound`` or ``ECONNREFUSED``.
+    """
+    for raw in reversed(tail.splitlines()):
+        low = raw.lower()
+        if "level=error" in low or low.startswith("error:") or " econnrefused" in low:
+            return raw.strip()[:limit]
+    return ""
+
+
+def _stage_failure_reason(exc: BaseException | None, tail: str = "") -> str:
+    """One human line naming the failure: worker-log error first, else exc."""
+    line = _log_error_line(tail)
+    if line:
+        return line
+    if exc is None:
+        return ""
+    text = str(exc).strip().splitlines()
+    return text[0][:_REASON_LIMIT] if text else ""
+
+
 def _worker_exit_code(log_holder: dict[str, str]) -> int | None:
     """The worker's exit code recorded by ``agent_stage`` for THIS attempt.
 
@@ -2311,6 +2340,7 @@ def execute_agent_stage(
                         project_dir=project_dir, logs_dir=logs_dir,
                         outbox=outbox, todo_id=current_todo,
                         prefixes=prefixes,
+                        reason=_stage_failure_reason(e, tail),
                     )
                     break  # scheduled → next net round; exhausted → failure path
                 if failure_class == "auth":
@@ -2321,6 +2351,10 @@ def execute_agent_stage(
                     )
                     return current_todo, stage_idx, 1
                 print(f"ERROR: agent stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
+                reason = _stage_failure_reason(e, tail)
+                if reason:
+                    print(f"  Reason: {reason}", file=sys.stderr)
+                    _log(logs_dir, f"Agent stage {s_name} failure reason: {reason}")
                 _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
                 return current_todo, stage_idx, 1
             agent_elapsed = _time.monotonic() - agent_start
@@ -2365,6 +2399,7 @@ def execute_agent_stage(
                     project_dir=project_dir, logs_dir=logs_dir,
                     outbox=outbox, todo_id=current_todo,
                     prefixes=prefixes,
+                    reason=_stage_failure_reason(None, tail),
                 )
                 break  # scheduled → next net round; exhausted → failure path
             if failure_class == "auth":
